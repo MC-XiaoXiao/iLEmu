@@ -323,30 +323,6 @@ DisplayGeometry parse_display_geometry(std::string_view value) {
                          parse_extent(value.substr(separator + 1U))};
 }
 
-std::optional<std::string>
-host_timezone_name(const std::filesystem::path &rootfs) {
-  std::error_code error;
-  const auto localtime = std::filesystem::read_symlink("/etc/localtime", error);
-  if (error)
-    return std::nullopt;
-  const auto path = localtime.generic_string();
-  constexpr std::string_view marker{"zoneinfo/"};
-  const auto marker_position = path.rfind(marker);
-  if (marker_position == std::string::npos)
-    return std::nullopt;
-  const auto name = path.substr(marker_position + marker.size());
-  if (name.empty() || name.starts_with('/') ||
-      name.find("..") != std::string::npos) {
-    return std::nullopt;
-  }
-  if (!std::filesystem::is_regular_file(rootfs / "usr/share/zoneinfo" / name,
-                                        error) ||
-      error) {
-    return std::nullopt;
-  }
-  return name;
-}
-
 std::unique_ptr<Output> make_output(const std::vector<std::string> &args) {
   if (const auto path = option(args, "--output")) {
     return std::make_unique<Output>(*path);
@@ -707,12 +683,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::vector<std::string> initial_environment{
       "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
       "SHELL=/bin/sh"};
-  const auto host_timezone =
-      bounded_execution ? std::nullopt
-                        : host_timezone_name(std::filesystem::path{*rootfs});
-  if (host_timezone) {
-    initial_environment.push_back("TZ=" + *host_timezone);
-  }
   auto process = loader.load(binary, {}, initial_environment);
   std::vector<std::unique_ptr<Runtime>> runtimes;
   auto initial = std::make_unique<Runtime>();
@@ -1145,11 +1115,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
             std::chrono::system_clock::now().time_since_epoch())
             .count();
     if (host_wall_time > 0) {
-      initial_runtime->kernel->synchronize_wall_time(
+      initial_runtime->kernel->set_wall_time(
           static_cast<std::uint64_t>(host_wall_time));
     }
-    output.line("[clock] mode=realtime wall-time=host timezone=" +
-                host_timezone.value_or("guest-default"));
+    output.line("[clock] mode=virtual-rtc seed=host-once rate=realtime "
+                "timezone=guest");
   }
   while ((!bounded_execution || remaining_ticks != 0) &&
          !initial_runtime->kernel->process().exited && !hard_stop) {

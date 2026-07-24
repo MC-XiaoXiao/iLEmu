@@ -242,6 +242,7 @@ inline constexpr std::uint32_t set_socket_option = 105;
 inline constexpr std::uint32_t listen = 106;
 inline constexpr std::uint32_t get_socket_option = 118;
 inline constexpr std::uint32_t write_vector = 121;
+inline constexpr std::uint32_t set_time_of_day = 122;
 inline constexpr std::uint32_t send_to = 133;
 inline constexpr std::uint32_t shutdown = 134;
 inline constexpr std::uint32_t socket_pair = 135;

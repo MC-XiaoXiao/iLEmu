@@ -165,8 +165,11 @@ public:
   [[nodiscard]] std::uint64_t current_wall_time() const {
     return shared_state_->clock.wall_time();
   }
+  void set_wall_time(std::uint64_t unix_time_nanoseconds) {
+    shared_state_->clock.set_wall_time(unix_time_nanoseconds);
+  }
   void synchronize_wall_time(std::uint64_t unix_time_nanoseconds) {
-    shared_state_->clock.synchronize_wall_time(unix_time_nanoseconds);
+    set_wall_time(unix_time_nanoseconds);
   }
   // Refreshes the process-local firmware framebuffer into the shared host
   // display. Most processes have no scanout surface and return immediately.

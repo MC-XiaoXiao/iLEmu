@@ -361,6 +361,75 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
                     (wall_time / 1'000ULL) % 1'000'000ULL));
     return;
   }
+  case darwin::syscall::set_time_of_day: {
+    if (process_.effective_uid != 0) {
+      bsd_error(cpu, darwin::error::operation_not_permitted);
+      return;
+    }
+
+    std::optional<std::pair<std::int64_t, std::int64_t>> requested_time;
+    if (registers[0] != 0) {
+      if (registers[0] >
+          std::numeric_limits<std::uint32_t>::max() -
+              sizeof(std::uint32_t)) {
+        bsd_error(cpu, darwin::error::bad_address);
+        return;
+      }
+      const auto seconds = memory_.read32(registers[0]);
+      const auto microseconds =
+          memory_.read32(registers[0] + sizeof(std::uint32_t));
+      if (!seconds || !microseconds) {
+        bsd_error(cpu, darwin::error::bad_address);
+        return;
+      }
+      requested_time.emplace(
+          static_cast<std::int32_t>(*seconds),
+          static_cast<std::int32_t>(*microseconds));
+    }
+
+    // XNU validates both pointers before changing the calendar. The legacy
+    // timezone value is otherwise independent of the firmware's zoneinfo
+    // state, so merely validate it here.
+    if (registers[1] != 0) {
+      if (registers[1] >
+              std::numeric_limits<std::uint32_t>::max() -
+                  sizeof(std::uint32_t) ||
+          !memory_.read32(registers[1]) ||
+          !memory_.read32(registers[1] + sizeof(std::uint32_t))) {
+        bsd_error(cpu, darwin::error::bad_address);
+        return;
+      }
+    }
+
+    if (requested_time) {
+      auto [seconds, microseconds] = *requested_time;
+      // Match Darwin 8 timevalfix() before its non-negative-time check.
+      if (microseconds < 0) {
+        --seconds;
+        microseconds += 1'000'000;
+      }
+      if (microseconds >= 1'000'000) {
+        ++seconds;
+        microseconds -= 1'000'000;
+      }
+      if (seconds < 0 || microseconds < 0 ||
+          microseconds >= 1'000'000) {
+        bsd_error(cpu, darwin::error::operation_not_permitted);
+        return;
+      }
+      const auto wall_time =
+          static_cast<std::uint64_t>(seconds) *
+              VirtualClock::nanoseconds_per_second +
+          static_cast<std::uint64_t>(microseconds) * 1'000ULL;
+      shared_state_->clock.set_wall_time(wall_time);
+      output_.write("[clock] settimeofday pid=" +
+                    std::to_string(process_.pid) +
+                    " seconds=" + std::to_string(seconds) +
+                    " microseconds=" + std::to_string(microseconds) + "\n");
+    }
+    bsd_success(cpu, 0);
+    return;
+  }
   case 147: // setsid
     process_.process_group = process_.pid;
     process_.session_id = process_.pid;

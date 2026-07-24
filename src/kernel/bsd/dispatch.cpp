@@ -51,6 +51,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case 244: // posix_spawn (xnu-1228 / iPhone OS user ABI)
   case 96:
   case 116:
+  case darwin::syscall::set_time_of_day:
   case 147:
   case darwin::syscall::set_effective_group_id:
   case darwin::syscall::set_effective_user_id:
