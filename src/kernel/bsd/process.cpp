@@ -86,6 +86,14 @@ void CompatibilityKernel::exit_process(std::uint32_t status,
                 "\n");
 }
 
+bool CompatibilityKernel::reap_process() {
+  if (!process_.exited || process_.reaped)
+    return false;
+  process_.reaped = true;
+  shared_state_->processes.erase(process_.pid);
+  return true;
+}
+
 void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
   if (dispatch_bsd_process_credentials(cpu, number))
     return;

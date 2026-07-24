@@ -94,6 +94,7 @@ public:
   [[nodiscard]] ProcessContext &process() { return process_; }
   [[nodiscard]] const ProcessContext &process() const { return process_; }
   void exit_process(std::uint32_t status, std::uint32_t signal = 0);
+  bool reap_process();
   void set_halt_on_unknown(bool value) { halt_on_unknown_ = value; }
   void set_thread_create_handler(ThreadCreateHandler handler) {
     thread_create_handler_ = std::move(handler);
