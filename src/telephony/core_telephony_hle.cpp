@@ -1,6 +1,7 @@
 #include "ilegacysim/core_telephony_hle.hpp"
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -8,6 +9,7 @@
 #include <string_view>
 
 #include "ilegacysim/address_space.hpp"
+#include "ilegacysim/cpu.hpp"
 #include "ilegacysim/userland_hle.hpp"
 #include "ilegacysim/wifi_state.hpp"
 
@@ -16,12 +18,24 @@ namespace {
 
 constexpr std::string_view core_telephony_image{
     "/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony"};
+constexpr std::string_view core_foundation_image{
+    "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"};
 constexpr std::string_view springboard_image{
     "/System/Library/CoreServices/SpringBoard.app/SpringBoard"};
 constexpr std::string_view application_directory{"Applications/"};
 constexpr std::uint32_t springboard_telephony_checked_in_method{0x0002a9f4U};
 constexpr std::string_view offline_sim_status_export{
     "_kCTSIMSupportSIMStatusNotInserted"};
+constexpr std::string_view create_call_from_info{
+    "__CTCallCreateFromCallInfo"};
+constexpr std::string_view copy_cf_string{"_CFStringGetCString"};
+constexpr std::string_view default_telephony_center{
+    "_CTTelephonyCenterGetDefault"};
+constexpr std::uint32_t cf_string_encoding_utf8{0x08000100U};
+constexpr std::uint32_t call_argument_words{8U};
+constexpr std::uint32_t call_argument_bytes{
+    call_argument_words * sizeof(std::uint32_t)};
+constexpr std::size_t maximum_dialed_number_bytes{256U};
 
 // These APIs have scalar return values in iPhoneOS 1.0. An offline handset
 // has no data attachment, active data context, signal, airplane mode, or calls.
@@ -116,6 +130,94 @@ void return_server_success(UserlandHleCall& call) {
     call.set_return(result);
 }
 
+void return_server_failure(UserlandHleCall& call, std::uint32_t result,
+                           std::uint32_t call_output,
+                           std::uint32_t error) {
+    if (call_output != 0) {
+        static_cast<void>(call.write32(call_output, 0));
+    }
+    if (result != 0) {
+        static_cast<void>(call.write32(result, 1));
+        static_cast<void>(call.write32(result + 4U, error));
+    }
+    call.set_return(result);
+}
+
+struct OfflineCallRequest {
+    std::uint32_t result{};
+    std::uint32_t call_output{};
+    std::uint32_t number{};
+    std::uint32_t dial_identifier{};
+    std::uint32_t caller_stack{};
+    std::uint32_t sequence{};
+    std::uint32_t address{};
+};
+
+bool create_firmware_call(UserlandHleCall& call,
+                          const OfflineCallRequest& request,
+                          std::uint32_t allocator_source) {
+    if (allocator_source == 0 ||
+        request.caller_stack < call_argument_bytes) {
+        return false;
+    }
+    const auto empty = call.intern_string("");
+    if (empty == 0) return false;
+
+    const auto call_stack =
+        request.caller_stack - call_argument_bytes;
+    const std::array<std::uint32_t, call_argument_words> arguments{
+        0x694c5349U,             // Fourth CFUUID word.
+        request.address,        // Dialed address.
+        empty,                  // No network-provided display name.
+        0U,                     // Start time is unknown while dialing.
+        0U,                     // Connected duration.
+        request.sequence,       // Stable call identifier.
+        2U,                     // Outgoing, dialing call state.
+        request.dial_identifier,
+    };
+    for (std::size_t index = 0; index < arguments.size(); ++index) {
+        if (!call.write32(
+                call_stack +
+                    static_cast<std::uint32_t>(index) *
+                        static_cast<std::uint32_t>(
+                            sizeof(std::uint32_t)),
+                arguments[index])) {
+            return false;
+        }
+    }
+
+    auto& registers = call.cpu().registers();
+    registers[0] = allocator_source;
+    registers[1] = 0x694c6567U;
+    registers[2] = call.process_id();
+    registers[3] = request.sequence;
+    registers[13] = call_stack;
+    if (call.call_guest_function(
+            create_call_from_info,
+            [request](UserlandHleCall& completed) {
+                completed.cpu().registers()[13] =
+                    request.caller_stack;
+                const auto created =
+                    completed.cpu().registers()[0];
+                if (created != 0 &&
+                    completed.write32(
+                        request.call_output, created) &&
+                    completed.write32(request.result, 0) &&
+                    completed.write32(
+                        request.result + 4U, 0)) {
+                    completed.set_return(request.result);
+                    return;
+                }
+                return_server_failure(
+                    completed, request.result,
+                    request.call_output, 12U);
+            })) {
+        return true;
+    }
+    registers[13] = request.caller_stack;
+    return false;
+}
+
 }  // namespace
 
 void register_core_telephony_hle(UserlandHleRegistry& registry) {
@@ -128,6 +230,9 @@ void register_core_telephony_hle(
     UserlandHleRegistry& registry, WifiStateProvider wifi_state,
     std::function<void(const WifiSnapshot&, const WifiSnapshot&)>
         wifi_state_changed) {
+    registry.register_guest_function(
+        std::string{core_foundation_image},
+        std::string{copy_cf_string});
     // Every stock UI process shares one offline compatibility backend. Match
     // the application directory instead of maintaining a bundle whitelist,
     // while allowing CommCenter and other system daemons to keep their native
@@ -141,6 +246,77 @@ void register_core_telephony_hle(
         springboard_telephony_checked_in_method,
         "-[SBStatusBarController telephonyControllerCheckedIn]",
         [](UserlandHleCall& call) { call.set_return(1); });
+
+    // Preserve the firmware's CTCall CFRuntime object and MobilePhone flow.
+    // Only adapt the missing baseband service reply into the same call-info
+    // record that a real CommCenter response would have produced.
+    const auto next_call_identifier =
+        std::make_shared<std::atomic<std::uint32_t>>(1U);
+    registry.register_function(
+        std::string{core_telephony_image},
+        "__CTServerConnectionCreateCall",
+        [next_call_identifier](UserlandHleCall& call) {
+            if (!is_offline_ui_client(call)) {
+                call.resume_original();
+                return;
+            }
+
+            OfflineCallRequest request{
+                call.argument(0),
+                call.argument(4),
+                call.argument(2),
+                call.argument(3),
+                call.cpu().registers()[13],
+                next_call_identifier->fetch_add(
+                    1U, std::memory_order_relaxed),
+                call.allocate_data(maximum_dialed_number_bytes, 1U),
+            };
+            if (request.result == 0 || request.call_output == 0 ||
+                request.number == 0 || request.address == 0) {
+                return_server_failure(
+                    call, request.result, request.call_output, 22U);
+                return;
+            }
+
+            auto& registers = call.cpu().registers();
+            registers[0] = request.number;
+            registers[1] = request.address;
+            registers[2] =
+                static_cast<std::uint32_t>(
+                    maximum_dialed_number_bytes);
+            registers[3] = cf_string_encoding_utf8;
+            if (!call.call_guest_function(
+                    copy_cf_string,
+                    [request](UserlandHleCall& copied) {
+                        if (copied.cpu().registers()[0] == 0) {
+                            return_server_failure(
+                                copied, request.result,
+                                request.call_output, 22U);
+                            return;
+                        }
+
+                        if (!copied.call_guest_function(
+                                default_telephony_center,
+                                [request](UserlandHleCall& centered) {
+                                    const auto center =
+                                        centered.cpu().registers()[0];
+                                    if (!create_firmware_call(
+                                            centered, request, center)) {
+                                        return_server_failure(
+                                            centered, request.result,
+                                            request.call_output, 38U);
+                                    }
+                                })) {
+                            return_server_failure(
+                                copied, request.result,
+                            request.call_output, 38U);
+                        }
+                    })) {
+                return_server_failure(
+                    call, request.result, request.call_output, 38U);
+            }
+        });
+
     for (const auto symbol : offline_scalar_queries) {
         registry.register_function(
             std::string{core_telephony_image}, std::string{symbol},
