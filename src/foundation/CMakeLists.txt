@@ -9,12 +9,16 @@ add_library(ilemu_foundation STATIC
     display.cpp
     macho.cpp
     output.cpp
+    performance.cpp
     process_loader.cpp
     scene_coordinator.cpp
     userland_hle.cpp
     virtual_clock.cpp)
 add_library(iLEmu::foundation ALIAS ilemu_foundation)
 ilemu_configure_module(ilemu_foundation)
+target_include_directories(ilemu_foundation SYSTEM PRIVATE
+    "${ILEMU_DYNARMIC_DIR}/externals/mcl/include"
+    "${ILEMU_BOOST_DIR}")
 target_link_libraries(ilemu_foundation PUBLIC
     dynarmic Threads::Threads iLEmu::xnu_adapter
     iLEmu::foundation_memory)

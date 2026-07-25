@@ -8,6 +8,18 @@
 #include <thread>
 #include <utility>
 
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wshadow"
+#endif
+#include <dynarmic/frontend/A32/a32_ir_emitter.h>
+#include <dynarmic/ir/basic_block.h>
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
+
+#include "ilemu/performance.hpp"
+
 namespace ilemu {
 namespace {
 
@@ -37,7 +49,9 @@ public:
     }
 
     bool PreCodeReadHook(
-        bool, Dynarmic::A32::VAddr, Dynarmic::A32::IREmitter&) override {
+        bool, Dynarmic::A32::VAddr, Dynarmic::A32::IREmitter& ir) override {
+        if (ir.block.CycleCount() == 0)
+            performance_counters().record_translation_block();
         // This fork's translator continues normal decoding when the hook returns
         // true. Returning false is reserved for a hook that already emitted an IR
         // terminal. (The comment in UserCallbacks currently says the opposite.)
@@ -123,6 +137,7 @@ public:
     }
 
     void CallSVC(std::uint32_t immediate) override {
+        performance_counters().record_svc();
         svc_ = immediate;
         if (svc_dispatch_mode_ == SvcDispatchMode::Deferred) {
             jit_->HaltExecution(Dynarmic::HaltReason::UserDefined2);
@@ -241,6 +256,7 @@ private:
     }
 
     void memory_fault(std::uint32_t address, std::size_t size, MemoryPermission access) {
+        performance_counters().record_page_fault();
         fault_ = MemoryFault{address, size, access, "unmapped address or protection failure"};
         if (jit_ != nullptr) {
             jit_->HaltExecution(Dynarmic::HaltReason::MemoryAbort);
@@ -304,6 +320,7 @@ void Cpu::ensure_jit() {
         config.only_detect_misalignment_via_page_table_on_page_boundary = true;
     }
     jit_ = std::make_unique<Dynarmic::A32::Jit>(config);
+    performance_counters().record_jit();
     callbacks_->attach(this, jit_.get());
 }
 
@@ -312,13 +329,17 @@ Cpu::~Cpu() = default;
 CpuRunResult Cpu::run(std::uint64_t ticks) {
     ensure_jit();
     callbacks_->begin(ticks);
-    return callbacks_->result(jit_->Run());
+    auto result = callbacks_->result(jit_->Run());
+    performance_counters().record_cpu_execution(result.ticks_consumed);
+    return result;
 }
 
 CpuRunResult Cpu::step() {
     ensure_jit();
     callbacks_->begin(1);
-    return callbacks_->result(jit_->Step());
+    auto result = callbacks_->result(jit_->Step());
+    performance_counters().record_cpu_execution(result.ticks_consumed);
+    return result;
 }
 
 void Cpu::reset() {

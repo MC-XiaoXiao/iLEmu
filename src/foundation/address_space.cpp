@@ -10,6 +10,8 @@
 
 #include <sys/mman.h>
 
+#include "ilemu/performance.hpp"
+
 namespace ilemu {
 namespace {
 
@@ -441,6 +443,7 @@ AddressSpace::Page &AddressSpace::ensure_page_locked(std::uint32_t address) {
   auto [page, inserted] = pages_.try_emplace(base);
   if (!page->second.backing) {
     if (const auto *mapping = find_file_mapping_locked(base)) {
+      performance_counters().record_page_miss();
       const auto mapping_start = static_cast<std::uint64_t>(
           std::prev(file_mappings_.upper_bound(base))->first);
       const auto file_offset =
@@ -500,6 +503,7 @@ bool AddressSpace::fault_file_pages(std::uint32_t address,
     const auto mapping_start = mapping_entry->first;
     const auto &mapping = mapping_entry->second;
     if (current >= mapping.end) continue;
+    performance_counters().record_page_miss();
 
     constexpr std::uint64_t cluster_bytes =
         guest_file_prefetch_pages * page_size;
