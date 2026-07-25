@@ -43,6 +43,8 @@ struct GlesRasterTextureUnit {
 };
 
 struct GlesRasterState {
+    // Separates per-context texture namespaces from a shared render target.
+    std::uint64_t resource_owner{};
     std::int32_t viewport_x{};
     std::int32_t viewport_y{};
     std::uint32_t viewport_width{};
