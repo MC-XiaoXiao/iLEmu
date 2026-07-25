@@ -103,14 +103,15 @@ void LayerKitHle::register_handlers(
                 SceneTransform{1.0F, 0.0F, 0.0F, 1.0F,
                                -placement->presentation_offset_x,
                                -placement->presentation_offset_y});
+            graphics_services_input::activate_resolved_application(
+                *shared_state_, *client_process_id,
+                scene_coordinator_.get());
           }
         }
         if (const auto replacement = compatibility_.observe_commit(
                 context, current_layer_id, call.argument(1), render_flags,
                 call.argument(3), children, root_handle_cached)) {
           if (call.write32(context + 0x3cU, *replacement)) {
-            graphics_services_input::activate_resolved_application(
-                *shared_state_, call.process_id(), scene_coordinator_.get());
             output.write("[layerkit] reconnected detached root context=" +
                          std::to_string(context) +
                          " layer=" + std::to_string(*replacement) + "\n");

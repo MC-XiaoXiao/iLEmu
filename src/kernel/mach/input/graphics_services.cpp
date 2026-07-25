@@ -465,12 +465,51 @@ void activate_resolved_application(KernelSharedState &state,
       scenes ? scenes->client_scene(process_id).has_value()
              : state.active_application_scene &&
                    state.active_application_scene->touch_transform.has_value();
-  if (state.active_application_scene &&
-      state.active_application_scene->process_id == process_id &&
-      scene_committed) {
-    state.active_application_event_object =
-        state.active_application_scene->event_object;
+  const auto owns_active_intent =
+      state.active_application_scene &&
+      state.active_application_scene->process_id == process_id;
+  auto event_object =
+      owns_active_intent ? state.active_application_scene->event_object : 0U;
+  if (const auto pending_port = state.mach_port_objects.lookup(
+          state.pending_application_event_object);
+      pending_port && pending_port->receive_owner == process_id) {
+    event_object = state.pending_application_event_object;
+  }
+  const auto process = state.processes.find(process_id);
+  const auto valid_application =
+      process != state.processes.end() && !process->second.exited &&
+      process->second.executable_path.starts_with("/Applications/");
+  const auto requests_userspace_prewarm =
+      valid_application &&
+      std::find(process->second.arguments.begin(),
+                process->second.arguments.end(),
+                "--suspended") != process->second.arguments.end();
+  const auto preserves_committed_foreground =
+      state.active_application_scene && !owns_active_intent &&
+      state.active_application_event_object ==
+          state.active_application_scene->event_object &&
+      !state.application_touch_suspended &&
+      (scenes ? scenes->client_scene_active(
+                    state.active_application_scene->process_id)
+              : state.active_application_scene->touch_transform.has_value());
+  if (scene_committed && event_object != 0U && valid_application &&
+      !preserves_committed_foreground &&
+      (!requests_userspace_prewarm || owns_active_intent)) {
+    std::optional<KernelSharedState::ApplicationTouchTransform> transform;
+    if (const auto cached =
+            state.application_scene_transforms.find(process_id);
+        cached != state.application_scene_transforms.end()) {
+      transform = cached->second;
+    } else if (owns_active_intent) {
+      transform = state.active_application_scene->touch_transform;
+    }
+    state.active_application_scene = KernelSharedState::ActiveApplicationScene{
+        process_id, event_object, transform};
+    state.active_application_event_object = event_object;
     state.application_touch_suspended = false;
+    state.application_suspension_reason =
+        KernelSharedState::ApplicationSuspensionReason::None;
+    state.suspended_application_scene_process_id.reset();
     if (scenes)
       scenes->activate_client_scene(process_id);
   }
