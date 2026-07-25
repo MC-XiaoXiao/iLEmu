@@ -1,5 +1,6 @@
 #include "ilemu/surface_store.hpp"
 
+#include <atomic>
 #include <bit>
 #include <cstddef>
 #include <cstring>
@@ -10,8 +11,26 @@
 
 #include "ilemu/address_space.hpp"
 #include "ilemu/core_surface_abi.hpp"
+#include "ilemu/gles_renderer.hpp"
+#include "ilemu/host_graphics.hpp"
 
 namespace ilemu {
+namespace {
+
+std::atomic<std::uint64_t> next_host_surface_sequence{1};
+
+std::uint64_t allocate_host_surface_sequence() {
+    auto sequence =
+        next_host_surface_sequence.fetch_add(1, std::memory_order_relaxed);
+    if (sequence == 0) {
+        sequence =
+            next_host_surface_sequence.fetch_add(1,
+                                                 std::memory_order_relaxed);
+    }
+    return sequence;
+}
+
+} // namespace
 
 SurfaceStore::~SurfaceStore() {
     reset();
@@ -19,19 +38,26 @@ SurfaceStore::~SurfaceStore() {
 
 void SurfaceStore::reset() {
     const auto registry = registry_;
-    std::scoped_lock lock{mutex_, registry->mutex};
-    for (const auto& [id, backing] : backings_) {
-        static_cast<void>(backing);
-        const auto object = registry->objects.find(id);
-        if (object == registry->objects.end())
-            continue;
-        if (object->second.store_references > 1) {
-            --object->second.store_references;
-        } else {
-            registry->objects.erase(object);
+    std::vector<std::uint64_t> released_targets;
+    {
+        std::scoped_lock lock{mutex_, registry->mutex};
+        for (const auto& [id, backing] : backings_) {
+            static_cast<void>(backing);
+            const auto object = registry->objects.find(id);
+            if (object == registry->objects.end())
+                continue;
+            if (object->second.store_references > 1) {
+                --object->second.store_references;
+            } else {
+                released_targets.push_back(
+                    object->second.metadata.provenance.publication_sequence);
+                registry->objects.erase(object);
+            }
         }
+        backings_.clear();
     }
-    backings_.clear();
+    for (const auto target : released_targets)
+        release_gles_render_target({0, target});
 }
 
 void SurfaceStore::inherit_state(const SurfaceStore& parent) {
@@ -92,6 +118,7 @@ bool SurfaceStore::publish(AddressSpace& memory, Backing backing) {
         return false;
 
     const auto registry = registry_;
+    const auto published_id = backing.id;
     {
         std::scoped_lock lock{mutex_, registry->mutex};
         if (registry->objects.contains(backing.id) ||
@@ -99,22 +126,29 @@ bool SurfaceStore::publish(AddressSpace& memory, Backing backing) {
             return false;
         }
         backing.provenance.publication_sequence =
-            registry->next_publication_sequence++;
+            allocate_host_surface_sequence();
         registry->publication_watermark =
             backing.provenance.publication_sequence;
-        if (registry->next_publication_sequence == 0U)
-            registry->next_publication_sequence = 1U;
         SharedObject object;
         object.metadata = backing;
         object.metadata.base = 0;
         object.page_offset = page_offset;
         object.mapping_size = mapping_size;
         object.pages = std::move(*pages);
+        object.host_surface = shared_gles_renderer()->create_surface(
+            {0, backing.provenance.publication_sequence},
+            HostSurfaceDescriptor{backing.width, backing.height,
+                                  backing.bytes_per_row,
+                                  backing.pixel_format});
         object.store_references = 1;
         registry->objects.emplace(backing.id, std::move(object));
         if (registry->next_identifier <= backing.id)
             registry->next_identifier = backing.id + 1U;
         backings_.insert_or_assign(backing.id, std::move(backing));
+    }
+    if (const auto pixels = read_argb(memory, published_id)) {
+        if (const auto surface = host_surface(published_id))
+            surface->replace_cpu(*pixels);
     }
     return true;
 }
@@ -157,17 +191,24 @@ SurfaceStore::import(AddressSpace& memory, std::uint32_t id,
 
 void SurfaceStore::erase(std::uint32_t id) {
     const auto registry = registry_;
-    std::scoped_lock lock{mutex_, registry->mutex};
-    if (backings_.erase(id) == 0)
-        return;
-    const auto object = registry->objects.find(id);
-    if (object == registry->objects.end())
-        return;
-    if (object->second.store_references > 1) {
-        --object->second.store_references;
-    } else {
-        registry->objects.erase(object);
+    std::optional<std::uint64_t> released_target;
+    {
+        std::scoped_lock lock{mutex_, registry->mutex};
+        if (backings_.erase(id) == 0)
+            return;
+        const auto object = registry->objects.find(id);
+        if (object == registry->objects.end())
+            return;
+        if (object->second.store_references > 1) {
+            --object->second.store_references;
+        } else {
+            released_target =
+                object->second.metadata.provenance.publication_sequence;
+            registry->objects.erase(object);
+        }
     }
+    if (released_target)
+        release_gles_render_target({0, *released_target});
 }
 
 std::optional<SurfaceStore::Backing>
@@ -178,11 +219,28 @@ SurfaceStore::find(std::uint32_t id) const {
                                     : std::optional<Backing>{found->second};
 }
 
+std::shared_ptr<HostSurface>
+SurfaceStore::host_surface(std::uint32_t id) const {
+    const auto registry = registry_;
+    std::lock_guard lock{registry->mutex};
+    const auto found = registry->objects.find(id);
+    return found == registry->objects.end() ? nullptr
+                                            : found->second.host_surface;
+}
+
 std::optional<std::vector<std::uint32_t>>
 SurfaceStore::read_argb(AddressSpace& memory, std::uint32_t id) const {
     const auto backing = find(id);
     if (!backing || backing->pixel_format != surface_pixel_format_bgra) {
         return std::nullopt;
+    }
+    const auto surface = host_surface(id);
+    if (surface &&
+        surface->gpu_generation() > surface->cpu_generation()) {
+        if (!shared_gles_renderer()->map_cpu(*surface, true))
+            return std::nullopt;
+        auto mapping = surface->map_cpu(false);
+        return mapping.frame().pixels;
     }
     constexpr auto pixel_size = core_surface_abi::bytes_per_bgra_pixel;
     const auto row_bytes =
@@ -229,7 +287,20 @@ SurfaceStore::read_argb(AddressSpace& memory, std::uint32_t id) const {
                 (alpha << 24U) | (red << 16U) | (green << 8U) | blue;
         }
     }
+    if (surface)
+        surface->replace_cpu(pixels);
     return pixels;
+}
+
+bool SurfaceStore::synchronize_for_cpu(AddressSpace& memory,
+                                       std::uint32_t id) const {
+    const auto backing = find(id);
+    if (!backing)
+        return false;
+    if (backing->pixel_format != surface_pixel_format_bgra)
+        return true;
+    const auto pixels = read_argb(memory, id);
+    return pixels && write_argb(memory, id, *pixels);
 }
 
 bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,
@@ -287,6 +358,8 @@ bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,
         if (!memory.copy_in(destination, bytes))
             return false;
     }
+    if (const auto surface = host_surface(id))
+        surface->replace_cpu(pixels);
     return true;
 }
 

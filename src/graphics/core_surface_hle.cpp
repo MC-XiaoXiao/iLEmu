@@ -559,8 +559,14 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
         call.set_return(call.argument(1) == 0 ? buffer->base : 0);
     } else if (symbol == "_CoreSurfaceClientBufferGetPlaneCount") {
         call.set_return(0);
-    } else if (symbol == "_CoreSurfaceClientBufferLock" ||
-               symbol == "_CoreSurfaceClientBufferFlushProcessorCaches") {
+    } else if (symbol == "_CoreSurfaceClientBufferLock") {
+        call.set_return(
+            surfaces_->synchronize_for_cpu(call.memory(), buffer->id)
+                ? success
+                : 1U);
+    } else if (symbol ==
+               "_CoreSurfaceClientBufferFlushProcessorCaches") {
+        static_cast<void>(surfaces_->read_argb(call.memory(), buffer->id));
         call.set_return(success);
     } else if (symbol == "_CoreSurfaceClientBufferUnlock") {
         if (!buffer->preserved_exit_snapshot_pixels.empty()) {
@@ -583,6 +589,8 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
                 buffer->preserved_exit_snapshot_pixels.clear();
             }
         }
+        static_cast<void>(
+            surfaces_->read_argb(call.memory(), buffer->id));
         submit(*buffer, call);
         call.set_return(success);
     } else if (symbol == "_CoreSurfaceClientBufferGetYCbCrMatrix" ||

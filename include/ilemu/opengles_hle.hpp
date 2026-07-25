@@ -157,6 +157,7 @@ class OpenGlesHle {
     std::shared_ptr<SurfaceStore> surface_store_;
     std::uint64_t renderer_owner_{};
     std::shared_ptr<GlesRenderer> renderer_;
+    std::unique_ptr<CommandEncoder> command_encoder_;
     std::shared_ptr<KernelSharedState> shared_state_;
     std::shared_ptr<SceneCoordinator> scene_coordinator_;
 };

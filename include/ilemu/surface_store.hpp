@@ -13,6 +13,7 @@
 namespace ilemu {
 
 class AddressSpace;
+class HostSurface;
 
 constexpr std::uint32_t surface_fourcc(char a, char b, char c, char d) {
     return (static_cast<std::uint32_t>(a) << 24U) |
@@ -71,8 +72,14 @@ class SurfaceStore {
                                                 std::uint32_t mapping_address);
     void erase(std::uint32_t id);
     [[nodiscard]] std::optional<Backing> find(std::uint32_t id) const;
+    [[nodiscard]] std::shared_ptr<HostSurface>
+    host_surface(std::uint32_t id) const;
     [[nodiscard]] std::optional<std::vector<std::uint32_t>>
     read_argb(AddressSpace& memory, std::uint32_t id) const;
+    // CPU map is the explicit GPU completion/readback boundary. The resulting
+    // pixels are copied into the guest mapping for firmware access.
+    [[nodiscard]] bool synchronize_for_cpu(AddressSpace& memory,
+                                           std::uint32_t id) const;
     [[nodiscard]] bool write_argb(AddressSpace& memory, std::uint32_t id,
                                   std::span<const std::uint32_t> pixels) const;
 
@@ -82,13 +89,13 @@ class SurfaceStore {
         std::uint32_t page_offset{};
         std::uint32_t mapping_size{};
         std::vector<std::shared_ptr<GuestPageBacking>> pages;
+        std::shared_ptr<HostSurface> host_surface;
         std::size_t store_references{};
     };
     struct SharedRegistry {
         mutable std::mutex mutex;
         std::map<std::uint32_t, SharedObject> objects;
         std::uint32_t next_identifier{1};
-        std::uint64_t next_publication_sequence{1};
         std::uint64_t publication_watermark{};
     };
 
