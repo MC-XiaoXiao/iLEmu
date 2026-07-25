@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -57,6 +58,18 @@ public:
   // the continuation only adapts the surrounding service transaction.
   [[nodiscard]] bool call_guest_function(std::string_view symbol,
                                          Continuation continuation);
+  // Queue a mapped guest function for the consumer thread's next receive-only
+  // Mach-message boundary. This models a run-loop service notification after
+  // the initiating call unwinds, without a polling thread or host timer.
+  [[nodiscard]] bool defer_guest_function(
+      std::string_view symbol, Continuation setup,
+      Continuation completion = {});
+  // Queue the next guest step of an already-delivering deferred transaction.
+  // It runs before the intercepted Mach receive is retried, so multi-function
+  // service decoding remains one event-loop delivery.
+  [[nodiscard]] bool continue_deferred_guest_function(
+      std::string_view symbol, Continuation setup,
+      Continuation completion = {});
   // Stop intercepting this entry in the current process and execute the
   // original guest implementation from its first instruction.
   void resume_original();
@@ -184,10 +197,24 @@ private:
   [[nodiscard]] std::optional<std::uint32_t>
   install_continuation(Cpu &cpu, std::uint32_t return_address,
                        UserlandHleCall::Continuation continuation);
+  [[nodiscard]] bool defer_guest_function(
+      std::string_view symbol, std::size_t processor_id,
+      bool wait_for_receive_boundary, Handler setup,
+      Handler completion);
+  [[nodiscard]] bool deliver_deferred_guest_function(
+      Cpu &cpu, std::uint32_t process_id, std::uint32_t svc_immediate);
 
   struct PendingContinuation {
     std::uint32_t return_address{};
     UserlandHleCall::Continuation handler;
+  };
+  struct DeferredGuestCall {
+    std::uint32_t address{};
+    std::size_t processor_id{};
+    bool wait_for_receive_boundary{};
+    bool thumb{};
+    Handler setup;
+    Handler completion;
   };
 
   AddressSpace &memory_;
@@ -206,6 +233,7 @@ private:
   std::map<std::uint32_t, std::uint32_t> persistent_trampolines_;
   std::uint32_t persistent_trampoline_cursor_{0x60000000U};
   std::map<std::uint32_t, PendingContinuation> pending_continuations_;
+  std::deque<DeferredGuestCall> deferred_guest_calls_;
   std::vector<std::uint32_t> available_continuation_trampolines_;
   std::uint32_t continuation_trampoline_cursor_{0x61000000U};
   std::uint32_t thread_callback_return_address_{};

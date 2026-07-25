@@ -288,6 +288,22 @@ bool UserlandHleCall::call_guest_function(std::string_view symbol,
   return true;
 }
 
+bool UserlandHleCall::defer_guest_function(
+    std::string_view symbol, Continuation setup,
+    Continuation completion) {
+  return registry_.defer_guest_function(
+      symbol, cpu_.processor_id(), true, std::move(setup),
+      std::move(completion));
+}
+
+bool UserlandHleCall::continue_deferred_guest_function(
+    std::string_view symbol, Continuation setup,
+    Continuation completion) {
+  return registry_.defer_guest_function(
+      symbol, cpu_.processor_id(), false, std::move(setup),
+      std::move(completion));
+}
+
 void UserlandHleCall::resume_original() { resume_original_ = true; }
 
 void UserlandHleCall::resume_original_persistently() {
@@ -659,6 +675,10 @@ std::size_t UserlandHleRegistry::install_mapped_image(
 
 bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
                                    std::uint32_t svc_immediate) {
+  if (!deferred_guest_calls_.empty() && svc_immediate == 0x80U &&
+      deliver_deferred_guest_function(cpu, process_id, svc_immediate)) {
+    return true;
+  }
   const bool thumb = svc_immediate == userland_hle_thumb_svc;
   if (!thumb && (svc_immediate & userland_hle_svc_namespace_mask) !=
                     userland_hle_svc_namespace) {
@@ -862,6 +882,87 @@ std::optional<std::uint32_t> UserlandHleRegistry::install_continuation(
   return address;
 }
 
+bool UserlandHleRegistry::defer_guest_function(
+    std::string_view symbol, std::size_t processor_id,
+    bool wait_for_receive_boundary, Handler setup,
+    Handler completion) {
+  if (!setup) return false;
+  const auto address = symbol_address(symbol);
+  const auto thumb = installed_symbol_thumb_.find(symbol);
+  if (!address || thumb == installed_symbol_thumb_.end()) return false;
+  deferred_guest_calls_.push_back(
+      DeferredGuestCall{*address, processor_id,
+                        wait_for_receive_boundary, thumb->second,
+                        std::move(setup), std::move(completion)});
+  return true;
+}
+
+bool UserlandHleRegistry::deliver_deferred_guest_function(
+    Cpu &cpu, std::uint32_t process_id, std::uint32_t svc_immediate) {
+  if (svc_immediate != 0x80U || deferred_guest_calls_.empty()) {
+    return false;
+  }
+
+  // A service callback belongs at the consumer thread's event-loop boundary,
+  // not at an arbitrary syscall made while the initiating UI action is still
+  // unwinding. A receive-only mach_msg trap is the stable Darwin boundary at
+  // which CFRunLoop is about to wait for its next source. Run the pending
+  // callback there, then restore and retry the original receive.
+  constexpr std::int32_t mach_message_trap = -31;
+  constexpr std::uint32_t mach_receive_message = 0x2U;
+  const auto& boundary_registers = cpu.registers();
+  const auto at_receive_boundary =
+      static_cast<std::int32_t>(boundary_registers[12]) ==
+          mach_message_trap &&
+      boundary_registers[2] == 0 &&
+      (boundary_registers[1] & mach_receive_message) != 0;
+
+  const auto pending = std::find_if(
+      deferred_guest_calls_.begin(), deferred_guest_calls_.end(),
+      [&](const DeferredGuestCall& candidate) {
+        return candidate.processor_id == cpu.processor_id() &&
+               (!candidate.wait_for_receive_boundary ||
+                at_receive_boundary);
+      });
+  if (pending == deferred_guest_calls_.end()) return false;
+  auto deferred = std::move(*pending);
+  deferred_guest_calls_.erase(pending);
+  const auto saved_registers = boundary_registers;
+  const auto saved_cpsr = cpu.cpsr();
+  const auto interrupted_thumb =
+      (saved_cpsr & arm_thumb_state_bit) != 0;
+  const auto svc_size = interrupted_thumb ? 2U : 4U;
+  const auto svc_entry = saved_registers[15] - svc_size;
+  const auto return_gate = install_continuation(
+      cpu, svc_entry | (interrupted_thumb ? 1U : 0U),
+      [saved_registers, saved_cpsr,
+       completion = std::move(deferred.completion)](
+          UserlandHleCall &completed) mutable {
+        if (completion) completion(completed);
+        completed.cpu().registers() = saved_registers;
+        completed.cpu().set_cpsr(saved_cpsr);
+      });
+  if (!return_gate) {
+    deferred_guest_calls_.push_front(std::move(deferred));
+    return false;
+  }
+
+  UserlandHleCall setup{*this, cpu, memory_, output_, process_id,
+                        "__deferred_guest_setup"};
+  deferred.setup(setup);
+  auto &registers = cpu.registers();
+  registers[14] = *return_gate;
+  registers[15] = deferred.address;
+  auto cpsr = cpu.cpsr();
+  if (deferred.thumb) {
+    cpsr |= arm_thumb_state_bit;
+  } else {
+    cpsr &= ~arm_thumb_state_bit;
+  }
+  cpu.set_cpsr(cpsr);
+  return true;
+}
+
 std::optional<std::uint32_t>
 UserlandHleRegistry::prepare_thread_callback_return(Cpu &cpu) {
   if (thread_callback_return_address_ != 0)
@@ -1048,6 +1149,7 @@ void UserlandHleRegistry::reset_mappings() {
   persistent_trampolines_.clear();
   persistent_trampoline_cursor_ = 0x60000000U;
   pending_continuations_.clear();
+  deferred_guest_calls_.clear();
   available_continuation_trampolines_.clear();
   continuation_trampoline_cursor_ = 0x61000000U;
   thread_callback_return_address_ = 0;
@@ -1068,6 +1170,7 @@ void UserlandHleRegistry::inherit_mappings(const UserlandHleRegistry &parent) {
   persistent_trampolines_ = parent.persistent_trampolines_;
   persistent_trampoline_cursor_ = parent.persistent_trampoline_cursor_;
   pending_continuations_.clear();
+  deferred_guest_calls_.clear();
   available_continuation_trampolines_ =
       parent.available_continuation_trampolines_;
   continuation_trampoline_cursor_ =
