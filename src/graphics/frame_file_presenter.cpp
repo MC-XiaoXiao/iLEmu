@@ -125,16 +125,22 @@ FrameFilePresenter::FrameFilePresenter(std::filesystem::path path)
 }
 
 void FrameFilePresenter::present(const DisplayFrame& frame) {
-    if (frame.width == 0 || frame.height == 0 ||
-        frame.pixels.size() !=
-            static_cast<std::size_t>(frame.width) * frame.height) {
+    DisplayFrame materialized = frame;
+    const auto expected =
+        static_cast<std::size_t>(frame.width) * frame.height;
+    if (materialized.pixels.size() != expected &&
+        materialized.read_pixels) {
+        materialized.pixels = materialized.read_pixels();
+    }
+    if (materialized.width == 0 || materialized.height == 0 ||
+        materialized.pixels.size() != expected) {
         return;
     }
     const std::scoped_lock lock{mutex_};
     auto temporary = path_;
     temporary += ".tmp";
     if (path_.extension() == ".png") {
-        write_png(temporary, frame);
+        write_png(temporary, materialized);
     } else {
         std::ofstream output{temporary, std::ios::binary | std::ios::trunc};
         if (!output) {
@@ -142,9 +148,9 @@ void FrameFilePresenter::present(const DisplayFrame& frame) {
                                      temporary.string()};
         }
         if (path_.extension() == ".bmp") {
-            write_bitmap(output, frame);
+            write_bitmap(output, materialized);
         } else {
-            write_portable_pixmap(output, frame);
+            write_portable_pixmap(output, materialized);
         }
         output.close();
         if (!output) {

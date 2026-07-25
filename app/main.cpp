@@ -726,15 +726,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
     throw std::runtime_error{"boot requires --rootfs"};
   }
   const auto gles_backend = parse_gles_backend(args);
+  configure_gles_pipeline_cache(
+      std::filesystem::path{*rootfs} / "var/db/ilegacysim" /
+      "vulkan-pipeline-cache.bin");
   configure_gles_backend(gles_backend);
-  const auto gles_renderer = shared_gles_renderer();
-  output.line("[gles] requested=" +
-              std::string{gles_backend_name(gles_backend)} + " renderer=\"" +
-              std::string{gles_renderer->name()} + "\" accelerated=" +
-              std::to_string(gles_renderer->accelerated()) +
-              " software-fallback=" +
-              (gles_renderer->software_fallback_allowed() ? "allowed"
-                                                           : "disabled"));
   const auto binary = option(args, "--binary").value_or("/sbin/launchd");
   auto device = DeviceProfile::default_profile();
   if (const auto display_size = option(args, "--display-size")) {
@@ -822,7 +817,34 @@ void boot(const std::vector<std::string> &args, Output &output) {
     }
     sdl_display = std::make_unique<SdlDisplay>(device.display,
                                                device.user_interface);
+    if (const auto presenter =
+            sdl_display->vulkan_presenter_configuration()) {
+      configure_gles_vulkan_presenter(*presenter);
+    }
   }
+  auto gles_renderer = shared_gles_renderer();
+  if (sdl_display)
+    sdl_display->set_host_graphics(gles_renderer);
+  output.line("[gles] requested=" +
+              std::string{gles_backend_name(gles_backend)} + " renderer=\"" +
+              std::string{gles_renderer->name()} + "\" accelerated=" +
+              std::to_string(gles_renderer->accelerated()) +
+              " software-fallback=" +
+              (gles_renderer->software_fallback_allowed() ? "allowed"
+                                                           : "disabled") +
+              " direct-present=" +
+              (gles_renderer->native_presentation_available() ? "yes"
+                                                               : "no"));
+  struct RendererLifetime {
+    std::shared_ptr<GlesRenderer> &renderer;
+    SdlDisplay *display;
+    ~RendererLifetime() {
+      if (display)
+        display->set_host_graphics({});
+      renderer.reset();
+      shutdown_gles_renderer();
+    }
+  } renderer_lifetime{gles_renderer, sdl_display.get()};
   if (const auto path = option(args, "--frame-output")) {
     frame_file_presenter = std::make_unique<FrameFilePresenter>(*path);
   }
@@ -905,8 +927,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
         [backend = frame_file_presenter.get(),
          &output](const DisplayFrame &frame) {
           backend->present(frame);
+          const auto pixels =
+              frame.pixels.empty() && frame.read_pixels
+                  ? frame.read_pixels()
+                  : frame.pixels;
           const auto visible = std::count_if(
-              frame.pixels.begin(), frame.pixels.end(),
+              pixels.begin(), pixels.end(),
               [](std::uint32_t pixel) { return (pixel & 0x00ffffffU) != 0; });
           output.line("[display] frame=" + std::to_string(frame.sequence) +
                       " visible-pixels=" + std::to_string(visible));

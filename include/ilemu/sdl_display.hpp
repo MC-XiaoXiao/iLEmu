@@ -1,9 +1,11 @@
 #pragma once
 
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "ilemu/display_geometry.hpp"
+#include "ilemu/gles_renderer.hpp"
 #include "ilemu/ringer_switch_state.hpp"
 #include "ilemu/system_button_input.hpp"
 #include "ilemu/touch_input.hpp"
@@ -21,6 +23,9 @@ public:
   SdlDisplay &operator=(const SdlDisplay &) = delete;
 
   [[nodiscard]] static bool available();
+  [[nodiscard]] std::optional<VulkanPresenterConfiguration>
+  vulkan_presenter_configuration() const;
+  void set_host_graphics(std::shared_ptr<HostGraphicsDevice> graphics);
   void present(const DisplayFrame &frame);
   // Returns false after the user closes the window.
   [[nodiscard]] bool poll_events();
