@@ -231,12 +231,11 @@ bool XnuScheduler::set_realtime(
 
 std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
     std::optional<XnuThreadId> preferred) {
-    return choose_next(0, preferred, std::nullopt);
+    return choose_next(0, preferred);
 }
 
 std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
-    std::size_t processor, std::optional<XnuThreadId> preferred,
-    std::optional<std::uint32_t> preferred_process) {
+    std::size_t processor, std::optional<XnuThreadId> preferred) {
     if (processor >= processor_run_queues_.size()) return std::nullopt;
     if (preferred) {
         const auto iterator = threads_.find(*preferred);
@@ -262,57 +261,16 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
     }
 
     auto& local_run_queue = processor_run_queues_[processor];
-    const auto highest_priority = std::max(
-        local_run_queue.count == 0 ? -1 : local_run_queue.high_queue,
-        processor_set_run_queue_.count == 0
-            ? -1
-            : processor_set_run_queue_.high_queue);
-    const auto preferred_process_runnable =
-        preferred_process && std::any_of(
-                                threads_.begin(), threads_.end(),
-                                [&](const auto &entry) {
-                                  return entry.first.process ==
-                                             *preferred_process &&
-                                         entry.second.queued;
-                                });
-    std::optional<XnuThreadId> selected_thread;
-    if (preferred_process &&
-        highest_priority <= xnu792::scheduler::default_base_priority) {
-        auto local_candidate = peek_highest_process(
-            local_run_queue, highest_priority, *preferred_process);
-        auto global_candidate = peek_highest_process(
-            processor_set_run_queue_, highest_priority, *preferred_process);
-        if (local_candidate && threads_.at(*local_candidate).info.depressed)
-            local_candidate.reset();
-        if (global_candidate && threads_.at(*global_candidate).info.depressed)
-            global_candidate.reset();
-        const auto use_local = local_candidate &&
-            (!global_candidate ||
-             threads_.at(*local_candidate).info.scheduled_priority >=
-                 threads_.at(*global_candidate).info.scheduled_priority);
-        const auto candidate = use_local ? local_candidate : global_candidate;
-        if (candidate) {
-            const auto priority =
-                threads_.at(*candidate).info.scheduled_priority;
-            selected_thread = pop_process_at_priority(
-                use_local ? local_run_queue : processor_set_run_queue_,
-                priority, *preferred_process);
-        }
-    }
-
     RunQueue* selected_queue = nullptr;
-    if (!selected_thread) {
-        if (local_run_queue.count != 0 &&
-            local_run_queue.high_queue >= processor_set_run_queue_.high_queue) {
-            selected_queue = &local_run_queue;
-        } else if (processor_set_run_queue_.count != 0) {
-            selected_queue = &processor_set_run_queue_;
-        }
-        if (selected_queue == nullptr) return std::nullopt;
-        selected_thread = pop_highest(*selected_queue);
+    if (local_run_queue.count != 0 &&
+        local_run_queue.high_queue >= processor_set_run_queue_.high_queue) {
+        selected_queue = &local_run_queue;
+    } else if (processor_set_run_queue_.count != 0) {
+        selected_queue = &processor_set_run_queue_;
     }
+    if (selected_queue == nullptr) return std::nullopt;
 
-    const auto thread = *selected_thread;
+    const auto thread = pop_highest(*selected_queue);
     auto& record = threads_.at(thread);
     record.queued = false;
     record.queued_processor.reset();
@@ -327,24 +285,12 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
         record.info.timeslice_processor = processor;
     }
     record.priority_usage_shift = processor_set_priority_shift();
-    auto tick_budget = record.info.remaining_quantum;
-    if (preferred_process_runnable && thread.process != *preferred_process &&
-        record.info.scheduled_priority <=
-            xnu792::scheduler::default_base_priority) {
-        // Reconsider normal-priority background work within an interactive
-        // frame. The thread retains its XNU quantum; only this execution slice
-        // is shortened so a newly woken foreground thread and display timer
-        // are noticed without waiting for a full host-expensive quantum.
-        tick_budget = std::min(
-            tick_budget,
-            std::max<std::uint64_t>(1, quantum_ticks_ / 4U));
-    }
-    return XnuScheduledSlice{thread, processor, tick_budget};
+    return XnuScheduledSlice{
+        thread, processor, record.info.remaining_quantum};
 }
 
 XnuPreemption XnuScheduler::preemption_for(
-    XnuThreadId running_thread, std::size_t processor,
-    std::optional<std::uint32_t> preferred_process) const {
+    XnuThreadId running_thread, std::size_t processor) const {
     const auto current = threads_.find(running_thread);
     if (processor >= processor_run_queues_.size() ||
         current == threads_.end() ||
@@ -362,49 +308,16 @@ XnuPreemption XnuScheduler::preemption_for(
     }
     if (candidate_queue == nullptr) return XnuPreemption::None;
 
-    auto candidate_priority = candidate_queue->high_queue;
+    const auto candidate_priority = candidate_queue->high_queue;
     const auto current_priority = current->second.info.scheduled_priority;
     const auto first_timeslice =
         current->second.info.remaining_quantum != 0;
-    std::optional<XnuThreadId> foreground_candidate;
-    if (preferred_process &&
-        candidate_priority <= xnu792::scheduler::default_base_priority) {
-        auto local_candidate = peek_highest_process(
-            local_run_queue, candidate_priority, *preferred_process);
-        auto global_candidate = peek_highest_process(
-            processor_set_run_queue_, candidate_priority,
-            *preferred_process);
-        if (local_candidate && threads_.at(*local_candidate).info.depressed)
-            local_candidate.reset();
-        if (global_candidate && threads_.at(*global_candidate).info.depressed)
-            global_candidate.reset();
-        foreground_candidate = local_candidate &&
-                (!global_candidate ||
-                 threads_.at(*local_candidate).info.scheduled_priority >=
-                     threads_.at(*global_candidate).info.scheduled_priority)
-            ? local_candidate
-            : global_candidate;
-        if (foreground_candidate) {
-            candidate_priority =
-                threads_.at(*foreground_candidate).info.scheduled_priority;
-            if (running_thread.process != *preferred_process) {
-                return XnuPreemption::Preempt;
-            }
-        } else if (running_thread.process == *preferred_process) {
-            return XnuPreemption::None;
-        }
-    }
     bool preempt = first_timeslice
         ? candidate_priority > current_priority
         : candidate_priority >= current_priority;
-    auto candidate = threads_.end();
-    if (foreground_candidate) {
-        candidate = threads_.find(*foreground_candidate);
-    } else {
-        const auto& queue = candidate_queue->queues[
-            static_cast<std::size_t>(candidate_priority)];
-        candidate = threads_.find(queue.front());
-    }
+    const auto& queue = candidate_queue->queues[
+        static_cast<std::size_t>(candidate_priority)];
+    const auto candidate = threads_.find(queue.front());
     if (!preempt && candidate != threads_.end() &&
         candidate_priority >= xnu792::scheduler::realtime_queue_priority &&
         current->second.info.realtime && candidate->second.info.realtime &&
@@ -417,6 +330,19 @@ XnuPreemption XnuScheduler::preemption_for(
                    candidate_priority >= xnu792::scheduler::preempt_priority
         ? XnuPreemption::Urgent
         : XnuPreemption::Preempt;
+}
+
+bool XnuScheduler::should_yield(XnuThreadId running_thread) const {
+    const auto current = threads_.find(running_thread);
+    if (current == threads_.end() ||
+        current->second.info.state != XnuThreadState::Running ||
+        !current->second.info.last_processor) {
+        return false;
+    }
+    const auto processor = *current->second.info.last_processor;
+    if (processor >= processor_run_queues_.size()) return false;
+    return processor_run_queues_[processor].count != 0 ||
+           processor_set_run_queue_.count != 0;
 }
 
 bool XnuScheduler::complete_slice(
@@ -633,49 +559,6 @@ XnuThreadId XnuScheduler::pop_highest(RunQueue& run_queue) {
     return thread;
 }
 
-std::optional<XnuThreadId> XnuScheduler::pop_process_at_priority(
-    RunQueue& run_queue, std::int32_t priority, std::uint32_t process) {
-    if (priority < xnu792::scheduler::minimum_priority ||
-        priority > xnu792::scheduler::maximum_priority) {
-        return std::nullopt;
-    }
-    auto& queue = run_queue.queues[static_cast<std::size_t>(priority)];
-    const auto found = std::find_if(
-        queue.begin(), queue.end(), [process](XnuThreadId thread) {
-            return thread.process == process;
-        });
-    if (found == queue.end()) return std::nullopt;
-
-    const auto thread = *found;
-    queue.erase(found);
-    --run_queue.count;
-    if (queue.empty()) {
-        run_queue.bitmap[static_cast<std::size_t>(priority) / 32U] &=
-            ~(std::uint32_t{1} <<
-              (static_cast<std::uint32_t>(priority) % 32U));
-        if (priority == run_queue.high_queue) refresh_high_queue(run_queue);
-    }
-    return thread;
-}
-
-std::optional<XnuThreadId> XnuScheduler::peek_highest_process(
-    const RunQueue& run_queue, std::int32_t maximum_priority,
-    std::uint32_t process) {
-    const auto upper = std::min(
-        maximum_priority, xnu792::scheduler::maximum_priority);
-    for (auto priority = upper;
-         priority >= xnu792::scheduler::minimum_priority; --priority) {
-        const auto& queue =
-            run_queue.queues[static_cast<std::size_t>(priority)];
-        const auto found = std::find_if(
-            queue.begin(), queue.end(), [process](XnuThreadId thread) {
-                return thread.process == process;
-            });
-        if (found != queue.end()) return *found;
-    }
-    return std::nullopt;
-}
-
 void XnuScheduler::advance_scheduler_time(std::uint64_t consumed_ticks) {
     elapsed_ticks_ = saturating_add(elapsed_ticks_, consumed_ticks);
     expire_depressions();
@@ -759,18 +642,11 @@ std::uint64_t XnuScheduler::quantum_for(const ThreadRecord& record) const {
 
 std::optional<std::uint32_t>
 XnuScheduler::processor_set_priority_shift() const {
-    const auto runnable_threads = static_cast<std::size_t>(std::count_if(
-        threads_.begin(), threads_.end(), [](const auto& entry) {
-            return entry.second.info.state != XnuThreadState::Waiting;
-        }));
-    if (runnable_threads == 0) return std::nullopt;
-    const auto competing_threads = runnable_threads - 1U;
-    auto shared_threads = static_cast<std::size_t>(std::count_if(
+    const auto shared_threads = static_cast<std::size_t>(std::count_if(
         threads_.begin(), threads_.end(), [](const auto& entry) {
             return entry.second.info.state != XnuThreadState::Waiting &&
                    entry.second.info.timeshare;
         }));
-    shared_threads = std::min(shared_threads, competing_threads);
     const auto processors = processor_run_queues_.size();
     if (shared_threads <= processors) return std::nullopt;
 

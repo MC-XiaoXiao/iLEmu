@@ -278,15 +278,33 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
     } else if (*message_id ==
                mig_message_id(
                    xnu792::mig::thread_act::Routine::thread_policy)) {
-      process_.thread_base_priority = static_cast<std::int32_t>(
-          memory_
-              .read32(message_address +
-                      xnu792::mig::thread_act::thread_policy_arguments[2]
-                          .request_offset)
-              .value_or(static_cast<std::uint32_t>(
-                  xnu792::scheduler::default_base_priority)));
-      if (task_priority_handler_) {
-        task_priority_handler_(process_.thread_base_priority);
+      using namespace darwin::mach::thread_policy;
+      bool applied = false;
+      if (registers[3] >= legacy_minimum_request_size) {
+        const auto policy =
+            memory_.read32(message_address + legacy_request_policy_offset);
+        const auto count =
+            memory_.read32(message_address + legacy_request_count_offset);
+        const auto base =
+            memory_.read32(message_address + legacy_request_base_offset);
+        const auto set_limit =
+            memory_.read32(message_address + legacy_request_set_limit_offset);
+        std::optional<std::size_t> target_thread;
+        for (const auto &[processor, port] : thread_ports_) {
+          if (port == *remote_port) {
+            target_thread = processor;
+            break;
+          }
+        }
+        if (policy && count && *count == legacy_policy_word_count && base &&
+            set_limit && target_thread && legacy_thread_policy_handler_) {
+          applied = legacy_thread_policy_handler_(
+              *target_thread, *policy, std::bit_cast<std::int32_t>(*base),
+              *set_limit != 0);
+        }
+      }
+      if (!applied) {
+        kernel_result = darwin::mach::invalid_argument;
       }
     } else if (*message_id ==
                mig_message_id(

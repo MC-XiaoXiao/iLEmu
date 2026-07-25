@@ -13,6 +13,7 @@ const DeviceProfile& DeviceProfile::default_profile() {
         "Samsung S5L8900 (APL0098)",
         "ARM1176JZF-S",
         "ARMv6KZ + Thumb",
+        ArmCpuModelKind::Arm1176JzfS,
         400'000'000,
         100'000'000,
         128ULL * 1024ULL * 1024ULL,

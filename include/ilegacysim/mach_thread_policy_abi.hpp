@@ -13,6 +13,17 @@ constexpr std::uint32_t legacy_policy_message = subsystem_base + 16;
 constexpr std::uint32_t policy_set_message = subsystem_base + 17;
 constexpr std::uint32_t policy_get_message = subsystem_base + 18;
 
+constexpr std::uint32_t legacy_timeshare_policy = 1;
+constexpr std::uint32_t legacy_round_robin_policy = 2;
+constexpr std::uint32_t legacy_fifo_policy = 4;
+
+constexpr std::size_t legacy_request_policy_offset = 32;
+constexpr std::size_t legacy_request_count_offset = 36;
+constexpr std::size_t legacy_request_base_offset = 40;
+constexpr std::size_t legacy_request_set_limit_offset = 44;
+constexpr std::size_t legacy_minimum_request_size = 48;
+constexpr std::size_t legacy_policy_word_count = 1;
+
 constexpr std::uint32_t extended_policy = 1;
 constexpr std::uint32_t time_constraint_policy = 2;
 constexpr std::uint32_t precedence_policy = 3;

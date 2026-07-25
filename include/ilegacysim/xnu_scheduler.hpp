@@ -12,8 +12,9 @@
 namespace ilegacysim {
 
 // Constants and ordering are taken from XNU 792.24.17 osfmk/kern/sched.h
-// and sched_prim.c. Dynarmic's tick is an instruction-budget unit, so the
-// guest tick rate is an explicit calibration rather than host wall time.
+// and sched_prim.c. These defaults serve CPU-only helpers and unit tests. A
+// full boot derives its tick rate from the selected device instruction-timing
+// model instead of assuming that the CPU clock equals the system bus clock.
 namespace xnu792::scheduler {
 
 constexpr std::size_t run_queue_count = 128;
@@ -25,7 +26,7 @@ constexpr std::int32_t maximum_kernel_priority = 95;
 constexpr std::int32_t preempt_priority = maximum_kernel_priority - 2;
 constexpr std::int32_t maximum_user_priority = 63;
 constexpr std::int32_t default_base_priority = 31;
-constexpr std::uint64_t default_guest_ticks_per_second = 100'000'000;
+constexpr std::uint64_t default_guest_ticks_per_second = 400'000'000;
 constexpr std::uint64_t default_preemption_rate = 100;
 constexpr std::uint64_t scheduler_ticks_per_second = 8;
 constexpr std::uint64_t scheduling_usage_decay_ticks = 32;
@@ -149,11 +150,13 @@ public:
         std::optional<XnuThreadId> preferred = std::nullopt);
     [[nodiscard]] std::optional<XnuScheduledSlice> choose_next(
         std::size_t processor,
-        std::optional<XnuThreadId> preferred = std::nullopt,
-        std::optional<std::uint32_t> preferred_process = std::nullopt);
+        std::optional<XnuThreadId> preferred = std::nullopt);
     [[nodiscard]] XnuPreemption preemption_for(
-        XnuThreadId running_thread, std::size_t processor,
-        std::optional<std::uint32_t> preferred_process = std::nullopt) const;
+        XnuThreadId running_thread, std::size_t processor) const;
+    // XNU's scheduler policy owns the yield decision. Resolve the physical
+    // processor from the running thread instead of confusing it with the
+    // emulator's per-process CPU-context slot.
+    [[nodiscard]] bool should_yield(XnuThreadId running_thread) const;
     bool complete_slice(
         XnuThreadId thread, std::uint64_t consumed_ticks,
         XnuSliceCompletion completion,
@@ -206,12 +209,6 @@ private:
     void remove_from_queue(XnuThreadId thread, ThreadRecord& record);
     static void refresh_high_queue(RunQueue& run_queue);
     [[nodiscard]] static XnuThreadId pop_highest(RunQueue& run_queue);
-    [[nodiscard]] static std::optional<XnuThreadId> pop_process_at_priority(
-        RunQueue& run_queue, std::int32_t priority,
-        std::uint32_t process);
-    [[nodiscard]] static std::optional<XnuThreadId> peek_highest_process(
-        const RunQueue& run_queue, std::int32_t maximum_priority,
-        std::uint32_t process);
     void advance_scheduler_time(std::uint64_t consumed_ticks);
     void age_priorities(std::uint64_t elapsed_ticks);
     void expire_depressions();

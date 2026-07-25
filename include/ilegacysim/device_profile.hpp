@@ -5,6 +5,7 @@
 #include <string_view>
 
 #include "ilegacysim/display_geometry.hpp"
+#include "ilegacysim/arm_cpu_model.hpp"
 
 namespace ilegacysim {
 
@@ -18,6 +19,7 @@ struct DeviceProfile {
     std::string_view soc;
     std::string_view cpu_core;
     std::string_view instruction_set;
+    ArmCpuModelKind cpu_model;
     std::uint32_t cpu_hz;
     std::uint32_t bus_hz;
     std::uint64_t ram_bytes;

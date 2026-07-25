@@ -9,10 +9,27 @@
 #include <utility>
 
 namespace ilegacysim {
+namespace {
+
+[[nodiscard]] Dynarmic::A32::ArchVersion dynarmic_architecture_version(
+    ArmArchitectureVersion version) {
+    switch (version) {
+    case ArmArchitectureVersion::Armv6K:
+        return Dynarmic::A32::ArchVersion::v6K;
+    case ArmArchitectureVersion::Armv7:
+        return Dynarmic::A32::ArchVersion::v7;
+    }
+    throw std::invalid_argument{"unsupported ARM architecture version"};
+}
+
+}  // namespace
 
 class Cpu::Callbacks final : public Dynarmic::A32::UserCallbacks {
 public:
-    explicit Callbacks(AddressSpace& memory) : memory_{memory} {}
+    Callbacks(
+        AddressSpace& memory,
+        const ArmCpuModel& cpu_model)
+        : memory_{memory}, cpu_model_{cpu_model} {}
 
     void attach(Cpu* owner, Dynarmic::A32::Jit* jit) {
         owner_ = owner;
@@ -138,6 +155,12 @@ public:
         ticks_remaining_ = ticks >= ticks_remaining_ ? 0 : ticks_remaining_ - ticks;
     }
     std::uint64_t GetTicksRemaining() override { return ticks_remaining_; }
+    std::uint64_t GetTicksForCode(
+        bool is_thumb, Dynarmic::A32::VAddr address,
+        std::uint32_t instruction) override {
+        return cpu_model_.ticks_for_instruction(
+            is_thumb, address, instruction);
+    }
 
     void begin(std::uint64_t ticks) {
         ticks_remaining_ = ticks;
@@ -165,7 +188,15 @@ public:
     void set_debug_breakpoints_enabled(bool enabled) {
         debug_breakpoints_enabled_ = enabled;
     }
-
+    [[nodiscard]] const ArmCpuModel& cpu_model() const {
+        return cpu_model_;
+    }
+    [[nodiscard]] std::uint8_t** jit_page_table() {
+        return memory_.jit_page_table();
+    }
+    void disable_jit_page_table() {
+        memory_.disable_jit_page_table();
+    }
 private:
     template<typename T, typename Member>
     T read(std::uint32_t address, Member member) {
@@ -217,6 +248,7 @@ private:
     }
 
     AddressSpace& memory_;
+    const ArmCpuModel& cpu_model_;
     Cpu* owner_{};
     Dynarmic::A32::Jit* jit_{};
     std::uint64_t ticks_remaining_{};
@@ -235,27 +267,42 @@ private:
 Cpu::Cpu(
     std::size_t processor_id, AddressSpace& memory, Dynarmic::ExclusiveMonitor& monitor)
     : Cpu{
-          processor_id, processor_id, memory, monitor} {}
+          processor_id, processor_id, memory, monitor,
+          default_arm_cpu_model()} {}
 
 Cpu::Cpu(
     std::size_t processor_id,
     std::size_t exclusive_processor_id,
     AddressSpace& memory,
-    Dynarmic::ExclusiveMonitor& monitor)
+    Dynarmic::ExclusiveMonitor& monitor,
+    const ArmCpuModel& cpu_model)
     : processor_id_{processor_id},
       exclusive_processor_id_{exclusive_processor_id},
       monitor_{&monitor},
-      callbacks_{std::make_unique<Callbacks>(memory)} {}
+      callbacks_{std::make_unique<Callbacks>(memory, cpu_model)} {}
 
 void Cpu::ensure_jit() {
     if (jit_) return;
     Dynarmic::A32::UserConfig config{callbacks_.get()};
     config.processor_id = exclusive_processor_id_;
     config.global_monitor = monitor_;
-    config.arch_version = Dynarmic::A32::ArchVersion::v6K;
+    config.arch_version = dynarmic_architecture_version(
+        callbacks_->cpu_model().architecture_version());
     config.always_little_endian = true;
     config.enable_cycle_counting = true;
     config.check_halt_on_memory_access = true;
+    using DynarmicPageTable = std::array<
+        std::uint8_t*,
+        Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>;
+    static_assert(
+        AddressSpace::page_count ==
+        Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES);
+    if (auto** table = callbacks_->jit_page_table()) {
+        config.page_table = reinterpret_cast<DynarmicPageTable*>(table);
+        config.detect_misaligned_access_via_page_table =
+            static_cast<std::uint8_t>(8U | 16U | 32U | 64U);
+        config.only_detect_misalignment_via_page_table_on_page_boundary = true;
+    }
     jit_ = std::make_unique<Dynarmic::A32::Jit>(config);
     callbacks_->attach(this, jit_.get());
 }
@@ -332,6 +379,9 @@ void Cpu::set_svc_dispatch_mode(SvcDispatchMode mode) {
 }
 void Cpu::set_memory_write_watchpoint(
     std::uint32_t address, MemoryWriteHandler handler) {
+    if (handler) {
+        callbacks_->disable_jit_page_table();
+    }
     callbacks_->set_memory_write_watchpoint(address, std::move(handler));
 }
 void Cpu::set_debug_breakpoints_enabled(bool enabled) {
@@ -360,9 +410,20 @@ CpuCluster::CpuCluster(
     std::size_t maximum_processor_count,
     AddressSpace& memory,
     bool serialized_execution)
+    : CpuCluster{
+          initial_processor_count, maximum_processor_count, memory,
+          serialized_execution, default_arm_cpu_model()} {}
+
+CpuCluster::CpuCluster(
+    std::size_t initial_processor_count,
+    std::size_t maximum_processor_count,
+    AddressSpace& memory,
+    bool serialized_execution,
+    const ArmCpuModel& cpu_model)
     : memory_{&memory},
       maximum_processor_count_{maximum_processor_count},
       serialized_execution_{serialized_execution},
+      cpu_model_{&cpu_model},
       monitor_{serialized_execution ? 1U : maximum_processor_count} {
     if (initial_processor_count == 0) {
         throw std::invalid_argument{
@@ -384,7 +445,8 @@ std::optional<std::size_t> CpuCluster::add_cpu() {
     }
     const auto id = cpus_.size();
     cpus_.push_back(std::unique_ptr<Cpu>{new Cpu{
-        id, serialized_execution_ ? 0U : id, *memory_, monitor_}});
+        id, serialized_execution_ ? 0U : id, *memory_, monitor_,
+        *cpu_model_}});
     return id;
 }
 

@@ -430,20 +430,35 @@ void CompatibilityKernel::dispatch_mach(Cpu &cpu, std::uint32_t trap) {
     registers[0] = 0; // KERN_SUCCESS / boolean false for swtch
     return;
   case darwin::mach::scheduler::swtch_pri_trap: {
+    const auto should_yield =
+        scheduler_runnable_query_ &&
+        scheduler_runnable_query_(cpu.processor_id());
+    if (!should_yield) {
+      registers[0] = 0;
+      return;
+    }
     const auto quantum_milliseconds =
         static_cast<std::uint32_t>(xnu792::scheduler::milliseconds_per_second /
                                    xnu792::scheduler::default_preemption_rate);
     scheduler_yields_[cpu.processor_id()] =
         SchedulerYieldRequest{true, quantum_milliseconds};
-    registers[0] = scheduler_runnable_query_ && scheduler_runnable_query_();
+    registers[0] = 1;
     cpu.halt(Dynarmic::HaltReason::UserDefined8);
     return;
   }
-  case darwin::mach::scheduler::swtch_trap:
+  case darwin::mach::scheduler::swtch_trap: {
+    const auto should_yield =
+        scheduler_runnable_query_ &&
+        scheduler_runnable_query_(cpu.processor_id());
+    if (!should_yield) {
+      registers[0] = 0;
+      return;
+    }
     scheduler_yields_[cpu.processor_id()] = SchedulerYieldRequest{};
-    registers[0] = scheduler_runnable_query_ && scheduler_runnable_query_();
+    registers[0] = 1;
     cpu.halt(Dynarmic::HaltReason::UserDefined8);
     return;
+  }
   default:
     trace_unknown(cpu, "Mach trap", trap);
     registers[0] = 4; // KERN_INVALID_ARGUMENT

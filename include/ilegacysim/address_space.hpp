@@ -33,11 +33,22 @@ public:
       (std::uint64_t{1} << 32U) / page_size;
 
   AddressSpace();
+  ~AddressSpace();
 
   // Selects the synchronization policy before guest execution starts. The
   // physical single-core device runs all memory access on the scheduler
   // thread; optional multi-core sessions retain shared/exclusive locking.
   void set_parallel_access(bool enabled);
+  // Dynarmic may directly access resident private/shared-writable pages while
+  // the physical single-core model serializes all guest execution. Unsafe
+  // pages remain null and transparently fall back to the checked callbacks.
+  // The returned table has one host page pointer per 4 KiB guest page and
+  // remains valid for this AddressSpace's lifetime.
+  [[nodiscard]] std::uint8_t **jit_page_table();
+  // Debug write watchpoints and parallel virtual-CPU sessions require every
+  // access to pass through callbacks. Existing JITs retain a valid all-null
+  // table after this call.
+  void disable_jit_page_table();
 
   bool map(std::uint32_t address, std::uint32_t size,
            MemoryPermission permissions);
@@ -110,6 +121,10 @@ public:
   exchange32(std::uint32_t address, std::uint32_t value);
 
   [[nodiscard]] bool mapped(std::uint32_t address, std::size_t size = 1) const;
+  // Write generations are only needed by memory consumers that poll a
+  // specific range (for example, a legacy scanout buffer). Registering that
+  // range keeps ordinary Guest stores out of the dirty-generation path.
+  bool track_write_generation(std::uint32_t address, std::size_t size);
   // Returns the newest write generation among pages intersecting the range.
   // Graphics scanout uses this to avoid copying an unchanged framebuffer.
   [[nodiscard]] std::optional<std::uint64_t> range_write_generation(
@@ -139,6 +154,11 @@ private:
     std::uint64_t file_offset{};
     std::shared_ptr<GuestFileBacking> backing;
   };
+  struct TrackedWriteRange {
+    std::uint32_t begin{};
+    std::uint64_t end{};
+  };
+  struct JitPageTableStorage;
   static constexpr std::size_t page_lookup_chunk_size = 1024;
   static constexpr std::size_t page_lookup_chunk_count =
       page_count / page_lookup_chunk_size;
@@ -172,9 +192,15 @@ private:
   void cache_page_locked(std::uint32_t address, Page &page);
   void uncache_page_locked(std::uint32_t address);
   void rebuild_page_lookup_locked();
+  void refresh_jit_page_locked(std::uint32_t address);
+  void refresh_jit_page_range_locked(std::uint32_t address,
+                                     std::uint64_t end);
+  void clear_jit_page_table_locked();
   [[nodiscard]] static std::byte read_byte_locked(const Page *page,
                                                   std::uint32_t offset);
   [[nodiscard]] static GuestPageBacking &writable_backing_locked(Page &page);
+  [[nodiscard]] bool tracks_write_locked(std::uint32_t address,
+                                         std::size_t size) const;
   void mark_written_locked(std::uint32_t address, std::size_t size);
   void add_page_permissions_locked(std::uint32_t address, std::uint64_t end,
                                    MemoryPermission permissions);
@@ -201,6 +227,9 @@ private:
   // byte index is kept in sync so the per-instruction CPU callbacks can check
   // the overwhelmingly common one-page access without a tree lookup.
   std::vector<std::uint8_t> page_permissions_;
+  std::unique_ptr<JitPageTableStorage> jit_page_table_;
+  bool jit_page_table_enabled_{};
+  std::optional<TrackedWriteRange> tracked_write_range_;
   std::uint64_t write_generation_{};
   std::shared_ptr<FilePageCache> file_page_cache_;
 };

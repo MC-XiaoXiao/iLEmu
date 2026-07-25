@@ -2,6 +2,7 @@ add_subdirectory(memory)
 
 add_library(ilegacysim_foundation STATIC
     address_space.cpp
+    arm_cpu_model.cpp
     cpu.cpp
     darwin_notify_state_hle.cpp
     device_profile.cpp

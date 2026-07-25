@@ -59,7 +59,66 @@ constexpr std::size_t maximum_guest_threads = 32;
 constexpr std::size_t maximum_virtual_processors = 64;
 constexpr std::size_t arm_thumb_breakpoint_size = 2;
 constexpr std::size_t arm_breakpoint_size = 4;
-constexpr auto interactive_maximum_sleep = std::chrono::milliseconds{1};
+// Host input, network completion, and display polling do not need a 1 kHz
+// wakeup rate. Four milliseconds stays well below one 60 Hz frame while
+// avoiding repeated full runtime scans between the same Guest deadline.
+constexpr auto interactive_maximum_sleep = std::chrono::milliseconds{4};
+
+class GuestTickClock {
+public:
+  explicit GuestTickClock(std::uint32_t ticks_per_second)
+      : ticks_per_second_{ticks_per_second} {
+    if (ticks_per_second_ == 0) {
+      throw std::invalid_argument{"guest tick rate must be non-zero"};
+    }
+  }
+
+  [[nodiscard]] std::uint64_t absolute_time_units(
+      std::uint64_t ticks) {
+    constexpr auto units_per_second =
+        darwin::mach::thread_policy::absolute_time_units_per_second;
+    const auto whole_seconds = ticks / ticks_per_second_;
+    if (whole_seconds >
+        std::numeric_limits<std::uint64_t>::max() / units_per_second) {
+      throw std::overflow_error{"guest time conversion overflow"};
+    }
+    const auto fractional_ticks = ticks % ticks_per_second_;
+    const auto scaled_fraction =
+        fractional_ticks * units_per_second + remainder_;
+    remainder_ = scaled_fraction % ticks_per_second_;
+    return whole_seconds * units_per_second +
+           scaled_fraction / ticks_per_second_;
+  }
+
+private:
+  std::uint64_t ticks_per_second_{};
+  std::uint64_t remainder_{};
+};
+
+[[nodiscard]] std::uint64_t duration_to_guest_ticks(
+    std::uint64_t value, std::uint64_t units_per_second,
+    std::uint32_t guest_ticks_per_second) {
+  if (units_per_second == 0 || guest_ticks_per_second == 0) {
+    throw std::invalid_argument{"time conversion rate must be non-zero"};
+  }
+  const auto whole_seconds = value / units_per_second;
+  const auto fractional_units = value % units_per_second;
+  if (whole_seconds >
+      std::numeric_limits<std::uint64_t>::max() / guest_ticks_per_second ||
+      fractional_units >
+          std::numeric_limits<std::uint64_t>::max() /
+              guest_ticks_per_second) {
+    throw std::overflow_error{"guest tick conversion overflow"};
+  }
+  const auto whole_ticks = whole_seconds * guest_ticks_per_second;
+  const auto fractional_ticks =
+      fractional_units * guest_ticks_per_second / units_per_second;
+  if (fractional_ticks >
+      std::numeric_limits<std::uint64_t>::max() - whole_ticks) {
+    throw std::overflow_error{"guest tick conversion overflow"};
+  }
+  return whole_ticks + fractional_ticks;
+}
 
 struct PendingExec {
   std::size_t processor{};
@@ -586,6 +645,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                   : std::numeric_limits<std::uint64_t>::max();
   const auto default_processor_count =
       device.physical_cpu_count;
+  const auto cpu_model =
+      make_arm_cpu_model(device.cpu_model, device.cpu_hz);
+  const auto guest_ticks_per_second =
+      cpu_model->ticks_per_second();
+  GuestTickClock guest_tick_clock{guest_ticks_per_second};
   const auto guest_processor_count = static_cast<std::size_t>(
       std::stoul(option(args, "--cores")
                      .value_or(std::to_string(default_processor_count))));
@@ -689,7 +753,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   initial->memory = std::move(initial_memory);
   initial->cpus = std::make_unique<CpuCluster>(
       initial_guest_thread_slots, maximum_guest_threads, *initial->memory,
-      guest_processor_count == 1);
+      guest_processor_count == 1, *cpu_model);
   initial->kernel =
       std::make_unique<CompatibilityKernel>(*initial->memory, output, *rootfs,
                                             device);
@@ -737,9 +801,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
   initial_runtime->kernel->set_preferred_wifi_networks(
       preferred_wifi_networks);
   BootGdbTarget debug_target{runtimes};
-  XnuScheduler scheduler{xnu792::scheduler::standard_quantum_ticks,
-                         xnu792::scheduler::scheduler_tick_interval,
-                         guest_processor_count};
+  XnuScheduler scheduler{
+      guest_ticks_per_second /
+          xnu792::scheduler::default_preemption_rate,
+      guest_ticks_per_second /
+          xnu792::scheduler::scheduler_ticks_per_second,
+      guest_processor_count};
   std::optional<XnuThreadId> last_serial_thread;
 
   std::uint32_t next_pid = 2;
@@ -894,7 +961,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                           *child->memory);
           child->cpus = std::make_unique<CpuCluster>(
               initial_guest_thread_slots, maximum_guest_threads,
-              *child->memory, guest_processor_count == 1);
+              *child->memory, guest_processor_count == 1,
+              *cpu_model);
           child->kernel = std::make_unique<CompatibilityKernel>(
               *child->memory, output, *rootfs, device);
           child->kernel->inherit_process_state(*runtime_ptr->kernel, child_pid);
@@ -978,7 +1046,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
           return true;
         });
     runtime.kernel->set_scheduler_runnable_query(
-        [&scheduler] { return scheduler.runnable_count() != 0; });
+        [&scheduler, runtime_ptr](std::size_t thread_slot) {
+          return scheduler.should_yield(XnuThreadId{
+              runtime_ptr->kernel->process().pid,
+              static_cast<std::uint32_t>(thread_slot)});
+        });
     runtime.kernel->set_signal_delivery_handler(
         [&runtimes, &scheduler](std::uint32_t target_pid,
                                 std::uint32_t signal) {
@@ -994,15 +1066,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
           return darwin::error::no_such_process;
         });
     runtime.kernel->set_scheduler_preemption_query(
-        [runtime_ptr, initial_runtime, &scheduler](std::size_t processor) {
+        [runtime_ptr, &scheduler](std::size_t processor) {
           const XnuThreadId thread{runtime_ptr->kernel->process().pid,
                                    static_cast<std::uint32_t>(processor)};
           const auto scheduling_info = scheduler.info(thread);
           return scheduling_info && scheduling_info->last_processor &&
                  scheduler.preemption_for(thread,
-                                          *scheduling_info->last_processor,
-                                          initial_runtime->kernel
-                                              ->active_client_process_id()) !=
+                                          *scheduling_info->last_processor) !=
                      XnuPreemption::None;
         });
     runtime.kernel->set_task_priority_handler(
@@ -1017,9 +1087,24 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 priority));
           }
         });
+    runtime.kernel->set_legacy_thread_policy_handler(
+        [runtime_ptr, &scheduler](std::size_t processor, std::uint32_t policy,
+                                  std::int32_t base_priority, bool) {
+          using namespace darwin::mach::thread_policy;
+          const XnuThreadId thread{runtime_ptr->kernel->process().pid,
+                                   static_cast<std::uint32_t>(processor)};
+          const auto timeshare = policy == legacy_timeshare_policy;
+          if (!timeshare && policy != legacy_round_robin_policy &&
+              policy != legacy_fifo_policy) {
+            return false;
+          }
+          return scheduler.set_timeshare(thread, timeshare) &&
+                 scheduler.set_base_priority(thread, base_priority);
+        });
     runtime.kernel->set_thread_policy_handler(
-        [runtime_ptr, &scheduler](std::size_t processor, std::uint32_t flavor,
-                                  std::span<const std::uint32_t> policy) {
+        [runtime_ptr, &scheduler,
+         guest_ticks_per_second](std::size_t processor, std::uint32_t flavor,
+                                 std::span<const std::uint32_t> policy) {
           using namespace darwin::mach::thread_policy;
           const XnuThreadId thread{runtime_ptr->kernel->process().pid,
                                    static_cast<std::uint32_t>(processor)};
@@ -1029,10 +1114,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
           }
           if (flavor == time_constraint_policy &&
               policy.size() >= time_constraint_policy_word_count) {
-            const auto to_scheduler_ticks = [](std::uint32_t value) {
-              return static_cast<std::uint64_t>(value) *
-                     xnu792::scheduler::default_guest_ticks_per_second /
-                     absolute_time_units_per_second;
+            const auto to_scheduler_ticks =
+                [guest_ticks_per_second](std::uint32_t value) {
+              return duration_to_guest_ticks(
+                  value, absolute_time_units_per_second,
+                  guest_ticks_per_second);
             };
             return scheduler.set_realtime(
                 thread, to_scheduler_ticks(policy[realtime_period_index]),
@@ -1383,8 +1469,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
       preferred_thread = XnuThreadId{debug_request->thread->process,
                                      debug_request->thread->thread - 1U};
     }
-    const auto preferred_process =
-        initial_runtime->kernel->active_client_process_id();
     std::vector<XnuScheduledSlice> scheduled_batch;
     scheduled_batch.reserve(guest_processor_count);
     auto reservable_ticks = remaining_ticks;
@@ -1392,8 +1476,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
          ++processor) {
       if (bounded_execution && reservable_ticks == 0)
         break;
-      const auto scheduled = scheduler.choose_next(
-          processor, preferred_thread, preferred_process);
+      const auto scheduled =
+          scheduler.choose_next(processor, preferred_thread);
       if (scheduled) {
         scheduled_batch.push_back(*scheduled);
         if (bounded_execution) {
@@ -1579,9 +1663,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
         if (const auto request = runtime.kernel->consume_scheduler_yield(index);
             request && request->depress) {
           const auto duration_ticks =
-              static_cast<std::uint64_t>(request->duration_milliseconds) *
-              (xnu792::scheduler::default_guest_ticks_per_second /
-               xnu792::scheduler::milliseconds_per_second);
+              duration_to_guest_ticks(
+                  request->duration_milliseconds,
+                  xnu792::scheduler::milliseconds_per_second,
+                  guest_ticks_per_second);
           static_cast<void>(
               scheduler.depress(scheduled->thread, duration_ticks));
         }
@@ -1647,16 +1732,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
     }
     scheduler.advance_time(scheduler_round_ticks);
     if (scheduler_round_ticks != 0) {
-      constexpr auto absolute_time_units_per_guest_tick =
-          darwin::mach::thread_policy::absolute_time_units_per_second /
-          xnu792::scheduler::default_guest_ticks_per_second;
-      static_assert(
-          darwin::mach::thread_policy::absolute_time_units_per_second %
-                  xnu792::scheduler::default_guest_ticks_per_second ==
-              0,
-          "guest scheduler ticks must map exactly to virtual time");
       initial_runtime->kernel->advance_time_by(
-          scheduler_round_ticks * absolute_time_units_per_guest_tick);
+          guest_tick_clock.absolute_time_units(scheduler_round_ticks));
       const auto advanced_time =
           initial_runtime->kernel->current_absolute_time();
       for (auto &runtime : runtimes) {

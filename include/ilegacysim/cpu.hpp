@@ -13,6 +13,7 @@
 #include <dynarmic/interface/exclusive_monitor.h>
 
 #include "ilegacysim/address_space.hpp"
+#include "ilegacysim/arm_cpu_model.hpp"
 
 namespace ilegacysim {
 
@@ -70,7 +71,8 @@ private:
         std::size_t processor_id,
         std::size_t exclusive_processor_id,
         AddressSpace& memory,
-        Dynarmic::ExclusiveMonitor& monitor);
+        Dynarmic::ExclusiveMonitor& monitor,
+        const ArmCpuModel& cpu_model);
     class Callbacks;
     void ensure_jit();
 
@@ -97,6 +99,12 @@ public:
         std::size_t maximum_processor_count,
         AddressSpace& memory,
         bool serialized_execution);
+    CpuCluster(
+        std::size_t initial_processor_count,
+        std::size_t maximum_processor_count,
+        AddressSpace& memory,
+        bool serialized_execution,
+        const ArmCpuModel& cpu_model);
 
     [[nodiscard]] std::size_t size() const { return cpus_.size(); }
     [[nodiscard]] std::size_t capacity() const {
@@ -112,6 +120,7 @@ private:
     AddressSpace* memory_{};
     std::size_t maximum_processor_count_{};
     bool serialized_execution_{};
+    const ArmCpuModel* cpu_model_{};
     Dynarmic::ExclusiveMonitor monitor_;
     std::vector<std::unique_ptr<Cpu>> cpus_;
 };

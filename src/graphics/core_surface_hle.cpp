@@ -183,6 +183,10 @@ std::uint32_t CoreSurfaceHle::create_buffer(
     auto backing = SurfaceStore::Backing{
         id, base, size, width, height, pitch, surface_pixel_format_bgra, {}};
     backing.provenance.producer_process_id = call.process_id();
+    if (id == iokit_abi::apple_h1clcd_default_surface_id &&
+        !call.memory().track_write_generation(base, size)) {
+        return 0;
+    }
     if (publish && !surfaces_->publish(call.memory(), backing)) return 0;
     std::vector<std::uint32_t> preserved_exit_snapshot_pixels;
     const auto geometry = display_ ? display_->geometry()

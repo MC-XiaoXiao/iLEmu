@@ -76,7 +76,9 @@ public:
   using SpawnExecHandler =
       std::function<bool(std::uint32_t, std::string, std::vector<std::string>,
                          std::vector<std::string>, bool)>;
-  using SchedulerRunnableQuery = std::function<bool()>;
+  using SchedulerRunnableQuery = std::function<bool(std::size_t)>;
+  using LegacyThreadPolicyHandler = std::function<bool(
+      std::size_t, std::uint32_t, std::int32_t, bool)>;
   using ThreadPolicyHandler = std::function<bool(
       std::size_t, std::uint32_t, std::span<const std::uint32_t>)>;
   using TaskPriorityHandler = std::function<void(std::int32_t)>;
@@ -125,6 +127,9 @@ public:
   }
   void set_scheduler_runnable_query(SchedulerRunnableQuery query) {
     scheduler_runnable_query_ = std::move(query);
+  }
+  void set_legacy_thread_policy_handler(LegacyThreadPolicyHandler handler) {
+    legacy_thread_policy_handler_ = std::move(handler);
   }
   void set_thread_policy_handler(ThreadPolicyHandler handler) {
     thread_policy_handler_ = std::move(handler);
@@ -497,6 +502,7 @@ private:
   ExecHandler exec_handler_;
   SpawnExecHandler spawn_exec_handler_;
   SchedulerRunnableQuery scheduler_runnable_query_;
+  LegacyThreadPolicyHandler legacy_thread_policy_handler_;
   ThreadPolicyHandler thread_policy_handler_;
   TaskPriorityHandler task_priority_handler_;
   SchedulerPreemptionQuery scheduler_preemption_query_;
