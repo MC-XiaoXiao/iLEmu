@@ -30,6 +30,7 @@
 #include "ilemu/display.hpp"
 #include "ilemu/frame_file_presenter.hpp"
 #include "ilemu/gdb_rsp.hpp"
+#include "ilemu/gles_renderer.hpp"
 #include "ilemu/kernel.hpp"
 #include "ilemu/live_control.hpp"
 #include "ilemu/live_touch_scheduler.hpp"
@@ -38,6 +39,7 @@
 #include "ilemu/macho.hpp"
 #include "ilemu/network_preferences.hpp"
 #include "ilemu/output.hpp"
+#include "ilemu/performance.hpp"
 #include "ilemu/process_loader.hpp"
 #include "ilemu/realtime_pacer.hpp"
 #include "ilemu/sdl_display.hpp"
@@ -342,16 +344,20 @@ std::string usage() {
          "  ilemu boot --rootfs DIR [--binary /sbin/launchd] [--ticks N] "
          "[--cores N] [--watch-address ADDR] [--gdb PORT] "
          "[--display headless|sdl] [--network isolated|loopback|host] "
+         "[--gles-backend auto|software|vulkan] [--gpu] "
          "[--display-size WIDTHxHEIGHT] "
          "[--activation activated|unactivated|preserve] "
          "[--frame-output FILE] [--touch-replay FILE] [--control-stdin] "
          "[--baseband-input FILE] [--baseband-output FILE] "
-         "[--output FILE]\n"
-         "  ilemu smoke [--cores N] [--output FILE]\n";
+         "[--perf-summary] [--output FILE]\n"
+         "  ilemu smoke [--cores N] [--perf-summary] [--output FILE]\n"
+         "  ilemu benchmark arm [--iterations N] [--perf-summary] "
+         "[--output FILE]\n";
 }
 
 std::optional<std::string> option(const std::vector<std::string> &args,
                                   std::string_view name) {
+  const auto inline_prefix = std::string{name} + "=";
   for (std::size_t i = 0; i < args.size(); ++i) {
     if (args[i] == name) {
       if (i + 1 >= args.size()) {
@@ -359,8 +365,42 @@ std::optional<std::string> option(const std::vector<std::string> &args,
       }
       return args[i + 1];
     }
+    if (args[i].starts_with(inline_prefix)) {
+      const auto value = args[i].substr(inline_prefix.size());
+      if (value.empty()) {
+        throw std::runtime_error{"missing value for " + std::string{name}};
+      }
+      return value;
+    }
   }
   return std::nullopt;
+}
+
+bool flag(const std::vector<std::string> &args, std::string_view name) {
+  return std::find(args.begin(), args.end(), name) != args.end();
+}
+
+GlesBackend parse_gles_backend(const std::vector<std::string> &args) {
+  const auto configured = option(args, "--gles-backend");
+  auto backend = GlesBackend::Auto;
+  if (configured) {
+    if (*configured == "software") {
+      backend = GlesBackend::Software;
+    } else if (*configured == "vulkan") {
+      backend = GlesBackend::Vulkan;
+    } else if (*configured != "auto") {
+      throw std::runtime_error{
+          "--gles-backend must be auto, software, or vulkan"};
+    }
+  }
+  if (flag(args, "--gpu")) {
+    if (configured && backend == GlesBackend::Software) {
+      throw std::runtime_error{
+          "--gpu conflicts with --gles-backend=software"};
+    }
+    backend = GlesBackend::Vulkan;
+  }
+  return backend;
 }
 
 DisplayGeometry parse_display_geometry(std::string_view value) {
@@ -480,7 +520,8 @@ void inspect(const std::vector<std::string> &args, Output &output) {
   output.line(text.str());
 }
 
-void append_word(std::array<std::byte, 8> &code, std::size_t offset,
+template <std::size_t Size>
+void append_word(std::array<std::byte, Size> &code, std::size_t offset,
                  std::uint32_t word) {
   for (std::size_t i = 0; i < 4; ++i) {
     code[offset + i] = static_cast<std::byte>((word >> (i * 8U)) & 0xffU);
@@ -613,11 +654,87 @@ void smoke(const std::vector<std::string> &args, Output &output) {
   output.line(text.str());
 }
 
+void benchmark(const std::vector<std::string> &args, Output &output) {
+  if (args.empty() || args.front() != "arm") {
+    throw std::runtime_error{"benchmark requires the 'arm' baseline"};
+  }
+  const auto value = option(args, "--iterations").value_or("1000000");
+  std::size_t consumed = 0;
+  const auto parsed = std::stoull(value, &consumed, 10);
+  if (consumed != value.size() || parsed == 0 ||
+      parsed > std::numeric_limits<std::uint32_t>::max()) {
+    throw std::runtime_error{
+        "--iterations must be in the range 1..4294967295"};
+  }
+  const auto iterations = static_cast<std::uint32_t>(parsed);
+
+  AddressSpace memory;
+  constexpr std::uint32_t code_address = 0x1000;
+  if (!memory.map(code_address, AddressSpace::page_size,
+                  MemoryPermission::Read | MemoryPermission::Write |
+                      MemoryPermission::Execute)) {
+    throw std::runtime_error{"ARM benchmark code mapping failed"};
+  }
+  std::array<std::byte, 16> code{};
+  append_word(code, 0, 0xe3a01000U);  // mov r1, #0
+  append_word(code, 4, 0xe2811001U);  // add r1, r1, #1
+  append_word(code, 8, 0xe2500001U);  // subs r0, r0, #1
+  append_word(code, 12, 0x1afffffcU); // bne 0x1004
+  if (!memory.copy_in(code_address, code)) {
+    throw std::runtime_error{"ARM benchmark code upload failed"};
+  }
+  constexpr std::uint32_t svc_address = code_address + sizeof(code);
+  const std::array<std::byte, 4> svc{
+      std::byte{0x80}, std::byte{0x00}, std::byte{0x00}, std::byte{0xef}};
+  if (!memory.copy_in(svc_address, svc)) {
+    throw std::runtime_error{"ARM benchmark SVC upload failed"};
+  }
+
+  CpuCluster cluster{1, memory};
+  auto &cpu = cluster.cpu(0);
+  cpu.registers()[0] = iterations;
+  cpu.registers()[15] = code_address;
+  cpu.set_cpsr(0x10);
+  const auto tick_budget = static_cast<std::uint64_t>(iterations) * 16U + 32U;
+  const auto started = std::chrono::steady_clock::now();
+  const auto result = cpu.run(tick_budget);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  if (cpu.registers()[0] != 0 || cpu.registers()[1] != iterations ||
+      result.svc != std::optional<std::uint32_t>{0x80}) {
+    throw std::runtime_error{
+        "ARM benchmark produced an unexpected CPU state"};
+  }
+  const auto elapsed_nanoseconds =
+      std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+  const auto iterations_per_second =
+      elapsed_nanoseconds > 0
+          ? static_cast<std::uint64_t>(
+                static_cast<long double>(iterations) * 1'000'000'000.0L /
+                static_cast<long double>(elapsed_nanoseconds))
+          : 0U;
+  output.line("[benchmark] baseline=arm iterations=" +
+              std::to_string(iterations) +
+              " ticks=" + std::to_string(result.ticks_consumed) +
+              " elapsed-ns=" + std::to_string(elapsed_nanoseconds) +
+              " iterations-per-second=" +
+              std::to_string(iterations_per_second) + " status=ok");
+}
+
 void boot(const std::vector<std::string> &args, Output &output) {
   const auto rootfs = option(args, "--rootfs");
   if (!rootfs) {
     throw std::runtime_error{"boot requires --rootfs"};
   }
+  const auto gles_backend = parse_gles_backend(args);
+  configure_gles_backend(gles_backend);
+  const auto gles_renderer = shared_gles_renderer();
+  output.line("[gles] requested=" +
+              std::string{gles_backend_name(gles_backend)} + " renderer=\"" +
+              std::string{gles_renderer->name()} + "\" accelerated=" +
+              std::to_string(gles_renderer->accelerated()) +
+              " software-fallback=" +
+              (gles_renderer->software_fallback_allowed() ? "allowed"
+                                                           : "disabled"));
   const auto binary = option(args, "--binary").value_or("/sbin/launchd");
   auto device = DeviceProfile::default_profile();
   if (const auto display_size = option(args, "--display-size")) {
@@ -1822,6 +1939,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
       std::this_thread::sleep_for(interactive_maximum_sleep);
     }
   }
+  const auto checked_in_services =
+      initial_runtime->kernel->bootstrap_checked_in_service_count();
+  output.line("[boot] milestone=service-check-in service-state=" +
+              std::string{checked_in_services == 0 ? "waiting" : "ready"} +
+              " checked-in-services=" +
+              std::to_string(checked_in_services));
   std::size_t allocated_count = 0;
   std::size_t runnable_count = 0;
   std::size_t waiting_count = 0;
@@ -1971,19 +2094,37 @@ int main(int argc, char **argv) {
       args.emplace_back(argv[i]);
     }
     auto output = make_output(args);
+    const auto perf_summary = flag(args, "--perf-summary");
+    performance_counters().reset(perf_summary);
     const std::string_view command{argv[1]};
-    if (command == "profile") {
-      profile(*output);
-    } else if (command == "inspect") {
-      inspect(args, *output);
-    } else if (command == "disasm") {
-      disasm(args, *output);
-    } else if (command == "smoke") {
-      smoke(args, *output);
-    } else if (command == "boot") {
-      boot(args, *output);
-    } else {
-      throw std::runtime_error{"unknown command: " + std::string{command}};
+    try {
+      if (command == "profile") {
+        profile(*output);
+      } else if (command == "inspect") {
+        inspect(args, *output);
+      } else if (command == "disasm") {
+        disasm(args, *output);
+      } else if (command == "smoke") {
+        smoke(args, *output);
+      } else if (command == "benchmark") {
+        benchmark(args, *output);
+      } else if (command == "boot") {
+        boot(args, *output);
+      } else {
+        throw std::runtime_error{"unknown command: " + std::string{command}};
+      }
+    } catch (...) {
+      shutdown_gles_renderer();
+      if (perf_summary) {
+        output->line(
+            format_performance_summary(performance_counters().snapshot()));
+      }
+      throw;
+    }
+    shutdown_gles_renderer();
+    if (perf_summary) {
+      output->line(
+          format_performance_summary(performance_counters().snapshot()));
     }
     return 0;
   } catch (const std::exception &error) {
