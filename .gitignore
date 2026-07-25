@@ -5,3 +5,4 @@
 *.log
 /sources/
 /firmwares/
+/.cache-mem/
