@@ -1,5 +1,7 @@
 #include "ilegacysim/sdl_display.hpp"
 
+#include <mutex>
+#include <optional>
 #include <stdexcept>
 
 #include "ilegacysim/display.hpp"
@@ -21,6 +23,8 @@ struct SdlDisplay::Impl {
   SDL_Renderer *renderer{};
   SDL_Texture *texture{};
 #endif
+  std::mutex frame_mutex;
+  std::optional<DisplayFrame> pending_frame;
   SdlInput input;
   bool running{true};
 };
@@ -53,7 +57,7 @@ SdlDisplay::SdlDisplay(DisplayGeometry frame_geometry,
                              std::string{SDL_GetError()}};
   }
   impl_->renderer = SDL_CreateRenderer(
-      impl_->window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+      impl_->window, -1, SDL_RENDERER_ACCELERATED);
   if (impl_->renderer == nullptr) {
     impl_->renderer =
         SDL_CreateRenderer(impl_->window, -1, SDL_RENDERER_SOFTWARE);
@@ -96,19 +100,12 @@ SdlDisplay::~SdlDisplay() {
 
 void SdlDisplay::present(const DisplayFrame &frame) {
 #if defined(ILEGACYSIM_HAS_SDL2)
-  if (!impl_->running || frame.width != impl_->geometry.width ||
+  if (frame.width != impl_->geometry.width ||
       frame.height != impl_->geometry.height || frame.pixels.empty()) {
     return;
   }
-  if (SDL_UpdateTexture(
-          impl_->texture, nullptr, frame.pixels.data(),
-          static_cast<int>(frame.width * sizeof(std::uint32_t))) != 0) {
-    throw std::runtime_error{"SDL texture upload failed: " +
-                             std::string{SDL_GetError()}};
-  }
-  SDL_RenderClear(impl_->renderer);
-  SDL_RenderCopy(impl_->renderer, impl_->texture, nullptr, nullptr);
-  SDL_RenderPresent(impl_->renderer);
+  std::lock_guard lock{impl_->frame_mutex};
+  impl_->pending_frame = frame;
 #else
   static_cast<void>(frame);
 #endif
@@ -116,6 +113,22 @@ void SdlDisplay::present(const DisplayFrame &frame) {
 
 bool SdlDisplay::poll_events() {
 #if defined(ILEGACYSIM_HAS_SDL2)
+  std::optional<DisplayFrame> frame;
+  {
+    std::lock_guard lock{impl_->frame_mutex};
+    frame.swap(impl_->pending_frame);
+  }
+  if (frame) {
+    if (SDL_UpdateTexture(
+            impl_->texture, nullptr, frame->pixels.data(),
+            static_cast<int>(frame->width * sizeof(std::uint32_t))) != 0) {
+      throw std::runtime_error{"SDL texture upload failed: " +
+                               std::string{SDL_GetError()}};
+    }
+    SDL_RenderClear(impl_->renderer);
+    SDL_RenderCopy(impl_->renderer, impl_->texture, nullptr, nullptr);
+    SDL_RenderPresent(impl_->renderer);
+  }
   impl_->running = impl_->input.poll(impl_->window);
 #endif
   return impl_->running;
