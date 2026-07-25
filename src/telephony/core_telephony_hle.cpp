@@ -4,9 +4,12 @@
 #include <atomic>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "ilegacysim/address_space.hpp"
 #include "ilegacysim/cpu.hpp"
@@ -28,13 +31,29 @@ constexpr std::string_view offline_sim_status_export{
     "_kCTSIMSupportSIMStatusNotInserted"};
 constexpr std::string_view create_call_from_info{
     "__CTCallCreateFromCallInfo"};
+constexpr std::string_view copy_next_call{
+    "__CTServerConnectionCopyNextCall"};
 constexpr std::string_view copy_cf_string{"_CFStringGetCString"};
-constexpr std::string_view default_telephony_center{
-    "_CTTelephonyCenterGetDefault"};
+constexpr std::string_view call_status_change_notification{
+    "_kCTCallStatusChangeNotification"};
+constexpr std::string_view call_dictionary_key{"_kCTCall"};
+constexpr std::string_view server_connection_callback{
+    "__ServerConnectionCallback"};
+constexpr std::string_view cf_dictionary_create_mutable{
+    "_CFDictionaryCreateMutable"};
+constexpr std::string_view cf_dictionary_set_value{
+    "_CFDictionarySetValue"};
+constexpr std::string_view cf_dictionary_key_callbacks{
+    "_kCFTypeDictionaryKeyCallBacks"};
+constexpr std::string_view cf_dictionary_value_callbacks{
+    "_kCFTypeDictionaryValueCallBacks"};
+constexpr std::string_view cf_release{"_CFRelease"};
 constexpr std::uint32_t cf_string_encoding_utf8{0x08000100U};
 constexpr std::uint32_t call_argument_words{8U};
 constexpr std::uint32_t call_argument_bytes{
     call_argument_words * sizeof(std::uint32_t)};
+constexpr std::uint32_t dialing_call_state{2U};
+constexpr std::uint32_t disconnected_call_state{4U};
 constexpr std::size_t maximum_dialed_number_bytes{256U};
 
 // These APIs have scalar return values in iPhoneOS 1.0. An offline handset
@@ -46,15 +65,9 @@ constexpr std::array<std::string_view, 4> offline_scalar_queries{
     "_CTGetCurrentCallCount",
 };
 
-constexpr std::array<std::string_view, 3> observer_operations{
-    "_CTTelephonyCenterAddObserver",
-    "_CTTelephonyCenterRemoveObserver",
-    "_CTTelephonyCenterRemoveEveryObserver",
-};
-
 // These server queries normally write a retained CFString through argument 2.
-// The offline profile has a genuine connection object but no CommCenter-backed
-// values, so terminate the queries at this HLE boundary.
+// The offline profile has no CommCenter-backed values, so terminate the
+// queries at this HLE boundary.
 constexpr std::array<std::string_view, 6> offline_server_string_queries{
     "__CTServerConnectionCopyFirmwareVersion",
     "__CTServerConnectionCopySIMIdentity",
@@ -130,6 +143,15 @@ void return_server_success(UserlandHleCall& call) {
     call.set_return(result);
 }
 
+void return_server_success(UserlandHleCall& call, std::uint32_t result) {
+    if (result == 0 || !call.write32(result, 0) ||
+        !call.write32(result + 4U, 0)) {
+        call.set_return(0);
+        return;
+    }
+    call.set_return(result);
+}
+
 void return_server_failure(UserlandHleCall& call, std::uint32_t result,
                            std::uint32_t call_output,
                            std::uint32_t error) {
@@ -147,33 +169,46 @@ struct OfflineCallRequest {
     std::uint32_t result{};
     std::uint32_t call_output{};
     std::uint32_t number{};
-    std::uint32_t dial_identifier{};
-    std::uint32_t caller_stack{};
-    std::uint32_t sequence{};
-    std::uint32_t address{};
+    struct Record {
+        std::uint32_t dial_identifier{};
+        std::uint32_t sequence{};
+        std::uint32_t address{};
+        // Preserve the server source verbatim. A null value is valid when the
+        // firmware's telephony center has no live CommCenter transport, and
+        // still selects its native UUID-map/object-reuse path.
+        std::uint32_t source{};
+    } record;
 };
 
-bool create_firmware_call(UserlandHleCall& call,
-                          const OfflineCallRequest& request,
-                          std::uint32_t allocator_source) {
-    if (allocator_source == 0 ||
-        request.caller_stack < call_argument_bytes) {
-        return false;
-    }
-    const auto empty = call.intern_string("");
-    if (empty == 0) return false;
+struct OfflineCallState {
+    std::atomic<std::uint32_t> next_identifier{1U};
+    std::mutex mutex;
+    std::map<std::uint32_t, OfflineCallRequest::Record> calls;
+};
 
-    const auto call_stack =
-        request.caller_stack - call_argument_bytes;
+using CreatedCallContinuation =
+    std::function<void(UserlandHleCall&, std::uint32_t)>;
+
+bool prepare_firmware_call(
+    UserlandHleCall& call,
+    const OfflineCallRequest::Record& record,
+    std::uint32_t source, std::uint32_t call_state,
+    std::uint32_t empty) {
+    if (empty == 0) return false;
+    auto& registers = call.cpu().registers();
+    const auto caller_stack = registers[13];
+    if (caller_stack < call_argument_bytes) return false;
+
+    const auto call_stack = caller_stack - call_argument_bytes;
     const std::array<std::uint32_t, call_argument_words> arguments{
         0x694c5349U,             // Fourth CFUUID word.
-        request.address,        // Dialed address.
+        record.address,         // Dialed address.
         empty,                  // No network-provided display name.
         0U,                     // Start time is unknown while dialing.
         0U,                     // Connected duration.
-        request.sequence,       // Stable call identifier.
-        2U,                     // Outgoing, dialing call state.
-        request.dial_identifier,
+        record.sequence,        // Stable call identifier.
+        call_state,
+        record.dial_identifier,
     };
     for (std::size_t index = 0; index < arguments.size(); ++index) {
         if (!call.write32(
@@ -186,36 +221,243 @@ bool create_firmware_call(UserlandHleCall& call,
         }
     }
 
-    auto& registers = call.cpu().registers();
-    registers[0] = allocator_source;
+    registers[0] = source;
     registers[1] = 0x694c6567U;
     registers[2] = call.process_id();
-    registers[3] = request.sequence;
+    registers[3] = record.sequence;
     registers[13] = call_stack;
+    return true;
+}
+
+bool create_firmware_call(UserlandHleCall& call,
+                          const OfflineCallRequest::Record& record,
+                          std::uint32_t call_state,
+                          CreatedCallContinuation continuation) {
+    if (!continuation) return false;
+    const auto caller_stack = call.cpu().registers()[13];
+    const auto empty = call.intern_string("");
+    if (!prepare_firmware_call(
+            call, record, record.source, call_state,
+            empty)) return false;
+    auto& registers = call.cpu().registers();
     if (call.call_guest_function(
             create_call_from_info,
-            [request](UserlandHleCall& completed) {
-                completed.cpu().registers()[13] =
-                    request.caller_stack;
-                const auto created =
-                    completed.cpu().registers()[0];
-                if (created != 0 &&
-                    completed.write32(
-                        request.call_output, created) &&
-                    completed.write32(request.result, 0) &&
-                    completed.write32(
-                        request.result + 4U, 0)) {
-                    completed.set_return(request.result);
-                    return;
-                }
-                return_server_failure(
-                    completed, request.result,
-                    request.call_output, 12U);
+            [caller_stack, continuation = std::move(continuation)](
+                UserlandHleCall& completed) mutable {
+                completed.cpu().registers()[13] = caller_stack;
+                const auto created = completed.cpu().registers()[0];
+                continuation(completed, created);
             })) {
         return true;
     }
-    registers[13] = request.caller_stack;
+    registers[13] = caller_stack;
     return false;
+}
+
+bool create_firmware_call(UserlandHleCall& call,
+                          const OfflineCallRequest& request,
+                          const std::shared_ptr<OfflineCallState>& state) {
+    return create_firmware_call(
+        call, request.record, dialing_call_state,
+        [request, state](
+            UserlandHleCall& completed, std::uint32_t created) {
+            if (created != 0 &&
+                completed.write32(
+                    request.call_output, created) &&
+                completed.write32(request.result, 0) &&
+                completed.write32(
+                    request.result + 4U, 0)) {
+                {
+                    std::lock_guard lock{state->mutex};
+                    state->calls.insert_or_assign(
+                        created, request.record);
+                }
+                completed.set_return(request.result);
+                return;
+            }
+            return_server_failure(
+                completed, request.result,
+                request.call_output, 12U);
+        });
+}
+
+void erase_offline_call(
+    const std::shared_ptr<OfflineCallState>& state,
+    std::uint32_t original_call) {
+    std::lock_guard lock{state->mutex};
+    state->calls.erase(original_call);
+}
+
+void release_disconnected_call(
+    UserlandHleCall& call,
+    const std::shared_ptr<OfflineCallState>& state,
+    std::uint32_t original_call,
+    std::uint32_t disconnected_call) {
+    if (disconnected_call == 0 ||
+        !call.continue_deferred_guest_function(
+            cf_release,
+            [disconnected_call](UserlandHleCall& release) {
+                release.cpu().registers()[0] = disconnected_call;
+            },
+            [state, original_call](UserlandHleCall&) {
+                erase_offline_call(state, original_call);
+            })) {
+        erase_offline_call(state, original_call);
+    }
+}
+
+void release_disconnect_objects(
+    UserlandHleCall& call,
+    const std::shared_ptr<OfflineCallState>& state,
+    std::uint32_t original_call, std::uint32_t dictionary,
+    std::uint32_t disconnected_call) {
+    if (dictionary == 0 ||
+        !call.continue_deferred_guest_function(
+            cf_release,
+            [dictionary](UserlandHleCall& release) {
+                release.cpu().registers()[0] = dictionary;
+            },
+            [state, original_call, disconnected_call](
+                UserlandHleCall& released) {
+                release_disconnected_call(
+                    released, state, original_call,
+                    disconnected_call);
+            })) {
+        release_disconnected_call(
+            call, state, original_call, disconnected_call);
+    }
+}
+
+void complete_disconnect_service(
+    UserlandHleCall& call, std::uint32_t result,
+    std::uint32_t original_call,
+    const OfflineCallRequest::Record& record,
+    const std::shared_ptr<OfflineCallState>& state) {
+    const auto notification =
+        exported_object(call, call_status_change_notification);
+    const auto dictionary_key =
+        exported_object(call, call_dictionary_key);
+    const auto key_callbacks =
+        call.symbol_address(cf_dictionary_key_callbacks).value_or(0);
+    const auto value_callbacks =
+        call.symbol_address(cf_dictionary_value_callbacks).value_or(0);
+    const auto empty = call.intern_string("");
+    const auto source = record.source;
+    const auto queued =
+        notification != 0 && dictionary_key != 0 &&
+        key_callbacks != 0 && value_callbacks != 0 && empty != 0 &&
+        call.defer_guest_function(
+            create_call_from_info,
+            [record, empty](UserlandHleCall& deferred) {
+                static_cast<void>(prepare_firmware_call(
+                    deferred, record, record.source,
+                    disconnected_call_state, empty));
+            },
+            [state, notification, dictionary_key, key_callbacks,
+             value_callbacks, original_call, source](
+                UserlandHleCall& created) {
+                const auto disconnected_call =
+                    created.cpu().registers()[0];
+                const auto dictionary_queued =
+                    disconnected_call != 0 &&
+                    created.continue_deferred_guest_function(
+                        cf_dictionary_create_mutable,
+                        [key_callbacks, value_callbacks](
+                            UserlandHleCall& deferred) {
+                            auto& registers =
+                                deferred.cpu().registers();
+                            registers[0] = 0;
+                            registers[1] = 1U;
+                            registers[2] = key_callbacks;
+                            registers[3] = value_callbacks;
+                        },
+                        [state, notification, dictionary_key,
+                         original_call, disconnected_call, source](
+                            UserlandHleCall& dictionary_created) {
+                            const auto dictionary =
+                                dictionary_created.cpu()
+                                    .registers()[0];
+                            const auto value_queued =
+                                dictionary != 0 &&
+                                dictionary_created
+                                    .continue_deferred_guest_function(
+                                        cf_dictionary_set_value,
+                                        [dictionary, dictionary_key,
+                                         disconnected_call](
+                                            UserlandHleCall&
+                                                deferred) {
+                                            auto& registers =
+                                                deferred.cpu()
+                                                    .registers();
+                                            registers[0] =
+                                                dictionary;
+                                            registers[1] =
+                                                dictionary_key;
+                                            registers[2] =
+                                                disconnected_call;
+                                        },
+                                        [state, notification, original_call,
+                                         dictionary, disconnected_call,
+                                         source](
+                                            UserlandHleCall&
+                                                value_set) {
+                                            const auto handled =
+                                                value_set
+                                                    .continue_deferred_guest_function(
+                                                        server_connection_callback,
+                                                        [source,
+                                                         notification,
+                                                         dictionary](
+                                                            UserlandHleCall&
+                                                                deferred) {
+                                                            auto&
+                                                                registers =
+                                                                    deferred
+                                                                        .cpu()
+                                                                        .registers();
+                                                            registers[0] =
+                                                                source;
+                                                            registers[1] =
+                                                                notification;
+                                                            registers[2] =
+                                                                dictionary;
+                                                        },
+                                                        [state,
+                                                         original_call,
+                                                         dictionary,
+                                                         disconnected_call](
+                                                            UserlandHleCall&
+                                                                completed) {
+                                                            release_disconnect_objects(
+                                                                completed,
+                                                                state,
+                                                                original_call,
+                                                                dictionary,
+                                                                disconnected_call);
+                                                        });
+                                            if (!handled) {
+                                                release_disconnect_objects(
+                                                    value_set, state,
+                                                    original_call,
+                                                    dictionary,
+                                                    disconnected_call);
+                                            }
+                                        });
+                            if (!value_queued) {
+                                release_disconnect_objects(
+                                    dictionary_created, state,
+                                    original_call, dictionary,
+                                    disconnected_call);
+                            }
+                        });
+                if (!dictionary_queued) {
+                    release_disconnected_call(
+                        created, state, original_call,
+                        disconnected_call);
+                }
+            });
+    if (!queued) erase_offline_call(state, original_call);
+    return_server_success(call, result);
 }
 
 }  // namespace
@@ -230,9 +472,17 @@ void register_core_telephony_hle(
     UserlandHleRegistry& registry, WifiStateProvider wifi_state,
     std::function<void(const WifiSnapshot&, const WifiSnapshot&)>
         wifi_state_changed) {
-    registry.register_guest_function(
-        std::string{core_foundation_image},
-        std::string{copy_cf_string});
+    for (const auto symbol : {
+             copy_cf_string,
+             cf_dictionary_create_mutable,
+             cf_dictionary_set_value,
+             cf_dictionary_key_callbacks,
+             cf_dictionary_value_callbacks,
+             cf_release,
+         }) {
+        registry.register_guest_function(
+            std::string{core_foundation_image}, std::string{symbol});
+    }
     // Every stock UI process shares one offline compatibility backend. Match
     // the application directory instead of maintaining a bundle whitelist,
     // while allowing CommCenter and other system daemons to keep their native
@@ -250,12 +500,11 @@ void register_core_telephony_hle(
     // Preserve the firmware's CTCall CFRuntime object and MobilePhone flow.
     // Only adapt the missing baseband service reply into the same call-info
     // record that a real CommCenter response would have produced.
-    const auto next_call_identifier =
-        std::make_shared<std::atomic<std::uint32_t>>(1U);
+    const auto offline_calls = std::make_shared<OfflineCallState>();
     registry.register_function(
         std::string{core_telephony_image},
         "__CTServerConnectionCreateCall",
-        [next_call_identifier](UserlandHleCall& call) {
+        [offline_calls](UserlandHleCall& call) {
             if (!is_offline_ui_client(call)) {
                 call.resume_original();
                 return;
@@ -265,14 +514,17 @@ void register_core_telephony_hle(
                 call.argument(0),
                 call.argument(4),
                 call.argument(2),
-                call.argument(3),
-                call.cpu().registers()[13],
-                next_call_identifier->fetch_add(
-                    1U, std::memory_order_relaxed),
-                call.allocate_data(maximum_dialed_number_bytes, 1U),
+                {
+                    call.argument(3),
+                    offline_calls->next_identifier.fetch_add(
+                        1U, std::memory_order_relaxed),
+                    call.allocate_data(
+                        maximum_dialed_number_bytes, 1U),
+                    call.argument(1),
+                },
             };
             if (request.result == 0 || request.call_output == 0 ||
-                request.number == 0 || request.address == 0) {
+                request.number == 0 || request.record.address == 0) {
                 return_server_failure(
                     call, request.result, request.call_output, 22U);
                 return;
@@ -280,43 +532,73 @@ void register_core_telephony_hle(
 
             auto& registers = call.cpu().registers();
             registers[0] = request.number;
-            registers[1] = request.address;
+            registers[1] = request.record.address;
             registers[2] =
                 static_cast<std::uint32_t>(
                     maximum_dialed_number_bytes);
             registers[3] = cf_string_encoding_utf8;
             if (!call.call_guest_function(
                     copy_cf_string,
-                    [request](UserlandHleCall& copied) {
+                    [request, offline_calls](UserlandHleCall& copied) {
                         if (copied.cpu().registers()[0] == 0) {
                             return_server_failure(
                                 copied, request.result,
                                 request.call_output, 22U);
                             return;
                         }
-
-                        if (!copied.call_guest_function(
-                                default_telephony_center,
-                                [request](UserlandHleCall& centered) {
-                                    const auto center =
-                                        centered.cpu().registers()[0];
-                                    if (!create_firmware_call(
-                                            centered, request, center)) {
-                                        return_server_failure(
-                                            centered, request.result,
-                                            request.call_output, 38U);
-                                    }
-                                })) {
+                        if (!create_firmware_call(
+                                copied, request, offline_calls)) {
                             return_server_failure(
                                 copied, request.result,
-                            request.call_output, 38U);
+                                request.call_output, 38U);
                         }
                     })) {
                 return_server_failure(
                     call, request.result, request.call_output, 38U);
             }
         });
+    registry.register_function(
+        std::string{core_telephony_image},
+        "__CTServerConnectionEndCall",
+        [offline_calls](UserlandHleCall& call) {
+            if (!is_offline_ui_client(call)) {
+                call.resume_original();
+                return;
+            }
 
+            const auto result = call.argument(0);
+            const auto original_call = call.argument(2);
+            OfflineCallRequest::Record record;
+            bool found_call = false;
+            {
+                std::lock_guard lock{offline_calls->mutex};
+                const auto found =
+                    offline_calls->calls.find(original_call);
+                if (found != offline_calls->calls.end()) {
+                    record = found->second;
+                    found_call = true;
+                }
+            }
+            if (result == 0 || original_call == 0 ||
+                !found_call) {
+                return_server_success(call, result);
+                return;
+            }
+            complete_disconnect_service(
+                call, result, original_call, record, offline_calls);
+        });
+    registry.register_function(
+        std::string{core_telephony_image},
+        std::string{copy_next_call},
+        [](UserlandHleCall& call) {
+            if (!is_offline_ui_client(call)) {
+                call.resume_original();
+                return;
+            }
+            static_cast<void>(call.write32(call.argument(2), 0));
+            static_cast<void>(call.write32(call.argument(3), 0));
+            return_server_success(call, call.argument(0));
+        });
     for (const auto symbol : offline_scalar_queries) {
         registry.register_function(
             std::string{core_telephony_image}, std::string{symbol},
@@ -328,6 +610,36 @@ void register_core_telephony_hle(
                 }
             });
     }
+    registry.register_function(
+        std::string{core_telephony_image},
+        "__CTServerConnectionCallListEnd",
+        [offline_calls](UserlandHleCall& call) {
+            if (!is_offline_ui_client(call)) {
+                call.resume_original();
+                return;
+            }
+
+            const auto result = call.argument(0);
+            std::uint32_t original_call = 0;
+            OfflineCallRequest::Record record;
+            {
+                std::lock_guard lock{offline_calls->mutex};
+                for (const auto& [candidate, candidate_record] :
+                     offline_calls->calls) {
+                    if (original_call == 0 ||
+                        candidate_record.sequence > record.sequence) {
+                        original_call = candidate;
+                        record = candidate_record;
+                    }
+                }
+            }
+            if (result == 0 || original_call == 0) {
+                return_server_success(call, result);
+                return;
+            }
+            complete_disconnect_service(
+                call, result, original_call, record, offline_calls);
+        });
     registry.register_function(
         std::string{core_telephony_image}, "_CTPowerGetAirplaneMode",
         [wifi_state](UserlandHleCall& call) {
@@ -383,11 +695,8 @@ void register_core_telephony_hle(
                 call, exported_object(call, offline_sim_status_export));
         });
 
-    // Let the firmware construct its genuine CFRuntime server connection,
-    // including the dedicated receive right exposed by GetPort. The launchd
-    // Mach service exists even when the baseband transport is parked. Offline
-    // clients may subscribe locally, but registration cannot produce remote
-    // CommCenter updates and is therefore a successful no-op.
+    // The offline adapter supplies service results directly, so registration
+    // cannot produce remote CommCenter updates and is a successful no-op.
     for (const auto symbol : {
              "__CTServerConnectionRegisterForNotification",
              "__CTServerConnectionUnregisterForNotification",
@@ -414,7 +723,8 @@ void register_core_telephony_hle(
 
     // Let the firmware construct a genuine CFRuntime telephony-center object,
     // while suppressing only its attempt to establish the unavailable
-    // CommCenter/baseband channel. Every client can retain/release it normally.
+    // CommCenter/baseband channel. Its observer APIs remain native so service
+    // completions can use the firmware's local CFNotificationCenter path.
     registry.register_function(
         std::string{core_telephony_image}, "__EstablishServerConnection",
         [](UserlandHleCall& call) {
@@ -433,17 +743,7 @@ void register_core_telephony_hle(
                 call.resume_original();
             }
         });
-    for (const auto symbol : observer_operations) {
-        registry.register_function(
-            std::string{core_telephony_image}, std::string{symbol},
-            [](UserlandHleCall& call) {
-                if (is_offline_ui_client(call)) {
-                    call.set_return(0);
-                } else {
-                    call.resume_original();
-                }
-            });
-    }
+
 }
 
 }  // namespace ilegacysim
