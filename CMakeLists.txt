@@ -5,6 +5,8 @@ project(iLegacySim VERSION 0.1.0 LANGUAGES C CXX)
 include(CTest)
 find_package(Threads REQUIRED)
 option(ILEGACYSIM_ENABLE_SDL2 "Build the optional SDL2 display backend" ON)
+option(ILEGACYSIM_ENABLE_VULKAN
+    "Build the optional Vulkan GLES renderer" ON)
 find_package(PkgConfig QUIET)
 if(ILEGACYSIM_ENABLE_SDL2)
     if(PkgConfig_FOUND)

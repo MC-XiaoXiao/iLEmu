@@ -59,6 +59,7 @@ inline constexpr std::uint32_t vertex_array = 0x8074U;
 inline constexpr std::uint32_t color_array = 0x8076U;
 inline constexpr std::uint32_t texture_coord_array = 0x8078U;
 inline constexpr std::uint32_t blend = 0x0be2U;
+inline constexpr std::uint32_t cull_face = 0x0b44U;
 inline constexpr std::uint32_t scissor_test = 0x0c11U;
 
 inline constexpr std::uint32_t current_color = 0x0b00U;
@@ -70,6 +71,7 @@ inline constexpr std::uint32_t texture_matrix_query = 0x0ba8U;
 inline constexpr std::uint32_t scissor_box = 0x0c10U;
 inline constexpr std::uint32_t color_write_mask = 0x0c23U;
 inline constexpr std::uint32_t front_face_query = 0x0b46U;
+inline constexpr std::uint32_t cull_face_mode = 0x0b45U;
 inline constexpr std::uint32_t depth_write_mask = 0x0b72U;
 inline constexpr std::uint32_t stencil_write_mask = 0x0b98U;
 inline constexpr std::uint32_t maximum_texture_size = 0x0d33U;
@@ -77,6 +79,7 @@ inline constexpr std::uint32_t maximum_texture_size = 0x0d33U;
 inline constexpr std::uint32_t modelview = 0x1700U;
 inline constexpr std::uint32_t projection = 0x1701U;
 inline constexpr std::uint32_t texture_matrix = 0x1702U;
+inline constexpr std::uint32_t texture_source = 0x1702U;
 inline constexpr std::size_t maximum_matrix_stack_depth = 32;
 
 inline constexpr std::uint32_t zero = 0;
@@ -86,15 +89,48 @@ inline constexpr std::uint32_t one_minus_source_alpha = 0x0303U;
 
 inline constexpr std::uint32_t clockwise = 0x0900U;
 inline constexpr std::uint32_t counter_clockwise = 0x0901U;
+inline constexpr std::uint32_t front = 0x0404U;
+inline constexpr std::uint32_t back = 0x0405U;
+inline constexpr std::uint32_t front_and_back = 0x0408U;
 inline constexpr std::uint32_t texture_environment = 0x2300U;
 inline constexpr std::uint32_t texture_environment_mode = 0x2200U;
 inline constexpr std::uint32_t texture_environment_color = 0x2201U;
 inline constexpr std::uint32_t modulate = 0x2100U;
 inline constexpr std::uint32_t replace = 0x1e01U;
+inline constexpr std::uint32_t decal = 0x2101U;
+inline constexpr std::uint32_t add = 0x0104U;
+inline constexpr std::uint32_t combine = 0x8570U;
+inline constexpr std::uint32_t combine_rgb = 0x8571U;
+inline constexpr std::uint32_t combine_alpha = 0x8572U;
+inline constexpr std::uint32_t rgb_scale = 0x8573U;
+inline constexpr std::uint32_t add_signed = 0x8574U;
+inline constexpr std::uint32_t interpolate = 0x8575U;
+inline constexpr std::uint32_t constant = 0x8576U;
+inline constexpr std::uint32_t primary_color = 0x8577U;
+inline constexpr std::uint32_t previous = 0x8578U;
+inline constexpr std::uint32_t subtract = 0x84e7U;
+inline constexpr std::uint32_t source0_rgb = 0x8580U;
+inline constexpr std::uint32_t source1_rgb = 0x8581U;
+inline constexpr std::uint32_t source2_rgb = 0x8582U;
+inline constexpr std::uint32_t source0_alpha = 0x8588U;
+inline constexpr std::uint32_t source1_alpha = 0x8589U;
+inline constexpr std::uint32_t source2_alpha = 0x858aU;
+inline constexpr std::uint32_t operand0_rgb = 0x8590U;
+inline constexpr std::uint32_t operand1_rgb = 0x8591U;
+inline constexpr std::uint32_t operand2_rgb = 0x8592U;
+inline constexpr std::uint32_t operand0_alpha = 0x8598U;
+inline constexpr std::uint32_t operand1_alpha = 0x8599U;
+inline constexpr std::uint32_t operand2_alpha = 0x859aU;
+inline constexpr std::uint32_t source_color = 0x0300U;
+inline constexpr std::uint32_t one_minus_source_color = 0x0301U;
+inline constexpr std::uint32_t dot3_rgb = 0x86aeU;
+inline constexpr std::uint32_t dot3_rgba = 0x86afU;
+inline constexpr std::uint32_t alpha_scale = 0x0d1cU;
 
 inline constexpr std::uint32_t default_pixel_alignment = 4;
 inline constexpr std::uint32_t maximum_texture_dimension = 4096;
-inline constexpr std::uint64_t maximum_resource_bytes = 256ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t maximum_resource_bytes =
+    256ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint32_t maximum_draw_vertices = 1'000'000U;
 
-}  // namespace ilegacysim::gles_abi
+} // namespace ilegacysim::gles_abi

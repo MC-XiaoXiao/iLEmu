@@ -10,6 +10,7 @@ namespace ilegacysim {
 
 class DisplayState;
 class GlesResourceStore;
+struct DisplayFrame;
 
 struct GlesRasterVertex {
     std::array<float, 4> position{0.0F, 0.0F, 0.0F, 1.0F};
@@ -17,11 +18,28 @@ struct GlesRasterVertex {
     std::array<std::array<float, 2>, gles_abi::texture_unit_count> texture{};
 };
 
+struct GlesTextureEnvironment {
+    std::uint32_t mode{gles_abi::modulate};
+    std::array<float, 4> color{};
+    std::uint32_t combine_rgb{gles_abi::modulate};
+    std::uint32_t combine_alpha{gles_abi::modulate};
+    std::array<std::uint32_t, 3> rgb_sources{
+        gles_abi::texture_source, gles_abi::previous, gles_abi::constant};
+    std::array<std::uint32_t, 3> alpha_sources{
+        gles_abi::texture_source, gles_abi::previous, gles_abi::constant};
+    std::array<std::uint32_t, 3> rgb_operands{
+        gles_abi::source_color, gles_abi::source_color, gles_abi::source_alpha};
+    std::array<std::uint32_t, 3> alpha_operands{
+        gles_abi::source_alpha, gles_abi::source_alpha, gles_abi::source_alpha};
+    float rgb_scale{1.0F};
+    float alpha_scale{1.0F};
+};
+
 struct GlesRasterTextureUnit {
     std::uint32_t texture{};
+    GlesTextureEnvironment environment;
     bool enabled{};
     bool rectangle{};
-    bool replace{};
 };
 
 struct GlesRasterState {
@@ -38,13 +56,19 @@ struct GlesRasterState {
     std::array<bool, 4> color_mask{true, true, true, true};
     std::uint32_t blend_source{};
     std::uint32_t blend_destination{};
+    std::uint32_t cull_mode{gles_abi::back};
+    std::uint32_t front_face{gles_abi::counter_clockwise};
+    bool cull_enabled{};
 };
 
 class GlesSoftwareRasterizer {
-public:
-    static bool draw(
-        DisplayState& display, std::span<const GlesRasterVertex> vertices,
-        std::uint32_t mode, const GlesRasterState& state);
+  public:
+    static bool draw(DisplayFrame& frame,
+                     std::span<const GlesRasterVertex> vertices,
+                     std::uint32_t mode, const GlesRasterState& state);
+    static bool draw(DisplayState& display,
+                     std::span<const GlesRasterVertex> vertices,
+                     std::uint32_t mode, const GlesRasterState& state);
 };
 
-}  // namespace ilegacysim
+} // namespace ilegacysim

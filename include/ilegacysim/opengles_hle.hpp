@@ -10,11 +10,12 @@
 #include <span>
 #include <vector>
 
+#include "ilegacysim/display.hpp"
 #include "ilegacysim/gles_abi.hpp"
 #include "ilegacysim/gles_math.hpp"
 #include "ilegacysim/gles_rasterizer.hpp"
+#include "ilegacysim/gles_renderer.hpp"
 #include "ilegacysim/gles_resources.hpp"
-#include "ilegacysim/display.hpp"
 
 namespace ilegacysim {
 
@@ -28,10 +29,11 @@ struct KernelSharedState;
 // ABI. It deliberately models EGL/GLES state rather than the PowerVR MBX
 // kernel command stream used by Apple's original implementation.
 class OpenGlesHle {
-public:
+  public:
     OpenGlesHle(UserlandHleRegistry& registry,
                 std::shared_ptr<DisplayState> display,
                 std::shared_ptr<SurfaceStore> surfaces = {});
+    ~OpenGlesHle();
 
     void reset();
     void inherit_state(const OpenGlesHle& parent);
@@ -42,13 +44,20 @@ public:
         return resources_;
     }
 
-private:
+  private:
     struct ThreadState {
         std::uint32_t display{};
         std::uint32_t draw_surface{};
         std::uint32_t read_surface{};
         std::uint32_t context{};
         std::uint32_t gl_error{};
+    };
+    struct SurfaceState {
+        std::optional<std::uint32_t> backing_identifier;
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::vector<std::uint32_t> pixels;
+        bool dirty{};
     };
     struct ContextState {
         struct ArrayPointer {
@@ -62,8 +71,7 @@ private:
         struct TextureUnitState {
             std::uint32_t bound_texture_2d{};
             std::uint32_t bound_texture_rectangle{};
-            std::uint32_t texture_environment_mode{gles_abi::modulate};
-            std::array<float, 4> texture_environment_color{};
+            GlesTextureEnvironment texture_environment;
             GlesMatrix texture_matrix;
             std::vector<GlesMatrix> texture_stack;
             ArrayPointer texture_array;
@@ -78,8 +86,7 @@ private:
         std::uint32_t pack_alignment{gles_abi::default_pixel_alignment};
         std::array<std::int32_t, 4> viewport{};
         std::array<std::int32_t, 4> scissor_box{};
-        std::array<float, 4> current_color{
-            1.0F, 1.0F, 1.0F, 1.0F};
+        std::array<float, 4> current_color{1.0F, 1.0F, 1.0F, 1.0F};
         std::array<bool, 4> color_mask{true, true, true, true};
         std::array<std::uint32_t, 4> clear_color{};
         std::uint32_t clear_argb{0xff000000U};
@@ -88,6 +95,7 @@ private:
         std::uint32_t blend_destination{gles_abi::zero};
         std::size_t active_texture_unit{};
         std::size_t client_active_texture_unit{};
+        std::uint32_t cull_mode{gles_abi::back};
         std::uint32_t front_face{gles_abi::counter_clockwise};
         std::uint32_t stencil_mask{0xffffffffU};
         bool depth_mask{true};
@@ -105,16 +113,30 @@ private:
     void set_gl_error(UserlandHleCall& call, std::uint32_t error);
     void set_array_pointer(UserlandHleCall& call, std::uint32_t array);
     [[nodiscard]] GlesMatrix* current_matrix(ContextState& context);
-    [[nodiscard]] std::vector<GlesMatrix>* current_matrix_stack(
-        ContextState& context);
+    [[nodiscard]] std::vector<GlesMatrix>*
+    current_matrix_stack(ContextState& context);
     void multiply_current_matrix(UserlandHleCall& call, GlesMatrix matrix);
-    [[nodiscard]] bool read_array(
-        UserlandHleCall& call, const ContextState::ArrayPointer& array,
-        std::uint32_t index, std::span<float> destination,
-        bool normalized) const;
-    [[nodiscard]] std::optional<GlesRasterVertex> read_vertex(
-        UserlandHleCall& call, const ContextState& context,
-        std::uint32_t index) const;
+    [[nodiscard]] bool read_array(UserlandHleCall& call,
+                                  const ContextState::ArrayPointer& array,
+                                  std::uint32_t index,
+                                  std::span<float> destination,
+                                  bool normalized) const;
+    [[nodiscard]] std::optional<GlesRasterVertex>
+    read_vertex(UserlandHleCall& call, const ContextState& context,
+                std::uint32_t index) const;
+    [[nodiscard]] std::optional<std::uint32_t>
+    core_surface_identifier(UserlandHleCall& call, std::uint32_t surface) const;
+    [[nodiscard]] SurfaceState* current_pixmap_surface(UserlandHleCall& call);
+    [[nodiscard]] GlesRenderTargetKey
+    render_target_key(std::uint32_t surface) const;
+    [[nodiscard]] bool reload_surface(UserlandHleCall& call,
+                                      std::uint32_t surface);
+    [[nodiscard]] bool flush_surface(UserlandHleCall& call,
+                                     std::uint32_t surface);
+    [[nodiscard]] std::optional<DisplayFrame>
+    render_target(UserlandHleCall& call);
+    [[nodiscard]] bool commit_render_target(UserlandHleCall& call,
+                                            DisplayFrame frame);
     void draw(UserlandHleCall& call, bool indexed);
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
     void register_egl(UserlandHleRegistry& registry);
@@ -123,7 +145,7 @@ private:
 
     std::map<std::size_t, ThreadState> threads_;
     std::map<std::uint32_t, ContextState> contexts_;
-    std::set<std::uint32_t> surfaces_;
+    std::map<std::uint32_t, SurfaceState> surfaces_;
     GlesResourceStore resources_;
     std::uint32_t next_context_{0x00010001U};
     std::uint32_t next_surface_{0x00020001U};
@@ -132,8 +154,9 @@ private:
     std::size_t unsupported_trace_count_{};
     std::shared_ptr<DisplayState> display_;
     std::shared_ptr<SurfaceStore> surface_store_;
+    std::shared_ptr<GlesRenderer> renderer_;
     std::shared_ptr<KernelSharedState> shared_state_;
     std::shared_ptr<SceneCoordinator> scene_coordinator_;
 };
 
-}  // namespace ilegacysim
+} // namespace ilegacysim
