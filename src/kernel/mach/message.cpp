@@ -296,17 +296,27 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
       const auto bootstrap_registration =
           *message_id ==
           mig_message_id(xnu792::mig::bootstrap::Routine::mig_register);
-      if (bootstrap_lookup || bootstrap_registration) {
-        const auto service_offset = bootstrap_lookup
-            ? xnu792::mig::bootstrap::look_up_arguments[2].request_offset
-            : xnu792::mig::bootstrap::mig_register_arguments[2]
-                  .request_offset;
+      const auto bootstrap_check_in =
+          *message_id ==
+          mig_message_id(xnu792::mig::bootstrap::Routine::check_in);
+      std::optional<std::size_t> service_offset;
+      if (bootstrap_lookup) {
+        service_offset =
+            xnu792::mig::bootstrap::look_up_arguments[2].request_offset;
+      } else if (bootstrap_registration) {
+        service_offset =
+            xnu792::mig::bootstrap::mig_register_arguments[2].request_offset;
+      } else if (bootstrap_check_in) {
+        service_offset =
+            xnu792::mig::bootstrap::check_in_arguments[1].request_offset;
+      }
+      if (service_offset) {
         constexpr std::size_t maximum_service_length = 128;
         for (std::size_t index = 0; index < maximum_service_length &&
-                                    service_offset + index < bytes->size();
+                                    *service_offset + index < bytes->size();
              ++index) {
           const auto character =
-              std::to_integer<unsigned char>((*bytes)[service_offset + index]);
+              std::to_integer<unsigned char>((*bytes)[*service_offset + index]);
           if (character == 0)
             break;
           if (character < 0x20U || character > 0x7eU) {
@@ -570,6 +580,10 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
           if (bootstrap_registration && !bootstrap_service_name.empty()) {
             graphics_services_input::record_bootstrap_registration_locked(
                 *shared_state_, bootstrap_service_name);
+          }
+          if (bootstrap_check_in && !bootstrap_service_name.empty()) {
+            shared_state_->bootstrap_checked_in_services.insert(
+                bootstrap_service_name);
           }
           if (graphics_event_type) {
             graphics_services_input::record_application_lifecycle_event_locked(

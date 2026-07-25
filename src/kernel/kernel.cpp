@@ -51,6 +51,11 @@
 
 namespace ilemu {
 
+std::size_t CompatibilityKernel::bootstrap_checked_in_service_count() const {
+  std::lock_guard lock{shared_state_->mach_mutex};
+  return shared_state_->bootstrap_checked_in_services.size();
+}
+
 namespace {
 
 constexpr std::uint32_t carry_flag = 1U << 29U;

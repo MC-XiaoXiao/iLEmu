@@ -604,6 +604,11 @@ struct KernelSharedState {
   std::map<std::uint32_t, PendingTimer::BootstrapRetry>
       pending_bootstrap_retries;
   std::map<std::string, std::uint64_t> bootstrap_service_generations;
+  // A successful bootstrap_check_in is an observable guest boot milestone:
+  // launchd accepted a service provider and transferred its receive right.
+  // Keep names only to deduplicate retries; status reporting exposes a count
+  // and does not depend on any firmware-specific service name.
+  std::set<std::string> bootstrap_checked_in_services;
   // A Purple application registers a bootstrap service backed by its own
   // receive right. When SpringBoard resolves that service, retain the global
   // port object so host touch input can follow Purple's foreground routing.

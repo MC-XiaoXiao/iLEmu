@@ -171,6 +171,7 @@ public:
   [[nodiscard]] std::uint64_t current_wall_time() const {
     return shared_state_->clock.wall_time();
   }
+  [[nodiscard]] std::size_t bootstrap_checked_in_service_count() const;
   void set_wall_time(std::uint64_t unix_time_nanoseconds) {
     shared_state_->clock.set_wall_time(unix_time_nanoseconds);
   }
