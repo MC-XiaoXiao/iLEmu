@@ -1,7 +1,10 @@
 #include "ilemu/gles_renderer.hpp"
 
 #include <memory>
+#include <mutex>
 #include <span>
+#include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -42,6 +45,12 @@ class SoftwareGlesRenderer final : public GlesRenderer {
     }
 
     [[nodiscard]] bool accelerated() const override { return false; }
+    [[nodiscard]] bool software_fallback_allowed() const override {
+        return false;
+    }
+    [[nodiscard]] PerfFallbackReason failure_reason() const override {
+        return PerfFallbackReason::None;
+    }
 };
 
 class FallbackGlesRenderer final : public GlesRenderer {
@@ -55,6 +64,7 @@ class FallbackGlesRenderer final : public GlesRenderer {
               const GlesRasterState& state) override {
         if (primary_->draw(frame, target, vertices, mode, state))
             return true;
+        performance_counters().record_fallback(primary_->failure_reason());
         if (!primary_->synchronize(frame, target) ||
             !fallback_->draw(frame, target, vertices, mode, state)) {
             return false;
@@ -85,26 +95,104 @@ class FallbackGlesRenderer final : public GlesRenderer {
     [[nodiscard]] bool accelerated() const override {
         return primary_->accelerated();
     }
+    [[nodiscard]] bool software_fallback_allowed() const override {
+        return true;
+    }
+    [[nodiscard]] PerfFallbackReason failure_reason() const override {
+        return primary_->failure_reason();
+    }
 
   private:
     std::unique_ptr<GlesRenderer> primary_;
     std::unique_ptr<GlesRenderer> fallback_;
 };
 
+struct SharedRendererState {
+    std::mutex mutex;
+    GlesBackend backend{GlesBackend::Auto};
+    std::shared_ptr<GlesRenderer>* renderer{};
+};
+
+SharedRendererState& shared_renderer_state() {
+    static SharedRendererState state;
+    return state;
+}
+
+std::shared_ptr<GlesRenderer> create_renderer(GlesBackend backend) {
+    if (backend == GlesBackend::Software) {
+        return std::make_shared<SoftwareGlesRenderer>();
+    }
+
+    std::string failure;
+#if defined(ILEMU_HAS_VULKAN)
+    if (auto accelerated = create_vulkan_gles_renderer(&failure)) {
+        if (backend == GlesBackend::Vulkan) {
+            return std::shared_ptr<GlesRenderer>{std::move(accelerated)};
+        }
+        return std::make_shared<FallbackGlesRenderer>(
+            std::move(accelerated),
+            std::make_unique<SoftwareGlesRenderer>());
+    }
+    performance_counters().record_fallback(
+        PerfFallbackReason::VulkanUnavailable);
+#else
+    failure = "Vulkan support was not built";
+    performance_counters().record_fallback(
+        PerfFallbackReason::VulkanUnavailable);
+#endif
+
+    if (backend == GlesBackend::Vulkan) {
+        throw std::runtime_error{
+            "forced Vulkan GLES backend unavailable: " + failure};
+    }
+    return std::make_shared<SoftwareGlesRenderer>();
+}
+
+std::shared_ptr<GlesRenderer>& renderer_slot(GlesBackend backend) {
+    // Register this holder's destructor only after create_renderer() returns.
+    // Vulkan ICDs may register their own process-lifetime teardown during
+    // device creation; the renderer must be destroyed before those callbacks.
+    static std::shared_ptr<GlesRenderer> renderer = create_renderer(backend);
+    return renderer;
+}
+
 } // namespace
 
+void configure_gles_backend(GlesBackend backend) {
+    auto& state = shared_renderer_state();
+    std::lock_guard lock{state.mutex};
+    if (state.renderer != nullptr && *state.renderer &&
+        state.backend != backend) {
+        throw std::logic_error{
+            "GLES backend cannot change after renderer initialization"};
+    }
+    state.backend = backend;
+}
+
+std::string_view gles_backend_name(GlesBackend backend) {
+    switch (backend) {
+    case GlesBackend::Auto: return "auto";
+    case GlesBackend::Software: return "software";
+    case GlesBackend::Vulkan: return "vulkan";
+    }
+    return "unknown";
+}
+
 std::shared_ptr<GlesRenderer> shared_gles_renderer() {
-    static const auto renderer = []() -> std::shared_ptr<GlesRenderer> {
-#if defined(ILEMU_HAS_VULKAN)
-        if (auto accelerated = create_vulkan_gles_renderer()) {
-            return std::make_shared<FallbackGlesRenderer>(
-                std::move(accelerated),
-                std::make_unique<SoftwareGlesRenderer>());
-        }
-#endif
-        return std::make_shared<SoftwareGlesRenderer>();
-    }();
-    return renderer;
+    auto& state = shared_renderer_state();
+    std::lock_guard lock{state.mutex};
+    if (state.renderer == nullptr)
+        state.renderer = &renderer_slot(state.backend);
+    if (!*state.renderer)
+        *state.renderer = create_renderer(state.backend);
+    return *state.renderer;
+}
+
+void shutdown_gles_renderer() {
+    auto& state = shared_renderer_state();
+    std::lock_guard lock{state.mutex};
+    if (state.renderer != nullptr)
+        state.renderer->reset();
 }
 
 } // namespace ilemu

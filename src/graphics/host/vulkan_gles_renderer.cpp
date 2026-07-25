@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <compare>
 #include <cstddef>
@@ -305,6 +307,12 @@ class VulkanGlesRenderer final : public GlesRenderer {
         return renderer_name_;
     }
     [[nodiscard]] bool accelerated() const override { return true; }
+    [[nodiscard]] bool software_fallback_allowed() const override {
+        return false;
+    }
+    [[nodiscard]] PerfFallbackReason failure_reason() const override {
+        return last_failure_reason_.load(std::memory_order_relaxed);
+    }
 
   private:
     struct Buffer {
@@ -342,7 +350,7 @@ class VulkanGlesRenderer final : public GlesRenderer {
     };
 
     struct TextureKey {
-        std::uintptr_t owner{};
+        std::uint64_t owner{};
         std::uint32_t name{};
         bool rectangle{};
 
@@ -431,6 +439,8 @@ class VulkanGlesRenderer final : public GlesRenderer {
     std::optional<GlesRenderTargetKey> active_target_;
     std::string renderer_name_;
     std::mutex mutex_;
+    std::atomic<PerfFallbackReason> last_failure_reason_{
+        PerfFallbackReason::None};
 };
 
 VulkanGlesRenderer::Buffer::Buffer(Buffer&& other) noexcept
@@ -948,6 +958,11 @@ void VulkanGlesRenderer::ensure_target(std::uint32_t width,
         target_image_.height == height) {
         return;
     }
+    // Recorded draws may still reference the old image and framebuffer.
+    // Submission includes a fence wait, so only retire them after the command
+    // buffer can no longer access either object.
+    if (command_recording_)
+        submit_commands();
     if (framebuffer_ != VK_NULL_HANDLE) {
         vkDestroyFramebuffer(device_, framebuffer_, nullptr);
         framebuffer_ = VK_NULL_HANDLE;
@@ -979,6 +994,7 @@ void VulkanGlesRenderer::upload(Buffer& buffer, const void* data,
         throw std::runtime_error{"Vulkan buffer upload exceeds allocation"};
     }
     std::memcpy(static_cast<std::byte*>(buffer.mapped) + offset, data, size);
+    performance_counters().record_upload(size);
     if (!buffer.coherent) {
         auto range = make_vulkan_structure<VkMappedMemoryRange>(
             VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE);
@@ -1005,6 +1021,7 @@ void VulkanGlesRenderer::download(Buffer& buffer, void* destination,
                         "vkInvalidateMappedMemoryRanges");
     }
     std::memcpy(destination, buffer.mapped, size);
+    performance_counters().record_readback(size);
 }
 
 void VulkanGlesRenderer::begin_commands() {
@@ -1031,9 +1048,20 @@ void VulkanGlesRenderer::submit_commands() {
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &command_buffer_;
     require_success(vkQueueSubmit(queue_, 1, &submit, fence_), "vkQueueSubmit");
-    require_success(vkWaitForFences(device_, 1, &fence_, VK_TRUE,
-                                    fence_timeout_nanoseconds),
-                    "vkWaitForFences");
+    performance_counters().record_submit();
+    const auto measure_wait = performance_counters().enabled();
+    const auto wait_start = measure_wait ? std::chrono::steady_clock::now()
+                                         : std::chrono::steady_clock::time_point{};
+    const auto wait_result = vkWaitForFences(
+        device_, 1, &fence_, VK_TRUE, fence_timeout_nanoseconds);
+    if (measure_wait) {
+        const auto elapsed = std::chrono::steady_clock::now() - wait_start;
+        performance_counters().record_fence_wait(
+            static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed)
+                    .count()));
+    }
+    require_success(wait_result, "vkWaitForFences");
     batch_draw_count_ = 0;
     vertex_bytes_used_ = 0;
     if (++batch_sequence_ == 0)
@@ -1315,6 +1343,8 @@ void VulkanGlesRenderer::transition_image(
 bool VulkanGlesRenderer::synchronize(DisplayFrame& frame,
                                      GlesRenderTargetKey target) {
     std::lock_guard lock{mutex_};
+    last_failure_reason_.store(PerfFallbackReason::None,
+                               std::memory_order_relaxed);
     if (!active_target_ || *active_target_ != target || !target_valid_ ||
         !target_dirty_) {
         return true;
@@ -1323,6 +1353,8 @@ bool VulkanGlesRenderer::synchronize(DisplayFrame& frame,
         frame.height != target_image_.height ||
         frame.pixels.size() !=
             static_cast<std::size_t>(frame.width) * frame.height) {
+        last_failure_reason_.store(PerfFallbackReason::InvalidTarget,
+                                   std::memory_order_relaxed);
         return false;
     }
 
@@ -1367,6 +1399,8 @@ bool VulkanGlesRenderer::synchronize(DisplayFrame& frame,
         target_dirty_ = false;
         return true;
     } catch (...) {
+        last_failure_reason_.store(PerfFallbackReason::BackendFailure,
+                                   std::memory_order_relaxed);
         vkDeviceWaitIdle(device_);
         discard_commands();
         for (auto& [key, texture] : texture_cache_) {
@@ -1403,25 +1437,37 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                               std::uint32_t mode,
                               const GlesRasterState& state) {
     std::lock_guard lock{mutex_};
+    last_failure_reason_.store(PerfFallbackReason::None,
+                               std::memory_order_relaxed);
     if (frame.width == 0 || frame.height == 0 ||
         frame.pixels.size() !=
             static_cast<std::size_t>(frame.width) * frame.height ||
         state.viewport_width == 0 || state.viewport_height == 0 ||
-        vertices.size() < 3 ||
-        (mode != gles_abi::triangles && mode != gles_abi::triangle_strip &&
-         mode != gles_abi::triangle_fan)) {
+        vertices.size() < 3) {
+        last_failure_reason_.store(PerfFallbackReason::InvalidTarget,
+                                   std::memory_order_relaxed);
+        return false;
+    }
+    if (mode != gles_abi::triangles && mode != gles_abi::triangle_strip &&
+        mode != gles_abi::triangle_fan) {
+        last_failure_reason_.store(PerfFallbackReason::UnsupportedPrimitive,
+                                   std::memory_order_relaxed);
         return false;
     }
     if (std::any_of(vertices.begin(), vertices.end(),
                     [](const GlesRasterVertex& vertex) {
                         return vertex.position[3] == 0.0F;
                     })) {
+        last_failure_reason_.store(PerfFallbackReason::InvalidVertex,
+                                   std::memory_order_relaxed);
         return false;
     }
     if (state.blend_enabled &&
         !((state.blend_source == gles_abi::source_alpha ||
            state.blend_source == gles_abi::one) &&
           state.blend_destination == gles_abi::one_minus_source_alpha)) {
+        last_failure_reason_.store(PerfFallbackReason::UnsupportedBlend,
+                                   std::memory_order_relaxed);
         return false;
     }
 
@@ -1465,12 +1511,19 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
     }
     try {
         const auto selected_pipeline = pipeline(pipeline_key);
-        if (selected_pipeline == VK_NULL_HANDLE)
+        if (selected_pipeline == VK_NULL_HANDLE) {
+            last_failure_reason_.store(
+                PerfFallbackReason::PipelineUnavailable,
+                std::memory_order_relaxed);
             return false;
+        }
 
         if (!active_target_ || *active_target_ != target) {
-            if (command_recording_ || target_dirty_)
+            if (command_recording_ || target_dirty_) {
+                last_failure_reason_.store(PerfFallbackReason::TargetBusy,
+                                           std::memory_order_relaxed);
                 return false;
+            }
             active_target_ = target;
             target_valid_ = false;
             target_dirty_ = false;
@@ -1754,6 +1807,8 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         vertex_bytes_used_ += vertex_bytes;
         return true;
     } catch (...) {
+        last_failure_reason_.store(PerfFallbackReason::BackendFailure,
+                                   std::memory_order_relaxed);
         vkDeviceWaitIdle(device_);
         discard_commands();
         target_valid_ = false;
@@ -1764,18 +1819,22 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
 
 } // namespace
 
-std::unique_ptr<GlesRenderer> create_vulkan_gles_renderer() noexcept {
+std::unique_ptr<GlesRenderer>
+create_vulkan_gles_renderer(std::string* failure) noexcept {
     try {
         auto renderer = std::make_unique<VulkanGlesRenderer>();
         std::clog << "[gles-renderer] selected " << renderer->name() << "\n";
         return renderer;
     } catch (const std::exception& error) {
+        if (failure != nullptr)
+            *failure = error.what();
         std::clog << "[gles-renderer] Vulkan unavailable: " << error.what()
-                  << "; using software\n";
+                  << "\n";
         return {};
     } catch (...) {
-        std::clog << "[gles-renderer] Vulkan unavailable: unknown error; "
-                     "using software\n";
+        if (failure != nullptr)
+            *failure = "unknown error";
+        std::clog << "[gles-renderer] Vulkan unavailable: unknown error\n";
         return {};
     }
 }

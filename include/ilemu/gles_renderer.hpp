@@ -7,13 +7,20 @@
 #include <string_view>
 
 #include "ilemu/gles_rasterizer.hpp"
+#include "ilemu/performance.hpp"
 
 namespace ilemu {
 
 struct DisplayFrame;
 
+enum class GlesBackend : std::uint8_t {
+    Auto,
+    Software,
+    Vulkan,
+};
+
 struct GlesRenderTargetKey {
-    std::uintptr_t owner{};
+    std::uint64_t owner{};
     std::uint32_t surface{};
 
     auto operator<=>(const GlesRenderTargetKey&) const = default;
@@ -41,10 +48,18 @@ class GlesRenderer {
     virtual void release(GlesRenderTargetKey target) = 0;
     [[nodiscard]] virtual std::string_view name() const = 0;
     [[nodiscard]] virtual bool accelerated() const = 0;
+    [[nodiscard]] virtual bool software_fallback_allowed() const = 0;
+    [[nodiscard]] virtual PerfFallbackReason failure_reason() const = 0;
 };
 
 // A renderer owns host-wide Vulkan device/queue state and is shared by all
 // guest processes. Per-process EGL/GLES resources remain in OpenGlesHle.
+// Configure the host policy before the first renderer is requested.
+void configure_gles_backend(GlesBackend backend);
+[[nodiscard]] std::string_view gles_backend_name(GlesBackend backend);
 [[nodiscard]] std::shared_ptr<GlesRenderer> shared_gles_renderer();
+// Release the host renderer while its graphics driver is still initialized.
+// The command-line host calls this after all guest runtimes have unwound.
+void shutdown_gles_renderer();
 
 } // namespace ilemu

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -71,6 +72,15 @@ bool is_valid_display(std::uint32_t display) {
     return display == egl_default_display;
 }
 
+std::uint64_t allocate_renderer_owner() {
+    static std::atomic<std::uint64_t> next_owner{1};
+    for (;;) {
+        const auto owner = next_owner.fetch_add(1, std::memory_order_relaxed);
+        if (owner != 0)
+            return owner;
+    }
+}
+
 } // namespace
 
 OpenGlesHle::OpenGlesHle(UserlandHleRegistry& registry,
@@ -79,6 +89,7 @@ OpenGlesHle::OpenGlesHle(UserlandHleRegistry& registry,
     : display_{std::move(display)},
       surface_store_{surfaces ? std::move(surfaces)
                               : std::make_shared<SurfaceStore>()},
+      renderer_owner_{allocate_renderer_owner()},
       renderer_{shared_gles_renderer()} {
     register_egl(registry);
     register_gles(registry);
@@ -100,6 +111,7 @@ void OpenGlesHle::reset() {
     contexts_.clear();
     surfaces_.clear();
     resources_.reset();
+    renderer_owner_ = allocate_renderer_owner();
     next_context_ = 0x00010001U;
     next_surface_ = 0x00020001U;
     egl_error_ = egl_success;
@@ -116,6 +128,7 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent) {
     contexts_ = parent.contexts_;
     surfaces_ = parent.surfaces_;
     resources_.inherit_state(parent.resources_);
+    renderer_owner_ = allocate_renderer_owner();
     next_context_ = parent.next_context_;
     next_surface_ = parent.next_surface_;
     egl_error_ = parent.egl_error_;
@@ -415,7 +428,7 @@ OpenGlesHle::current_pixmap_surface(UserlandHleCall& call) {
 
 GlesRenderTargetKey
 OpenGlesHle::render_target_key(std::uint32_t surface) const {
-    return {reinterpret_cast<std::uintptr_t>(this), surface};
+    return {renderer_owner_, surface};
 }
 
 bool OpenGlesHle::reload_surface(UserlandHleCall& call, std::uint32_t surface) {
@@ -659,6 +672,7 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed) {
     if (!pixmap_target) {
         renderer_->invalidate(target_key);
     }
+    performance_counters().record_draw();
     auto rendered = renderer_->draw(*target, target_key, vertices, mode, state);
     if (rendered && !pixmap_target) {
         rendered = renderer_->synchronize(*target, target_key);
