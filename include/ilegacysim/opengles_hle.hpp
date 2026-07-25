@@ -57,6 +57,7 @@ class OpenGlesHle {
         std::uint32_t width{};
         std::uint32_t height{};
         std::vector<std::uint32_t> pixels;
+        std::set<std::uint32_t> refreshed_textures;
         bool dirty{};
     };
     struct ContextState {

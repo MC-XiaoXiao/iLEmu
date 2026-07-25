@@ -433,6 +433,7 @@ bool OpenGlesHle::reload_surface(UserlandHleCall& call, std::uint32_t surface) {
     state.width = backing->width;
     state.height = backing->height;
     state.pixels = std::move(*pixels);
+    state.refreshed_textures.clear();
     state.dirty = false;
     renderer_->invalidate(render_target_key(surface));
     return true;
@@ -454,6 +455,7 @@ bool OpenGlesHle::flush_surface(UserlandHleCall& call, std::uint32_t surface) {
     if (!state.backing_identifier) {
         if (display_ && display_write_allowed(call))
             display_->replace_pixels(std::move(frame.pixels));
+        state.refreshed_textures.clear();
         return true;
     }
     state.pixels = std::move(frame.pixels);
@@ -463,6 +465,7 @@ bool OpenGlesHle::flush_surface(UserlandHleCall& call, std::uint32_t surface) {
         return false;
     }
     state.dirty = false;
+    state.refreshed_textures.clear();
     return true;
 }
 
@@ -625,6 +628,7 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed) {
     state.blend_destination = context->blend_destination;
     state.cull_mode = context->cull_mode;
     state.front_face = context->front_face;
+    auto* pixmap_surface = current_pixmap_surface(call);
     for (std::size_t unit_index = 0; unit_index < context->texture_units.size();
          ++unit_index) {
         const auto& unit = context->texture_units[unit_index];
@@ -637,16 +641,26 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed) {
                                                 : unit.bound_texture_2d;
         if (!raster_unit.enabled)
             continue;
-        const auto refresh_error = resources_.refresh_surface_texture(
-            call.memory(), raster_unit.texture, *surface_store_);
-        if (refresh_error != gles_abi::no_error) {
-            set_gl_error(call, refresh_error);
-            return;
+        if (pixmap_surface == nullptr ||
+            !pixmap_surface->refreshed_textures.contains(
+                raster_unit.texture)) {
+            const auto refresh_error = resources_.refresh_surface_texture(
+                call.memory(), raster_unit.texture, *surface_store_);
+            if (refresh_error != gles_abi::no_error) {
+                set_gl_error(call, refresh_error);
+                return;
+            }
+            if (pixmap_surface != nullptr)
+                pixmap_surface->refreshed_textures.insert(raster_unit.texture);
         }
     }
     const auto target_key = render_target_key(thread(call).draw_surface);
+    const auto pixmap_target = pixmap_surface != nullptr;
+    if (!pixmap_target) {
+        renderer_->invalidate(target_key);
+    }
     auto rendered = renderer_->draw(*target, target_key, vertices, mode, state);
-    if (rendered && current_pixmap_surface(call) == nullptr) {
+    if (rendered && !pixmap_target) {
         rendered = renderer_->synchronize(*target, target_key);
     }
     if (!rendered || !commit_render_target(call, std::move(*target))) {

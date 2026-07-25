@@ -176,10 +176,17 @@ std::optional<GlesResourceStore::TextureLevel> decode_surface(
     }
     return GlesResourceStore::TextureLevel{
         backing.width, backing.height, gles_abi::bgra_apple,
-        std::move(pixels), backing.id};
+        std::move(pixels), backing.id, 0};
 }
 
 }  // namespace
+
+std::uint64_t GlesResourceStore::allocate_texture_revision() {
+    const auto revision = next_texture_revision_++;
+    if (next_texture_revision_ == 0)
+        next_texture_revision_ = 1;
+    return revision;
+}
 
 void GlesResourceStore::reset() {
     textures_.clear();
@@ -188,6 +195,7 @@ void GlesResourceStore::reset() {
     generated_buffers_.clear();
     next_texture_ = 1;
     next_buffer_ = 1;
+    next_texture_revision_ = 1;
 }
 
 void GlesResourceStore::inherit_state(const GlesResourceStore& parent) {
@@ -197,6 +205,7 @@ void GlesResourceStore::inherit_state(const GlesResourceStore& parent) {
     generated_buffers_ = parent.generated_buffers_;
     next_texture_ = parent.next_texture_;
     next_buffer_ = parent.next_buffer_;
+    next_texture_revision_ = parent.next_texture_revision_;
 }
 
 std::uint32_t GlesResourceStore::generate_texture() {
@@ -264,7 +273,7 @@ std::uint32_t GlesResourceStore::upload_texture_2d(
     textures_.at(name).levels.insert_or_assign(
         level, TextureLevel{
                    width, height, internal_format, std::move(*decoded),
-                   std::nullopt});
+                   std::nullopt, allocate_texture_revision()});
     return gles_abi::no_error;
 }
 
@@ -296,6 +305,7 @@ std::uint32_t GlesResourceStore::update_texture_2d(
             destination->second.argb.begin() +
                 static_cast<std::size_t>(y + row) * destination->second.width + x);
     }
+    destination->second.revision = allocate_texture_revision();
     return gles_abi::no_error;
 }
 
@@ -323,6 +333,7 @@ std::uint32_t GlesResourceStore::import_surface_texture(
     }
     auto decoded = decode_surface(memory, *backing);
     if (!decoded) return gles_abi::invalid_value;
+    decoded->revision = allocate_texture_revision();
     texture->second.levels.insert_or_assign(0, std::move(*decoded));
     return gles_abi::no_error;
 }
@@ -346,6 +357,14 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
                    ? gles_abi::invalid_value
                    : gles_abi::invalid_enum;
     }
+    if (decoded->width == level->second.width &&
+        decoded->height == level->second.height &&
+        decoded->internal_format == level->second.internal_format &&
+        decoded->surface_id == level->second.surface_id &&
+        decoded->argb == level->second.argb) {
+        return gles_abi::no_error;
+    }
+    decoded->revision = allocate_texture_revision();
     level->second = std::move(*decoded);
     return gles_abi::no_error;
 }

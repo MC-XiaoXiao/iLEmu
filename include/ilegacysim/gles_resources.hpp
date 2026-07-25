@@ -20,6 +20,7 @@ public:
         std::uint32_t internal_format{};
         std::vector<std::uint32_t> argb;
         std::optional<std::uint32_t> surface_id;
+        std::uint64_t revision{};
     };
     struct Texture {
         std::uint32_t name{};
@@ -75,12 +76,15 @@ public:
     [[nodiscard]] const Buffer* buffer(std::uint32_t name) const;
 
 private:
+    [[nodiscard]] std::uint64_t allocate_texture_revision();
+
     std::map<std::uint32_t, Texture> textures_;
     std::map<std::uint32_t, Buffer> buffers_;
     std::set<std::uint32_t> generated_textures_;
     std::set<std::uint32_t> generated_buffers_;
     std::uint32_t next_texture_{1};
     std::uint32_t next_buffer_{1};
+    std::uint64_t next_texture_revision_{1};
 };
 
 }  // namespace ilegacysim
