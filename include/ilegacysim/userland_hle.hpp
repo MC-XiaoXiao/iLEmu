@@ -52,6 +52,11 @@ public:
   // link register. This supports compatibility adapters that finish through
   // the firmware's own implementation instead of duplicating it on the host.
   [[nodiscard]] bool tail_call_registered(std::string_view symbol);
+  // Invoke a mapped guest function and run a host continuation after it
+  // returns. The firmware function keeps its native ABI and object lifecycle;
+  // the continuation only adapts the surrounding service transaction.
+  [[nodiscard]] bool call_guest_function(std::string_view symbol,
+                                         Continuation continuation);
   // Stop intercepting this entry in the current process and execute the
   // original guest implementation from its first instruction.
   void resume_original();
@@ -97,6 +102,11 @@ public:
                          Handler handler);
   void register_prefix(std::string image_suffix, std::string symbol_prefix,
                        Handler handler);
+  // Resolve a defined guest function for call_guest_function without patching
+  // its entry point. This is for adapters that compose existing firmware
+  // logic.
+  void register_guest_function(std::string image_suffix,
+                               std::string symbol);
   // Resolve a stripped Objective-C 1.x instance method by metadata name when
   // the image is mapped. This avoids firmware-version-specific addresses.
   void register_objc_instance_method(std::string image_suffix,
@@ -183,8 +193,10 @@ private:
   AddressSpace &memory_;
   Output &output_;
   std::vector<Registration> registrations_;
+  std::vector<std::pair<std::string, std::string>> guest_functions_;
   std::map<std::uint32_t, InstalledCall> installed_calls_;
   std::map<std::string, std::uint32_t, std::less<>> installed_symbols_;
+  std::map<std::string, bool, std::less<>> installed_symbol_thumb_;
   std::set<std::string, std::less<>> loaded_images_;
   std::map<std::string, std::uint32_t, std::less<>> interned_strings_;
   std::uint32_t string_page_{};

@@ -272,6 +272,22 @@ bool UserlandHleCall::tail_call_registered(std::string_view symbol) {
   return true;
 }
 
+bool UserlandHleCall::call_guest_function(std::string_view symbol,
+                                          Continuation continuation) {
+  if (!continuation) return false;
+  const auto address = registry_.symbol_address(symbol);
+  const auto thumb = registry_.installed_symbol_thumb_.find(symbol);
+  if (!address || thumb == registry_.installed_symbol_thumb_.end()) {
+    return false;
+  }
+  const auto return_gate = registry_.install_continuation(
+      cpu_, cpu_.registers()[14], std::move(continuation));
+  if (!return_gate) return false;
+  cpu_.registers()[14] = *return_gate;
+  tail_call_address_ = *address | (thumb->second ? 1U : 0U);
+  return true;
+}
+
 void UserlandHleCall::resume_original() { resume_original_ = true; }
 
 void UserlandHleCall::resume_original_persistently() {
@@ -319,6 +335,21 @@ void UserlandHleRegistry::register_prefix(std::string image_suffix,
       Registration{static_cast<std::uint16_t>(registrations_.size() + 1U),
                    std::move(image_suffix), std::move(symbol_prefix), true,
                    std::nullopt, std::nullopt, std::move(handler)});
+}
+
+void UserlandHleRegistry::register_guest_function(
+    std::string image_suffix, std::string symbol) {
+  if (image_suffix.empty() || symbol.empty()) {
+    throw std::runtime_error{"invalid guest function registration"};
+  }
+  const auto dependency = std::pair{std::move(image_suffix),
+                                    std::move(symbol)};
+  if (std::find(guest_functions_.begin(), guest_functions_.end(),
+                dependency) != guest_functions_.end()) {
+    throw std::runtime_error{"duplicate guest function registration: " +
+                             dependency.second};
+  }
+  guest_functions_.push_back(dependency);
 }
 
 void UserlandHleRegistry::register_objc_instance_method(
@@ -414,12 +445,17 @@ std::size_t UserlandHleRegistry::install_mapped_image(
       file_offset > std::numeric_limits<std::uint32_t>::max()) {
     return 0;
   }
-  const auto relevant =
+  const auto hle_relevant =
       std::any_of(registrations_.begin(), registrations_.end(),
                   [&](const Registration &registration) {
                     return path_has_suffix(path, registration.image_suffix);
                   });
-  if (!relevant)
+  const auto guest_relevant =
+      std::any_of(guest_functions_.begin(), guest_functions_.end(),
+                  [&](const auto &dependency) {
+                    return path_has_suffix(path, dependency.first);
+                  });
+  if (!hle_relevant && !guest_relevant)
     return 0;
 
   const auto image = MachOImage::parse(image_path);
@@ -452,7 +488,17 @@ std::size_t UserlandHleRegistry::install_mapped_image(
     }
     const auto runtime_address =
         mapping_address + static_cast<std::uint32_t>(mapping_delta);
-    installed_symbols_.insert_or_assign(symbol.name, runtime_address);
+    const auto guest_dependency =
+        std::find_if(guest_functions_.begin(), guest_functions_.end(),
+                     [&](const auto &dependency) {
+                       return path_has_suffix(path, dependency.first) &&
+                              dependency.second == symbol.name;
+                     });
+    if (hle_relevant || guest_dependency != guest_functions_.end()) {
+      installed_symbols_.insert_or_assign(symbol.name, runtime_address);
+      installed_symbol_thumb_.insert_or_assign(
+          symbol.name, symbol.thumb_definition());
+    }
 
     auto *registration = select_registration(path, symbol.name);
     if (registration == nullptr)
@@ -763,11 +809,6 @@ bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
     }
     const bool original_thumb = installed->second.thumb;
     cpu.invalidate_cache_range(entry, installed->second.original.size());
-    if (const auto symbol_entry = installed_symbols_.find(symbol);
-        symbol_entry != installed_symbols_.end() &&
-        symbol_entry->second == entry) {
-      installed_symbols_.erase(symbol_entry);
-    }
     installed_calls_.erase(installed);
     registers[15] = entry;
     auto cpsr = cpu.cpsr();
@@ -997,6 +1038,7 @@ void UserlandHleRegistry::record_loaded_image(std::string image_path) {
 void UserlandHleRegistry::reset_mappings() {
   installed_calls_.clear();
   installed_symbols_.clear();
+  installed_symbol_thumb_.clear();
   loaded_images_.clear();
   interned_strings_.clear();
   string_page_ = 0;
@@ -1016,6 +1058,7 @@ void UserlandHleRegistry::reset_mappings() {
 void UserlandHleRegistry::inherit_mappings(const UserlandHleRegistry &parent) {
   installed_calls_ = parent.installed_calls_;
   installed_symbols_ = parent.installed_symbols_;
+  installed_symbol_thumb_ = parent.installed_symbol_thumb_;
   loaded_images_ = parent.loaded_images_;
   interned_strings_ = parent.interned_strings_;
   string_page_ = parent.string_page_;
