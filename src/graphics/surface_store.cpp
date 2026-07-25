@@ -13,17 +13,51 @@
 
 namespace ilemu {
 
+SurfaceStore::~SurfaceStore() {
+    reset();
+}
+
 void SurfaceStore::reset() {
-    std::lock_guard lock{mutex_};
+    const auto registry = registry_;
+    std::scoped_lock lock{mutex_, registry->mutex};
+    for (const auto& [id, backing] : backings_) {
+        static_cast<void>(backing);
+        const auto object = registry->objects.find(id);
+        if (object == registry->objects.end())
+            continue;
+        if (object->second.store_references > 1) {
+            --object->second.store_references;
+        } else {
+            registry->objects.erase(object);
+        }
+    }
     backings_.clear();
 }
 
 void SurfaceStore::inherit_state(const SurfaceStore& parent) {
     if (this == &parent)
         return;
-    std::scoped_lock lock{mutex_, parent.mutex_};
-    backings_ = parent.backings_;
-    registry_ = parent.registry_;
+    reset();
+
+    std::map<std::uint32_t, Backing> inherited;
+    std::shared_ptr<SharedRegistry> inherited_registry;
+    {
+        std::lock_guard parent_lock{parent.mutex_};
+        inherited_registry = parent.registry_;
+        std::lock_guard registry_lock{inherited_registry->mutex};
+        inherited = parent.backings_;
+        for (const auto& [id, backing] : inherited) {
+            static_cast<void>(backing);
+            const auto object = inherited_registry->objects.find(id);
+            if (object != inherited_registry->objects.end())
+                ++object->second.store_references;
+        }
+    }
+    {
+        std::lock_guard lock{mutex_};
+        backings_ = std::move(inherited);
+        registry_ = std::move(inherited_registry);
+    }
 }
 
 std::uint32_t SurfaceStore::allocate_identifier() {
@@ -57,28 +91,29 @@ bool SurfaceStore::publish(AddressSpace& memory, Backing backing) {
     if (!pages)
         return false;
 
+    const auto registry = registry_;
     {
-        std::lock_guard lock{registry_->mutex};
-        if (registry_->objects.contains(backing.id))
+        std::scoped_lock lock{mutex_, registry->mutex};
+        if (registry->objects.contains(backing.id) ||
+            backings_.contains(backing.id)) {
             return false;
+        }
         backing.provenance.publication_sequence =
-            registry_->next_publication_sequence++;
-        registry_->publication_watermark =
+            registry->next_publication_sequence++;
+        registry->publication_watermark =
             backing.provenance.publication_sequence;
-        if (registry_->next_publication_sequence == 0U)
-            registry_->next_publication_sequence = 1U;
+        if (registry->next_publication_sequence == 0U)
+            registry->next_publication_sequence = 1U;
         SharedObject object;
         object.metadata = backing;
         object.metadata.base = 0;
         object.page_offset = page_offset;
         object.mapping_size = mapping_size;
         object.pages = std::move(*pages);
-        registry_->objects.emplace(backing.id, std::move(object));
-        if (registry_->next_identifier <= backing.id)
-            registry_->next_identifier = backing.id + 1U;
-    }
-    {
-        std::lock_guard lock{mutex_};
+        object.store_references = 1;
+        registry->objects.emplace(backing.id, std::move(object));
+        if (registry->next_identifier <= backing.id)
+            registry->next_identifier = backing.id + 1U;
         backings_.insert_or_assign(backing.id, std::move(backing));
     }
     return true;
@@ -86,9 +121,10 @@ bool SurfaceStore::publish(AddressSpace& memory, Backing backing) {
 
 std::optional<SurfaceStore::SharedMapping>
 SurfaceStore::shared_mapping(std::uint32_t id) const {
-    std::lock_guard lock{registry_->mutex};
-    const auto found = registry_->objects.find(id);
-    if (found == registry_->objects.end())
+    const auto registry = registry_;
+    std::lock_guard lock{registry->mutex};
+    const auto found = registry->objects.find(id);
+    if (found == registry->objects.end())
         return std::nullopt;
     return SharedMapping{found->second.metadata, found->second.mapping_size};
 }
@@ -96,20 +132,14 @@ SurfaceStore::shared_mapping(std::uint32_t id) const {
 std::optional<SurfaceStore::Backing>
 SurfaceStore::import(AddressSpace& memory, std::uint32_t id,
                      std::uint32_t mapping_address) {
-    {
-        std::lock_guard lock{mutex_};
-        if (const auto local = backings_.find(id); local != backings_.end())
-            return local->second;
-    }
-
-    SharedObject object;
-    {
-        std::lock_guard lock{registry_->mutex};
-        const auto found = registry_->objects.find(id);
-        if (found == registry_->objects.end())
-            return std::nullopt;
-        object = found->second;
-    }
+    const auto registry = registry_;
+    std::scoped_lock lock{mutex_, registry->mutex};
+    if (const auto local = backings_.find(id); local != backings_.end())
+        return local->second;
+    const auto found = registry->objects.find(id);
+    if (found == registry->objects.end())
+        return std::nullopt;
+    const auto& object = found->second;
     if (mapping_address == 0 ||
         mapping_address % AddressSpace::page_size != 0 ||
         !memory.map_page_backings(
@@ -120,16 +150,24 @@ SurfaceStore::import(AddressSpace& memory, std::uint32_t id,
     }
     auto local = object.metadata;
     local.base = mapping_address + object.page_offset;
-    {
-        std::lock_guard lock{mutex_};
-        backings_.insert_or_assign(id, local);
-    }
+    backings_.insert_or_assign(id, local);
+    ++found->second.store_references;
     return local;
 }
 
 void SurfaceStore::erase(std::uint32_t id) {
-    std::lock_guard lock{mutex_};
-    backings_.erase(id);
+    const auto registry = registry_;
+    std::scoped_lock lock{mutex_, registry->mutex};
+    if (backings_.erase(id) == 0)
+        return;
+    const auto object = registry->objects.find(id);
+    if (object == registry->objects.end())
+        return;
+    if (object->second.store_references > 1) {
+        --object->second.store_references;
+    } else {
+        registry->objects.erase(object);
+    }
 }
 
 std::optional<SurfaceStore::Backing>

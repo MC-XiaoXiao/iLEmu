@@ -467,6 +467,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
             return;
         }
         auto client = clients_by_id_.find(requested_id);
+        const auto retain_existing = client != clients_by_id_.end();
         if (client == clients_by_id_.end()) {
             std::uint32_t created = 0;
             if (const auto shared = surfaces_->shared_mapping(requested_id)) {
@@ -494,8 +495,13 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
             client = clients_by_id_.find(requested_id);
         }
         auto* buffer = find(client->second);
-        if (buffer)
+        if (buffer && retain_existing) {
             ++buffer->references;
+            static_cast<void>(call.memory().write32(
+                buffer->client +
+                    core_surface_abi::client_reference_count_offset,
+                buffer->references));
+        }
         call.set_return(client->second);
         return;
     }
@@ -517,6 +523,17 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
         static_cast<void>(call.memory().write32(
             buffer->client + core_surface_abi::client_reference_count_offset,
             buffer->references));
+        if (buffer->references == 0) {
+            const auto client = buffer->client;
+            const auto id = buffer->id;
+            const auto indexed = clients_by_id_.find(id);
+            if (indexed != clients_by_id_.end() &&
+                indexed->second == client) {
+                clients_by_id_.erase(indexed);
+            }
+            buffers_.erase(client);
+            surfaces_->erase(id);
+        }
         call.set_return(0);
     } else if (symbol == "_CoreSurfaceClientBufferGetID") {
         call.set_return(buffer->id);

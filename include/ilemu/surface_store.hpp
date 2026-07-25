@@ -32,6 +32,8 @@ inline constexpr std::uint32_t surface_pixel_format_rgb555 =
 // space without assuming that both tasks chose the same virtual address.
 class SurfaceStore {
   public:
+    ~SurfaceStore();
+
     struct Provenance {
         // The task that first published the backing. Importers retain this
         // identity instead of replacing it with the compositor's task.
@@ -80,6 +82,7 @@ class SurfaceStore {
         std::uint32_t page_offset{};
         std::uint32_t mapping_size{};
         std::vector<std::shared_ptr<GuestPageBacking>> pages;
+        std::size_t store_references{};
     };
     struct SharedRegistry {
         mutable std::mutex mutex;
