@@ -21,6 +21,8 @@ constexpr std::uint32_t stack_size = 0x00100000U;
 constexpr std::uint32_t stack_top = stack_base + stack_size;
 constexpr std::size_t maximum_interpreter_line = 256;
 constexpr std::size_t maximum_interpreter_depth = 4;
+constexpr std::string_view layerkit_auto_ogl_name{"LK_AUTO_ENABLE_OGL="};
+constexpr std::string_view layerkit_auto_ogl_setting{"LK_AUTO_ENABLE_OGL=1"};
 
 struct InterpreterDirective {
     std::string path;
@@ -64,7 +66,7 @@ read_interpreter_directive(const std::filesystem::path& path) {
     const auto trim_left = [](std::string_view value) {
         const auto first = value.find_first_not_of(" \t");
         return first == std::string_view::npos ? std::string_view{}
-                                                : value.substr(first);
+                                               : value.substr(first);
     };
     directive = trim_left(directive);
     const auto separator = directive.find_first_of(" \t");
@@ -83,12 +85,13 @@ read_interpreter_directive(const std::filesystem::path& path) {
     return result;
 }
 
-}  // namespace
+} // namespace
 
 ProcessLoader::ProcessLoader(std::filesystem::path rootfs, AddressSpace& memory)
     : rootfs_{std::move(rootfs)}, memory_{memory} {}
 
-std::filesystem::path ProcessLoader::host_path(const std::string& guest_path) const {
+std::filesystem::path
+ProcessLoader::host_path(const std::string& guest_path) const {
     std::filesystem::path relative{guest_path};
     if (relative.is_absolute()) {
         relative = relative.relative_path();
@@ -104,10 +107,9 @@ std::filesystem::path ProcessLoader::host_path(const std::string& guest_path) co
     return rootfs_ / relative;
 }
 
-LoadedProcess ProcessLoader::load(
-    std::string guest_executable,
-    std::vector<std::string> arguments,
-    std::vector<std::string> environment) {
+LoadedProcess ProcessLoader::load(std::string guest_executable,
+                                  std::vector<std::string> arguments,
+                                  std::vector<std::string> environment) {
     auto invocation =
         resolve_invocation(std::move(guest_executable), std::move(arguments));
     auto mapped_executable = std::move(invocation.executable_path);
@@ -115,9 +117,11 @@ LoadedProcess ProcessLoader::load(
 
     auto executable = MachOImage::parse(host_path(mapped_executable));
     if (!executable.dynamic_linker() || !executable.entry_point()) {
-        throw std::runtime_error{"executable lacks LC_LOAD_DYLINKER or LC_UNIXTHREAD"};
+        throw std::runtime_error{
+            "executable lacks LC_LOAD_DYLINKER or LC_UNIXTHREAD"};
     }
-    auto dynamic_linker = MachOImage::parse(host_path(*executable.dynamic_linker()));
+    auto dynamic_linker =
+        MachOImage::parse(host_path(*executable.dynamic_linker()));
     if (!dynamic_linker.entry_point()) {
         throw std::runtime_error{"dynamic linker lacks LC_UNIXTHREAD"};
     }
@@ -135,16 +139,27 @@ LoadedProcess ProcessLoader::load(
             "SHELL=/bin/sh",
         };
     }
+    // LayerKit's device launch environment enables its adaptive renderer.
+    // Preserve an explicit guest choice, otherwise keep the firmware's MBX2D
+    // fast path while allowing complex/3D updates to select GLES.
+    if (std::none_of(environment.begin(), environment.end(),
+                     [](const std::string& variable) {
+                         return variable.starts_with(layerkit_auto_ogl_name);
+                     })) {
+        environment.emplace_back(layerkit_auto_ogl_setting);
+    }
 
     std::uint32_t string_cursor = stack_top;
     auto push_string = [&](const std::string& value) {
         const auto bytes = static_cast<std::uint32_t>(value.size() + 1);
         if (bytes > string_cursor - stack_base) {
-            throw std::runtime_error{"initial stack strings exceed stack mapping"};
+            throw std::runtime_error{
+                "initial stack strings exceed stack mapping"};
         }
         string_cursor -= bytes;
         const auto* data = reinterpret_cast<const std::byte*>(value.c_str());
-        if (!memory_.copy_in(string_cursor, std::span<const std::byte>{data, bytes})) {
+        if (!memory_.copy_in(string_cursor,
+                             std::span<const std::byte>{data, bytes})) {
             throw std::runtime_error{"failed to write initial stack string"};
         }
         return string_cursor;
@@ -166,24 +181,30 @@ LoadedProcess ProcessLoader::load(
 
     const auto text_segment = std::find_if(
         executable.segments().begin(), executable.segments().end(),
-        [](const MachSegment& segment) { return segment.file_offset == 0 && segment.file_size != 0; });
+        [](const MachSegment& segment) {
+            return segment.file_offset == 0 && segment.file_size != 0;
+        });
     if (text_segment == executable.segments().end()) {
-        throw std::runtime_error{"cannot locate the main Mach-O header mapping"};
+        throw std::runtime_error{
+            "cannot locate the main Mach-O header mapping"};
     }
     const auto main_header = text_segment->vm_address;
 
     std::vector<std::uint32_t> words;
     words.reserve(5 + argument_pointers.size() + environment_pointers.size());
-    words.push_back(main_header);  // dyld's ARM start shim consumes this first.
+    words.push_back(main_header); // dyld's ARM start shim consumes this first.
     words.push_back(static_cast<std::uint32_t>(argument_pointers.size()));
-    words.insert(words.end(), argument_pointers.begin(), argument_pointers.end());
+    words.insert(words.end(), argument_pointers.begin(),
+                 argument_pointers.end());
     words.push_back(0);
-    words.insert(words.end(), environment_pointers.begin(), environment_pointers.end());
+    words.insert(words.end(), environment_pointers.begin(),
+                 environment_pointers.end());
     words.push_back(0);
     words.push_back(executable_path);
     words.push_back(0);
 
-    const auto word_bytes = static_cast<std::uint32_t>(words.size() * sizeof(std::uint32_t));
+    const auto word_bytes =
+        static_cast<std::uint32_t>(words.size() * sizeof(std::uint32_t));
     if (word_bytes > string_cursor - stack_base) {
         throw std::runtime_error{"initial stack vectors exceed stack mapping"};
     }
@@ -193,7 +214,9 @@ LoadedProcess ProcessLoader::load(
     }
     for (std::size_t index = 0; index < words.size(); ++index) {
         const auto encoded = little_endian_word(words[index]);
-        if (!memory_.copy_in(stack_pointer + static_cast<std::uint32_t>(index * 4U), encoded)) {
+        if (!memory_.copy_in(stack_pointer +
+                                 static_cast<std::uint32_t>(index * 4U),
+                             encoded)) {
             throw std::runtime_error{"failed to write initial stack vector"};
         }
     }
@@ -210,9 +233,9 @@ LoadedProcess ProcessLoader::load(
     };
 }
 
-ProcessLoader::ResolvedInvocation ProcessLoader::resolve_invocation(
-    std::string guest_executable,
-    std::vector<std::string> arguments) const {
+ProcessLoader::ResolvedInvocation
+ProcessLoader::resolve_invocation(std::string guest_executable,
+                                  std::vector<std::string> arguments) const {
     if (arguments.empty()) {
         arguments.push_back(guest_executable);
     }
@@ -264,4 +287,4 @@ bool ProcessLoader::validate(std::string guest_executable) const {
     }
 }
 
-}  // namespace ilegacysim
+} // namespace ilegacysim
