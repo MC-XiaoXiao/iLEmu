@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <vector>
 
 #include "ilegacysim/file_page_cache.hpp"
@@ -30,7 +31,7 @@ inline constexpr std::uint32_t surface_pixel_format_rgb555 =
 // CoreSurface transport ID can be imported into a different guest address
 // space without assuming that both tasks chose the same virtual address.
 class SurfaceStore {
-public:
+  public:
     struct Provenance {
         // The task that first published the backing. Importers retain this
         // identity instead of replacing it with the compositor's task.
@@ -61,17 +62,19 @@ public:
     [[nodiscard]] std::uint32_t allocate_identifier();
     [[nodiscard]] std::uint64_t publication_watermark() const;
     [[nodiscard]] bool publish(AddressSpace& memory, Backing backing);
-    [[nodiscard]] std::optional<SharedMapping> shared_mapping(
-        std::uint32_t id) const;
-    [[nodiscard]] std::optional<Backing> import(
-        AddressSpace& memory, std::uint32_t id,
-        std::uint32_t mapping_address);
+    [[nodiscard]] std::optional<SharedMapping>
+    shared_mapping(std::uint32_t id) const;
+    [[nodiscard]] std::optional<Backing> import(AddressSpace& memory,
+                                                std::uint32_t id,
+                                                std::uint32_t mapping_address);
     void erase(std::uint32_t id);
     [[nodiscard]] std::optional<Backing> find(std::uint32_t id) const;
-    [[nodiscard]] std::optional<std::vector<std::uint32_t>> read_argb(
-        AddressSpace& memory, std::uint32_t id) const;
+    [[nodiscard]] std::optional<std::vector<std::uint32_t>>
+    read_argb(AddressSpace& memory, std::uint32_t id) const;
+    [[nodiscard]] bool write_argb(AddressSpace& memory, std::uint32_t id,
+                                  std::span<const std::uint32_t> pixels) const;
 
-private:
+  private:
     struct SharedObject {
         Backing metadata;
         std::uint32_t page_offset{};
@@ -92,4 +95,4 @@ private:
         std::make_shared<SharedRegistry>()};
 };
 
-}  // namespace ilegacysim
+} // namespace ilegacysim

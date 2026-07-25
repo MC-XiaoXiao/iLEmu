@@ -1,8 +1,11 @@
 #include "ilegacysim/core_surface_hle.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -11,6 +14,7 @@
 
 #include "ilegacysim/address_space.hpp"
 #include "ilegacysim/core_surface_abi.hpp"
+#include "ilegacysim/cpu.hpp"
 #include "ilegacysim/display.hpp"
 #include "ilegacysim/iokit_abi.hpp"
 #include "ilegacysim/kernel_shared_state.hpp"
@@ -25,17 +29,38 @@ namespace {
 
 constexpr std::string_view core_surface_image{
     "/System/Library/Frameworks/CoreSurface.framework/CoreSurface"};
+constexpr std::string_view core_foundation_image{
+    "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"};
 constexpr std::string_view client_buffer_prefix{"_CoreSurfaceClientBuffer"};
 
 constexpr std::size_t client_buffer_alignment = 16;
 constexpr std::size_t pixel_buffer_alignment = 64;
 constexpr std::size_t maximum_unsupported_traces = 32;
+constexpr std::uint64_t maximum_surface_bytes = 256ULL * 1024ULL * 1024ULL;
+constexpr std::uint32_t cf_number_sint32_type = 3;
+
+enum CreateProperty : std::size_t {
+    client_address,
+    allocation_size,
+    width,
+    height,
+    pitch,
+    pixel_format,
+    data_offset,
+};
+
+constexpr std::array<std::string_view, 7> create_property_symbols{
+    "_kCoreSurfaceBufferClientAddress", "_kCoreSurfaceBufferAllocSize",
+    "_kCoreSurfaceBufferWidth",         "_kCoreSurfaceBufferHeight",
+    "_kCoreSurfaceBufferPitch",         "_kCoreSurfaceBufferPixelFormat",
+    "_kCoreSurfaceBufferOffset",
+};
 
 // Bytes in guest memory are B,G,R,A; when read as a little-endian uint32_t
 // this is the DisplayState 0xAARRGGBB representation without conversion.
 constexpr std::uint32_t success = 0;
 
-}  // namespace
+} // namespace
 
 CoreSurfaceHle::CoreSurfaceHle(
     UserlandHleRegistry& registry, std::shared_ptr<DisplayState> display,
@@ -45,9 +70,13 @@ CoreSurfaceHle::CoreSurfaceHle(
       surfaces_{surfaces ? std::move(surfaces)
                          : std::make_shared<SurfaceStore>()},
       presentation_tracker_{std::move(presentations)} {
-    registry.register_prefix(
-        std::string{core_surface_image}, std::string{client_buffer_prefix},
-        [this](UserlandHleCall& call) { dispatch(call); });
+    registry.register_prefix(std::string{core_surface_image},
+                             std::string{client_buffer_prefix},
+                             [this](UserlandHleCall& call) { dispatch(call); });
+    registry.register_guest_function(std::string{core_foundation_image},
+                                     "_CFDictionaryGetValue");
+    registry.register_guest_function(std::string{core_foundation_image},
+                                     "_CFNumberGetValue");
 }
 
 void CoreSurfaceHle::reset() {
@@ -83,13 +112,16 @@ void CoreSurfaceHle::set_scene_coordinator(
 }
 
 bool CoreSurfaceHle::refresh_default_scanout(AddressSpace& memory) {
-    if (!display_) return false;
-    const auto backing = surfaces_->find(
-        iokit_abi::apple_h1clcd_default_surface_id);
-    if (!backing) return false;
-    const auto generation = memory.range_write_generation(
-        backing->base, backing->allocation_size);
-    if (!generation || generation == last_scanout_generation_) return false;
+    if (!display_)
+        return false;
+    const auto backing =
+        surfaces_->find(iokit_abi::apple_h1clcd_default_surface_id);
+    if (!backing)
+        return false;
+    const auto generation =
+        memory.range_write_generation(backing->base, backing->allocation_size);
+    if (!generation || generation == last_scanout_generation_)
+        return false;
     last_scanout_generation_ = generation;
     const auto pixels = surfaces_->read_argb(
         memory, iokit_abi::apple_h1clcd_default_surface_id);
@@ -117,53 +149,181 @@ CoreSurfaceHle::Buffer* CoreSurfaceHle::find(std::uint32_t client) {
     return found == buffers_.end() ? nullptr : &found->second;
 }
 
-std::uint32_t CoreSurfaceHle::create_default_buffer(
-    UserlandHleCall& call, std::uint32_t requested_id) {
-    const auto geometry = display_ ? display_->geometry()
-                                   : default_display_geometry;
+void CoreSurfaceHle::create_from_dictionary(UserlandHleCall& call,
+                                            std::uint32_t dictionary) {
+    if (dictionary == 0) {
+        call.set_return(create_default_buffer(call));
+        return;
+    }
+    auto request = std::make_shared<CreateRequest>();
+    request->dictionary = dictionary;
+    request->number_output =
+        call.allocate_data(sizeof(std::uint32_t), alignof(std::uint32_t));
+    if (request->number_output == 0) {
+        call.set_return(0);
+        return;
+    }
+    read_next_create_property(call, request);
+}
+
+void CoreSurfaceHle::read_next_create_property(
+    UserlandHleCall& call, const std::shared_ptr<CreateRequest>& request) {
+    if (request->property_index >= create_property_symbols.size()) {
+        finish_create_from_dictionary(call, request);
+        return;
+    }
+    const auto variable =
+        call.symbol_address(create_property_symbols[request->property_index]);
+    const auto key = variable ? call.memory().read32(*variable).value_or(0) : 0;
+    if (key == 0) {
+        ++request->property_index;
+        read_next_create_property(call, request);
+        return;
+    }
+    call.cpu().registers()[0] = request->dictionary;
+    call.cpu().registers()[1] = key;
+    if (!call.call_guest_function(
+            "_CFDictionaryGetValue",
+            [this, request](UserlandHleCall& value_call) {
+                const auto value = value_call.cpu().registers()[0];
+                if (value == 0) {
+                    ++request->property_index;
+                    read_next_create_property(value_call, request);
+                    return;
+                }
+                if (!value_call.memory().write32(request->number_output, 0)) {
+                    value_call.set_return(0);
+                    return;
+                }
+                value_call.cpu().registers()[0] = value;
+                value_call.cpu().registers()[1] = cf_number_sint32_type;
+                value_call.cpu().registers()[2] = request->number_output;
+                if (!value_call.call_guest_function(
+                        "_CFNumberGetValue",
+                        [this, request](UserlandHleCall& number_call) {
+                            if (number_call.cpu().registers()[0] != 0) {
+                                request->properties[request->property_index] =
+                                    number_call.memory()
+                                        .read32(request->number_output)
+                                        .value_or(0);
+                            }
+                            ++request->property_index;
+                            read_next_create_property(number_call, request);
+                        })) {
+                    value_call.set_return(0);
+                }
+            })) {
+        call.set_return(0);
+    }
+}
+
+void CoreSurfaceHle::finish_create_from_dictionary(
+    UserlandHleCall& call, const std::shared_ptr<CreateRequest>& request) {
+    const auto address = request->properties[client_address];
+    auto size = request->properties[allocation_size];
+    const auto surface_width = request->properties[width];
+    const auto surface_height = request->properties[height];
+    auto bytes_per_row = request->properties[pitch];
+    auto format = request->properties[pixel_format];
+    const auto offset = request->properties[data_offset];
+
+    if (format == 0)
+        format = surface_pixel_format_bgra;
+    const auto bytes_per_pixel = format == surface_pixel_format_bgra
+                                     ? core_surface_abi::bytes_per_bgra_pixel
+                                 : format == surface_pixel_format_rgb555 ? 2U
+                                                                         : 0U;
+    const auto row_bytes =
+        static_cast<std::uint64_t>(surface_width) * bytes_per_pixel;
+    if (bytes_per_row == 0 &&
+        row_bytes <= std::numeric_limits<std::uint32_t>::max()) {
+        bytes_per_row = static_cast<std::uint32_t>(row_bytes);
+    }
+    const auto required =
+        surface_height == 0
+            ? 0
+            : static_cast<std::uint64_t>(surface_height - 1U) * bytes_per_row +
+                  row_bytes;
+    if (size == 0 && required <= std::numeric_limits<std::uint32_t>::max()) {
+        size = static_cast<std::uint32_t>(required);
+    }
+    const auto valid_offset = offset <= size;
+    const auto usable_size = valid_offset ? size - offset : 0;
+    const auto valid_address =
+        address <= std::numeric_limits<std::uint32_t>::max() - offset;
+    const auto base = valid_address ? address + offset : 0;
+    if (surface_width == 0 || surface_height == 0 || bytes_per_pixel == 0 ||
+        row_bytes > bytes_per_row || required == 0 || required > usable_size ||
+        usable_size > maximum_surface_bytes) {
+        call.output().write("[coresurface-hle] invalid create properties\n");
+        call.set_return(0);
+        return;
+    }
+
+    auto owns_memory = address == 0;
+    auto storage = base;
+    if (owns_memory) {
+        storage = call.allocate_data(usable_size, pixel_buffer_alignment);
+    } else if (!call.memory().mapped(storage, usable_size)) {
+        storage = 0;
+    }
+    call.set_return(storage == 0
+                        ? 0
+                        : create_buffer(call, storage, usable_size,
+                                        surface_width, surface_height,
+                                        bytes_per_row, format, owns_memory));
+}
+
+std::uint32_t
+CoreSurfaceHle::create_default_buffer(UserlandHleCall& call,
+                                      std::uint32_t requested_id) {
+    const auto geometry =
+        display_ ? display_->geometry() : default_display_geometry;
     const auto width = geometry.width;
     const auto height = geometry.height;
     const auto pitch = width * core_surface_abi::bytes_per_bgra_pixel;
     const auto size = pitch * height;
     const auto base = call.allocate_data(size, pixel_buffer_alignment);
-    if (base == 0) return 0;
-    return create_buffer(
-        call, base, size, width, height, true, requested_id);
+    if (base == 0)
+        return 0;
+    return create_buffer(call, base, size, width, height, pitch,
+                         surface_pixel_format_bgra, true, requested_id);
 }
 
-std::uint32_t CoreSurfaceHle::wrap_client_memory(
-    UserlandHleCall& call, std::uint32_t base, std::uint32_t size) {
+std::uint32_t CoreSurfaceHle::wrap_client_memory(UserlandHleCall& call,
+                                                 std::uint32_t base,
+                                                 std::uint32_t size) {
     if (base == 0 || size < core_surface_abi::bytes_per_bgra_pixel ||
         !call.memory().mapped(base, size)) {
         return 0;
     }
-    const auto geometry = display_ ? display_->geometry()
-                                   : default_display_geometry;
-    const auto full_screen_size = geometry.width *
-                                  geometry.height *
+    const auto geometry =
+        display_ ? display_->geometry() : default_display_geometry;
+    const auto full_screen_size = geometry.width * geometry.height *
                                   core_surface_abi::bytes_per_bgra_pixel;
-    const auto width = size >= full_screen_size
-                           ? geometry.width
-                           : std::max(
-                                 1U, size /
-                                         core_surface_abi::bytes_per_bgra_pixel);
+    const auto width =
+        size >= full_screen_size
+            ? geometry.width
+            : std::max(1U, size / core_surface_abi::bytes_per_bgra_pixel);
     const auto height = size >= full_screen_size ? geometry.height : 1U;
-    return create_buffer(call, base, size, width, height, false);
+    return create_buffer(call, base, size, width, height,
+                         width * core_surface_abi::bytes_per_bgra_pixel,
+                         surface_pixel_format_bgra, false);
 }
 
-std::uint32_t CoreSurfaceHle::create_buffer(
-    UserlandHleCall& call, std::uint32_t base, std::uint32_t size,
-    std::uint32_t width, std::uint32_t height, bool owns_memory,
-    std::uint32_t requested_id, bool publish) {
-    const auto client = call.allocate_data(
-        core_surface_abi::client_buffer_structure_size,
-        client_buffer_alignment);
-    if (client == 0) return 0;
-    const auto id = requested_id == 0
-                        ? surfaces_->allocate_identifier()
-                        : requested_id;
-    const auto pitch = width * core_surface_abi::bytes_per_bgra_pixel;
-
+std::uint32_t
+CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
+                              std::uint32_t size, std::uint32_t width,
+                              std::uint32_t height, std::uint32_t bytes_per_row,
+                              std::uint32_t pixel_format, bool owns_memory,
+                              std::uint32_t requested_id, bool publish) {
+    const auto client =
+        call.allocate_data(core_surface_abi::client_buffer_structure_size,
+                           client_buffer_alignment);
+    if (client == 0)
+        return 0;
+    const auto id =
+        requested_id == 0 ? surfaces_->allocate_identifier() : requested_id;
     const std::pair<std::uint32_t, std::uint32_t> fields[]{
         {core_surface_abi::client_reference_count_offset, 1},
         {core_surface_abi::client_identifier_offset, id},
@@ -171,31 +331,32 @@ std::uint32_t CoreSurfaceHle::create_buffer(
         {core_surface_abi::client_allocation_size_offset, size},
         {core_surface_abi::client_width_offset, width},
         {core_surface_abi::client_height_offset, height},
-        {core_surface_abi::client_pitch_offset, pitch},
+        {core_surface_abi::client_pitch_offset, bytes_per_row},
         {core_surface_abi::client_data_offset_offset, 0},
-        {core_surface_abi::client_pixel_format_offset,
-         surface_pixel_format_bgra},
+        {core_surface_abi::client_pixel_format_offset, pixel_format},
         {core_surface_abi::client_plane_count_offset, 0},
     };
     for (const auto& [offset, value] : fields) {
-        if (!call.memory().write32(client + offset, value)) return 0;
+        if (!call.memory().write32(client + offset, value))
+            return 0;
     }
     auto backing = SurfaceStore::Backing{
-        id, base, size, width, height, pitch, surface_pixel_format_bgra, {}};
+        id, base, size, width, height, bytes_per_row, pixel_format, {}};
     backing.provenance.producer_process_id = call.process_id();
     if (id == iokit_abi::apple_h1clcd_default_surface_id &&
         !call.memory().track_write_generation(base, size)) {
         return 0;
     }
-    if (publish && !surfaces_->publish(call.memory(), backing)) return 0;
+    if (publish && !surfaces_->publish(call.memory(), backing))
+        return 0;
     std::vector<std::uint32_t> preserved_exit_snapshot_pixels;
-    const auto geometry = display_ ? display_->geometry()
-                                   : default_display_geometry;
-    if (shared_state_ && publish && owns_memory &&
-        width == geometry.width &&
+    const auto geometry =
+        display_ ? display_->geometry() : default_display_geometry;
+    if (shared_state_ && publish && owns_memory && width == geometry.width &&
         height == geometry.height &&
-        pitch == geometry.width *
-                     core_surface_abi::bytes_per_bgra_pixel) {
+        bytes_per_row ==
+            geometry.width * core_surface_abi::bytes_per_bgra_pixel &&
+        pixel_format == surface_pixel_format_bgra) {
         std::lock_guard lock{shared_state_->mach_mutex};
         auto& pending = shared_state_->pending_application_exit_snapshot;
         if (pending && pending->process_id == call.process_id() &&
@@ -205,24 +366,31 @@ std::uint32_t CoreSurfaceHle::create_buffer(
             pending.reset();
         }
     }
-    buffers_[client] = Buffer{
-        client, id, base, size, width, height, pitch,
-        surface_pixel_format_bgra, 1, owns_memory,
-        std::move(preserved_exit_snapshot_pixels)};
+    buffers_[client] = Buffer{client,
+                              id,
+                              base,
+                              size,
+                              width,
+                              height,
+                              bytes_per_row,
+                              pixel_format,
+                              1,
+                              owns_memory,
+                              std::move(preserved_exit_snapshot_pixels)};
     clients_by_id_[id] = client;
     call.output().write(
         "[coresurface-hle] create pid=" + std::to_string(call.process_id()) +
-        " id=" + std::to_string(id) + " client=" +
-        std::to_string(client) + " base=" + std::to_string(base) +
-        " size=" + std::to_string(size) + "\n");
+        " id=" + std::to_string(id) + " client=" + std::to_string(client) +
+        " base=" + std::to_string(base) + " size=" + std::to_string(size) +
+        "\n");
     return client;
 }
 
 void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call) {
     if (!display_ || buffer.width != display_->width() ||
         buffer.height != display_->height() ||
-        buffer.bytes_per_row != display_->width() *
-                                    core_surface_abi::bytes_per_bgra_pixel) {
+        buffer.bytes_per_row !=
+            display_->width() * core_surface_abi::bytes_per_bgra_pixel) {
         return;
     }
     if (shared_state_) {
@@ -233,9 +401,9 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call) {
             !active_application_owns_display_locked(
                 *shared_state_, call.process_id(),
                 scene_coordinator_
-                    ? std::optional<bool>{
-                          scene_coordinator_->client_scene_active(
-                              call.process_id())}
+                    ? std::optional<bool>{scene_coordinator_
+                                              ->client_scene_active(
+                                                  call.process_id())}
                     : std::nullopt)) {
             return;
         }
@@ -243,26 +411,24 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call) {
     // Unlock publishes guest writes to the CoreSurface backing. Once the
     // firmware has entered transactional hardware-layer presentation, only
     // IOMobileFramebuffer SwapEnd may turn those backing updates into scanout.
-    if (presentation_tracker_ &&
-        presentation_tracker_->has_presented_frame()) {
+    if (presentation_tracker_ && presentation_tracker_->has_presented_frame()) {
         return;
     }
-    const auto bytes = call.memory().read_bytes(buffer.base, buffer.allocation_size);
-    if (!bytes || bytes->size() < static_cast<std::size_t>(
-                                    display_->width()) *
-                                    display_->height() *
-                                    core_surface_abi::bytes_per_bgra_pixel) {
+    const auto bytes =
+        call.memory().read_bytes(buffer.base, buffer.allocation_size);
+    if (!bytes || bytes->size() < static_cast<std::size_t>(display_->width()) *
+                                      display_->height() *
+                                      core_surface_abi::bytes_per_bgra_pixel) {
         return;
     }
-    std::vector<std::uint32_t> pixels(
-        display_->geometry().pixel_count());
+    std::vector<std::uint32_t> pixels(display_->geometry().pixel_count());
     for (std::size_t index = 0; index < pixels.size(); ++index) {
-        const auto offset =
-            index * core_surface_abi::bytes_per_bgra_pixel;
-        pixels[index] = std::to_integer<std::uint32_t>((*bytes)[offset]) |
-                        (std::to_integer<std::uint32_t>((*bytes)[offset + 1U]) << 8U) |
-                        (std::to_integer<std::uint32_t>((*bytes)[offset + 2U]) << 16U) |
-                        (std::to_integer<std::uint32_t>((*bytes)[offset + 3U]) << 24U);
+        const auto offset = index * core_surface_abi::bytes_per_bgra_pixel;
+        pixels[index] =
+            std::to_integer<std::uint32_t>((*bytes)[offset]) |
+            (std::to_integer<std::uint32_t>((*bytes)[offset + 1U]) << 8U) |
+            (std::to_integer<std::uint32_t>((*bytes)[offset + 2U]) << 16U) |
+            (std::to_integer<std::uint32_t>((*bytes)[offset + 3U]) << 24U);
     }
     display_->replace_pixels(std::move(pixels));
 }
@@ -270,23 +436,28 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call) {
 void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
     const auto symbol = call.symbol();
     if (symbol == "_CoreSurfaceClientBufferCreate") {
-        call.set_return(create_default_buffer(call));
+        create_from_dictionary(call, call.argument(0));
         return;
     }
     if (symbol == "_CoreSurfaceClientBufferAlloc") {
-        const auto geometry = display_ ? display_->geometry()
-                                       : default_display_geometry;
-        const auto size = geometry.pixel_count() *
-                          core_surface_abi::bytes_per_bgra_pixel;
+        const auto geometry =
+            display_ ? display_->geometry() : default_display_geometry;
+        const auto size =
+            geometry.pixel_count() * core_surface_abi::bytes_per_bgra_pixel;
         const auto base = call.allocate_data(size, pixel_buffer_alignment);
-        call.set_return(base == 0 ? 0 : create_buffer(
-            call, base, static_cast<std::uint32_t>(size), geometry.width,
-            geometry.height, true, call.argument(0)));
+        call.set_return(
+            base == 0
+                ? 0
+                : create_buffer(
+                      call, base, static_cast<std::uint32_t>(size),
+                      geometry.width, geometry.height,
+                      geometry.width * core_surface_abi::bytes_per_bgra_pixel,
+                      surface_pixel_format_bgra, true, call.argument(0)));
         return;
     }
     if (symbol == "_CoreSurfaceClientBufferWrapClientMemory") {
-        call.set_return(wrap_client_memory(
-            call, call.argument(0), call.argument(1)));
+        call.set_return(
+            wrap_client_memory(call, call.argument(0), call.argument(1)));
         return;
     }
     if (symbol == "_CoreSurfaceClientBufferLookup") {
@@ -308,8 +479,9 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
                             call.memory(), requested_id, mapping_address)) {
                         created = create_buffer(
                             call, imported->base, imported->allocation_size,
-                            imported->width, imported->height, false,
-                            requested_id, false);
+                            imported->width, imported->height,
+                            imported->bytes_per_row, imported->pixel_format,
+                            false, requested_id, false);
                     }
                 }
             } else {
@@ -322,7 +494,8 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
             client = clients_by_id_.find(requested_id);
         }
         auto* buffer = find(client->second);
-        if (buffer) ++buffer->references;
+        if (buffer)
+            ++buffer->references;
         call.set_return(client->second);
         return;
     }
@@ -339,7 +512,8 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
             buffer->references));
         call.set_return(buffer->client);
     } else if (symbol == "_CoreSurfaceClientBufferRelease") {
-        if (buffer->references != 0) --buffer->references;
+        if (buffer->references != 0)
+            --buffer->references;
         static_cast<void>(call.memory().write32(
             buffer->client + core_surface_abi::client_reference_count_offset,
             buffer->references));
@@ -412,4 +586,4 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
     }
 }
 
-}  // namespace ilegacysim
+} // namespace ilegacysim

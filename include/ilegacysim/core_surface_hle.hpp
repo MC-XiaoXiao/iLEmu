@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -22,7 +23,7 @@ class UserlandHleRegistry;
 // The public CoreSurfaceBuffer CFRuntime wrapper remains firmware code; only
 // its _CoreSurfaceClientBuffer* backing operations are intercepted.
 class CoreSurfaceHle {
-public:
+  public:
     CoreSurfaceHle(UserlandHleRegistry& registry,
                    std::shared_ptr<DisplayState> display,
                    std::shared_ptr<SurfaceStore> surfaces = {},
@@ -39,7 +40,7 @@ public:
     // Return true only when a newly visible frame was submitted.
     bool refresh_default_scanout(AddressSpace& memory);
 
-private:
+  private:
     struct Buffer {
         std::uint32_t client{};
         std::uint32_t id{};
@@ -53,16 +54,33 @@ private:
         bool owns_memory{};
         std::vector<std::uint32_t> preserved_exit_snapshot_pixels;
     };
+    struct CreateRequest {
+        std::uint32_t dictionary{};
+        std::array<std::uint32_t, 7> properties{};
+        std::size_t property_index{};
+        std::uint32_t number_output{};
+    };
 
     void dispatch(UserlandHleCall& call);
-    [[nodiscard]] std::uint32_t create_default_buffer(
-        UserlandHleCall& call, std::uint32_t requested_id = 0);
-    [[nodiscard]] std::uint32_t wrap_client_memory(
-        UserlandHleCall& call, std::uint32_t base, std::uint32_t size);
-    [[nodiscard]] std::uint32_t create_buffer(
-        UserlandHleCall& call, std::uint32_t base, std::uint32_t size,
-        std::uint32_t width, std::uint32_t height, bool owns_memory,
-        std::uint32_t requested_id = 0, bool publish = true);
+    void create_from_dictionary(UserlandHleCall& call,
+                                std::uint32_t dictionary);
+    void
+    read_next_create_property(UserlandHleCall& call,
+                              const std::shared_ptr<CreateRequest>& request);
+    void finish_create_from_dictionary(
+        UserlandHleCall& call, const std::shared_ptr<CreateRequest>& request);
+    [[nodiscard]] std::uint32_t
+    create_default_buffer(UserlandHleCall& call,
+                          std::uint32_t requested_id = 0);
+    [[nodiscard]] std::uint32_t wrap_client_memory(UserlandHleCall& call,
+                                                   std::uint32_t base,
+                                                   std::uint32_t size);
+    [[nodiscard]] std::uint32_t
+    create_buffer(UserlandHleCall& call, std::uint32_t base, std::uint32_t size,
+                  std::uint32_t width, std::uint32_t height,
+                  std::uint32_t bytes_per_row, std::uint32_t pixel_format,
+                  bool owns_memory, std::uint32_t requested_id = 0,
+                  bool publish = true);
     [[nodiscard]] Buffer* find(std::uint32_t client);
     void submit(Buffer& buffer, UserlandHleCall& call);
 
@@ -78,4 +96,4 @@ private:
     std::shared_ptr<SceneCoordinator> scene_coordinator_;
 };
 
-}  // namespace ilegacysim
+} // namespace ilegacysim
