@@ -1,18 +1,22 @@
 #include "ilemu/mobile_framebuffer_hle.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include "ilemu/address_space.hpp"
 #include "ilemu/core_surface_abi.hpp"
 #include "ilemu/display.hpp"
+#include "ilemu/gles_renderer.hpp"
 #include "ilemu/iokit_abi.hpp"
 #include "ilemu/kernel_shared_state.hpp"
 #include "ilemu/mobile_framebuffer_abi.hpp"
@@ -28,6 +32,7 @@ namespace {
 constexpr std::string_view framebuffer_image{
     "/System/Library/Frameworks/IOMobileFramebuffer.framework/"
     "IOMobileFramebuffer"};
+std::atomic<std::uint64_t> next_scanout_surface{1};
 
 } // namespace
 
@@ -40,7 +45,9 @@ MobileFramebufferHle::MobileFramebufferHle(
                               : std::make_shared<SurfaceStore>()},
       presentation_tracker_{
           presentations ? std::move(presentations)
-                        : std::make_shared<PresentationTracker>()} {
+                        : std::make_shared<PresentationTracker>()},
+      host_graphics_{shared_gles_renderer()},
+      command_encoder_{host_graphics_->create_command_encoder()} {
   const auto add = [&](std::string symbol,
                        UserlandHleRegistry::Handler handler) {
     registry.register_function(std::string{framebuffer_image},
@@ -122,10 +129,18 @@ void MobileFramebufferHle::inherit_state(const MobileFramebufferHle &parent) {
   layers_ = parent.layers_;
   next_swap_id_ = parent.next_swap_id_;
   background_argb_ = parent.background_argb_;
+  scanout_surface_ = parent.scanout_surface_;
 }
 
 void MobileFramebufferHle::set_display(std::shared_ptr<DisplayState> display) {
   display_ = std::move(display);
+  if (scanout_surface_ && display_) {
+    const auto descriptor = scanout_surface_->descriptor();
+    if (descriptor.width != display_->width() ||
+        descriptor.height != display_->height()) {
+      scanout_surface_.reset();
+    }
+  }
 }
 
 void MobileFramebufferHle::set_shared_state(
@@ -163,6 +178,113 @@ bool MobileFramebufferHle::display_write_allowed(
 
 bool MobileFramebufferHle::has_active_layers() const {
   return !layers_.empty();
+}
+
+void MobileFramebufferHle::ensure_scanout_surface() {
+  if (!display_)
+    return;
+  if (scanout_surface_) {
+    const auto descriptor = scanout_surface_->descriptor();
+    if (descriptor.width == display_->width() &&
+        descriptor.height == display_->height()) {
+      return;
+    }
+  }
+  const auto pixels =
+      static_cast<std::size_t>(display_->width()) * display_->height();
+  const std::vector<std::uint32_t> initial(pixels, background_argb_);
+  scanout_surface_ = host_graphics_->create_surface(
+      {0x4d464253U,
+       next_scanout_surface.fetch_add(1, std::memory_order_relaxed)},
+      HostSurfaceDescriptor{display_->width(), display_->height(),
+                            display_->width() *
+                                core_surface_abi::bytes_per_bgra_pixel,
+                            surface_pixel_format_bgra},
+      initial);
+}
+
+bool MobileFramebufferHle::submit_host_layers() {
+  if (!display_ || !host_graphics_->accelerated() || !command_encoder_)
+    return false;
+  ensure_scanout_surface();
+  if (!scanout_surface_ ||
+      !command_encoder_->fill(
+          scanout_surface_,
+          {0, 0, display_->width(), display_->height()},
+          background_argb_)) {
+    return false;
+  }
+  const auto exact_rectangle = [](const Rectangle &rectangle)
+      -> std::optional<HostRectangle> {
+    const auto exact = [](float value) {
+      return std::isfinite(value) && std::trunc(value) == value;
+    };
+    if (!exact(rectangle.x) || !exact(rectangle.y) ||
+        !exact(rectangle.width) || !exact(rectangle.height) ||
+        rectangle.x < 0.0F || rectangle.y < 0.0F ||
+        rectangle.width <= 0.0F || rectangle.height <= 0.0F ||
+        rectangle.x >
+            static_cast<float>(std::numeric_limits<std::int32_t>::max()) ||
+        rectangle.y >
+            static_cast<float>(std::numeric_limits<std::int32_t>::max()) ||
+        rectangle.width >
+            static_cast<float>(std::numeric_limits<std::uint32_t>::max()) ||
+        rectangle.height >
+            static_cast<float>(std::numeric_limits<std::uint32_t>::max())) {
+      return std::nullopt;
+    }
+    return HostRectangle{
+        static_cast<std::int32_t>(rectangle.x),
+        static_cast<std::int32_t>(rectangle.y),
+        static_cast<std::uint32_t>(rectangle.width),
+        static_cast<std::uint32_t>(rectangle.height)};
+  };
+  for (const auto &[layer, state] : layers_) {
+    static_cast<void>(layer);
+    const auto backing = surface_store_->find(state.surface_id);
+    const auto source = surface_store_->host_surface(state.surface_id);
+    const auto source_rectangle = exact_rectangle(state.source);
+    const auto destination_rectangle = exact_rectangle(state.destination);
+    if (!backing || backing->pixel_format != surface_pixel_format_bgra ||
+        !source || !source_rectangle || !destination_rectangle ||
+        static_cast<std::uint32_t>(source_rectangle->x) >
+            backing->width - std::min(backing->width,
+                                      source_rectangle->width) ||
+        source_rectangle->width > backing->width ||
+        static_cast<std::uint32_t>(source_rectangle->y) >
+            backing->height - std::min(backing->height,
+                                       source_rectangle->height) ||
+        source_rectangle->height > backing->height ||
+        static_cast<std::uint32_t>(destination_rectangle->x) >
+            display_->width() -
+                std::min(display_->width(), destination_rectangle->width) ||
+        destination_rectangle->width > display_->width() ||
+        static_cast<std::uint32_t>(destination_rectangle->y) >
+            display_->height() -
+                std::min(display_->height(),
+                         destination_rectangle->height) ||
+        destination_rectangle->height > display_->height() ||
+        !command_encoder_->copy(
+            source, scanout_surface_, *source_rectangle,
+            *destination_rectangle,
+            HostCompositeMode::PremultipliedSourceOver, 0xffU,
+            HostFilter::Nearest)) {
+      return false;
+    }
+  }
+  if (!command_encoder_->submit())
+    return false;
+  auto graphics = host_graphics_;
+  auto scanout = scanout_surface_;
+  display_->replace_surface(
+      scanout,
+      [graphics, scanout] {
+        if (!graphics->map_cpu(*scanout, true))
+          return std::vector<std::uint32_t>{};
+        auto mapping = scanout->map_cpu(false);
+        return mapping.frame().pixels;
+      });
+  return true;
 }
 
 void MobileFramebufferHle::set_layer(UserlandHleCall &call) {
@@ -226,6 +348,8 @@ void MobileFramebufferHle::set_layer(UserlandHleCall &call) {
 
 void MobileFramebufferHle::submit_layers(UserlandHleCall &call) {
   if (display_ == nullptr)
+    return;
+  if (submit_host_layers())
     return;
   const auto geometry = display_->geometry();
   std::vector<std::uint32_t> composed(

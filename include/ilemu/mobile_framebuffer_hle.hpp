@@ -5,9 +5,12 @@
 #include <map>
 #include <memory>
 
+#include "ilemu/host_graphics.hpp"
+
 namespace ilemu {
 
 class DisplayState;
+class GlesRenderer;
 class PresentationTracker;
 class SceneCoordinator;
 struct KernelSharedState;
@@ -37,6 +40,8 @@ private:
     void submit_layers(UserlandHleCall& call);
     void record_presentation(UserlandHleCall& call);
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
+    [[nodiscard]] bool submit_host_layers();
+    void ensure_scanout_surface();
 
     struct Rectangle {
         float x{};
@@ -56,6 +61,9 @@ private:
     std::shared_ptr<PresentationTracker> presentation_tracker_;
     std::shared_ptr<KernelSharedState> shared_state_;
     std::shared_ptr<SceneCoordinator> scene_coordinator_;
+    std::shared_ptr<GlesRenderer> host_graphics_;
+    std::unique_ptr<CommandEncoder> command_encoder_;
+    std::shared_ptr<HostSurface> scanout_surface_;
     std::map<std::uint32_t, LayerState> layers_;
     std::uint32_t next_swap_id_{1};
     std::uint32_t background_argb_{0xff000000U};

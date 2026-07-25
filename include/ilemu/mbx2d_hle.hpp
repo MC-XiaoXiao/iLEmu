@@ -8,6 +8,7 @@
 #include <set>
 #include <vector>
 
+#include "ilemu/host_graphics.hpp"
 #include "ilemu/mbx2d_abi.hpp"
 #include "ilemu/surface_store.hpp"
 
@@ -16,6 +17,7 @@ namespace ilemu {
 class UserlandHleCall;
 class UserlandHleRegistry;
 class DisplayState;
+class GlesRenderer;
 class PresentationTracker;
 
 // User-mode compatibility implementation for the MBX2D API consumed by
@@ -69,7 +71,9 @@ private:
     std::set<std::uint32_t> enabled_features;
   };
   struct ResolvedSurface {
+    std::uint32_t core_surface_id{};
     std::optional<SurfaceStore::Backing> backing;
+    std::shared_ptr<HostSurface> host_surface;
     bool framebuffer{};
     std::uint32_t width{};
     std::uint32_t height{};
@@ -140,6 +144,9 @@ private:
                  const std::vector<std::uint32_t> &source,
                  std::int64_t &output_width, std::int64_t &output_height,
                  UserlandHleCall &call);
+  [[nodiscard]] std::optional<HostCompositeMode>
+  host_composite_mode(const RenderState &state) const;
+  [[nodiscard]] bool submit_host_commands(bool wait);
   void submit_destination(UserlandHleCall &call, bool context_api);
   void deferred(UserlandHleCall &call);
 
@@ -160,6 +167,8 @@ private:
   std::shared_ptr<DisplayState> display_;
   std::shared_ptr<SurfaceStore> surface_store_;
   std::shared_ptr<PresentationTracker> presentation_tracker_;
+  std::shared_ptr<GlesRenderer> host_graphics_;
+  std::unique_ptr<CommandEncoder> command_encoder_;
 };
 
 } // namespace ilemu
