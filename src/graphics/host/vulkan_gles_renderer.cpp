@@ -34,17 +34,8 @@ namespace {
 
 constexpr VkFormat color_format = VK_FORMAT_B8G8R8A8_UNORM;
 constexpr std::uint64_t fence_timeout_nanoseconds = 5'000'000'000ULL;
-
-std::uint64_t pixel_hash(std::span<const std::uint32_t> pixels,
-                         std::uint32_t width, std::uint32_t height) {
-    auto hash = 1469598103934665603ULL;
-    for (const auto pixel : pixels) {
-        hash ^= pixel;
-        hash *= 1099511628211ULL;
-    }
-    hash ^= static_cast<std::uint64_t>(width) << 32U | height;
-    return hash;
-}
+constexpr std::size_t maximum_batch_draws = 128;
+constexpr VkDeviceSize minimum_vertex_arena_bytes = 1U << 20U;
 
 constexpr std::string_view vertex_shader_source = R"(
 #version 450
@@ -321,6 +312,7 @@ class VulkanGlesRenderer final : public GlesRenderer {
         VkBuffer buffer{};
         VkDeviceMemory memory{};
         VkDeviceSize size{};
+        void* mapped{};
         bool coherent{};
 
         Buffer() = default;
@@ -349,6 +341,23 @@ class VulkanGlesRenderer final : public GlesRenderer {
         ~Image();
     };
 
+    struct TextureKey {
+        std::uintptr_t owner{};
+        std::uint32_t name{};
+        bool rectangle{};
+
+        auto operator<=>(const TextureKey&) const = default;
+    };
+
+    struct CachedTexture {
+        Image image;
+        Buffer upload;
+        std::uint64_t revision{};
+        std::uint64_t last_used{};
+        std::uint64_t last_upload_batch{};
+        std::uint64_t last_draw_batch{};
+    };
+
     [[nodiscard]] std::uint32_t
     find_memory_type(std::uint32_t candidates, VkMemoryPropertyFlags required,
                      VkMemoryPropertyFlags preferred = 0) const;
@@ -362,10 +371,12 @@ class VulkanGlesRenderer final : public GlesRenderer {
     void ensure_buffer(Buffer& buffer, VkDeviceSize size,
                        VkBufferUsageFlags usage) const;
     void ensure_target(std::uint32_t width, std::uint32_t height);
-    void ensure_texture(std::size_t index, std::uint32_t width,
-                        std::uint32_t height, bool rectangle);
-    void upload(Buffer& buffer, const void* data, std::size_t size) const;
+    void upload(Buffer& buffer, const void* data, std::size_t size,
+                VkDeviceSize offset = 0) const;
     void download(Buffer& buffer, void* destination, std::size_t size) const;
+    void begin_commands();
+    void submit_commands();
+    void discard_commands() noexcept;
     [[nodiscard]] VkShaderModule
     create_shader_module(std::span<const std::uint32_t> code) const;
     [[nodiscard]] VkPipeline pipeline(const PipelineKey& key);
@@ -397,7 +408,7 @@ class VulkanGlesRenderer final : public GlesRenderer {
     VkDescriptorSetLayout descriptor_layout_{};
     VkPipelineLayout pipeline_layout_{};
     VkDescriptorPool descriptor_pool_{};
-    VkDescriptorSet descriptor_{};
+    std::array<VkDescriptorSet, maximum_batch_draws> descriptors_{};
     VkShaderModule vertex_shader_{};
     VkShaderModule fragment_shader_{};
     std::map<PipelineKey, VkPipeline> pipelines_;
@@ -405,16 +416,19 @@ class VulkanGlesRenderer final : public GlesRenderer {
     Buffer target_download_;
     Buffer vertex_buffer_;
     Buffer uniform_buffer_;
-    std::array<Buffer, gles_abi::texture_unit_count> texture_uploads_;
     Image target_image_;
-    std::array<Image, gles_abi::texture_unit_count> texture_images_;
+    std::map<TextureKey, CachedTexture> texture_cache_;
+    std::uint64_t texture_use_sequence_{};
+    std::uint64_t batch_sequence_{1};
+    VkDeviceSize uniform_stride_{};
+    VkDeviceSize vertex_bytes_used_{};
+    std::size_t batch_draw_count_{};
+    bool command_recording_{};
     VkFramebuffer framebuffer_{};
     bool target_valid_{};
-    std::uint64_t target_cpu_hash_{};
+    bool target_dirty_{};
     VkImageLayout target_layout_{VK_IMAGE_LAYOUT_UNDEFINED};
     std::optional<GlesRenderTargetKey> active_target_;
-    std::array<bool, gles_abi::texture_unit_count> texture_initialized_{};
-    std::array<std::uint64_t, gles_abi::texture_unit_count> texture_hashes_{};
     std::string renderer_name_;
     std::mutex mutex_;
 };
@@ -424,12 +438,15 @@ VulkanGlesRenderer::Buffer::Buffer(Buffer&& other) noexcept
       buffer{std::exchange(other.buffer, VK_NULL_HANDLE)},
       memory{std::exchange(other.memory, VK_NULL_HANDLE)},
       size{std::exchange(other.size, 0)},
+      mapped{std::exchange(other.mapped, nullptr)},
       coherent{std::exchange(other.coherent, false)} {}
 
 VulkanGlesRenderer::Buffer&
 VulkanGlesRenderer::Buffer::operator=(Buffer&& other) noexcept {
     if (this == &other)
         return *this;
+    if (mapped != nullptr)
+        vkUnmapMemory(device, memory);
     if (buffer != VK_NULL_HANDLE)
         vkDestroyBuffer(device, buffer, nullptr);
     if (memory != VK_NULL_HANDLE)
@@ -438,11 +455,14 @@ VulkanGlesRenderer::Buffer::operator=(Buffer&& other) noexcept {
     buffer = std::exchange(other.buffer, VK_NULL_HANDLE);
     memory = std::exchange(other.memory, VK_NULL_HANDLE);
     size = std::exchange(other.size, 0);
+    mapped = std::exchange(other.mapped, nullptr);
     coherent = std::exchange(other.coherent, false);
     return *this;
 }
 
 VulkanGlesRenderer::Buffer::~Buffer() {
+    if (mapped != nullptr)
+        vkUnmapMemory(device, memory);
     if (buffer != VK_NULL_HANDLE)
         vkDestroyBuffer(device, buffer, nullptr);
     if (memory != VK_NULL_HANDLE)
@@ -571,6 +591,14 @@ VulkanGlesRenderer::VulkanGlesRenderer() {
                 "Vulkan exposes no hardware graphics queue"};
         }
 
+        VkPhysicalDeviceProperties physical_properties{};
+        vkGetPhysicalDeviceProperties(physical_device_, &physical_properties);
+        const auto uniform_alignment =
+            std::max<VkDeviceSize>(
+                1, physical_properties.limits.minUniformBufferOffsetAlignment);
+        uniform_stride_ =
+            (sizeof(GpuFixedFunctionState) + uniform_alignment - 1U) &
+            ~(uniform_alignment - 1U);
         vkGetPhysicalDeviceMemoryProperties(physical_device_,
                                             &memory_properties_);
         constexpr float queue_priority = 1.0F;
@@ -676,14 +704,18 @@ VulkanGlesRenderer::VulkanGlesRenderer() {
                         "vkCreatePipelineLayout");
 
         std::array<VkDescriptorPoolSize, 2> pool_sizes{};
-        pool_sizes[0] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1};
+        pool_sizes[0] = {
+            VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+            static_cast<std::uint32_t>(maximum_batch_draws)};
         pool_sizes[1] = {
             VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            static_cast<std::uint32_t>(gles_abi::texture_unit_count)};
+            static_cast<std::uint32_t>(maximum_batch_draws *
+                                       gles_abi::texture_unit_count)};
         auto descriptor_pool_info =
             make_vulkan_structure<VkDescriptorPoolCreateInfo>(
                 VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO);
-        descriptor_pool_info.maxSets = 1;
+        descriptor_pool_info.maxSets =
+            static_cast<std::uint32_t>(maximum_batch_draws);
         descriptor_pool_info.poolSizeCount =
             static_cast<std::uint32_t>(pool_sizes.size());
         descriptor_pool_info.pPoolSizes = pool_sizes.data();
@@ -694,10 +726,14 @@ VulkanGlesRenderer::VulkanGlesRenderer() {
             make_vulkan_structure<VkDescriptorSetAllocateInfo>(
                 VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO);
         descriptor_info.descriptorPool = descriptor_pool_;
-        descriptor_info.descriptorSetCount = 1;
-        descriptor_info.pSetLayouts = &descriptor_layout_;
+        std::array<VkDescriptorSetLayout, maximum_batch_draws> layouts;
+        layouts.fill(descriptor_layout_);
+        descriptor_info.descriptorSetCount =
+            static_cast<std::uint32_t>(descriptors_.size());
+        descriptor_info.pSetLayouts = layouts.data();
         require_success(
-            vkAllocateDescriptorSets(device_, &descriptor_info, &descriptor_),
+            vkAllocateDescriptorSets(device_, &descriptor_info,
+                                     descriptors_.data()),
             "vkAllocateDescriptorSets");
 
         vertex_shader_ = create_shader_module(vertex_code);
@@ -720,16 +756,11 @@ void VulkanGlesRenderer::destroy() noexcept {
             framebuffer_ = VK_NULL_HANDLE;
         }
         target_image_ = {};
-        for (auto& image : texture_images_) {
-            image = {};
-        }
+        texture_cache_.clear();
         target_upload_ = {};
         target_download_ = {};
         vertex_buffer_ = {};
         uniform_buffer_ = {};
-        for (auto& buffer : texture_uploads_) {
-            buffer = {};
-        }
         active_target_.reset();
         for (const auto& [key, value] : pipelines_) {
             static_cast<void>(key);
@@ -823,6 +854,10 @@ VulkanGlesRenderer::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
     require_success(
         vkBindBufferMemory(device_, result.buffer, result.memory, 0),
         "vkBindBufferMemory");
+    require_success(
+        vkMapMemory(device_, result.memory, 0, VK_WHOLE_SIZE, 0,
+                    &result.mapped),
+        "vkMapMemory(buffer)");
     return result;
 }
 
@@ -934,35 +969,16 @@ void VulkanGlesRenderer::ensure_target(std::uint32_t width,
         vkCreateFramebuffer(device_, &framebuffer_info, nullptr, &framebuffer_),
         "vkCreateFramebuffer");
     target_valid_ = false;
-    target_cpu_hash_ = 0;
+    target_dirty_ = false;
     target_layout_ = VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
-void VulkanGlesRenderer::ensure_texture(std::size_t index, std::uint32_t width,
-                                        std::uint32_t height, bool rectangle) {
-    auto& image = texture_images_.at(index);
-    if (image.image != VK_NULL_HANDLE && image.width == width &&
-        image.height == height && image.rectangle == rectangle) {
-        return;
-    }
-    image = create_image(width, height,
-                         VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                             VK_IMAGE_USAGE_SAMPLED_BIT,
-                         true, rectangle);
-    texture_initialized_.at(index) = false;
-    texture_hashes_.at(index) = 0;
-}
-
 void VulkanGlesRenderer::upload(Buffer& buffer, const void* data,
-                                std::size_t size) const {
-    if (size > buffer.size) {
+                                std::size_t size, VkDeviceSize offset) const {
+    if (offset > buffer.size || size > buffer.size - offset) {
         throw std::runtime_error{"Vulkan buffer upload exceeds allocation"};
     }
-    void* mapped{};
-    require_success(vkMapMemory(device_, buffer.memory, 0,
-                                static_cast<VkDeviceSize>(size), 0, &mapped),
-                    "vkMapMemory(upload)");
-    std::memcpy(mapped, data, size);
+    std::memcpy(static_cast<std::byte*>(buffer.mapped) + offset, data, size);
     if (!buffer.coherent) {
         auto range = make_vulkan_structure<VkMappedMemoryRange>(
             VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE);
@@ -972,7 +988,6 @@ void VulkanGlesRenderer::upload(Buffer& buffer, const void* data,
         require_success(vkFlushMappedMemoryRanges(device_, 1, &range),
                         "vkFlushMappedMemoryRanges");
     }
-    vkUnmapMemory(device_, buffer.memory);
 }
 
 void VulkanGlesRenderer::download(Buffer& buffer, void* destination,
@@ -980,10 +995,6 @@ void VulkanGlesRenderer::download(Buffer& buffer, void* destination,
     if (size > buffer.size) {
         throw std::runtime_error{"Vulkan buffer download exceeds allocation"};
     }
-    void* mapped{};
-    require_success(vkMapMemory(device_, buffer.memory, 0,
-                                static_cast<VkDeviceSize>(size), 0, &mapped),
-                    "vkMapMemory(download)");
     if (!buffer.coherent) {
         auto range = make_vulkan_structure<VkMappedMemoryRange>(
             VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE);
@@ -993,8 +1004,56 @@ void VulkanGlesRenderer::download(Buffer& buffer, void* destination,
         require_success(vkInvalidateMappedMemoryRanges(device_, 1, &range),
                         "vkInvalidateMappedMemoryRanges");
     }
-    std::memcpy(destination, mapped, size);
-    vkUnmapMemory(device_, buffer.memory);
+    std::memcpy(destination, buffer.mapped, size);
+}
+
+void VulkanGlesRenderer::begin_commands() {
+    if (command_recording_)
+        return;
+    require_success(vkResetCommandBuffer(command_buffer_, 0),
+                    "vkResetCommandBuffer");
+    auto begin = make_vulkan_structure<VkCommandBufferBeginInfo>(
+        VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
+    begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    require_success(vkBeginCommandBuffer(command_buffer_, &begin),
+                    "vkBeginCommandBuffer");
+    command_recording_ = true;
+}
+
+void VulkanGlesRenderer::submit_commands() {
+    if (!command_recording_)
+        return;
+    require_success(vkEndCommandBuffer(command_buffer_), "vkEndCommandBuffer");
+    command_recording_ = false;
+    require_success(vkResetFences(device_, 1, &fence_), "vkResetFences");
+    auto submit =
+        make_vulkan_structure<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &command_buffer_;
+    require_success(vkQueueSubmit(queue_, 1, &submit, fence_), "vkQueueSubmit");
+    require_success(vkWaitForFences(device_, 1, &fence_, VK_TRUE,
+                                    fence_timeout_nanoseconds),
+                    "vkWaitForFences");
+    batch_draw_count_ = 0;
+    vertex_bytes_used_ = 0;
+    if (++batch_sequence_ == 0)
+        batch_sequence_ = 1;
+}
+
+void VulkanGlesRenderer::discard_commands() noexcept {
+    for (auto& [key, texture] : texture_cache_) {
+        static_cast<void>(key);
+        if (texture.last_upload_batch == batch_sequence_)
+            texture.revision = 0;
+    }
+    if (command_recording_) {
+        static_cast<void>(vkResetCommandBuffer(command_buffer_, 0));
+        command_recording_ = false;
+    }
+    batch_draw_count_ = 0;
+    vertex_bytes_used_ = 0;
+    if (++batch_sequence_ == 0)
+        batch_sequence_ = 1;
 }
 
 VkShaderModule VulkanGlesRenderer::create_shader_module(
@@ -1255,22 +1314,87 @@ void VulkanGlesRenderer::transition_image(
 
 bool VulkanGlesRenderer::synchronize(DisplayFrame& frame,
                                      GlesRenderTargetKey target) {
-    static_cast<void>(frame);
-    static_cast<void>(target);
-    return true;
+    std::lock_guard lock{mutex_};
+    if (!active_target_ || *active_target_ != target || !target_valid_ ||
+        !target_dirty_) {
+        return true;
+    }
+    if (frame.width != target_image_.width ||
+        frame.height != target_image_.height ||
+        frame.pixels.size() !=
+            static_cast<std::size_t>(frame.width) * frame.height) {
+        return false;
+    }
+
+    try {
+        const auto frame_bytes =
+            static_cast<VkDeviceSize>(frame.pixels.size()) *
+            sizeof(std::uint32_t);
+        ensure_buffer(target_download_, frame_bytes,
+                      VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+        begin_commands();
+        if (target_layout_ != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+            transition_image(command_buffer_, target_image_.image,
+                             target_layout_,
+                             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                             VK_ACCESS_TRANSFER_READ_BIT);
+        }
+        VkBufferImageCopy copy{};
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageExtent = {frame.width, frame.height, 1};
+        vkCmdCopyImageToBuffer(command_buffer_, target_image_.image,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               target_download_.buffer, 1, &copy);
+        auto host_barrier = make_vulkan_structure<VkBufferMemoryBarrier>(
+            VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER);
+        host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+        host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        host_barrier.buffer = target_download_.buffer;
+        host_barrier.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(command_buffer_, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
+                             &host_barrier, 0, nullptr);
+        submit_commands();
+        download(target_download_, frame.pixels.data(),
+                 static_cast<std::size_t>(frame_bytes));
+        target_layout_ = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+        target_dirty_ = false;
+        return true;
+    } catch (...) {
+        vkDeviceWaitIdle(device_);
+        discard_commands();
+        for (auto& [key, texture] : texture_cache_) {
+            static_cast<void>(key);
+            texture.revision = 0;
+        }
+        target_valid_ = false;
+        target_dirty_ = false;
+        return false;
+    }
 }
 
 void VulkanGlesRenderer::invalidate(GlesRenderTargetKey target) {
     std::lock_guard lock{mutex_};
-    if (active_target_ && *active_target_ == target)
+    if (active_target_ && *active_target_ == target) {
+        discard_commands();
         target_valid_ = false;
+        target_dirty_ = false;
+    }
 }
 
 void VulkanGlesRenderer::release(GlesRenderTargetKey target) {
     std::lock_guard lock{mutex_};
     if (active_target_ && *active_target_ == target) {
+        discard_commands();
         active_target_.reset();
         target_valid_ = false;
+        target_dirty_ = false;
     }
 }
 
@@ -1339,15 +1463,17 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                 static_cast<std::uint8_t>(1U << component);
         }
     }
-    bool submitted = false;
     try {
         const auto selected_pipeline = pipeline(pipeline_key);
         if (selected_pipeline == VK_NULL_HANDLE)
             return false;
 
         if (!active_target_ || *active_target_ != target) {
+            if (command_recording_ || target_dirty_)
+                return false;
             active_target_ = target;
             target_valid_ = false;
+            target_dirty_ = false;
         }
 
         const auto frame_bytes =
@@ -1356,32 +1482,34 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         const auto vertex_bytes =
             static_cast<VkDeviceSize>(expanded.size()) * sizeof(GpuVertex);
         ensure_target(frame.width, frame.height);
-        const auto frame_hash =
-            pixel_hash(frame.pixels, frame.width, frame.height);
-        if (target_valid_ && frame_hash != target_cpu_hash_)
-            target_valid_ = false;
-        if (!target_valid_) {
-            ensure_buffer(target_upload_, frame_bytes,
-                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-            upload(target_upload_, frame.pixels.data(),
-                   static_cast<std::size_t>(frame_bytes));
+
+        constexpr std::size_t maximum_cached_textures = 256;
+        if (texture_cache_.size() >
+               maximum_cached_textures -
+                   gles_abi::texture_unit_count &&
+            command_recording_) {
+            submit_commands();
         }
-        ensure_buffer(target_download_, frame_bytes,
-                      VK_BUFFER_USAGE_TRANSFER_DST_BIT);
-        ensure_buffer(vertex_buffer_, vertex_bytes,
-                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-        ensure_buffer(uniform_buffer_, sizeof(GpuFixedFunctionState),
-                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
-        upload(vertex_buffer_, expanded.data(),
-               static_cast<std::size_t>(vertex_bytes));
-        const auto uniforms = fixed_function_state(state);
-        upload(uniform_buffer_, &uniforms, sizeof(uniforms));
+        while (texture_cache_.size() >
+               maximum_cached_textures -
+                   gles_abi::texture_unit_count) {
+            const auto oldest = std::min_element(
+                texture_cache_.begin(), texture_cache_.end(),
+                [](const auto& left, const auto& right) {
+                    return left.second.last_used < right.second.last_used;
+                });
+            if (oldest == texture_cache_.end())
+                break;
+            texture_cache_.erase(oldest);
+        }
 
         constexpr std::array<std::uint32_t, 1> white_pixel{0xffffffffU};
         std::array<bool, gles_abi::texture_unit_count> texture_changed{};
+        std::array<CachedTexture*, gles_abi::texture_unit_count>
+            selected_textures{};
         std::array<std::uint64_t, gles_abi::texture_unit_count>
-            texture_hashes{};
-        for (std::size_t index = 0; index < texture_images_.size(); ++index) {
+            texture_revisions{};
+        for (std::size_t index = 0; index < selected_textures.size(); ++index) {
             const auto& unit = state.texture_units[index];
             const GlesResourceStore::TextureLevel* level{};
             if (unit.enabled && unit.texture != 0 &&
@@ -1404,38 +1532,87 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                 level ? level->argb.data() : white_pixel.data();
             const auto byte_count = static_cast<VkDeviceSize>(width) * height *
                                     sizeof(std::uint32_t);
-            ensure_texture(index, width, height, unit.rectangle);
-            auto hash = pixel_hash(
-                std::span<const std::uint32_t>{
-                    pixels, static_cast<std::size_t>(width) * height},
-                width, height);
-            hash ^= unit.rectangle ? 0x9e3779b97f4a7c15ULL : 0;
-            texture_hashes[index] = hash;
+            const auto key = TextureKey{
+                level ? target.owner : 0, level ? unit.texture : 0,
+                unit.rectangle};
+            auto& cached = texture_cache_[key];
+            cached.last_used = ++texture_use_sequence_;
+            if (cached.image.image == VK_NULL_HANDLE ||
+                cached.image.width != width ||
+                cached.image.height != height) {
+                if (cached.image.image != VK_NULL_HANDLE &&
+                    cached.last_draw_batch == batch_sequence_) {
+                    submit_commands();
+                }
+                cached.image = create_image(
+                    width, height,
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                        VK_IMAGE_USAGE_SAMPLED_BIT,
+                    true, unit.rectangle);
+                cached.revision = 0;
+            }
+            selected_textures[index] = &cached;
+            texture_revisions[index] = level ? level->revision : 1;
             texture_changed[index] =
-                !texture_initialized_[index] || texture_hashes_[index] != hash;
+                cached.revision != texture_revisions[index];
+            if (texture_changed[index] &&
+                cached.last_upload_batch == batch_sequence_) {
+                submit_commands();
+            }
+            for (std::size_t previous = 0; previous < index; ++previous) {
+                if (selected_textures[previous] == &cached) {
+                    texture_changed[index] = false;
+                    break;
+                }
+            }
             if (texture_changed[index]) {
-                ensure_buffer(texture_uploads_[index], byte_count,
+                ensure_buffer(cached.upload, byte_count,
                               VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-                upload(texture_uploads_[index], pixels,
+                upload(cached.upload, pixels,
                        static_cast<std::size_t>(byte_count));
             }
         }
 
-        require_success(vkResetFences(device_, 1, &fence_), "vkResetFences");
-        require_success(vkResetCommandBuffer(command_buffer_, 0),
-                        "vkResetCommandBuffer");
-        VkDescriptorBufferInfo uniform_info{uniform_buffer_.buffer, 0,
-                                            sizeof(GpuFixedFunctionState)};
+        if (batch_draw_count_ == maximum_batch_draws)
+            submit_commands();
+        if (vertex_buffer_.buffer == VK_NULL_HANDLE ||
+            vertex_bytes > vertex_buffer_.size - vertex_bytes_used_) {
+            submit_commands();
+            ensure_buffer(vertex_buffer_,
+                          std::max(vertex_bytes, minimum_vertex_arena_bytes),
+                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        }
+        ensure_buffer(uniform_buffer_,
+                      uniform_stride_ * maximum_batch_draws,
+                      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+        const auto vertex_offset = vertex_bytes_used_;
+        const auto uniform_offset =
+            uniform_stride_ * static_cast<VkDeviceSize>(batch_draw_count_);
+        upload(vertex_buffer_, expanded.data(),
+               static_cast<std::size_t>(vertex_bytes), vertex_offset);
+        const auto uniforms = fixed_function_state(state);
+        upload(uniform_buffer_, &uniforms, sizeof(uniforms), uniform_offset);
+        if (!target_valid_) {
+            ensure_buffer(target_upload_, frame_bytes,
+                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+            upload(target_upload_, frame.pixels.data(),
+                   static_cast<std::size_t>(frame_bytes));
+        }
+
+        const auto descriptor = descriptors_[batch_draw_count_];
+        VkDescriptorBufferInfo uniform_info{
+            uniform_buffer_.buffer, uniform_offset,
+            sizeof(GpuFixedFunctionState)};
         std::array<VkDescriptorImageInfo, gles_abi::texture_unit_count>
             image_infos{};
         for (std::size_t index = 0; index < image_infos.size(); ++index) {
-            image_infos[index] = {texture_images_[index].sampler,
-                                  texture_images_[index].view,
+            const auto& image = selected_textures[index]->image;
+            image_infos[index] = {image.sampler, image.view,
                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         }
         std::array<VkWriteDescriptorSet, 3> writes{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[0].dstSet = descriptor_;
+        writes[0].dstSet = descriptor;
         writes[0].dstBinding = 0;
         writes[0].descriptorCount = 1;
         writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
@@ -1443,7 +1620,7 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         for (std::uint32_t index = 0; index < image_infos.size(); ++index) {
             auto& write = writes[index + 1U];
             write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            write.dstSet = descriptor_;
+            write.dstSet = descriptor;
             write.dstBinding = index + 1U;
             write.descriptorCount = 1;
             write.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
@@ -1453,11 +1630,7 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                                static_cast<std::uint32_t>(writes.size()),
                                writes.data(), 0, nullptr);
 
-        auto begin = make_vulkan_structure<VkCommandBufferBeginInfo>(
-            VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO);
-        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        require_success(vkBeginCommandBuffer(command_buffer_, &begin),
-                        "vkBeginCommandBuffer");
+        begin_commands();
         if (!target_valid_) {
             auto source_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
             VkAccessFlags source_access{};
@@ -1489,6 +1662,8 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                              VK_ACCESS_TRANSFER_WRITE_BIT,
                              VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
                                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+            target_valid_ = true;
+            target_layout_ = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         } else if (target_layout_ != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
             transition_image(command_buffer_, target_image_.image,
                              target_layout_,
@@ -1498,29 +1673,31 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                              VK_ACCESS_TRANSFER_READ_BIT,
                              VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
                                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+            target_layout_ = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         }
-        for (std::size_t index = 0; index < texture_images_.size(); ++index) {
+        for (std::size_t index = 0; index < selected_textures.size(); ++index) {
             if (!texture_changed[index])
                 continue;
-            auto& image = texture_images_[index];
+            auto& texture = *selected_textures[index];
+            auto& image = texture.image;
             transition_image(
                 command_buffer_, image.image,
-                texture_initialized_[index]
+                texture.revision != 0
                     ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                     : VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                texture_initialized_[index]
+                texture.revision != 0
                     ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
                     : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                 VK_PIPELINE_STAGE_TRANSFER_BIT,
-                texture_initialized_[index] ? VK_ACCESS_SHADER_READ_BIT : 0,
+                texture.revision != 0 ? VK_ACCESS_SHADER_READ_BIT : 0,
                 VK_ACCESS_TRANSFER_WRITE_BIT);
             VkBufferImageCopy copy{};
             copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             copy.imageSubresource.layerCount = 1;
             copy.imageExtent = {image.width, image.height, 1};
             vkCmdCopyBufferToImage(
-                command_buffer_, texture_uploads_[index].buffer, image.image,
+                command_buffer_, texture.upload.buffer, image.image,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
             transition_image(command_buffer_, image.image,
                              VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
@@ -1529,6 +1706,8 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                              VK_ACCESS_TRANSFER_WRITE_BIT,
                              VK_ACCESS_SHADER_READ_BIT);
+            texture.revision = texture_revisions[index];
+            texture.last_upload_batch = batch_sequence_;
         }
 
         auto render_begin = make_vulkan_structure<VkRenderPassBeginInfo>(
@@ -1540,12 +1719,11 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                              VK_SUBPASS_CONTENTS_INLINE);
         vkCmdBindPipeline(command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           selected_pipeline);
-        constexpr VkDeviceSize vertex_offset = 0;
         vkCmdBindVertexBuffers(command_buffer_, 0, 1, &vertex_buffer_.buffer,
                                &vertex_offset);
         vkCmdBindDescriptorSets(
             command_buffer_, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_,
-            0, 1, &descriptor_, 0, nullptr);
+            0, 1, &descriptor, 0, nullptr);
         VkViewport viewport{};
         viewport.x = static_cast<float>(state.viewport_x);
         viewport.y = static_cast<float>(frame.height) -
@@ -1568,62 +1746,18 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         vkCmdDraw(command_buffer_, static_cast<std::uint32_t>(expanded.size()),
                   1, 0, 0);
         vkCmdEndRenderPass(command_buffer_);
-
-        transition_image(command_buffer_, target_image_.image,
-                         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                         VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT,
-                         VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                         VK_ACCESS_TRANSFER_READ_BIT);
-        VkBufferImageCopy readback_copy{};
-        readback_copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        readback_copy.imageSubresource.layerCount = 1;
-        readback_copy.imageExtent = {frame.width, frame.height, 1};
-        vkCmdCopyImageToBuffer(command_buffer_, target_image_.image,
-                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                               target_download_.buffer, 1, &readback_copy);
-        auto host_barrier = make_vulkan_structure<VkBufferMemoryBarrier>(
-            VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER);
-        host_barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        host_barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-        host_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        host_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        host_barrier.buffer = target_download_.buffer;
-        host_barrier.size = VK_WHOLE_SIZE;
-        vkCmdPipelineBarrier(command_buffer_, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
-                             &host_barrier, 0, nullptr);
-        require_success(vkEndCommandBuffer(command_buffer_),
-                        "vkEndCommandBuffer");
-        auto submit =
-            make_vulkan_structure<VkSubmitInfo>(VK_STRUCTURE_TYPE_SUBMIT_INFO);
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &command_buffer_;
-        require_success(vkQueueSubmit(queue_, 1, &submit, fence_),
-                        "vkQueueSubmit");
-        submitted = true;
-        require_success(vkWaitForFences(device_, 1, &fence_, VK_TRUE,
-                                        fence_timeout_nanoseconds),
-                        "vkWaitForFences");
-        submitted = false;
-        download(target_download_, frame.pixels.data(),
-                 static_cast<std::size_t>(frame_bytes));
-        target_valid_ = true;
-        target_cpu_hash_ = pixel_hash(frame.pixels, frame.width, frame.height);
-        target_layout_ = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        for (std::size_t index = 0; index < texture_images_.size(); ++index) {
-            if (texture_changed[index]) {
-                texture_initialized_[index] = true;
-                texture_hashes_[index] = texture_hashes[index];
-            }
-        }
+        target_dirty_ = true;
+        target_layout_ = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+        for (auto* texture : selected_textures)
+            texture->last_draw_batch = batch_sequence_;
+        ++batch_draw_count_;
+        vertex_bytes_used_ += vertex_bytes;
         return true;
     } catch (...) {
-        if (submitted) {
-            vkDeviceWaitIdle(device_);
-        }
-        texture_initialized_.fill(false);
+        vkDeviceWaitIdle(device_);
+        discard_commands();
+        target_valid_ = false;
+        target_dirty_ = false;
         return false;
     }
 }
