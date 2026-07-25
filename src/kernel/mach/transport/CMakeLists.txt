@@ -1,5 +1,5 @@
-add_library(ilegacysim_kernel_mach_transport STATIC
+add_library(ilemu_kernel_mach_transport STATIC
     descriptor.cpp)
-add_library(iLegacySim::kernel_mach_transport ALIAS
-    ilegacysim_kernel_mach_transport)
-ilegacysim_configure_module(ilegacysim_kernel_mach_transport)
+add_library(iLEmu::kernel_mach_transport ALIAS
+    ilemu_kernel_mach_transport)
+ilemu_configure_module(ilemu_kernel_mach_transport)

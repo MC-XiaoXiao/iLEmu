@@ -1,4 +1,4 @@
-#include "ilegacysim/baseband_replay.hpp"
+#include "ilemu/baseband_replay.hpp"
 
 #include <fstream>
 #include <iterator>
@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace ilegacysim::bsd::baseband_device {
+namespace ilemu::bsd::baseband_device {
 
 std::vector<std::byte> load_replay_file(const std::filesystem::path &path) {
   std::ifstream stream{path, std::ios::binary};
@@ -44,4 +44,4 @@ void write_capture_file(const std::filesystem::path &path,
   }
 }
 
-} // namespace ilegacysim::bsd::baseband_device
+} // namespace ilemu::bsd::baseband_device

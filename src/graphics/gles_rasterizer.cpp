@@ -1,4 +1,4 @@
-#include "ilegacysim/gles_rasterizer.hpp"
+#include "ilemu/gles_rasterizer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,11 +8,11 @@
 #include <span>
 #include <vector>
 
-#include "ilegacysim/display.hpp"
-#include "ilegacysim/gles_abi.hpp"
-#include "ilegacysim/gles_resources.hpp"
+#include "ilemu/display.hpp"
+#include "ilemu/gles_abi.hpp"
+#include "ilemu/gles_resources.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 struct ScreenVertex {
@@ -433,4 +433,4 @@ bool GlesSoftwareRasterizer::draw(DisplayState& display,
     return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

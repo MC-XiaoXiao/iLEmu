@@ -6,7 +6,7 @@ add_subdirectory(thread)
 add_subdirectory(vm)
 add_subdirectory(input)
 
-target_sources(ilegacysim_kernel PRIVATE
+target_sources(ilemu_kernel PRIVATE
     support.cpp
     ipc.cpp
     semaphore.cpp
@@ -17,11 +17,11 @@ target_sources(ilegacysim_kernel PRIVATE
     rights_message.cpp
     notification_message.cpp
     traps.cpp)
-target_link_libraries(ilegacysim_kernel PRIVATE
-    iLegacySim::kernel_mach_transport
-    iLegacySim::kernel_mach_port
-    iLegacySim::kernel_mach_processor
-    iLegacySim::kernel_mach_task
-    iLegacySim::kernel_mach_thread
-    iLegacySim::kernel_mach_vm
-    iLegacySim::kernel_mach_input)
+target_link_libraries(ilemu_kernel PRIVATE
+    iLEmu::kernel_mach_transport
+    iLEmu::kernel_mach_port
+    iLEmu::kernel_mach_processor
+    iLEmu::kernel_mach_task
+    iLEmu::kernel_mach_thread
+    iLEmu::kernel_mach_vm
+    iLEmu::kernel_mach_input)

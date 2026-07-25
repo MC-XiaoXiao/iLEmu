@@ -22,35 +22,35 @@
 
 #include <dynarmic/interface/A32/disassembler.h>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/baseband_replay.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/device_profile.hpp"
-#include "ilegacysim/display.hpp"
-#include "ilegacysim/frame_file_presenter.hpp"
-#include "ilegacysim/gdb_rsp.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/live_control.hpp"
-#include "ilegacysim/live_touch_scheduler.hpp"
-#include "ilegacysim/lockdown_profile.hpp"
-#include "ilegacysim/mach_thread_policy_abi.hpp"
-#include "ilegacysim/macho.hpp"
-#include "ilegacysim/network_preferences.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/process_loader.hpp"
-#include "ilegacysim/realtime_pacer.hpp"
-#include "ilegacysim/sdl_display.hpp"
-#include "ilegacysim/touch_replay.hpp"
-#include "ilegacysim/virtual_network.hpp"
-#include "ilegacysim/wifi_state.hpp"
-#include "ilegacysim/xnu_scheduler.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/baseband_replay.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/device_profile.hpp"
+#include "ilemu/display.hpp"
+#include "ilemu/frame_file_presenter.hpp"
+#include "ilemu/gdb_rsp.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/live_control.hpp"
+#include "ilemu/live_touch_scheduler.hpp"
+#include "ilemu/lockdown_profile.hpp"
+#include "ilemu/mach_thread_policy_abi.hpp"
+#include "ilemu/macho.hpp"
+#include "ilemu/network_preferences.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/process_loader.hpp"
+#include "ilemu/realtime_pacer.hpp"
+#include "ilemu/sdl_display.hpp"
+#include "ilemu/touch_replay.hpp"
+#include "ilemu/virtual_network.hpp"
+#include "ilemu/wifi_state.hpp"
+#include "ilemu/xnu_scheduler.hpp"
 #include "ffmpeg_audio_decoder.hpp"
 #include "sdl_audio_sink.hpp"
 
 namespace {
 
-using namespace ilegacysim;
+using namespace ilemu;
 
 constexpr std::size_t fault_stack_word_count = 32;
 constexpr std::size_t maximum_watchpoint_traces = 64;
@@ -334,12 +334,12 @@ private:
 
 std::string usage() {
   return "Usage:\n"
-         "  ilegacysim profile [--output FILE]\n"
-         "  ilegacysim inspect --rootfs DIR [--binary /sbin/launchd] "
+         "  ilemu profile [--output FILE]\n"
+         "  ilemu inspect --rootfs DIR [--binary /sbin/launchd] "
          "[--symbols SUBSTRING] [--output FILE]\n"
-         "  ilegacysim disasm --rootfs DIR --binary PATH "
+         "  ilemu disasm --rootfs DIR --binary PATH "
          "(--symbol NAME | --address ADDR) [--count N] [--thumb]\n"
-         "  ilegacysim boot --rootfs DIR [--binary /sbin/launchd] [--ticks N] "
+         "  ilemu boot --rootfs DIR [--binary /sbin/launchd] [--ticks N] "
          "[--cores N] [--watch-address ADDR] [--gdb PORT] "
          "[--display headless|sdl] [--network isolated|loopback|host] "
          "[--display-size WIDTHxHEIGHT] "
@@ -347,7 +347,7 @@ std::string usage() {
          "[--frame-output FILE] [--touch-replay FILE] [--control-stdin] "
          "[--baseband-input FILE] [--baseband-output FILE] "
          "[--output FILE]\n"
-         "  ilegacysim smoke [--cores N] [--output FILE]\n";
+         "  ilemu smoke [--cores N] [--output FILE]\n";
 }
 
 std::optional<std::string> option(const std::vector<std::string> &args,
@@ -1987,7 +1987,7 @@ int main(int argc, char **argv) {
     }
     return 0;
   } catch (const std::exception &error) {
-    std::cerr << "ilegacysim: " << error.what() << '\n';
+    std::cerr << "ilemu: " << error.what() << '\n';
     return 1;
   }
 }

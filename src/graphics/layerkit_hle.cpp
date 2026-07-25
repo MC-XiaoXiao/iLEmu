@@ -1,18 +1,18 @@
-#include "ilegacysim/layerkit_hle.hpp"
+#include "ilemu/layerkit_hle.hpp"
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/graphics_services_input.hpp"
-#include "ilegacysim/kernel_shared_state.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/scene_coordinator.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/graphics_services_input.hpp"
+#include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/scene_coordinator.hpp"
+#include "ilemu/userland_hle.hpp"
 
 #include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr const char *layerkit_image = "LayerKit.framework/LayerKit";
@@ -137,4 +137,4 @@ void LayerKitHle::inherit_state(const LayerKitHle &parent) {
   compatibility_ = parent.compatibility_;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

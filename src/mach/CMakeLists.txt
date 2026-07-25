@@ -1,8 +1,8 @@
-add_library(ilegacysim_mach STATIC
+add_library(ilemu_mach STATIC
     mach_namespace.cpp
     kernel_mach_ipc.cpp
     xnu_scheduler.cpp)
-add_library(iLegacySim::mach ALIAS ilegacysim_mach)
-ilegacysim_configure_module(ilegacysim_mach)
-target_link_libraries(ilegacysim_mach PUBLIC
-    iLegacySim::foundation iLegacySim::xnu_adapter)
+add_library(iLEmu::mach ALIAS ilemu_mach)
+ilemu_configure_module(ilemu_mach)
+target_link_libraries(ilemu_mach PUBLIC
+    iLEmu::foundation iLEmu::xnu_adapter)

@@ -1,7 +1,7 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/mach_port_mig_ids.hpp"
-#include "ilegacysim/mach_port_object.hpp"
+#include "ilemu/mach_port_mig_ids.hpp"
+#include "ilemu/mach_port_object.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,7 +13,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 using namespace mach_support;
@@ -171,4 +171,4 @@ bool CompatibilityKernel::dispatch_mach_port_membership_message(
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

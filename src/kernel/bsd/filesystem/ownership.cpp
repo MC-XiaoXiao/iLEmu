@@ -1,6 +1,6 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
+#include "ilemu/darwin_abi.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -11,7 +11,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t unchanged_identity =
@@ -227,4 +227,4 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
   }
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

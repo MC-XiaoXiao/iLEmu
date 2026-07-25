@@ -1,6 +1,6 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
+#include "ilemu/darwin_abi.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -8,7 +8,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 bool default_signal_is_ignored(std::uint32_t signal) {
@@ -160,4 +160,4 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu &cpu, std::uint32_t number) {
   }
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

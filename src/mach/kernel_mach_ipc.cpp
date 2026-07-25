@@ -1,10 +1,10 @@
-#include "ilegacysim/kernel_mach_ipc.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
+#include "ilemu/kernel_mach_ipc.hpp"
+#include "ilemu/mig_wire_abi.hpp"
 
 #include <array>
 #include <limits>
 
-namespace ilegacysim::mach_ipc {
+namespace ilemu::mach_ipc {
 namespace {
 
 std::uint32_t read_word(const std::vector<std::byte> &bytes,
@@ -128,4 +128,4 @@ prepare_received_message(const KernelSharedState::MachMessage &message,
   return result;
 }
 
-} // namespace ilegacysim::mach_ipc
+} // namespace ilemu::mach_ipc

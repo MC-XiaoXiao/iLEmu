@@ -1,6 +1,6 @@
-add_library(ilegacysim_app_runtime STATIC
+add_library(ilemu_app_runtime STATIC
     realtime_pacer.cpp)
-add_library(iLegacySim::app_runtime ALIAS ilegacysim_app_runtime)
-ilegacysim_configure_module(ilegacysim_app_runtime)
-target_link_libraries(ilegacysim_app_runtime PUBLIC
-    iLegacySim::foundation)
+add_library(iLEmu::app_runtime ALIAS ilemu_app_runtime)
+ilemu_configure_module(ilemu_app_runtime)
+target_link_libraries(ilemu_app_runtime PUBLIC
+    iLEmu::foundation)

@@ -1,6 +1,6 @@
-#include "ilegacysim/gdb_rsp.hpp"
+#include "ilemu/gdb_rsp.hpp"
 
-#include "ilegacysim/output.hpp"
+#include "ilemu/output.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,7 +17,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::size_t maximum_gdb_memory_transfer = 1024U * 1024U;
@@ -667,4 +667,4 @@ void GdbRemoteServer::detach() {
   close_client();
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

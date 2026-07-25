@@ -1,11 +1,11 @@
-#include "ilegacysim/gles_math.hpp"
+#include "ilemu/gles_math.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cmath>
 #include <utility>
 
-namespace ilegacysim {
+namespace ilemu {
 
 GlesMatrix::GlesMatrix()
     : values_{1.0F, 0.0F, 0.0F, 0.0F,
@@ -113,4 +113,4 @@ std::array<float, 4> GlesMatrix::transform(
     return result;
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

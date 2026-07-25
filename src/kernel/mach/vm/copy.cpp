@@ -1,7 +1,7 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/vm_map_mig_ids.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/vm_map_mig_ids.hpp"
 
 #include <cstdint>
 #include <string>
@@ -9,7 +9,7 @@
 #include "../support.hpp"
 #include "wire_reply.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t vm_copy_request_size =
@@ -76,4 +76,4 @@ bool CompatibilityKernel::dispatch_mach_vm_copy_message(
   return finish(kern_success);
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

@@ -89,7 +89,7 @@ static const char dnssd_a[] = "PROBE dnssd A callback\n";
 static const char dnssd_aaaa[] = "PROBE dnssd AAAA callback\n";
 static const char dnssd_failed[] = "PROBE dnssd failed\n";
 static const char probe_complete[] = "PROBE complete\n";
-static const char local_hostname[] = "iPhone-020000000001.local";
+static const char local_hostname[] = "iPhone-021a543a0002.local";
 
 static volatile int libinfo_result;
 static volatile int dnssd_result;
@@ -218,13 +218,13 @@ static int probe_main(void) {
   DNSServiceRefDeallocate(service);
   if (dnssd_result != 1)
     return 1;
-  if (ilegacysim_run_system_configuration_probe(local_hostname) != 0)
+  if (ilemu_run_system_configuration_probe(local_hostname) != 0)
     return 1;
   emit(probe_complete, sizeof(probe_complete) - 1);
   return 0;
 }
 
-__attribute__((noreturn)) void ilegacysim_guest_start(int argc, char **argv,
+__attribute__((noreturn)) void ilemu_guest_start(int argc, char **argv,
                                                       char **environment) {
   NXArgc = argc;
   NXArgv = argv;
@@ -236,6 +236,6 @@ __attribute__((noreturn)) void ilegacysim_guest_start(int argc, char **argv,
   if (_cthread_init_routine != (darwin_init_routine)0) {
     _cthread_init_routine();
   }
-  ilegacysim_guest_run_runtime_initializers();
+  ilemu_guest_run_runtime_initializers();
   _exit(probe_main());
 }

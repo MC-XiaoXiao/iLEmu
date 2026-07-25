@@ -1,10 +1,10 @@
-#include "ilegacysim/kernel_mach_task_identity.hpp"
+#include "ilemu/kernel_mach_task_identity.hpp"
 
-#include "ilegacysim/kernel_shared_state.hpp"
+#include "ilemu/kernel_shared_state.hpp"
 
 #include <optional>
 
-namespace ilegacysim::mach_task_identity {
+namespace ilemu::mach_task_identity {
 namespace {
 
 using xnu792::ipc::Right;
@@ -125,4 +125,4 @@ bool inherit_child(KernelSharedState &state, const ProcessContext &parent,
       .has_value();
 }
 
-} // namespace ilegacysim::mach_task_identity
+} // namespace ilemu::mach_task_identity

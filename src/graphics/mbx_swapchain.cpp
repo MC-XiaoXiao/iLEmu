@@ -1,14 +1,14 @@
-#include "ilegacysim/mbx2d_hle.hpp"
+#include "ilemu/mbx2d_hle.hpp"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
 
-#include "ilegacysim/display.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/display.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 
 void Mbx2dHle::initialize_destination(
     UserlandHleCall& call, RenderState& state) {
@@ -121,4 +121,4 @@ void Mbx2dHle::prepare_destination_for_frame(
     }
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

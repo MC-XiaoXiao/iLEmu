@@ -1,10 +1,10 @@
-#include "ilegacysim/scene_coordinator.hpp"
+#include "ilemu/scene_coordinator.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <utility>
 
-namespace ilegacysim {
+namespace ilemu {
 
 std::pair<float, float> SceneTransform::map(float x, float y) const {
   return {xx * x + xy * y + tx, yx * x + yy * y + ty};
@@ -101,4 +101,4 @@ void SceneCoordinator::retire_process(std::uint32_t process_id) {
   client_scenes_.erase(process_id);
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

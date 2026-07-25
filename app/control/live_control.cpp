@@ -1,4 +1,4 @@
-#include "ilegacysim/live_control.hpp"
+#include "ilemu/live_control.hpp"
 
 #include <cerrno>
 #include <cmath>
@@ -13,7 +13,7 @@
 #include <poll.h>
 #include <unistd.h>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::size_t read_buffer_size = 4096;
@@ -357,4 +357,4 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line) {
   return {std::move(command)};
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

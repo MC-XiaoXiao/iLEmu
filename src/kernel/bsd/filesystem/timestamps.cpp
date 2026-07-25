@@ -1,6 +1,6 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
+#include "ilemu/darwin_abi.hpp"
 
 #include <array>
 #include <bit>
@@ -15,7 +15,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t timeval_seconds_offset = 0;
@@ -124,4 +124,4 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_timestamps(
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

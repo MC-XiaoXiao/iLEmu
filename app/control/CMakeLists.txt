@@ -1,7 +1,7 @@
-add_library(ilegacysim_app_control STATIC
+add_library(ilemu_app_control STATIC
     live_control.cpp
     live_touch_scheduler.cpp)
-add_library(iLegacySim::app_control ALIAS ilegacysim_app_control)
-ilegacysim_configure_module(ilegacysim_app_control)
-target_link_libraries(ilegacysim_app_control PUBLIC
-    iLegacySim::foundation)
+add_library(iLEmu::app_control ALIAS ilemu_app_control)
+ilemu_configure_module(ilemu_app_control)
+target_link_libraries(ilemu_app_control PUBLIC
+    iLEmu::foundation)

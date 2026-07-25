@@ -1,4 +1,4 @@
-#include "ilegacysim/surface_store.hpp"
+#include "ilemu/surface_store.hpp"
 
 #include <bit>
 #include <cstddef>
@@ -8,10 +8,10 @@
 #include <utility>
 #include <vector>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/core_surface_abi.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/core_surface_abi.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 
 void SurfaceStore::reset() {
     std::lock_guard lock{mutex_};
@@ -252,4 +252,4 @@ bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,
     return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

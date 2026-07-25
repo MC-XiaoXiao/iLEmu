@@ -1,11 +1,11 @@
-#include "ilegacysim/presentation_tracker.hpp"
+#include "ilemu/presentation_tracker.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <map>
 #include <utility>
 
-namespace ilegacysim {
+namespace ilemu {
 
 std::uint64_t
 PresentationTracker::record(std::uint32_t submitting_process_id,
@@ -140,4 +140,4 @@ PresentationTracker::latest_scenes_locked() const {
   return scenes;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

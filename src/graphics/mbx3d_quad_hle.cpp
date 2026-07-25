@@ -1,4 +1,4 @@
-#include "ilegacysim/mbx2d_hle.hpp"
+#include "ilemu/mbx2d_hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,11 +10,11 @@
 #include <optional>
 #include <vector>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/mbx2d_abi.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/mbx2d_abi.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 struct Point {
@@ -402,4 +402,4 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
           : mbx2d_abi::failure);
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

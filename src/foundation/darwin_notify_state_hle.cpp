@@ -1,12 +1,12 @@
-#include "ilegacysim/darwin_notify_state_hle.hpp"
+#include "ilemu/darwin_notify_state_hle.hpp"
 
 #include <utility>
 #include <vector>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view libsystem_image{"/usr/lib/libSystem.B.dylib"};
@@ -189,4 +189,4 @@ void DarwinNotifyStateHle::record_registration(std::string name,
   owned_registrations_.insert(key);
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

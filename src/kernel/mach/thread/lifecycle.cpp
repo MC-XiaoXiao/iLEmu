@@ -1,6 +1,6 @@
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/thread_act_mig_ids.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/thread_act_mig_ids.hpp"
 
 #include <array>
 #include <cstdint>
@@ -8,7 +8,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 
 using namespace mach_support;
 
@@ -127,4 +127,4 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

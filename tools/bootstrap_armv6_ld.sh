@@ -13,7 +13,7 @@ if test -x "$target_ld"; then
     exit 0
 fi
 
-dependency_prefix=${ILEGACYSIM_LIBDISPATCH_PREFIX:-}
+dependency_prefix=${ILEMU_LIBDISPATCH_PREFIX:-}
 if test -z "$dependency_prefix" &&
    test -f /usr/lib/libdispatch.so &&
    test -f /usr/lib/libBlocksRuntime.so; then
@@ -33,7 +33,7 @@ if test -z "$dependency_prefix" ||
    test ! -f "$dependency_prefix/lib/libdispatch.so" ||
    test ! -f "$dependency_prefix/lib/libBlocksRuntime.so"; then
     echo "libdispatch and BlocksRuntime are required to build cctools-port." >&2
-    echo "Install them or set ILEGACYSIM_LIBDISPATCH_PREFIX." >&2
+    echo "Install them or set ILEMU_LIBDISPATCH_PREFIX." >&2
     exit 1
 fi
 

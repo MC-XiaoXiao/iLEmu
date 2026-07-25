@@ -1,4 +1,4 @@
-#include "ilegacysim/mobile_framebuffer_hle.hpp"
+#include "ilemu/mobile_framebuffer_hle.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -10,19 +10,19 @@
 #include <string_view>
 #include <utility>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/core_surface_abi.hpp"
-#include "ilegacysim/display.hpp"
-#include "ilegacysim/iokit_abi.hpp"
-#include "ilegacysim/kernel_shared_state.hpp"
-#include "ilegacysim/mobile_framebuffer_abi.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/presentation_tracker.hpp"
-#include "ilegacysim/scene_coordinator.hpp"
-#include "ilegacysim/surface_store.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/core_surface_abi.hpp"
+#include "ilemu/display.hpp"
+#include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/mobile_framebuffer_abi.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/presentation_tracker.hpp"
+#include "ilemu/scene_coordinator.hpp"
+#include "ilemu/surface_store.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view framebuffer_image{
@@ -383,4 +383,4 @@ void MobileFramebufferHle::set_background_color(UserlandHleCall &call) {
   call.set_return(iokit_abi::success);
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

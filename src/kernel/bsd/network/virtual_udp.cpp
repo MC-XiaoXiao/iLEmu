@@ -1,12 +1,12 @@
-#include "ilegacysim/virtual_udp.hpp"
+#include "ilemu/virtual_udp.hpp"
 
-#include "ilegacysim/darwin_network_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
 
 #include <algorithm>
 #include <array>
 #include <limits>
 
-namespace ilegacysim::bsd {
+namespace ilemu::bsd {
 namespace {
 
 using namespace darwin::network;
@@ -432,4 +432,4 @@ std::size_t VirtualUdpSocket::pending_bytes() const {
   return network ? network->pending_bytes(*this) : 0;
 }
 
-} // namespace ilegacysim::bsd
+} // namespace ilemu::bsd

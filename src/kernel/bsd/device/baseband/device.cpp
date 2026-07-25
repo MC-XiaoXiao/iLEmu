@@ -1,13 +1,13 @@
-#include "ilegacysim/baseband_device.hpp"
+#include "ilemu/baseband_device.hpp"
 
-#include "ilegacysim/darwin_tty_abi.hpp"
+#include "ilemu/darwin_tty_abi.hpp"
 
 #include <algorithm>
 #include <mutex>
 #include <utility>
 #include <vector>
 
-namespace ilegacysim::bsd::baseband_device {
+namespace ilemu::bsd::baseband_device {
 
 bool State::may_open(bool privileged) const {
   const std::lock_guard lock{mutex_};
@@ -90,4 +90,4 @@ std::vector<std::byte> State::take_transmitted() {
 
 bool is_path(std::string_view candidate) { return candidate == path; }
 
-} // namespace ilegacysim::bsd::baseband_device
+} // namespace ilemu::bsd::baseband_device

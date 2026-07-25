@@ -1,11 +1,11 @@
-#include "ilegacysim/file_page_cache.hpp"
+#include "ilemu/file_page_cache.hpp"
 
 #include <algorithm>
 #include <fstream>
 #include <limits>
 #include <tuple>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint64_t file_prefetch_bytes =
@@ -191,4 +191,4 @@ std::size_t FilePageCache::page_count() const {
   return pages_.size();
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

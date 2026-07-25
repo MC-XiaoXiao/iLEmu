@@ -1,4 +1,4 @@
-#include "ilegacysim/celestial_volume_protocol.hpp"
+#include "ilemu/celestial_volume_protocol.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -6,7 +6,7 @@
 #include <cstring>
 #include <utility>
 
-namespace ilegacysim::celestial_volume_protocol {
+namespace ilemu::celestial_volume_protocol {
 namespace {
 
 constexpr std::uint32_t category_volume_reply_identifier = 1138;
@@ -145,4 +145,4 @@ decode_source_float_property_request(std::uint32_t identifier,
   return decode_float_property(identifier, bytes);
 }
 
-} // namespace ilegacysim::celestial_volume_protocol
+} // namespace ilemu::celestial_volume_protocol

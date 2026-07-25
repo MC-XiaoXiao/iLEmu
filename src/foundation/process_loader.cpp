@@ -1,4 +1,4 @@
-#include "ilegacysim/process_loader.hpp"
+#include "ilemu/process_loader.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,7 +13,7 @@
 #include <utility>
 #include <vector>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t stack_base = 0x2ff00000U;
@@ -287,4 +287,4 @@ bool ProcessLoader::validate(std::string guest_executable) const {
     }
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

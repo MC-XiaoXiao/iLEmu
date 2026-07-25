@@ -1,11 +1,11 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
+#include "ilemu/darwin_abi.hpp"
 
 #include <cstdint>
 #include <string>
 
-namespace ilegacysim {
+namespace ilemu {
 
 bool CompatibilityKernel::dispatch_bsd_process_credentials(
     Cpu &cpu, std::uint32_t number) {
@@ -52,4 +52,4 @@ bool CompatibilityKernel::dispatch_bsd_process_credentials(
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

@@ -1,8 +1,8 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/mach_port_mig_ids.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/mach_port_mig_ids.hpp"
+#include "ilemu/mig_wire_abi.hpp"
 
 #include <array>
 #include <cstddef>
@@ -13,7 +13,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t complex_reply_size = 68;
@@ -154,4 +154,4 @@ bool CompatibilityKernel::dispatch_mach_port_query_message(
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

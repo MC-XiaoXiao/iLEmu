@@ -1,6 +1,6 @@
-#include "ilegacysim/darwin_sysctl.hpp"
+#include "ilemu/darwin_sysctl.hpp"
 
-namespace ilegacysim::darwin::sysctl {
+namespace ilemu::darwin::sysctl {
 
 std::optional<std::string_view>
 hardware_string(std::uint32_t selector, std::string_view machine,
@@ -15,4 +15,4 @@ hardware_string(std::uint32_t selector, std::string_view machine,
   }
 }
 
-} // namespace ilegacysim::darwin::sysctl
+} // namespace ilemu::darwin::sysctl

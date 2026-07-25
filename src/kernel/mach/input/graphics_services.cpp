@@ -1,4 +1,4 @@
-#include "ilegacysim/graphics_services_input.hpp"
+#include "ilemu/graphics_services_input.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -6,12 +6,12 @@
 #include <mutex>
 #include <vector>
 
-#include "ilegacysim/display.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/scene_coordinator.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/display.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/scene_coordinator.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim::graphics_services_input {
+namespace ilemu::graphics_services_input {
 namespace {
 
 constexpr std::uint32_t copy_send_bits = 19;
@@ -813,4 +813,4 @@ void record_application_lifecycle_event_locked(
   }
 }
 
-} // namespace ilegacysim::graphics_services_input
+} // namespace ilemu::graphics_services_input

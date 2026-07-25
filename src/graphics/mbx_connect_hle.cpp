@@ -1,12 +1,12 @@
-#include "ilegacysim/mbx_connect_hle.hpp"
+#include "ilemu/mbx_connect_hle.hpp"
 
 #include <array>
 #include <string>
 #include <string_view>
 
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view mbx_connect_image{
@@ -30,4 +30,4 @@ void register_mbx_connect_hle(UserlandHleRegistry& registry) {
     }
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

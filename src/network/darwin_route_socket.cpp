@@ -1,12 +1,12 @@
-#include "ilegacysim/darwin_route_socket.hpp"
+#include "ilemu/darwin_route_socket.hpp"
 
-#include "ilegacysim/darwin_network_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
 
 #include <algorithm>
 #include <bit>
 #include <utility>
 
-namespace ilegacysim::darwin::route {
+namespace ilemu::darwin::route {
 namespace {
 
 std::uint16_t read16(std::span<const std::byte> bytes, std::size_t offset) {
@@ -538,4 +538,4 @@ std::vector<Entry> Table::snapshot() const {
     return entries_;
 }
 
-}  // namespace ilegacysim::darwin::route
+}  // namespace ilemu::darwin::route

@@ -1,8 +1,8 @@
-#include "ilegacysim/host_network.hpp"
+#include "ilemu/host_network.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_network_abi.hpp"
-#include "ilegacysim/virtual_network.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
+#include "ilemu/virtual_network.hpp"
 
 #include <algorithm>
 #include <array>
@@ -23,7 +23,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t darwin_socket_stream = 1;
@@ -936,4 +936,4 @@ bool HostSocket::writable() const {
            (descriptor.revents & (POLLOUT | POLLHUP | POLLERR)) != 0;
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

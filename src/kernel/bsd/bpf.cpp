@@ -1,8 +1,8 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_bpf_abi.hpp"
-#include "ilegacysim/virtual_network.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_bpf_abi.hpp"
+#include "ilemu/virtual_network.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,7 +17,7 @@
 
 #include "support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 std::string interface_name(std::span<const std::byte> request) {
@@ -634,4 +634,4 @@ bool CompatibilityKernel::ioctl_bpf_device(Cpu &cpu, std::uint32_t fd) {
   }
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

@@ -1,28 +1,28 @@
-#include "ilegacysim/bootstrap_mig_ids.hpp"
-#include "ilegacysim/celestial_volume_protocol.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_kqueue_abi.hpp"
-#include "ilegacysim/darwin_network_abi.hpp"
-#include "ilegacysim/darwin_resource_abi.hpp"
-#include "ilegacysim/darwin_route_socket.hpp"
-#include "ilegacysim/graphics_services_input.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/kernel_clock.hpp"
-#include "ilegacysim/kernel_iokit.hpp"
-#include "ilegacysim/kernel_mach_ipc.hpp"
-#include "ilegacysim/kernel_network.hpp"
-#include "ilegacysim/mach_clock_abi.hpp"
-#include "ilegacysim/mach_descriptor_transport.hpp"
-#include "ilegacysim/mach_host_mig_ids.hpp"
-#include "ilegacysim/mach_port_mig_ids.hpp"
-#include "ilegacysim/mach_scheduler_abi.hpp"
-#include "ilegacysim/mach_thread_policy_abi.hpp"
-#include "ilegacysim/media_library_service.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/task_mig_ids.hpp"
-#include "ilegacysim/thread_act_mig_ids.hpp"
-#include "ilegacysim/vm_map_mig_ids.hpp"
-#include "ilegacysim/xnu_mig_adapter.hpp"
+#include "ilemu/bootstrap_mig_ids.hpp"
+#include "ilemu/celestial_volume_protocol.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_kqueue_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
+#include "ilemu/darwin_resource_abi.hpp"
+#include "ilemu/darwin_route_socket.hpp"
+#include "ilemu/graphics_services_input.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/kernel_clock.hpp"
+#include "ilemu/kernel_iokit.hpp"
+#include "ilemu/kernel_mach_ipc.hpp"
+#include "ilemu/kernel_network.hpp"
+#include "ilemu/mach_clock_abi.hpp"
+#include "ilemu/mach_descriptor_transport.hpp"
+#include "ilemu/mach_host_mig_ids.hpp"
+#include "ilemu/mach_port_mig_ids.hpp"
+#include "ilemu/mach_scheduler_abi.hpp"
+#include "ilemu/mach_thread_policy_abi.hpp"
+#include "ilemu/media_library_service.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/task_mig_ids.hpp"
+#include "ilemu/thread_act_mig_ids.hpp"
+#include "ilemu/vm_map_mig_ids.hpp"
+#include "ilemu/xnu_mig_adapter.hpp"
 
 #include <algorithm>
 #include <array>
@@ -40,7 +40,7 @@
 
 #include "support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 
 using namespace mach_support;
 
@@ -721,4 +721,4 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
   return;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

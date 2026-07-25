@@ -1,8 +1,8 @@
-#include "ilegacysim/darwin_sysctl.hpp"
+#include "ilemu/darwin_sysctl.hpp"
 
 #include <array>
 
-namespace ilegacysim::darwin::sysctl {
+namespace ilemu::darwin::sysctl {
 namespace {
 
 struct NamedObject {
@@ -48,4 +48,4 @@ std::optional<ObjectIdentifier> resolve_name(std::string_view name) {
   return std::nullopt;
 }
 
-} // namespace ilegacysim::darwin::sysctl
+} // namespace ilemu::darwin::sysctl

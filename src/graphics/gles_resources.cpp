@@ -1,4 +1,4 @@
-#include "ilegacysim/gles_resources.hpp"
+#include "ilemu/gles_resources.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -8,11 +8,11 @@
 #include <utility>
 #include <vector>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/gles_abi.hpp"
-#include "ilegacysim/surface_store.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/gles_abi.hpp"
+#include "ilemu/surface_store.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 struct PixelLayout {
@@ -420,4 +420,4 @@ const GlesResourceStore::Buffer* GlesResourceStore::buffer(
     return found == buffers_.end() ? nullptr : &found->second;
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

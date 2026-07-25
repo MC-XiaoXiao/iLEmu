@@ -1,13 +1,13 @@
-#include "ilegacysim/app_support_hle.hpp"
+#include "ilemu/app_support_hle.hpp"
 
 #include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
 
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view app_support_image{
@@ -41,4 +41,4 @@ void register_app_support_hle(UserlandHleRegistry& registry) {
     }
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

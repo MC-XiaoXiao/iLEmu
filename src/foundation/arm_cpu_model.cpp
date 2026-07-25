@@ -1,9 +1,9 @@
-#include "ilegacysim/arm_cpu_model.hpp"
+#include "ilemu/arm_cpu_model.hpp"
 
 #include <array>
 #include <stdexcept>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 struct TimingRule {
@@ -107,4 +107,4 @@ const ArmCpuModel &default_arm_cpu_model() {
   return model;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

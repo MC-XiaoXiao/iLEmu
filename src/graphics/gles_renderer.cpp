@@ -1,17 +1,17 @@
-#include "ilegacysim/gles_renderer.hpp"
+#include "ilemu/gles_renderer.hpp"
 
 #include <memory>
 #include <span>
 #include <string_view>
 #include <utility>
 
-#include "ilegacysim/display.hpp"
+#include "ilemu/display.hpp"
 
-#if defined(ILEGACYSIM_HAS_VULKAN)
+#if defined(ILEMU_HAS_VULKAN)
 #include "host/vulkan_gles_renderer.hpp"
 #endif
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 class SoftwareGlesRenderer final : public GlesRenderer {
@@ -38,7 +38,7 @@ class SoftwareGlesRenderer final : public GlesRenderer {
     }
 
     [[nodiscard]] std::string_view name() const override {
-        return "iLegacySim GLES 1.1 software";
+        return "iLEmu GLES 1.1 software";
     }
 
     [[nodiscard]] bool accelerated() const override { return false; }
@@ -95,7 +95,7 @@ class FallbackGlesRenderer final : public GlesRenderer {
 
 std::shared_ptr<GlesRenderer> shared_gles_renderer() {
     static const auto renderer = []() -> std::shared_ptr<GlesRenderer> {
-#if defined(ILEGACYSIM_HAS_VULKAN)
+#if defined(ILEMU_HAS_VULKAN)
         if (auto accelerated = create_vulkan_gles_renderer()) {
             return std::make_shared<FallbackGlesRenderer>(
                 std::move(accelerated),
@@ -107,4 +107,4 @@ std::shared_ptr<GlesRenderer> shared_gles_renderer() {
     return renderer;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

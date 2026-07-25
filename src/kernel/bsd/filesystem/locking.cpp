@@ -1,7 +1,7 @@
-#include "ilegacysim/bsd_file_lock.hpp"
+#include "ilemu/bsd_file_lock.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/kernel.hpp"
 
 #include <limits>
 #include <memory>
@@ -15,7 +15,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim::bsd {
+namespace ilemu::bsd {
 namespace {
 
 bool ranges_overlap(const RecordLockRange &lhs, const RecordLockRange &rhs) {
@@ -195,9 +195,9 @@ void AdvisoryFileLockRegistry::release_process_record_locks(
   }
 }
 
-} // namespace ilegacysim::bsd
+} // namespace ilemu::bsd
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 struct GuestRecordLock {
@@ -511,4 +511,4 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_locking(
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

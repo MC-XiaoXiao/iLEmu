@@ -1,10 +1,10 @@
-add_library(ilegacysim_kernel_mach_thread STATIC
+add_library(ilemu_kernel_mach_thread STATIC
     lifecycle.cpp
     self.cpp
     state.cpp)
-add_library(iLegacySim::kernel_mach_thread ALIAS
-    ilegacysim_kernel_mach_thread)
-ilegacysim_configure_module(ilegacysim_kernel_mach_thread)
-target_link_libraries(ilegacysim_kernel_mach_thread PRIVATE
-    iLegacySim::foundation
-    iLegacySim::mach)
+add_library(iLEmu::kernel_mach_thread ALIAS
+    ilemu_kernel_mach_thread)
+ilemu_configure_module(ilemu_kernel_mach_thread)
+target_link_libraries(ilemu_kernel_mach_thread PRIVATE
+    iLEmu::foundation
+    iLEmu::mach)

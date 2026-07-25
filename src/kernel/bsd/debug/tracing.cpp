@@ -1,10 +1,10 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
 #include "../support.hpp"
 
 #include <cstdint>
 
-namespace ilegacysim {
+namespace ilemu {
 
 bool CompatibilityKernel::dispatch_bsd_debug(Cpu &cpu,
                                               std::uint32_t number) {
@@ -17,4 +17,4 @@ bool CompatibilityKernel::dispatch_bsd_debug(Cpu &cpu,
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

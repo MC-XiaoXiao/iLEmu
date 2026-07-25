@@ -1,4 +1,4 @@
-#include "ilegacysim/darwin_network_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -7,7 +7,7 @@
 #include <string>
 #include <string_view>
 
-namespace ilegacysim::darwin::network {
+namespace ilemu::darwin::network {
 namespace {
 
 constexpr std::size_t interface_message_header_size = 112;
@@ -343,4 +343,4 @@ std::vector<std::byte> make_kernel_event(
     return result;
 }
 
-}  // namespace ilegacysim::darwin::network
+}  // namespace ilemu::darwin::network

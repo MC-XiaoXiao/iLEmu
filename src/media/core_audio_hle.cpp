@@ -1,4 +1,4 @@
-#include "ilegacysim/core_audio_hle.hpp"
+#include "ilemu/core_audio_hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,13 +14,13 @@
 #include <string_view>
 #include <vector>
 
-#include "ilegacysim/audio.hpp"
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/audio.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view core_audio_image{
@@ -1027,4 +1027,4 @@ void CoreAudioHle::stop_io(UserlandHleCall &call) {
   call.set_return(0);
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

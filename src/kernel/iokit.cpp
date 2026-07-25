@@ -1,4 +1,4 @@
-#include "ilegacysim/kernel_iokit.hpp"
+#include "ilemu/kernel_iokit.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,20 +13,20 @@
 #include <utility>
 #include <vector>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/device_mig_ids.hpp"
-#include "ilegacysim/iokit_abi.hpp"
-#include "ilegacysim/kernel_iokit_baseband.hpp"
-#include "ilegacysim/kernel_iokit_display.hpp"
-#include "ilegacysim/kernel_shared_state.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/wifi_state.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/device_mig_ids.hpp"
+#include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel_iokit_baseband.hpp"
+#include "ilemu/kernel_iokit_display.hpp"
+#include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/wifi_state.hpp"
 
 #include "iokit/power.hpp"
 #include "mach/support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t mach_rcv_invalid_data = 0x10004008U;
@@ -1831,4 +1831,4 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
   return std::nullopt;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

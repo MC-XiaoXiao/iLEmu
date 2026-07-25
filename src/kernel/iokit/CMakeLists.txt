@@ -1,10 +1,10 @@
 add_subdirectory(baseband)
 add_subdirectory(display)
 
-add_library(ilegacysim_kernel_iokit_power STATIC
+add_library(ilemu_kernel_iokit_power STATIC
     power.cpp)
-add_library(iLegacySim::kernel_iokit_power ALIAS
-    ilegacysim_kernel_iokit_power)
-ilegacysim_configure_module(ilegacysim_kernel_iokit_power)
-target_link_libraries(ilegacysim_kernel_iokit_power PRIVATE
-    iLegacySim::foundation)
+add_library(iLEmu::kernel_iokit_power ALIAS
+    ilemu_kernel_iokit_power)
+ilemu_configure_module(ilemu_kernel_iokit_power)
+target_link_libraries(ilemu_kernel_iokit_power PRIVATE
+    iLEmu::foundation)

@@ -1,12 +1,12 @@
-#include "ilegacysim/audio_toolbox_hle.hpp"
+#include "ilemu/audio_toolbox_hle.hpp"
 
 #include <string>
 #include <string_view>
 
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view audio_toolbox_image{
@@ -36,4 +36,4 @@ void AudioToolboxHle::play_system_sound(UserlandHleCall &call) {
   call.resume_original();
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

@@ -1,0 +1,165 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <map>
+#include <memory>
+#include <optional>
+#include <set>
+#include <vector>
+
+#include "ilemu/mbx2d_abi.hpp"
+#include "ilemu/surface_store.hpp"
+
+namespace ilemu {
+
+class UserlandHleCall;
+class UserlandHleRegistry;
+class DisplayState;
+class PresentationTracker;
+
+// User-mode compatibility implementation for the MBX2D API consumed by
+// LayerKit. Handles are opaque because every operation stays at this HLE
+// boundary; no PowerVR command buffer or GPU register is interpreted.
+class Mbx2dHle {
+public:
+  Mbx2dHle(UserlandHleRegistry &registry, std::shared_ptr<DisplayState> display,
+           std::shared_ptr<SurfaceStore> surfaces = {},
+           std::shared_ptr<PresentationTracker> presentations = {});
+
+  void reset();
+  void inherit_state(const Mbx2dHle &parent);
+  void set_display(std::shared_ptr<DisplayState> display);
+
+private:
+  struct Surface {
+    std::uint32_t handle{};
+    std::uint32_t core_surface_id{};
+    bool framebuffer{};
+    std::optional<SurfaceStore::Backing> client_backing;
+  };
+  struct Binding {
+    std::uint32_t surface{};
+    std::uint32_t pitch{};
+    std::uint32_t format{};
+    std::uint32_t flags{};
+  };
+  struct Scissor {
+    std::int32_t left{};
+    std::int32_t top{};
+    std::int32_t right{};
+    std::int32_t bottom{};
+    bool enabled{};
+  };
+  struct BlendState {
+    std::uint32_t source_factor{};
+    std::uint32_t destination_factor{};
+    std::uint32_t operation{};
+    std::uint8_t global_alpha{0xffU};
+    bool complex{};
+  };
+  struct RenderState {
+    std::optional<Binding> source;
+    std::optional<Binding> destination;
+    Scissor scissor;
+    BlendState blend;
+    std::uint32_t scale_x_bits{mbx2d_abi::float_one_bits};
+    std::uint32_t scale_y_bits{mbx2d_abi::float_one_bits};
+    std::uint32_t rotation{};
+    std::set<std::uint32_t> enabled_features;
+  };
+  struct ResolvedSurface {
+    std::optional<SurfaceStore::Backing> backing;
+    bool framebuffer{};
+    std::uint32_t width{};
+    std::uint32_t height{};
+  };
+  struct BlitRegion {
+    std::int64_t source_x{};
+    std::int64_t source_y{};
+    std::int64_t destination_x{};
+    std::int64_t destination_y{};
+    std::int64_t width{};
+    std::int64_t height{};
+  };
+  struct DamageRegion {
+    std::int64_t left{};
+    std::int64_t top{};
+    std::int64_t right{};
+    std::int64_t bottom{};
+  };
+
+  [[nodiscard]] std::uint32_t
+  allocate_surface(std::uint32_t core_surface_id = 0, bool framebuffer = false);
+  [[nodiscard]] std::uint32_t
+  allocate_client_surface(std::uint32_t base, std::uint32_t allocation_size,
+                          std::uint32_t width);
+  [[nodiscard]] std::uint32_t allocate_context();
+  [[nodiscard]] RenderState *select_state(UserlandHleCall &call,
+                                          bool context_api);
+  void bind_surface(UserlandHleCall &call, bool source, bool context_api);
+  void initialize_destination(UserlandHleCall &call, RenderState &state);
+  void prepare_destination_for_frame(UserlandHleCall &call, RenderState &state,
+                                     DamageRegion damage,
+                                     std::uint32_t source_surface);
+  void set_scissor(UserlandHleCall &call, bool context_api);
+  void set_blend_equation(UserlandHleCall &call, bool context_api,
+                          bool complex);
+  void set_scale_factor(UserlandHleCall &call, bool context_api);
+  void set_rotation(UserlandHleCall &call, bool context_api);
+  void set_feature(UserlandHleCall &call, bool context_api, bool enabled);
+  void blit_color(UserlandHleCall &call, bool context_api);
+  void blit_copy(UserlandHleCall &call, bool context_api);
+  void quad_color(UserlandHleCall &call);
+  void quad_copy(UserlandHleCall &call);
+  void flush_surfaces(UserlandHleCall &call);
+  void terminate(UserlandHleCall &call);
+  [[nodiscard]] std::optional<ResolvedSurface>
+  resolve(const std::optional<Binding> &binding) const;
+  [[nodiscard]] bool clip_region(BlitRegion &region,
+                                 const ResolvedSurface *source,
+                                 const ResolvedSurface &destination,
+                                 const Scissor &scissor) const;
+  [[nodiscard]] std::optional<std::vector<std::uint32_t>>
+  read_region(const ResolvedSurface &surface, std::int64_t x, std::int64_t y,
+              std::int64_t width, std::int64_t height,
+              UserlandHleCall &call) const;
+  [[nodiscard]] bool write_region(const ResolvedSurface &surface,
+                                  std::int64_t x, std::int64_t y,
+                                  std::int64_t width, std::int64_t height,
+                                  const std::vector<std::uint32_t> &pixels,
+                                  UserlandHleCall &call);
+  [[nodiscard]] std::optional<std::vector<std::uint32_t>>
+  composite(const RenderState &state, const ResolvedSurface &destination,
+            std::int64_t x, std::int64_t y, std::int64_t width,
+            std::int64_t height, const std::vector<std::uint32_t> &source,
+            UserlandHleCall &call) const;
+  [[nodiscard]] std::optional<std::vector<std::uint32_t>>
+  transform_copy(const RenderState &state, std::int64_t source_width,
+                 std::int64_t source_height,
+                 const std::vector<std::uint32_t> &source,
+                 std::int64_t &output_width, std::int64_t &output_height,
+                 UserlandHleCall &call);
+  void submit_destination(UserlandHleCall &call, bool context_api);
+  void deferred(UserlandHleCall &call);
+
+  static constexpr std::uint32_t first_context_handle = 0x00020001U;
+  static constexpr std::uint32_t first_surface_handle = 0x00030001U;
+  std::map<std::uint32_t, RenderState> contexts_;
+  std::uint32_t next_context_{first_context_handle};
+  std::map<std::uint32_t, Surface> surfaces_;
+  std::set<std::uint32_t> initialized_destinations_;
+  std::map<std::uint32_t, std::uint64_t> destination_frame_sequences_;
+  std::map<std::uint32_t, DamageRegion> destination_scene_damage_;
+  std::map<std::uint32_t, std::uint32_t> destination_scene_sources_;
+  std::uint32_t next_surface_{first_surface_handle};
+  std::uint32_t framebuffer_surface_{};
+  RenderState state_;
+  bool initialized_{};
+  std::size_t deferred_trace_count_{};
+  std::shared_ptr<DisplayState> display_;
+  std::shared_ptr<SurfaceStore> surface_store_;
+  std::shared_ptr<PresentationTracker> presentation_tracker_;
+};
+
+} // namespace ilemu

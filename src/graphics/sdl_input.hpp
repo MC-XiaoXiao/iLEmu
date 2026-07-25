@@ -2,14 +2,14 @@
 
 #include <vector>
 
-#include "ilegacysim/display_geometry.hpp"
-#include "ilegacysim/ringer_switch_state.hpp"
-#include "ilegacysim/system_button_input.hpp"
-#include "ilegacysim/touch_input.hpp"
+#include "ilemu/display_geometry.hpp"
+#include "ilemu/ringer_switch_state.hpp"
+#include "ilemu/system_button_input.hpp"
+#include "ilemu/touch_input.hpp"
 
 struct SDL_Window;
 
-namespace ilegacysim {
+namespace ilemu {
 
 class SdlInput {
 public:
@@ -29,4 +29,4 @@ private:
   bool running_{true};
 };
 
-} // namespace ilegacysim
+} // namespace ilemu

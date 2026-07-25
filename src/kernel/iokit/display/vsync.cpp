@@ -1,13 +1,13 @@
-#include "ilegacysim/kernel_iokit_display.hpp"
+#include "ilemu/kernel_iokit_display.hpp"
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/device_mig_ids.hpp"
-#include "ilegacysim/iokit_abi.hpp"
-#include "ilegacysim/kernel_shared_state.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/xnu_mig_adapter.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/device_mig_ids.hpp"
+#include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/xnu_mig_adapter.hpp"
 
 #include <algorithm>
 #include <array>
@@ -17,7 +17,7 @@
 #include <span>
 #include <string>
 
-namespace ilegacysim::kernel_iokit::display {
+namespace ilemu::kernel_iokit::display {
 namespace {
 
 namespace device_mig = xnu792::mig::device;
@@ -360,4 +360,4 @@ void close_connection_locked(KernelSharedState &state,
   state.iokit_display_connections.erase(connection_object);
 }
 
-} // namespace ilegacysim::kernel_iokit::display
+} // namespace ilemu::kernel_iokit::display

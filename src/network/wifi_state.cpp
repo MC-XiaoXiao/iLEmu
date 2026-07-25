@@ -1,11 +1,11 @@
-#include "ilegacysim/wifi_state.hpp"
+#include "ilemu/wifi_state.hpp"
 
-#include "ilegacysim/virtual_network.hpp"
+#include "ilemu/virtual_network.hpp"
 
 #include <algorithm>
 #include <utility>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 std::vector<VirtualAccessPoint> default_access_points() {
@@ -158,4 +158,4 @@ WifiIpv4Configuration WifiState::default_ipv4_configuration() {
     return result;
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

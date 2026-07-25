@@ -1,14 +1,14 @@
 #pragma once
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/mig_wire_abi.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <span>
 
-namespace ilegacysim::mach_vm_support {
+namespace ilemu::mach_vm_support {
 
 inline constexpr std::uint32_t kern_success = 0;
 inline constexpr std::uint32_t kern_invalid_address = 1;
@@ -47,4 +47,4 @@ inline bool write_simple_reply(AddressSpace &memory, std::uint32_t address,
   return write_words(memory, address, reply);
 }
 
-} // namespace ilegacysim::mach_vm_support
+} // namespace ilemu::mach_vm_support

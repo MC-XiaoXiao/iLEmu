@@ -1,4 +1,4 @@
-#include "ilegacysim/dns_configuration_hle.hpp"
+#include "ilemu/dns_configuration_hle.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -7,10 +7,10 @@
 #include <string_view>
 #include <vector>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view responder_image{"/usr/sbin/mDNSResponder"};
@@ -95,4 +95,4 @@ void register_dns_configuration_hle(UserlandHleRegistry& registry) {
         });
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

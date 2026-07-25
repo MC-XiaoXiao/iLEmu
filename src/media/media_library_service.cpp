@@ -1,6 +1,6 @@
-#include "ilegacysim/media_library_service.hpp"
+#include "ilemu/media_library_service.hpp"
 
-namespace ilegacysim::media_library_service {
+namespace ilemu::media_library_service {
 
 bool can_serve_empty_catalogue(const std::filesystem::path &rootfs) {
   if (rootfs.empty()) return false;
@@ -34,4 +34,4 @@ bool is_request_identifier(std::uint32_t identifier) {
   return identifier >= 990000U && identifier < 990100U;
 }
 
-} // namespace ilegacysim::media_library_service
+} // namespace ilemu::media_library_service

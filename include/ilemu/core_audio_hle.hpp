@@ -1,0 +1,104 @@
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <memory>
+#include <optional>
+#include <vector>
+
+namespace ilemu {
+
+class AudioService;
+class AddressSpace;
+class Output;
+class UserlandHleCall;
+class UserlandHleRegistry;
+
+// CoreAudio's firmware HAL remains in the guest. This adapter supplies the
+// one physical output device that an emulator has in place of iPhone hardware.
+class CoreAudioHle {
+public:
+  struct ScheduledIoProc {
+    std::uint32_t process_id{};
+    std::optional<std::size_t> processor;
+    std::array<std::uint32_t, 16> registers{};
+    std::uint32_t cpsr{};
+    std::function<void(UserlandHleCall &)> completion;
+  };
+
+  CoreAudioHle(UserlandHleRegistry &registry,
+               std::shared_ptr<AudioService> service);
+
+  void set_service(std::shared_ptr<AudioService> service);
+  void reset();
+  [[nodiscard]] std::optional<std::uint64_t>
+  next_io_proc_deadline() const;
+  [[nodiscard]] std::optional<ScheduledIoProc>
+  take_due_io_proc(std::uint64_t now);
+  void io_proc_thread_scheduled(std::uint32_t process_id,
+                                std::size_t processor);
+  void io_proc_schedule_failed(std::uint32_t process_id);
+  [[nodiscard]] std::vector<std::size_t> take_retired_io_proc_threads();
+
+private:
+  void hardware_property_info(UserlandHleCall &call);
+  void hardware_property(UserlandHleCall &call);
+  void device_property_info(UserlandHleCall &call);
+  void device_property(UserlandHleCall &call);
+  void device_set_property(UserlandHleCall &call);
+  void stream_property_info(UserlandHleCall &call);
+  void stream_property(UserlandHleCall &call);
+  void stream_set_property(UserlandHleCall &call);
+  void object_property(UserlandHleCall &call);
+  void object_set_property(UserlandHleCall &call);
+  void add_io_proc(UserlandHleCall &call);
+  void remove_io_proc(UserlandHleCall &call);
+  void start_io(UserlandHleCall &call);
+  void stop_io(UserlandHleCall &call);
+  void complete_io_proc(UserlandHleCall &call, std::uint32_t process_id);
+  [[nodiscard]] float device_output_gain(std::uint32_t device) const;
+  [[nodiscard]] double device_sample_rate(std::uint32_t device) const;
+  [[nodiscard]] std::uint32_t
+  device_channel_count(std::uint32_t device) const;
+
+  struct IoProcRegistration {
+    std::uint32_t callback{};
+    std::uint32_t client_data{};
+    std::uint32_t device{};
+    AddressSpace *memory{};
+    Output *output{};
+    std::uint32_t callback_return{};
+    std::uint32_t timestamp{};
+    std::uint32_t output_buffers{};
+    std::uint32_t output_samples{};
+    std::uint32_t output_sample_bytes{};
+    std::vector<std::byte> zero_output_samples;
+    std::vector<std::byte> captured_output_samples;
+    std::uint32_t stack{};
+    std::uint64_t next_deadline{};
+    std::uint64_t sample_time{};
+    std::uint64_t callback_count{};
+    std::uint32_t peak_since_report{};
+    std::optional<std::size_t> processor;
+    bool running{};
+    bool in_flight{};
+  };
+
+  UserlandHleRegistry &registry_;
+  std::shared_ptr<AudioService> service_;
+  std::uint32_t buffer_frame_size_{1024};
+  struct StreamFormatState {
+    double sample_rate{};
+    std::uint32_t channel_count{};
+  };
+  std::map<std::uint32_t, StreamFormatState> stream_formats_;
+  std::map<std::uint32_t, float> device_volumes_;
+  std::map<std::uint64_t, std::uint32_t> hardware_control_states_;
+  std::map<std::uint32_t, IoProcRegistration> io_procs_;
+  std::vector<std::size_t> retired_io_proc_threads_;
+};
+
+} // namespace ilemu

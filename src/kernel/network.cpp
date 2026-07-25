@@ -1,11 +1,11 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/baseband_device.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_kqueue_abi.hpp"
-#include "ilegacysim/darwin_network_abi.hpp"
-#include "ilegacysim/darwin_route_socket.hpp"
-#include "ilegacysim/kernel_network.hpp"
+#include "ilemu/baseband_device.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_kqueue_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
+#include "ilemu/darwin_route_socket.hpp"
+#include "ilemu/kernel_network.hpp"
 
 #include <algorithm>
 #include <array>
@@ -24,7 +24,7 @@
 
 #include "bsd/support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t ebadf = 9;
@@ -1334,4 +1334,4 @@ void CompatibilityKernel::detach_kevents_for_descriptor(std::uint32_t fd) {
 }
 
 
-}  // namespace ilegacysim
+}  // namespace ilemu

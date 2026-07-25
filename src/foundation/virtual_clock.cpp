@@ -1,9 +1,9 @@
-#include "ilegacysim/virtual_clock.hpp"
+#include "ilemu/virtual_clock.hpp"
 
 #include <algorithm>
 #include <limits>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint64_t maximum_positive_offset =
@@ -73,4 +73,4 @@ void VirtualClock::advance_to(std::uint64_t deadline) {
     }
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

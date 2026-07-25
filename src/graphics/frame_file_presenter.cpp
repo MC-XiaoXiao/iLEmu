@@ -1,4 +1,4 @@
-#include "ilegacysim/frame_file_presenter.hpp"
+#include "ilemu/frame_file_presenter.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -10,9 +10,9 @@
 
 #include <png.h>
 
-#include "ilegacysim/display.hpp"
+#include "ilemu/display.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t bitmap_file_header_size = 14;
@@ -165,4 +165,4 @@ void FrameFilePresenter::present(const DisplayFrame& frame) {
     }
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

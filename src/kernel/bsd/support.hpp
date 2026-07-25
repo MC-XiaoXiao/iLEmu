@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ilegacysim/hfs_metadata.hpp"
-#include "ilegacysim/virtual_clock.hpp"
+#include "ilemu/hfs_metadata.hpp"
+#include "ilemu/virtual_clock.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -9,7 +9,7 @@
 #include <string>
 #include <system_error>
 
-namespace ilegacysim::bsd_support {
+namespace ilemu::bsd_support {
 
 inline constexpr std::uint32_t carry_flag = 1U << 29U;
 inline constexpr std::uint32_t bad_file_descriptor = 9;
@@ -33,4 +33,4 @@ darwin_filesystem_error(const std::error_code &error,
 [[nodiscard]] std::string
 format_payload_prefix(std::span<const std::byte> bytes);
 
-} // namespace ilegacysim::bsd_support
+} // namespace ilemu::bsd_support

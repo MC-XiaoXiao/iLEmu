@@ -1,9 +1,9 @@
-#include "ilegacysim/mbx2d_hle.hpp"
+#include "ilemu/mbx2d_hle.hpp"
 
 #include <cstdint>
 #include <limits>
 
-namespace ilegacysim {
+namespace ilemu {
 
 std::uint32_t Mbx2dHle::allocate_client_surface(
     std::uint32_t base, std::uint32_t allocation_size,
@@ -26,4 +26,4 @@ std::uint32_t Mbx2dHle::allocate_client_surface(
     return handle;
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

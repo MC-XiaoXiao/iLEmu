@@ -1,7 +1,7 @@
-add_library(ilegacysim_kernel_bsd_signal STATIC
+add_library(ilemu_kernel_bsd_signal STATIC
     signal.cpp)
-add_library(iLegacySim::kernel_bsd_signal ALIAS
-    ilegacysim_kernel_bsd_signal)
-ilegacysim_configure_module(ilegacysim_kernel_bsd_signal)
-target_link_libraries(ilegacysim_kernel_bsd_signal PRIVATE
-    iLegacySim::foundation)
+add_library(iLEmu::kernel_bsd_signal ALIAS
+    ilemu_kernel_bsd_signal)
+ilemu_configure_module(ilemu_kernel_bsd_signal)
+target_link_libraries(ilemu_kernel_bsd_signal PRIVATE
+    iLEmu::foundation)

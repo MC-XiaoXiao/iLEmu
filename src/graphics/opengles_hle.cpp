@@ -1,4 +1,4 @@
-#include "ilegacysim/opengles_hle.hpp"
+#include "ilemu/opengles_hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,17 +12,17 @@
 #include <string_view>
 #include <utility>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/core_surface_abi.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/display.hpp"
-#include "ilegacysim/kernel_shared_state.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/scene_coordinator.hpp"
-#include "ilegacysim/surface_store.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/core_surface_abi.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/display.hpp"
+#include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/scene_coordinator.hpp"
+#include "ilemu/surface_store.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view opengles_image{
@@ -956,8 +956,8 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry) {
         }
         std::string_view value;
         switch (call.argument(1)) {
-        case egl_vendor: value = "iLegacySim"; break;
-        case egl_version: value = "1.1 iLegacySim userland HLE"; break;
+        case egl_vendor: value = "iLEmu"; break;
+        case egl_version: value = "1.1 iLEmu userland HLE"; break;
         case egl_extensions: value = ""; break;
         default:
             egl_error_ = egl_bad_parameter;
@@ -1041,9 +1041,9 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry) {
     add("_glGetString", [this](UserlandHleCall& call) {
         std::string_view value;
         switch (call.argument(0)) {
-        case gl_vendor: value = "iLegacySim"; break;
+        case gl_vendor: value = "iLEmu"; break;
         case gl_renderer: value = renderer_->name(); break;
-        case gl_version: value = "OpenGL ES-CM 1.1 iLegacySim"; break;
+        case gl_version: value = "OpenGL ES-CM 1.1 iLEmu"; break;
         case gl_extensions:
             value = "GL_OES_fixed_point GL_OES_single_precision "
                     "GL_APPLE_texture_rectangle ";
@@ -2200,4 +2200,4 @@ void OpenGlesHle::unsupported(UserlandHleCall& call) {
     call.set_return(0);
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

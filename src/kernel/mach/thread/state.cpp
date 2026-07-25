@@ -1,10 +1,10 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/mach_arm_thread_abi.hpp"
-#include "ilegacysim/mach_thread_info_abi.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/thread_act_mig_ids.hpp"
-#include "ilegacysim/xnu_scheduler.hpp"
+#include "ilemu/mach_arm_thread_abi.hpp"
+#include "ilemu/mach_thread_info_abi.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/thread_act_mig_ids.hpp"
+#include "ilemu/xnu_scheduler.hpp"
 
 #include <algorithm>
 #include <array>
@@ -18,7 +18,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 using namespace mach_support;
@@ -316,4 +316,4 @@ bool CompatibilityKernel::dispatch_mach_thread_state_message(
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

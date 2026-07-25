@@ -25,11 +25,11 @@
 #include <utility>
 #include <vector>
 
-#include "ilegacysim/display.hpp"
-#include "ilegacysim/gles_abi.hpp"
-#include "ilegacysim/gles_resources.hpp"
+#include "ilemu/display.hpp"
+#include "ilemu/gles_abi.hpp"
+#include "ilemu/gles_resources.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr VkFormat color_format = VK_FORMAT_B8G8R8A8_UNORM;
@@ -517,16 +517,16 @@ VulkanGlesRenderer::VulkanGlesRenderer() {
     try {
         const auto vertex_code =
             compile_shader(vertex_shader_source, shaderc_glsl_vertex_shader,
-                           "iLegacySim GLES vertex shader");
+                           "iLEmu GLES vertex shader");
         const auto fragment_code =
             compile_shader(fragment_shader_source, shaderc_glsl_fragment_shader,
-                           "iLegacySim GLES fragment shader");
+                           "iLEmu GLES fragment shader");
 
         auto application = make_vulkan_structure<VkApplicationInfo>(
             VK_STRUCTURE_TYPE_APPLICATION_INFO);
-        application.pApplicationName = "iLegacySim";
+        application.pApplicationName = "iLEmu";
         application.applicationVersion = VK_MAKE_VERSION(0, 1, 0);
-        application.pEngineName = "iLegacySim GLES HLE";
+        application.pEngineName = "iLEmu GLES HLE";
         application.engineVersion = VK_MAKE_VERSION(0, 1, 0);
         application.apiVersion = VK_API_VERSION_1_0;
 
@@ -582,7 +582,7 @@ VulkanGlesRenderer::VulkanGlesRenderer() {
                 best_score = score;
                 physical_device_ = candidate;
                 queue_family_ = family;
-                renderer_name_ = "iLegacySim GLES 1.1 Vulkan (" +
+                renderer_name_ = "iLEmu GLES 1.1 Vulkan (" +
                                  std::string{properties.deviceName} + ")";
             }
         }
@@ -1780,4 +1780,4 @@ std::unique_ptr<GlesRenderer> create_vulkan_gles_renderer() noexcept {
     }
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

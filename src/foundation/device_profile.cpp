@@ -1,6 +1,6 @@
-#include "ilegacysim/device_profile.hpp"
+#include "ilemu/device_profile.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 
 const DeviceProfile& DeviceProfile::default_profile() {
     // iPhone OS 1.0 used the pre-1.1.2 clock setting generally reported as
@@ -24,4 +24,4 @@ const DeviceProfile& DeviceProfile::default_profile() {
     return profile;
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

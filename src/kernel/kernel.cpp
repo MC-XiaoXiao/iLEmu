@@ -1,35 +1,35 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/app_support_hle.hpp"
-#include "ilegacysim/bluetooth_manager_hle.hpp"
-#include "ilegacysim/bootstrap_mig_ids.hpp"
-#include "ilegacysim/core_telephony_hle.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/dns_configuration_hle.hpp"
-#include "ilegacysim/darwin_kqueue_abi.hpp"
-#include "ilegacysim/darwin_network_abi.hpp"
-#include "ilegacysim/darwin_resource_abi.hpp"
-#include "ilegacysim/darwin_route_socket.hpp"
-#include "ilegacysim/graphics_services_input.hpp"
-#include "ilegacysim/iokit_abi.hpp"
-#include "ilegacysim/kernel_clock.hpp"
-#include "ilegacysim/kernel_iokit.hpp"
-#include "ilegacysim/kernel_iokit_display.hpp"
-#include "ilegacysim/kernel_mach_ipc.hpp"
-#include "ilegacysim/kernel_mach_task_identity.hpp"
-#include "ilegacysim/kernel_network.hpp"
-#include "ilegacysim/mach_clock_abi.hpp"
-#include "ilegacysim/mach_host_mig_ids.hpp"
-#include "ilegacysim/mach_port_mig_ids.hpp"
-#include "ilegacysim/mach_scheduler_abi.hpp"
-#include "ilegacysim/mach_thread_policy_abi.hpp"
-#include "ilegacysim/macho.hpp"
-#include "ilegacysim/mbx_connect_hle.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/task_mig_ids.hpp"
-#include "ilegacysim/thread_act_mig_ids.hpp"
-#include "ilegacysim/vm_map_mig_ids.hpp"
-#include "ilegacysim/xnu_mig_adapter.hpp"
+#include "ilemu/app_support_hle.hpp"
+#include "ilemu/bluetooth_manager_hle.hpp"
+#include "ilemu/bootstrap_mig_ids.hpp"
+#include "ilemu/core_telephony_hle.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/dns_configuration_hle.hpp"
+#include "ilemu/darwin_kqueue_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
+#include "ilemu/darwin_resource_abi.hpp"
+#include "ilemu/darwin_route_socket.hpp"
+#include "ilemu/graphics_services_input.hpp"
+#include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel_clock.hpp"
+#include "ilemu/kernel_iokit.hpp"
+#include "ilemu/kernel_iokit_display.hpp"
+#include "ilemu/kernel_mach_ipc.hpp"
+#include "ilemu/kernel_mach_task_identity.hpp"
+#include "ilemu/kernel_network.hpp"
+#include "ilemu/mach_clock_abi.hpp"
+#include "ilemu/mach_host_mig_ids.hpp"
+#include "ilemu/mach_port_mig_ids.hpp"
+#include "ilemu/mach_scheduler_abi.hpp"
+#include "ilemu/mach_thread_policy_abi.hpp"
+#include "ilemu/macho.hpp"
+#include "ilemu/mbx_connect_hle.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/task_mig_ids.hpp"
+#include "ilemu/thread_act_mig_ids.hpp"
+#include "ilemu/vm_map_mig_ids.hpp"
+#include "ilemu/xnu_mig_adapter.hpp"
 
 #include <algorithm>
 #include <array>
@@ -49,7 +49,7 @@
 
 #include <sys/stat.h>
 
-namespace ilegacysim {
+namespace ilemu {
 
 namespace {
 
@@ -1646,4 +1646,4 @@ void CompatibilityKernel::trace_unknown(Cpu &cpu, std::string kind,
   }
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

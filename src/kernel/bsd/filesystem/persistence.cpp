@@ -1,6 +1,6 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
+#include "ilemu/darwin_abi.hpp"
 
 #include <cerrno>
 #include <string>
@@ -10,7 +10,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 
 bool CompatibilityKernel::dispatch_bsd_filesystem_persistence(
     Cpu &cpu, std::uint32_t number) {
@@ -45,4 +45,4 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_persistence(
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

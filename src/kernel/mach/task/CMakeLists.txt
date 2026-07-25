@@ -1,9 +1,9 @@
-add_library(ilegacysim_kernel_mach_task STATIC
+add_library(ilemu_kernel_mach_task STATIC
     identity.cpp
     enumeration.cpp)
-add_library(iLegacySim::kernel_mach_task ALIAS
-    ilegacysim_kernel_mach_task)
-ilegacysim_configure_module(ilegacysim_kernel_mach_task)
-target_link_libraries(ilegacysim_kernel_mach_task PRIVATE
-    iLegacySim::foundation
-    iLegacySim::mach)
+add_library(iLEmu::kernel_mach_task ALIAS
+    ilemu_kernel_mach_task)
+ilemu_configure_module(ilemu_kernel_mach_task)
+target_link_libraries(ilemu_kernel_mach_task PRIVATE
+    iLEmu::foundation
+    iLEmu::mach)

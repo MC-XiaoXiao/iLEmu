@@ -14,8 +14,8 @@ add_subdirectory(graphics)
 add_subdirectory(kernel)
 add_subdirectory(debug)
 
-add_library(ilegacysim_core INTERFACE)
-add_library(iLegacySim::core ALIAS ilegacysim_core)
-target_link_libraries(ilegacysim_core INTERFACE
-    iLegacySim::kernel
-    iLegacySim::debug)
+add_library(ilemu_core INTERFACE)
+add_library(iLEmu::core ALIAS ilemu_core)
+target_link_libraries(ilemu_core INTERFACE
+    iLEmu::kernel
+    iLEmu::debug)

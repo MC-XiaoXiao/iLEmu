@@ -742,8 +742,8 @@ void write_header(
               "#include <cstdint>\n"
               "#include <span>\n"
               "#include <string_view>\n\n"
-              "#include \"ilegacysim/xnu_mig_adapter.hpp\"\n\n"
-              "namespace ilegacysim::xnu792::mig::"
+              "#include \"ilemu/xnu_mig_adapter.hpp\"\n\n"
+              "namespace ilemu::xnu792::mig::"
            << arguments.cpp_namespace << " {\n\n"
               "inline constexpr std::string_view subsystem_name{\""
            << subsystem << "\"};\n"
@@ -819,7 +819,7 @@ void write_header(
               "constexpr std::uint32_t id(Routine routine) {\n"
               "    return static_cast<std::uint32_t>(routine);\n"
               "}\n\n"
-              "}  // namespace ilegacysim::xnu792::mig::"
+              "}  // namespace ilemu::xnu792::mig::"
            << arguments.cpp_namespace << "\n";
 }
 

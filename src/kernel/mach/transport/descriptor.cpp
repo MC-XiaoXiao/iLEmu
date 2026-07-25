@@ -1,10 +1,10 @@
-#include "ilegacysim/mach_descriptor_transport.hpp"
+#include "ilemu/mach_descriptor_transport.hpp"
 
-#include "ilegacysim/mig_wire_abi.hpp"
+#include "ilemu/mig_wire_abi.hpp"
 
 #include <limits>
 
-namespace ilegacysim::mach_transport {
+namespace ilemu::mach_transport {
 namespace {
 
 std::uint32_t read_word(std::span<const std::byte> bytes, std::size_t offset) {
@@ -80,4 +80,4 @@ parse_descriptors(std::span<const std::byte> message) {
   return descriptors;
 }
 
-} // namespace ilegacysim::mach_transport
+} // namespace ilemu::mach_transport

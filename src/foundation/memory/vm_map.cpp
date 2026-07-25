@@ -1,10 +1,10 @@
-#include "ilegacysim/vm_map.hpp"
+#include "ilemu/vm_map.hpp"
 
 #include <algorithm>
 #include <iterator>
 #include <limits>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint64_t address_space_end =
@@ -129,4 +129,4 @@ std::size_t VmMap::page_count(std::uint32_t page_size) const {
   return static_cast<std::size_t>(count);
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

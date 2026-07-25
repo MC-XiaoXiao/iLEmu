@@ -1,4 +1,4 @@
-#include "ilegacysim/mbx2d_hle.hpp"
+#include "ilemu/mbx2d_hle.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -13,14 +13,14 @@
 #include <utility>
 #include <vector>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/display.hpp"
-#include "ilegacysim/mbx2d_abi.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/presentation_tracker.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/display.hpp"
+#include "ilemu/mbx2d_abi.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/presentation_tracker.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view mbx2d_image{
@@ -1010,4 +1010,4 @@ void Mbx2dHle::deferred(UserlandHleCall &call) {
   call.set_return(mbx_success);
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

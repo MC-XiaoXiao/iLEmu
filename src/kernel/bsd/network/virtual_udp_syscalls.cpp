@@ -1,6 +1,6 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
+#include "ilemu/darwin_abi.hpp"
 
 #include "../support.hpp"
 
@@ -10,7 +10,7 @@
 #include <span>
 #include <vector>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 std::uint32_t socket_error(bsd::VirtualUdpStatus status) {
@@ -135,4 +135,4 @@ bool CompatibilityKernel::send_socket_message(
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

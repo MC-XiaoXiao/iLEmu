@@ -1,24 +1,24 @@
-#include "ilegacysim/sdl_display.hpp"
+#include "ilemu/sdl_display.hpp"
 
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 
-#include "ilegacysim/display.hpp"
+#include "ilemu/display.hpp"
 #include "sdl_input.hpp"
 
-#if defined(ILEGACYSIM_HAS_SDL2)
+#if defined(ILEMU_HAS_SDL2)
 #include <SDL.h>
 #endif
 
-namespace ilegacysim {
+namespace ilemu {
 
 struct SdlDisplay::Impl {
   Impl(DisplayGeometry initial_geometry, DisplayGeometry input_geometry)
       : geometry{initial_geometry}, input{input_geometry} {}
 
   DisplayGeometry geometry;
-#if defined(ILEGACYSIM_HAS_SDL2)
+#if defined(ILEMU_HAS_SDL2)
   SDL_Window *window{};
   SDL_Renderer *renderer{};
   SDL_Texture *texture{};
@@ -30,7 +30,7 @@ struct SdlDisplay::Impl {
 };
 
 bool SdlDisplay::available() {
-#if defined(ILEGACYSIM_HAS_SDL2)
+#if defined(ILEMU_HAS_SDL2)
   return true;
 #else
   return false;
@@ -43,13 +43,13 @@ SdlDisplay::SdlDisplay(DisplayGeometry frame_geometry,
           frame_geometry.valid() ? frame_geometry : default_display_geometry,
           input_geometry.valid() ? input_geometry
                                  : default_display_geometry)} {
-#if defined(ILEGACYSIM_HAS_SDL2)
+#if defined(ILEMU_HAS_SDL2)
   if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
     throw std::runtime_error{"SDL video initialization failed: " +
                              std::string{SDL_GetError()}};
   }
   impl_->window = SDL_CreateWindow(
-      "iLegacySim", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+      "iLEmu", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
       static_cast<int>(impl_->geometry.width),
       static_cast<int>(impl_->geometry.height), SDL_WINDOW_RESIZABLE);
   if (impl_->window == nullptr) {
@@ -80,12 +80,12 @@ SdlDisplay::SdlDisplay(DisplayGeometry frame_geometry,
   present(initial);
 #else
   throw std::runtime_error{
-      "SDL2 display support was not available when iLegacySim was built"};
+      "SDL2 display support was not available when iLEmu was built"};
 #endif
 }
 
 SdlDisplay::~SdlDisplay() {
-#if defined(ILEGACYSIM_HAS_SDL2)
+#if defined(ILEMU_HAS_SDL2)
   if (impl_) {
     if (impl_->texture != nullptr)
       SDL_DestroyTexture(impl_->texture);
@@ -99,7 +99,7 @@ SdlDisplay::~SdlDisplay() {
 }
 
 void SdlDisplay::present(const DisplayFrame &frame) {
-#if defined(ILEGACYSIM_HAS_SDL2)
+#if defined(ILEMU_HAS_SDL2)
   if (frame.width != impl_->geometry.width ||
       frame.height != impl_->geometry.height || frame.pixels.empty()) {
     return;
@@ -112,7 +112,7 @@ void SdlDisplay::present(const DisplayFrame &frame) {
 }
 
 bool SdlDisplay::poll_events() {
-#if defined(ILEGACYSIM_HAS_SDL2)
+#if defined(ILEMU_HAS_SDL2)
   std::optional<DisplayFrame> frame;
   {
     std::lock_guard lock{impl_->frame_mutex};
@@ -146,4 +146,4 @@ std::vector<RingerSwitchInput> SdlDisplay::take_ringer_switch_events() {
   return impl_->input.take_ringer_switch_events();
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

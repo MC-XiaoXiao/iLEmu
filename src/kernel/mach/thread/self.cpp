@@ -1,12 +1,12 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/kernel_shared_state.hpp"
-#include "ilegacysim/mach_namespace.hpp"
+#include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/mach_namespace.hpp"
 
 #include <cstdint>
 #include <mutex>
 
-namespace ilegacysim {
+namespace ilemu {
 
 void CompatibilityKernel::dispatch_mach_thread_self_trap(Cpu &cpu) {
   const auto slot = static_cast<std::uint32_t>(cpu.processor_id());
@@ -30,4 +30,4 @@ void CompatibilityKernel::dispatch_mach_thread_self_trap(Cpu &cpu) {
   cpu.registers()[0] = name;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

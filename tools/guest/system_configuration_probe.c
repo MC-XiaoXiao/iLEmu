@@ -133,10 +133,10 @@ static int run_dynamic_store_probe(CFRunLoopRef run_loop) {
   SCDynamicStoreContext context = {0, (void *)0, (void *)0, (void *)0,
                                    (void *)0};
   CFStringRef name = CFStringCreateWithCString(
-      (CFAllocatorRef)0, "iLegacySim SystemConfiguration probe",
+      (CFAllocatorRef)0, "iLEmu SystemConfiguration probe",
       cf_string_encoding_utf8);
   CFStringRef key = CFStringCreateWithCString(
-      (CFAllocatorRef)0, "State:/iLegacySim/Probe", cf_string_encoding_utf8);
+      (CFAllocatorRef)0, "State:/iLEmu/Probe", cf_string_encoding_utf8);
   CFStringRef value = CFStringCreateWithCString((CFAllocatorRef)0, "callback",
                                                 cf_string_encoding_utf8);
   if (name == (CFStringRef)0 || key == (CFStringRef)0 ||
@@ -223,7 +223,7 @@ static int run_reachability_probe(CFRunLoopRef run_loop,
   return success;
 }
 
-int ilegacysim_run_system_configuration_probe(const char *reachability_name) {
+int ilemu_run_system_configuration_probe(const char *reachability_name) {
   CFRunLoopRef run_loop = CFRunLoopGetCurrent();
   if (run_loop == (CFRunLoopRef)0 || !run_dynamic_store_probe(run_loop)) {
     emit(store_failed_marker, sizeof(store_failed_marker) - 1);

@@ -1,9 +1,9 @@
-#include "ilegacysim/mach_namespace.hpp"
+#include "ilemu/mach_namespace.hpp"
 
 #include <algorithm>
 #include <limits>
 
-namespace ilegacysim::xnu792::ipc {
+namespace ilemu::xnu792::ipc {
 namespace {
 
 constexpr std::size_t right_count = 5;
@@ -360,4 +360,4 @@ bool MachNamespaceTable::valid_name(MachName name) {
   return name != null_name && name != dead_name;
 }
 
-} // namespace ilegacysim::xnu792::ipc
+} // namespace ilemu::xnu792::ipc

@@ -1,11 +1,11 @@
-#include "ilegacysim/kernel_iokit_baseband.hpp"
+#include "ilemu/kernel_iokit_baseband.hpp"
 
-#include "ilegacysim/kernel_shared_state.hpp"
+#include "ilemu/kernel_shared_state.hpp"
 
 #include <algorithm>
 #include <string>
 
-namespace ilegacysim::kernel_iokit::baseband {
+namespace ilemu::kernel_iokit::baseband {
 
 namespace {
 
@@ -37,4 +37,4 @@ std::uint32_t ensure_service_locked(KernelSharedState &state) {
   return object;
 }
 
-} // namespace ilegacysim::kernel_iokit::baseband
+} // namespace ilemu::kernel_iokit::baseband

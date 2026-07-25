@@ -1,11 +1,11 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_kqueue_abi.hpp"
-#include "ilegacysim/darwin_network_abi.hpp"
-#include "ilegacysim/darwin_resource_abi.hpp"
-#include "ilegacysim/darwin_route_socket.hpp"
-#include "ilegacysim/kernel_network.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_kqueue_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
+#include "ilemu/darwin_resource_abi.hpp"
+#include "ilemu/darwin_route_socket.hpp"
+#include "ilemu/kernel_network.hpp"
 
 #include <algorithm>
 #include <array>
@@ -26,7 +26,7 @@
 
 #include "support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 
 void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   switch (number) {
@@ -176,4 +176,4 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   }
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

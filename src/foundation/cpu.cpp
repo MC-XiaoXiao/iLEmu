@@ -1,4 +1,4 @@
-#include "ilegacysim/cpu.hpp"
+#include "ilemu/cpu.hpp"
 
 #include <array>
 #include <mutex>
@@ -8,7 +8,7 @@
 #include <thread>
 #include <utility>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 [[nodiscard]] Dynarmic::A32::ArchVersion dynarmic_architecture_version(
@@ -467,4 +467,4 @@ std::vector<CpuRunResult> CpuCluster::run_parallel(std::uint64_t ticks_per_cpu) 
     return results;
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

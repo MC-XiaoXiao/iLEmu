@@ -1,9 +1,9 @@
-#include "ilegacysim/darwin_sysctl.hpp"
+#include "ilemu/darwin_sysctl.hpp"
 
 #include <algorithm>
 #include <iterator>
 
-namespace ilegacysim::darwin::sysctl {
+namespace ilemu::darwin::sysctl {
 namespace {
 
 void append_string(std::vector<std::byte> &result, std::string_view value) {
@@ -42,4 +42,4 @@ encode_process_arguments(std::string_view executable_path,
   return result;
 }
 
-} // namespace ilegacysim::darwin::sysctl
+} // namespace ilemu::darwin::sysctl

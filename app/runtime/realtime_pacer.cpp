@@ -1,11 +1,11 @@
-#include "ilegacysim/realtime_pacer.hpp"
+#include "ilemu/realtime_pacer.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <limits>
 
-namespace ilegacysim {
+namespace ilemu {
 
 RealtimePacer::RealtimePacer(std::uint64_t initial_virtual_time)
     : initial_virtual_time_{initial_virtual_time},
@@ -39,4 +39,4 @@ RealtimePacer::delay_until(std::uint64_t virtual_time) const {
       static_cast<std::chrono::nanoseconds::rep>(std::min(delay, maximum))};
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

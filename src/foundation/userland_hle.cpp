@@ -1,4 +1,4 @@
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/userland_hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9,12 +9,12 @@
 #include <stdexcept>
 #include <utility>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/macho.hpp"
-#include "ilegacysim/output.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/macho.hpp"
+#include "ilemu/output.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t arm_svc_opcode = 0xef000000U;
@@ -1179,4 +1179,4 @@ void UserlandHleRegistry::inherit_mappings(const UserlandHleRegistry &parent) {
   pending_thread_callbacks_.clear();
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

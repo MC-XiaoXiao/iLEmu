@@ -1,10 +1,10 @@
-#include "ilegacysim/lockdown_profile.hpp"
+#include "ilemu/lockdown_profile.hpp"
 
 #include <fstream>
 #include <stdexcept>
 #include <string>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view activation_state_key{"-ActivationState"};
@@ -98,7 +98,7 @@ LockdownProfileResult apply_lockdown_profile(
 
     std::filesystem::create_directories(path.parent_path());
     auto temporary = path;
-    temporary += ".ilegacysim.tmp";
+    temporary += ".ilemu.tmp";
     {
         std::ofstream output{temporary, std::ios::binary | std::ios::trunc};
         if (!output || !output.write(xml.data(),
@@ -111,4 +111,4 @@ LockdownProfileResult apply_lockdown_profile(
     return {path, true};
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

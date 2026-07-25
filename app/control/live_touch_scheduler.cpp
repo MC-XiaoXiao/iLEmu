@@ -1,8 +1,8 @@
-#include "ilegacysim/live_touch_scheduler.hpp"
+#include "ilemu/live_touch_scheduler.hpp"
 
 #include <algorithm>
 
-namespace ilegacysim {
+namespace ilemu {
 
 void LiveTouchScheduler::schedule(std::span<const LiveTouchEvent> gesture) {
   if (gesture.empty())
@@ -28,4 +28,4 @@ std::vector<TouchInput> LiveTouchScheduler::poll() {
   return result;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

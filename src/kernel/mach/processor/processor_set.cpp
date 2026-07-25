@@ -1,9 +1,9 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/host_priv_mig_ids.hpp"
-#include "ilegacysim/mach_port_object.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/processor_set_mig_ids.hpp"
+#include "ilemu/host_priv_mig_ids.hpp"
+#include "ilemu/mach_port_object.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/processor_set_mig_ids.hpp"
 
 #include <array>
 #include <cstddef>
@@ -14,7 +14,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 using namespace mach_support;
@@ -257,4 +257,4 @@ bool CompatibilityKernel::dispatch_mach_processor_message(
   return false;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

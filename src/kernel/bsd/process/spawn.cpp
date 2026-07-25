@@ -1,4 +1,4 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -9,7 +9,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t posix_spawn_syscall = 244U;
@@ -112,4 +112,4 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

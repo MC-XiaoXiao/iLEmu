@@ -3,7 +3,7 @@
 #include <cstdint>
 #include <optional>
 
-namespace ilegacysim {
+namespace ilemu {
 
 class AddressSpace;
 class Output;
@@ -22,4 +22,4 @@ namespace kernel_iokit {
     std::uint32_t remote_object, std::uint32_t local_port);
 
 } // namespace kernel_iokit
-} // namespace ilegacysim
+} // namespace ilemu

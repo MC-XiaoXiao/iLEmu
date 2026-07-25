@@ -1,6 +1,6 @@
-#include "ilegacysim/kernel_control.hpp"
+#include "ilemu/kernel_control.hpp"
 
-namespace ilegacysim::bsd::kernel_control {
+namespace ilemu::bsd::kernel_control {
 
 std::optional<std::uint32_t> identifier_for_name(std::string_view name) {
   if (name == ip_interface_name)
@@ -15,4 +15,4 @@ name_for_identifier(std::uint32_t identifier) {
   return std::nullopt;
 }
 
-} // namespace ilegacysim::bsd::kernel_control
+} // namespace ilemu::bsd::kernel_control

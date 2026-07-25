@@ -1,8 +1,8 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_kernel_control_abi.hpp"
-#include "ilegacysim/kernel_control.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_kernel_control_abi.hpp"
+#include "ilemu/kernel_control.hpp"
 
 #include <array>
 #include <cstddef>
@@ -13,7 +13,7 @@
 
 #include "../../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 
 bool CompatibilityKernel::create_kernel_control_socket(Cpu &cpu) {
   auto &registers = cpu.registers();
@@ -222,4 +222,4 @@ bool CompatibilityKernel::write_kernel_control_socket(
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

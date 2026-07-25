@@ -1,10 +1,10 @@
-#include "ilegacysim/xnu_scheduler.hpp"
+#include "ilemu/xnu_scheduler.hpp"
 
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
 
-namespace ilegacysim {
+namespace ilemu {
 
 namespace {
 
@@ -703,4 +703,4 @@ std::uint32_t XnuScheduler::timeshare_quanta() const {
         (processor_count + run_queue_count / 2U) / run_queue_count);
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

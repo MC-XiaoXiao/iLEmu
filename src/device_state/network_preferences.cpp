@@ -1,4 +1,4 @@
-#include "ilegacysim/network_preferences.hpp"
+#include "ilemu/network_preferences.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,20 +14,20 @@
 #include <utility>
 #include <vector>
 
-#if defined(ILEGACYSIM_HAS_LIBPLIST)
+#if defined(ILEMU_HAS_LIBPLIST)
 #include <plist/plist.h>
 #endif
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view default_set_identifier{
     "A1F4F2E2-EE3B-4C6D-8B67-1E6A43530002"};
 constexpr std::string_view default_service_identifier{
     "A1F4F2E2-EE3B-4C6D-8B67-1E6A43530001"};
-constexpr std::string_view managed_service_key{"iLegacySimManaged"};
+constexpr std::string_view managed_service_key{"iLEmuManaged"};
 
-#if defined(ILEGACYSIM_HAS_LIBPLIST)
+#if defined(ILEMU_HAS_LIBPLIST)
 
 class PlistOwner {
 public:
@@ -380,7 +380,7 @@ void write_plist_atomically(const std::filesystem::path& path, plist_t root,
 
     std::filesystem::create_directories(path.parent_path());
     auto temporary = path;
-    temporary += ".ilegacysim.tmp";
+    temporary += ".ilemu.tmp";
     {
         std::ofstream output{temporary, std::ios::binary | std::ios::trunc};
         if (!output ||
@@ -407,7 +407,7 @@ NetworkPreferencesResult ensure_airport_network_service(
                   "private/var/root/Library/Preferences/SystemConfiguration/"
                   "preferences.plist";
 
-#if defined(ILEGACYSIM_HAS_LIBPLIST)
+#if defined(ILEMU_HAS_LIBPLIST)
     result.supported = true;
     result.preferred_wifi_networks = preferred_wifi_networks(rootfs);
     auto bytes = read_file(result.path);
@@ -525,4 +525,4 @@ NetworkPreferencesResult ensure_airport_network_service(
     return result;
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

@@ -8,7 +8,7 @@
 #include <mutex>
 #include <string>
 
-#if defined(ILEGACYSIM_HAS_FFMPEG)
+#if defined(ILEMU_HAS_FFMPEG)
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -19,10 +19,10 @@ extern "C" {
 }
 #endif
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
-#if defined(ILEGACYSIM_HAS_FFMPEG)
+#if defined(ILEMU_HAS_FFMPEG)
 std::string ffmpeg_error(int status) {
   std::array<char, AV_ERROR_MAX_STRING_SIZE> text{};
   if (av_strerror(status, text.data(), text.size()) < 0)
@@ -68,7 +68,7 @@ FfmpegAudioDecoder::FfmpegAudioDecoder()
 FfmpegAudioDecoder::~FfmpegAudioDecoder() = default;
 
 bool FfmpegAudioDecoder::available() {
-#if defined(ILEGACYSIM_HAS_FFMPEG)
+#if defined(ILEMU_HAS_FFMPEG)
   return true;
 #else
   return false;
@@ -78,7 +78,7 @@ bool FfmpegAudioDecoder::available() {
 std::optional<AudioBuffer>
 FfmpegAudioDecoder::decode(const std::filesystem::path &path) {
   std::lock_guard lock{impl_->mutex};
-#if defined(ILEGACYSIM_HAS_FFMPEG)
+#if defined(ILEMU_HAS_FFMPEG)
   AVFormatContext *raw_format = nullptr;
   auto status = avformat_open_input(&raw_format, path.c_str(), nullptr, nullptr);
   if (status < 0) {
@@ -231,4 +231,4 @@ std::string FfmpegAudioDecoder::last_error() const {
   return impl_->error;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

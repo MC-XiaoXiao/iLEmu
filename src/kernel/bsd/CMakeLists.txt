@@ -7,7 +7,7 @@ add_subdirectory(network)
 add_subdirectory(process)
 add_subdirectory(vm)
 
-target_sources(ilegacysim_kernel PRIVATE
+target_sources(ilemu_kernel PRIVATE
     dispatch.cpp
     aio.cpp
     process.cpp
@@ -17,17 +17,17 @@ target_sources(ilegacysim_kernel PRIVATE
     socket.cpp
     events.cpp
     support.cpp)
-target_link_libraries(ilegacysim_kernel PRIVATE
-    iLegacySim::kernel_bsd_baseband_device
-    iLegacySim::kernel_bsd_control
-    iLegacySim::kernel_bsd_debug
-    iLegacySim::kernel_bsd_filesystem_persistence
-    iLegacySim::kernel_bsd_filesystem_timestamps
-    iLegacySim::kernel_bsd_filesystem_locking
-    iLegacySim::kernel_bsd_filesystem_ownership
-    iLegacySim::kernel_bsd_virtual_udp_syscalls
-    iLegacySim::kernel_bsd_virtual_udp
-    iLegacySim::kernel_bsd_process
-    iLegacySim::kernel_bsd_vm_shared_region
-    iLegacySim::kernel_bsd_signal
-    iLegacySim::kernel_bsd_sysctl)
+target_link_libraries(ilemu_kernel PRIVATE
+    iLEmu::kernel_bsd_baseband_device
+    iLEmu::kernel_bsd_control
+    iLEmu::kernel_bsd_debug
+    iLEmu::kernel_bsd_filesystem_persistence
+    iLEmu::kernel_bsd_filesystem_timestamps
+    iLEmu::kernel_bsd_filesystem_locking
+    iLEmu::kernel_bsd_filesystem_ownership
+    iLEmu::kernel_bsd_virtual_udp_syscalls
+    iLEmu::kernel_bsd_virtual_udp
+    iLEmu::kernel_bsd_process
+    iLEmu::kernel_bsd_vm_shared_region
+    iLEmu::kernel_bsd_signal
+    iLEmu::kernel_bsd_sysctl)

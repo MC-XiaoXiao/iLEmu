@@ -1,8 +1,8 @@
-add_library(ilegacysim_kernel_bsd_baseband_device STATIC
+add_library(ilemu_kernel_bsd_baseband_device STATIC
     device.cpp
     replay.cpp)
-add_library(iLegacySim::kernel_bsd_baseband_device ALIAS
-    ilegacysim_kernel_bsd_baseband_device)
-ilegacysim_configure_module(ilegacysim_kernel_bsd_baseband_device)
-target_link_libraries(ilegacysim_kernel_bsd_baseband_device PRIVATE
-    iLegacySim::foundation)
+add_library(iLEmu::kernel_bsd_baseband_device ALIAS
+    ilemu_kernel_bsd_baseband_device)
+ilemu_configure_module(ilemu_kernel_bsd_baseband_device)
+target_link_libraries(ilemu_kernel_bsd_baseband_device PRIVATE
+    iLEmu::foundation)

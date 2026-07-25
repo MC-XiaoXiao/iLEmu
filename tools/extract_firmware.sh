@@ -20,7 +20,7 @@ fi
 
 "${project_root}/tools/dmg2img/dmg2img" -p 3 -i "${dmg}" -o "${image}"
 "${project_root}/tools/hfsfuse/hfstar" \
-    -W --rsrc-ext .ilegacysim-rsrc "${image}" "${archive}"
+    -W --rsrc-ext .ilemu-rsrc "${image}" "${archive}"
 if tar --version 2>/dev/null | grep -q "GNU tar"; then
     tar --xattrs --xattrs-include='*' --warning=no-unknown-keyword \
         --no-same-owner --no-same-permissions \

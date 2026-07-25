@@ -1,4 +1,4 @@
-#include "ilegacysim/hfs_metadata.hpp"
+#include "ilemu/hfs_metadata.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -15,7 +15,7 @@
 #include <sys/stat.h>
 #include <sys/xattr.h>
 
-namespace ilegacysim::hfs {
+namespace ilemu::hfs {
 namespace {
 
 constexpr std::uint32_t hfs_root_catalog_id = 2;
@@ -670,4 +670,4 @@ std::filesystem::path MetadataProvider::resource_sidecar(
     return result;
 }
 
-}  // namespace ilegacysim::hfs
+}  // namespace ilemu::hfs

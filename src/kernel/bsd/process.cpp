@@ -1,12 +1,12 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_kqueue_abi.hpp"
-#include "ilegacysim/darwin_network_abi.hpp"
-#include "ilegacysim/darwin_resource_abi.hpp"
-#include "ilegacysim/darwin_route_socket.hpp"
-#include "ilegacysim/graphics_services_input.hpp"
-#include "ilegacysim/kernel_network.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_kqueue_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
+#include "ilemu/darwin_resource_abi.hpp"
+#include "ilemu/darwin_route_socket.hpp"
+#include "ilemu/graphics_services_input.hpp"
+#include "ilemu/kernel_network.hpp"
 
 #include <algorithm>
 #include <array>
@@ -28,7 +28,7 @@
 #include "support.hpp"
 #include "../mach/support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 
 void CompatibilityKernel::release_process_mach_rights() {
   scene_coordinator_->retire_process(process_.pid);
@@ -564,4 +564,4 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
   }
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

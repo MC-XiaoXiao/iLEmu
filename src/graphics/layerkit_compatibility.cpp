@@ -1,10 +1,10 @@
-#include "ilegacysim/layerkit_compatibility.hpp"
+#include "ilemu/layerkit_compatibility.hpp"
 
 #include <bit>
 #include <cmath>
 #include <limits>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t render_type_mask = 0x001f0000U;
@@ -134,4 +134,4 @@ std::optional<std::uint32_t> LayerKitRootCompatibility::observe_commit(
   return state.attached_window_wrapper;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

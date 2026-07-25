@@ -1,5 +1,5 @@
-add_library(ilegacysim_bluetooth STATIC
+add_library(ilemu_bluetooth STATIC
     bluetooth_manager_hle.cpp)
-add_library(iLegacySim::bluetooth ALIAS ilegacysim_bluetooth)
-ilegacysim_configure_module(ilegacysim_bluetooth)
-target_link_libraries(ilegacysim_bluetooth PUBLIC iLegacySim::foundation)
+add_library(iLEmu::bluetooth ALIAS ilemu_bluetooth)
+ilemu_configure_module(ilemu_bluetooth)
+target_link_libraries(ilemu_bluetooth PUBLIC iLEmu::foundation)

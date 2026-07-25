@@ -2,9 +2,9 @@
 
 #include <memory>
 
-#include "ilegacysim/audio.hpp"
+#include "ilemu/audio.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 
 class FfmpegAudioDecoder final : public AudioDecoder {
 public:
@@ -24,4 +24,4 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
-} // namespace ilegacysim
+} // namespace ilemu

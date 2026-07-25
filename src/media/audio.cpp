@@ -1,4 +1,4 @@
-#include "ilegacysim/audio.hpp"
+#include "ilemu/audio.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,11 +13,11 @@
 #include <string>
 #include <utility>
 
-#if defined(ILEGACYSIM_HAS_LIBPLIST)
+#if defined(ILEMU_HAS_LIBPLIST)
 #include <plist/plist.h>
 #endif
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::array<std::byte, 4> caf_signature{
@@ -608,7 +608,7 @@ AudioService::load_file_locked(const std::filesystem::path &guest_path,
 }
 
 void AudioService::load_category_aliases() {
-#if defined(ILEGACYSIM_HAS_LIBPLIST)
+#if defined(ILEMU_HAS_LIBPLIST)
   const auto path =
       rootfs_ / "System/Library/Frameworks/Celestial.framework/"
                 "CategoriesThatShareVolumes.plist";
@@ -676,7 +676,7 @@ void AudioService::retire_finished_service_source_locked() {
 }
 
 void AudioService::load_system_volume_state() {
-#if defined(ILEGACYSIM_HAS_LIBPLIST)
+#if defined(ILEMU_HAS_LIBPLIST)
   const auto path = rootfs_ /
                     "var/root/Library/Preferences/com.apple.celestial.plist";
   const auto bytes = read_file(path);
@@ -711,4 +711,4 @@ void AudioService::load_system_volume_state() {
 #endif
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

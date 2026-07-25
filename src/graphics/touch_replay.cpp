@@ -1,4 +1,4 @@
-#include "ilegacysim/touch_replay.hpp"
+#include "ilemu/touch_replay.hpp"
 
 #include <fstream>
 #include <limits>
@@ -6,7 +6,7 @@
 #include <stdexcept>
 #include <string>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 TouchPhase parse_phase(const std::string &value) {
@@ -84,4 +84,4 @@ bool TouchReplay::settled(std::chrono::milliseconds quiet_period) const {
          final_delay + quiet_period;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

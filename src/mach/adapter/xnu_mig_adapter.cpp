@@ -1,21 +1,21 @@
-#include "ilegacysim/xnu_mig_adapter.hpp"
+#include "ilemu/xnu_mig_adapter.hpp"
 
 #include <limits>
 
-#include "ilegacysim/bootstrap_mig_ids.hpp"
-#include "ilegacysim/clock_mig_ids.hpp"
-#include "ilegacysim/clock_reply_mig_ids.hpp"
-#include "ilegacysim/device_mig_ids.hpp"
-#include "ilegacysim/mach_host_mig_ids.hpp"
-#include "ilegacysim/mach_port_mig_ids.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/semaphore_mig_ids.hpp"
-#include "ilegacysim/system_configuration_mig_ids.hpp"
-#include "ilegacysim/task_mig_ids.hpp"
-#include "ilegacysim/thread_act_mig_ids.hpp"
-#include "ilegacysim/vm_map_mig_ids.hpp"
+#include "ilemu/bootstrap_mig_ids.hpp"
+#include "ilemu/clock_mig_ids.hpp"
+#include "ilemu/clock_reply_mig_ids.hpp"
+#include "ilemu/device_mig_ids.hpp"
+#include "ilemu/mach_host_mig_ids.hpp"
+#include "ilemu/mach_port_mig_ids.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/semaphore_mig_ids.hpp"
+#include "ilemu/system_configuration_mig_ids.hpp"
+#include "ilemu/task_mig_ids.hpp"
+#include "ilemu/thread_act_mig_ids.hpp"
+#include "ilemu/vm_map_mig_ids.hpp"
 
-namespace ilegacysim::xnu792::mig {
+namespace ilemu::xnu792::mig {
 namespace {
 
 template<typename Range>
@@ -227,4 +227,4 @@ std::optional<RoutineInfo> lookup_routine(std::uint32_t identifier) {
         system_configuration::routines);
 }
 
-}  // namespace ilegacysim::xnu792::mig
+}  // namespace ilemu::xnu792::mig

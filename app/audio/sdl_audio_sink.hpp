@@ -4,9 +4,9 @@
 #include <mutex>
 #include <string>
 
-#include "ilegacysim/audio.hpp"
+#include "ilemu/audio.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 
 class SdlAudioSink final : public AudioSink {
 public:
@@ -28,4 +28,4 @@ private:
   std::unique_ptr<Impl> impl_;
 };
 
-} // namespace ilegacysim
+} // namespace ilemu

@@ -1,4 +1,4 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
 #include "../support.hpp"
 
@@ -11,7 +11,7 @@
 #include <system_error>
 #include <vector>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 // The iPhoneOS 1 ARM dyld uses five 32-bit words here.  This differs from
@@ -235,4 +235,4 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

@@ -1,4 +1,4 @@
-#include "ilegacysim/kernel_clock.hpp"
+#include "ilemu/kernel_clock.hpp"
 
 #include <array>
 #include <cstddef>
@@ -7,15 +7,15 @@
 #include <span>
 #include <utility>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/clock_mig_ids.hpp"
-#include "ilegacysim/clock_reply_mig_ids.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/kernel_shared_state.hpp"
-#include "ilegacysim/mach_clock_abi.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/clock_mig_ids.hpp"
+#include "ilemu/clock_reply_mig_ids.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/mach_clock_abi.hpp"
+#include "ilemu/mig_wire_abi.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t mach_rcv_too_large = 0x10004004U;
@@ -308,4 +308,4 @@ void deliver_due_clock_alarms_locked(
     }
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

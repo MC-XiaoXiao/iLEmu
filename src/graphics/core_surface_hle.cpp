@@ -1,4 +1,4 @@
-#include "ilegacysim/core_surface_hle.hpp"
+#include "ilemu/core_surface_hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,19 +12,19 @@
 #include <utility>
 #include <vector>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/core_surface_abi.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/display.hpp"
-#include "ilegacysim/iokit_abi.hpp"
-#include "ilegacysim/kernel_shared_state.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/presentation_tracker.hpp"
-#include "ilegacysim/scene_coordinator.hpp"
-#include "ilegacysim/surface_store.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/core_surface_abi.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/display.hpp"
+#include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/presentation_tracker.hpp"
+#include "ilemu/scene_coordinator.hpp"
+#include "ilemu/surface_store.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view core_surface_image{
@@ -586,4 +586,4 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
     }
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

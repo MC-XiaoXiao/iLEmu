@@ -1,12 +1,12 @@
-add_library(ilegacysim_kernel_mach_vm STATIC
+add_library(ilemu_kernel_mach_vm STATIC
     allocate.cpp
     copy.cpp
     map.cpp
     memory_entry.cpp
     purgable.cpp
     read.cpp)
-add_library(iLegacySim::kernel_mach_vm ALIAS
-    ilegacysim_kernel_mach_vm)
-ilegacysim_configure_module(ilegacysim_kernel_mach_vm)
-target_link_libraries(ilegacysim_kernel_mach_vm PRIVATE
-    iLegacySim::foundation)
+add_library(iLEmu::kernel_mach_vm ALIAS
+    ilemu_kernel_mach_vm)
+ilemu_configure_module(ilemu_kernel_mach_vm)
+target_link_libraries(ilemu_kernel_mach_vm PRIVATE
+    iLEmu::foundation)

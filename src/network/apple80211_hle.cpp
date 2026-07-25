@@ -1,4 +1,4 @@
-#include "ilegacysim/apple80211_hle.hpp"
+#include "ilemu/apple80211_hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9,12 +9,12 @@
 #include <string_view>
 #include <utility>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view aeropuerto_image{
@@ -479,4 +479,4 @@ void Apple80211Hle::queue_event_locked(
     });
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

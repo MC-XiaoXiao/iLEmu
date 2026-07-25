@@ -1,4 +1,4 @@
-#include "ilegacysim/address_space.hpp"
+#include "ilemu/address_space.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -10,7 +10,7 @@
 
 #include <sys/mman.h>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t page_base(std::uint32_t address) {
@@ -1118,4 +1118,4 @@ void AddressSpace::clear_page_permissions_locked(std::uint32_t address,
   }
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

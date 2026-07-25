@@ -1,9 +1,9 @@
-#include "ilegacysim/display.hpp"
+#include "ilemu/display.hpp"
 
 #include <algorithm>
 #include <utility>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 std::vector<std::uint32_t>
@@ -88,4 +88,4 @@ bool DisplayState::powered_on() const {
   return powered_on_;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

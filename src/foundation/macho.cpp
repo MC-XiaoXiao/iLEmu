@@ -1,4 +1,4 @@
-#include "ilegacysim/macho.hpp"
+#include "ilemu/macho.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,7 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::uint32_t mh_magic = 0xfeedfaceU;
@@ -561,4 +561,4 @@ std::string mach_cpu_name(std::uint32_t cpu_type, std::uint32_t cpu_subtype) {
     }
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

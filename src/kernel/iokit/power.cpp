@@ -1,13 +1,13 @@
 #include "power.hpp"
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/device_mig_ids.hpp"
-#include "ilegacysim/iokit_abi.hpp"
-#include "ilegacysim/kernel_shared_state.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/xnu_mig_adapter.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/device_mig_ids.hpp"
+#include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/xnu_mig_adapter.hpp"
 
 #include <array>
 #include <cstddef>
@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-namespace ilegacysim::kernel_iokit {
+namespace ilemu::kernel_iokit {
 namespace {
 
 namespace device_mig = xnu792::mig::device;
@@ -263,4 +263,4 @@ std::optional<std::uint32_t> handle_power_mach_request(
                                       remote_object, local_port);
 }
 
-} // namespace ilegacysim::kernel_iokit
+} // namespace ilemu::kernel_iokit

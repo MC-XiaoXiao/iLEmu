@@ -1,9 +1,9 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/mach_port_mig_ids.hpp"
-#include "ilegacysim/mach_port_object.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/mach_port_mig_ids.hpp"
+#include "ilemu/mach_port_object.hpp"
+#include "ilemu/mig_wire_abi.hpp"
 
 #include <array>
 #include <cstddef>
@@ -11,7 +11,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 
 bool CompatibilityKernel::dispatch_mach_port_limit_message(
     Cpu &cpu, const MachMessageRequest &request) {
@@ -97,4 +97,4 @@ bool CompatibilityKernel::dispatch_mach_port_limit_message(
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

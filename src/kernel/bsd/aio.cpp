@@ -1,6 +1,6 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/darwin_abi.hpp"
+#include "ilemu/darwin_abi.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -20,7 +20,7 @@
 
 #include "support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 enum class AioOperation {
@@ -327,4 +327,4 @@ void CompatibilityKernel::dispatch_bsd_aio(Cpu &cpu, std::uint32_t number) {
   }
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

@@ -3,16 +3,16 @@
 #include <algorithm>
 #include <optional>
 
-#include "ilegacysim/display.hpp"
+#include "ilemu/display.hpp"
 
-#if defined(ILEGACYSIM_HAS_SDL2)
+#if defined(ILEMU_HAS_SDL2)
 #include <SDL.h>
 #endif
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
-#if defined(ILEGACYSIM_HAS_SDL2)
+#if defined(ILEMU_HAS_SDL2)
 TouchInput map_mouse(SDL_Window *window, TouchPhase phase, int x, int y,
                      DisplayGeometry geometry) {
   int width = 1;
@@ -56,7 +56,7 @@ std::optional<SystemButton> map_key(SDL_Keycode key) {
 } // namespace
 
 bool SdlInput::poll(SDL_Window *window) {
-#if defined(ILEGACYSIM_HAS_SDL2)
+#if defined(ILEMU_HAS_SDL2)
   SDL_Event event{};
   while (SDL_PollEvent(&event) != 0) {
     switch (event.type) {
@@ -146,4 +146,4 @@ std::vector<RingerSwitchInput> SdlInput::take_ringer_switch_events() {
   return events;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

@@ -1,11 +1,11 @@
-#include "ilegacysim/bluetooth_manager_hle.hpp"
+#include "ilemu/bluetooth_manager_hle.hpp"
 
 #include <string>
 #include <string_view>
 
-#include "ilegacysim/userland_hle.hpp"
+#include "ilemu/userland_hle.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view bluetooth_manager_image{
@@ -42,4 +42,4 @@ void register_bluetooth_manager_hle(UserlandHleRegistry& registry) {
         });
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

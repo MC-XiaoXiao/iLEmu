@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ilegacysim/kernel_shared_state.hpp"
+#include "ilemu/kernel_shared_state.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -8,7 +8,7 @@
 #include <span>
 #include <string>
 
-namespace ilegacysim {
+namespace ilemu {
 
 class AddressSpace;
 
@@ -96,4 +96,4 @@ modify_port_references_locked(KernelSharedState &state, std::uint32_t task,
                               std::int32_t delta);
 
 } // namespace mach_support
-} // namespace ilegacysim
+} // namespace ilemu

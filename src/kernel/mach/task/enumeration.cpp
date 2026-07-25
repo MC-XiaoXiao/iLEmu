@@ -1,7 +1,7 @@
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/kernel.hpp"
 
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/task_mig_ids.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/task_mig_ids.hpp"
 
 #include <array>
 #include <cstddef>
@@ -12,7 +12,7 @@
 
 #include "../support.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 using namespace mach_support;
@@ -154,4 +154,4 @@ bool CompatibilityKernel::dispatch_mach_task_enumeration_message(
   return true;
 }
 
-} // namespace ilegacysim
+} // namespace ilemu

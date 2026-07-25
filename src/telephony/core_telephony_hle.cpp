@@ -1,4 +1,4 @@
-#include "ilegacysim/core_telephony_hle.hpp"
+#include "ilemu/core_telephony_hle.hpp"
 
 #include <array>
 #include <atomic>
@@ -11,12 +11,12 @@
 #include <string_view>
 #include <utility>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/userland_hle.hpp"
-#include "ilegacysim/wifi_state.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/userland_hle.hpp"
+#include "ilemu/wifi_state.hpp"
 
-namespace ilegacysim {
+namespace ilemu {
 namespace {
 
 constexpr std::string_view core_telephony_image{
@@ -746,4 +746,4 @@ void register_core_telephony_hle(
 
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu

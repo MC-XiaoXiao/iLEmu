@@ -1,8 +1,8 @@
-#include "ilegacysim/output.hpp"
+#include "ilemu/output.hpp"
 
 #include <stdexcept>
 
-namespace ilegacysim {
+namespace ilemu {
 
 namespace {
 
@@ -49,4 +49,4 @@ bool Output::should_emit(std::string_view text) const {
            concise_prefix(text);
 }
 
-}  // namespace ilegacysim
+}  // namespace ilemu
