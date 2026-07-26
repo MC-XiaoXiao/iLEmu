@@ -219,6 +219,7 @@ void CompatibilityKernel::enqueue_baseband_input(
 
 void CompatibilityKernel::enqueue_touch_input(const TouchInput &input) {
   const PerformanceLatencyScope latency{PerfLatencyKind::InputEnqueue};
+  performance_counters().discard_pending_vsync_callbacks();
   const auto result =
       graphics_services_input::enqueue_touch(*shared_state_, input,
                                              scene_coordinator_.get());
@@ -245,6 +246,7 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput &input) {
 void CompatibilityKernel::enqueue_system_button(
     const SystemButtonInput &input) {
   const PerformanceLatencyScope latency{PerfLatencyKind::InputEnqueue};
+  performance_counters().discard_pending_vsync_callbacks();
   bool home_pressed_while_display_asleep = false;
   if (input.button == SystemButton::Home &&
       input.phase == SystemButtonPhase::Down) {
@@ -292,6 +294,7 @@ void CompatibilityKernel::enqueue_system_button(
 void CompatibilityKernel::set_ringer_switch_active(bool active) {
   if (!ringer_switch_state_->set_active(active))
     return;
+  performance_counters().discard_pending_vsync_callbacks();
   darwin_notify_state_hle_.publish(ringer_switch_notification_name);
   const auto result =
       graphics_services_input::enqueue_ringer_switch_change(*shared_state_,
@@ -306,6 +309,7 @@ void CompatibilityKernel::set_ringer_switch_active(bool active) {
 
 void CompatibilityKernel::toggle_ringer_switch() {
   const auto active = ringer_switch_state_->toggle();
+  performance_counters().discard_pending_vsync_callbacks();
   darwin_notify_state_hle_.publish(ringer_switch_notification_name);
   const auto result =
       graphics_services_input::enqueue_ringer_switch_change(*shared_state_,
@@ -1099,6 +1103,12 @@ std::optional<std::uint64_t> CompatibilityKernel::next_timer_deadline() const {
     }
   }
   return deadline;
+}
+
+std::optional<std::uint64_t>
+CompatibilityKernel::next_display_vsync_deadline() const {
+  std::lock_guard mach_lock{shared_state_->mach_mutex};
+  return kernel_iokit::display::next_vsync_deadline_locked(*shared_state_);
 }
 
 void CompatibilityKernel::advance_absolute_time(std::uint64_t deadline) {

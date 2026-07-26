@@ -246,6 +246,8 @@ public:
   bool deliver_pending_mach(Cpu &cpu);
   bool deliver_pending_io(Cpu &cpu);
   [[nodiscard]] std::optional<std::uint64_t> next_timer_deadline() const;
+  [[nodiscard]] std::optional<std::uint64_t>
+  next_display_vsync_deadline() const;
   void advance_absolute_time(std::uint64_t deadline);
   void advance_time_by(std::uint64_t interval);
   // The clock is shared by every process, while device registrations are

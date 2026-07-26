@@ -21,6 +21,7 @@
 #include "ilemu/kernel_shared_state.hpp"
 #include "ilemu/mobile_framebuffer_abi.hpp"
 #include "ilemu/output.hpp"
+#include "ilemu/performance.hpp"
 #include "ilemu/presentation_tracker.hpp"
 #include "ilemu/scene_coordinator.hpp"
 #include "ilemu/surface_store.hpp"
@@ -73,6 +74,16 @@ MobileFramebufferHle::MobileFramebufferHle(
                         ? iokit_abi::success
                         : iokit_abi::bad_argument);
   });
+  // NotifyFunc begins by calling this firmware routine before it examines or
+  // dispatches the notification. Observe that boundary, then immediately run
+  // the original routine. The VSync/IONotificationPort entry points, callback
+  // dispatch, coalescing, arguments, and object lifetime remain firmware code.
+  add("_IOMobileFramebufferGetNotifyMessageCount",
+      [](UserlandHleCall &call) {
+    performance_counters().record_vsync_callback(
+        call.process_id(), call.argument(0), 0);
+    call.resume_original_persistently();
+  });
   // GetLayerDefaultSurface intentionally remains firmware code. It calls
   // IOConnectCallScalarMethod(selector 3) and then CoreSurfaceBufferLookup,
   // preserving the real CFRuntime wrapper around our client-buffer HLE.
@@ -86,10 +97,15 @@ MobileFramebufferHle::MobileFramebufferHle(
       [this](UserlandHleCall &call) { set_background_color(call); });
   add("_IOMobileFramebufferSwapEnd", [this](UserlandHleCall &call) {
     if (display_write_allowed(call)) {
+      performance_counters().record_vsync_swap_end(
+          call.process_id(), call.argument(0));
       submit_layers(call);
       record_presentation(call);
-      if (display_)
+      if (display_) {
         display_->present();
+        performance_counters().record_vsync_guest_submit(
+            call.process_id(), call.argument(0));
+      }
     }
     call.set_return(iokit_abi::success);
   });
@@ -103,9 +119,9 @@ MobileFramebufferHle::MobileFramebufferHle(
   };
   add("_IOMobileFramebufferWaitSurface", success);
   add("_IOMobileFramebufferEnableStatistics", success);
-  // GetNotifyMessageCount remains firmware code. It asks the Mach port layer
-  // for MACH_PORT_RECEIVE_STATUS and returns mps_msgcount so the native vsync
-  // callback can coalesce queued notifications accurately.
+  // GetNotifyMessageCount's observed original implementation asks the Mach
+  // port layer for MACH_PORT_RECEIVE_STATUS and returns mps_msgcount so the
+  // native callback can coalesce queued notifications accurately.
   add("_IOMobileFramebufferSetDebugFlags", success);
   add("_IOMobileFramebufferSetTVOutMode", success);
   add("_IOMobileFramebufferSetWSSInfo", success);

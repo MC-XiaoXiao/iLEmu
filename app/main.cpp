@@ -2001,6 +2001,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
 
     std::vector<PreparedGuestSlice> prepared_slices;
     prepared_slices.reserve(scheduled_batch.size());
+    std::optional<std::uint64_t> display_vsync_tick_budget;
+    if (const auto deadline =
+            initial_runtime->kernel->next_display_vsync_deadline()) {
+      const auto now = initial_runtime->kernel->current_absolute_time();
+      if (*deadline > now) {
+        display_vsync_tick_budget = std::max<std::uint64_t>(
+            1, duration_to_guest_ticks(
+                   *deadline - now,
+                   darwin::mach::thread_policy::absolute_time_units_per_second,
+                   guest_ticks_per_second));
+      }
+    }
     auto batch_ticks = remaining_ticks;
     for (const auto &scheduled_value : scheduled_batch) {
       if (!scheduler.contains(scheduled_value.thread))
@@ -2025,9 +2037,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
           static_cast<std::size_t>(scheduled_value.thread.thread);
       auto &cpu = selected_runtime->cpus->cpu(index);
       cpu.clear_halt();
-      const auto slice =
+      auto slice =
           bounded_execution ? std::min(batch_ticks, scheduled_value.tick_budget)
                             : scheduled_value.tick_budget;
+      if (display_vsync_tick_budget &&
+          *display_vsync_tick_budget < slice) {
+        performance_counters().record_display_vsync_budget(
+            slice, *display_vsync_tick_budget);
+        slice = *display_vsync_tick_budget;
+      }
       if (bounded_execution)
         batch_ticks -= slice;
       prepared_slices.push_back(PreparedGuestSlice{

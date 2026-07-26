@@ -7,6 +7,7 @@
 #include "ilemu/kernel_shared_state.hpp"
 #include "ilemu/mig_wire_abi.hpp"
 #include "ilemu/output.hpp"
+#include "ilemu/performance.hpp"
 #include "ilemu/xnu_mig_adapter.hpp"
 
 #include <algorithm>
@@ -344,6 +345,11 @@ void deliver_due_vsync_locked(KernelSharedState &state,
     if (!queue_has_vsync(queue)) {
       ++registration.sequence;
       queue.push_back(make_vsync_message(registration, deadline));
+      performance_counters().record_vsync_due(
+          registration.owner_pid,
+          registration.async_reference
+              [iokit_abi::display_vsync::async_refcon_index],
+          registration.sequence);
     }
     const auto period = iokit_abi::display_vsync::period_absolute_time;
     const auto elapsed = deadline - *registration.next_deadline;
