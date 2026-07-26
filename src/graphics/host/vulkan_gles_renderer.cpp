@@ -391,9 +391,11 @@ class VulkanGlesRenderer final : public GlesRenderer {
               const GlesRasterState& state) override;
     bool flush(GlesRenderTargetKey target) override;
     bool finish(GlesRenderTargetKey target) override;
-    bool synchronize(DisplayFrame& frame, GlesRenderTargetKey target) override;
+    bool synchronize(
+        DisplayFrame& frame, GlesRenderTargetKey target,
+        std::optional<HostRectangle>* readback_damage) override;
     void invalidate(GlesRenderTargetKey target) override;
-    void release(GlesRenderTargetKey target) override;
+    void release(std::span<const GlesRenderTargetKey> targets) override;
     [[nodiscard]] std::string_view name() const override {
         return renderer_name_;
     }
@@ -1963,8 +1965,11 @@ void VulkanGlesRenderer::transition_image(
                          nullptr, 0, nullptr, 1, &barrier);
 }
 
-bool VulkanGlesRenderer::synchronize(DisplayFrame& frame,
-                                     GlesRenderTargetKey target) {
+bool VulkanGlesRenderer::synchronize(
+    DisplayFrame& frame, GlesRenderTargetKey target,
+    std::optional<HostRectangle>* readback_damage) {
+    if (readback_damage != nullptr)
+        readback_damage->reset();
     std::lock_guard lock{mutex_};
     last_failure_reason_.store(PerfFallbackReason::None,
                                std::memory_order_relaxed);
@@ -1985,6 +1990,8 @@ bool VulkanGlesRenderer::synchronize(DisplayFrame& frame,
 
     try {
         const auto damage = *surface.dirty;
+        if (readback_damage != nullptr)
+            *readback_damage = damage;
         const auto damage_pixels =
             static_cast<std::size_t>(damage.width) * damage.height;
         const auto damage_bytes =
@@ -2131,17 +2138,26 @@ void VulkanGlesRenderer::invalidate(GlesRenderTargetKey target) {
     found->second.dirty.reset();
 }
 
-void VulkanGlesRenderer::release(GlesRenderTargetKey target) {
+void VulkanGlesRenderer::release(
+    std::span<const GlesRenderTargetKey> targets) {
+    const PerformanceLatencyScope latency{PerfLatencyKind::GlesTargetRelease};
     std::lock_guard lock{mutex_};
-    const auto found = targets_.find(target);
-    if (found == targets_.end())
+    const auto has_target = std::ranges::any_of(
+        targets, [this](const auto target) { return targets_.contains(target); });
+    if (!has_target)
         return;
     if (command_recording_)
         submit_commands(false);
     wait_for_all_slots();
-    if (found->second.framebuffer != VK_NULL_HANDLE)
-        vkDestroyFramebuffer(device_, found->second.framebuffer, nullptr);
-    targets_.erase(found);
+    for (const auto target : targets) {
+        const auto found = targets_.find(target);
+        if (found == targets_.end())
+            continue;
+        if (found->second.framebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(device_, found->second.framebuffer, nullptr);
+        }
+        targets_.erase(found);
+    }
 }
 
 HostGraphicsDevice::PresentResult

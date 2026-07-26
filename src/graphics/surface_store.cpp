@@ -38,7 +38,7 @@ SurfaceStore::~SurfaceStore() {
 
 void SurfaceStore::reset() {
     const auto registry = registry_;
-    std::vector<std::uint64_t> released_targets;
+    std::vector<GlesRenderTargetKey> released_targets;
     {
         std::scoped_lock lock{mutex_, registry->mutex};
         for (const auto& [id, backing] : backings_) {
@@ -50,14 +50,13 @@ void SurfaceStore::reset() {
                 --object->second.store_references;
             } else {
                 released_targets.push_back(
-                    object->second.metadata.provenance.publication_sequence);
+                    {0, object->second.metadata.provenance.publication_sequence});
                 registry->objects.erase(object);
             }
         }
         backings_.clear();
     }
-    for (const auto target : released_targets)
-        release_gles_render_target({0, target});
+    release_gles_render_targets(released_targets);
 }
 
 void SurfaceStore::inherit_state(const SurfaceStore& parent) {

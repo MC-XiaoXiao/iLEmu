@@ -130,6 +130,7 @@ class OpenGlesHle {
     [[nodiscard]] SurfaceState* current_pixmap_surface(UserlandHleCall& call);
     [[nodiscard]] GlesRenderTargetKey
     render_target_key(std::uint32_t surface) const;
+    void release_unbacked_surfaces();
     [[nodiscard]] bool reload_surface(UserlandHleCall& call,
                                       std::uint32_t surface);
     [[nodiscard]] bool flush_surface(UserlandHleCall& call,

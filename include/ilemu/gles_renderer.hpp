@@ -42,7 +42,8 @@ class GlesRenderer : public HostGraphicsDevice {
     create_command_encoder() override;
     [[nodiscard]] bool
     map_cpu(HostSurface& surface, bool read,
-            PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback) override;
+            PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback,
+            std::optional<HostRectangle>* readback_damage = nullptr) override;
     [[nodiscard]] HostNativeImage
     native_image(const HostSurface& surface) const override;
     [[nodiscard]] PresentResult
@@ -61,11 +62,16 @@ class GlesRenderer : public HostGraphicsDevice {
     // Materializes GPU-resident draws in a host-endian CPU frame at an
     // explicit CPU-map/readback boundary. An immediately visible backend may
     // implement this as a no-op.
-    [[nodiscard]] virtual bool synchronize(DisplayFrame& frame,
-                                           GlesRenderTargetKey target) = 0;
+    [[nodiscard]] virtual bool synchronize(
+        DisplayFrame& frame, GlesRenderTargetKey target,
+        std::optional<HostRectangle>* readback_damage = nullptr) = 0;
     // Marks a CPU-side clear or another writer as authoritative for the target.
     virtual void invalidate(GlesRenderTargetKey target) = 0;
-    virtual void release(GlesRenderTargetKey target) = 0;
+    // Releases a lifecycle batch behind one backend synchronization boundary.
+    // Guest-facing stores already know the complete retiring set; preserving
+    // that batch prevents a host fence wait per individual surface.
+    virtual void
+    release(std::span<const GlesRenderTargetKey> targets) = 0;
     [[nodiscard]] virtual std::string_view name() const = 0;
     [[nodiscard]] virtual bool accelerated() const = 0;
     [[nodiscard]] virtual bool software_fallback_allowed() const = 0;
@@ -94,6 +100,8 @@ void configure_gles_vulkan_presenter(
 // Releases a shared CoreSurface target only when the renderer is still alive;
 // unlike shared_gles_renderer(), this never creates a backend during teardown.
 void release_gles_render_target(GlesRenderTargetKey target);
+void release_gles_render_targets(
+    std::span<const GlesRenderTargetKey> targets);
 // Release the host renderer while its graphics driver is still initialized.
 // The command-line host calls this after all guest runtimes have unwound.
 void shutdown_gles_renderer();

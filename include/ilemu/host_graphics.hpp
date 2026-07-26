@@ -154,7 +154,8 @@ class HostGraphicsDevice {
     create_command_encoder() = 0;
     [[nodiscard]] virtual bool
     map_cpu(HostSurface& surface, bool read,
-            PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback) = 0;
+            PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback,
+            std::optional<HostRectangle>* readback_damage = nullptr) = 0;
     [[nodiscard]] virtual HostNativeImage
     native_image(const HostSurface& surface) const = 0;
     [[nodiscard]] virtual PresentResult

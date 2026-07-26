@@ -97,17 +97,11 @@ OpenGlesHle::OpenGlesHle(UserlandHleRegistry& registry,
 }
 
 OpenGlesHle::~OpenGlesHle() {
-    for (const auto& [surface, state] : surfaces_) {
-        if (!state.backing_identifier)
-            renderer_->release(render_target_key(surface));
-    }
+    release_unbacked_surfaces();
 }
 
 void OpenGlesHle::reset() {
-    for (const auto& [surface, state] : surfaces_) {
-        if (!state.backing_identifier)
-            renderer_->release(render_target_key(surface));
-    }
+    release_unbacked_surfaces();
     threads_.clear();
     contexts_.clear();
     surfaces_.clear();
@@ -121,10 +115,7 @@ void OpenGlesHle::reset() {
 }
 
 void OpenGlesHle::inherit_state(const OpenGlesHle& parent) {
-    for (const auto& [surface, state] : surfaces_) {
-        if (!state.backing_identifier)
-            renderer_->release(render_target_key(surface));
-    }
+    release_unbacked_surfaces();
     threads_ = parent.threads_;
     contexts_ = parent.contexts_;
     surfaces_ = parent.surfaces_;
@@ -134,6 +125,16 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent) {
     next_surface_ = parent.next_surface_;
     egl_error_ = parent.egl_error_;
     frame_count_ = parent.frame_count_;
+}
+
+void OpenGlesHle::release_unbacked_surfaces() {
+    std::vector<GlesRenderTargetKey> targets;
+    targets.reserve(surfaces_.size());
+    for (const auto& [surface, state] : surfaces_) {
+        if (!state.backing_identifier)
+            targets.push_back(render_target_key(surface));
+    }
+    renderer_->release(targets);
 }
 
 void OpenGlesHle::set_display(std::shared_ptr<DisplayState> display) {
@@ -913,8 +914,10 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry) {
             call.set_return(egl_false);
             return;
         }
-        if (!surfaces_.at(surface).backing_identifier)
-            renderer_->release(render_target_key(surface));
+        if (!surfaces_.at(surface).backing_identifier) {
+            const auto target = render_target_key(surface);
+            renderer_->release(std::span{&target, 1U});
+        }
         surfaces_.erase(surface);
         for (auto& [processor, current] : threads_) {
             static_cast<void>(processor);

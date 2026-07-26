@@ -1,5 +1,7 @@
 #include "ilemu/gles_renderer.hpp"
 
+#include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <filesystem>
@@ -29,9 +31,13 @@ class SoftwareGlesRenderer final : public GlesRenderer {
         return GlesSoftwareRasterizer::draw(frame, vertices, mode, state);
     }
 
-    bool synchronize(DisplayFrame& frame, GlesRenderTargetKey target) override {
-        static_cast<void>(frame);
+    bool synchronize(
+        DisplayFrame& frame, GlesRenderTargetKey target,
+        std::optional<HostRectangle>* readback_damage) override {
         static_cast<void>(target);
+        if (readback_damage != nullptr) {
+            *readback_damage = HostRectangle{0, 0, frame.width, frame.height};
+        }
         return true;
     }
 
@@ -49,8 +55,8 @@ class SoftwareGlesRenderer final : public GlesRenderer {
         static_cast<void>(target);
     }
 
-    void release(GlesRenderTargetKey target) override {
-        static_cast<void>(target);
+    void release(std::span<const GlesRenderTargetKey> targets) override {
+        static_cast<void>(targets);
     }
 
     [[nodiscard]] std::string_view name() const override {
@@ -96,9 +102,45 @@ class FallbackGlesRenderer final : public GlesRenderer {
         return true;
     }
 
-    bool synchronize(DisplayFrame& frame, GlesRenderTargetKey target) override {
-        return primary_->synchronize(frame, target) &&
-               fallback_->synchronize(frame, target);
+    bool synchronize(
+        DisplayFrame& frame, GlesRenderTargetKey target,
+        std::optional<HostRectangle>* readback_damage) override {
+        std::optional<HostRectangle> primary_damage;
+        std::optional<HostRectangle> fallback_damage;
+        if (!primary_->synchronize(
+                frame, target,
+                readback_damage != nullptr ? &primary_damage : nullptr) ||
+            !fallback_->synchronize(
+                frame, target,
+                readback_damage != nullptr ? &fallback_damage : nullptr)) {
+            return false;
+        }
+        if (readback_damage == nullptr)
+            return true;
+        if (!primary_damage) {
+            *readback_damage = fallback_damage;
+            return true;
+        }
+        if (!fallback_damage) {
+            *readback_damage = primary_damage;
+            return true;
+        }
+        const auto x = std::min(primary_damage->x, fallback_damage->x);
+        const auto y = std::min(primary_damage->y, fallback_damage->y);
+        const auto right = std::max(
+            static_cast<std::int64_t>(primary_damage->x) +
+                primary_damage->width,
+            static_cast<std::int64_t>(fallback_damage->x) +
+                fallback_damage->width);
+        const auto bottom = std::max(
+            static_cast<std::int64_t>(primary_damage->y) +
+                primary_damage->height,
+            static_cast<std::int64_t>(fallback_damage->y) +
+                fallback_damage->height);
+        *readback_damage = HostRectangle{
+            x, y, static_cast<std::uint32_t>(right - x),
+            static_cast<std::uint32_t>(bottom - y)};
+        return true;
     }
 
     bool flush(GlesRenderTargetKey target) override {
@@ -114,9 +156,9 @@ class FallbackGlesRenderer final : public GlesRenderer {
         fallback_->invalidate(target);
     }
 
-    void release(GlesRenderTargetKey target) override {
-        primary_->release(target);
-        fallback_->release(target);
+    void release(std::span<const GlesRenderTargetKey> targets) override {
+        primary_->release(targets);
+        fallback_->release(targets);
     }
 
     [[nodiscard]] std::string_view name() const override {
@@ -228,14 +270,17 @@ GlesRenderer::create_command_encoder() {
     return make_cpu_command_encoder();
 }
 
-bool GlesRenderer::map_cpu(HostSurface& surface, bool read,
-                           PerfCpuMapReason reason) {
+bool GlesRenderer::map_cpu(
+    HostSurface& surface, bool read, PerfCpuMapReason reason,
+    std::optional<HostRectangle>* readback_damage) {
+    if (readback_damage != nullptr)
+        readback_damage->reset();
     if (!read)
         return true;
     const auto generation = surface.gpu_generation();
     {
         auto mapping = surface.map_cpu(false, reason);
-        if (!synchronize(mapping.frame(), surface.key()))
+        if (!synchronize(mapping.frame(), surface.key(), readback_damage))
             return false;
     }
     surface.mark_cpu_synchronized(generation);
@@ -312,10 +357,17 @@ std::shared_ptr<GlesRenderer> shared_gles_renderer() {
 }
 
 void release_gles_render_target(GlesRenderTargetKey target) {
+    release_gles_render_targets(std::span{&target, 1U});
+}
+
+void release_gles_render_targets(
+    std::span<const GlesRenderTargetKey> targets) {
+    if (targets.empty())
+        return;
     auto& state = shared_renderer_state();
     std::lock_guard lock{state.mutex};
     if (state.renderer != nullptr && *state.renderer)
-        (*state.renderer)->release(target);
+        (*state.renderer)->release(targets);
 }
 
 void shutdown_gles_renderer() {
