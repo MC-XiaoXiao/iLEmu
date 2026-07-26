@@ -97,7 +97,8 @@ public:
 
   CompatibilityKernel(AddressSpace &memory, Output &output,
                       std::filesystem::path rootfs = {},
-                      DeviceProfile device = DeviceProfile::default_profile());
+                      DeviceProfile device = DeviceProfile::default_profile(),
+                      std::optional<bool> activated = std::nullopt);
 
   void attach(Cpu &cpu);
   void dispatch(Cpu &cpu, std::uint32_t svc_immediate);

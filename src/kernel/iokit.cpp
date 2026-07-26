@@ -41,6 +41,7 @@ constexpr std::string_view io80211_interface_class{"IO80211Interface"};
 constexpr std::string_view io_ethernet_interface_class{"IOEthernetInterface"};
 constexpr std::string_view io_network_interface_class{"IONetworkInterface"};
 constexpr std::string_view io_network_stack_class{"IONetworkStack"};
+constexpr std::string_view io_ipod_usb_device_class{"IOIpodUSBDevice"};
 constexpr std::string_view wifi_bus_class{"AppleARMIODevice"};
 constexpr std::string_view bsd_name_property{"BSD Name"};
 constexpr std::string_view interface_name_prefix_property{
@@ -521,6 +522,28 @@ ensure_platform_expert_service_locked(KernelSharedState &shared_state) {
 }
 
 std::uint32_t
+ensure_usb_device_mux_service_locked(KernelSharedState &shared_state) {
+  const auto existing = std::find_if(
+      shared_state.iokit_services.begin(), shared_state.iokit_services.end(),
+      [](const auto &entry) {
+        return entry.second.class_name == io_ipod_usb_device_class;
+      });
+  if (existing != shared_state.iokit_services.end())
+    return existing->first;
+
+  const auto parent = ensure_platform_expert_service_locked(shared_state);
+  const auto object = shared_state.allocate_mach_object();
+  static_cast<void>(shared_state.mach_port_objects.create(object));
+  shared_state.mach_queues.try_emplace(object);
+  shared_state.iokit_services.emplace(
+      object,
+      KernelSharedState::IOKitService{
+          std::string{io_ipod_usb_device_class}, {"IOService"}, {},
+          "IOService:/IOPlatformExpertDevice/IOIpodUSBDevice", parent});
+  return object;
+}
+
+std::uint32_t
 ensure_wifi_bus_service_locked(KernelSharedState &shared_state) {
   const auto existing = std::find_if(
       shared_state.iokit_services.begin(), shared_state.iokit_services.end(),
@@ -722,6 +745,9 @@ void populate_matching_services_locked(KernelSharedState &shared_state,
   if (kernel_iokit::baseband::matches_service(matching)) {
     services.push_back(
         kernel_iokit::baseband::ensure_service_locked(shared_state));
+  }
+  if (contains_text(matching, io_ipod_usb_device_class)) {
+    services.push_back(ensure_usb_device_mux_service_locked(shared_state));
   }
   if (shared_state.wifi_service_available &&
       contains_text(matching, io80211_controller_class)) {

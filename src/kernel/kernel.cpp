@@ -15,6 +15,7 @@
 #include "ilemu/kernel_clock.hpp"
 #include "ilemu/kernel_iokit.hpp"
 #include "ilemu/kernel_iokit_display.hpp"
+#include "ilemu/lockdown_hle.hpp"
 #include "ilemu/kernel_mach_ipc.hpp"
 #include "ilemu/kernel_mach_task_identity.hpp"
 #include "ilemu/kernel_network.hpp"
@@ -71,7 +72,8 @@ constexpr std::uint32_t root_disk_device =
 
 CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
                                          std::filesystem::path rootfs,
-                                         DeviceProfile device)
+                                         DeviceProfile device,
+                                         std::optional<bool> activated)
     : memory_{memory}, output_{output}, rootfs_{std::move(rootfs)},
       device_profile_{device},
       hfs_metadata_{rootfs_},
@@ -119,6 +121,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
       });
   register_dns_configuration_hle(userland_hle_);
   register_app_support_hle(userland_hle_);
+  register_lockdown_hle(userland_hle_, activated);
   register_bluetooth_manager_hle(userland_hle_);
   register_mbx_connect_hle(userland_hle_);
   graphics_services_input::register_springboard_alert_observers(

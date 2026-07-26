@@ -10,6 +10,8 @@ namespace {
 constexpr std::string_view activation_state_key{"-ActivationState"};
 constexpr std::string_view activation_acknowledged_key{
     "-ActivationStateAcknowledged"};
+constexpr std::string_view cached_activation_state_key{
+    "com.apple.mobile.lockdown_cache-ActivationState"};
 
 std::string initial_plist() {
     return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -94,6 +96,12 @@ LockdownProfileResult apply_lockdown_profile(
                      : "<string>Unactivated</string>");
     upsert(xml, activation_acknowledged_key,
            activated ? "<true/>" : "<false/>");
+    // lockdownd publishes its effective state through this persisted cache.
+    // Keep it in sync with the requested device profile so a prior offline
+    // baseband boot cannot override --activation on the next launch.
+    upsert(xml, cached_activation_state_key,
+           activated ? "<string>Activated</string>"
+                     : "<string>Unactivated</string>");
     if (xml == original) return {path, false};
 
     std::filesystem::create_directories(path.parent_path());

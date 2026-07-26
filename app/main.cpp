@@ -841,6 +841,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
   output.line("[device-state] activation=" + activation_value +
               " path=" + activation_result.path.string() +
               " changed=" + std::to_string(activation_result.changed));
+  const auto activation_override =
+      *activation == LockdownActivation::Preserve
+          ? std::optional<bool>{}
+          : std::optional<bool>{
+                *activation == LockdownActivation::Activated};
   const auto ticks_option = option(args, "--ticks");
   const auto bounded_execution = ticks_option.has_value();
   const auto ticks = ticks_option ? std::stoull(*ticks_option)
@@ -990,7 +995,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       guest_processor_count, *cpu_model);
   initial->kernel =
       std::make_unique<CompatibilityKernel>(*initial->memory, output, *rootfs,
-                                            device);
+                                            device, activation_override);
   std::shared_ptr<SdlAudioSink> audio_sink;
   if (SdlAudioSink::available()) {
     audio_sink = std::make_shared<SdlAudioSink>();
@@ -1202,7 +1207,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
               *child->memory, guest_processor_count,
               *cpu_model);
           child->kernel = std::make_unique<CompatibilityKernel>(
-              *child->memory, output, *rootfs, device);
+              *child->memory, output, *rootfs, device, activation_override);
           child->kernel->inherit_process_state(*runtime_ptr->kernel, child_pid);
           child->allocated.assign(initial_guest_thread_slots, false);
           configure_runtime(*child);
