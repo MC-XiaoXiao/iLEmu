@@ -39,12 +39,14 @@ public:
   // physical single-core device runs all memory access on the scheduler
   // thread; optional multi-core sessions retain shared/exclusive locking.
   void set_parallel_access(bool enabled);
-  // Dynarmic may directly access resident private/shared-writable pages while
-  // the physical single-core model serializes all guest execution. Unsafe
-  // pages remain null and transparently fall back to the checked callbacks.
-  // The returned table has one host page pointer per 4 KiB guest page and
-  // remains valid for this AddressSpace's lifetime.
+  // Legacy alias for the direct-write table.
   [[nodiscard]] std::uint8_t **jit_page_table();
+  // Read and write tables are separate: immutable/file/COW pages may be read
+  // directly, while only private/shared-writable pages bypass write callbacks.
+  // Null entries transparently fall back to the checked callbacks. Both tables
+  // remain valid for this AddressSpace's lifetime.
+  [[nodiscard]] std::uint8_t **jit_read_page_table();
+  [[nodiscard]] std::uint8_t **jit_write_page_table();
   // Debug write watchpoints and parallel virtual-CPU sessions require every
   // access to pass through callbacks. Existing JITs retain a valid all-null
   // table after this call.
@@ -162,7 +164,13 @@ private:
   static constexpr std::size_t page_lookup_chunk_size = 1024;
   static constexpr std::size_t page_lookup_chunk_count =
       page_count / page_lookup_chunk_size;
+  static constexpr std::size_t page_permission_chunk_size = 4096;
+  static constexpr std::size_t page_permission_chunk_count =
+      page_count / page_permission_chunk_size;
+  using PageMap = std::map<std::uint32_t, Page>;
   using PageLookupChunk = std::array<Page *, page_lookup_chunk_size>;
+  using PagePermissionChunk =
+      std::array<std::uint8_t, page_permission_chunk_size>;
   using ReadLock = std::shared_lock<std::shared_mutex>;
   using WriteLock = std::unique_lock<std::shared_mutex>;
 
@@ -191,6 +199,7 @@ private:
   void unmap_file_mappings_locked(std::uint32_t address, std::uint64_t end);
   void cache_page_locked(std::uint32_t address, Page &page);
   void uncache_page_locked(std::uint32_t address);
+  void ensure_unique_page_map_locked();
   void rebuild_page_lookup_locked();
   void refresh_jit_page_locked(std::uint32_t address);
   void refresh_jit_page_range_locked(std::uint32_t address,
@@ -208,13 +217,17 @@ private:
                                    MemoryPermission permissions);
   void clear_page_permissions_locked(std::uint32_t address,
                                      std::uint64_t end);
+  [[nodiscard]] std::uint8_t
+  page_permission_locked(std::size_t page_index) const;
+  [[nodiscard]] PagePermissionChunk &
+  writable_page_permission_chunk_locked(std::size_t page_index);
   [[nodiscard]] ReadLock read_lock() const;
   [[nodiscard]] WriteLock write_lock();
 
   mutable std::shared_mutex mutex_;
   bool parallel_access_{true};
   VmMap vm_map_;
-  std::map<std::uint32_t, Page> pages_;
+  std::shared_ptr<PageMap> pages_{std::make_shared<PageMap>()};
   // File-backed vm_map entries remain range metadata until a guest access
   // faults an individual page into pages_. This mirrors XNU's vnode pager and
   // avoids constructing thousands of page objects during mmap.
@@ -223,11 +236,14 @@ private:
   // efficient range unmap while CPU callbacks avoid a tree search.
   std::array<std::unique_ptr<PageLookupChunk>, page_lookup_chunk_count>
       page_lookup_{};
-  // The interval map remains the source of truth for VM operations. This dense
-  // byte index is kept in sync so the per-instruction CPU callbacks can check
-  // the overwhelmingly common one-page access without a tree lookup.
-  std::vector<std::uint8_t> page_permissions_;
-  std::unique_ptr<JitPageTableStorage> jit_page_table_;
+  // The interval map remains the source of truth for VM operations. A sparse
+  // chunked byte index keeps callback permission checks O(1) while fork clones
+  // share untouched chunks and detach only metadata ranges they modify.
+  std::array<std::shared_ptr<PagePermissionChunk>,
+             page_permission_chunk_count>
+      page_permissions_{};
+  std::unique_ptr<JitPageTableStorage> jit_read_page_table_;
+  std::unique_ptr<JitPageTableStorage> jit_write_page_table_;
   bool jit_page_table_enabled_{};
   std::optional<TrackedWriteRange> tracked_write_range_;
   std::uint64_t write_generation_{};

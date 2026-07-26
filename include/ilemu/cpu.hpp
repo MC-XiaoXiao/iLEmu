@@ -31,6 +31,18 @@ enum class SvcDispatchMode : std::uint8_t {
     Deferred,
 };
 
+struct CpuThreadState {
+    std::array<std::uint32_t, 16> registers{};
+    std::array<std::uint32_t, 64> extension_registers{};
+    std::uint32_t cpsr{};
+    std::uint32_t fpscr{};
+    std::optional<std::uint32_t> cthread_self;
+};
+
+class CpuExecutionPool;
+class JitExecutor;
+class JitCallbacks;
+
 class Cpu {
 public:
     using SvcHandler = std::function<void(Cpu&, std::uint32_t)>;
@@ -42,8 +54,8 @@ public:
     Cpu(const Cpu&) = delete;
     Cpu& operator=(const Cpu&) = delete;
 
-    CpuRunResult run(std::uint64_t ticks);
-    CpuRunResult step();
+    CpuRunResult run(std::uint64_t ticks, std::size_t execution_slot = 0);
+    CpuRunResult step(std::size_t execution_slot = 0);
     void reset();
     void clear_cache();
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
@@ -56,6 +68,13 @@ public:
     [[nodiscard]] const std::array<std::uint32_t, 16>& registers() const;
     [[nodiscard]] std::uint32_t cpsr() const;
     void set_cpsr(std::uint32_t value);
+    [[nodiscard]] std::array<std::uint32_t, 64>& extension_registers();
+    [[nodiscard]] const std::array<std::uint32_t, 64>&
+    extension_registers() const;
+    [[nodiscard]] std::uint32_t fpscr() const;
+    void set_fpscr(std::uint32_t value);
+    [[nodiscard]] std::optional<std::uint32_t> cthread_self() const;
+    void set_cthread_self(std::optional<std::uint32_t> value);
     void set_svc_handler(SvcHandler handler);
     void set_svc_dispatch_mode(SvcDispatchMode mode);
     void set_memory_write_watchpoint(
@@ -63,24 +82,25 @@ public:
     void set_debug_breakpoints_enabled(bool enabled);
     // The scheduler calls this when a different guest thread is dispatched on
     // the same serialized virtual processor.
-    void clear_exclusive_state();
+    void clear_exclusive_state(std::size_t execution_slot = 0);
 
 private:
     friend class CpuCluster;
+    friend class JitExecutor;
+    friend class JitCallbacks;
     Cpu(
         std::size_t processor_id,
-        std::size_t exclusive_processor_id,
-        AddressSpace& memory,
-        Dynarmic::ExclusiveMonitor& monitor,
-        const ArmCpuModel& cpu_model);
-    class Callbacks;
-    void ensure_jit();
+        std::shared_ptr<CpuExecutionPool> execution_pool);
 
     std::size_t processor_id_{};
-    std::size_t exclusive_processor_id_{};
-    Dynarmic::ExclusiveMonitor* monitor_{};
-    std::unique_ptr<Callbacks> callbacks_;
-    std::unique_ptr<Dynarmic::A32::Jit> jit_;
+    std::shared_ptr<CpuExecutionPool> execution_pool_;
+    CpuThreadState state_;
+    JitExecutor* active_executor_{};
+    SvcHandler svc_handler_;
+    MemoryWriteHandler memory_write_handler_;
+    SvcDispatchMode svc_dispatch_mode_{SvcDispatchMode::Immediate};
+    std::optional<std::uint32_t> memory_write_watch_address_;
+    bool debug_breakpoints_enabled_{};
     Dynarmic::HaltReason requested_halt_reason_{};
 };
 
@@ -105,6 +125,12 @@ public:
         AddressSpace& memory,
         bool serialized_execution,
         const ArmCpuModel& cpu_model);
+    CpuCluster(
+        std::size_t initial_processor_count,
+        std::size_t maximum_processor_count,
+        AddressSpace& memory,
+        std::size_t execution_slot_count,
+        const ArmCpuModel& cpu_model);
 
     [[nodiscard]] std::size_t size() const { return cpus_.size(); }
     [[nodiscard]] std::size_t capacity() const {
@@ -113,6 +139,8 @@ public:
     [[nodiscard]] Cpu& cpu(std::size_t index) { return *cpus_.at(index); }
     [[nodiscard]] const Cpu& cpu(std::size_t index) const { return *cpus_.at(index); }
     [[nodiscard]] std::optional<std::size_t> add_cpu();
+    void clear_cache();
+    void invalidate_cache_range(std::uint32_t address, std::size_t length);
 
     std::vector<CpuRunResult> run_parallel(std::uint64_t ticks_per_cpu);
 
@@ -122,6 +150,7 @@ private:
     bool serialized_execution_{};
     const ArmCpuModel* cpu_model_{};
     Dynarmic::ExclusiveMonitor monitor_;
+    std::shared_ptr<CpuExecutionPool> execution_pool_;
     std::vector<std::unique_ptr<Cpu>> cpus_;
 };
 
