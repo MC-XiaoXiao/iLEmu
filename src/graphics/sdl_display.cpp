@@ -1,10 +1,13 @@
 #include "ilemu/sdl_display.hpp"
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "ilemu/display.hpp"
@@ -32,7 +35,7 @@ struct SdlDisplay::Impl {
   SDL_Texture *texture{};
   bool vulkan_library_loaded{};
   bool vulkan_window{};
-  bool surface_created{};
+  std::atomic<bool> surface_created{};
 
   void ensure_cpu_presenter() {
     if (renderer != nullptr && texture != nullptr)
@@ -68,10 +71,58 @@ struct SdlDisplay::Impl {
   }
 #endif
   std::mutex frame_mutex;
+  std::condition_variable presentation_available;
   std::optional<DisplayFrame> pending_frame;
+  std::optional<DisplayFrame> pending_native_frame;
+  std::optional<DisplayFrame> failed_native_frame;
   std::shared_ptr<HostGraphicsDevice> host_graphics;
+  std::thread presentation_thread;
+  bool presentation_stopping{};
   SdlInput input;
   bool running{true};
+
+  void start_native_presenter() {
+    if (presentation_thread.joinable())
+      return;
+    presentation_stopping = false;
+    presentation_thread = std::thread([this] {
+      std::unique_lock lock{frame_mutex};
+      while (true) {
+        presentation_available.wait(lock, [this] {
+          return presentation_stopping || pending_native_frame.has_value();
+        });
+        if (presentation_stopping)
+          return;
+        auto frame = std::move(*pending_native_frame);
+        pending_native_frame.reset();
+        auto graphics = host_graphics;
+        lock.unlock();
+        const auto presented =
+            graphics && frame.host_surface &&
+            graphics->present(frame.host_surface);
+        if (presented)
+          performance_counters().record_native_present();
+        lock.lock();
+        if (!presented)
+          failed_native_frame = std::move(frame);
+      }
+    });
+  }
+
+  void stop_native_presenter() {
+    {
+      std::lock_guard lock{frame_mutex};
+      presentation_stopping = true;
+      pending_native_frame.reset();
+    }
+    presentation_available.notify_all();
+    if (presentation_thread.joinable())
+      presentation_thread.join();
+    {
+      std::lock_guard lock{frame_mutex};
+      presentation_stopping = false;
+    }
+  }
 };
 
 bool SdlDisplay::available() {
@@ -126,6 +177,7 @@ SdlDisplay::SdlDisplay(DisplayGeometry frame_geometry,
 SdlDisplay::~SdlDisplay() {
 #if defined(ILEMU_HAS_SDL2)
   if (impl_) {
+    impl_->stop_native_presenter();
     if (impl_->texture != nullptr)
       SDL_DestroyTexture(impl_->texture);
     if (impl_->renderer != nullptr)
@@ -188,11 +240,17 @@ SdlDisplay::vulkan_presenter_configuration() const {
 
 void SdlDisplay::set_host_graphics(
     std::shared_ptr<HostGraphicsDevice> graphics) {
-  impl_->host_graphics = std::move(graphics);
+  impl_->stop_native_presenter();
+  {
+    std::lock_guard lock{impl_->frame_mutex};
+    impl_->host_graphics = std::move(graphics);
+  }
 #if defined(ILEMU_HAS_SDL2)
   if (impl_->host_graphics &&
       !impl_->host_graphics->native_presentation_available()) {
     impl_->ensure_cpu_presenter();
+  } else if (impl_->host_graphics) {
+    impl_->start_native_presenter();
   }
 #endif
 }
@@ -213,27 +271,42 @@ void SdlDisplay::present(const DisplayFrame &frame) {
 
 bool SdlDisplay::poll_events() {
 #if defined(ILEMU_HAS_SDL2)
+  // SDL events are latency-sensitive and must be drained before any CPU
+  // fallback upload. Native presentation is handed to a lossy mailbox worker
+  // and never waits on acquire/present from the guest scheduler thread.
+  impl_->running = impl_->input.poll(impl_->window);
   std::optional<DisplayFrame> frame;
+  bool native_failed{};
   {
     std::lock_guard lock{impl_->frame_mutex};
-    frame.swap(impl_->pending_frame);
+    if (impl_->failed_native_frame) {
+      frame = std::move(impl_->failed_native_frame);
+      impl_->failed_native_frame.reset();
+      native_failed = true;
+      if (impl_->pending_frame) {
+        frame = std::move(impl_->pending_frame);
+        impl_->pending_frame.reset();
+      }
+    } else {
+      frame.swap(impl_->pending_frame);
+    }
   }
   if (frame) {
-    bool presented{};
-    if (frame->host_surface && impl_->host_graphics &&
+    if (!native_failed && frame->host_surface && impl_->host_graphics &&
         impl_->host_graphics->native_presentation_available()) {
-      presented = impl_->host_graphics->present(frame->host_surface);
+      {
+        std::lock_guard lock{impl_->frame_mutex};
+        impl_->pending_native_frame = std::move(*frame);
+      }
+      impl_->presentation_available.notify_one();
+      frame.reset();
     }
-    if (presented) {
-      performance_counters().record_native_present();
-    }
-    if (!presented) {
+  }
+  if (frame) {
     if (frame->host_surface) {
-      if (const auto renderer =
-              std::dynamic_pointer_cast<GlesRenderer>(
-                  impl_->host_graphics)) {
-        performance_counters().record_fallback(
-            renderer->failure_reason());
+      if (const auto renderer = std::dynamic_pointer_cast<GlesRenderer>(
+              impl_->host_graphics)) {
+        performance_counters().record_fallback(renderer->failure_reason());
       }
     }
     const auto expected =
@@ -253,9 +326,7 @@ bool SdlDisplay::poll_events() {
       SDL_RenderCopy(impl_->renderer, impl_->texture, nullptr, nullptr);
       SDL_RenderPresent(impl_->renderer);
     }
-    }
   }
-  impl_->running = impl_->input.poll(impl_->window);
 #endif
   return impl_->running;
 }
