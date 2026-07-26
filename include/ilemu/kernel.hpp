@@ -263,6 +263,7 @@ private:
   void dispatch_bsd_aio(Cpu &cpu, std::uint32_t number);
   void dispatch_bsd_process(Cpu &cpu, std::uint32_t number);
   void release_process_mach_rights();
+  void release_process_descriptors();
   [[nodiscard]] bool dispatch_bsd_process_credentials(Cpu &cpu,
                                                       std::uint32_t number);
   [[nodiscard]] bool dispatch_bsd_process_spawn(Cpu &cpu, std::uint32_t number);

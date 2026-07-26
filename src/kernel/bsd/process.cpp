@@ -63,6 +63,32 @@ void CompatibilityKernel::release_process_mach_rights() {
   shared_state_->mach_namespaces.destroy_task(process_.pid);
 }
 
+void CompatibilityKernel::release_process_descriptors() {
+  file_descriptors_.clear();
+  regular_file_open_descriptions_.clear();
+  virtual_block_descriptors_.clear();
+  file_offsets_.clear();
+  file_status_flags_.clear();
+  descriptor_flags_.clear();
+  virtual_descriptors_.clear();
+  bpf_descriptors_.clear();
+  host_sockets_.clear();
+  pending_wifi_driver_events_.clear();
+  virtual_udp_sockets_.clear();
+  kernel_control_endpoints_.clear();
+  bound_socket_names_.clear();
+  listening_sockets_.clear();
+  unix_listener_states_.clear();
+  socket_options_.clear();
+  duplicated_descriptors_.clear();
+  system_event_filters_.clear();
+  apple80211_scan_delivered_.clear();
+  system_event_next_identifiers_.clear();
+  route_socket_states_.clear();
+  socket_pair_endpoints_.clear();
+  kqueues_.clear();
+}
+
 void CompatibilityKernel::exit_process(std::uint32_t status,
                                        std::uint32_t signal) {
   if (process_.exited)
@@ -70,6 +96,7 @@ void CompatibilityKernel::exit_process(std::uint32_t status,
   shared_state_->advisory_file_locks->release_process_record_locks(
       process_.pid);
   apple80211_hle_.reset(process_.pid);
+  release_process_descriptors();
   release_process_mach_rights();
   process_.exited = true;
   process_.exit_status = status;
