@@ -1789,9 +1789,7 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
             : ConnectMethodResult{};
     std::uint64_t method_call_count = 0;
     bool vsync_enabled = false;
-    if (request->selector == static_cast<std::uint32_t>(
-                                 iokit_abi::AppleH1ClcdSelector::
-                                     SetVSyncNotifications)) {
+    if (iokit_abi::is_apple_h1clcd_vsync_selector(request->selector)) {
       std::lock_guard mach_lock{shared_state.mach_mutex};
       if (const auto registration =
               shared_state.iokit_display_vsync.find(remote_object);

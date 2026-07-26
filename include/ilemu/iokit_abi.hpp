@@ -27,9 +27,25 @@ enum class Message : std::uint32_t {
 
 enum class AppleH1ClcdSelector : std::uint32_t {
   GetLayerDefaultSurface = 3,
+  SetVSyncNotificationsV1 = 8,
   SetVSyncNotifications = 9,
+  RequestPowerChangeV1 = 13,
   RequestPowerChange = 14,
 };
+
+constexpr bool is_apple_h1clcd_vsync_selector(std::uint32_t selector) {
+  return selector == static_cast<std::uint32_t>(
+                         AppleH1ClcdSelector::SetVSyncNotificationsV1) ||
+         selector == static_cast<std::uint32_t>(
+                         AppleH1ClcdSelector::SetVSyncNotifications);
+}
+
+constexpr bool is_apple_h1clcd_power_selector(std::uint32_t selector) {
+  return selector == static_cast<std::uint32_t>(
+                         AppleH1ClcdSelector::RequestPowerChangeV1) ||
+         selector == static_cast<std::uint32_t>(
+                         AppleH1ClcdSelector::RequestPowerChange);
+}
 
 inline constexpr std::uint32_t success = 0;
 inline constexpr std::uint32_t not_found = 0xe00002f0U;
