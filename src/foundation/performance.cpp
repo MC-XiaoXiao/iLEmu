@@ -97,11 +97,30 @@ bool is_display_window_latency(PerfLatencyKind kind) {
     case PerfLatencyKind::QueuePresent:
     case PerfLatencyKind::PresentReturn:
     case PerfLatencyKind::PresentInterval:
+    case PerfLatencyKind::VsyncDueToCallback:
+    case PerfLatencyKind::VsyncCallbackToSwapEnd:
+    case PerfLatencyKind::VsyncSwapEndToGuestSubmit:
+    case PerfLatencyKind::VsyncDueToGuestSubmit:
         return true;
     case PerfLatencyKind::InputEnqueue:
     case PerfLatencyKind::DisplayPresent:
     case PerfLatencyKind::JitColdPath:
     case PerfLatencyKind::RuntimeDestructor:
+    case PerfLatencyKind::GlesTargetRelease:
+    case PerfLatencyKind::PosixSpawnTotal:
+    case PerfLatencyKind::PosixSpawnDecode:
+    case PerfLatencyKind::PosixSpawnFork:
+    case PerfLatencyKind::PosixSpawnCreate:
+    case PerfLatencyKind::ProcessFreshMemory:
+    case PerfLatencyKind::ProcessCloneMemory:
+    case PerfLatencyKind::ProcessCreateCpu:
+    case PerfLatencyKind::ProcessCreateKernel:
+    case PerfLatencyKind::ProcessInheritKernel:
+    case PerfLatencyKind::ProcessInheritSpawnKernel:
+    case PerfLatencyKind::ProcessConfigureRuntime:
+    case PerfLatencyKind::SpawnMemoryClear:
+    case PerfLatencyKind::SpawnImageLoad:
+    case PerfLatencyKind::SpawnResetRuntime:
     case PerfLatencyKind::Count:
         return false;
     }
@@ -137,6 +156,8 @@ void PerformanceCounters::reset(bool enabled) {
     display_first_nanoseconds_.store(0, std::memory_order_relaxed);
     display_last_nanoseconds_.store(0, std::memory_order_relaxed);
     display_mailbox_coalesced_.store(0, std::memory_order_relaxed);
+    display_vsync_budget_cuts_.store(0, std::memory_order_relaxed);
+    display_vsync_budget_saved_ticks_.store(0, std::memory_order_relaxed);
     native_present_attempts_.store(0, std::memory_order_relaxed);
     native_present_mailbox_coalesced_.store(0,
                                             std::memory_order_relaxed);
@@ -170,6 +191,10 @@ void PerformanceCounters::reset(bool enabled) {
         histogram.over_20ms.store(0, std::memory_order_relaxed);
         histogram.over_33_3ms.store(0, std::memory_order_relaxed);
         histogram.over_50ms.store(0, std::memory_order_relaxed);
+    }
+    {
+        std::lock_guard lock{vsync_timeline_mutex_};
+        vsync_timelines_.clear();
     }
     {
         std::lock_guard lock{jit_cache_slots_mutex_};
@@ -412,6 +437,20 @@ void PerformanceCounters::record_display_mailbox_coalesced() {
         &PerformanceSnapshot::display_mailbox_coalesced);
 }
 
+void PerformanceCounters::record_display_vsync_budget(
+    std::uint64_t original_ticks, std::uint64_t limited_ticks) {
+    if (!enabled() || limited_ticks >= original_ticks)
+        return;
+    display_vsync_budget_cuts_.fetch_add(1, std::memory_order_relaxed);
+    display_vsync_budget_saved_ticks_.fetch_add(
+        original_ticks - limited_ticks, std::memory_order_relaxed);
+    add_display_window_counter(
+        &PerformanceSnapshot::display_vsync_budget_cuts);
+    add_display_window_counter(
+        &PerformanceSnapshot::display_vsync_budget_saved_ticks,
+        original_ticks - limited_ticks);
+}
+
 void PerformanceCounters::record_native_present_attempt() {
     if (!enabled())
         return;
@@ -518,6 +557,174 @@ void PerformanceCounters::record_cpu_map(bool write,
         write ? cpu_map_write_reasons_ : cpu_map_read_reasons_;
     total.fetch_add(1, std::memory_order_relaxed);
     reasons[index].fetch_add(1, std::memory_order_relaxed);
+}
+
+void PerformanceCounters::record_vsync_due(std::uint32_t process_id,
+                                           std::uint32_t framebuffer,
+                                           std::uint64_t sequence) {
+    if (!enabled() || process_id == 0 || framebuffer == 0 || sequence == 0)
+        return;
+    std::lock_guard lock{vsync_timeline_mutex_};
+    auto& timelines = vsync_timelines_[{process_id, framebuffer}];
+    constexpr std::size_t maximum_pending_timelines = 8;
+    if (timelines.size() == maximum_pending_timelines)
+        timelines.pop_front();
+    timelines.push_back(
+        VsyncTimeline{sequence, std::chrono::steady_clock::now(), {}, {}});
+}
+
+void PerformanceCounters::record_vsync_callback(
+    std::uint32_t process_id, std::uint32_t framebuffer,
+    std::uint64_t sequence) {
+    if (!enabled() || process_id == 0 || framebuffer == 0)
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    std::optional<std::uint64_t> due_to_callback;
+    {
+        std::lock_guard lock{vsync_timeline_mutex_};
+        const auto found = vsync_timelines_.find({process_id, framebuffer});
+        if (found == vsync_timelines_.end())
+            return;
+        auto timeline = found->second.end();
+        if (sequence != 0) {
+            const auto matching = std::find_if(
+                found->second.rbegin(), found->second.rend(),
+                [sequence](const auto& candidate) {
+                    return candidate.sequence == sequence;
+                });
+            if (matching != found->second.rend()) {
+                timeline = matching.base();
+                --timeline;
+            }
+        } else {
+            const auto pending = std::find_if(
+                found->second.rbegin(), found->second.rend(),
+                [](const auto& candidate) {
+                    return candidate.callback ==
+                           std::chrono::steady_clock::time_point{};
+                });
+            if (pending != found->second.rend()) {
+                timeline = pending.base();
+                --timeline;
+            }
+        }
+        if (timeline == found->second.end())
+            return;
+        // A newer firmware callback supersedes an older callback that did not
+        // submit a frame. Discard those unconsumed prefixes so a later
+        // input-driven SwapEnd cannot be paired with a stale VSync.
+        found->second.erase(found->second.begin(), timeline);
+        auto& current = found->second.front();
+        current.callback = now;
+        if (current.due != std::chrono::steady_clock::time_point{} &&
+            now >= current.due) {
+            due_to_callback = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    now - current.due)
+                    .count());
+        }
+    }
+    if (due_to_callback)
+        record_latency(PerfLatencyKind::VsyncDueToCallback, *due_to_callback);
+}
+
+void PerformanceCounters::record_vsync_swap_end(
+    std::uint32_t process_id, std::uint32_t framebuffer) {
+    if (!enabled() || process_id == 0 || framebuffer == 0)
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    std::optional<std::uint64_t> callback_to_swap_end;
+    {
+        std::lock_guard lock{vsync_timeline_mutex_};
+        const auto found = vsync_timelines_.find({process_id, framebuffer});
+        if (found == vsync_timelines_.end())
+            return;
+        const auto timeline = std::find_if(
+            found->second.rbegin(), found->second.rend(), [](const auto& item) {
+                return item.callback !=
+                           std::chrono::steady_clock::time_point{} &&
+                       item.swap_end ==
+                           std::chrono::steady_clock::time_point{};
+            });
+        if (timeline == found->second.rend())
+            return;
+        timeline->swap_end = now;
+        if (now >= timeline->callback) {
+            callback_to_swap_end = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    now - timeline->callback)
+                    .count());
+        }
+    }
+    if (callback_to_swap_end) {
+        record_latency(PerfLatencyKind::VsyncCallbackToSwapEnd,
+                       *callback_to_swap_end);
+    }
+}
+
+void PerformanceCounters::record_vsync_guest_submit(
+    std::uint32_t process_id, std::uint32_t framebuffer) {
+    if (!enabled() || process_id == 0 || framebuffer == 0)
+        return;
+    const auto now = std::chrono::steady_clock::now();
+    std::optional<std::uint64_t> swap_end_to_submit;
+    std::optional<std::uint64_t> due_to_submit;
+    {
+        std::lock_guard lock{vsync_timeline_mutex_};
+        const auto found = vsync_timelines_.find({process_id, framebuffer});
+        if (found == vsync_timelines_.end())
+            return;
+        const auto timeline = std::find_if(
+            found->second.rbegin(), found->second.rend(), [](const auto& item) {
+                return item.swap_end !=
+                       std::chrono::steady_clock::time_point{};
+            });
+        if (timeline == found->second.rend())
+            return;
+        if (now >= timeline->swap_end) {
+            swap_end_to_submit = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    now - timeline->swap_end)
+                    .count());
+        }
+        if (timeline->due != std::chrono::steady_clock::time_point{} &&
+            now >= timeline->due) {
+            due_to_submit = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    now - timeline->due)
+                    .count());
+        }
+        const auto erase_end = timeline.base();
+        found->second.erase(found->second.begin(), erase_end);
+        if (found->second.empty())
+            vsync_timelines_.erase(found);
+    }
+    if (swap_end_to_submit) {
+        record_latency(PerfLatencyKind::VsyncSwapEndToGuestSubmit,
+                       *swap_end_to_submit);
+    }
+    if (due_to_submit)
+        record_latency(PerfLatencyKind::VsyncDueToGuestSubmit, *due_to_submit);
+}
+
+void PerformanceCounters::discard_pending_vsync_callbacks() {
+    if (!enabled())
+        return;
+    std::lock_guard lock{vsync_timeline_mutex_};
+    for (auto timeline = vsync_timelines_.begin();
+         timeline != vsync_timelines_.end();) {
+        std::erase_if(timeline->second, [](const auto& candidate) {
+            return candidate.callback !=
+                       std::chrono::steady_clock::time_point{} &&
+                   candidate.swap_end ==
+                       std::chrono::steady_clock::time_point{};
+        });
+        if (timeline->second.empty()) {
+            timeline = vsync_timelines_.erase(timeline);
+        } else {
+            ++timeline;
+        }
+    }
 }
 
 void PerformanceCounters::record_hle(std::string_view subsystem,
@@ -661,6 +868,10 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
         display_last_nanoseconds_.load(std::memory_order_relaxed);
     result.display_mailbox_coalesced =
         display_mailbox_coalesced_.load(std::memory_order_relaxed);
+    result.display_vsync_budget_cuts =
+        display_vsync_budget_cuts_.load(std::memory_order_relaxed);
+    result.display_vsync_budget_saved_ticks =
+        display_vsync_budget_saved_ticks_.load(std::memory_order_relaxed);
     result.native_present_attempts =
         native_present_attempts_.load(std::memory_order_relaxed);
     result.native_present_mailbox_coalesced =
@@ -830,8 +1041,33 @@ std::string_view perf_latency_kind_name(PerfLatencyKind kind) {
     case PerfLatencyKind::QueuePresent: return "queue-present";
     case PerfLatencyKind::PresentReturn: return "present-return";
     case PerfLatencyKind::PresentInterval: return "present-interval";
+    case PerfLatencyKind::VsyncDueToCallback:
+        return "vsync-due-callback";
+    case PerfLatencyKind::VsyncCallbackToSwapEnd:
+        return "vsync-callback-swap-end";
+    case PerfLatencyKind::VsyncSwapEndToGuestSubmit:
+        return "vsync-swap-end-guest-submit";
+    case PerfLatencyKind::VsyncDueToGuestSubmit:
+        return "vsync-due-guest-submit";
     case PerfLatencyKind::JitColdPath: return "jit-cold-path";
     case PerfLatencyKind::RuntimeDestructor: return "runtime-destructor";
+    case PerfLatencyKind::GlesTargetRelease: return "gles-target-release";
+    case PerfLatencyKind::PosixSpawnTotal: return "posix-spawn-total";
+    case PerfLatencyKind::PosixSpawnDecode: return "posix-spawn-decode";
+    case PerfLatencyKind::PosixSpawnFork: return "posix-spawn-fork";
+    case PerfLatencyKind::PosixSpawnCreate: return "posix-spawn-create";
+    case PerfLatencyKind::ProcessFreshMemory: return "process-fresh-memory";
+    case PerfLatencyKind::ProcessCloneMemory: return "process-clone-memory";
+    case PerfLatencyKind::ProcessCreateCpu: return "process-create-cpu";
+    case PerfLatencyKind::ProcessCreateKernel: return "process-create-kernel";
+    case PerfLatencyKind::ProcessInheritKernel: return "process-inherit-kernel";
+    case PerfLatencyKind::ProcessInheritSpawnKernel:
+        return "process-inherit-spawn-kernel";
+    case PerfLatencyKind::ProcessConfigureRuntime:
+        return "process-configure-runtime";
+    case PerfLatencyKind::SpawnMemoryClear: return "spawn-memory-clear";
+    case PerfLatencyKind::SpawnImageLoad: return "spawn-image-load";
+    case PerfLatencyKind::SpawnResetRuntime: return "spawn-reset-runtime";
     case PerfLatencyKind::Count: break;
     }
     return "unknown";
@@ -867,6 +1103,8 @@ std::string format_performance_summary(
          << " host-copy=" << snapshot.host_copies
          << " display-submit=" << snapshot.display_submissions
          << " display-coalesced=" << snapshot.display_mailbox_coalesced
+         << " display-vsync-budget=" << snapshot.display_vsync_budget_cuts
+         << '/' << snapshot.display_vsync_budget_saved_ticks
          << " native-attempt=" << snapshot.native_present_attempts
          << " native-coalesced="
          << snapshot.native_present_mailbox_coalesced
@@ -983,6 +1221,8 @@ std::string format_display_performance_summary(
                               snapshot.display_first_nanoseconds,
                               snapshot.display_last_nanoseconds)
          << " display-coalesced=" << snapshot.display_mailbox_coalesced
+         << " display-vsync-budget=" << snapshot.display_vsync_budget_cuts
+         << '/' << snapshot.display_vsync_budget_saved_ticks
          << " native-attempt=" << snapshot.native_present_attempts
          << " native-coalesced="
          << snapshot.native_present_mailbox_coalesced
@@ -1004,6 +1244,10 @@ std::string format_display_performance_summary(
         PerfLatencyKind::QueuePresent,
         PerfLatencyKind::PresentReturn,
         PerfLatencyKind::PresentInterval,
+        PerfLatencyKind::VsyncDueToCallback,
+        PerfLatencyKind::VsyncCallbackToSwapEnd,
+        PerfLatencyKind::VsyncSwapEndToGuestSubmit,
+        PerfLatencyKind::VsyncDueToGuestSubmit,
     };
     bool first = true;
     for (const auto kind : display_latencies) {

@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -64,8 +65,27 @@ enum class PerfLatencyKind : std::uint8_t {
     QueuePresent,
     PresentReturn,
     PresentInterval,
+    VsyncDueToCallback,
+    VsyncCallbackToSwapEnd,
+    VsyncSwapEndToGuestSubmit,
+    VsyncDueToGuestSubmit,
     JitColdPath,
     RuntimeDestructor,
+    GlesTargetRelease,
+    PosixSpawnTotal,
+    PosixSpawnDecode,
+    PosixSpawnFork,
+    PosixSpawnCreate,
+    ProcessFreshMemory,
+    ProcessCloneMemory,
+    ProcessCreateCpu,
+    ProcessCreateKernel,
+    ProcessInheritKernel,
+    ProcessInheritSpawnKernel,
+    ProcessConfigureRuntime,
+    SpawnMemoryClear,
+    SpawnImageLoad,
+    SpawnResetRuntime,
     Count,
 };
 
@@ -122,6 +142,8 @@ struct PerformanceSnapshot {
     std::uint64_t display_first_nanoseconds{};
     std::uint64_t display_last_nanoseconds{};
     std::uint64_t display_mailbox_coalesced{};
+    std::uint64_t display_vsync_budget_cuts{};
+    std::uint64_t display_vsync_budget_saved_ticks{};
     std::uint64_t native_present_attempts{};
     std::uint64_t native_present_mailbox_coalesced{};
     std::uint64_t native_present_skipped{};
@@ -181,6 +203,8 @@ class PerformanceCounters {
     void record_display_submission(
         std::chrono::steady_clock::time_point submitted_at);
     void record_display_mailbox_coalesced();
+    void record_display_vsync_budget(std::uint64_t original_ticks,
+                                     std::uint64_t limited_ticks);
     void record_native_present_attempt();
     void record_native_present_mailbox_coalesced();
     void record_native_present_skipped();
@@ -190,6 +214,17 @@ class PerformanceCounters {
     void record_cpu_present_fallback(
         std::chrono::steady_clock::time_point submitted_at = {});
     void record_cpu_map(bool write, PerfCpuMapReason reason);
+    void record_vsync_due(std::uint32_t process_id,
+                          std::uint32_t framebuffer,
+                          std::uint64_t sequence);
+    void record_vsync_callback(std::uint32_t process_id,
+                               std::uint32_t framebuffer,
+                               std::uint64_t sequence);
+    void record_vsync_swap_end(std::uint32_t process_id,
+                               std::uint32_t framebuffer);
+    void record_vsync_guest_submit(std::uint32_t process_id,
+                                   std::uint32_t framebuffer);
+    void discard_pending_vsync_callbacks();
     void record_hle(std::string_view subsystem, std::uint64_t nanoseconds);
     void record_fork();
     void record_exec();
@@ -263,6 +298,8 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> display_first_nanoseconds_{};
     std::atomic<std::uint64_t> display_last_nanoseconds_{};
     std::atomic<std::uint64_t> display_mailbox_coalesced_{};
+    std::atomic<std::uint64_t> display_vsync_budget_cuts_{};
+    std::atomic<std::uint64_t> display_vsync_budget_saved_ticks_{};
     std::atomic<std::uint64_t> native_present_attempts_{};
     std::atomic<std::uint64_t> native_present_mailbox_coalesced_{};
     std::atomic<std::uint64_t> native_present_skipped_{};
@@ -287,6 +324,16 @@ class PerformanceCounters {
     std::array<std::atomic<std::uint64_t>, perf_fallback_reason_count>
         fallback_reasons_{};
     std::array<LatencyHistogram, perf_latency_kind_count> latencies_{};
+    struct VsyncTimeline {
+        std::uint64_t sequence{};
+        std::chrono::steady_clock::time_point due;
+        std::chrono::steady_clock::time_point callback;
+        std::chrono::steady_clock::time_point swap_end;
+    };
+    mutable std::mutex vsync_timeline_mutex_;
+    std::map<std::pair<std::uint32_t, std::uint32_t>,
+             std::deque<VsyncTimeline>>
+        vsync_timelines_;
     std::mutex present_timeline_mutex_;
     std::atomic<bool> display_window_active_{false};
     mutable std::mutex display_window_mutex_;
