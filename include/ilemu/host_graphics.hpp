@@ -140,6 +140,12 @@ struct HostNativeImage {
 
 class HostGraphicsDevice {
   public:
+    enum class PresentResult : std::uint8_t {
+        Queued,
+        Skipped,
+        Failed,
+    };
+
     virtual ~HostGraphicsDevice() = default;
     [[nodiscard]] virtual std::shared_ptr<HostSurface>
     create_surface(HostSurfaceKey key, HostSurfaceDescriptor descriptor,
@@ -151,7 +157,7 @@ class HostGraphicsDevice {
             PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback) = 0;
     [[nodiscard]] virtual HostNativeImage
     native_image(const HostSurface& surface) const = 0;
-    [[nodiscard]] virtual bool
+    [[nodiscard]] virtual PresentResult
     present(const std::shared_ptr<HostSurface>& surface) = 0;
     [[nodiscard]] virtual bool native_presentation_available() const = 0;
 };

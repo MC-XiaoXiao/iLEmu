@@ -45,7 +45,7 @@ class GlesRenderer : public HostGraphicsDevice {
             PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback) override;
     [[nodiscard]] HostNativeImage
     native_image(const HostSurface& surface) const override;
-    [[nodiscard]] bool
+    [[nodiscard]] PresentResult
     present(const std::shared_ptr<HostSurface>& surface) override;
     [[nodiscard]] bool native_presentation_available() const override;
 

@@ -408,7 +408,7 @@ class VulkanGlesRenderer final : public GlesRenderer {
     native_image(const HostSurface& surface) const override;
     [[nodiscard]] std::unique_ptr<CommandEncoder>
     create_command_encoder() override;
-    [[nodiscard]] bool
+    [[nodiscard]] PresentResult
     present(const std::shared_ptr<HostSurface>& surface) override;
     [[nodiscard]] bool native_presentation_available() const override {
         return presentation_swapchain_ != VK_NULL_HANDLE;
@@ -539,7 +539,7 @@ class VulkanGlesRenderer final : public GlesRenderer {
     [[nodiscard]] bool create_presentation_swapchain();
     [[nodiscard]] bool recreate_presentation_surface();
     void destroy_presentation_swapchain() noexcept;
-    [[nodiscard]] bool present_target(Target& target);
+    [[nodiscard]] PresentResult present_target(Target& target);
     void discard_commands() noexcept;
     [[nodiscard]] VkShaderModule
     create_shader_module(std::span<const std::uint32_t> code) const;
@@ -2144,12 +2144,13 @@ void VulkanGlesRenderer::release(GlesRenderTargetKey target) {
     targets_.erase(found);
 }
 
-bool VulkanGlesRenderer::present_target(Target& target) {
+HostGraphicsDevice::PresentResult
+VulkanGlesRenderer::present_target(Target& target) {
     if (presentation_swapchain_ == VK_NULL_HANDLE ||
         presentation_images_.empty()) {
         last_failure_reason_.store(PerfFallbackReason::VulkanUnavailable,
                                    std::memory_order_relaxed);
-        return false;
+        return PresentResult::Failed;
     }
     // DZN and other translation layers may retain a presented image beyond
     // the render fence. Keep presentation in the next ring slot so compositor
@@ -2170,7 +2171,7 @@ bool VulkanGlesRenderer::present_target(Target& target) {
         if (!recreate_presentation_surface()) {
             last_failure_reason_.store(PerfFallbackReason::BackendFailure,
                                        std::memory_order_relaxed);
-            return false;
+            return PresentResult::Failed;
         }
         slot = &command_slot();
         wait_for_slot(*slot);
@@ -2181,23 +2182,23 @@ bool VulkanGlesRenderer::present_target(Target& target) {
         if (!create_presentation_swapchain()) {
             last_failure_reason_.store(PerfFallbackReason::BackendFailure,
                                        std::memory_order_relaxed);
-            return false;
+            return PresentResult::Failed;
         }
         slot = &command_slot();
         wait_for_slot(*slot);
         acquired = acquire_next_image();
     }
     if (acquired == VK_TIMEOUT || acquired == VK_NOT_READY)
-        return true;
+        return PresentResult::Skipped;
     if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
         last_failure_reason_.store(PerfFallbackReason::BackendFailure,
                                    std::memory_order_relaxed);
-        return false;
+        return PresentResult::Failed;
     }
     if (image_index >= presentation_images_.size()) {
         last_failure_reason_.store(PerfFallbackReason::BackendFailure,
                                    std::memory_order_relaxed);
-        return false;
+        return PresentResult::Failed;
     }
 
     begin_commands();
@@ -2264,7 +2265,7 @@ bool VulkanGlesRenderer::present_target(Target& target) {
         last_failure_reason_.store(PerfFallbackReason::BackendFailure,
                                    std::memory_order_relaxed);
         discard_commands();
-        return false;
+        return PresentResult::Failed;
     }
     const auto render_finished =
         presentation_render_finished_[image_index];
@@ -2288,7 +2289,7 @@ bool VulkanGlesRenderer::present_target(Target& target) {
         if (!recreate_presentation_surface()) {
             last_failure_reason_.store(PerfFallbackReason::BackendFailure,
                                        std::memory_order_relaxed);
-            return false;
+            return PresentResult::Failed;
         }
         return present_target(target);
     }
@@ -2300,14 +2301,18 @@ bool VulkanGlesRenderer::present_target(Target& target) {
             last_failure_reason_.store(PerfFallbackReason::BackendFailure,
                                        std::memory_order_relaxed);
         }
-        return recreated;
+        // VK_SUBOPTIMAL_KHR still accepted this frame. Report that outcome
+        // even if preparing the next swapchain fails.
+        return result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR
+                   ? PresentResult::Queued
+                   : PresentResult::Failed;
     }
     if (result != VK_SUCCESS) {
         last_failure_reason_.store(PerfFallbackReason::BackendFailure,
                                    std::memory_order_relaxed);
-        return false;
+        return PresentResult::Failed;
     }
-    return true;
+    return PresentResult::Queued;
 }
 
 VulkanGlesRenderer::Target& VulkanGlesRenderer::prepare_host_surface(
@@ -3027,10 +3032,10 @@ VulkanGlesRenderer::create_command_encoder() {
     return std::make_unique<Encoder>(*this);
 }
 
-bool VulkanGlesRenderer::present(
+HostGraphicsDevice::PresentResult VulkanGlesRenderer::present(
     const std::shared_ptr<HostSurface>& surface) {
     if (!surface)
-        return false;
+        return PresentResult::Failed;
     last_failure_reason_.store(PerfFallbackReason::None,
                                std::memory_order_relaxed);
     const auto cpu_generation = surface->cpu_generation();
@@ -3042,16 +3047,16 @@ bool VulkanGlesRenderer::present(
         cpu_frame = mapping.frame();
     }
     try {
-        bool presented{};
+        auto presented = PresentResult::Failed;
         {
             std::lock_guard lock{mutex_};
             auto& target = prepare_host_surface(
                 *surface, cpu_frame, cpu_generation, gpu_generation);
             if (!target.valid)
-                return false;
+                return PresentResult::Failed;
             presented = present_target(target);
         }
-        if (presented)
+        if (presented != PresentResult::Failed)
             surface->mark_gpu_synchronized(cpu_generation);
         return presented;
     } catch (...) {
@@ -3060,7 +3065,7 @@ bool VulkanGlesRenderer::present(
         std::lock_guard lock{mutex_};
         static_cast<void>(vkDeviceWaitIdle(device_));
         discard_commands();
-        return false;
+        return PresentResult::Failed;
     }
 }
 

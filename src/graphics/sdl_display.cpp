@@ -154,13 +154,13 @@ struct SdlDisplay::Impl {
         pending_native_frame.reset();
         auto graphics = host_graphics;
         lock.unlock();
-        const auto presented =
-            graphics && frame.host_surface &&
-            graphics->present(frame.host_surface);
-        if (presented)
+        const auto result = graphics && frame.host_surface
+                                ? graphics->present(frame.host_surface)
+                                : HostGraphicsDevice::PresentResult::Failed;
+        if (result == HostGraphicsDevice::PresentResult::Queued)
           performance_counters().record_native_present();
         lock.lock();
-        if (!presented)
+        if (result == HostGraphicsDevice::PresentResult::Failed)
           failed_native_frame = std::move(frame);
       }
     });

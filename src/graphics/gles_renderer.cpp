@@ -136,7 +136,7 @@ class FallbackGlesRenderer final : public GlesRenderer {
     native_image(const HostSurface& surface) const override {
         return primary_->native_image(surface);
     }
-    [[nodiscard]] bool
+    [[nodiscard]] PresentResult
     present(const std::shared_ptr<HostSurface>& surface) override {
         return primary_->present(surface);
     }
@@ -248,9 +248,10 @@ GlesRenderer::native_image(const HostSurface& surface) const {
     return {};
 }
 
-bool GlesRenderer::present(const std::shared_ptr<HostSurface>& surface) {
+HostGraphicsDevice::PresentResult
+GlesRenderer::present(const std::shared_ptr<HostSurface>& surface) {
     static_cast<void>(surface);
-    return false;
+    return PresentResult::Failed;
 }
 
 bool GlesRenderer::native_presentation_available() const {
