@@ -760,6 +760,15 @@ bool CompatibilityKernel::complete_unix_accept(
     }
     const auto listener = unix_listener_states_.find(listener_fd);
     if (listener == unix_listener_states_.end()) {
+        const auto descriptor = virtual_descriptors_.find(listener_fd);
+        if (descriptor != virtual_descriptors_.end() &&
+            kernel_network::is_isolated_stream_descriptor(
+                descriptor->second)) {
+            // No route can produce a peer while isolated. A blocking accept
+            // therefore remains asleep, just as it would on an empty local
+            // listener, instead of failing merely because no HostSocket exists.
+            return false;
+        }
         bsd_error(cpu, einval);
         return true;
     }

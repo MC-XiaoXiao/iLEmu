@@ -38,6 +38,7 @@ inline constexpr std::uint32_t protocol_not_supported = 43;
 inline constexpr std::uint32_t timed_out = 60;
 inline constexpr std::uint32_t operation_not_supported = 102;
 inline constexpr std::uint32_t address_not_available = 49;
+inline constexpr std::uint32_t network_unreachable = 51;
 inline constexpr std::uint32_t not_connected = 57;
 inline constexpr std::uint32_t connection_refused = 61;
 inline constexpr std::uint32_t no_attribute = 93;

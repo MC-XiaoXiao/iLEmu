@@ -323,6 +323,37 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
       }
       return;
     }
+    if (kernel_network::is_isolated_stream_descriptor(socket->second)) {
+      if (peer) {
+        bsd_error(cpu, bsd_support::not_connected);
+        return;
+      }
+      const auto ipv6 =
+          socket->second == kernel_network::isolated_ipv6_stream_descriptor;
+      const auto address_size =
+          ipv6 ? darwin::network::arm32_sockaddr_in6_size
+               : darwin::network::arm32_sockaddr_in_size;
+      std::vector<std::byte> address(address_size, std::byte{0});
+      address[darwin::network::sockaddr_length_offset] =
+          static_cast<std::byte>(address_size);
+      address[darwin::network::sockaddr_family_offset] =
+          static_cast<std::byte>(
+              ipv6 ? darwin::network::address_family_inet6
+                   : darwin::network::address_family_inet);
+      if (const auto bound = bound_socket_names_.find(fd);
+          bound != bound_socket_names_.end()) {
+        address.assign(
+            reinterpret_cast<const std::byte *>(bound->second.data()),
+            reinterpret_cast<const std::byte *>(bound->second.data() +
+                                                 bound->second.size()));
+      }
+      if (!copy_socket_address(registers[1], registers[2], address)) {
+        bsd_error(cpu, bsd_support::bad_address);
+      } else {
+        bsd_success(cpu, 0);
+      }
+      return;
+    }
     if (peer && !socket_pair_endpoints_.contains(fd)) {
       bsd_error(cpu, bsd_support::not_connected);
       return;
@@ -392,6 +423,22 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
          registers[0] == darwin::network::address_family_inet6) &&
         (registers[1] == darwin::socket::stream ||
          registers[1] == darwin::socket::datagram)) {
+      if (host_network_policy_ == HostNetworkPolicy::Isolated &&
+          registers[1] == darwin::socket::stream) {
+        const auto fd = allocate_file_descriptor();
+        if (!fd) {
+          bsd_error(cpu, 24); // EMFILE
+          return;
+        }
+        virtual_descriptors_.emplace(
+            *fd, registers[0] == darwin::network::address_family_inet
+                     ? kernel_network::isolated_ipv4_stream_descriptor
+                     : kernel_network::isolated_ipv6_stream_descriptor);
+        file_status_flags_[*fd] = darwin::open_flag::read_write;
+        descriptor_flags_[*fd] = 0;
+        bsd_success(cpu, *fd);
+        return;
+      }
       if (host_network_policy_ != HostNetworkPolicy::Isolated) {
         const auto created = HostSocket::create(
             host_network_policy_, registers[0], registers[1], registers[2]);
@@ -411,10 +458,6 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
           return;
         }
         bsd_success(cpu, *fd);
-        return;
-      }
-      if (registers[1] == darwin::socket::stream) {
-        bsd_error(cpu, 47); // EAFNOSUPPORT under isolated policy
         return;
       }
       const auto fd = allocate_file_descriptor();
@@ -553,6 +596,12 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
       }
       return;
     }
+    if (kernel_network::is_isolated_stream_descriptor(socket->second)) {
+      // Isolation keeps the local endpoint model usable without translating
+      // a guest destination onto the host loopback namespace.
+      bsd_error(cpu, darwin::error::network_unreachable);
+      return;
+    }
     if (connect_kernel_control_socket(cpu))
       return;
     const auto family = memory_.read8(registers[1] + 1);
@@ -636,6 +685,67 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
                       std::to_string(registers[0]) + "\n");
         bsd_success(cpu, 0);
       }
+      return;
+    }
+    if (kernel_network::is_isolated_stream_descriptor(socket->second)) {
+      const auto ipv6 =
+          socket->second == kernel_network::isolated_ipv6_stream_descriptor;
+      const auto expected_family =
+          ipv6 ? darwin::network::address_family_inet6
+               : darwin::network::address_family_inet;
+      const auto expected_size =
+          ipv6 ? darwin::network::arm32_sockaddr_in6_size
+               : darwin::network::arm32_sockaddr_in_size;
+      if (registers[2] < expected_size) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+        return;
+      }
+      const auto address = memory_.read_bytes(registers[1], expected_size);
+      if (!address) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+      if (std::to_integer<std::uint8_t>(
+              (*address)[darwin::network::sockaddr_family_offset]) !=
+          expected_family) {
+        bsd_error(cpu, 47); // EAFNOSUPPORT
+        return;
+      }
+      if (bound_socket_names_.contains(registers[0])) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+        return;
+      }
+      auto canonical = *address;
+      canonical[darwin::network::sockaddr_length_offset] =
+          static_cast<std::byte>(expected_size);
+      const std::string encoded{
+          reinterpret_cast<const char *>(canonical.data()), canonical.size()};
+      const auto duplicate = std::any_of(
+          bound_socket_names_.begin(), bound_socket_names_.end(),
+          [&](const auto &entry) {
+            const auto descriptor = virtual_descriptors_.find(entry.first);
+            return descriptor != virtual_descriptors_.end() &&
+                   kernel_network::is_isolated_stream_descriptor(
+                       descriptor->second) &&
+                   entry.second == encoded;
+          });
+      if (duplicate) {
+        bsd_error(cpu, bsd_support::address_in_use);
+        return;
+      }
+      bound_socket_names_[registers[0]] = encoded;
+      const auto port =
+          (static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(
+               canonical[darwin::network::sockaddr_port_offset]))
+           << 8U) |
+          std::to_integer<std::uint8_t>(
+              canonical[darwin::network::sockaddr_port_offset + 1U]);
+      output_.write("[network] isolated bind pid=" +
+                    std::to_string(process_.pid) + " fd=" +
+                    std::to_string(registers[0]) + " family=" +
+                    std::to_string(expected_family) + " port=" +
+                    std::to_string(port) + "\n");
+      bsd_success(cpu, 0);
       return;
     }
     const auto family = memory_.read8(registers[1] + 1);
@@ -732,6 +842,17 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
         bsd_error(cpu, listened.darwin_error);
       } else {
         listening_sockets_.insert(registers[0]);
+        bsd_success(cpu, 0);
+      }
+    } else if (kernel_network::is_isolated_stream_descriptor(
+                   virtual_descriptors_.at(registers[0]))) {
+      if (!bound_socket_names_.contains(registers[0])) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+      } else {
+        listening_sockets_.insert(registers[0]);
+        output_.write("[network] isolated listen pid=" +
+                      std::to_string(process_.pid) + " fd=" +
+                      std::to_string(registers[0]) + "\n");
         bsd_success(cpu, 0);
       }
     } else if (!bound_socket_names_.contains(registers[0])) {
