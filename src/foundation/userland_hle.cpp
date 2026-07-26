@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -13,6 +14,7 @@
 #include "ilemu/cpu.hpp"
 #include "ilemu/macho.hpp"
 #include "ilemu/output.hpp"
+#include "ilemu/performance.hpp"
 
 namespace ilemu {
 namespace {
@@ -33,6 +35,16 @@ constexpr std::size_t maximum_traced_hle_symbols = 512;
 bool path_has_suffix(std::string_view path, std::string_view suffix) {
   return path.size() >= suffix.size() &&
          path.substr(path.size() - suffix.size()) == suffix;
+}
+
+std::string_view hle_subsystem(std::string_view image_suffix) {
+  const auto separator = image_suffix.find_last_of('/');
+  auto name = separator == std::string_view::npos
+                  ? image_suffix
+                  : image_suffix.substr(separator + 1U);
+  if (name.ends_with(".dylib"))
+    name.remove_suffix(6U);
+  return name.empty() ? std::string_view{"unknown"} : name;
 }
 
 std::array<std::byte, 4> little_endian_word(std::uint32_t value) {
@@ -765,7 +777,19 @@ bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
                   " symbol=" + std::string{symbol} + "\n");
   }
   UserlandHleCall call{*this, cpu, memory_, output_, process_id, symbol};
+  const auto measure_hle = performance_counters().enabled();
+  const auto hle_start = measure_hle
+                             ? std::chrono::steady_clock::now()
+                             : std::chrono::steady_clock::time_point{};
   registration->handler(call);
+  if (measure_hle) {
+    const auto elapsed = std::chrono::steady_clock::now() - hle_start;
+    performance_counters().record_hle(
+        hle_subsystem(registration->image_suffix),
+        static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed)
+                .count()));
+  }
 
   auto &registers = cpu.registers();
   if (call.tail_call_address_) {

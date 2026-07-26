@@ -3,9 +3,11 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "ilemu/display.hpp"
+#include "ilemu/gles_renderer.hpp"
 #include "ilemu/userland_hle.hpp"
 
 namespace ilemu {
@@ -104,17 +106,38 @@ void Mbx2dHle::prepare_destination_for_frame(
     }
     const auto width = damage.right - damage.left;
     const auto height = damage.bottom - damage.top;
-    const auto pixel_count =
-        static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
-    const std::vector<std::uint32_t> clear(pixel_count, 0xff000000U);
     // LayerKit retains unchanged sibling layers in the swap backing. Extend
     // invalidation across old and new bounds only while the same large source
     // moves. A replacement source starts a new scene generation; clearing the
     // outgoing source's larger bounds would erase retained siblings outside
     // the replacement's local bounds until their next dirty update.
-    if (width > 0 && height > 0 &&
-        write_region(*destination, damage.left, damage.top, width, height,
-                     clear, call)) {
+    bool cleared{};
+    if (width > 0 && height > 0 && host_graphics_->accelerated() &&
+        destination->host_surface && destination->backing &&
+        destination->backing->pixel_format == surface_pixel_format_bgra &&
+        damage.left <= std::numeric_limits<std::int32_t>::max() &&
+        damage.top <= std::numeric_limits<std::int32_t>::max() &&
+        static_cast<std::uint64_t>(width) <=
+            std::numeric_limits<std::uint32_t>::max() &&
+        static_cast<std::uint64_t>(height) <=
+            std::numeric_limits<std::uint32_t>::max()) {
+        cleared = command_encoder_->fill(
+            destination->host_surface,
+            {static_cast<std::int32_t>(damage.left),
+             static_cast<std::int32_t>(damage.top),
+             static_cast<std::uint32_t>(width),
+             static_cast<std::uint32_t>(height)},
+            0xff000000U, HostCompositeMode::Copy);
+    }
+    if (!cleared && width > 0 && height > 0) {
+        const auto pixel_count =
+            static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        const std::vector<std::uint32_t> clear(pixel_count, 0xff000000U);
+        cleared =
+            write_region(*destination, damage.left, damage.top, width, height,
+                         clear, call);
+    }
+    if (cleared) {
         destination_frame_sequences_[surface] = sequence;
         destination_scene_damage_[surface] = current_damage;
         destination_scene_sources_[surface] = source_surface;

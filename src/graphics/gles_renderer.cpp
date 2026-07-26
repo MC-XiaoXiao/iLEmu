@@ -216,12 +216,13 @@ GlesRenderer::create_command_encoder() {
     return make_cpu_command_encoder();
 }
 
-bool GlesRenderer::map_cpu(HostSurface& surface, bool read) {
+bool GlesRenderer::map_cpu(HostSurface& surface, bool read,
+                           PerfCpuMapReason reason) {
     if (!read)
         return true;
     const auto generation = surface.gpu_generation();
     {
-        auto mapping = surface.map_cpu(false);
+        auto mapping = surface.map_cpu(false, reason);
         if (!synchronize(mapping.frame(), surface.key()))
             return false;
     }

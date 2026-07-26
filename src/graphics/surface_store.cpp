@@ -139,7 +139,8 @@ bool SurfaceStore::publish(AddressSpace& memory, Backing backing) {
             {0, backing.provenance.publication_sequence},
             HostSurfaceDescriptor{backing.width, backing.height,
                                   backing.bytes_per_row,
-                                  backing.pixel_format});
+                                  backing.pixel_format,
+                                  PerfSurfaceKind::CoreSurface});
         object.store_references = 1;
         registry->objects.emplace(backing.id, std::move(object));
         if (registry->next_identifier <= backing.id)
@@ -237,9 +238,11 @@ SurfaceStore::read_argb(AddressSpace& memory, std::uint32_t id) const {
     const auto surface = host_surface(id);
     if (surface &&
         surface->gpu_generation() > surface->cpu_generation()) {
-        if (!shared_gles_renderer()->map_cpu(*surface, true))
+        if (!shared_gles_renderer()->map_cpu(
+                *surface, true, PerfCpuMapReason::CoreSurface))
             return std::nullopt;
-        auto mapping = surface->map_cpu(false);
+        auto mapping =
+            surface->map_cpu(false, PerfCpuMapReason::CoreSurface);
         return mapping.frame().pixels;
     }
     constexpr auto pixel_size = core_surface_abi::bytes_per_bgra_pixel;

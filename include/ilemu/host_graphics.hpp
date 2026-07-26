@@ -7,6 +7,7 @@
 #include <span>
 
 #include "ilemu/display.hpp"
+#include "ilemu/performance.hpp"
 
 namespace ilemu {
 
@@ -22,6 +23,7 @@ struct HostSurfaceDescriptor {
     std::uint32_t height{};
     std::uint32_t bytes_per_row{};
     std::uint32_t pixel_format{};
+    PerfSurfaceKind kind{PerfSurfaceKind::Unknown};
 };
 
 struct HostRectangle {
@@ -75,7 +77,9 @@ class HostSurface {
     }
     [[nodiscard]] std::uint64_t cpu_generation() const;
     [[nodiscard]] std::uint64_t gpu_generation() const;
-    [[nodiscard]] CpuMapping map_cpu(bool write);
+    [[nodiscard]] CpuMapping
+    map_cpu(bool write,
+            PerfCpuMapReason reason = PerfCpuMapReason::Internal);
     void replace_cpu(std::span<const std::uint32_t> pixels);
     // Called after queueing a native image write and after a completed
     // GPU-to-CPU transfer, respectively.
@@ -137,7 +141,9 @@ class HostGraphicsDevice {
                    std::span<const std::uint32_t> initial_pixels = {}) = 0;
     [[nodiscard]] virtual std::unique_ptr<CommandEncoder>
     create_command_encoder() = 0;
-    [[nodiscard]] virtual bool map_cpu(HostSurface& surface, bool read) = 0;
+    [[nodiscard]] virtual bool
+    map_cpu(HostSurface& surface, bool read,
+            PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback) = 0;
     [[nodiscard]] virtual HostNativeImage
     native_image(const HostSurface& surface) const = 0;
     [[nodiscard]] virtual bool

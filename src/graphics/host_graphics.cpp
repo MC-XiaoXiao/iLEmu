@@ -42,7 +42,8 @@ class CpuCommandEncoder final : public CommandEncoder {
               std::uint8_t global_alpha) override {
         if (!destination)
             return false;
-        auto mapping = destination->map_cpu(true);
+        auto mapping = destination->map_cpu(
+            true, PerfCpuMapReason::SoftwareFallback);
         auto& frame = mapping.frame();
         if (rectangle.x < 0 || rectangle.y < 0 ||
             rectangle.width > frame.width ||
@@ -69,6 +70,7 @@ class CpuCommandEncoder final : public CommandEncoder {
                                               PremultipliedSourceOver);
             }
         }
+        performance_counters().record_host_fill();
         return true;
     }
 
@@ -86,10 +88,12 @@ class CpuCommandEncoder final : public CommandEncoder {
         }
         DisplayFrame source_frame;
         {
-            auto source_mapping = source->map_cpu(false);
+            auto source_mapping = source->map_cpu(
+                false, PerfCpuMapReason::SoftwareFallback);
             source_frame = source_mapping.frame();
         }
-        auto destination_mapping = destination->map_cpu(true);
+        auto destination_mapping = destination->map_cpu(
+            true, PerfCpuMapReason::SoftwareFallback);
         auto& destination_frame = destination_mapping.frame();
         const auto valid = [](const DisplayFrame& frame,
                               HostRectangle rectangle) {
@@ -154,6 +158,7 @@ class CpuCommandEncoder final : public CommandEncoder {
                                                   PremultipliedSourceOver);
             }
         }
+        performance_counters().record_host_copy();
         return true;
     }
 
@@ -201,7 +206,9 @@ std::uint64_t HostSurface::gpu_generation() const {
     return gpu_generation_;
 }
 
-HostSurface::CpuMapping HostSurface::map_cpu(bool write) {
+HostSurface::CpuMapping HostSurface::map_cpu(
+    bool write, PerfCpuMapReason reason) {
+    performance_counters().record_cpu_map(write, reason);
     return CpuMapping{*this, write};
 }
 

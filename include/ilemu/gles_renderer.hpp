@@ -40,7 +40,9 @@ class GlesRenderer : public HostGraphicsDevice {
         override;
     [[nodiscard]] std::unique_ptr<CommandEncoder>
     create_command_encoder() override;
-    [[nodiscard]] bool map_cpu(HostSurface& surface, bool read) override;
+    [[nodiscard]] bool
+    map_cpu(HostSurface& surface, bool read,
+            PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback) override;
     [[nodiscard]] HostNativeImage
     native_image(const HostSurface& surface) const override;
     [[nodiscard]] bool

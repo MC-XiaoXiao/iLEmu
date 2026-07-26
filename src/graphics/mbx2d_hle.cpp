@@ -672,7 +672,8 @@ bool Mbx2dHle::write_region(const ResolvedSurface &surface, std::int64_t x,
   }
   if (surface.host_surface &&
       backing.pixel_format == surface_pixel_format_bgra) {
-    auto mapping = surface.host_surface->map_cpu(true);
+    auto mapping = surface.host_surface->map_cpu(
+        true, PerfCpuMapReason::SoftwareFallback);
     auto &frame = mapping.frame();
     for (std::int64_t row = 0; row < height; ++row) {
       const auto source_offset = static_cast<std::size_t>(row * width);
@@ -1139,9 +1140,12 @@ void Mbx2dHle::submit_destination(UserlandHleCall &call, bool context_api) {
     display_->replace_surface(
         surface,
         [graphics, surface] {
-          if (!graphics->map_cpu(*surface, true))
+          if (!graphics->map_cpu(
+                  *surface, true,
+                  PerfCpuMapReason::DeferredDisplayRead))
             return std::vector<std::uint32_t>{};
-          auto mapping = surface->map_cpu(false);
+          auto mapping = surface->map_cpu(
+              false, PerfCpuMapReason::DeferredDisplayRead);
           return mapping.frame().pixels;
         });
     return;

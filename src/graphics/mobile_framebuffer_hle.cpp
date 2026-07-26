@@ -121,15 +121,21 @@ MobileFramebufferHle::MobileFramebufferHle(
 
 void MobileFramebufferHle::reset() {
   layers_.clear();
+  submitted_layers_.clear();
   next_swap_id_ = 1;
   background_argb_ = 0xff000000U;
+  submitted_background_argb_ = background_argb_;
+  scanout_contents_valid_ = false;
 }
 
 void MobileFramebufferHle::inherit_state(const MobileFramebufferHle &parent) {
   layers_ = parent.layers_;
+  submitted_layers_ = parent.submitted_layers_;
   next_swap_id_ = parent.next_swap_id_;
   background_argb_ = parent.background_argb_;
+  submitted_background_argb_ = parent.submitted_background_argb_;
   scanout_surface_ = parent.scanout_surface_;
+  scanout_contents_valid_ = parent.scanout_contents_valid_;
 }
 
 void MobileFramebufferHle::set_display(std::shared_ptr<DisplayState> display) {
@@ -139,6 +145,8 @@ void MobileFramebufferHle::set_display(std::shared_ptr<DisplayState> display) {
     if (descriptor.width != display_->width() ||
         descriptor.height != display_->height()) {
       scanout_surface_.reset();
+      submitted_layers_.clear();
+      scanout_contents_valid_ = false;
     }
   }
 }
@@ -199,21 +207,20 @@ void MobileFramebufferHle::ensure_scanout_surface() {
       HostSurfaceDescriptor{display_->width(), display_->height(),
                             display_->width() *
                                 core_surface_abi::bytes_per_bgra_pixel,
-                            surface_pixel_format_bgra},
+                            surface_pixel_format_bgra,
+                            PerfSurfaceKind::Scanout},
       initial);
+  submitted_layers_.clear();
+  submitted_background_argb_ = background_argb_;
+  scanout_contents_valid_ = false;
 }
 
 bool MobileFramebufferHle::submit_host_layers() {
   if (!display_ || !host_graphics_->accelerated() || !command_encoder_)
     return false;
   ensure_scanout_surface();
-  if (!scanout_surface_ ||
-      !command_encoder_->fill(
-          scanout_surface_,
-          {0, 0, display_->width(), display_->height()},
-          background_argb_)) {
+  if (!scanout_surface_)
     return false;
-  }
   const auto exact_rectangle = [](const Rectangle &rectangle)
       -> std::optional<HostRectangle> {
     const auto exact = [](float value) {
@@ -239,8 +246,18 @@ bool MobileFramebufferHle::submit_host_layers() {
         static_cast<std::uint32_t>(rectangle.width),
         static_cast<std::uint32_t>(rectangle.height)};
   };
+
+  struct PreparedLayer {
+    std::uint32_t order{};
+    LayerState state;
+    std::shared_ptr<HostSurface> source;
+    HostRectangle source_rectangle;
+    HostRectangle destination_rectangle;
+    std::uint64_t generation{};
+  };
+  std::vector<PreparedLayer> prepared_layers;
+  prepared_layers.reserve(layers_.size());
   for (const auto &[layer, state] : layers_) {
-    static_cast<void>(layer);
     const auto backing = surface_store_->find(state.surface_id);
     const auto source = surface_store_->host_surface(state.surface_id);
     const auto source_rectangle = exact_rectangle(state.source);
@@ -263,25 +280,140 @@ bool MobileFramebufferHle::submit_host_layers() {
             display_->height() -
                 std::min(display_->height(),
                          destination_rectangle->height) ||
-        destination_rectangle->height > display_->height() ||
-        !command_encoder_->copy(
-            source, scanout_surface_, *source_rectangle,
-            *destination_rectangle,
-            HostCompositeMode::PremultipliedSourceOver, 0xffU,
-            HostFilter::Nearest)) {
+        destination_rectangle->height > display_->height()) {
+      return false;
+    }
+    prepared_layers.push_back(
+        {layer, state, source, *source_rectangle, *destination_rectangle,
+         std::max(source->cpu_generation(), source->gpu_generation())});
+  }
+
+  const auto right = [](const HostRectangle &rectangle) {
+    return static_cast<std::int64_t>(rectangle.x) + rectangle.width;
+  };
+  const auto bottom = [](const HostRectangle &rectangle) {
+    return static_cast<std::int64_t>(rectangle.y) + rectangle.height;
+  };
+  const auto intersects = [&](const HostRectangle &left,
+                              const HostRectangle &right_rectangle) {
+    return static_cast<std::int64_t>(left.x) < right(right_rectangle) &&
+           static_cast<std::int64_t>(right_rectangle.x) < right(left) &&
+           static_cast<std::int64_t>(left.y) < bottom(right_rectangle) &&
+           static_cast<std::int64_t>(right_rectangle.y) < bottom(left);
+  };
+  const auto contains = [&](const HostRectangle &outer,
+                            const HostRectangle &inner) {
+    return outer.x <= inner.x && outer.y <= inner.y &&
+           right(outer) >= right(inner) && bottom(outer) >= bottom(inner);
+  };
+  std::optional<HostRectangle> damage;
+  const auto add_damage = [&](const HostRectangle &rectangle) {
+    if (!damage) {
+      damage = rectangle;
+      return;
+    }
+    const auto left = std::min(damage->x, rectangle.x);
+    const auto top = std::min(damage->y, rectangle.y);
+    const auto damage_right = std::max(right(*damage), right(rectangle));
+    const auto damage_bottom = std::max(bottom(*damage), bottom(rectangle));
+    damage = HostRectangle{
+        left, top, static_cast<std::uint32_t>(damage_right - left),
+        static_cast<std::uint32_t>(damage_bottom - top)};
+  };
+  const auto full_display = HostRectangle{
+      0, 0, display_->width(), display_->height()};
+  if (!scanout_contents_valid_ ||
+      submitted_background_argb_ != background_argb_) {
+    damage = full_display;
+  } else {
+    for (const auto &[order, submitted] : submitted_layers_) {
+      const auto current = std::find_if(
+          prepared_layers.begin(), prepared_layers.end(),
+          [order](const PreparedLayer &layer) { return layer.order == order; });
+      if (current == prepared_layers.end()) {
+        if (const auto old_destination =
+                exact_rectangle(submitted.state.destination)) {
+          add_damage(*old_destination);
+        }
+        continue;
+      }
+      if (current->state != submitted.state ||
+          current->source->key() != submitted.surface_key ||
+          current->generation != submitted.generation) {
+        if (const auto old_destination =
+                exact_rectangle(submitted.state.destination)) {
+          add_damage(*old_destination);
+        }
+        add_damage(current->destination_rectangle);
+      }
+    }
+    for (const auto &current : prepared_layers) {
+      if (!submitted_layers_.contains(current.order))
+        add_damage(current.destination_rectangle);
+    }
+  }
+
+  // Expanding to the complete destination of every intersecting layer makes
+  // it safe to replay those layers without a backend-specific clip/scissor.
+  // The fixed point also preserves z-order where the bounding box reaches an
+  // otherwise unchanged layer.
+  if (damage && !contains(*damage, full_display)) {
+    bool expanded{};
+    do {
+      expanded = false;
+      for (const auto &layer : prepared_layers) {
+        if (intersects(*damage, layer.destination_rectangle) &&
+            !contains(*damage, layer.destination_rectangle)) {
+          add_damage(layer.destination_rectangle);
+          expanded = true;
+        }
+      }
+    } while (expanded);
+  }
+
+  if (damage) {
+    if (!command_encoder_->fill(scanout_surface_, *damage,
+                                background_argb_)) {
+      scanout_contents_valid_ = false;
+      return false;
+    }
+    for (const auto &layer : prepared_layers) {
+      if (!intersects(*damage, layer.destination_rectangle))
+        continue;
+      if (!command_encoder_->copy(
+              layer.source, scanout_surface_, layer.source_rectangle,
+              layer.destination_rectangle,
+              HostCompositeMode::PremultipliedSourceOver, 0xffU,
+              HostFilter::Nearest)) {
+        scanout_contents_valid_ = false;
+        return false;
+      }
+    }
+    if (!command_encoder_->submit()) {
+      scanout_contents_valid_ = false;
       return false;
     }
   }
-  if (!command_encoder_->submit())
-    return false;
+
+  submitted_layers_.clear();
+  for (const auto &layer : prepared_layers) {
+    submitted_layers_.emplace(
+        layer.order,
+        SubmittedLayer{layer.state, layer.source->key(), layer.generation});
+  }
+  submitted_background_argb_ = background_argb_;
+  scanout_contents_valid_ = true;
   auto graphics = host_graphics_;
   auto scanout = scanout_surface_;
   display_->replace_surface(
       scanout,
       [graphics, scanout] {
-        if (!graphics->map_cpu(*scanout, true))
+        if (!graphics->map_cpu(
+                *scanout, true,
+                PerfCpuMapReason::DeferredDisplayRead))
           return std::vector<std::uint32_t>{};
-        auto mapping = scanout->map_cpu(false);
+        auto mapping = scanout->map_cpu(
+            false, PerfCpuMapReason::DeferredDisplayRead);
         return mapping.frame().pixels;
       });
   return true;
@@ -351,6 +483,8 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall &call) {
     return;
   if (submit_host_layers())
     return;
+  scanout_contents_valid_ = false;
+  submitted_layers_.clear();
   const auto geometry = display_->geometry();
   std::vector<std::uint32_t> composed(
       geometry.pixel_count(), background_argb_);

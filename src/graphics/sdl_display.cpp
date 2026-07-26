@@ -8,6 +8,8 @@
 #include <vector>
 
 #include "ilemu/display.hpp"
+#include "ilemu/gles_renderer.hpp"
+#include "ilemu/performance.hpp"
 #include "sdl_input.hpp"
 
 #if defined(ILEMU_HAS_SDL2)
@@ -222,12 +224,24 @@ bool SdlDisplay::poll_events() {
         impl_->host_graphics->native_presentation_available()) {
       presented = impl_->host_graphics->present(frame->host_surface);
     }
+    if (presented) {
+      performance_counters().record_native_present();
+    }
     if (!presented) {
+    if (frame->host_surface) {
+      if (const auto renderer =
+              std::dynamic_pointer_cast<GlesRenderer>(
+                  impl_->host_graphics)) {
+        performance_counters().record_fallback(
+            renderer->failure_reason());
+      }
+    }
     const auto expected =
         static_cast<std::size_t>(frame->width) * frame->height;
     if (frame->pixels.size() != expected && frame->read_pixels)
       frame->pixels = frame->read_pixels();
     if (frame->pixels.size() == expected) {
+      performance_counters().record_cpu_present_fallback();
       impl_->ensure_cpu_presenter();
       if (SDL_UpdateTexture(
               impl_->texture, nullptr, frame->pixels.data(),

@@ -48,12 +48,21 @@ private:
         float y{};
         float width{};
         float height{};
+
+        bool operator==(const Rectangle&) const = default;
     };
     struct LayerState {
         std::uint32_t surface_id{};
         Rectangle source;
         Rectangle destination;
         std::uint32_t flags{};
+
+        bool operator==(const LayerState&) const = default;
+    };
+    struct SubmittedLayer {
+        LayerState state;
+        HostSurfaceKey surface_key;
+        std::uint64_t generation{};
     };
 
     std::shared_ptr<DisplayState> display_;
@@ -65,8 +74,11 @@ private:
     std::unique_ptr<CommandEncoder> command_encoder_;
     std::shared_ptr<HostSurface> scanout_surface_;
     std::map<std::uint32_t, LayerState> layers_;
+    std::map<std::uint32_t, SubmittedLayer> submitted_layers_;
     std::uint32_t next_swap_id_{1};
     std::uint32_t background_argb_{0xff000000U};
+    std::uint32_t submitted_background_argb_{0xff000000U};
+    bool scanout_contents_valid_{};
 };
 
 }  // namespace ilemu
