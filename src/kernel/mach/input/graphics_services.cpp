@@ -94,6 +94,19 @@ std::uint32_t hand_type(TouchPhase phase) {
   return 3;
 }
 
+std::uint32_t mouse_event_type(TouchPhase phase) {
+  switch (phase) {
+  case TouchPhase::Down:
+    return 1;
+  case TouchPhase::Move:
+    return 6;
+  case TouchPhase::Up:
+  case TouchPhase::Cancel:
+    return 2;
+  }
+  return 2;
+}
+
 bool active(TouchPhase phase) {
   return phase == TouchPhase::Down || phase == TouchPhase::Move;
 }
@@ -117,7 +130,9 @@ std::uint32_t system_button_event_type(const SystemButtonInput &input) {
 
 KernelSharedState::MachMessage make_touch_message(std::uint32_t destination,
                                                   std::uint64_t timestamp,
-                                                  const TouchInput &input) {
+                                                  const TouchInput &input,
+                                                  KernelSharedState::
+                                                      GraphicsInputAbi abi) {
   KernelSharedState::MachMessage message;
   message.bytes.resize(hand_message_size, std::byte{0});
   message.destination = destination;
@@ -133,7 +148,10 @@ KernelSharedState::MachMessage make_touch_message(std::uint32_t destination,
              graphics_event_message_id);
 
   const auto record = darwin::mig_wire::message_header_size;
-  write_word(message.bytes, record, hand_event_type);
+  write_word(message.bytes, record,
+             abi == KernelSharedState::GraphicsInputAbi::UIKitHand
+                 ? hand_event_type
+                 : mouse_event_type(input.phase));
   write_float(message.bytes, record + record_location_offset, input.x);
   write_float(message.bytes, record + record_location_offset + 4, input.y);
   write_float(message.bytes, record + record_window_location_offset, input.x);
@@ -186,8 +204,15 @@ make_simple_event_message(std::uint32_t destination, std::uint64_t timestamp,
 
 void queue_locked(KernelSharedState &state, std::uint32_t destination,
                   const TouchInput &input) {
+  auto abi = KernelSharedState::GraphicsInputAbi::UIKitHand;
+  if (const auto port = state.mach_port_objects.lookup(destination)) {
+    if (const auto process = state.processes.find(port->receive_owner);
+        process != state.processes.end()) {
+      abi = process->second.graphics_input_abi;
+    }
+  }
   state.mach_queues[destination].push_back(
-      make_touch_message(destination, state.clock.now(), input));
+      make_touch_message(destination, state.clock.now(), input, abi));
 }
 
 void queue_simple_event_locked(KernelSharedState &state,
