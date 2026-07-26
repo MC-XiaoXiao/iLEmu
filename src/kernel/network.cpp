@@ -1,6 +1,7 @@
 #include "ilemu/kernel.hpp"
 
 #include "ilemu/baseband_device.hpp"
+#include "ilemu/offline_serial_device.hpp"
 #include "ilemu/darwin_abi.hpp"
 #include "ilemu/darwin_kqueue_abi.hpp"
 #include "ilemu/darwin_network_abi.hpp"
@@ -598,6 +599,12 @@ bool CompatibilityKernel::receive_socket_bytes(
             pending_wifi_driver_events_.erase(pending);
             bsd_success(cpu, static_cast<std::uint32_t>(copied));
         }
+        return true;
+    }
+    if (const auto descriptor = virtual_descriptors_.find(fd);
+        descriptor != virtual_descriptors_.end() &&
+        descriptor->second == bsd::offline_serial_device::descriptor_kind &&
+        offline_serial_state_.pending_bytes() != 0) {
         return true;
     }
     if (const auto host = host_sockets_.find(fd); host != host_sockets_.end()) {
@@ -1218,7 +1225,9 @@ bool CompatibilityKernel::descriptor_writable(std::uint32_t fd) const {
         descriptor != virtual_descriptors_.end() &&
         (descriptor->second == "route-socket" ||
          descriptor->second == darwin::bpf::descriptor_kind ||
-         descriptor->second == bsd::baseband_device::descriptor_kind)) {
+         descriptor->second == bsd::baseband_device::descriptor_kind ||
+         descriptor->second ==
+             bsd::offline_serial_device::descriptor_kind)) {
         return true;
     }
     return false;

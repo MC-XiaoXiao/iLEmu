@@ -23,6 +23,7 @@
 #include "ilemu/mach_port_mig_ids.hpp"
 #include "ilemu/mach_scheduler_abi.hpp"
 #include "ilemu/mach_thread_policy_abi.hpp"
+#include "ilemu/offline_serial_device.hpp"
 #include "ilemu/macho.hpp"
 #include "ilemu/mbx_connect_hle.hpp"
 #include "ilemu/mig_wire_abi.hpp"
@@ -855,6 +856,32 @@ bool CompatibilityKernel::deliver_pending_io(Cpu &cpu) {
   }
   if (const auto pending = pending_socket_reads_.find(cpu.processor_id());
       pending != pending_socket_reads_.end()) {
+    if (const auto descriptor =
+            virtual_descriptors_.find(pending->second.fd);
+        descriptor != virtual_descriptors_.end() &&
+        descriptor->second == bsd::offline_serial_device::descriptor_kind) {
+      if (auto bytes = offline_serial_state_.read(pending->second.size);
+          !bytes.empty()) {
+        if (!memory_.copy_in(pending->second.address, bytes)) {
+          bsd_error(cpu, efault);
+        } else {
+          bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
+        }
+        pending_socket_reads_.erase(pending);
+        process_.waiting_for_events = false;
+        cpu.clear_halt();
+        return true;
+      }
+      if (!pending->second.deadline ||
+          shared_state_->clock.now() < *pending->second.deadline) {
+        return false;
+      }
+      bsd_success(cpu, 0);
+      pending_socket_reads_.erase(pending);
+      process_.waiting_for_events = false;
+      cpu.clear_halt();
+      return true;
+    }
     if (!receive_socket_bytes(cpu, pending->second.fd, pending->second.address,
                               pending->second.size,
                               pending->second.source_address,
@@ -1007,6 +1034,12 @@ std::optional<std::uint64_t> CompatibilityKernel::next_timer_deadline() const {
     static_cast<void>(processor);
     if (wait.deadline && (!deadline || *wait.deadline < *deadline)) {
       deadline = wait.deadline;
+    }
+  }
+  for (const auto &[processor, read] : pending_socket_reads_) {
+    static_cast<void>(processor);
+    if (read.deadline && (!deadline || *read.deadline < *deadline)) {
+      deadline = read.deadline;
     }
   }
   for (const auto &[processor, receive] : pending_mach_receives_) {
@@ -1215,6 +1248,7 @@ void CompatibilityKernel::inherit_process_state(
   file_status_flags_ = parent.file_status_flags_;
   descriptor_flags_ = parent.descriptor_flags_;
   virtual_descriptors_ = parent.virtual_descriptors_;
+  offline_serial_state_.inherit_configuration(parent.offline_serial_state_);
   bpf_descriptors_ = parent.bpf_descriptors_;
   host_sockets_ = parent.host_sockets_;
   virtual_udp_sockets_ = parent.virtual_udp_sockets_;

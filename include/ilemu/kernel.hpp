@@ -26,6 +26,7 @@
 #include "ilemu/cpu.hpp"
 #include "ilemu/darwin_bpf_abi.hpp"
 #include "ilemu/darwin_notify_state_hle.hpp"
+#include "ilemu/darwin_tty_abi.hpp"
 #include "ilemu/display.hpp"
 #include "ilemu/device_profile.hpp"
 #include "ilemu/hfs_metadata.hpp"
@@ -37,6 +38,7 @@
 #include "ilemu/mbx2d_hle.hpp"
 #include "ilemu/mobile_framebuffer_hle.hpp"
 #include "ilemu/opengles_hle.hpp"
+#include "ilemu/offline_serial_device.hpp"
 #include "ilemu/output.hpp"
 #include "ilemu/presentation_tracker.hpp"
 #include "ilemu/ringer_switch_state.hpp"
@@ -471,6 +473,7 @@ private:
   std::map<std::uint32_t, std::uint32_t> descriptor_flags_;
   std::map<std::uint32_t, AioCompletion> aio_completions_;
   std::map<std::uint32_t, std::string> virtual_descriptors_;
+  bsd::offline_serial_device::State offline_serial_state_;
   std::map<std::uint32_t, std::shared_ptr<darwin::bpf::DescriptorState>>
       bpf_descriptors_;
   std::map<std::uint32_t, std::shared_ptr<HostSocket>> host_sockets_;

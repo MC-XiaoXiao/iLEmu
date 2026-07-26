@@ -32,6 +32,8 @@ constexpr std::uint32_t parameter_length(std::uint32_t command) {
 }
 
 inline constexpr std::size_t control_character_count = 20;
+inline constexpr std::size_t minimum_bytes_index = 16; // VMIN
+inline constexpr std::size_t timeout_deciseconds_index = 17; // VTIME
 inline constexpr std::uint32_t arm32_attributes_size = 44;
 
 namespace arm32_attributes_offset {
@@ -78,6 +80,12 @@ inline constexpr std::uint32_t set_attributes_after_drain =
     sized_command(ioctl_input, 't', 21, arm32_attributes_size);
 inline constexpr std::uint32_t set_attributes_after_drain_and_flush =
     sized_command(ioctl_input, 't', 22, arm32_attributes_size);
+inline constexpr std::uint32_t drain_output = void_command('t', 94);
+
+// AppleIOSerialFamily accepts arbitrary speeds through IOSSIOSPEED instead of
+// encoding every rate in termios. speed_t is 32-bit in the ARM guest ABI.
+inline constexpr std::uint32_t set_arbitrary_speed =
+    sized_command(ioctl_input, 'T', 2, sizeof(std::uint32_t));
 
 // Apple Onboard Serial driver contract used by the target CommCenter.
 // The firmware names this request IOAOSH5 and passes a 32-bit boolean that

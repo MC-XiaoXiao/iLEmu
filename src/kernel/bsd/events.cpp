@@ -8,6 +8,7 @@
 #include "ilemu/darwin_route_socket.hpp"
 #include "ilemu/darwin_sysctl.hpp"
 #include "ilemu/kernel_network.hpp"
+#include "ilemu/offline_serial_device.hpp"
 
 #include <algorithm>
 #include <array>
@@ -113,6 +114,123 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       return;
     if (ioctl_kernel_control_socket(cpu))
       return;
+    const auto tty_descriptor =
+        device->second == bsd::baseband_device::descriptor_kind ||
+        device->second == bsd::offline_serial_device::descriptor_kind;
+    if (tty_descriptor &&
+        registers[1] == darwin::tty::set_arbitrary_speed) {
+      const auto speed = memory_.read32(registers[2]);
+      if (!speed) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+      if (device->second == bsd::baseband_device::descriptor_kind) {
+        auto attributes = shared_state_->baseband_device_state.attributes();
+        attributes.input_speed = static_cast<std::int32_t>(*speed);
+        attributes.output_speed = static_cast<std::int32_t>(*speed);
+        shared_state_->baseband_device_state.set_attributes(attributes);
+      } else {
+        auto attributes = offline_serial_state_.attributes();
+        attributes.input_speed = static_cast<std::int32_t>(*speed);
+        attributes.output_speed = static_cast<std::int32_t>(*speed);
+        offline_serial_state_.set_attributes(attributes);
+      }
+      bsd_success(cpu, 0);
+      return;
+    }
+    if (tty_descriptor && registers[1] == darwin::tty::drain_output) {
+      // Both virtual serial implementations consume output synchronously.
+      bsd_success(cpu, 0);
+      return;
+    }
+    if (device->second == bsd::offline_serial_device::descriptor_kind) {
+      const auto request = registers[1];
+      const auto argument = registers[2];
+      if (request == darwin::tty::get_attributes) {
+        const auto attributes = offline_serial_state_.attributes();
+        const auto control_characters =
+            std::as_bytes(std::span{attributes.control_characters});
+        if (!memory_.write32(
+                argument + darwin::tty::arm32_attributes_offset::input_flags,
+                attributes.input_flags) ||
+            !memory_.write32(
+                argument + darwin::tty::arm32_attributes_offset::output_flags,
+                attributes.output_flags) ||
+            !memory_.write32(
+                argument + darwin::tty::arm32_attributes_offset::control_flags,
+                attributes.control_flags) ||
+            !memory_.write32(
+                argument + darwin::tty::arm32_attributes_offset::local_flags,
+                attributes.local_flags) ||
+            !memory_.copy_in(
+                argument +
+                    darwin::tty::arm32_attributes_offset::control_characters,
+                control_characters) ||
+            !memory_.write32(
+                argument + darwin::tty::arm32_attributes_offset::input_speed,
+                static_cast<std::uint32_t>(attributes.input_speed)) ||
+            !memory_.write32(
+                argument + darwin::tty::arm32_attributes_offset::output_speed,
+                static_cast<std::uint32_t>(attributes.output_speed))) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        bsd_success(cpu, 0);
+        return;
+      }
+      if (request == darwin::tty::set_attributes ||
+          request == darwin::tty::set_attributes_after_drain ||
+          request == darwin::tty::set_attributes_after_drain_and_flush) {
+        const auto input_flags = memory_.read32(
+            argument + darwin::tty::arm32_attributes_offset::input_flags);
+        const auto output_flags = memory_.read32(
+            argument + darwin::tty::arm32_attributes_offset::output_flags);
+        const auto control_flags = memory_.read32(
+            argument + darwin::tty::arm32_attributes_offset::control_flags);
+        const auto local_flags = memory_.read32(
+            argument + darwin::tty::arm32_attributes_offset::local_flags);
+        const auto control_characters = memory_.read_bytes(
+            argument + darwin::tty::arm32_attributes_offset::control_characters,
+            darwin::tty::control_character_count);
+        const auto input_speed = memory_.read32(
+            argument + darwin::tty::arm32_attributes_offset::input_speed);
+        const auto output_speed = memory_.read32(
+            argument + darwin::tty::arm32_attributes_offset::output_speed);
+        if (!input_flags || !output_flags || !control_flags || !local_flags ||
+            !control_characters || !input_speed || !output_speed) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        darwin::tty::Arm32Attributes attributes{
+            .input_flags = *input_flags,
+            .output_flags = *output_flags,
+            .control_flags = *control_flags,
+            .local_flags = *local_flags,
+            .input_speed = static_cast<std::int32_t>(*input_speed),
+            .output_speed = static_cast<std::int32_t>(*output_speed),
+        };
+        std::transform(
+            control_characters->begin(), control_characters->end(),
+            attributes.control_characters.begin(),
+            [](std::byte value) {
+              return std::to_integer<std::uint8_t>(value);
+            });
+        offline_serial_state_.set_attributes(attributes);
+        bsd_success(cpu, 0);
+        return;
+      }
+      if (request == darwin::tty::set_exclusive ||
+          request == darwin::tty::clear_exclusive) {
+        bsd_success(cpu, 0);
+        return;
+      }
+      std::ostringstream message;
+      message << "[serial] unsupported offline ioctl pid=" << process_.pid
+              << " request=0x" << std::hex << request << '\n';
+      output_.write(message.str());
+      bsd_error(cpu, darwin::error::inappropriate_ioctl);
+      return;
+    }
     if (device->second == bsd::baseband_device::descriptor_kind) {
       const auto request = registers[1];
       const auto argument = registers[2];
@@ -978,7 +1096,6 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
     std::uint32_t ready_count = 0;
     std::vector<std::uint32_t> requested_read_words(words);
     std::vector<std::uint32_t> requested_write_words(words);
-    bool watches_host_socket = false;
     for (std::uint32_t word_index = 0; word_index < words; ++word_index) {
       std::uint32_t ready_read_word = 0;
       std::uint32_t ready_write_word = 0;
@@ -993,7 +1110,6 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
           const auto fd = word_index * 32U + bit;
           if (fd >= descriptor_count || (*requested & (1U << bit)) == 0)
             continue;
-          watches_host_socket = watches_host_socket || host_sockets_.contains(fd);
           if (descriptor_readable(fd)) {
             ready_read_word |= 1U << bit;
             ++ready_count;
@@ -1016,7 +1132,6 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
           if (fd >= descriptor_count || (*requested & (1U << bit)) == 0) {
             continue;
           }
-          watches_host_socket = watches_host_socket || host_sockets_.contains(fd);
           if (descriptor_writable(fd)) {
             ready_write_word |= 1U << bit;
             ++ready_count;
@@ -1062,16 +1177,13 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
         bsd_success(cpu, 0);
         return;
       }
-      // Host sockets have a real poll source but still need the guest timer to
-      // wake a finite select when no packet arrives. Other virtual descriptors
-      // retain their existing provider-specific waiting behavior.
-      if (watches_host_socket) {
-        const auto now = shared_state_->clock.now();
-        timeout_deadline =
-            duration > std::numeric_limits<std::uint64_t>::max() - now
-                ? std::numeric_limits<std::uint64_t>::max()
-                : now + duration;
-      }
+      // select(2)'s timeout applies to every descriptor provider, including a
+      // disconnected character device with no host poll source.
+      const auto now = shared_state_->clock.now();
+      timeout_deadline =
+          duration > std::numeric_limits<std::uint64_t>::max() - now
+              ? std::numeric_limits<std::uint64_t>::max()
+              : now + duration;
     }
     process_.waiting_for_events = true;
     pending_selects_[cpu.processor_id()] =

@@ -215,7 +215,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
     }
     pending_socket_reads_[cpu.processor_id()] =
         PendingSocketRead{fd,           registers[1], registers[2],
-                          registers[4], registers[5], cpu.processor_id()};
+                          registers[4], registers[5], cpu.processor_id(),
+                          std::nullopt};
     process_.waiting_for_events = true;
     bsd_success(cpu, 0);
     cpu.halt(Dynarmic::HaltReason::UserDefined5);

@@ -4,8 +4,8 @@ namespace ilemu {
 
 class UserlandHleRegistry;
 
-// Keeps SpringBoard's BluetoothManager in its supported no-session state when
-// no guest Bluetooth device is exposed.
+// Reports the absence of a controller at MobileBluetooth's public session
+// boundary so guest clients can take their native offline path.
 void register_bluetooth_manager_hle(UserlandHleRegistry& registry);
 
 }  // namespace ilemu

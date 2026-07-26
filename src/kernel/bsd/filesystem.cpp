@@ -1,6 +1,7 @@
 #include "ilemu/kernel.hpp"
 
 #include "ilemu/baseband_device.hpp"
+#include "ilemu/offline_serial_device.hpp"
 #include "ilemu/darwin_abi.hpp"
 #include "ilemu/darwin_bpf_abi.hpp"
 #include "ilemu/darwin_kqueue_abi.hpp"
@@ -211,7 +212,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     }
     if (*path == "/dev/random" || *path == "/dev/urandom" ||
         *path == "/dev/srandom" || *path == "/dev/console" ||
-        bsd::baseband_device::is_path(*path)) {
+        bsd::baseband_device::is_path(*path) ||
+        bsd::offline_serial_device::is_path(*path)) {
       const auto fd = allocate_file_descriptor();
       if (!fd) {
         bsd_error(cpu, 24); // EMFILE
@@ -220,6 +222,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       const auto kind = *path == "/dev/console" ? std::string_view{"console"}
                         : bsd::baseband_device::is_path(*path)
                             ? bsd::baseband_device::descriptor_kind
+                        : bsd::offline_serial_device::is_path(*path)
+                            ? bsd::offline_serial_device::descriptor_kind
                             : std::string_view{"random"};
       virtual_descriptors_.emplace(*fd, kind);
       file_status_flags_[*fd] = flags;
@@ -466,7 +470,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
         *path == "/dev/disk0s2" || *path == "/dev/rdisk0s1" ||
         *path == "/dev/rdisk0s2" ||
         *path == darwin::network::apple80211_driver::event_device_path ||
-        bsd::baseband_device::is_path(*path)) {
+        bsd::baseband_device::is_path(*path) ||
+        bsd::offline_serial_device::is_path(*path)) {
       bsd_success(cpu, 0);
       return;
     }
@@ -1031,6 +1036,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       add_virtual("urandom", 2);
       add_virtual("bpf0", 2);
       add_virtual(std::string{bsd::baseband_device::directory_name}, 2);
+      add_virtual(std::string{bsd::offline_serial_device::directory_name}, 2);
       std::ostringstream directory_trace;
       directory_trace << "[vfs] virtual /dev enumeration entries="
                       << entries.size() << " buffer=" << registers[2]
@@ -1625,9 +1631,12 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       return;
     }
     output_.write("[vfs] stat " + *path + "\n");
-    if (bsd::baseband_device::is_path(*path)) {
-      if (!write_guest_device_stat(registers[1],
-                                   bsd::baseband_device::device_minor, true)) {
+    if (bsd::baseband_device::is_path(*path) ||
+        bsd::offline_serial_device::is_path(*path)) {
+      const auto minor = bsd::baseband_device::is_path(*path)
+                             ? bsd::baseband_device::device_minor
+                             : bsd::offline_serial_device::device_minor;
+      if (!write_guest_device_stat(registers[1], minor, true)) {
         bsd_error(cpu, bsd_support::bad_address);
       } else {
         bsd_success(cpu, 0);
@@ -1701,7 +1710,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
         (device->second == "random" || device->second == "console" ||
          device->second ==
              darwin::network::apple80211_driver::event_descriptor_kind ||
-         device->second == bsd::baseband_device::descriptor_kind)) {
+         device->second == bsd::baseband_device::descriptor_kind ||
+         device->second == bsd::offline_serial_device::descriptor_kind)) {
       constexpr std::uint32_t random_device_minor = 0;
       constexpr std::uint32_t console_device_minor = 1;
       constexpr std::uint32_t wifi_event_device_minor = 2;
@@ -1712,6 +1722,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
                                    darwin::network::apple80211_driver::
                                        event_descriptor_kind
                              ? wifi_event_device_minor
+                         : device->second ==
+                                   bsd::offline_serial_device::descriptor_kind
+                             ? bsd::offline_serial_device::device_minor
                              : bsd::baseband_device::device_minor;
       if (!write_guest_device_stat(registers[1], minor, true)) {
         bsd_error(cpu, bsd_support::bad_address);

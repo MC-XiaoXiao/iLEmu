@@ -112,6 +112,7 @@ struct PendingSocketRead {
   std::uint32_t source_address{};
   std::uint32_t source_length_address{};
   std::size_t processor{};
+  std::optional<std::uint64_t> deadline;
 };
 
 struct PendingHostConnect {

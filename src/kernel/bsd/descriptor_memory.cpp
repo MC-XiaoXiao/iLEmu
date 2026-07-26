@@ -1,6 +1,7 @@
 #include "ilemu/kernel.hpp"
 
 #include "ilemu/baseband_device.hpp"
+#include "ilemu/offline_serial_device.hpp"
 #include "ilemu/darwin_abi.hpp"
 #include "ilemu/darwin_kqueue_abi.hpp"
 #include "ilemu/darwin_network_abi.hpp"
@@ -54,6 +55,52 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
       return;
     }
     const auto virtual_descriptor = virtual_descriptors_.find(fd);
+    const auto offline_serial_descriptor =
+        virtual_descriptor != virtual_descriptors_.end() &&
+        virtual_descriptor->second ==
+            bsd::offline_serial_device::descriptor_kind;
+    if (offline_serial_descriptor) {
+      if (size == 0) {
+        bsd_success(cpu, 0);
+        return;
+      }
+      if (auto bytes = offline_serial_state_.read(size); !bytes.empty()) {
+        if (!memory_.copy_in(registers[1], bytes)) {
+          bsd_error(cpu, bsd_support::bad_address);
+        } else {
+          bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
+        }
+        return;
+      }
+      if ((file_status_flags_[fd] & darwin::open_flag::non_block) != 0) {
+        bsd_error(cpu, bsd_support::would_block);
+        return;
+      }
+      const auto attributes = offline_serial_state_.attributes();
+      const auto timeout = attributes.control_characters
+          [darwin::tty::timeout_deciseconds_index];
+      if (timeout == 0) {
+        // Without a read timeout, a disconnected character device reports
+        // the carrier failure instead of suspending a process forever.
+        bsd_error(cpu, darwin::error::io);
+        return;
+      }
+      constexpr std::uint64_t nanoseconds_per_decisecond = 100'000'000ULL;
+      const auto deadline =
+          shared_state_->clock.now() +
+          static_cast<std::uint64_t>(timeout) * nanoseconds_per_decisecond;
+      pending_socket_reads_[cpu.processor_id()] = PendingSocketRead{
+          fd,
+          registers[1],
+          static_cast<std::uint32_t>(size),
+          0,
+          0,
+          cpu.processor_id(),
+          deadline};
+      process_.waiting_for_events = true;
+      cpu.halt(Dynarmic::HaltReason::UserDefined5);
+      return;
+    }
     const auto baseband_descriptor =
         virtual_descriptor != virtual_descriptors_.end() &&
         virtual_descriptor->second == bsd::baseband_device::descriptor_kind;
@@ -77,8 +124,8 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
         return;
       }
       pending_socket_reads_[cpu.processor_id()] = PendingSocketRead{
-          fd, registers[1],      static_cast<std::uint32_t>(size), 0,
-          0,  cpu.processor_id()};
+          fd, registers[1], static_cast<std::uint32_t>(size), 0, 0,
+          cpu.processor_id(), std::nullopt};
       process_.waiting_for_events = true;
       output_.write(
           std::string{baseband_descriptor ? "[baseband]" : "[network]"} +
@@ -429,6 +476,22 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
       output_.write(std::string_view{
           reinterpret_cast<const char *>(bytes->data()), bytes->size()});
       bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));
+      return;
+    }
+    if (const auto device = virtual_descriptors_.find(fd);
+        device != virtual_descriptors_.end() &&
+        device->second == bsd::offline_serial_device::descriptor_kind) {
+      if (size > bsd_support::maximum_io) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+        return;
+      }
+      const auto bytes = memory_.read_bytes(address, size);
+      if (!bytes) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+      const auto written = offline_serial_state_.write(*bytes);
+      bsd_success(cpu, static_cast<std::uint32_t>(written));
       return;
     }
     if (const auto device = virtual_descriptors_.find(fd);

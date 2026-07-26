@@ -16,6 +16,7 @@ target_sources(ilemu_kernel PRIVATE
     bpf.cpp
     socket.cpp
     events.cpp
+    device/offline_serial.cpp
     support.cpp)
 target_link_libraries(ilemu_kernel PRIVATE
     iLEmu::kernel_bsd_baseband_device
