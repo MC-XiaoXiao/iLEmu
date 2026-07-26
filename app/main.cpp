@@ -1996,6 +1996,21 @@ void boot(const std::vector<std::string> &args, Output &output) {
       const auto fatal_result =
           result.fault || !result.exception.empty() ||
           Dynarmic::Has(result.reason, Dynarmic::HaltReason::UserDefined4);
+      if (fatal_result) {
+        const auto &registers = cpu.registers();
+        std::ostringstream failure;
+        failure << "[cpu] fatal pid=" << runtime.kernel->process().pid
+                << " cpu=" << index << " pc=0x" << std::hex << registers[15]
+                << " lr=0x" << registers[14];
+        if (result.fault) {
+          failure << " fault=0x" << result.fault->address << " access=0x"
+                  << static_cast<unsigned>(result.fault->access)
+                  << " size=0x" << result.fault->size;
+        }
+        if (!result.exception.empty())
+          failure << " exception=\"" << result.exception << '"';
+        output.line(failure.str());
+      }
       auto completion = XnuSliceCompletion::Continue;
       bool scheduler_completed = false;
       if (Dynarmic::Has(result.reason, Dynarmic::HaltReason::UserDefined5)) {
