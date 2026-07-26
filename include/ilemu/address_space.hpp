@@ -201,6 +201,7 @@ private:
   void uncache_page_locked(std::uint32_t address);
   void ensure_unique_page_map_locked();
   void rebuild_page_lookup_locked();
+  void ensure_jit_page_tables_locked();
   void refresh_jit_page_locked(std::uint32_t address);
   void refresh_jit_page_range_locked(std::uint32_t address,
                                      std::uint64_t end);

@@ -139,6 +139,8 @@ public:
     [[nodiscard]] Cpu& cpu(std::size_t index) { return *cpus_.at(index); }
     [[nodiscard]] const Cpu& cpu(std::size_t index) const { return *cpus_.at(index); }
     [[nodiscard]] std::optional<std::size_t> add_cpu();
+    void set_process_id(std::uint32_t process_id);
+    void set_jit_code_cache_size(std::size_t bytes);
     void clear_cache();
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
 

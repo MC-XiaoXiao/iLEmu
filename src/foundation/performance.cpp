@@ -1,5 +1,7 @@
 #include "ilemu/performance.hpp"
 
+#include <algorithm>
+#include <limits>
 #include <sstream>
 
 namespace ilemu {
@@ -11,6 +13,45 @@ void add_if_enabled(std::atomic<std::uint64_t>& counter,
     if (enabled.load(std::memory_order_relaxed)) {
         counter.fetch_add(value, std::memory_order_relaxed);
     }
+}
+
+constexpr std::uint64_t ten_milliseconds = 10'000'000;
+constexpr std::uint64_t one_hundred_milliseconds = 100'000'000;
+constexpr std::uint64_t one_second = 1'000'000'000;
+constexpr std::uint64_t ten_seconds = 10'000'000'000;
+
+std::size_t latency_bucket(std::uint64_t nanoseconds) {
+    if (nanoseconds < ten_milliseconds)
+        return static_cast<std::size_t>(nanoseconds / 10'000);
+    if (nanoseconds < one_hundred_milliseconds) {
+        return 1000U + static_cast<std::size_t>(
+                           (nanoseconds - ten_milliseconds) / 100'000);
+    }
+    if (nanoseconds < one_second) {
+        return 1900U + static_cast<std::size_t>(
+                           (nanoseconds - one_hundred_milliseconds) /
+                           1'000'000);
+    }
+    if (nanoseconds < ten_seconds) {
+        return 2800U + static_cast<std::size_t>(
+                           (nanoseconds - one_second) / 10'000'000);
+    }
+    return 3700U;
+}
+
+std::uint64_t latency_bucket_upper_bound(std::size_t bucket,
+                                         std::uint64_t maximum) {
+    if (bucket < 1000U)
+        return (bucket + 1U) * 10'000U;
+    if (bucket < 1900U)
+        return ten_milliseconds + (bucket - 999U) * 100'000U;
+    if (bucket < 2800U) {
+        return one_hundred_milliseconds +
+               (bucket - 1899U) * 1'000'000U;
+    }
+    if (bucket < 3700U)
+        return one_second + (bucket - 2799U) * 10'000'000U;
+    return maximum;
 }
 
 } // namespace
@@ -54,6 +95,17 @@ void PerformanceCounters::reset(bool enabled) {
         counter.store(0, std::memory_order_relaxed);
     for (auto& counter : fallback_reasons_)
         counter.store(0, std::memory_order_relaxed);
+    for (auto& histogram : latencies_) {
+        for (auto& bucket : histogram.buckets)
+            bucket.store(0, std::memory_order_relaxed);
+        histogram.samples.store(0, std::memory_order_relaxed);
+        histogram.maximum_nanoseconds.store(0, std::memory_order_relaxed);
+        histogram.over_20ms.store(0, std::memory_order_relaxed);
+    }
+    {
+        std::lock_guard lock{jit_cache_slots_mutex_};
+        jit_cache_slots_.clear();
+    }
     {
         std::lock_guard lock{hle_mutex_};
         hle_subsystems_.clear();
@@ -89,6 +141,7 @@ void PerformanceCounters::record_jit_destroyed() {
 }
 
 void PerformanceCounters::record_jit_code_cache_usage(
+    std::uint32_t process_id, std::uint32_t slot,
     std::uint64_t previous_bytes, std::uint64_t current_bytes) {
     if (!enabled() || previous_bytes == current_bytes)
         return;
@@ -111,6 +164,16 @@ void PerformanceCounters::record_jit_code_cache_usage(
                peak, aggregate, std::memory_order_relaxed,
                std::memory_order_relaxed)) {
     }
+    std::lock_guard lock{jit_cache_slots_mutex_};
+    auto [found, inserted] =
+        jit_cache_slots_.try_emplace({process_id, slot});
+    auto& usage = found->second;
+    if (inserted) {
+        usage.process_id = process_id;
+        usage.slot = slot;
+    }
+    usage.current_bytes = current_bytes;
+    usage.peak_bytes = std::max(usage.peak_bytes, current_bytes);
 }
 
 void PerformanceCounters::record_translation_block() {
@@ -234,6 +297,26 @@ void PerformanceCounters::record_fallback(PerfFallbackReason reason) {
     fallback_reasons_[index].fetch_add(1, std::memory_order_relaxed);
 }
 
+void PerformanceCounters::record_latency(PerfLatencyKind kind,
+                                         std::uint64_t nanoseconds) {
+    const auto index = static_cast<std::size_t>(kind);
+    if (!enabled() || index >= latencies_.size())
+        return;
+    auto& histogram = latencies_[index];
+    histogram.buckets[latency_bucket(nanoseconds)].fetch_add(
+        1, std::memory_order_relaxed);
+    histogram.samples.fetch_add(1, std::memory_order_relaxed);
+    if (nanoseconds > 20'000'000U)
+        histogram.over_20ms.fetch_add(1, std::memory_order_relaxed);
+    auto maximum =
+        histogram.maximum_nanoseconds.load(std::memory_order_relaxed);
+    while (nanoseconds > maximum &&
+           !histogram.maximum_nanoseconds.compare_exchange_weak(
+               maximum, nanoseconds, std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+    }
+}
+
 PerformanceSnapshot PerformanceCounters::snapshot() const {
     PerformanceSnapshot result;
     result.jit_instances = jit_instances_.load(std::memory_order_relaxed);
@@ -290,6 +373,44 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
         result.fallback_reasons[index] =
             fallback_reasons_[index].load(std::memory_order_relaxed);
     }
+    for (std::size_t index = 0; index < latencies_.size(); ++index) {
+        const auto& histogram = latencies_[index];
+        auto& latency = result.latencies[index];
+        latency.samples =
+            histogram.samples.load(std::memory_order_relaxed);
+        latency.maximum_nanoseconds =
+            histogram.maximum_nanoseconds.load(std::memory_order_relaxed);
+        latency.over_20ms =
+            histogram.over_20ms.load(std::memory_order_relaxed);
+        if (latency.samples == 0)
+            continue;
+        const auto percentile = [&](std::uint64_t numerator) {
+            const auto rank =
+                (latency.samples * numerator + 99U) / 100U;
+            std::uint64_t cumulative{};
+            for (std::size_t bucket = 0;
+                 bucket < histogram.buckets.size(); ++bucket) {
+                cumulative += histogram.buckets[bucket].load(
+                    std::memory_order_relaxed);
+                if (cumulative >= rank) {
+                    return latency_bucket_upper_bound(
+                        bucket, latency.maximum_nanoseconds);
+                }
+            }
+            return latency.maximum_nanoseconds;
+        };
+        latency.p50_nanoseconds = percentile(50);
+        latency.p95_nanoseconds = percentile(95);
+        latency.p99_nanoseconds = percentile(99);
+    }
+    {
+        std::lock_guard lock{jit_cache_slots_mutex_};
+        result.jit_cache_slots.reserve(jit_cache_slots_.size());
+        for (const auto& [key, usage] : jit_cache_slots_) {
+            static_cast<void>(key);
+            result.jit_cache_slots.push_back(usage);
+        }
+    }
     {
         std::lock_guard lock{hle_mutex_};
         result.hle_subsystems.reserve(hle_subsystems_.size());
@@ -304,6 +425,22 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
 PerformanceCounters& performance_counters() {
     static PerformanceCounters counters;
     return counters;
+}
+
+PerformanceLatencyScope::PerformanceLatencyScope(PerfLatencyKind kind)
+    : kind_{kind}, enabled_{performance_counters().enabled()},
+      started_{enabled_ ? std::chrono::steady_clock::now()
+                       : std::chrono::steady_clock::time_point{}} {}
+
+PerformanceLatencyScope::~PerformanceLatencyScope() {
+    if (!enabled_)
+        return;
+    const auto elapsed = std::chrono::steady_clock::now() - started_;
+    performance_counters().record_latency(
+        kind_, static_cast<std::uint64_t>(
+                   std::chrono::duration_cast<std::chrono::nanoseconds>(
+                       elapsed)
+                       .count()));
 }
 
 std::string_view perf_fallback_reason_name(PerfFallbackReason reason) {
@@ -346,6 +483,19 @@ std::string_view perf_surface_kind_name(PerfSurfaceKind kind) {
     case PerfSurfaceKind::Scanout: return "scanout";
     case PerfSurfaceKind::GlesRenderTarget: return "gles-target";
     case PerfSurfaceKind::Count: break;
+    }
+    return "unknown";
+}
+
+std::string_view perf_latency_kind_name(PerfLatencyKind kind) {
+    switch (kind) {
+    case PerfLatencyKind::InputEnqueue: return "input-enqueue";
+    case PerfLatencyKind::DisplayPresent: return "display-present";
+    case PerfLatencyKind::Acquire: return "acquire";
+    case PerfLatencyKind::QueuePresent: return "queue-present";
+    case PerfLatencyKind::JitColdPath: return "jit-cold-path";
+    case PerfLatencyKind::RuntimeDestructor: return "runtime-destructor";
+    case PerfLatencyKind::Count: break;
     }
     return "unknown";
 }
@@ -431,6 +581,31 @@ std::string format_performance_summary(
         text << perf_surface_kind_name(
                     static_cast<PerfSurfaceKind>(index))
              << ':' << uploads << '/' << readbacks;
+    }
+    if (first)
+        text << "none";
+    text << " latency-ns=";
+    first = true;
+    for (std::size_t index = 0; index < snapshot.latencies.size(); ++index) {
+        const auto& latency = snapshot.latencies[index];
+        if (!first)
+            text << ',';
+        first = false;
+        text << perf_latency_kind_name(
+                    static_cast<PerfLatencyKind>(index))
+             << ':' << latency.samples << '/' << latency.p50_nanoseconds
+             << '/' << latency.p95_nanoseconds << '/'
+             << latency.p99_nanoseconds << '/'
+             << latency.maximum_nanoseconds << '/' << latency.over_20ms;
+    }
+    text << " jit-cache-slots=";
+    first = true;
+    for (const auto& usage : snapshot.jit_cache_slots) {
+        if (!first)
+            text << ',';
+        first = false;
+        text << usage.process_id << ':' << usage.slot << ':'
+             << usage.current_bytes << '/' << usage.peak_bytes;
     }
     if (first)
         text << "none";

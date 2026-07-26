@@ -99,26 +99,14 @@ std::uint8_t **AddressSpace::jit_page_table() {
 std::uint8_t **AddressSpace::jit_read_page_table() {
   auto lock = write_lock();
   if (!jit_page_table_enabled_) return nullptr;
-  if (!jit_read_page_table_) {
-    jit_read_page_table_ = std::make_unique<JitPageTableStorage>();
-    for (const auto &[address, page] : *pages_) {
-      static_cast<void>(page);
-      refresh_jit_page_locked(address);
-    }
-  }
+  ensure_jit_page_tables_locked();
   return jit_read_page_table_->entries();
 }
 
 std::uint8_t **AddressSpace::jit_write_page_table() {
   auto lock = write_lock();
   if (!jit_page_table_enabled_) return nullptr;
-  if (!jit_write_page_table_) {
-    jit_write_page_table_ = std::make_unique<JitPageTableStorage>();
-    for (const auto &[address, page] : *pages_) {
-      static_cast<void>(page);
-      refresh_jit_page_locked(address);
-    }
-  }
+  ensure_jit_page_tables_locked();
   return jit_write_page_table_->entries();
 }
 
@@ -645,6 +633,19 @@ void AddressSpace::ensure_unique_page_map_locked() {
 void AddressSpace::rebuild_page_lookup_locked() {
   for (auto &chunk : page_lookup_) chunk.reset();
   for (auto &[address, page] : *pages_) cache_page_locked(address, page);
+}
+
+void AddressSpace::ensure_jit_page_tables_locked() {
+  if (jit_read_page_table_ && jit_write_page_table_)
+    return;
+  if (!jit_read_page_table_)
+    jit_read_page_table_ = std::make_unique<JitPageTableStorage>();
+  if (!jit_write_page_table_)
+    jit_write_page_table_ = std::make_unique<JitPageTableStorage>();
+  for (const auto &[address, page] : *pages_) {
+    static_cast<void>(page);
+    refresh_jit_page_locked(address);
+  }
 }
 
 void AddressSpace::refresh_jit_page_locked(std::uint32_t address) {

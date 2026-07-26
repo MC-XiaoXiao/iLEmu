@@ -280,16 +280,19 @@ class JitExecutor {
 public:
     JitExecutor(
         std::size_t processor_id,
+        std::size_t execution_slot,
         AddressSpace& memory,
         Dynarmic::ExclusiveMonitor& monitor,
         const ArmCpuModel& cpu_model)
         : processor_id_{processor_id},
+          execution_slot_{execution_slot},
           memory_{memory},
           monitor_{monitor},
           callbacks_{std::make_unique<JitCallbacks>(memory, cpu_model)} {}
 
     ~JitExecutor() {
         performance_counters().record_jit_code_cache_usage(
+            process_id_, static_cast<std::uint32_t>(execution_slot_),
             recorded_jit_code_cache_bytes_, 0);
         if (jit_) {
             performance_counters().record_jit_destroyed();
@@ -409,6 +412,7 @@ private:
         config.always_little_endian = true;
         config.enable_cycle_counting = true;
         config.check_halt_on_memory_access = true;
+        config.code_cache_size = code_cache_size_;
         using DynarmicPageTable = std::array<
             std::uint8_t*,
             Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>;
@@ -440,6 +444,8 @@ private:
                           .count())
                 : 0;
         performance_counters().record_jit(elapsed);
+        performance_counters().record_latency(
+            PerfLatencyKind::JitColdPath, elapsed);
         record_code_cache_usage();
     }
 
@@ -470,15 +476,34 @@ private:
         }
         const auto current = jit_code_cache_used(*jit_);
         performance_counters().record_jit_code_cache_usage(
+            process_id_, static_cast<std::uint32_t>(execution_slot_),
             recorded_jit_code_cache_bytes_, current);
         recorded_jit_code_cache_bytes_ = current;
     }
 
+  public:
+    void set_process_id(std::uint32_t process_id) {
+        process_id_ = process_id;
+    }
+
+    void set_code_cache_size(std::size_t bytes) {
+        std::lock_guard lock{execution_mutex_};
+        if (jit_) {
+            throw std::logic_error{
+                "cannot resize a live Dynarmic code cache"};
+        }
+        code_cache_size_ = bytes;
+    }
+
+  private:
     std::size_t processor_id_{};
+    std::size_t execution_slot_{};
+    std::uint32_t process_id_{};
     AddressSpace& memory_;
     Dynarmic::ExclusiveMonitor& monitor_;
     std::unique_ptr<JitCallbacks> callbacks_;
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
+    std::size_t code_cache_size_{64U * 1024U * 1024U};
     std::uint64_t recorded_jit_code_cache_bytes_{};
     std::mutex execution_mutex_;
 };
@@ -499,7 +524,7 @@ public:
         executors_.reserve(execution_slot_count);
         for (std::size_t slot = 0; slot < execution_slot_count; ++slot) {
             executors_.push_back(std::make_unique<JitExecutor>(
-                first_processor_id + slot, memory, monitor, cpu_model));
+                first_processor_id + slot, slot, memory, monitor, cpu_model));
         }
     }
 
@@ -509,6 +534,16 @@ public:
 
     [[nodiscard]] JitExecutor& executor(std::size_t slot) {
         return *executors_.at(slot);
+    }
+
+    void set_process_id(std::uint32_t process_id) {
+        for (auto& executor : executors_)
+            executor->set_process_id(process_id);
+    }
+
+    void set_code_cache_size(std::size_t bytes) {
+        for (auto& executor : executors_)
+            executor->set_code_cache_size(bytes);
     }
 
     void clear_cache() {
@@ -715,6 +750,14 @@ std::optional<std::size_t> CpuCluster::add_cpu() {
     cpus_.push_back(
         std::unique_ptr<Cpu>{new Cpu{id, execution_pool_}});
     return id;
+}
+
+void CpuCluster::set_process_id(std::uint32_t process_id) {
+    execution_pool_->set_process_id(process_id);
+}
+
+void CpuCluster::set_jit_code_cache_size(std::size_t bytes) {
+    execution_pool_->set_code_cache_size(bytes);
 }
 
 void CpuCluster::clear_cache() {

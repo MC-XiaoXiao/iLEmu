@@ -1,4 +1,5 @@
 #include "ilemu/display.hpp"
+#include "ilemu/performance.hpp"
 
 #include <algorithm>
 #include <utility>
@@ -77,6 +78,7 @@ void DisplayState::set_powered_on(bool powered_on) {
 }
 
 void DisplayState::present() {
+  const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
   Presenter presenter;
   DisplayFrame frame;
   {

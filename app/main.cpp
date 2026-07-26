@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <condition_variable>
+#include <deque>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -136,6 +137,86 @@ struct Runtime {
   std::unique_ptr<CompatibilityKernel> kernel;
   std::vector<bool> allocated;
   std::optional<PendingExec> pending_exec;
+
+  ~Runtime() {
+    PerformanceLatencyScope latency{PerfLatencyKind::RuntimeDestructor};
+    pending_exec.reset();
+    std::vector<bool>{}.swap(allocated);
+    kernel.reset();
+    cpus.reset();
+    memory.reset();
+  }
+};
+
+class RuntimeReaper {
+public:
+  RuntimeReaper() : worker_{[this] { worker_loop(); }} {}
+  RuntimeReaper(const RuntimeReaper &) = delete;
+  RuntimeReaper &operator=(const RuntimeReaper &) = delete;
+
+  ~RuntimeReaper() { finish(); }
+
+  void retire(std::unique_ptr<Runtime> runtime) {
+    if (!runtime)
+      return;
+    {
+      std::lock_guard lock{mutex_};
+      if (stopping_)
+        throw std::logic_error{"cannot retire a Runtime after reaper stop"};
+      pending_.push_back(std::move(runtime));
+    }
+    work_available_.notify_one();
+  }
+
+  void finish() {
+    {
+      std::lock_guard lock{mutex_};
+      if (joined_)
+        return;
+      stopping_ = true;
+    }
+    work_available_.notify_one();
+    {
+      std::unique_lock lock{mutex_};
+      idle_.wait(lock, [this] { return pending_.empty() && !active_; });
+    }
+    if (worker_.joinable())
+      worker_.join();
+    std::lock_guard lock{mutex_};
+    joined_ = true;
+  }
+
+private:
+  void worker_loop() {
+    std::unique_lock lock{mutex_};
+    for (;;) {
+      work_available_.wait(
+          lock, [this] { return stopping_ || !pending_.empty(); });
+      if (pending_.empty()) {
+        if (stopping_)
+          break;
+        continue;
+      }
+      auto runtime = std::move(pending_.front());
+      pending_.pop_front();
+      active_ = true;
+      lock.unlock();
+      runtime.reset();
+      lock.lock();
+      active_ = false;
+      idle_.notify_all();
+    }
+    idle_.notify_all();
+  }
+
+  std::mutex mutex_;
+  std::condition_variable work_available_;
+  std::condition_variable idle_;
+  std::deque<std::unique_ptr<Runtime>> pending_;
+  bool active_{};
+  bool stopping_{};
+  bool joined_{};
+  std::thread worker_;
 };
 
 struct PreparedGuestSlice {
@@ -432,7 +513,8 @@ std::string usage() {
          "  ilemu disasm --rootfs DIR --binary PATH "
          "(--symbol NAME | --address ADDR) [--count N] [--thumb]\n"
          "  ilemu boot --rootfs DIR [--binary /sbin/launchd] [--ticks N] "
-         "[--cores N] [--watch-address ADDR] [--gdb PORT] "
+         "[--cores N] [--jit-cache-mib 8..128] "
+         "[--watch-address ADDR] [--gdb PORT] "
          "[--display headless|sdl] [--network isolated|loopback|host] "
          "[--gles-backend auto|software|vulkan] [--gpu] "
          "[--display-size WIDTHxHEIGHT] "
@@ -440,8 +522,10 @@ std::string usage() {
          "[--frame-output FILE] [--touch-replay FILE] [--control-stdin] "
          "[--baseband-input FILE] [--baseband-output FILE] "
          "[--perf-summary] [--output FILE]\n"
-         "  ilemu smoke [--cores N] [--perf-summary] [--output FILE]\n"
-         "  ilemu benchmark arm [--iterations N] [--perf-summary] "
+         "  ilemu smoke [--cores N] [--jit-cache-mib 8..128] "
+         "[--perf-summary] [--output FILE]\n"
+         "  ilemu benchmark arm [--iterations N] "
+         "[--jit-cache-mib 8..128] [--perf-summary] "
          "[--output FILE]\n";
 }
 
@@ -468,6 +552,17 @@ std::optional<std::string> option(const std::vector<std::string> &args,
 
 bool flag(const std::vector<std::string> &args, std::string_view name) {
   return std::find(args.begin(), args.end(), name) != args.end();
+}
+
+std::size_t jit_code_cache_size(const std::vector<std::string> &args) {
+  const auto value = option(args, "--jit-cache-mib").value_or("64");
+  std::size_t consumed{};
+  const auto mebibytes = std::stoull(value, &consumed, 10);
+  if (consumed != value.size() || mebibytes < 8U || mebibytes > 128U) {
+    throw std::runtime_error{
+        "--jit-cache-mib must be in the range 8..128"};
+  }
+  return static_cast<std::size_t>(mebibytes) * 1024U * 1024U;
 }
 
 GlesBackend parse_gles_backend(const std::vector<std::string> &args) {
@@ -717,6 +812,7 @@ void smoke(const std::vector<std::string> &args, Output &output) {
   memory.copy_in(code_address, code);
 
   CpuCluster cluster{core_count, memory};
+  cluster.set_jit_code_cache_size(jit_code_cache_size(args));
   for (std::size_t index = 0; index < cluster.size(); ++index) {
     cluster.cpu(index).registers()[0] = static_cast<std::uint32_t>(index * 100);
     cluster.cpu(index).registers()[15] = code_address;
@@ -727,6 +823,11 @@ void smoke(const std::vector<std::string> &args, Output &output) {
   std::ostringstream text;
   text << "Dynarmic ARMv6 parallel smoke test: " << core_count
        << " virtual CPU(s)\n";
+  if (core_count > 1) {
+    text << "mode: stress/dev; execution-slot LDREX state follows the host "
+            "slot and process-local ExclusiveMonitor does not model "
+            "cross-process shared-page atomics\n";
+  }
   for (std::size_t index = 0; index < cluster.size(); ++index) {
     text << "cpu" << index << " r0=" << cluster.cpu(index).registers()[0]
          << " pc=0x" << std::hex << cluster.cpu(index).registers()[15]
@@ -781,6 +882,7 @@ void benchmark(const std::vector<std::string> &args, Output &output) {
   }
 
   CpuCluster cluster{1, memory};
+  cluster.set_jit_code_cache_size(jit_code_cache_size(args));
   auto &cpu = cluster.cpu(0);
   cpu.registers()[0] = iterations;
   cpu.registers()[15] = code_address;
@@ -806,6 +908,8 @@ void benchmark(const std::vector<std::string> &args, Output &output) {
               std::to_string(iterations) +
               " ticks=" + std::to_string(result.ticks_consumed) +
               " elapsed-ns=" + std::to_string(elapsed_nanoseconds) +
+              " jit-cache-mib=" +
+              std::to_string(jit_code_cache_size(args) / 1024U / 1024U) +
               " iterations-per-second=" +
               std::to_string(iterations_per_second) + " status=ok");
 }
@@ -865,6 +969,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
     throw std::runtime_error{"--cores must be in the range 1.." +
                              std::to_string(maximum_virtual_processors)};
   }
+  if (guest_processor_count > 1) {
+    output.line(
+        "[cpu] mode=stress/dev cores=" +
+        std::to_string(guest_processor_count) +
+        " warning=\"execution-slot LDREX state follows the host slot; "
+        "process-local ExclusiveMonitor does not model cross-process "
+        "shared-page atomics\"");
+  }
+  const auto configured_jit_code_cache_size =
+      jit_code_cache_size(args);
+  output.line("[jit] code-cache-mib=" +
+              std::to_string(configured_jit_code_cache_size /
+                             1024U / 1024U));
   std::unique_ptr<GuestSliceWorkerPool> guest_slice_workers;
   if (guest_processor_count > 1) {
     guest_slice_workers =
@@ -987,15 +1104,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
       "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
       "SHELL=/bin/sh"};
   auto process = loader.load(binary, {}, initial_environment);
+  RuntimeReaper runtime_reaper;
   std::vector<std::unique_ptr<Runtime>> runtimes;
   auto initial = std::make_unique<Runtime>();
   initial->memory = std::move(initial_memory);
   initial->cpus = std::make_unique<CpuCluster>(
       initial_guest_thread_slots, maximum_guest_threads, *initial->memory,
       guest_processor_count, *cpu_model);
+  initial->cpus->set_jit_code_cache_size(
+      configured_jit_code_cache_size);
   initial->kernel =
       std::make_unique<CompatibilityKernel>(*initial->memory, output, *rootfs,
                                             device, activation_override);
+  initial->cpus->set_process_id(initial->kernel->process().pid);
   std::shared_ptr<SdlAudioSink> audio_sink;
   if (SdlAudioSink::available()) {
     audio_sink = std::make_shared<SdlAudioSink>();
@@ -1206,9 +1327,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
               initial_guest_thread_slots, maximum_guest_threads,
               *child->memory, guest_processor_count,
               *cpu_model);
+          child->cpus->set_jit_code_cache_size(
+              configured_jit_code_cache_size);
           child->kernel = std::make_unique<CompatibilityKernel>(
               *child->memory, output, *rootfs, device, activation_override);
           child->kernel->inherit_process_state(*runtime_ptr->kernel, child_pid);
+          child->cpus->set_process_id(child_pid);
           child->allocated.assign(initial_guest_thread_slots, false);
           configure_runtime(*child);
           auto &child_cpu = child->cpus->cpu(0);
@@ -1730,10 +1854,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
       }
     }
-    std::erase_if(runtimes, [initial_runtime](const auto &runtime) {
-      return runtime.get() != initial_runtime &&
-             runtime->kernel->process().reaped;
-    });
+    for (auto runtime = runtimes.begin(); runtime != runtimes.end();) {
+      if (runtime->get() != initial_runtime &&
+          (*runtime)->kernel->process().reaped) {
+        runtime_reaper.retire(std::move(*runtime));
+        runtime = runtimes.erase(runtime);
+      } else {
+        ++runtime;
+      }
+    }
     std::optional<XnuThreadId> preferred_thread;
     if (debug_request && debug_request->thread &&
         debug_request->thread->thread != 0) {
@@ -2217,11 +2346,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
     output.line("[baseband] capture output=" + *baseband_output_path +
                 " bytes=" + std::to_string(captured.size()));
   }
-  if (flag(args, "--perf-summary")) {
-    // Snapshot before Runtime destruction so live JIT and current cache
-    // counters describe the stopped guest rather than host teardown.
-    output.line(
-        format_performance_summary(performance_counters().snapshot()));
+  const auto report_performance = flag(args, "--perf-summary");
+  const auto stopped_guest = report_performance
+                                 ? performance_counters().snapshot()
+                                 : PerformanceSnapshot{};
+  for (auto &runtime : runtimes)
+    runtime_reaper.retire(std::move(runtime));
+  runtimes.clear();
+  runtime_reaper.finish();
+  if (report_performance) {
+    // Preserve stopped-guest live/current values, then include Runtime
+    // destructor latency measured by the reaper in the final snapshot.
+    auto final_snapshot = performance_counters().snapshot();
+    final_snapshot.jit_live_instances = stopped_guest.jit_live_instances;
+    final_snapshot.jit_code_cache_bytes = stopped_guest.jit_code_cache_bytes;
+    final_snapshot.jit_cache_slots = stopped_guest.jit_cache_slots;
+    output.line(format_performance_summary(final_snapshot));
   }
 }
 

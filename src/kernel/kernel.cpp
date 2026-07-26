@@ -28,6 +28,7 @@
 #include "ilemu/macho.hpp"
 #include "ilemu/mbx_connect_hle.hpp"
 #include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/performance.hpp"
 #include "ilemu/task_mig_ids.hpp"
 #include "ilemu/thread_act_mig_ids.hpp"
 #include "ilemu/vm_map_mig_ids.hpp"
@@ -217,6 +218,7 @@ void CompatibilityKernel::enqueue_baseband_input(
 }
 
 void CompatibilityKernel::enqueue_touch_input(const TouchInput &input) {
+  const PerformanceLatencyScope latency{PerfLatencyKind::InputEnqueue};
   const auto result =
       graphics_services_input::enqueue_touch(*shared_state_, input,
                                              scene_coordinator_.get());
@@ -242,6 +244,7 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput &input) {
 
 void CompatibilityKernel::enqueue_system_button(
     const SystemButtonInput &input) {
+  const PerformanceLatencyScope latency{PerfLatencyKind::InputEnqueue};
   bool home_pressed_while_display_asleep = false;
   if (input.button == SystemButton::Home &&
       input.phase == SystemButtonPhase::Down) {

@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -53,6 +54,35 @@ enum class PerfSurfaceKind : std::uint8_t {
 inline constexpr auto perf_surface_kind_count =
     static_cast<std::size_t>(PerfSurfaceKind::Count);
 
+enum class PerfLatencyKind : std::uint8_t {
+    InputEnqueue,
+    DisplayPresent,
+    Acquire,
+    QueuePresent,
+    JitColdPath,
+    RuntimeDestructor,
+    Count,
+};
+
+inline constexpr auto perf_latency_kind_count =
+    static_cast<std::size_t>(PerfLatencyKind::Count);
+
+struct PerfLatencySnapshot {
+    std::uint64_t samples{};
+    std::uint64_t p50_nanoseconds{};
+    std::uint64_t p95_nanoseconds{};
+    std::uint64_t p99_nanoseconds{};
+    std::uint64_t maximum_nanoseconds{};
+    std::uint64_t over_20ms{};
+};
+
+struct JitCacheSlotSnapshot {
+    std::uint32_t process_id{};
+    std::uint32_t slot{};
+    std::uint64_t current_bytes{};
+    std::uint64_t peak_bytes{};
+};
+
 struct HlePerformanceSnapshot {
     std::string subsystem;
     std::uint64_t calls{};
@@ -96,6 +126,8 @@ struct PerformanceSnapshot {
     std::uint64_t execs{};
     std::uint64_t abnormal_exits{};
     std::array<std::uint64_t, perf_fallback_reason_count> fallback_reasons{};
+    std::array<PerfLatencySnapshot, perf_latency_kind_count> latencies{};
+    std::vector<JitCacheSlotSnapshot> jit_cache_slots;
     std::vector<HlePerformanceSnapshot> hle_subsystems;
 };
 
@@ -108,7 +140,9 @@ class PerformanceCounters {
 
     void record_jit(std::uint64_t creation_nanoseconds = 0);
     void record_jit_destroyed();
-    void record_jit_code_cache_usage(std::uint64_t previous_bytes,
+    void record_jit_code_cache_usage(std::uint32_t process_id,
+                                     std::uint32_t slot,
+                                     std::uint64_t previous_bytes,
                                      std::uint64_t current_bytes);
     void record_translation_block();
     void record_cpu_execution(std::uint64_t ticks);
@@ -132,10 +166,22 @@ class PerformanceCounters {
     void record_exec();
     void record_abnormal_exit();
     void record_fallback(PerfFallbackReason reason);
+    void record_latency(PerfLatencyKind kind, std::uint64_t nanoseconds);
 
     [[nodiscard]] PerformanceSnapshot snapshot() const;
 
   private:
+    // Four linear ranges retain useful precision from sub-millisecond host
+    // calls through multi-second teardown without growing with run duration:
+    // 10 us to 10 ms, 100 us to 100 ms, 1 ms to 1 s, and 10 ms to 10 s.
+    static constexpr std::size_t latency_bucket_count = 3701;
+    struct LatencyHistogram {
+        std::array<std::atomic<std::uint64_t>, latency_bucket_count> buckets{};
+        std::atomic<std::uint64_t> samples{};
+        std::atomic<std::uint64_t> maximum_nanoseconds{};
+        std::atomic<std::uint64_t> over_20ms{};
+    };
+
     std::atomic<bool> enabled_{false};
     std::atomic<std::uint64_t> jit_instances_{};
     std::atomic<std::uint64_t> jit_live_instances_{};
@@ -174,18 +220,39 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> abnormal_exits_{};
     std::array<std::atomic<std::uint64_t>, perf_fallback_reason_count>
         fallback_reasons_{};
+    std::array<LatencyHistogram, perf_latency_kind_count> latencies_{};
+    mutable std::mutex jit_cache_slots_mutex_;
+    std::map<std::pair<std::uint32_t, std::uint32_t>, JitCacheSlotSnapshot>
+        jit_cache_slots_;
     mutable std::mutex hle_mutex_;
     std::map<std::string, HlePerformanceSnapshot, std::less<>>
         hle_subsystems_;
 };
 
 [[nodiscard]] PerformanceCounters& performance_counters();
+
+class PerformanceLatencyScope {
+  public:
+    explicit PerformanceLatencyScope(PerfLatencyKind kind);
+    PerformanceLatencyScope(const PerformanceLatencyScope&) = delete;
+    PerformanceLatencyScope&
+    operator=(const PerformanceLatencyScope&) = delete;
+    ~PerformanceLatencyScope();
+
+  private:
+    PerfLatencyKind kind_;
+    bool enabled_{};
+    std::chrono::steady_clock::time_point started_;
+};
+
 [[nodiscard]] std::string_view
 perf_fallback_reason_name(PerfFallbackReason reason);
 [[nodiscard]] std::string_view
 perf_cpu_map_reason_name(PerfCpuMapReason reason);
 [[nodiscard]] std::string_view
 perf_surface_kind_name(PerfSurfaceKind kind);
+[[nodiscard]] std::string_view
+perf_latency_kind_name(PerfLatencyKind kind);
 [[nodiscard]] std::string
 format_performance_summary(const PerformanceSnapshot& snapshot);
 
