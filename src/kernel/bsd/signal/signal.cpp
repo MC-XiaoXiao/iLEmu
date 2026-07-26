@@ -1,6 +1,7 @@
 #include "ilemu/kernel.hpp"
 
 #include "ilemu/darwin_abi.hpp"
+#include "ilemu/performance.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -69,6 +70,7 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal) {
   process_.exited = true;
   process_.exit_status = 0;
   process_.termination_signal = signal;
+  performance_counters().record_abnormal_exit();
   if (auto record = shared_state_->processes.find(process_.pid);
       record != shared_state_->processes.end()) {
     record->second.exited = true;

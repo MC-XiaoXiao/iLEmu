@@ -1,4 +1,5 @@
 #include "ilemu/kernel.hpp"
+#include "ilemu/performance.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -87,12 +88,14 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
     bsd_error(cpu, 11); // EAGAIN
     return true;
   }
+  performance_counters().record_fork();
   if (!spawn_exec_handler_ ||
       !spawn_exec_handler_(*child, *path, *arguments, *environment,
                            start_suspended)) {
     bsd_error(cpu, 8); // ENOEXEC
     return true;
   }
+  performance_counters().record_exec();
   if (!memory_.write32(pid_address, *child)) {
     bsd_error(cpu, bsd_support::bad_address);
     return true;

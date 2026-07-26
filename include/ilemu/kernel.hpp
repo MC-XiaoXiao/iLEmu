@@ -56,6 +56,11 @@ public:
     bool depress{};
     std::uint32_t duration_milliseconds{};
   };
+  struct WaitChildResult {
+    bool has_child{};
+    std::optional<std::uint32_t> child_pid;
+    std::uint32_t status{};
+  };
   using ThreadCreateHandler = std::function<std::optional<std::size_t>(
       const std::array<std::uint32_t, 16> &, std::uint32_t)>;
   using ThreadTerminateHandler =
@@ -85,6 +90,8 @@ public:
   using SchedulerPreemptionQuery = std::function<bool(std::size_t)>;
   using SignalDeliveryHandler =
       std::function<std::uint32_t(std::uint32_t, std::uint32_t)>;
+  using WaitChildHandler =
+      std::function<WaitChildResult(std::int32_t, bool)>;
 
   CompatibilityKernel(AddressSpace &memory, Output &output,
                       std::filesystem::path rootfs = {},
@@ -142,6 +149,9 @@ public:
   }
   void set_signal_delivery_handler(SignalDeliveryHandler handler) {
     signal_delivery_handler_ = std::move(handler);
+  }
+  void set_wait_child_handler(WaitChildHandler handler) {
+    wait_child_handler_ = std::move(handler);
   }
   [[nodiscard]] std::uint32_t deliver_signal(std::uint32_t signal);
   [[nodiscard]] std::optional<SchedulerYieldRequest>
@@ -508,6 +518,7 @@ private:
   TaskPriorityHandler task_priority_handler_;
   SchedulerPreemptionQuery scheduler_preemption_query_;
   SignalDeliveryHandler signal_delivery_handler_;
+  WaitChildHandler wait_child_handler_;
   std::map<std::size_t, SchedulerYieldRequest> scheduler_yields_;
   std::map<std::size_t, PendingWait> pending_waits_;
   std::map<std::size_t, PendingMachReceive> pending_mach_receives_;

@@ -7,6 +7,7 @@
 #include "ilemu/darwin_route_socket.hpp"
 #include "ilemu/graphics_services_input.hpp"
 #include "ilemu/kernel_network.hpp"
+#include "ilemu/performance.hpp"
 
 #include <algorithm>
 #include <array>
@@ -73,6 +74,8 @@ void CompatibilityKernel::exit_process(std::uint32_t status,
   process_.exited = true;
   process_.exit_status = status;
   process_.termination_signal = signal;
+  if (signal != 0)
+    performance_counters().record_abnormal_exit();
   if (auto record = shared_state_->processes.find(process_.pid);
       record != shared_state_->processes.end()) {
     record->second.exited = true;
@@ -122,6 +125,7 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
       bsd_error(cpu, 11); // EAGAIN
       return;
     }
+    performance_counters().record_fork();
     output_.write("[process] fork parent=" + std::to_string(process_.pid) +
                   " child=" + std::to_string(*child) + " bootstrap=" +
                   std::to_string(process_.bootstrap_port) + "\n");
@@ -137,6 +141,7 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
       bsd_error(cpu, 11);
       return;
     }
+    performance_counters().record_fork();
     output_.write("[process] vfork parent=" + std::to_string(process_.pid) +
                   " child=" + std::to_string(*child) + " bootstrap=" +
                   std::to_string(process_.bootstrap_port) + "\n");
@@ -150,8 +155,31 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
       bsd_error(cpu, bsd_support::invalid_argument);
       return;
     }
-    if ((options & 1U) != 0) { // WNOHANG: no child status is ready yet
-      bsd_success(cpu, 0);
+    if ((options & 1U) != 0) { // WNOHANG
+      const auto result = wait_child_handler_
+                              ? wait_child_handler_(target_pid, false)
+                              : WaitChildResult{};
+      if (!result.has_child) {
+        bsd_error(cpu, darwin::error::no_child_process);
+        return;
+      }
+      if (!result.child_pid) {
+        bsd_success(cpu, 0);
+        return;
+      }
+      if (registers[1] != 0 &&
+          !memory_.write32(registers[1], result.status)) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+      if (wait_child_handler_) {
+        static_cast<void>(wait_child_handler_(
+            static_cast<std::int32_t>(*result.child_pid), true));
+      }
+      output_.write("[process] reap-nohang parent=" +
+                    std::to_string(process_.pid) +
+                    " child=" + std::to_string(*result.child_pid) + "\n");
+      bsd_success(cpu, *result.child_pid);
       return;
     }
     pending_waits_.insert_or_assign(
@@ -338,6 +366,7 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
       bsd_error(cpu, 2); // ENOENT
       return;
     }
+    performance_counters().record_exec();
     cpu.halt(Dynarmic::HaltReason::UserDefined6);
     return;
   }

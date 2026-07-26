@@ -1208,6 +1208,34 @@ void boot(const std::vector<std::string> &args, Output &output) {
           }
           return darwin::error::no_such_process;
         });
+    runtime.kernel->set_wait_child_handler(
+        [runtime_ptr, &runtimes](std::int32_t target_pid, bool reap) {
+          CompatibilityKernel::WaitChildResult result;
+          for (auto &child : runtimes) {
+            const auto &child_process = child->kernel->process();
+            if (child_process.reaped ||
+                child_process.parent_pid !=
+                    runtime_ptr->kernel->process().pid ||
+                (target_pid != -1 &&
+                 static_cast<std::uint32_t>(target_pid) !=
+                     child_process.pid)) {
+              continue;
+            }
+            result.has_child = true;
+            if (!child_process.exited) {
+              continue;
+            }
+            result.child_pid = child_process.pid;
+            result.status = child_process.termination_signal != 0
+                                ? child_process.termination_signal & 0x7fU
+                                : (child_process.exit_status & 0xffU) << 8U;
+            if (reap) {
+              static_cast<void>(child->kernel->reap_process());
+            }
+            break;
+          }
+          return result;
+        });
     runtime.kernel->set_scheduler_preemption_query(
         [runtime_ptr, &scheduler](std::size_t processor) {
           const XnuThreadId thread{runtime_ptr->kernel->process().pid,
@@ -1558,7 +1586,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
       }
     }
-    bool reclaimed_process = false;
     for (auto &parent : runtimes) {
       const auto pending_waits = parent->kernel->pending_waits();
       for (const auto &[processor, pending] : pending_waits) {
@@ -1582,8 +1609,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   : (child_process.exit_status & 0xffU) << 8U;
           if (parent->kernel->complete_wait(parent->cpus->cpu(processor),
                                             child_process.pid, wait_status)) {
-            reclaimed_process = child->kernel->reap_process() ||
-                                reclaimed_process;
+            static_cast<void>(child->kernel->reap_process());
             static_cast<void>(scheduler.make_runnable(
                 XnuThreadId{parent->kernel->process().pid,
                             static_cast<std::uint32_t>(processor)}));
@@ -1600,12 +1626,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
       }
     }
-    if (reclaimed_process) {
-      std::erase_if(runtimes, [initial_runtime](const auto &runtime) {
-        return runtime.get() != initial_runtime &&
-               runtime->kernel->process().reaped;
-      });
-    }
+    std::erase_if(runtimes, [initial_runtime](const auto &runtime) {
+      return runtime.get() != initial_runtime &&
+             runtime->kernel->process().reaped;
+    });
     std::optional<XnuThreadId> preferred_thread;
     if (debug_request && debug_request->thread &&
         debug_request->thread->thread != 0) {
