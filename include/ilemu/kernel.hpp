@@ -495,7 +495,6 @@ private:
   std::map<std::uint32_t, SocketPairEndpoint> socket_pair_endpoints_;
   std::map<std::uint32_t, std::vector<KeventRegistration>> kqueues_;
   std::map<std::size_t, std::uint32_t> thread_ports_;
-  std::map<std::size_t, std::uint32_t> cthread_self_;
   std::map<std::uint32_t, std::uint32_t> vm_purgable_states_;
   std::set<std::size_t> disabled_thread_signals_;
   std::array<std::array<std::uint32_t, 4>, 32> signal_actions_{};

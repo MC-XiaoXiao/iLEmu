@@ -396,7 +396,6 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id) {
           *surviving_thread;
     }
   }
-  cthread_self_.clear();
   disabled_thread_signals_.clear();
   pending_waits_.clear();
   pending_mach_receives_.clear();
@@ -1238,11 +1237,6 @@ void CompatibilityKernel::inherit_process_state(
   random_state_ = parent.random_state_ ^ child_pid;
   thread_ports_.clear();
   thread_ports_.emplace(0, process_.thread_port);
-  cthread_self_.clear();
-  if (const auto inherited = parent.cthread_self_.find(0);
-      inherited != parent.cthread_self_.end()) {
-    cthread_self_.emplace(0, inherited->second);
-  }
   {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
     if (!mach_task_identity::inherit_child(*shared_state_, parent.process_,
@@ -1326,12 +1320,10 @@ void CompatibilityKernel::dispatch_arm_fast_trap(Cpu &cpu) {
     // Preserve the saved registers just as the real trap return path does.
     return;
   case darwin::arm_fast_trap::thread_set_cthread_self:
-    cthread_self_[cpu.processor_id()] = registers[0];
+    cpu.set_cthread_self(registers[0]);
     return;
   case darwin::arm_fast_trap::thread_get_cthread_self:
-    registers[0] = cthread_self_.contains(cpu.processor_id())
-                       ? cthread_self_.at(cpu.processor_id())
-                       : 0;
+    registers[0] = cpu.cthread_self().value_or(0);
     return;
   default:
     trace_unknown(cpu, "ARM fast trap", registers[3]);

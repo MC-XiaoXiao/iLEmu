@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <condition_variable>
 #include <exception>
 #include <filesystem>
 #include <functional>
@@ -146,6 +147,95 @@ struct PreparedGuestSlice {
   bool single_step{};
   CpuRunResult result;
   std::exception_ptr error;
+};
+
+class GuestSliceWorkerPool {
+public:
+  explicit GuestSliceWorkerPool(std::size_t worker_count) {
+    workers_.reserve(worker_count);
+    for (std::size_t index = 0; index < worker_count; ++index) {
+      workers_.emplace_back([this] { worker_loop(); });
+    }
+  }
+
+  GuestSliceWorkerPool(const GuestSliceWorkerPool &) = delete;
+  GuestSliceWorkerPool &operator=(const GuestSliceWorkerPool &) = delete;
+
+  ~GuestSliceWorkerPool() {
+    {
+      std::lock_guard lock{mutex_};
+      stopping_ = true;
+    }
+    work_available_.notify_all();
+    for (auto &worker : workers_)
+      worker.join();
+  }
+
+  void run(std::vector<PreparedGuestSlice> &slices) {
+    if (slices.empty())
+      return;
+    {
+      std::lock_guard lock{mutex_};
+      if (remaining_ != 0)
+        throw std::logic_error{"guest slice worker batch overlaps"};
+      slices_ = slices.data();
+      slice_count_ = slices.size();
+      next_slice_ = 0;
+      remaining_ = slices.size();
+      if (++generation_ == 0)
+        ++generation_;
+    }
+    work_available_.notify_all();
+    std::unique_lock lock{mutex_};
+    batch_complete_.wait(lock, [this] { return remaining_ == 0; });
+    slices_ = nullptr;
+    slice_count_ = 0;
+  }
+
+  static void execute(PreparedGuestSlice &prepared) {
+    try {
+      prepared.result =
+          prepared.single_step
+              ? prepared.cpu->step(prepared.scheduled.processor)
+              : prepared.cpu->run(prepared.tick_budget,
+                                  prepared.scheduled.processor);
+    } catch (...) {
+      prepared.error = std::current_exception();
+    }
+  }
+
+private:
+  void worker_loop() {
+    std::uint64_t observed_generation{};
+    std::unique_lock lock{mutex_};
+    while (true) {
+      work_available_.wait(lock, [&] {
+        return stopping_ || generation_ != observed_generation;
+      });
+      if (stopping_)
+        return;
+      observed_generation = generation_;
+      while (next_slice_ < slice_count_) {
+        auto *slice = slices_ + next_slice_++;
+        lock.unlock();
+        execute(*slice);
+        lock.lock();
+        if (--remaining_ == 0)
+          batch_complete_.notify_one();
+      }
+    }
+  }
+
+  std::mutex mutex_;
+  std::condition_variable work_available_;
+  std::condition_variable batch_complete_;
+  std::vector<std::thread> workers_;
+  PreparedGuestSlice *slices_{};
+  std::size_t slice_count_{};
+  std::size_t next_slice_{};
+  std::size_t remaining_{};
+  std::uint64_t generation_{};
+  bool stopping_{};
 };
 
 class BootGdbTarget final : public GdbTarget {
@@ -770,6 +860,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
     throw std::runtime_error{"--cores must be in the range 1.." +
                              std::to_string(maximum_virtual_processors)};
   }
+  std::unique_ptr<GuestSliceWorkerPool> guest_slice_workers;
+  if (guest_processor_count > 1) {
+    guest_slice_workers =
+        std::make_unique<GuestSliceWorkerPool>(guest_processor_count);
+  }
   const auto network_policy_value =
       option(args, "--network").value_or("host");
   const auto network_policy = parse_host_network_policy(network_policy_value);
@@ -892,7 +987,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   initial->memory = std::move(initial_memory);
   initial->cpus = std::make_unique<CpuCluster>(
       initial_guest_thread_slots, maximum_guest_threads, *initial->memory,
-      guest_processor_count == 1, *cpu_model);
+      guest_processor_count, *cpu_model);
   initial->kernel =
       std::make_unique<CompatibilityKernel>(*initial->memory, output, *rootfs,
                                             device);
@@ -1104,7 +1199,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                           *child->memory);
           child->cpus = std::make_unique<CpuCluster>(
               initial_guest_thread_slots, maximum_guest_threads,
-              *child->memory, guest_processor_count == 1,
+              *child->memory, guest_processor_count,
               *cpu_model);
           child->kernel = std::make_unique<CompatibilityKernel>(
               *child->memory, output, *rootfs, device);
@@ -1113,8 +1208,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
           configure_runtime(*child);
           auto &child_cpu = child->cpus->cpu(0);
           child_cpu.registers() = parent_cpu.registers();
+          child_cpu.extension_registers() =
+              parent_cpu.extension_registers();
           child_cpu.registers()[0] = 0;
           child_cpu.set_cpsr(parent_cpu.cpsr() & ~(1U << 29U));
+          child_cpu.set_fpscr(parent_cpu.fpscr());
+          child_cpu.set_cthread_self(parent_cpu.cthread_self());
           child->allocated[0] = true;
           static_cast<void>(scheduler.register_thread(
               XnuThreadId{child_pid, 0},
@@ -1699,15 +1798,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
       });
     }
 
-    const auto execute_slice = [](PreparedGuestSlice &prepared) {
-      try {
-        prepared.result = prepared.single_step
-                              ? prepared.cpu->step()
-                              : prepared.cpu->run(prepared.tick_budget);
-      } catch (...) {
-        prepared.error = std::current_exception();
-      }
-    };
     if (guest_processor_count == 1 && !prepared_slices.empty() &&
         last_serial_thread !=
             std::optional<XnuThreadId>{
@@ -1716,21 +1806,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // not to the saved register context. Clear it only at a real serialized
       // thread switch; repeated slices of the same thread retain the ordinary
       // Dynarmic fast path.
-      prepared_slices.front().cpu->clear_exclusive_state();
+      prepared_slices.front().cpu->clear_exclusive_state(
+          prepared_slices.front().scheduled.processor);
       last_serial_thread = prepared_slices.front().scheduled.thread;
     }
     if (prepared_slices.size() == 1) {
-      execute_slice(prepared_slices.front());
+      GuestSliceWorkerPool::execute(prepared_slices.front());
     } else if (!prepared_slices.empty()) {
-      std::vector<std::thread> workers;
-      workers.reserve(prepared_slices.size());
-      for (auto &prepared : prepared_slices) {
-        auto *prepared_ptr = &prepared;
-        workers.emplace_back(
-            [prepared_ptr, &execute_slice] { execute_slice(*prepared_ptr); });
-      }
-      for (auto &worker : workers)
-        worker.join();
+      guest_slice_workers->run(prepared_slices);
     }
 
     const bool ran_thread = !prepared_slices.empty();
@@ -2129,6 +2212,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
     output.line("[baseband] capture output=" + *baseband_output_path +
                 " bytes=" + std::to_string(captured.size()));
   }
+  if (flag(args, "--perf-summary")) {
+    // Snapshot before Runtime destruction so live JIT and current cache
+    // counters describe the stopped guest rather than host teardown.
+    output.line(
+        format_performance_summary(performance_counters().snapshot()));
+  }
 }
 
 } // namespace
@@ -2172,7 +2261,7 @@ int main(int argc, char **argv) {
       throw;
     }
     shutdown_gles_renderer();
-    if (perf_summary) {
+    if (perf_summary && command != "boot") {
       output->line(
           format_performance_summary(performance_counters().snapshot()));
     }
