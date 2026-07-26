@@ -4,7 +4,8 @@ add_library(ilemu_kernel_mach_vm STATIC
     map.cpp
     memory_entry.cpp
     purgable.cpp
-    read.cpp)
+    read.cpp
+    region.cpp)
 add_library(iLEmu::kernel_mach_vm ALIAS
     ilemu_kernel_mach_vm)
 ilemu_configure_module(ilemu_kernel_mach_vm)

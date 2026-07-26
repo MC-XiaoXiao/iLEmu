@@ -1,5 +1,6 @@
 add_library(ilemu_kernel_mach_task STATIC
     identity.cpp
+    info.cpp
     enumeration.cpp)
 add_library(iLEmu::kernel_mach_task ALIAS
     ilemu_kernel_mach_task)

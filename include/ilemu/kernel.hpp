@@ -94,6 +94,8 @@ public:
       std::function<std::uint32_t(std::uint32_t, std::uint32_t)>;
   using WaitChildHandler =
       std::function<WaitChildResult(std::int32_t, bool)>;
+  using TaskMemoryRegionQuery = std::function<
+      std::optional<AddressSpace::MappingRegion>(std::uint32_t, std::uint32_t)>;
 
   CompatibilityKernel(AddressSpace &memory, Output &output,
                       std::filesystem::path rootfs = {},
@@ -155,6 +157,9 @@ public:
   }
   void set_wait_child_handler(WaitChildHandler handler) {
     wait_child_handler_ = std::move(handler);
+  }
+  void set_task_memory_region_query(TaskMemoryRegionQuery query) {
+    task_memory_region_query_ = std::move(query);
   }
   [[nodiscard]] std::uint32_t deliver_signal(std::uint32_t signal);
   [[nodiscard]] std::optional<SchedulerYieldRequest>
@@ -308,6 +313,9 @@ private:
   dispatch_mach_task_enumeration_message(Cpu &cpu,
                                          const MachMessageRequest &request);
   [[nodiscard]] bool
+  dispatch_mach_task_info_message(Cpu &cpu,
+                                  const MachMessageRequest &request);
+  [[nodiscard]] bool
   dispatch_mach_thread_state_message(Cpu &cpu,
                                      const MachMessageRequest &request);
   [[nodiscard]] bool
@@ -329,6 +337,9 @@ private:
                                         const MachMessageRequest &request);
   [[nodiscard]] bool
   dispatch_mach_vm_map_message(Cpu &cpu, const MachMessageRequest &request);
+  [[nodiscard]] bool
+  dispatch_mach_vm_region_message(Cpu &cpu,
+                                  const MachMessageRequest &request);
   [[nodiscard]] bool
   dispatch_mach_rights_message(Cpu &cpu, const MachMessageRequest &request);
   [[nodiscard]] bool
@@ -522,6 +533,7 @@ private:
   SchedulerPreemptionQuery scheduler_preemption_query_;
   SignalDeliveryHandler signal_delivery_handler_;
   WaitChildHandler wait_child_handler_;
+  TaskMemoryRegionQuery task_memory_region_query_;
   std::map<std::size_t, SchedulerYieldRequest> scheduler_yields_;
   std::map<std::size_t, PendingWait> pending_waits_;
   std::map<std::size_t, PendingMachReceive> pending_mach_receives_;

@@ -122,6 +122,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
       dispatch_mach_processor_message(cpu, request) ||
       dispatch_mach_port_message(cpu, request) ||
       dispatch_mach_task_enumeration_message(cpu, request) ||
+      dispatch_mach_task_info_message(cpu, request) ||
       dispatch_mach_thread_lifecycle_message(cpu, request) ||
       dispatch_mach_thread_state_message(cpu, request) ||
       dispatch_mach_task_vm_message(cpu, request) ||

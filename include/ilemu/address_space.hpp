@@ -28,6 +28,7 @@ struct MemoryFault {
 
 class AddressSpace {
 public:
+  using MappingRegion = VmMap::MappingRegion;
   static constexpr std::uint32_t page_size = guest_memory_page_size;
   static constexpr std::size_t page_count =
       (std::uint64_t{1} << 32U) / page_size;
@@ -139,6 +140,8 @@ public:
   [[nodiscard]] std::size_t cached_file_mapping_count() const;
   [[nodiscard]] std::size_t cached_file_page_count() const;
   [[nodiscard]] std::size_t mapping_region_count() const;
+  [[nodiscard]] std::optional<MappingRegion>
+  mapping_region_at_or_after(std::uint32_t address) const;
   [[nodiscard]] std::unique_ptr<AddressSpace> clone() const;
 
 private:

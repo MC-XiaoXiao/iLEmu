@@ -1464,6 +1464,17 @@ void boot(const std::vector<std::string> &args, Output &output) {
           }
           return result;
         });
+    runtime.kernel->set_task_memory_region_query(
+        [&runtimes](std::uint32_t pid, std::uint32_t address)
+            -> std::optional<AddressSpace::MappingRegion> {
+          const auto runtime = std::find_if(
+              runtimes.begin(), runtimes.end(), [pid](const auto &candidate) {
+                return candidate->kernel->process().pid == pid;
+              });
+          if (runtime == runtimes.end())
+            return std::nullopt;
+          return (*runtime)->memory->mapping_region_at_or_after(address);
+        });
     runtime.kernel->set_scheduler_preemption_query(
         [runtime_ptr, &scheduler](std::size_t processor) {
           const XnuThreadId thread{runtime_ptr->kernel->process().pid,

@@ -121,6 +121,23 @@ bool VmMap::overlaps(std::uint32_t start, std::uint64_t end) const {
   return region->second.end > start;
 }
 
+std::optional<VmMap::MappingRegion>
+VmMap::region_at_or_after(std::uint32_t address) const {
+  auto region = regions_.upper_bound(address);
+  if (region != regions_.begin()) {
+    const auto containing = std::prev(region);
+    if (containing->second.end > address) {
+      return MappingRegion{containing->first, containing->second.end,
+                           containing->second.permissions};
+    }
+  }
+  region = regions_.lower_bound(address);
+  if (region == regions_.end())
+    return std::nullopt;
+  return MappingRegion{region->first, region->second.end,
+                       region->second.permissions};
+}
+
 std::size_t VmMap::page_count(std::uint32_t page_size) const {
   std::uint64_t count = 0;
   for (const auto &[start, region] : regions_) {

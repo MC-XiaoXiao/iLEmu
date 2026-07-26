@@ -1123,6 +1123,12 @@ std::size_t AddressSpace::mapping_region_count() const {
   return vm_map_.region_count();
 }
 
+std::optional<AddressSpace::MappingRegion>
+AddressSpace::mapping_region_at_or_after(std::uint32_t address) const {
+  auto lock = read_lock();
+  return vm_map_.region_at_or_after(address);
+}
+
 std::unique_ptr<AddressSpace> AddressSpace::clone() const {
   auto result = std::make_unique<AddressSpace>();
   std::unique_lock source_lock{mutex_};
