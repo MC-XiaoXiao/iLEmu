@@ -420,6 +420,26 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id) {
   aio_completions_.clear();
 }
 
+std::size_t CompatibilityKernel::install_mapped_user_image(
+    Cpu &cpu, const std::filesystem::path &image_path,
+    std::uint32_t mapping_address, std::uint32_t mapping_size,
+    std::uint64_t file_offset) {
+  const auto installed = userland_hle_.install_mapped_image(
+      cpu, process_.pid, image_path, mapping_address, mapping_size,
+      file_offset);
+  constexpr std::string_view uikit_image{"/UIKit.framework/UIKit"};
+  const auto path = image_path.generic_string();
+  if (path.ends_with(uikit_image)) {
+    std::lock_guard mach_lock{shared_state_->mach_mutex};
+    if (const auto process = shared_state_->processes.find(process_.pid);
+        process != shared_state_->processes.end()) {
+      process->second.graphics_input_abi =
+          KernelSharedState::GraphicsInputAbi::UIKitHand;
+    }
+  }
+  return installed;
+}
+
 void CompatibilityKernel::install_main_image_hle(
     Cpu &cpu, std::string_view mapped_guest_path) {
   auto relative = std::filesystem::path{
@@ -432,8 +452,8 @@ void CompatibilityKernel::install_main_image_hle(
   for (const auto &segment : image.segments()) {
     if (segment.file_size == 0)
       continue;
-    static_cast<void>(userland_hle_.install_mapped_image(
-        cpu, process_.pid, host_path, segment.vm_address, segment.file_size,
+    static_cast<void>(install_mapped_user_image(
+        cpu, host_path, segment.vm_address, segment.file_size,
         segment.file_offset));
   }
 }
@@ -457,6 +477,8 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path) {
   record.termination_signal = 0;
   record.command = std::move(name);
   record.executable_path = std::string{guest_path};
+  record.graphics_input_abi =
+      KernelSharedState::GraphicsInputAbi::LegacyMouse;
   if (record.arguments.empty())
     record.arguments.push_back(record.executable_path);
 }

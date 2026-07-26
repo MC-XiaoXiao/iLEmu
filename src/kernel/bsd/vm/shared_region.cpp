@@ -223,9 +223,9 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
   }
   for (const auto &mapping : mappings) {
     if ((mapping.initial_protection & vm_protection_zero_fill) != 0) continue;
-    static_cast<void>(userland_hle_.install_mapped_image(
-        cpu, process_.pid, descriptor->second, mapping.address + *slide,
-        mapping.size, mapping.file_offset));
+    static_cast<void>(install_mapped_user_image(
+        cpu, descriptor->second, mapping.address + *slide, mapping.size,
+        mapping.file_offset));
   }
   output_.write("[shared-region] map pid=" + std::to_string(process_.pid) +
                 " file=" + descriptor->second.string() +

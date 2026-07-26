@@ -373,6 +373,10 @@ private:
   bool write_guest_device_stat(std::uint32_t address, std::uint32_t minor,
                                bool character_device);
   bool write_guest_statfs(std::uint32_t address);
+  std::size_t install_mapped_user_image(
+      Cpu &cpu, const std::filesystem::path &image_path,
+      std::uint32_t mapping_address, std::uint32_t mapping_size,
+      std::uint64_t file_offset);
   void install_commpage();
   void configure_darwin_notify_state();
   bool deliver_pending_mach_locked(Cpu &cpu);

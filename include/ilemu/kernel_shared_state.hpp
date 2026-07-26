@@ -383,6 +383,10 @@ struct KernelSharedState {
     std::uint64_t byte_offset{};
     std::vector<DescriptorTransfer> transfers;
   };
+  enum class GraphicsInputAbi {
+    LegacyMouse,
+    UIKitHand,
+  };
   struct ProcessRecord {
     std::uint32_t parent_pid{};
     std::uint32_t process_group{};
@@ -397,6 +401,7 @@ struct KernelSharedState {
     std::string executable_path;
     std::vector<std::string> arguments;
     std::vector<std::string> environment;
+    GraphicsInputAbi graphics_input_abi{GraphicsInputAbi::UIKitHand};
   };
   struct IOKitNotification {
     std::uint32_t owner_pid{};

@@ -1010,8 +1010,8 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
         bsd_error(cpu, bsd_support::bad_address);
         return;
       }
-      static_cast<void>(userland_hle_.install_mapped_image(
-          cpu, process_.pid, found->second, address, size, offset));
+      static_cast<void>(install_mapped_user_image(
+          cpu, found->second, address, size, offset));
       if (mapping_trace_count_ < 64U) {
         output_.write("[mmap] pid=" + std::to_string(process_.pid) +
                       " address=" + std::to_string(address) +
