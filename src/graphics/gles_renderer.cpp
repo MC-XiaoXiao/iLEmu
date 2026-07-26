@@ -3,6 +3,7 @@
 #include <memory>
 #include <mutex>
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -10,6 +11,7 @@
 #include <utility>
 
 #include "ilemu/display.hpp"
+#include "ilemu/gles_resources.hpp"
 
 #if defined(ILEMU_HAS_VULKAN)
 #include "host/vulkan_gles_renderer.hpp"
@@ -76,8 +78,18 @@ class FallbackGlesRenderer final : public GlesRenderer {
         if (primary_->draw(frame, target, vertices, mode, state))
             return true;
         performance_counters().record_fallback(primary_->failure_reason());
-        if (!primary_->synchronize(frame, target) ||
-            !fallback_->draw(frame, target, vertices, mode, state)) {
+        if (!primary_->synchronize(frame, target))
+            return false;
+        auto fallback_state = state;
+        std::optional<GlesResourceStore> fallback_resources;
+        if (state.resources != nullptr) {
+            fallback_resources = *state.resources;
+            if (!fallback_resources->materialize_surface_textures(*primary_))
+                return false;
+            fallback_state.resources = &*fallback_resources;
+        }
+        if (!fallback_->draw(frame, target, vertices, mode,
+                             fallback_state)) {
             return false;
         }
         primary_->invalidate(target);

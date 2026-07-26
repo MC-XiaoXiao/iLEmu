@@ -10,6 +10,7 @@
 
 #include "ilemu/address_space.hpp"
 #include "ilemu/gles_abi.hpp"
+#include "ilemu/host_graphics.hpp"
 #include "ilemu/surface_store.hpp"
 
 namespace ilemu {
@@ -176,7 +177,7 @@ std::optional<GlesResourceStore::TextureLevel> decode_surface(
     }
     return GlesResourceStore::TextureLevel{
         backing.width, backing.height, gles_abi::bgra_apple,
-        std::move(pixels), backing.id, 0};
+        std::move(pixels), backing.id, 0, {}, 0};
 }
 
 }  // namespace
@@ -273,7 +274,7 @@ std::uint32_t GlesResourceStore::upload_texture_2d(
     textures_.at(name).levels.insert_or_assign(
         level, TextureLevel{
                    width, height, internal_format, std::move(*decoded),
-                   std::nullopt, allocate_texture_revision()});
+                   std::nullopt, allocate_texture_revision(), {}, 0});
     return gles_abi::no_error;
 }
 
@@ -331,8 +332,25 @@ std::uint32_t GlesResourceStore::import_surface_texture(
     if (backing->pixel_format != surface_pixel_format_bgra) {
         return gles_abi::invalid_enum;
     }
+    const auto host_surface = surfaces.host_surface(surface_id);
+    if (host_surface &&
+        host_surface->gpu_generation() > host_surface->cpu_generation()) {
+        TextureLevel imported;
+        imported.width = backing->width;
+        imported.height = backing->height;
+        imported.internal_format = gles_abi::bgra_apple;
+        imported.surface_id = backing->id;
+        imported.revision = allocate_texture_revision();
+        imported.host_generation = host_surface->gpu_generation();
+        imported.host_surface = host_surface;
+        texture->second.levels.insert_or_assign(0, std::move(imported));
+        return gles_abi::no_error;
+    }
     auto decoded = decode_surface(memory, *backing);
     if (!decoded) return gles_abi::invalid_value;
+    decoded->host_surface = host_surface;
+    decoded->host_generation =
+        host_surface ? host_surface->cpu_generation() : 0;
     decoded->revision = allocate_texture_revision();
     texture->second.levels.insert_or_assign(0, std::move(*decoded));
     return gles_abi::no_error;
@@ -351,22 +369,87 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
     }
     const auto backing = surfaces.find(*level->second.surface_id);
     if (!backing) return gles_abi::invalid_operation;
+    const auto host_surface = surfaces.host_surface(*level->second.surface_id);
+    if (host_surface &&
+        host_surface->gpu_generation() > host_surface->cpu_generation()) {
+        const auto generation = host_surface->gpu_generation();
+        if (level->second.host_surface == host_surface &&
+            level->second.host_generation == generation &&
+            level->second.width == backing->width &&
+            level->second.height == backing->height) {
+            return gles_abi::no_error;
+        }
+        TextureLevel refreshed;
+        refreshed.width = backing->width;
+        refreshed.height = backing->height;
+        refreshed.internal_format = gles_abi::bgra_apple;
+        refreshed.surface_id = backing->id;
+        refreshed.revision = allocate_texture_revision();
+        refreshed.host_surface = host_surface;
+        refreshed.host_generation = generation;
+        level->second = std::move(refreshed);
+        return gles_abi::no_error;
+    }
     auto decoded = decode_surface(memory, *backing);
     if (!decoded) {
         return backing->pixel_format == surface_pixel_format_bgra
                    ? gles_abi::invalid_value
                    : gles_abi::invalid_enum;
     }
+    decoded->host_surface = host_surface;
+    decoded->host_generation =
+        host_surface ? host_surface->cpu_generation() : 0;
     if (decoded->width == level->second.width &&
         decoded->height == level->second.height &&
         decoded->internal_format == level->second.internal_format &&
         decoded->surface_id == level->second.surface_id &&
+        decoded->host_surface == level->second.host_surface &&
+        decoded->host_generation == level->second.host_generation &&
         decoded->argb == level->second.argb) {
         return gles_abi::no_error;
     }
     decoded->revision = allocate_texture_revision();
     level->second = std::move(*decoded);
     return gles_abi::no_error;
+}
+
+bool GlesResourceStore::materialize_surface_textures(
+    HostGraphicsDevice& graphics) {
+    for (auto& [name, texture] : textures_) {
+        static_cast<void>(name);
+        for (auto& [index, level] : texture.levels) {
+            static_cast<void>(index);
+            if (!level.host_surface ||
+                level.argb.size() ==
+                    static_cast<std::size_t>(level.width) * level.height) {
+                continue;
+            }
+            if (level.host_surface->gpu_generation() >
+                    level.host_surface->cpu_generation() &&
+                graphics.native_image(*level.host_surface).api ==
+                    HostNativeImage::Api::None) {
+                return false;
+            }
+            if (!graphics.map_cpu(*level.host_surface, true,
+                                  PerfCpuMapReason::SoftwareFallback)) {
+                return false;
+            }
+            auto mapping = level.host_surface->map_cpu(
+                false, PerfCpuMapReason::SoftwareFallback);
+            const auto& frame = mapping.frame();
+            if (frame.width != level.width || frame.height != level.height ||
+                frame.pixels.size() !=
+                    static_cast<std::size_t>(level.width) * level.height) {
+                return false;
+            }
+            level.argb = frame.pixels;
+            level.host_generation = std::max(
+                level.host_surface->cpu_generation(),
+                level.host_surface->gpu_generation());
+            level.revision = allocate_texture_revision();
+        }
+    }
+    return true;
 }
 
 std::uint32_t GlesResourceStore::upload_buffer(

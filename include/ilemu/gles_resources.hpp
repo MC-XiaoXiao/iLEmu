@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <vector>
@@ -10,6 +11,8 @@
 namespace ilemu {
 
 class AddressSpace;
+class HostGraphicsDevice;
+class HostSurface;
 class SurfaceStore;
 
 class GlesResourceStore {
@@ -21,6 +24,8 @@ public:
         std::vector<std::uint32_t> argb;
         std::optional<std::uint32_t> surface_id;
         std::uint64_t revision{};
+        std::shared_ptr<HostSurface> host_surface;
+        std::uint64_t host_generation{};
     };
     struct Texture {
         std::uint32_t name{};
@@ -64,6 +69,10 @@ public:
     [[nodiscard]] std::uint32_t refresh_surface_texture(
         AddressSpace& memory, std::uint32_t name,
         const SurfaceStore& surfaces);
+    // Explicit software-fallback boundary for textures whose newest pixels
+    // live only in a HostSurface native image.
+    [[nodiscard]] bool
+    materialize_surface_textures(HostGraphicsDevice& graphics);
 
     [[nodiscard]] std::uint32_t upload_buffer(
         AddressSpace& memory, std::uint32_t name, std::uint32_t size,
