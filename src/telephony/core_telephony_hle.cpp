@@ -65,6 +65,14 @@ constexpr std::array<std::string_view, 4> offline_scalar_queries{
     "_CTGetCurrentCallCount",
 };
 
+// These direct queries return retained CF objects. With no registered carrier
+// there is no operator or service-provider name to expose.
+constexpr std::array<std::string_view, 3> offline_direct_string_queries{
+    "_CTRegistrationCopyOperatorName",
+    "_CTRegistrationCopyServiceProviderName",
+    "_CTSettingCopyMyPhoneNumber",
+};
+
 // These server queries normally write a retained CFString through argument 2.
 // The offline profile has no CommCenter-backed values, so terminate the
 // queries at this HLE boundary.
@@ -678,10 +686,28 @@ void register_core_telephony_hle(
                 call, "_kCTRegistrationStatusNotRegistered");
         });
     registry.register_function(
+        std::string{core_telephony_image},
+        "_CTRegistrationGetNetworkSelectionMode",
+        [](UserlandHleCall& call) {
+            return_firmware_object(
+                call, "_kCTRegistrationNetworkSelectionModeDisabled");
+        });
+    registry.register_function(
         std::string{core_telephony_image}, "_CTSIMSupportGetSIMStatus",
         [](UserlandHleCall& call) {
             return_firmware_object(call, offline_sim_status_export);
         });
+    for (const auto symbol : offline_direct_string_queries) {
+        registry.register_function(
+            std::string{core_telephony_image}, std::string{symbol},
+            [](UserlandHleCall& call) {
+                if (is_offline_ui_client(call)) {
+                    call.set_return(0);
+                } else {
+                    call.resume_original();
+                }
+            });
+    }
     for (const auto symbol : offline_server_string_queries) {
         registry.register_function(
             std::string{core_telephony_image}, std::string{symbol},
