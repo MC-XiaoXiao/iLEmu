@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <optional>
 #include <vector>
 
 #include "ilemu/touch_input.hpp"
@@ -18,6 +19,8 @@ public:
   [[nodiscard]] std::vector<TouchInput> poll();
   [[nodiscard]] bool empty() const { return next_event_ >= events_.size(); }
   [[nodiscard]] bool settled(std::chrono::milliseconds quiet_period) const;
+  [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
+  next_deadline() const;
 
 private:
   struct Event {

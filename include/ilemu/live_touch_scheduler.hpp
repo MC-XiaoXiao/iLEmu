@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <deque>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -18,6 +19,8 @@ public:
   void schedule(std::span<const LiveTouchEvent> gesture);
   [[nodiscard]] std::vector<TouchInput> poll();
   [[nodiscard]] bool empty() const { return events_.empty(); }
+  [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
+  next_deadline() const;
 
 private:
   struct Event {

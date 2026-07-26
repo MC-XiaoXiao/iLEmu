@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <optional>
 
 namespace ilemu {
 
@@ -14,7 +15,13 @@ public:
 
   [[nodiscard]] std::uint64_t allowed_virtual_time() const;
   [[nodiscard]] std::chrono::nanoseconds
-  delay_until(std::uint64_t virtual_time) const;
+  delay_until(
+      std::uint64_t virtual_time,
+      std::optional<std::chrono::steady_clock::time_point> host_deadline =
+          std::nullopt) const;
+  [[nodiscard]] std::chrono::nanoseconds limit_delay(
+      std::chrono::nanoseconds delay,
+      std::optional<std::chrono::steady_clock::time_point> host_deadline) const;
 
 private:
   std::uint64_t initial_virtual_time_{};

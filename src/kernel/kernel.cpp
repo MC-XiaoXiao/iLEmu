@@ -357,6 +357,13 @@ bool CompatibilityKernel::refresh_display_scanout() {
   return refreshed;
 }
 
+bool CompatibilityKernel::owns_display_scanout() const {
+  const auto backing =
+      surface_store_->find(iokit_abi::apple_h1clcd_default_surface_id);
+  return backing &&
+         backing->provenance.producer_process_id == process_.pid;
+}
+
 void CompatibilityKernel::install_commpage() {
   // The iPhoneOS 1.0 libSystem shipped in this firmware directly reads the
   // legacy ARM commpage at 0x40000000 (for example, time data at +0x40).

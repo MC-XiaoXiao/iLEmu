@@ -1664,7 +1664,23 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::vector<std::pair<std::chrono::steady_clock::time_point,
                         std::filesystem::path>>
       scheduled_snapshots;
+  const auto next_host_control_deadline = [&]() {
+    std::optional<std::chrono::steady_clock::time_point> deadline;
+    const auto consider = [&deadline](const auto candidate) {
+      if (candidate && (!deadline || *candidate < *deadline))
+        deadline = candidate;
+    };
+    if (touch_replay)
+      consider(touch_replay->next_deadline());
+    consider(live_touch_scheduler.next_deadline());
+    if (!scheduled_snapshots.empty()) {
+      consider(std::optional<std::chrono::steady_clock::time_point>{
+          scheduled_snapshots.front().first});
+    }
+    return deadline;
+  };
   std::optional<std::string> display_performance_window;
+  Runtime *display_scanout_owner = nullptr;
   if (!bounded_execution) {
     realtime_pacer.emplace(initial_runtime->kernel->current_absolute_time());
     const auto host_wall_time =
@@ -1897,7 +1913,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
       }
       const auto delay = realtime_pacer->delay_until(
-          initial_runtime->kernel->current_absolute_time());
+          initial_runtime->kernel->current_absolute_time(),
+          next_host_control_deadline());
       if (delay > std::chrono::nanoseconds::zero()) {
         std::this_thread::sleep_for(std::min(
             delay, std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1965,6 +1982,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
     for (auto runtime = runtimes.begin(); runtime != runtimes.end();) {
       if (runtime->get() != initial_runtime &&
           (*runtime)->kernel->process().reaped) {
+        if (runtime->get() == display_scanout_owner)
+          display_scanout_owner = nullptr;
         runtime_reaper.retire(std::move(*runtime));
         runtime = runtimes.erase(runtime);
       } else {
@@ -2268,14 +2287,27 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
       }
       // AppleH1CLCD scans its reserved CoreSurface directly; firmware does
-      // not unlock or swap that front buffer. Refresh each process-local
-      // surface after advancing virtual display time. Only the process that
-      // owns surface ID 0x100 performs any pixel work.
-      for (auto &runtime : runtimes) {
-        if (!runtime->kernel->process().exited) {
-          static_cast<void>(runtime->kernel->refresh_display_scanout());
+      // not unlock or swap that front buffer. Cache the publishing task after
+      // the first lookup; imported task-local mappings retain the producer
+      // provenance and cannot steal ownership.
+      if (display_scanout_owner == nullptr ||
+          display_scanout_owner->kernel->process().exited ||
+          !display_scanout_owner->kernel->owns_display_scanout()) {
+        display_scanout_owner = nullptr;
+        for (auto &runtime : runtimes) {
+          if (!runtime->kernel->process().exited &&
+              runtime->kernel->owns_display_scanout()) {
+            display_scanout_owner = runtime.get();
+            output.line("[display] scanout-owner pid=" +
+                        std::to_string(
+                            display_scanout_owner->kernel->process().pid));
+            break;
+          }
         }
       }
+      if (display_scanout_owner != nullptr)
+        static_cast<void>(
+            display_scanout_owner->kernel->refresh_display_scanout());
     }
     if (!ran_thread) {
       if (gdb_server && gdb_server->poll_interrupt()) {
@@ -2311,7 +2343,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
       }
       if (next_deadline) {
         if (realtime_pacer) {
-          const auto delay = realtime_pacer->delay_until(*next_deadline);
+          const auto delay = realtime_pacer->delay_until(
+              *next_deadline, next_host_control_deadline());
           if (delay > std::chrono::nanoseconds::zero()) {
             std::this_thread::sleep_for(std::min(
                 delay, std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -2344,7 +2377,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // is blocked: SDL input, GDB interrupt, and future host-network
       // completions may still produce a wakeup. Avoid a busy-spin while
       // retaining a responsive event loop.
-      std::this_thread::sleep_for(interactive_maximum_sleep);
+      const auto maximum_delay =
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              interactive_maximum_sleep);
+      const auto delay = realtime_pacer
+                             ? realtime_pacer->limit_delay(
+                                   maximum_delay,
+                                   next_host_control_deadline())
+                             : maximum_delay;
+      if (delay > std::chrono::nanoseconds::zero())
+        std::this_thread::sleep_for(delay);
     }
   }
   const auto checked_in_services =

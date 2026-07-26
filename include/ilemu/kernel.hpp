@@ -209,6 +209,9 @@ public:
   // Refreshes the process-local firmware framebuffer into the shared host
   // display. Most processes have no scanout surface and return immediately.
   bool refresh_display_scanout();
+  // The default scanout may be imported into several task-local stores. Its
+  // publishing task remains the owner whose address space drives scanout.
+  [[nodiscard]] bool owns_display_scanout() const;
   bool set_virtual_processor_count(std::size_t processor_count);
   void set_preferred_wifi_networks(std::vector<std::string> ssids) {
     wifi_state_->set_preferred_networks(std::move(ssids));

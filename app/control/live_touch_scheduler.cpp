@@ -28,4 +28,12 @@ std::vector<TouchInput> LiveTouchScheduler::poll() {
   return result;
 }
 
+std::optional<std::chrono::steady_clock::time_point>
+LiveTouchScheduler::next_deadline() const {
+  return events_.empty()
+             ? std::nullopt
+             : std::optional<std::chrono::steady_clock::time_point>{
+                   events_.front().deadline};
+}
+
 } // namespace ilemu
