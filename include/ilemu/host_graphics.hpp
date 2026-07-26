@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 
 #include "ilemu/display.hpp"
@@ -81,6 +82,9 @@ class HostSurface {
     map_cpu(bool write,
             PerfCpuMapReason reason = PerfCpuMapReason::Internal);
     void replace_cpu(std::span<const std::uint32_t> pixels);
+    void replace_cpu_region(HostRectangle rectangle,
+                            std::span<const std::uint32_t> pixels);
+    [[nodiscard]] std::optional<HostRectangle> cpu_damage() const;
     // Called after queueing a native image write and after a completed
     // GPU-to-CPU transfer, respectively.
     [[nodiscard]] std::uint64_t mark_gpu_write();
@@ -97,6 +101,7 @@ class HostSurface {
     std::uint64_t next_generation_{1};
     std::uint64_t cpu_generation_{1};
     std::uint64_t gpu_generation_{};
+    std::optional<HostRectangle> cpu_damage_;
 };
 
 class CommandEncoder {

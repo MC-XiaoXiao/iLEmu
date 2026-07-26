@@ -37,14 +37,36 @@ namespace {
 
 constexpr VkFormat color_format = VK_FORMAT_B8G8R8A8_UNORM;
 constexpr std::uint64_t fence_timeout_nanoseconds = 5'000'000'000ULL;
+constexpr std::uint64_t acquire_timeout_nanoseconds = 2'000'000ULL;
 constexpr std::size_t maximum_batch_draws = 128;
 constexpr std::size_t command_ring_size = 3;
 constexpr VkDeviceSize minimum_vertex_arena_bytes = 1U << 20U;
+constexpr VkDeviceSize minimum_staging_arena_bytes = 4U << 20U;
+constexpr VkDeviceSize staging_alignment = 256U;
 constexpr std::uintmax_t maximum_pipeline_cache_bytes = 64U * 1024U * 1024U;
 constexpr VkDeviceSize mebibyte = 1024U * 1024U;
 constexpr VkDeviceSize default_texture_cache_budget = 128U * mebibyte;
 constexpr VkDeviceSize maximum_texture_cache_budget = 256U * mebibyte;
 constexpr std::size_t maximum_texture_cache_entries = 4096;
+
+void add_damage(std::optional<HostRectangle>& damage,
+                HostRectangle rectangle) {
+    if (!damage) {
+        damage = rectangle;
+        return;
+    }
+    const auto x = std::min(damage->x, rectangle.x);
+    const auto y = std::min(damage->y, rectangle.y);
+    const auto right = std::max(
+        static_cast<std::int64_t>(damage->x) + damage->width,
+        static_cast<std::int64_t>(rectangle.x) + rectangle.width);
+    const auto bottom = std::max(
+        static_cast<std::int64_t>(damage->y) + damage->height,
+        static_cast<std::int64_t>(rectangle.y) + rectangle.height);
+    damage = HostRectangle{
+        x, y, static_cast<std::uint32_t>(right - x),
+        static_cast<std::uint32_t>(bottom - y)};
+}
 
 #if 0
 constexpr std::string_view vertex_shader_source = R"(
@@ -445,12 +467,11 @@ class VulkanGlesRenderer final : public GlesRenderer {
         std::uint64_t cpu_generation{};
         PerfSurfaceKind kind{PerfSurfaceKind::GlesRenderTarget};
         bool valid{};
-        bool dirty{};
+        std::optional<HostRectangle> dirty;
     };
 
     struct CachedTexture {
         Image image;
-        std::array<Buffer, command_ring_size> uploads;
         std::uint64_t revision{};
         std::uint64_t last_used{};
         std::uint64_t last_upload_batch{};
@@ -462,12 +483,12 @@ class VulkanGlesRenderer final : public GlesRenderer {
         VkFence fence{};
         VkSemaphore image_available{};
         std::array<VkDescriptorSet, maximum_batch_draws> descriptors{};
-        Buffer target_upload;
+        Buffer staging;
         Buffer vertex;
         Buffer uniform;
+        VkDeviceSize staging_bytes_used{};
         VkDeviceSize vertex_bytes_used{};
         std::size_t draw_count{};
-        bool target_upload_in_use{};
         bool in_flight{};
     };
 
@@ -1086,6 +1107,21 @@ bool VulkanGlesRenderer::create_presentation_swapchain() {
             formats.data()) != VK_SUCCESS) {
         return false;
     }
+    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
+    std::uint32_t present_mode_count{};
+    if (vkGetPhysicalDeviceSurfacePresentModesKHR(
+            physical_device_, presentation_surface_, &present_mode_count,
+            nullptr) == VK_SUCCESS &&
+        present_mode_count != 0) {
+        std::vector<VkPresentModeKHR> present_modes(present_mode_count);
+        if (vkGetPhysicalDeviceSurfacePresentModesKHR(
+                physical_device_, presentation_surface_, &present_mode_count,
+                present_modes.data()) == VK_SUCCESS &&
+            std::find(present_modes.begin(), present_modes.end(),
+                      VK_PRESENT_MODE_MAILBOX_KHR) != present_modes.end()) {
+            present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
+        }
+    }
     auto selected = formats.front();
     if (const auto preferred = std::find_if(
             formats.begin(), formats.end(), [](const auto& format) {
@@ -1141,7 +1177,7 @@ bool VulkanGlesRenderer::create_presentation_swapchain() {
     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.preTransform = capabilities.currentTransform;
     info.compositeAlpha = composite_alpha;
-    info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
+    info.presentMode = present_mode;
     info.clipped = VK_TRUE;
     info.oldSwapchain = presentation_swapchain_;
     VkSwapchainKHR swapchain{};
@@ -1187,6 +1223,12 @@ bool VulkanGlesRenderer::create_presentation_swapchain() {
     presentation_render_finished_ = std::move(render_finished);
     presentation_layouts_.assign(swapchain_image_count,
                                  VK_IMAGE_LAYOUT_UNDEFINED);
+    if (renderer_name_.find("present-mode=") == std::string::npos) {
+        renderer_name_ +=
+            present_mode == VK_PRESENT_MODE_MAILBOX_KHR
+                ? "; present-mode=mailbox"
+                : "; present-mode=fifo";
+    }
     return true;
 }
 
@@ -1258,7 +1300,7 @@ void VulkanGlesRenderer::destroy() noexcept {
         texture_cache_.clear();
         texture_cache_bytes_ = 0;
         for (auto& slot : command_slots_) {
-            slot.target_upload = {};
+            slot.staging = {};
             slot.vertex = {};
             slot.uniform = {};
             slot.in_flight = false;
@@ -1500,7 +1542,7 @@ VulkanGlesRenderer::ensure_target(GlesRenderTargetKey key,
                             &target.framebuffer),
         "vkCreateFramebuffer");
     target.valid = false;
-    target.dirty = false;
+    target.dirty.reset();
     target.cpu_generation = 0;
     target.layout = VK_IMAGE_LAYOUT_UNDEFINED;
     return target;
@@ -1625,8 +1667,8 @@ void VulkanGlesRenderer::submit_commands(
     submitted.in_flight = true;
     performance_counters().record_submit();
     submitted.draw_count = 0;
+    submitted.staging_bytes_used = 0;
     submitted.vertex_bytes_used = 0;
-    submitted.target_upload_in_use = false;
     if (++batch_sequence_ == 0)
         batch_sequence_ = 1;
     command_slot_index_ =
@@ -1658,8 +1700,8 @@ void VulkanGlesRenderer::discard_commands() noexcept {
     render_pass_target_.reset();
     for (auto& slot : command_slots_) {
         slot.draw_count = 0;
+        slot.staging_bytes_used = 0;
         slot.vertex_bytes_used = 0;
-        slot.target_upload_in_use = false;
     }
     if (++batch_sequence_ == 0)
         batch_sequence_ = 1;
@@ -1942,27 +1984,52 @@ bool VulkanGlesRenderer::synchronize(DisplayFrame& frame,
     }
 
     try {
-        const auto frame_bytes =
-            static_cast<VkDeviceSize>(frame.pixels.size()) *
+        const auto damage = *surface.dirty;
+        const auto damage_pixels =
+            static_cast<std::size_t>(damage.width) * damage.height;
+        const auto damage_bytes =
+            static_cast<VkDeviceSize>(damage_pixels) *
             sizeof(std::uint32_t);
-        ensure_buffer(surface.download, frame_bytes,
+        ensure_buffer(surface.download, damage_bytes,
                       VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         begin_commands();
         end_render_pass();
         auto& commands = command_slot();
         if (surface.layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+            VkPipelineStageFlags source_stage =
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            VkAccessFlags source_access{};
+            if (surface.layout ==
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+                source_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+                source_access = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            } else if (surface.layout ==
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ||
+                       surface.layout ==
+                           VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+                source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                source_access =
+                    surface.layout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL
+                        ? VK_ACCESS_TRANSFER_WRITE_BIT
+                        : VK_ACCESS_TRANSFER_READ_BIT;
+            } else if (surface.layout ==
+                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+                source_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+                source_access = VK_ACCESS_SHADER_READ_BIT;
+            }
             transition_image(commands.command, surface.image.image,
                              surface.layout,
                              VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                             VK_PIPELINE_STAGE_TRANSFER_BIT,
-                             VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                             source_stage, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             source_access,
                              VK_ACCESS_TRANSFER_READ_BIT);
         }
         VkBufferImageCopy copy{};
         copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         copy.imageSubresource.layerCount = 1;
-        copy.imageExtent = {frame.width, frame.height, 1};
+        copy.imageOffset = {damage.x, damage.y, 0};
+        copy.imageExtent = {damage.width, damage.height, 1};
         vkCmdCopyImageToBuffer(commands.command, surface.image.image,
                                VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                surface.download.buffer, 1, &copy);
@@ -1979,10 +2046,22 @@ bool VulkanGlesRenderer::synchronize(DisplayFrame& frame,
                              VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
                              &host_barrier, 0, nullptr);
         submit_commands();
-        download(surface.download, frame.pixels.data(),
-                 static_cast<std::size_t>(frame_bytes), surface.kind);
+        std::vector<std::uint32_t> pixels(damage_pixels);
+        download(surface.download, pixels.data(),
+                 static_cast<std::size_t>(damage_bytes), surface.kind);
+        for (std::uint32_t row = 0; row < damage.height; ++row) {
+            std::copy_n(
+                pixels.begin() +
+                    static_cast<std::size_t>(row) * damage.width,
+                damage.width,
+                frame.pixels.begin() +
+                    static_cast<std::size_t>(
+                        static_cast<std::uint32_t>(damage.y) + row) *
+                        frame.width +
+                    static_cast<std::uint32_t>(damage.x));
+        }
         surface.layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-        surface.dirty = false;
+        surface.dirty.reset();
         return true;
     } catch (...) {
         last_failure_reason_.store(PerfFallbackReason::BackendFailure,
@@ -1994,7 +2073,7 @@ bool VulkanGlesRenderer::synchronize(DisplayFrame& frame,
             texture.revision = 0;
         }
         surface.valid = false;
-        surface.dirty = false;
+        surface.dirty.reset();
         return false;
     }
 }
@@ -2016,7 +2095,7 @@ bool VulkanGlesRenderer::flush(GlesRenderTargetKey target) {
         if (const auto found = targets_.find(target);
             found != targets_.end()) {
             found->second.valid = false;
-            found->second.dirty = false;
+            found->second.dirty.reset();
         }
         return false;
     }
@@ -2049,7 +2128,7 @@ void VulkanGlesRenderer::invalidate(GlesRenderTargetKey target) {
         submit_commands(false);
     wait_for_all_slots();
     found->second.valid = false;
-    found->second.dirty = false;
+    found->second.dirty.reset();
 }
 
 void VulkanGlesRenderer::release(GlesRenderTargetKey target) {
@@ -2072,18 +2151,21 @@ bool VulkanGlesRenderer::present_target(Target& target) {
                                    std::memory_order_relaxed);
         return false;
     }
-    // Queue compositor work before acquiring the presentation image. DZN and
-    // other Vulkan translation layers may retain a presented image beyond the
-    // render fence; keeping the presentation submission in the next ring slot
-    // avoids reusing its binary semaphores while presentation still owns them.
+    // DZN and other translation layers may retain a presented image beyond
+    // the render fence. Keep presentation in the next ring slot so compositor
+    // and presentation semaphore lifetimes cannot alias.
     submit_commands(false);
     auto* slot = &command_slot();
     wait_for_slot(*slot);
 
     std::uint32_t image_index{};
-    auto acquired = vkAcquireNextImageKHR(
-        device_, presentation_swapchain_, UINT64_MAX,
-        slot->image_available, VK_NULL_HANDLE, &image_index);
+    const auto acquire_next_image = [&] {
+        const PerformanceLatencyScope latency{PerfLatencyKind::Acquire};
+        return vkAcquireNextImageKHR(
+            device_, presentation_swapchain_, acquire_timeout_nanoseconds,
+            slot->image_available, VK_NULL_HANDLE, &image_index);
+    };
+    auto acquired = acquire_next_image();
     if (acquired == VK_ERROR_SURFACE_LOST_KHR) {
         if (!recreate_presentation_surface()) {
             last_failure_reason_.store(PerfFallbackReason::BackendFailure,
@@ -2092,9 +2174,7 @@ bool VulkanGlesRenderer::present_target(Target& target) {
         }
         slot = &command_slot();
         wait_for_slot(*slot);
-        acquired = vkAcquireNextImageKHR(
-            device_, presentation_swapchain_, UINT64_MAX,
-            slot->image_available, VK_NULL_HANDLE, &image_index);
+        acquired = acquire_next_image();
     }
     if (acquired == VK_ERROR_OUT_OF_DATE_KHR) {
         require_success(vkDeviceWaitIdle(device_), "vkDeviceWaitIdle");
@@ -2105,10 +2185,10 @@ bool VulkanGlesRenderer::present_target(Target& target) {
         }
         slot = &command_slot();
         wait_for_slot(*slot);
-        acquired = vkAcquireNextImageKHR(
-            device_, presentation_swapchain_, UINT64_MAX,
-            slot->image_available, VK_NULL_HANDLE, &image_index);
+        acquired = acquire_next_image();
     }
+    if (acquired == VK_TIMEOUT || acquired == VK_NOT_READY)
+        return true;
     if (acquired != VK_SUCCESS && acquired != VK_SUBOPTIMAL_KHR) {
         last_failure_reason_.store(PerfFallbackReason::BackendFailure,
                                    std::memory_order_relaxed);
@@ -2199,7 +2279,11 @@ bool VulkanGlesRenderer::present_target(Target& target) {
     present.swapchainCount = 1;
     present.pSwapchains = &presentation_swapchain_;
     present.pImageIndices = &image_index;
-    const auto result = vkQueuePresentKHR(queue_, &present);
+    VkResult result{};
+    {
+        const PerformanceLatencyScope latency{PerfLatencyKind::QueuePresent};
+        result = vkQueuePresentKHR(queue_, &present);
+    }
     if (result == VK_ERROR_SURFACE_LOST_KHR) {
         if (!recreate_presentation_surface()) {
             last_failure_reason_.store(PerfFallbackReason::BackendFailure,
@@ -2235,6 +2319,10 @@ VulkanGlesRenderer::Target& VulkanGlesRenderer::prepare_host_surface(
     target.kind = descriptor.kind;
     if (target.valid && cpu_generation <= target.cpu_generation)
         return target;
+    if (target.valid && gpu_generation != 0 &&
+        cpu_generation == gpu_generation) {
+        return target;
+    }
     // A stale CPU shadow must never overwrite a newer native image.
     if (cpu_generation < gpu_generation || cpu_frame.width != descriptor.width ||
         cpu_frame.height != descriptor.height ||
@@ -2243,18 +2331,71 @@ VulkanGlesRenderer::Target& VulkanGlesRenderer::prepare_host_surface(
         return target;
     }
 
-    if (command_recording_ && command_slot().target_upload_in_use)
+    auto upload_rectangle =
+        HostRectangle{0, 0, descriptor.width, descriptor.height};
+    if (target.valid && target.cpu_generation != 0) {
+        if (const auto damage = surface.cpu_damage();
+            damage && damage->x >= 0 && damage->y >= 0 &&
+            damage->width != 0 && damage->height != 0 &&
+            damage->width <= descriptor.width &&
+            damage->height <= descriptor.height &&
+            static_cast<std::uint32_t>(damage->x) <=
+                descriptor.width - damage->width &&
+            static_cast<std::uint32_t>(damage->y) <=
+                descriptor.height - damage->height) {
+            upload_rectangle = *damage;
+        }
+    }
+    std::vector<std::uint32_t> upload_pixels;
+    const auto full_upload =
+        upload_rectangle.x == 0 && upload_rectangle.y == 0 &&
+        upload_rectangle.width == descriptor.width &&
+        upload_rectangle.height == descriptor.height;
+    const std::uint32_t* upload_source = cpu_frame.pixels.data();
+    if (!full_upload) {
+        upload_pixels.resize(
+            static_cast<std::size_t>(upload_rectangle.width) *
+            upload_rectangle.height);
+        for (std::uint32_t row = 0; row < upload_rectangle.height; ++row) {
+            std::copy_n(
+                cpu_frame.pixels.begin() +
+                    static_cast<std::size_t>(
+                        static_cast<std::uint32_t>(upload_rectangle.y) + row) *
+                        descriptor.width +
+                    static_cast<std::uint32_t>(upload_rectangle.x),
+                upload_rectangle.width,
+                upload_pixels.begin() +
+                    static_cast<std::size_t>(row) *
+                        upload_rectangle.width);
+        }
+        upload_source = upload_pixels.data();
+    }
+    const auto byte_count =
+        static_cast<VkDeviceSize>(upload_rectangle.width) *
+        upload_rectangle.height * sizeof(std::uint32_t);
+    const auto align_staging = [](VkDeviceSize value) {
+        return (value + staging_alignment - 1U) &
+               ~(staging_alignment - 1U);
+    };
+    auto required_end =
+        align_staging(command_slot().staging_bytes_used) + byte_count;
+    if (command_recording_ &&
+        (command_slot().staging.buffer == VK_NULL_HANDLE ||
+         required_end > command_slot().staging.size)) {
         submit_commands(false);
+        required_end = byte_count;
+    }
     wait_for_slot(command_slot());
     auto& commands = command_slot();
-    const auto byte_count =
-        static_cast<VkDeviceSize>(cpu_frame.pixels.size()) *
-        sizeof(std::uint32_t);
-    ensure_buffer(commands.target_upload, byte_count,
+    ensure_buffer(commands.staging,
+                  std::max(required_end, minimum_staging_arena_bytes),
                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-    upload(commands.target_upload, cpu_frame.pixels.data(),
-           static_cast<std::size_t>(byte_count), 0, descriptor.kind);
-    commands.target_upload_in_use = true;
+    const auto staging_offset =
+        align_staging(commands.staging_bytes_used);
+    upload(commands.staging, upload_source,
+           static_cast<std::size_t>(byte_count), staging_offset,
+           descriptor.kind);
+    commands.staging_bytes_used = staging_offset + byte_count;
 
     begin_commands();
     end_render_pass();
@@ -2276,16 +2417,23 @@ VulkanGlesRenderer::Target& VulkanGlesRenderer::prepare_host_surface(
                      VK_PIPELINE_STAGE_TRANSFER_BIT, source_access,
                      VK_ACCESS_TRANSFER_WRITE_BIT);
     VkBufferImageCopy copy{};
+    copy.bufferOffset = staging_offset;
     copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     copy.imageSubresource.layerCount = 1;
-    copy.imageExtent = {descriptor.width, descriptor.height, 1};
-    vkCmdCopyBufferToImage(commands.command, commands.target_upload.buffer,
+    copy.imageOffset = {upload_rectangle.x, upload_rectangle.y, 0};
+    copy.imageExtent = {
+        upload_rectangle.width, upload_rectangle.height, 1};
+    vkCmdCopyBufferToImage(commands.command, commands.staging.buffer,
                            target.image.image,
                            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
     target.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     target.cpu_generation = cpu_generation;
     target.valid = true;
-    target.dirty = false;
+    // A partial CPU upload preserves newer GPU pixels outside the uploaded
+    // rectangle. Keep their conservative damage so a later CPU map can still
+    // refresh the shadow; a full upload makes the CPU frame authoritative.
+    if (full_upload)
+        target.dirty.reset();
     return target;
 }
 
@@ -2429,7 +2577,7 @@ bool VulkanGlesRenderer::encode_fill(
             clear.layerCount = 1;
             vkCmdClearAttachments(command_slot().command, 1, &attachment, 1,
                                   &clear);
-            target.dirty = true;
+            add_damage(target.dirty, rectangle);
         }
         destination.mark_gpu_synchronized(cpu_generation);
         static_cast<void>(destination.mark_gpu_write());
@@ -2842,7 +2990,8 @@ bool VulkanGlesRenderer::encode_copy(
                                                      : VK_FILTER_NEAREST);
                 }
             }
-            destination_target.dirty = true;
+            add_damage(destination_target.dirty,
+                       destination_rectangle);
         }
         source.mark_gpu_synchronized(source_cpu_generation);
         destination.mark_gpu_synchronized(destination_cpu_generation);
@@ -3036,8 +3185,10 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         std::array<bool, gles_abi::texture_unit_count> texture_changed{};
         std::array<CachedTexture*, gles_abi::texture_unit_count>
             selected_textures{};
-        std::array<Buffer*, gles_abi::texture_unit_count>
-            selected_uploads{};
+        std::array<Target*, gles_abi::texture_unit_count>
+            selected_surface_targets{};
+        std::array<VkDeviceSize, gles_abi::texture_unit_count>
+            selected_upload_offsets{};
         std::array<const std::uint32_t*, gles_abi::texture_unit_count>
             selected_pixels{};
         std::array<VkDeviceSize, gles_abi::texture_unit_count>
@@ -3054,15 +3205,37 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                     const auto found = texture->levels.find(0);
                     if (found != texture->levels.end() &&
                         found->second.width != 0 && found->second.height != 0 &&
-                        found->second.argb.size() ==
-                            static_cast<std::size_t>(found->second.width) *
-                                found->second.height) {
+                        (found->second.host_surface != nullptr ||
+                         found->second.argb.size() ==
+                             static_cast<std::size_t>(found->second.width) *
+                                 found->second.height)) {
                         level = &found->second;
                     }
                 }
             }
             const auto width = level ? level->width : 1U;
             const auto height = level ? level->height : 1U;
+            if (level && level->host_surface &&
+                level->host_surface->key() != target &&
+                level->host_surface->gpu_generation() >
+                    level->host_surface->cpu_generation()) {
+                const auto native =
+                    targets_.find(level->host_surface->key());
+                if (native != targets_.end() && native->second.valid &&
+                    native->second.image.width == width &&
+                    native->second.image.height == height) {
+                    selected_surface_targets[index] = &native->second;
+                    texture_revisions[index] = level->host_generation;
+                    continue;
+                }
+            }
+            if (level &&
+                level->argb.size() !=
+                    static_cast<std::size_t>(width) * height) {
+                last_failure_reason_.store(PerfFallbackReason::TargetBusy,
+                                           std::memory_order_relaxed);
+                return false;
+            }
             const auto* pixels =
                 level ? level->argb.data() : white_pixel.data();
             const auto byte_count = static_cast<VkDeviceSize>(width) * height *
@@ -3140,9 +3313,7 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
             }
         }
 
-        if ((!gpu_target.valid &&
-             command_slot().target_upload_in_use) ||
-            command_slot().draw_count == maximum_batch_draws) {
+        if (command_slot().draw_count == maximum_batch_draws) {
             submit_commands(false);
         }
         wait_for_slot(command_slot());
@@ -3156,6 +3327,41 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                           std::max(vertex_bytes, minimum_vertex_arena_bytes),
                           VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         }
+        const auto align_staging = [](VkDeviceSize value) {
+            return (value + staging_alignment - 1U) &
+                   ~(staging_alignment - 1U);
+        };
+        auto staging_end = command_slot().staging_bytes_used;
+        if (!gpu_target.valid)
+            staging_end = align_staging(staging_end) + frame_bytes;
+        for (std::size_t index = 0; index < selected_textures.size();
+             ++index) {
+            if (texture_changed[index]) {
+                staging_end =
+                    align_staging(staging_end) +
+                    selected_byte_counts[index];
+            }
+        }
+        if (staging_end > command_slot().staging.size) {
+            if (command_recording_)
+                submit_commands(false);
+            wait_for_slot(command_slot());
+            staging_end = 0;
+            if (!gpu_target.valid)
+                staging_end = frame_bytes;
+            for (std::size_t index = 0; index < selected_textures.size();
+                 ++index) {
+                if (texture_changed[index]) {
+                    staging_end =
+                        align_staging(staging_end) +
+                        selected_byte_counts[index];
+                }
+            }
+            ensure_buffer(
+                command_slot().staging,
+                std::max(staging_end, minimum_staging_arena_bytes),
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        }
         auto& commands = command_slot();
         ensure_buffer(commands.uniform,
                       uniform_stride_ * maximum_batch_draws,
@@ -3168,25 +3374,27 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                static_cast<std::size_t>(vertex_bytes), vertex_offset);
         const auto uniforms = fixed_function_state(state);
         upload(commands.uniform, &uniforms, sizeof(uniforms), uniform_offset);
+        VkDeviceSize target_upload_offset{};
         if (!gpu_target.valid) {
-            ensure_buffer(commands.target_upload, frame_bytes,
-                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-            upload(commands.target_upload, frame.pixels.data(),
-                   static_cast<std::size_t>(frame_bytes), 0,
+            target_upload_offset =
+                align_staging(commands.staging_bytes_used);
+            upload(commands.staging, frame.pixels.data(),
+                   static_cast<std::size_t>(frame_bytes),
+                   target_upload_offset,
                    gpu_target.kind);
-            commands.target_upload_in_use = true;
+            commands.staging_bytes_used =
+                target_upload_offset + frame_bytes;
         }
         for (std::size_t index = 0; index < selected_textures.size(); ++index) {
             if (!texture_changed[index])
                 continue;
             const auto byte_count = selected_byte_counts[index];
-            auto& upload_buffer =
-                selected_textures[index]->uploads[command_slot_index_];
-            ensure_buffer(upload_buffer, byte_count,
-                          VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-            upload(upload_buffer, selected_pixels[index],
-                   static_cast<std::size_t>(byte_count));
-            selected_uploads[index] = &upload_buffer;
+            const auto offset =
+                align_staging(commands.staging_bytes_used);
+            upload(commands.staging, selected_pixels[index],
+                   static_cast<std::size_t>(byte_count), offset);
+            commands.staging_bytes_used = offset + byte_count;
+            selected_upload_offsets[index] = offset;
         }
 
         const auto descriptor = commands.descriptors[commands.draw_count];
@@ -3196,7 +3404,10 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         std::array<VkDescriptorImageInfo, gles_abi::texture_unit_count>
             image_infos{};
         for (std::size_t index = 0; index < image_infos.size(); ++index) {
-            const auto& image = selected_textures[index]->image;
+            const auto& image =
+                selected_surface_targets[index]
+                    ? selected_surface_targets[index]->image
+                    : selected_textures[index]->image;
             image_infos[index] = {image.sampler, image.view,
                                   VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         }
@@ -3226,7 +3437,14 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         if (!gpu_target.valid ||
             gpu_target.layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ||
             std::any_of(texture_changed.begin(), texture_changed.end(),
-                        [](bool changed) { return changed; })) {
+                        [](bool changed) { return changed; }) ||
+            std::any_of(selected_surface_targets.begin(),
+                        selected_surface_targets.end(),
+                        [](const Target* source) {
+                            return source != nullptr &&
+                                   source->layout !=
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                        })) {
             end_render_pass();
         }
         if (!gpu_target.valid) {
@@ -3246,11 +3464,12 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                              VK_PIPELINE_STAGE_TRANSFER_BIT, source_access,
                              VK_ACCESS_TRANSFER_WRITE_BIT);
             VkBufferImageCopy target_copy{};
+            target_copy.bufferOffset = target_upload_offset;
             target_copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             target_copy.imageSubresource.layerCount = 1;
             target_copy.imageExtent = {frame.width, frame.height, 1};
             vkCmdCopyBufferToImage(
-                commands.command, commands.target_upload.buffer,
+                commands.command, commands.staging.buffer,
                 gpu_target.image.image,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &target_copy);
             transition_image(commands.command, gpu_target.image.image,
@@ -3275,6 +3494,34 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
             gpu_target.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         }
+        for (auto* source : selected_surface_targets) {
+            if (source == nullptr ||
+                source->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+                continue;
+            }
+            VkPipelineStageFlags source_stage =
+                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+            VkAccessFlags source_access{};
+            if (source->layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+                source_stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+                source_access = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+            } else if (source->layout ==
+                       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+                source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                source_access = VK_ACCESS_TRANSFER_WRITE_BIT;
+            } else if (source->layout ==
+                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+                source_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+                source_access = VK_ACCESS_TRANSFER_READ_BIT;
+            }
+            transition_image(
+                commands.command, source->image.image, source->layout,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, source_stage,
+                VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, source_access,
+                VK_ACCESS_SHADER_READ_BIT);
+            source->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        }
         for (std::size_t index = 0; index < selected_textures.size(); ++index) {
             if (!texture_changed[index])
                 continue;
@@ -3293,11 +3540,12 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                 texture.revision != 0 ? VK_ACCESS_SHADER_READ_BIT : 0,
                 VK_ACCESS_TRANSFER_WRITE_BIT);
             VkBufferImageCopy copy{};
+            copy.bufferOffset = selected_upload_offsets[index];
             copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
             copy.imageSubresource.layerCount = 1;
             copy.imageExtent = {image.width, image.height, 1};
             vkCmdCopyBufferToImage(
-                commands.command, selected_uploads[index]->buffer,
+                commands.command, commands.staging.buffer,
                 image.image,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
             transition_image(commands.command, image.image,
@@ -3352,10 +3600,19 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         vkCmdSetScissor(commands.command, 0, 1, &scissor);
         vkCmdDraw(commands.command,
                   static_cast<std::uint32_t>(expanded.size()), 1, 0, 0);
-        gpu_target.dirty = true;
+        add_damage(
+            gpu_target.dirty,
+            HostRectangle{
+                static_cast<std::int32_t>(scissor_left),
+                static_cast<std::int32_t>(
+                    static_cast<std::int64_t>(frame.height) - scissor_top),
+                static_cast<std::uint32_t>(scissor_right - scissor_left),
+                static_cast<std::uint32_t>(scissor_top - scissor_bottom)});
         gpu_target.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-        for (auto* texture : selected_textures)
-            texture->last_draw_batch = batch_sequence_;
+        for (auto* texture : selected_textures) {
+            if (texture != nullptr)
+                texture->last_draw_batch = batch_sequence_;
+        }
         ++commands.draw_count;
         commands.vertex_bytes_used += vertex_bytes;
         return true;
@@ -3367,7 +3624,7 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         if (const auto found = targets_.find(target);
             found != targets_.end()) {
             found->second.valid = false;
-            found->second.dirty = false;
+            found->second.dirty.reset();
         }
         return false;
     }

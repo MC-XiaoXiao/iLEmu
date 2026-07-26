@@ -672,17 +672,12 @@ bool Mbx2dHle::write_region(const ResolvedSurface &surface, std::int64_t x,
   }
   if (surface.host_surface &&
       backing.pixel_format == surface_pixel_format_bgra) {
-    auto mapping = surface.host_surface->map_cpu(
-        true, PerfCpuMapReason::SoftwareFallback);
-    auto &frame = mapping.frame();
-    for (std::int64_t row = 0; row < height; ++row) {
-      const auto source_offset = static_cast<std::size_t>(row * width);
-      const auto destination_offset =
-          static_cast<std::size_t>((y + row) * frame.width + x);
-      std::copy_n(pixels.begin() + source_offset,
-                  static_cast<std::size_t>(width),
-                  frame.pixels.begin() + destination_offset);
-    }
+    surface.host_surface->replace_cpu_region(
+        HostRectangle{static_cast<std::int32_t>(x),
+                      static_cast<std::int32_t>(y),
+                      static_cast<std::uint32_t>(width),
+                      static_cast<std::uint32_t>(height)},
+        pixels);
   }
   return true;
 }

@@ -9,6 +9,20 @@
 namespace ilemu {
 namespace {
 
+HostRectangle union_rectangle(HostRectangle left, HostRectangle right) {
+    const auto x = std::min(left.x, right.x);
+    const auto y = std::min(left.y, right.y);
+    const auto right_edge = std::max(
+        static_cast<std::int64_t>(left.x) + left.width,
+        static_cast<std::int64_t>(right.x) + right.width);
+    const auto bottom_edge = std::max(
+        static_cast<std::int64_t>(left.y) + left.height,
+        static_cast<std::int64_t>(right.y) + right.height);
+    return HostRectangle{
+        x, y, static_cast<std::uint32_t>(right_edge - x),
+        static_cast<std::uint32_t>(bottom_edge - y)};
+}
+
 std::uint32_t source_over(std::uint32_t source, std::uint32_t destination,
                           std::uint8_t global_alpha, bool premultiplied) {
     const auto scale = [](std::uint32_t value, std::uint32_t factor) {
@@ -190,7 +204,8 @@ HostSurface::HostSurface(HostSurfaceKey key,
                  std::vector<std::uint32_t>(
                      static_cast<std::size_t>(descriptor.width) *
                          descriptor.height,
-                     0)} {
+                     0)},
+      cpu_damage_{HostRectangle{0, 0, descriptor.width, descriptor.height}} {
     if (initial_pixels.size() == cpu_frame_.pixels.size())
         std::copy(initial_pixels.begin(), initial_pixels.end(),
                   cpu_frame_.pixels.begin());
@@ -220,6 +235,40 @@ void HostSurface::replace_cpu(std::span<const std::uint32_t> pixels) {
     mark_cpu_write_locked();
 }
 
+void HostSurface::replace_cpu_region(
+    HostRectangle rectangle, std::span<const std::uint32_t> pixels) {
+    std::lock_guard lock{mutex_};
+    if (rectangle.x < 0 || rectangle.y < 0 || rectangle.width == 0 ||
+        rectangle.height == 0 || rectangle.width > descriptor_.width ||
+        rectangle.height > descriptor_.height ||
+        static_cast<std::uint32_t>(rectangle.x) >
+            descriptor_.width - rectangle.width ||
+        static_cast<std::uint32_t>(rectangle.y) >
+            descriptor_.height - rectangle.height ||
+        pixels.size() !=
+            static_cast<std::size_t>(rectangle.width) * rectangle.height) {
+        return;
+    }
+    for (std::uint32_t row = 0; row < rectangle.height; ++row) {
+        std::copy_n(
+            pixels.begin() + static_cast<std::size_t>(row) * rectangle.width,
+            rectangle.width,
+            cpu_frame_.pixels.begin() +
+                static_cast<std::size_t>(
+                    static_cast<std::uint32_t>(rectangle.y) + row) *
+                    descriptor_.width +
+                static_cast<std::uint32_t>(rectangle.x));
+    }
+    cpu_generation_ = ++next_generation_;
+    cpu_damage_ = cpu_damage_ ? union_rectangle(*cpu_damage_, rectangle)
+                              : std::optional<HostRectangle>{rectangle};
+}
+
+std::optional<HostRectangle> HostSurface::cpu_damage() const {
+    std::lock_guard lock{mutex_};
+    return cpu_damage_;
+}
+
 std::uint64_t HostSurface::mark_gpu_write() {
     std::lock_guard lock{mutex_};
     gpu_generation_ = ++next_generation_;
@@ -230,16 +279,22 @@ void HostSurface::mark_cpu_synchronized(std::uint64_t gpu_generation) {
     std::lock_guard lock{mutex_};
     cpu_generation_ = std::max(cpu_generation_, gpu_generation);
     next_generation_ = std::max(next_generation_, cpu_generation_);
+    if (gpu_generation >= cpu_generation_)
+        cpu_damage_.reset();
 }
 
 void HostSurface::mark_gpu_synchronized(std::uint64_t cpu_generation) {
     std::lock_guard lock{mutex_};
     gpu_generation_ = std::max(gpu_generation_, cpu_generation);
     next_generation_ = std::max(next_generation_, gpu_generation_);
+    if (cpu_generation >= cpu_generation_)
+        cpu_damage_.reset();
 }
 
 void HostSurface::mark_cpu_write_locked() {
     cpu_generation_ = ++next_generation_;
+    cpu_damage_ =
+        HostRectangle{0, 0, descriptor_.width, descriptor_.height};
 }
 
 std::shared_ptr<HostSurface>
