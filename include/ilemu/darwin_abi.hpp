@@ -86,6 +86,13 @@ inline constexpr std::uint32_t truncate = 0x0400;
 inline constexpr std::uint32_t exclusive = 0x0800;
 } // namespace open_flag
 
+namespace path_configuration {
+// Darwin 8 sys/unistd.h.  This is the value applications store in termios
+// control-character slots to disable the corresponding function.
+inline constexpr std::uint32_t disabled_control_character = 9;
+inline constexpr std::uint32_t disabled_control_character_value = 0xff;
+} // namespace path_configuration
+
 namespace fcntl_command {
 inline constexpr std::uint32_t get_descriptor_flags = 1;
 inline constexpr std::uint32_t set_descriptor_flags = 2;
@@ -215,11 +222,13 @@ inline constexpr std::uint32_t write = 4;
 inline constexpr std::uint32_t open = 5;
 inline constexpr std::uint32_t close = 6;
 inline constexpr std::uint32_t kill = 37;
+inline constexpr std::uint32_t get_process_group = 81;
 inline constexpr std::uint32_t unlink = 10;
 inline constexpr std::uint32_t change_mode = 15;
 inline constexpr std::uint32_t change_owner = 16;
 inline constexpr std::uint32_t change_flags = 34;
 inline constexpr std::uint32_t change_flags_fd = 35;
+inline constexpr std::uint32_t revoke = 56;
 inline constexpr std::uint32_t change_owner_fd = 123;
 inline constexpr std::uint32_t change_mode_fd = 124;
 inline constexpr std::uint32_t flock = 131;
@@ -252,6 +261,7 @@ inline constexpr std::uint32_t set_effective_group_id = 182;
 inline constexpr std::uint32_t set_effective_user_id = 183;
 inline constexpr std::uint32_t get_resource_limit = 194;
 inline constexpr std::uint32_t set_resource_limit = 195;
+inline constexpr std::uint32_t file_descriptor_path_configuration = 192;
 inline constexpr std::uint32_t get_extended_attribute = 234;
 inline constexpr std::uint32_t get_extended_attribute_fd = 235;
 inline constexpr std::uint32_t set_extended_attribute = 236;

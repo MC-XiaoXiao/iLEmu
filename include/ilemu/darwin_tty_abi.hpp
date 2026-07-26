@@ -81,6 +81,8 @@ inline constexpr std::uint32_t set_attributes_after_drain =
 inline constexpr std::uint32_t set_attributes_after_drain_and_flush =
     sized_command(ioctl_input, 't', 22, arm32_attributes_size);
 inline constexpr std::uint32_t drain_output = void_command('t', 94);
+inline constexpr std::uint32_t set_controlling_terminal =
+    void_command('t', 97);
 
 // AppleIOSerialFamily accepts arbitrary speeds through IOSSIOSPEED instead of
 // encoding every rate in termios. speed_t is 32-bit in the ARM guest ABI.

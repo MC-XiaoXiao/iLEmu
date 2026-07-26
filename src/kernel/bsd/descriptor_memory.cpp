@@ -721,6 +721,36 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
   case darwin::syscall::get_descriptor_table_size:
     bsd_success(cpu, file_descriptor_limit());
     return;
+  case darwin::syscall::file_descriptor_path_configuration: {
+    const auto fd = registers[0];
+    const auto virtual_descriptor = virtual_descriptors_.find(fd);
+    const auto valid =
+        fd <= 2 || file_descriptors_.contains(fd) ||
+        virtual_descriptor != virtual_descriptors_.end() ||
+        duplicated_descriptors_.contains(fd);
+    if (!valid) {
+      bsd_error(cpu, bsd_support::bad_file_descriptor);
+      return;
+    }
+    const auto terminal =
+        fd <= 2 ||
+        (virtual_descriptor != virtual_descriptors_.end() &&
+         (virtual_descriptor->second == "console" ||
+          virtual_descriptor->second ==
+              bsd::baseband_device::descriptor_kind ||
+          virtual_descriptor->second ==
+              bsd::offline_serial_device::descriptor_kind));
+    if (terminal &&
+        registers[1] ==
+            darwin::path_configuration::disabled_control_character) {
+      bsd_success(
+          cpu,
+          darwin::path_configuration::disabled_control_character_value);
+    } else {
+      bsd_error(cpu, bsd_support::invalid_argument);
+    }
+    return;
+  }
   case darwin::syscall::duplicate_to: {
     const auto source = registers[0];
     const auto destination = registers[1];

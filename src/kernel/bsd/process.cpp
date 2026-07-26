@@ -210,6 +210,9 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
   case 47: // getgid
     bsd_success(cpu, process_.gid);
     return;
+  case darwin::syscall::get_process_group:
+    bsd_success(cpu, process_.process_group);
+    return;
   case 46: { // sigaction
     const auto signal = registers[0];
     if (signal == 0 || signal >= signal_actions_.size() || signal == 9 ||

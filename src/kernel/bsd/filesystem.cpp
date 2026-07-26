@@ -494,6 +494,39 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     // backing tree and virtual mount table, so there is nothing deferred.
     bsd_success(cpu, 0);
     return;
+  case darwin::syscall::revoke: {
+    const auto path = memory_.read_c_string(registers[0]);
+    if (!path) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
+    const auto host = resolve_guest_path(*path);
+    std::error_code error;
+    const auto status = std::filesystem::status(host, error);
+    const auto virtual_console = *path == "/dev/console";
+    if (error && !virtual_console) {
+      bsd_error(cpu, bsd_support::darwin_filesystem_error(error));
+      return;
+    }
+    if (!virtual_console && !std::filesystem::is_character_file(status) &&
+        !std::filesystem::is_block_file(status)) {
+      bsd_error(cpu, darwin::error::invalid_argument);
+      return;
+    }
+    if (process_.effective_uid != 0) {
+      const auto metadata = query_hfs_metadata(host, true);
+      if (!metadata || metadata->owner != process_.effective_uid) {
+        bsd_error(cpu, darwin::error::operation_not_permitted);
+        return;
+      }
+    }
+    // Device endpoints are guest-owned objects rather than host descriptors.
+    // A subsequent open therefore receives fresh endpoint state without
+    // asking the host kernel to revoke an unrelated device node.
+    output_.write("[vfs] revoke " + *path + "\n");
+    bsd_success(cpu, 0);
+    return;
+  }
   case 57: { // symlink
     const auto target = memory_.read_c_string(registers[0]);
     const auto link_path = memory_.read_c_string(registers[1]);

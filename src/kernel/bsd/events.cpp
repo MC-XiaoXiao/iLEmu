@@ -115,8 +115,17 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
     if (ioctl_kernel_control_socket(cpu))
       return;
     const auto tty_descriptor =
+        device->second == "console" ||
         device->second == bsd::baseband_device::descriptor_kind ||
         device->second == bsd::offline_serial_device::descriptor_kind;
+    if (tty_descriptor &&
+        registers[1] == darwin::tty::set_controlling_terminal) {
+      output_.write("[tty] controlling-terminal pid=" +
+                    std::to_string(process_.pid) + " fd=" +
+                    std::to_string(fd) + "\n");
+      bsd_success(cpu, 0);
+      return;
+    }
     if (tty_descriptor &&
         registers[1] == darwin::tty::set_arbitrary_speed) {
       const auto speed = memory_.read32(registers[2]);

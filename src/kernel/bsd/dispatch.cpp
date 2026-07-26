@@ -48,6 +48,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case 55:
   case 60:
   case 59:
+  case darwin::syscall::get_process_group:
   case 244: // posix_spawn (xnu-1228 / iPhone OS user ABI)
   case 96:
   case 116:
@@ -84,6 +85,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case darwin::syscall::flock:
   case darwin::syscall::synchronize_file:
   case 36:
+  case darwin::syscall::revoke:
   case 57:
   case 58:
   case 128:
@@ -122,6 +124,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case darwin::syscall::get_descriptor_table_size:
   case darwin::syscall::duplicate_to:
   case darwin::syscall::fcntl:
+  case darwin::syscall::file_descriptor_path_configuration:
   case darwin::syscall::memory_protect:
   case 197:
   case 266:
