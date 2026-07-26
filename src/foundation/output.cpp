@@ -10,7 +10,7 @@ bool concise_prefix(std::string_view text) {
     constexpr std::string_view prefixes[]{
         "[control]", "[device-state]", "[loader]", "[clock]",
         "[process]", "[display]", "[baseband]", "[watch]", "[gles]",
-        "[perf]", "[boot]", "[benchmark]",
+        "[perf]", "[perf-display]", "[boot]", "[benchmark]",
     };
     for (const auto prefix : prefixes) {
         if (text.starts_with(prefix)) return true;
@@ -42,7 +42,11 @@ void Output::line(std::string_view text) {
     std::lock_guard lock{mutex_};
     stream_->write(text.data(), static_cast<std::streamsize>(text.size()));
     stream_->put('\n');
-    if (flush_each_write_) stream_->flush();
+    // Interactive performance windows end outside the measured interval, so
+    // flushing their one-line result cannot perturb the sample and lets a
+    // controller evaluate it before starting the next window.
+    if (flush_each_write_ || text.starts_with("[perf-display]"))
+        stream_->flush();
 }
 
 bool Output::should_emit(std::string_view text) const {

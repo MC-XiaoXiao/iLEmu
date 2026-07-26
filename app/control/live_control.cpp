@@ -174,6 +174,23 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line) {
     return {simple_command(LiveControlCommandKind::Status)};
   if (operation == "help")
     return {simple_command(LiveControlCommandKind::Help)};
+  if (operation == "perf-begin") {
+    std::string label;
+    std::string trailing;
+    if (!(parser >> label) || (parser >> trailing)) {
+      return {error_command("perf-begin requires exactly one label")};
+    }
+    LiveControlCommand command;
+    command.kind = LiveControlCommandKind::PerfBegin;
+    command.message = std::move(label);
+    return {std::move(command)};
+  }
+  if (operation == "perf-end") {
+    std::string trailing;
+    if (parser >> trailing)
+      return {error_command("perf-end does not accept arguments")};
+    return {simple_command(LiveControlCommandKind::PerfEnd)};
+  }
   if (operation == "wake") {
     std::string trailing;
     if (parser >> trailing)

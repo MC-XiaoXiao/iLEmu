@@ -1604,6 +1604,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::vector<std::pair<std::chrono::steady_clock::time_point,
                         std::filesystem::path>>
       scheduled_snapshots;
+  std::optional<std::string> display_performance_window;
   if (!bounded_execution) {
     realtime_pacer.emplace(initial_runtime->kernel->current_absolute_time());
     const auto host_wall_time =
@@ -1730,6 +1731,41 @@ void boot(const std::vector<std::string> &args, Output &output) {
               " count=" + std::to_string(command.snapshot_count));
           break;
         }
+        case LiveControlCommandKind::PerfBegin:
+          if (!performance_counters().enabled()) {
+            output.line(
+                "[control] error: perf-begin requires --perf-summary");
+          } else if (display_performance_window) {
+            output.line("[control] error: perf window already active label=" +
+                        *display_performance_window);
+          } else {
+            if (sdl_display)
+              sdl_display->flush_presentation();
+            if (!performance_counters().begin_display_window()) {
+              output.line("[control] error: perf window could not begin");
+            } else {
+              display_performance_window = command.message;
+              output.line("[control] perf-begin label=" + command.message);
+            }
+          }
+          break;
+        case LiveControlCommandKind::PerfEnd:
+          if (!display_performance_window) {
+            output.line("[control] error: no active perf window");
+          } else {
+            if (sdl_display)
+              sdl_display->flush_presentation();
+            const auto snapshot =
+                performance_counters().end_display_window();
+            if (snapshot) {
+              output.line(format_display_performance_summary(
+                  *snapshot, *display_performance_window));
+            } else {
+              output.line("[control] error: perf window could not end");
+            }
+            display_performance_window.reset();
+          }
+          break;
         case LiveControlCommandKind::Status: {
           const auto frame = initial_runtime->kernel->display_snapshot();
           const auto active_process =
@@ -1752,6 +1788,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                       "wake; lock; volume-up; volume-down; snapshot PATH; "
                       "ringer ring|silent; "
                       "snapshot-sequence PATH-PREFIX INTERVAL-MS COUNT; "
+                      "perf-begin LABEL; perf-end; "
                       "status; quit");
           break;
         case LiveControlCommandKind::Quit:
@@ -2373,6 +2410,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 " bytes=" + std::to_string(captured.size()));
   }
   const auto report_performance = flag(args, "--perf-summary");
+  if (sdl_display)
+    sdl_display->flush_presentation();
   const auto stopped_guest = report_performance
                                  ? performance_counters().snapshot()
                                  : PerformanceSnapshot{};
