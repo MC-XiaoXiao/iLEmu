@@ -1,6 +1,7 @@
 #include "ilemu/performance.hpp"
 
 #include <algorithm>
+#include <iomanip>
 #include <limits>
 #include <sstream>
 
@@ -16,6 +17,10 @@ void add_if_enabled(std::atomic<std::uint64_t>& counter,
 }
 
 constexpr std::uint64_t ten_milliseconds = 10'000'000;
+constexpr std::uint64_t one_sixtieth_second = 16'666'667;
+constexpr std::uint64_t twenty_milliseconds = 20'000'000;
+constexpr std::uint64_t one_thirtieth_second = 33'333'334;
+constexpr std::uint64_t fifty_milliseconds = 50'000'000;
 constexpr std::uint64_t one_hundred_milliseconds = 100'000'000;
 constexpr std::uint64_t one_second = 1'000'000'000;
 constexpr std::uint64_t ten_seconds = 10'000'000'000;
@@ -54,10 +59,60 @@ std::uint64_t latency_bucket_upper_bound(std::size_t bucket,
     return maximum;
 }
 
+std::uint64_t steady_nanoseconds(
+    std::chrono::steady_clock::time_point timestamp) {
+    if (timestamp == std::chrono::steady_clock::time_point{})
+        return 0;
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            timestamp.time_since_epoch())
+            .count());
+}
+
+void record_timestamp_span(std::atomic<std::uint64_t>& samples,
+                           std::atomic<std::uint64_t>& first,
+                           std::atomic<std::uint64_t>& last,
+                           std::uint64_t timestamp) {
+    samples.fetch_add(1, std::memory_order_relaxed);
+    auto unset = std::uint64_t{};
+    static_cast<void>(first.compare_exchange_strong(
+        unset, timestamp, std::memory_order_relaxed,
+        std::memory_order_relaxed));
+    last.store(timestamp, std::memory_order_relaxed);
+}
+
+double frames_per_second(std::uint64_t frames, std::uint64_t first,
+                         std::uint64_t last) {
+    if (frames < 2 || last <= first)
+        return 0.0;
+    return static_cast<double>(frames - 1U) * 1'000'000'000.0 /
+           static_cast<double>(last - first);
+}
+
+bool is_display_window_latency(PerfLatencyKind kind) {
+    switch (kind) {
+    case PerfLatencyKind::DisplayMailbox:
+    case PerfLatencyKind::NativeMailbox:
+    case PerfLatencyKind::Acquire:
+    case PerfLatencyKind::QueuePresent:
+    case PerfLatencyKind::PresentReturn:
+    case PerfLatencyKind::PresentInterval:
+        return true;
+    case PerfLatencyKind::InputEnqueue:
+    case PerfLatencyKind::DisplayPresent:
+    case PerfLatencyKind::JitColdPath:
+    case PerfLatencyKind::RuntimeDestructor:
+    case PerfLatencyKind::Count:
+        return false;
+    }
+    return false;
+}
+
 } // namespace
 
 void PerformanceCounters::reset(bool enabled) {
     enabled_.store(false, std::memory_order_relaxed);
+    display_window_active_.store(false, std::memory_order_release);
     jit_instances_.store(0, std::memory_order_relaxed);
     jit_live_instances_.store(0, std::memory_order_relaxed);
     jit_live_peak_instances_.store(0, std::memory_order_relaxed);
@@ -78,7 +133,18 @@ void PerformanceCounters::reset(bool enabled) {
     readback_bytes_.store(0, std::memory_order_relaxed);
     host_fills_.store(0, std::memory_order_relaxed);
     host_copies_.store(0, std::memory_order_relaxed);
+    display_submissions_.store(0, std::memory_order_relaxed);
+    display_first_nanoseconds_.store(0, std::memory_order_relaxed);
+    display_last_nanoseconds_.store(0, std::memory_order_relaxed);
+    display_mailbox_coalesced_.store(0, std::memory_order_relaxed);
+    native_present_attempts_.store(0, std::memory_order_relaxed);
+    native_present_mailbox_coalesced_.store(0,
+                                            std::memory_order_relaxed);
+    native_present_skipped_.store(0, std::memory_order_relaxed);
+    native_present_failures_.store(0, std::memory_order_relaxed);
     native_presents_.store(0, std::memory_order_relaxed);
+    present_first_nanoseconds_.store(0, std::memory_order_relaxed);
+    present_last_nanoseconds_.store(0, std::memory_order_relaxed);
     cpu_present_fallbacks_.store(0, std::memory_order_relaxed);
     cpu_map_reads_.store(0, std::memory_order_relaxed);
     cpu_map_writes_.store(0, std::memory_order_relaxed);
@@ -100,7 +166,10 @@ void PerformanceCounters::reset(bool enabled) {
             bucket.store(0, std::memory_order_relaxed);
         histogram.samples.store(0, std::memory_order_relaxed);
         histogram.maximum_nanoseconds.store(0, std::memory_order_relaxed);
+        histogram.over_16_7ms.store(0, std::memory_order_relaxed);
         histogram.over_20ms.store(0, std::memory_order_relaxed);
+        histogram.over_33_3ms.store(0, std::memory_order_relaxed);
+        histogram.over_50ms.store(0, std::memory_order_relaxed);
     }
     {
         std::lock_guard lock{jit_cache_slots_mutex_};
@@ -110,7 +179,69 @@ void PerformanceCounters::reset(bool enabled) {
         std::lock_guard lock{hle_mutex_};
         hle_subsystems_.clear();
     }
+    {
+        std::lock_guard lock{display_window_mutex_};
+        reset_display_window_locked();
+    }
     enabled_.store(enabled, std::memory_order_release);
+}
+
+void PerformanceCounters::reset_display_window_locked() {
+    display_window_snapshot_ = PerformanceSnapshot{};
+    for (auto& histogram : display_window_latencies_)
+        histogram = DisplayWindowLatencyHistogram{};
+}
+
+bool PerformanceCounters::begin_display_window() {
+    if (!enabled())
+        return false;
+    std::lock_guard lock{display_window_mutex_};
+    if (display_window_active_.load(std::memory_order_relaxed))
+        return false;
+    reset_display_window_locked();
+    display_window_active_.store(true, std::memory_order_release);
+    return true;
+}
+
+std::optional<PerformanceSnapshot>
+PerformanceCounters::end_display_window() {
+    std::lock_guard lock{display_window_mutex_};
+    if (!display_window_active_.load(std::memory_order_relaxed))
+        return std::nullopt;
+    display_window_active_.store(false, std::memory_order_release);
+
+    auto result = display_window_snapshot_;
+    for (std::size_t index = 0; index < display_window_latencies_.size();
+         ++index) {
+        const auto& histogram = display_window_latencies_[index];
+        auto& latency = result.latencies[index];
+        latency.samples = histogram.samples;
+        latency.maximum_nanoseconds = histogram.maximum_nanoseconds;
+        latency.over_16_7ms = histogram.over_16_7ms;
+        latency.over_20ms = histogram.over_20ms;
+        latency.over_33_3ms = histogram.over_33_3ms;
+        latency.over_50ms = histogram.over_50ms;
+        if (latency.samples == 0)
+            continue;
+        const auto percentile = [&](std::uint64_t numerator) {
+            const auto rank =
+                (latency.samples * numerator + 99U) / 100U;
+            std::uint64_t cumulative{};
+            for (std::size_t bucket = 0;
+                 bucket < histogram.buckets.size(); ++bucket) {
+                cumulative += histogram.buckets[bucket];
+                if (cumulative >= rank) {
+                    return latency_bucket_upper_bound(
+                        bucket, latency.maximum_nanoseconds);
+                }
+            }
+            return latency.maximum_nanoseconds;
+        };
+        latency.p50_nanoseconds = percentile(50);
+        latency.p95_nanoseconds = percentile(95);
+        latency.p99_nanoseconds = percentile(99);
+    }
+    return result;
 }
 
 void PerformanceCounters::record_jit(std::uint64_t creation_nanoseconds) {
@@ -242,12 +373,139 @@ void PerformanceCounters::record_host_copy() {
     add_if_enabled(host_copies_, enabled_);
 }
 
-void PerformanceCounters::record_native_present() {
-    add_if_enabled(native_presents_, enabled_);
+void PerformanceCounters::record_display_submission(
+    std::chrono::steady_clock::time_point submitted_at) {
+    if (!enabled())
+        return;
+    const auto timestamp = steady_nanoseconds(submitted_at);
+    if (timestamp == 0)
+        return;
+    record_timestamp_span(display_submissions_, display_first_nanoseconds_,
+                          display_last_nanoseconds_, timestamp);
+    if (!display_window_active_.load(std::memory_order_acquire))
+        return;
+    std::lock_guard lock{display_window_mutex_};
+    if (!display_window_active_.load(std::memory_order_relaxed))
+        return;
+    auto& window = display_window_snapshot_;
+    ++window.display_submissions;
+    if (window.display_first_nanoseconds == 0)
+        window.display_first_nanoseconds = timestamp;
+    window.display_last_nanoseconds = timestamp;
 }
 
-void PerformanceCounters::record_cpu_present_fallback() {
-    add_if_enabled(cpu_present_fallbacks_, enabled_);
+void PerformanceCounters::add_display_window_counter(
+    std::uint64_t PerformanceSnapshot::*counter, std::uint64_t value) {
+    if (!display_window_active_.load(std::memory_order_acquire))
+        return;
+    std::lock_guard lock{display_window_mutex_};
+    if (!display_window_active_.load(std::memory_order_relaxed))
+        return;
+    display_window_snapshot_.*counter += value;
+}
+
+void PerformanceCounters::record_display_mailbox_coalesced() {
+    if (!enabled())
+        return;
+    display_mailbox_coalesced_.fetch_add(1, std::memory_order_relaxed);
+    add_display_window_counter(
+        &PerformanceSnapshot::display_mailbox_coalesced);
+}
+
+void PerformanceCounters::record_native_present_attempt() {
+    if (!enabled())
+        return;
+    native_present_attempts_.fetch_add(1, std::memory_order_relaxed);
+    add_display_window_counter(&PerformanceSnapshot::native_present_attempts);
+}
+
+void PerformanceCounters::record_native_present_mailbox_coalesced() {
+    if (!enabled())
+        return;
+    native_present_mailbox_coalesced_.fetch_add(
+        1, std::memory_order_relaxed);
+    add_display_window_counter(
+        &PerformanceSnapshot::native_present_mailbox_coalesced);
+}
+
+void PerformanceCounters::record_native_present_skipped() {
+    if (!enabled())
+        return;
+    native_present_skipped_.fetch_add(1, std::memory_order_relaxed);
+    add_display_window_counter(&PerformanceSnapshot::native_present_skipped);
+}
+
+void PerformanceCounters::record_native_present_failure() {
+    if (!enabled())
+        return;
+    native_present_failures_.fetch_add(1, std::memory_order_relaxed);
+    add_display_window_counter(&PerformanceSnapshot::native_present_failures);
+}
+
+void PerformanceCounters::record_present_completion(
+    bool native,
+    std::chrono::steady_clock::time_point submitted_at) {
+    if (!enabled())
+        return;
+    std::lock_guard timeline_lock{present_timeline_mutex_};
+    const auto returned_at = std::chrono::steady_clock::now();
+    const auto returned_nanoseconds = steady_nanoseconds(returned_at);
+    auto& global_count =
+        native ? native_presents_ : cpu_present_fallbacks_;
+    global_count.fetch_add(1, std::memory_order_relaxed);
+    if (present_first_nanoseconds_.load(std::memory_order_relaxed) == 0) {
+        present_first_nanoseconds_.store(returned_nanoseconds,
+                                         std::memory_order_relaxed);
+    }
+    const auto previous =
+        present_last_nanoseconds_.load(std::memory_order_relaxed);
+    present_last_nanoseconds_.store(returned_nanoseconds,
+                                    std::memory_order_relaxed);
+    if (previous != 0)
+        record_global_latency(PerfLatencyKind::PresentInterval,
+                              returned_nanoseconds - previous);
+    const auto submitted_nanoseconds = steady_nanoseconds(submitted_at);
+    if (submitted_nanoseconds != 0 &&
+        returned_nanoseconds > submitted_nanoseconds) {
+        record_global_latency(PerfLatencyKind::PresentReturn,
+                              returned_nanoseconds - submitted_nanoseconds);
+    }
+
+    if (!display_window_active_.load(std::memory_order_acquire))
+        return;
+    std::lock_guard window_lock{display_window_mutex_};
+    if (!display_window_active_.load(std::memory_order_relaxed))
+        return;
+    auto& window = display_window_snapshot_;
+    if (native)
+        ++window.native_presents;
+    else
+        ++window.cpu_present_fallbacks;
+    if (window.present_first_nanoseconds == 0)
+        window.present_first_nanoseconds = returned_nanoseconds;
+    const auto window_previous = window.present_last_nanoseconds;
+    window.present_last_nanoseconds = returned_nanoseconds;
+    if (window_previous != 0) {
+        record_display_window_latency_locked(
+            PerfLatencyKind::PresentInterval,
+            returned_nanoseconds - window_previous);
+    }
+    if (submitted_nanoseconds != 0 &&
+        returned_nanoseconds > submitted_nanoseconds) {
+        record_display_window_latency_locked(
+            PerfLatencyKind::PresentReturn,
+            returned_nanoseconds - submitted_nanoseconds);
+    }
+}
+
+void PerformanceCounters::record_native_present(
+    std::chrono::steady_clock::time_point submitted_at) {
+    record_present_completion(true, submitted_at);
+}
+
+void PerformanceCounters::record_cpu_present_fallback(
+    std::chrono::steady_clock::time_point submitted_at) {
+    record_present_completion(false, submitted_at);
 }
 
 void PerformanceCounters::record_cpu_map(bool write,
@@ -297,17 +555,23 @@ void PerformanceCounters::record_fallback(PerfFallbackReason reason) {
     fallback_reasons_[index].fetch_add(1, std::memory_order_relaxed);
 }
 
-void PerformanceCounters::record_latency(PerfLatencyKind kind,
-                                         std::uint64_t nanoseconds) {
+void PerformanceCounters::record_global_latency(PerfLatencyKind kind,
+                                                std::uint64_t nanoseconds) {
     const auto index = static_cast<std::size_t>(kind);
-    if (!enabled() || index >= latencies_.size())
+    if (index >= latencies_.size())
         return;
     auto& histogram = latencies_[index];
     histogram.buckets[latency_bucket(nanoseconds)].fetch_add(
         1, std::memory_order_relaxed);
     histogram.samples.fetch_add(1, std::memory_order_relaxed);
-    if (nanoseconds > 20'000'000U)
+    if (nanoseconds > one_sixtieth_second)
+        histogram.over_16_7ms.fetch_add(1, std::memory_order_relaxed);
+    if (nanoseconds > twenty_milliseconds)
         histogram.over_20ms.fetch_add(1, std::memory_order_relaxed);
+    if (nanoseconds > one_thirtieth_second)
+        histogram.over_33_3ms.fetch_add(1, std::memory_order_relaxed);
+    if (nanoseconds > fifty_milliseconds)
+        histogram.over_50ms.fetch_add(1, std::memory_order_relaxed);
     auto maximum =
         histogram.maximum_nanoseconds.load(std::memory_order_relaxed);
     while (nanoseconds > maximum &&
@@ -315,6 +579,49 @@ void PerformanceCounters::record_latency(PerfLatencyKind kind,
                maximum, nanoseconds, std::memory_order_relaxed,
                std::memory_order_relaxed)) {
     }
+}
+
+void PerformanceCounters::record_display_window_latency_locked(
+    PerfLatencyKind kind, std::uint64_t nanoseconds) {
+    const auto index = static_cast<std::size_t>(kind);
+    if (!is_display_window_latency(kind) ||
+        index >= display_window_latencies_.size()) {
+        return;
+    }
+    auto& histogram = display_window_latencies_[index];
+    ++histogram.buckets[latency_bucket(nanoseconds)];
+    ++histogram.samples;
+    if (nanoseconds > one_sixtieth_second)
+        ++histogram.over_16_7ms;
+    if (nanoseconds > twenty_milliseconds)
+        ++histogram.over_20ms;
+    if (nanoseconds > one_thirtieth_second)
+        ++histogram.over_33_3ms;
+    if (nanoseconds > fifty_milliseconds)
+        ++histogram.over_50ms;
+    histogram.maximum_nanoseconds =
+        std::max(histogram.maximum_nanoseconds, nanoseconds);
+}
+
+void PerformanceCounters::record_display_window_latency(
+    PerfLatencyKind kind, std::uint64_t nanoseconds) {
+    if (!is_display_window_latency(kind) ||
+        !display_window_active_.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::lock_guard lock{display_window_mutex_};
+    if (!display_window_active_.load(std::memory_order_relaxed))
+        return;
+    record_display_window_latency_locked(kind, nanoseconds);
+}
+
+void PerformanceCounters::record_latency(PerfLatencyKind kind,
+                                         std::uint64_t nanoseconds) {
+    const auto index = static_cast<std::size_t>(kind);
+    if (!enabled() || index >= latencies_.size())
+        return;
+    record_global_latency(kind, nanoseconds);
+    record_display_window_latency(kind, nanoseconds);
 }
 
 PerformanceSnapshot PerformanceCounters::snapshot() const {
@@ -346,8 +653,28 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
     result.readback_bytes = readback_bytes_.load(std::memory_order_relaxed);
     result.host_fills = host_fills_.load(std::memory_order_relaxed);
     result.host_copies = host_copies_.load(std::memory_order_relaxed);
+    result.display_submissions =
+        display_submissions_.load(std::memory_order_relaxed);
+    result.display_first_nanoseconds =
+        display_first_nanoseconds_.load(std::memory_order_relaxed);
+    result.display_last_nanoseconds =
+        display_last_nanoseconds_.load(std::memory_order_relaxed);
+    result.display_mailbox_coalesced =
+        display_mailbox_coalesced_.load(std::memory_order_relaxed);
+    result.native_present_attempts =
+        native_present_attempts_.load(std::memory_order_relaxed);
+    result.native_present_mailbox_coalesced =
+        native_present_mailbox_coalesced_.load(std::memory_order_relaxed);
+    result.native_present_skipped =
+        native_present_skipped_.load(std::memory_order_relaxed);
+    result.native_present_failures =
+        native_present_failures_.load(std::memory_order_relaxed);
     result.native_presents =
         native_presents_.load(std::memory_order_relaxed);
+    result.present_first_nanoseconds =
+        present_first_nanoseconds_.load(std::memory_order_relaxed);
+    result.present_last_nanoseconds =
+        present_last_nanoseconds_.load(std::memory_order_relaxed);
     result.cpu_present_fallbacks =
         cpu_present_fallbacks_.load(std::memory_order_relaxed);
     result.cpu_map_reads = cpu_map_reads_.load(std::memory_order_relaxed);
@@ -380,8 +707,14 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
             histogram.samples.load(std::memory_order_relaxed);
         latency.maximum_nanoseconds =
             histogram.maximum_nanoseconds.load(std::memory_order_relaxed);
+        latency.over_16_7ms =
+            histogram.over_16_7ms.load(std::memory_order_relaxed);
         latency.over_20ms =
             histogram.over_20ms.load(std::memory_order_relaxed);
+        latency.over_33_3ms =
+            histogram.over_33_3ms.load(std::memory_order_relaxed);
+        latency.over_50ms =
+            histogram.over_50ms.load(std::memory_order_relaxed);
         if (latency.samples == 0)
             continue;
         const auto percentile = [&](std::uint64_t numerator) {
@@ -491,8 +824,12 @@ std::string_view perf_latency_kind_name(PerfLatencyKind kind) {
     switch (kind) {
     case PerfLatencyKind::InputEnqueue: return "input-enqueue";
     case PerfLatencyKind::DisplayPresent: return "display-present";
+    case PerfLatencyKind::DisplayMailbox: return "display-mailbox";
+    case PerfLatencyKind::NativeMailbox: return "native-mailbox";
     case PerfLatencyKind::Acquire: return "acquire";
     case PerfLatencyKind::QueuePresent: return "queue-present";
+    case PerfLatencyKind::PresentReturn: return "present-return";
+    case PerfLatencyKind::PresentInterval: return "present-interval";
     case PerfLatencyKind::JitColdPath: return "jit-cold-path";
     case PerfLatencyKind::RuntimeDestructor: return "runtime-destructor";
     case PerfLatencyKind::Count: break;
@@ -528,6 +865,13 @@ std::string format_performance_summary(
          << " readback-bytes=" << snapshot.readback_bytes
          << " host-fill=" << snapshot.host_fills
          << " host-copy=" << snapshot.host_copies
+         << " display-submit=" << snapshot.display_submissions
+         << " display-coalesced=" << snapshot.display_mailbox_coalesced
+         << " native-attempt=" << snapshot.native_present_attempts
+         << " native-coalesced="
+         << snapshot.native_present_mailbox_coalesced
+         << " native-skipped=" << snapshot.native_present_skipped
+         << " native-failed=" << snapshot.native_present_failures
          << " native-present=" << snapshot.native_presents
          << " cpu-present-fallback=" << snapshot.cpu_present_fallbacks
          << " cpu-map-read=" << snapshot.cpu_map_reads
@@ -584,7 +928,8 @@ std::string format_performance_summary(
     }
     if (first)
         text << "none";
-    text << " latency-ns=";
+    text << " latency-format=samples/p50/p95/p99/max/>16.7/>20/>33.3/>50"
+         << " latency-ns=";
     first = true;
     for (std::size_t index = 0; index < snapshot.latencies.size(); ++index) {
         const auto& latency = snapshot.latencies[index];
@@ -596,7 +941,9 @@ std::string format_performance_summary(
              << ':' << latency.samples << '/' << latency.p50_nanoseconds
              << '/' << latency.p95_nanoseconds << '/'
              << latency.p99_nanoseconds << '/'
-             << latency.maximum_nanoseconds << '/' << latency.over_20ms;
+             << latency.maximum_nanoseconds << '/'
+             << latency.over_16_7ms << '/' << latency.over_20ms << '/'
+             << latency.over_33_3ms << '/' << latency.over_50ms;
     }
     text << " jit-cache-slots=";
     first = true;
@@ -620,6 +967,58 @@ std::string format_performance_summary(
     }
     if (first)
         text << "none";
+    return text.str();
+}
+
+std::string format_display_performance_summary(
+    const PerformanceSnapshot& snapshot, std::string_view label) {
+    const auto present_returns =
+        snapshot.native_presents + snapshot.cpu_present_fallbacks;
+    std::ostringstream text;
+    text << std::fixed << std::setprecision(2)
+         << "[perf-display] label=" << label
+         << " guest-submit=" << snapshot.display_submissions
+         << " guest-fps="
+         << frames_per_second(snapshot.display_submissions,
+                              snapshot.display_first_nanoseconds,
+                              snapshot.display_last_nanoseconds)
+         << " display-coalesced=" << snapshot.display_mailbox_coalesced
+         << " native-attempt=" << snapshot.native_present_attempts
+         << " native-coalesced="
+         << snapshot.native_present_mailbox_coalesced
+         << " native-queued=" << snapshot.native_presents
+         << " native-skipped=" << snapshot.native_present_skipped
+         << " native-failed=" << snapshot.native_present_failures
+         << " cpu-present=" << snapshot.cpu_present_fallbacks
+         << " present-return=" << present_returns
+         << " present-return-fps="
+         << frames_per_second(present_returns,
+                              snapshot.present_first_nanoseconds,
+                              snapshot.present_last_nanoseconds)
+         << " latency-format=samples/p50/p95/p99/max/>16.7/>20/>33.3/>50"
+         << " latency-ns=";
+    constexpr std::array display_latencies{
+        PerfLatencyKind::DisplayMailbox,
+        PerfLatencyKind::NativeMailbox,
+        PerfLatencyKind::Acquire,
+        PerfLatencyKind::QueuePresent,
+        PerfLatencyKind::PresentReturn,
+        PerfLatencyKind::PresentInterval,
+    };
+    bool first = true;
+    for (const auto kind : display_latencies) {
+        if (!first)
+            text << ',';
+        first = false;
+        const auto& latency =
+            snapshot.latencies[static_cast<std::size_t>(kind)];
+        text << perf_latency_kind_name(kind) << ':' << latency.samples << '/'
+             << latency.p50_nanoseconds << '/' << latency.p95_nanoseconds
+             << '/' << latency.p99_nanoseconds << '/'
+             << latency.maximum_nanoseconds << '/'
+             << latency.over_16_7ms << '/' << latency.over_20ms << '/'
+             << latency.over_33_3ms << '/' << latency.over_50ms;
+    }
     return text.str();
 }
 

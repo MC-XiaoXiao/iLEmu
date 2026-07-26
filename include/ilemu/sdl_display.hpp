@@ -27,6 +27,7 @@ public:
   vulkan_presenter_configuration() const;
   void set_host_graphics(std::shared_ptr<HostGraphicsDevice> graphics);
   void present(const DisplayFrame &frame);
+  void flush_presentation();
   // Returns false after the user closes the window.
   [[nodiscard]] bool poll_events();
   [[nodiscard]] std::vector<TouchInput> take_touch_events();

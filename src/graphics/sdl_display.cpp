@@ -89,6 +89,7 @@ struct SdlDisplay::Impl {
 #endif
   std::mutex frame_mutex;
   std::condition_variable presentation_available;
+  std::condition_variable presentation_idle;
   std::optional<DisplayFrame> pending_frame;
   std::optional<DisplayFrame> pending_native_frame;
   std::optional<DisplayFrame> failed_native_frame;
@@ -96,6 +97,7 @@ struct SdlDisplay::Impl {
   std::shared_ptr<HostSurface> cpu_present_surface;
   std::thread presentation_thread;
   bool presentation_stopping{};
+  bool presentation_active{};
   SdlInput input;
   bool running{true};
 
@@ -152,16 +154,39 @@ struct SdlDisplay::Impl {
           return;
         auto frame = std::move(*pending_native_frame);
         pending_native_frame.reset();
+        presentation_active = true;
         auto graphics = host_graphics;
         lock.unlock();
+        auto &performance = performance_counters();
+        const auto telemetry_enabled = performance.enabled();
+        if (telemetry_enabled && frame.native_queued_at !=
+            std::chrono::steady_clock::time_point{}) {
+          const auto residence = std::chrono::steady_clock::now() -
+                                 frame.native_queued_at;
+          performance.record_latency(
+              PerfLatencyKind::NativeMailbox,
+              static_cast<std::uint64_t>(
+                  std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      residence)
+                      .count()));
+        }
+        if (telemetry_enabled)
+          performance.record_native_present_attempt();
         const auto result = graphics && frame.host_surface
                                 ? graphics->present(frame.host_surface)
                                 : HostGraphicsDevice::PresentResult::Failed;
-        if (result == HostGraphicsDevice::PresentResult::Queued)
-          performance_counters().record_native_present();
+        if (result == HostGraphicsDevice::PresentResult::Queued) {
+          performance.record_native_present(frame.submitted_at);
+        } else if (result == HostGraphicsDevice::PresentResult::Skipped) {
+          performance.record_native_present_skipped();
+        } else {
+          performance.record_native_present_failure();
+        }
         lock.lock();
+        presentation_active = false;
         if (result == HostGraphicsDevice::PresentResult::Failed)
           failed_native_frame = std::move(frame);
+        presentation_idle.notify_all();
       }
     });
   }
@@ -170,6 +195,8 @@ struct SdlDisplay::Impl {
     {
       std::lock_guard lock{frame_mutex};
       presentation_stopping = true;
+      if (pending_native_frame)
+        performance_counters().record_native_present_mailbox_coalesced();
       pending_native_frame.reset();
     }
     presentation_available.notify_all();
@@ -178,7 +205,17 @@ struct SdlDisplay::Impl {
     {
       std::lock_guard lock{frame_mutex};
       presentation_stopping = false;
+      presentation_active = false;
     }
+  }
+
+  void flush_native_presenter() {
+    std::unique_lock lock{frame_mutex};
+    if (!presentation_thread.joinable())
+      return;
+    presentation_idle.wait(lock, [this] {
+      return !pending_native_frame && !presentation_active;
+    });
   }
 };
 
@@ -321,9 +358,28 @@ void SdlDisplay::present(const DisplayFrame &frame) {
     return;
   }
   std::lock_guard lock{impl_->frame_mutex};
+  if (impl_->pending_frame)
+    performance_counters().record_display_mailbox_coalesced();
   impl_->pending_frame = frame;
 #else
   static_cast<void>(frame);
+#endif
+}
+
+void SdlDisplay::flush_presentation() {
+#if defined(ILEMU_HAS_SDL2)
+  // A native failure is converted to the software path by poll_events(), so a
+  // complete boundary has to alternate the main-thread pump with the native
+  // worker until every stage is empty.
+  while (true) {
+    static_cast<void>(poll_events());
+    impl_->flush_native_presenter();
+    std::lock_guard lock{impl_->frame_mutex};
+    if (!impl_->pending_frame && !impl_->pending_native_frame &&
+        !impl_->failed_native_frame && !impl_->presentation_active) {
+      break;
+    }
+  }
 #endif
 }
 
@@ -350,12 +406,30 @@ bool SdlDisplay::poll_events() {
     }
   }
   if (frame) {
+    auto &performance = performance_counters();
+    const auto telemetry_enabled = performance.enabled();
+    if (telemetry_enabled && frame->submitted_at !=
+        std::chrono::steady_clock::time_point{}) {
+      const auto residence = std::chrono::steady_clock::now() -
+                             frame->submitted_at;
+      performance.record_latency(
+          PerfLatencyKind::DisplayMailbox,
+          static_cast<std::uint64_t>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(residence)
+                  .count()));
+    }
     if (!native_failed)
       static_cast<void>(impl_->stage_cpu_frame_for_native_present(*frame));
     if (!native_failed && frame->host_surface && impl_->host_graphics &&
         impl_->host_graphics->native_presentation_available()) {
       {
         std::lock_guard lock{impl_->frame_mutex};
+        if (impl_->pending_native_frame) {
+          performance_counters()
+              .record_native_present_mailbox_coalesced();
+        }
+        if (telemetry_enabled)
+          frame->native_queued_at = std::chrono::steady_clock::now();
         impl_->pending_native_frame = std::move(*frame);
       }
       impl_->presentation_available.notify_one();
@@ -374,7 +448,6 @@ bool SdlDisplay::poll_events() {
     if (frame->pixels.size() != expected && frame->read_pixels)
       frame->pixels = frame->read_pixels();
     if (frame->pixels.size() == expected) {
-      performance_counters().record_cpu_present_fallback();
       impl_->ensure_cpu_presenter();
       if (SDL_UpdateTexture(
               impl_->texture, nullptr, frame->pixels.data(),
@@ -385,6 +458,8 @@ bool SdlDisplay::poll_events() {
       SDL_RenderClear(impl_->renderer);
       SDL_RenderCopy(impl_->renderer, impl_->texture, nullptr, nullptr);
       SDL_RenderPresent(impl_->renderer);
+      performance_counters().record_cpu_present_fallback(
+          frame->submitted_at);
     }
   }
 #endif

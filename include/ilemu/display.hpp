@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -28,6 +29,11 @@ struct DisplayFrame {
   std::uint32_t width{};
   std::uint32_t height{};
   std::uint64_t sequence{};
+  // Host submission time used only for presentation diagnostics. A default
+  // time point marks snapshots and synthetic frames that were not submitted
+  // by DisplayState.
+  std::chrono::steady_clock::time_point submitted_at{};
+  std::chrono::steady_clock::time_point native_queued_at{};
   // Host-endian 0xAARRGGBB pixels. Backends perform any required upload
   // format conversion without exposing it to the guest graphics HLE.
   std::vector<std::uint32_t> pixels;

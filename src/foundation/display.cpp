@@ -74,11 +74,16 @@ void DisplayState::set_powered_on(bool powered_on) {
                            visible_pixels(pixels_, powered_on_)};
     }
   }
+  const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
+  auto &performance = performance_counters();
+  if (performance.enabled()) {
+    frame.submitted_at = std::chrono::steady_clock::now();
+    performance.record_display_submission(frame.submitted_at);
+  }
   presenter(frame);
 }
 
 void DisplayState::present() {
-  const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
   Presenter presenter;
   DisplayFrame frame;
   {
@@ -94,6 +99,12 @@ void DisplayState::present() {
       frame = DisplayFrame{geometry_.width, geometry_.height, sequence_,
                            visible_pixels(pixels_, powered_on_)};
     }
+  }
+  const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
+  auto &performance = performance_counters();
+  if (performance.enabled()) {
+    frame.submitted_at = std::chrono::steady_clock::now();
+    performance.record_display_submission(frame.submitted_at);
   }
   presenter(frame);
 }

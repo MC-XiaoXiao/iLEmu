@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -57,8 +58,12 @@ inline constexpr auto perf_surface_kind_count =
 enum class PerfLatencyKind : std::uint8_t {
     InputEnqueue,
     DisplayPresent,
+    DisplayMailbox,
+    NativeMailbox,
     Acquire,
     QueuePresent,
+    PresentReturn,
+    PresentInterval,
     JitColdPath,
     RuntimeDestructor,
     Count,
@@ -73,7 +78,10 @@ struct PerfLatencySnapshot {
     std::uint64_t p95_nanoseconds{};
     std::uint64_t p99_nanoseconds{};
     std::uint64_t maximum_nanoseconds{};
+    std::uint64_t over_16_7ms{};
     std::uint64_t over_20ms{};
+    std::uint64_t over_33_3ms{};
+    std::uint64_t over_50ms{};
 };
 
 struct JitCacheSlotSnapshot {
@@ -110,7 +118,17 @@ struct PerformanceSnapshot {
     std::uint64_t readback_bytes{};
     std::uint64_t host_fills{};
     std::uint64_t host_copies{};
+    std::uint64_t display_submissions{};
+    std::uint64_t display_first_nanoseconds{};
+    std::uint64_t display_last_nanoseconds{};
+    std::uint64_t display_mailbox_coalesced{};
+    std::uint64_t native_present_attempts{};
+    std::uint64_t native_present_mailbox_coalesced{};
+    std::uint64_t native_present_skipped{};
+    std::uint64_t native_present_failures{};
     std::uint64_t native_presents{};
+    std::uint64_t present_first_nanoseconds{};
+    std::uint64_t present_last_nanoseconds{};
     std::uint64_t cpu_present_fallbacks{};
     std::uint64_t cpu_map_reads{};
     std::uint64_t cpu_map_writes{};
@@ -134,6 +152,8 @@ struct PerformanceSnapshot {
 class PerformanceCounters {
   public:
     void reset(bool enabled);
+    [[nodiscard]] bool begin_display_window();
+    [[nodiscard]] std::optional<PerformanceSnapshot> end_display_window();
     [[nodiscard]] bool enabled() const {
         return enabled_.load(std::memory_order_relaxed);
     }
@@ -158,8 +178,17 @@ class PerformanceCounters {
                          PerfSurfaceKind surface = PerfSurfaceKind::Unknown);
     void record_host_fill();
     void record_host_copy();
-    void record_native_present();
-    void record_cpu_present_fallback();
+    void record_display_submission(
+        std::chrono::steady_clock::time_point submitted_at);
+    void record_display_mailbox_coalesced();
+    void record_native_present_attempt();
+    void record_native_present_mailbox_coalesced();
+    void record_native_present_skipped();
+    void record_native_present_failure();
+    void record_native_present(
+        std::chrono::steady_clock::time_point submitted_at);
+    void record_cpu_present_fallback(
+        std::chrono::steady_clock::time_point submitted_at = {});
     void record_cpu_map(bool write, PerfCpuMapReason reason);
     void record_hle(std::string_view subsystem, std::uint64_t nanoseconds);
     void record_fork();
@@ -179,8 +208,35 @@ class PerformanceCounters {
         std::array<std::atomic<std::uint64_t>, latency_bucket_count> buckets{};
         std::atomic<std::uint64_t> samples{};
         std::atomic<std::uint64_t> maximum_nanoseconds{};
+        std::atomic<std::uint64_t> over_16_7ms{};
         std::atomic<std::uint64_t> over_20ms{};
+        std::atomic<std::uint64_t> over_33_3ms{};
+        std::atomic<std::uint64_t> over_50ms{};
     };
+
+    struct DisplayWindowLatencyHistogram {
+        std::array<std::uint64_t, latency_bucket_count> buckets{};
+        std::uint64_t samples{};
+        std::uint64_t maximum_nanoseconds{};
+        std::uint64_t over_16_7ms{};
+        std::uint64_t over_20ms{};
+        std::uint64_t over_33_3ms{};
+        std::uint64_t over_50ms{};
+    };
+
+    void reset_display_window_locked();
+    void add_display_window_counter(
+        std::uint64_t PerformanceSnapshot::*counter,
+        std::uint64_t value = 1);
+    void record_global_latency(PerfLatencyKind kind,
+                               std::uint64_t nanoseconds);
+    void record_display_window_latency(PerfLatencyKind kind,
+                                       std::uint64_t nanoseconds);
+    void record_display_window_latency_locked(PerfLatencyKind kind,
+                                              std::uint64_t nanoseconds);
+    void record_present_completion(
+        bool native,
+        std::chrono::steady_clock::time_point submitted_at);
 
     std::atomic<bool> enabled_{false};
     std::atomic<std::uint64_t> jit_instances_{};
@@ -203,7 +259,17 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> readback_bytes_{};
     std::atomic<std::uint64_t> host_fills_{};
     std::atomic<std::uint64_t> host_copies_{};
+    std::atomic<std::uint64_t> display_submissions_{};
+    std::atomic<std::uint64_t> display_first_nanoseconds_{};
+    std::atomic<std::uint64_t> display_last_nanoseconds_{};
+    std::atomic<std::uint64_t> display_mailbox_coalesced_{};
+    std::atomic<std::uint64_t> native_present_attempts_{};
+    std::atomic<std::uint64_t> native_present_mailbox_coalesced_{};
+    std::atomic<std::uint64_t> native_present_skipped_{};
+    std::atomic<std::uint64_t> native_present_failures_{};
     std::atomic<std::uint64_t> native_presents_{};
+    std::atomic<std::uint64_t> present_first_nanoseconds_{};
+    std::atomic<std::uint64_t> present_last_nanoseconds_{};
     std::atomic<std::uint64_t> cpu_present_fallbacks_{};
     std::atomic<std::uint64_t> cpu_map_reads_{};
     std::atomic<std::uint64_t> cpu_map_writes_{};
@@ -221,6 +287,12 @@ class PerformanceCounters {
     std::array<std::atomic<std::uint64_t>, perf_fallback_reason_count>
         fallback_reasons_{};
     std::array<LatencyHistogram, perf_latency_kind_count> latencies_{};
+    std::mutex present_timeline_mutex_;
+    std::atomic<bool> display_window_active_{false};
+    mutable std::mutex display_window_mutex_;
+    PerformanceSnapshot display_window_snapshot_;
+    std::array<DisplayWindowLatencyHistogram, perf_latency_kind_count>
+        display_window_latencies_{};
     mutable std::mutex jit_cache_slots_mutex_;
     std::map<std::pair<std::uint32_t, std::uint32_t>, JitCacheSlotSnapshot>
         jit_cache_slots_;
@@ -255,5 +327,7 @@ perf_surface_kind_name(PerfSurfaceKind kind);
 perf_latency_kind_name(PerfLatencyKind kind);
 [[nodiscard]] std::string
 format_performance_summary(const PerformanceSnapshot& snapshot);
+[[nodiscard]] std::string format_display_performance_summary(
+    const PerformanceSnapshot& snapshot, std::string_view label);
 
 } // namespace ilemu
