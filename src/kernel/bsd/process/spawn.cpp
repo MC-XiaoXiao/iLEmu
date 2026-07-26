@@ -44,11 +44,18 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
   if (number != posix_spawn_syscall)
     return false;
 
+  PerformanceLatencyScope total_latency{PerfLatencyKind::PosixSpawnTotal};
   auto &registers = cpu.registers();
   const auto pid_address = registers[0];
-  const auto path = memory_.read_c_string(registers[1]);
-  const auto arguments = read_string_vector(memory_, registers[3]);
-  const auto environment = read_string_vector(memory_, registers[4]);
+  std::optional<std::string> path;
+  std::optional<std::vector<std::string>> arguments;
+  std::optional<std::vector<std::string>> environment;
+  {
+    PerformanceLatencyScope decode_latency{PerfLatencyKind::PosixSpawnDecode};
+    path = memory_.read_c_string(registers[1]);
+    arguments = read_string_vector(memory_, registers[3]);
+    environment = read_string_vector(memory_, registers[4]);
+  }
   if (pid_address == 0 || !path || !arguments || !environment) {
     bsd_error(cpu, bsd_support::bad_address);
     return true;
@@ -83,7 +90,15 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
     return true;
   }
 
-  const auto child = fork_handler_ ? fork_handler_(cpu) : std::nullopt;
+  std::optional<std::uint32_t> child;
+  if (spawn_create_handler_) {
+    PerformanceLatencyScope create_latency{
+        PerfLatencyKind::PosixSpawnCreate};
+    child = spawn_create_handler_(cpu);
+  } else {
+    PerformanceLatencyScope fork_latency{PerfLatencyKind::PosixSpawnFork};
+    child = fork_handler_ ? fork_handler_(cpu) : std::nullopt;
+  }
   if (!child) {
     bsd_error(cpu, 11); // EAGAIN
     return true;

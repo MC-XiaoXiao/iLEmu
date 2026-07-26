@@ -54,6 +54,11 @@ namespace ilemu {
 
 class CompatibilityKernel {
 public:
+  enum class ProcessInheritance : std::uint8_t {
+    Fork,
+    SpawnExec,
+  };
+
   struct SchedulerYieldRequest {
     bool depress{};
     std::uint32_t duration_milliseconds{};
@@ -78,6 +83,8 @@ public:
   using ThreadWakeHandler =
       std::function<bool(std::uint32_t, std::uint32_t)>;
   using ForkHandler = std::function<std::optional<std::uint32_t>(Cpu &)>;
+  using SpawnCreateHandler =
+      std::function<std::optional<std::uint32_t>(Cpu &)>;
   using ExecHandler = std::function<bool(
       Cpu &, std::string, std::vector<std::string>, std::vector<std::string>)>;
   using SpawnExecHandler =
@@ -130,6 +137,9 @@ public:
   }
   void set_fork_handler(ForkHandler handler) {
     fork_handler_ = std::move(handler);
+  }
+  void set_spawn_create_handler(SpawnCreateHandler handler) {
+    spawn_create_handler_ = std::move(handler);
   }
   void set_exec_handler(ExecHandler handler) {
     exec_handler_ = std::move(handler);
@@ -217,8 +227,9 @@ public:
   void toggle_ringer_switch();
   [[nodiscard]] bool display_powered_on() const;
   [[nodiscard]] std::vector<std::byte> take_baseband_output();
-  void inherit_process_state(const CompatibilityKernel &parent,
-                             std::uint32_t child_pid);
+  void inherit_process_state(
+      const CompatibilityKernel &parent, std::uint32_t child_pid,
+      ProcessInheritance inheritance = ProcessInheritance::Fork);
   void prepare_exec(std::size_t processor_id);
   void install_main_image_hle(Cpu &cpu,
                               std::string_view mapped_guest_path = {});
@@ -529,6 +540,7 @@ private:
   ThreadRunnableHandler thread_runnable_handler_;
   ThreadWakeHandler thread_wake_handler_;
   ForkHandler fork_handler_;
+  SpawnCreateHandler spawn_create_handler_;
   ExecHandler exec_handler_;
   SpawnExecHandler spawn_exec_handler_;
   SchedulerRunnableQuery scheduler_runnable_query_;

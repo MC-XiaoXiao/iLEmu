@@ -1222,19 +1222,29 @@ void CompatibilityKernel::attach(Cpu &cpu) {
 }
 
 void CompatibilityKernel::inherit_process_state(
-    const CompatibilityKernel &parent, std::uint32_t child_pid) {
+    const CompatibilityKernel &parent, std::uint32_t child_pid,
+    ProcessInheritance inheritance) {
+  const auto inherit_fork_state = inheritance == ProcessInheritance::Fork;
   shared_state_ = parent.shared_state_;
   display_state_ = parent.display_state_;
   presentation_tracker_ = parent.presentation_tracker_;
   scene_coordinator_ = parent.scene_coordinator_;
+  // posix_spawn starts with a fresh virtual address space, not a fresh device
+  // namespace. CoreSurface IDs are global transport names and must still
+  // resolve to the producer's shared backing when firmware sends them to a
+  // compositor task.
+  surface_store_->share_registry(*parent.surface_store_);
   wifi_state_ = parent.wifi_state_;
   audio_service_ = parent.audio_service_;
   ringer_switch_state_ = parent.ringer_switch_state_;
-  darwin_notify_state_hle_.inherit_state(parent.darwin_notify_state_hle_);
+  if (inherit_fork_state) {
+    darwin_notify_state_hle_.inherit_state(parent.darwin_notify_state_hle_);
+  }
   configure_darwin_notify_state();
   core_audio_hle_.set_service(audio_service_);
   apple80211_hle_.set_wifi_state(wifi_state_);
   core_surface_hle_.set_display(display_state_);
+  core_surface_hle_.set_presentation_tracker(presentation_tracker_);
   core_surface_hle_.set_shared_state(shared_state_);
   core_surface_hle_.set_scene_coordinator(scene_coordinator_);
   opengles_hle_.set_shared_state(shared_state_);
@@ -1246,17 +1256,21 @@ void CompatibilityKernel::inherit_process_state(
   layerkit_hle_.set_scene_coordinator(scene_coordinator_);
   opengles_hle_.set_display(display_state_);
   mbx2d_hle_.set_display(display_state_);
+  mbx2d_hle_.set_presentation_tracker(presentation_tracker_);
   mobile_framebuffer_hle_.set_display(display_state_);
-  userland_hle_.inherit_mappings(parent.userland_hle_);
-  apple80211_hle_.inherit_state(parent.apple80211_hle_, parent.process_.pid,
-                                child_pid);
-  core_surface_hle_.inherit_state(parent.core_surface_hle_);
-  opengles_hle_.inherit_state(parent.opengles_hle_);
-  mbx2d_hle_.inherit_state(parent.mbx2d_hle_);
-  mobile_framebuffer_hle_.inherit_state(parent.mobile_framebuffer_hle_);
-  layerkit_hle_.inherit_state(parent.layerkit_hle_);
+  if (inherit_fork_state) {
+    userland_hle_.inherit_mappings(parent.userland_hle_);
+    apple80211_hle_.inherit_state(parent.apple80211_hle_,
+                                  parent.process_.pid, child_pid);
+    core_surface_hle_.inherit_state(parent.core_surface_hle_);
+    opengles_hle_.inherit_state(parent.opengles_hle_);
+    mbx2d_hle_.inherit_state(parent.mbx2d_hle_);
+    mobile_framebuffer_hle_.inherit_state(parent.mobile_framebuffer_hle_);
+    layerkit_hle_.inherit_state(parent.layerkit_hle_);
+  }
   guest_working_directory_ = parent.guest_working_directory_;
-  process_image_ = parent.process_image_;
+  if (inherit_fork_state)
+    process_image_ = parent.process_image_;
   process_ = parent.process_;
   process_.parent_pid = parent.process_.pid;
   process_.pid = child_pid;
@@ -1292,9 +1306,11 @@ void CompatibilityKernel::inherit_process_state(
   system_event_next_identifiers_ = parent.system_event_next_identifiers_;
   route_socket_states_ = parent.route_socket_states_;
   socket_pair_endpoints_ = parent.socket_pair_endpoints_;
-  vm_purgable_states_ = parent.vm_purgable_states_;
-  signal_actions_ = parent.signal_actions_;
-  signal_mask_ = parent.signal_mask_;
+  if (inherit_fork_state) {
+    vm_purgable_states_ = parent.vm_purgable_states_;
+    signal_actions_ = parent.signal_actions_;
+    signal_mask_ = parent.signal_mask_;
+  }
   kqueues_ = parent.kqueues_;
   random_state_ = parent.random_state_ ^ child_pid;
   thread_ports_.clear();

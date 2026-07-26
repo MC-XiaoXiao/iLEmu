@@ -86,6 +86,20 @@ void SurfaceStore::inherit_state(const SurfaceStore& parent) {
     }
 }
 
+void SurfaceStore::share_registry(const SurfaceStore& peer) {
+    if (this == &peer)
+        return;
+
+    std::shared_ptr<SharedRegistry> shared;
+    {
+        std::lock_guard peer_lock{peer.mutex_};
+        shared = peer.registry_;
+    }
+    reset();
+    std::lock_guard lock{mutex_};
+    registry_ = std::move(shared);
+}
+
 std::uint32_t SurfaceStore::allocate_identifier() {
     std::lock_guard lock{registry_->mutex};
     while (registry_->next_identifier == 0 ||

@@ -62,6 +62,11 @@ class SurfaceStore {
 
     void reset();
     void inherit_state(const SurfaceStore& parent);
+    // A fresh exec address space has no process-local CoreSurface mappings,
+    // but transport identifiers remain global kernel objects. Share only the
+    // registry; callers import individual mappings through Lookup as firmware
+    // passes their IDs between tasks.
+    void share_registry(const SurfaceStore& peer);
     [[nodiscard]] std::uint32_t allocate_identifier();
     [[nodiscard]] std::uint64_t publication_watermark() const;
     [[nodiscard]] bool publish(AddressSpace& memory, Backing backing);

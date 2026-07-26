@@ -32,6 +32,8 @@ class CoreSurfaceHle {
     void reset();
     void inherit_state(const CoreSurfaceHle& parent);
     void set_display(std::shared_ptr<DisplayState> display);
+    void set_presentation_tracker(
+        std::shared_ptr<PresentationTracker> presentations);
     void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);
     void set_scene_coordinator(std::shared_ptr<SceneCoordinator> scenes);
     // The display user client exposes its front buffer as a reserved

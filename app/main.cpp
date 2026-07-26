@@ -137,6 +137,7 @@ struct Runtime {
   std::unique_ptr<CompatibilityKernel> kernel;
   std::vector<bool> allocated;
   std::optional<PendingExec> pending_exec;
+  bool fresh_spawn_address_space{};
 
   ~Runtime() {
     PerformanceLatencyScope latency{PerfLatencyKind::RuntimeDestructor};
@@ -1316,39 +1317,86 @@ void boot(const std::vector<std::string> &args, Output &output) {
         [&scheduler](std::uint32_t pid, std::uint32_t slot) {
           return scheduler.wake_thread(XnuThreadId{pid, slot});
         });
-    runtime.kernel->set_fork_handler(
-        [&, runtime_ptr](Cpu &parent_cpu) -> std::optional<std::uint32_t> {
+    const auto create_child_runtime =
+        [&, runtime_ptr](Cpu *parent_cpu,
+                         CompatibilityKernel::ProcessInheritance inheritance)
+        -> std::optional<std::uint32_t> {
           const auto child_pid = next_pid++;
           auto child = std::make_unique<Runtime>();
-          child->memory = runtime_ptr->memory->clone();
-          debug_target.prepare_fork_child(runtime_ptr->kernel->process().pid,
-                                          *child->memory);
-          child->cpus = std::make_unique<CpuCluster>(
-              initial_guest_thread_slots, maximum_guest_threads,
-              *child->memory, guest_processor_count,
-              *cpu_model);
-          child->cpus->set_jit_code_cache_size(
-              configured_jit_code_cache_size);
-          child->kernel = std::make_unique<CompatibilityKernel>(
-              *child->memory, output, *rootfs, device, activation_override);
-          child->kernel->inherit_process_state(*runtime_ptr->kernel, child_pid);
+          if (inheritance ==
+              CompatibilityKernel::ProcessInheritance::SpawnExec) {
+            PerformanceLatencyScope latency{
+                PerfLatencyKind::ProcessFreshMemory};
+            child->memory = std::make_unique<AddressSpace>();
+            child->memory->set_parallel_access(guest_processor_count > 1);
+            child->fresh_spawn_address_space = true;
+          } else {
+            PerformanceLatencyScope latency{
+                PerfLatencyKind::ProcessCloneMemory};
+            child->memory = runtime_ptr->memory->clone();
+            debug_target.prepare_fork_child(
+                runtime_ptr->kernel->process().pid, *child->memory);
+          }
+          {
+            PerformanceLatencyScope latency{PerfLatencyKind::ProcessCreateCpu};
+            child->cpus = std::make_unique<CpuCluster>(
+                initial_guest_thread_slots, maximum_guest_threads,
+                *child->memory, guest_processor_count, *cpu_model);
+            child->cpus->set_jit_code_cache_size(
+                configured_jit_code_cache_size);
+          }
+          {
+            PerformanceLatencyScope latency{
+                PerfLatencyKind::ProcessCreateKernel};
+            child->kernel = std::make_unique<CompatibilityKernel>(
+                *child->memory, output, *rootfs, device, activation_override);
+          }
+          if (inheritance ==
+              CompatibilityKernel::ProcessInheritance::SpawnExec) {
+            PerformanceLatencyScope latency{
+                PerfLatencyKind::ProcessInheritSpawnKernel};
+            child->kernel->inherit_process_state(*runtime_ptr->kernel,
+                                                 child_pid, inheritance);
+          } else {
+            PerformanceLatencyScope latency{
+                PerfLatencyKind::ProcessInheritKernel};
+            child->kernel->inherit_process_state(*runtime_ptr->kernel,
+                                                 child_pid, inheritance);
+          }
           child->cpus->set_process_id(child_pid);
           child->allocated.assign(initial_guest_thread_slots, false);
-          configure_runtime(*child);
-          auto &child_cpu = child->cpus->cpu(0);
-          child_cpu.registers() = parent_cpu.registers();
-          child_cpu.extension_registers() =
-              parent_cpu.extension_registers();
-          child_cpu.registers()[0] = 0;
-          child_cpu.set_cpsr(parent_cpu.cpsr() & ~(1U << 29U));
-          child_cpu.set_fpscr(parent_cpu.fpscr());
-          child_cpu.set_cthread_self(parent_cpu.cthread_self());
+          {
+            PerformanceLatencyScope latency{
+                PerfLatencyKind::ProcessConfigureRuntime};
+            configure_runtime(*child);
+          }
+          if (parent_cpu != nullptr) {
+            auto &child_cpu = child->cpus->cpu(0);
+            child_cpu.registers() = parent_cpu->registers();
+            child_cpu.extension_registers() =
+                parent_cpu->extension_registers();
+            child_cpu.registers()[0] = 0;
+            child_cpu.set_cpsr(parent_cpu->cpsr() & ~(1U << 29U));
+            child_cpu.set_fpscr(parent_cpu->fpscr());
+            child_cpu.set_cthread_self(parent_cpu->cthread_self());
+          }
           child->allocated[0] = true;
           static_cast<void>(scheduler.register_thread(
               XnuThreadId{child_pid, 0},
               child->kernel->process().thread_base_priority));
           runtimes.push_back(std::move(child));
           return child_pid;
+        };
+    runtime.kernel->set_fork_handler(
+        [create_child_runtime](Cpu &parent_cpu) {
+          return create_child_runtime(
+              &parent_cpu, CompatibilityKernel::ProcessInheritance::Fork);
+        });
+    runtime.kernel->set_spawn_create_handler(
+        [create_child_runtime](Cpu &) {
+          return create_child_runtime(
+              nullptr,
+              CompatibilityKernel::ProcessInheritance::SpawnExec);
         });
     runtime.kernel->set_exec_handler(
         [&, runtime_ptr](Cpu &source, std::string path,
@@ -1384,23 +1432,35 @@ void boot(const std::vector<std::string> &args, Output &output) {
           auto &child_runtime = **child;
           try {
             debug_target.notify_exec(child_pid);
-            child_runtime.memory->clear();
-            ProcessLoader loader{*rootfs, *child_runtime.memory};
-            auto loaded =
-                loader.load(path, std::move(arguments), environment);
-            child_runtime.kernel->set_process_arguments(loaded.arguments,
-                                                        environment);
-            child_runtime.kernel->set_process_image(path);
-            child_runtime.kernel->prepare_exec(0);
-            auto &child_cpu = child_runtime.cpus->cpu(0);
-            child_cpu.reset();
-            child_cpu.clear_cache();
-            child_cpu.registers().fill(0);
-            child_cpu.registers()[13] = loaded.stack_pointer;
-            child_cpu.registers()[15] = loaded.entry_point;
-            child_cpu.set_cpsr(0x10);
-            child_runtime.kernel->install_main_image_hle(
-                child_cpu, loaded.executable_path);
+            if (!child_runtime.fresh_spawn_address_space) {
+              PerformanceLatencyScope latency{
+                  PerfLatencyKind::SpawnMemoryClear};
+              child_runtime.memory->clear();
+            }
+            LoadedProcess loaded;
+            {
+              PerformanceLatencyScope latency{PerfLatencyKind::SpawnImageLoad};
+              ProcessLoader loader{*rootfs, *child_runtime.memory};
+              loaded = loader.load(path, std::move(arguments), environment);
+            }
+            {
+              PerformanceLatencyScope latency{
+                  PerfLatencyKind::SpawnResetRuntime};
+              child_runtime.kernel->set_process_arguments(loaded.arguments,
+                                                          environment);
+              child_runtime.kernel->set_process_image(path);
+              child_runtime.kernel->prepare_exec(0);
+              auto &child_cpu = child_runtime.cpus->cpu(0);
+              child_cpu.reset();
+              child_cpu.clear_cache();
+              child_cpu.registers().fill(0);
+              child_cpu.registers()[13] = loaded.stack_pointer;
+              child_cpu.registers()[15] = loaded.entry_point;
+              child_cpu.set_cpsr(0x10);
+              child_runtime.kernel->install_main_image_hle(
+                  child_cpu, loaded.executable_path);
+            }
+            child_runtime.fresh_spawn_address_space = false;
             if (start_suspended) {
               static_cast<void>(scheduler.block(XnuThreadId{child_pid, 0}));
             }

@@ -32,6 +32,8 @@ public:
   void reset();
   void inherit_state(const Mbx2dHle &parent);
   void set_display(std::shared_ptr<DisplayState> display);
+  void set_presentation_tracker(
+      std::shared_ptr<PresentationTracker> presentations);
 
 private:
   struct Surface {

@@ -235,6 +235,11 @@ void Mbx2dHle::set_display(std::shared_ptr<DisplayState> display) {
   display_ = std::move(display);
 }
 
+void Mbx2dHle::set_presentation_tracker(
+    std::shared_ptr<PresentationTracker> presentations) {
+  presentation_tracker_ = std::move(presentations);
+}
+
 std::uint32_t Mbx2dHle::allocate_surface(std::uint32_t core_surface_id,
                                          bool framebuffer) {
   const auto handle = next_surface_++;

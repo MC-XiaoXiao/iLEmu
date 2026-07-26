@@ -101,6 +101,11 @@ void CoreSurfaceHle::set_display(std::shared_ptr<DisplayState> display) {
     display_ = std::move(display);
 }
 
+void CoreSurfaceHle::set_presentation_tracker(
+    std::shared_ptr<PresentationTracker> presentations) {
+    presentation_tracker_ = std::move(presentations);
+}
+
 void CoreSurfaceHle::set_shared_state(
     std::shared_ptr<KernelSharedState> shared_state) {
     shared_state_ = std::move(shared_state);
