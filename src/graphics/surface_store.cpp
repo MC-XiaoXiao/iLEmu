@@ -258,39 +258,48 @@ SurfaceStore::read_argb(AddressSpace& memory, std::uint32_t id) const {
             surface->map_cpu(false, PerfCpuMapReason::CoreSurface);
         return mapping.frame().pixels;
     }
+    auto pixels = read_guest_argb(memory, *backing);
+    if (surface && pixels)
+        surface->replace_cpu(*pixels);
+    return pixels;
+}
+
+std::optional<std::vector<std::uint32_t>>
+SurfaceStore::read_guest_argb(AddressSpace& memory,
+                              const Backing& backing) const {
     constexpr auto pixel_size = core_surface_abi::bytes_per_bgra_pixel;
     const auto row_bytes =
-        static_cast<std::uint64_t>(backing->width) * pixel_size;
-    if (row_bytes > backing->bytes_per_row)
+        static_cast<std::uint64_t>(backing.width) * pixel_size;
+    if (row_bytes > backing.bytes_per_row)
         return std::nullopt;
     const auto required =
-        backing->height == 0
+        backing.height == 0
             ? 0
-            : static_cast<std::uint64_t>(backing->height - 1U) *
-                      backing->bytes_per_row +
+            : static_cast<std::uint64_t>(backing.height - 1U) *
+                      backing.bytes_per_row +
                   row_bytes;
-    if (required > backing->allocation_size ||
+    if (required > backing.allocation_size ||
         required > std::numeric_limits<std::size_t>::max()) {
         return std::nullopt;
     }
     const auto source =
-        memory.read_bytes(backing->base, static_cast<std::size_t>(required));
+        memory.read_bytes(backing.base, static_cast<std::size_t>(required));
     if (!source)
         return std::nullopt;
-    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(backing->width) *
-                                      backing->height);
-    for (std::uint32_t y = 0; y < backing->height; ++y) {
+    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(backing.width) *
+                                      backing.height);
+    for (std::uint32_t y = 0; y < backing.height; ++y) {
         if constexpr (std::endian::native == std::endian::little) {
             std::memcpy(pixels.data() +
-                            static_cast<std::size_t>(y) * backing->width,
+                            static_cast<std::size_t>(y) * backing.width,
                         source->data() + static_cast<std::size_t>(y) *
-                                             backing->bytes_per_row,
+                                             backing.bytes_per_row,
                         static_cast<std::size_t>(row_bytes));
             continue;
         }
-        for (std::uint32_t x = 0; x < backing->width; ++x) {
+        for (std::uint32_t x = 0; x < backing.width; ++x) {
             const auto offset = static_cast<std::size_t>(
-                static_cast<std::uint64_t>(y) * backing->bytes_per_row +
+                static_cast<std::uint64_t>(y) * backing.bytes_per_row +
                 static_cast<std::uint64_t>(x) * pixel_size);
             const auto blue = std::to_integer<std::uint32_t>((*source)[offset]);
             const auto green =
@@ -299,24 +308,50 @@ SurfaceStore::read_argb(AddressSpace& memory, std::uint32_t id) const {
                 std::to_integer<std::uint32_t>((*source)[offset + 2U]);
             const auto alpha =
                 std::to_integer<std::uint32_t>((*source)[offset + 3U]);
-            pixels[static_cast<std::size_t>(y) * backing->width + x] =
+            pixels[static_cast<std::size_t>(y) * backing.width + x] =
                 (alpha << 24U) | (red << 16U) | (green << 8U) | blue;
         }
     }
-    if (surface)
-        surface->replace_cpu(pixels);
     return pixels;
 }
 
 bool SurfaceStore::synchronize_for_cpu(AddressSpace& memory,
-                                       std::uint32_t id) const {
+                                       std::uint32_t id,
+                                       bool avoid_sync) const {
     const auto backing = find(id);
     if (!backing)
         return false;
     if (backing->pixel_format != surface_pixel_format_bgra)
         return true;
-    const auto pixels = read_argb(memory, id);
-    return pixels && write_argb(memory, id, *pixels);
+    const auto surface = host_surface(id);
+    if (!surface || surface->gpu_generation() <= surface->cpu_generation())
+        return true;
+    if (avoid_sync)
+        return false;
+
+    std::optional<HostRectangle> damage;
+    if (!shared_gles_renderer()->map_cpu(
+            *surface, true, PerfCpuMapReason::CoreSurface, &damage)) {
+        return false;
+    }
+    if (!damage)
+        return true;
+    auto mapping = surface->map_cpu(false, PerfCpuMapReason::CoreSurface);
+    return write_argb_region_to_guest(memory, *backing, *damage,
+                                      mapping.frame().pixels);
+}
+
+bool SurfaceStore::synchronize_from_guest(AddressSpace& memory,
+                                          std::uint32_t id) const {
+    const auto backing = find(id);
+    if (!backing || backing->pixel_format != surface_pixel_format_bgra)
+        return backing.has_value();
+    const auto pixels = read_guest_argb(memory, *backing);
+    if (!pixels)
+        return false;
+    if (const auto surface = host_surface(id))
+        surface->replace_cpu(*pixels);
+    return true;
 }
 
 bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,
@@ -325,23 +360,49 @@ bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,
     if (!backing || backing->pixel_format != surface_pixel_format_bgra) {
         return false;
     }
-    constexpr auto pixel_size = core_surface_abi::bytes_per_bgra_pixel;
-    const auto row_bytes =
-        static_cast<std::uint64_t>(backing->width) * pixel_size;
     const auto pixel_count =
         static_cast<std::uint64_t>(backing->width) * backing->height;
-    if (row_bytes > backing->bytes_per_row || pixel_count != pixels.size()) {
+    if (pixel_count != pixels.size()) {
         return false;
     }
-    const auto required =
-        backing->height == 0
-            ? 0
-            : static_cast<std::uint64_t>(backing->height - 1U) *
-                      backing->bytes_per_row +
-                  row_bytes;
-    if (required > backing->allocation_size ||
+    if (!write_argb_region_to_guest(
+            memory, *backing,
+            HostRectangle{0, 0, backing->width, backing->height}, pixels)) {
+        return false;
+    }
+
+    if (const auto surface = host_surface(id))
+        surface->replace_cpu(pixels);
+    return true;
+}
+
+bool SurfaceStore::write_argb_region_to_guest(
+    AddressSpace& memory, const Backing& backing, HostRectangle rectangle,
+    std::span<const std::uint32_t> pixels) const {
+    constexpr auto pixel_size = core_surface_abi::bytes_per_bgra_pixel;
+    const auto pixel_count =
+        static_cast<std::uint64_t>(backing.width) * backing.height;
+    if (rectangle.x < 0 || rectangle.y < 0 || rectangle.width == 0 ||
+        rectangle.height == 0 || rectangle.width > backing.width ||
+        rectangle.height > backing.height ||
+        static_cast<std::uint32_t>(rectangle.x) >
+            backing.width - rectangle.width ||
+        static_cast<std::uint32_t>(rectangle.y) >
+            backing.height - rectangle.height ||
+        pixel_count != pixels.size()) {
+        return false;
+    }
+    const auto row_bytes =
+        static_cast<std::uint64_t>(rectangle.width) * pixel_size;
+    const auto last_row = static_cast<std::uint64_t>(rectangle.y) +
+                          rectangle.height - 1U;
+    const auto required = last_row * backing.bytes_per_row +
+                          (static_cast<std::uint64_t>(rectangle.x) +
+                           rectangle.width) *
+                              pixel_size;
+    if (required > backing.allocation_size ||
         required > std::numeric_limits<std::uint32_t>::max() ||
-        backing->base > std::numeric_limits<std::uint32_t>::max() - required) {
+        backing.base > std::numeric_limits<std::uint32_t>::max() - required) {
         return false;
     }
 
@@ -349,15 +410,18 @@ bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,
     if constexpr (std::endian::native != std::endian::little) {
         encoded_row.resize(static_cast<std::size_t>(row_bytes));
     }
-    for (std::uint32_t y = 0; y < backing->height; ++y) {
+    for (std::uint32_t y = 0; y < rectangle.height; ++y) {
+        const auto source_y = static_cast<std::uint32_t>(rectangle.y) + y;
         const auto row = pixels.subspan(
-            static_cast<std::size_t>(y) * backing->width, backing->width);
+            static_cast<std::size_t>(source_y) * backing.width +
+                static_cast<std::uint32_t>(rectangle.x),
+            rectangle.width);
         std::span<const std::byte> bytes;
         if constexpr (std::endian::native == std::endian::little) {
             bytes = {reinterpret_cast<const std::byte*>(row.data()),
                      static_cast<std::size_t>(row_bytes)};
         } else {
-            for (std::uint32_t x = 0; x < backing->width; ++x) {
+            for (std::uint32_t x = 0; x < rectangle.width; ++x) {
                 const auto pixel = row[x];
                 const auto offset = static_cast<std::size_t>(x) * pixel_size;
                 encoded_row[offset] = static_cast<std::byte>(pixel & 0xffU);
@@ -370,12 +434,12 @@ bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,
             }
             bytes = encoded_row;
         }
-        const auto destination = backing->base + y * backing->bytes_per_row;
+        const auto destination =
+            backing.base + source_y * backing.bytes_per_row +
+            static_cast<std::uint32_t>(rectangle.x) * pixel_size;
         if (!memory.copy_in(destination, bytes))
             return false;
     }
-    if (const auto surface = host_surface(id))
-        surface->replace_cpu(pixels);
     return true;
 }
 

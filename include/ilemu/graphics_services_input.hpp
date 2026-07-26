@@ -120,8 +120,6 @@ void record_application_lifecycle_event_locked(KernelSharedState &state,
                                                std::uint32_t sender_pid,
                                                std::uint32_t destination,
                                                std::uint32_t event_type,
-                                               std::span<const std::uint32_t>
-                                                   exit_snapshot_pixels = {},
                                                SceneCoordinator *scenes =
                                                    nullptr);
 

@@ -641,10 +641,6 @@ void release_application_process_locked(KernelSharedState &state,
   if (active_scene_owned) {
     state.active_application_scene.reset();
   }
-  if (state.pending_application_exit_snapshot &&
-      state.pending_application_exit_snapshot->process_id == process_id) {
-    state.pending_application_exit_snapshot.reset();
-  }
   state.application_scene_transforms.erase(process_id);
   state.consumed_application_prewarm_activations.erase(process_id);
   std::erase_if(state.application_scene_context_owners,
@@ -656,7 +652,6 @@ void release_application_process_locked(KernelSharedState &state,
 void record_application_lifecycle_event_locked(
     KernelSharedState &state, std::uint32_t sender_pid,
     std::uint32_t destination, std::uint32_t event_type,
-    std::span<const std::uint32_t> exit_snapshot_pixels,
     SceneCoordinator *scenes) {
   if (event_type != application_did_become_active_event_type &&
       event_type != application_will_resign_active_event_type) {
@@ -750,66 +745,12 @@ void record_application_lifecycle_event_locked(
             destination_port->receive_owner) {
       state.latest_application_scene_transform.reset();
     }
-    if (state.pending_application_exit_snapshot &&
-        state.pending_application_exit_snapshot->process_id ==
-            destination_port->receive_owner) {
-      state.pending_application_exit_snapshot.reset();
-    }
   } else {
     if (scenes)
       scenes->suspend_client_scene(destination_port->receive_owner);
     state.application_touch_suspended = true;
     state.suspended_application_scene_process_id =
         destination_port->receive_owner;
-    if (!exit_snapshot_pixels.empty()) {
-      std::vector<std::uint32_t> application_pixels{
-          exit_snapshot_pixels.begin(), exit_snapshot_pixels.end()};
-      auto screen_origin_y = 0.0F;
-      if (state.active_application_scene &&
-          state.active_application_scene->process_id ==
-              destination_port->receive_owner &&
-          state.active_application_scene->touch_transform) {
-        screen_origin_y =
-            state.active_application_scene->touch_transform->screen_origin_y;
-      } else if (const auto cached = state.application_scene_transforms.find(
-                     destination_port->receive_owner);
-                 cached != state.application_scene_transforms.end()) {
-        screen_origin_y = cached->second.screen_origin_y;
-      }
-      const auto geometry = state.display_geometry;
-      const auto ui_geometry = state.user_interface_geometry;
-      const auto scaled_origin_y =
-          ui_geometry.height == 0U
-              ? screen_origin_y
-              : screen_origin_y * static_cast<float>(geometry.height) /
-                    static_cast<float>(ui_geometry.height);
-      const auto rounded_origin_y = std::llround(scaled_origin_y);
-      if (rounded_origin_y > 0 && rounded_origin_y < geometry.height &&
-          application_pixels.size() ==
-              geometry.pixel_count()) {
-        const auto inset = static_cast<std::size_t>(rounded_origin_y);
-        const auto client_height =
-            static_cast<std::size_t>(geometry.height) - inset;
-        std::vector<std::uint32_t> local_pixels(application_pixels.size());
-        for (std::size_t target_y = 0; target_y < geometry.height;
-             ++target_y) {
-          const auto client_y =
-              std::min(client_height - 1U,
-                       target_y * client_height / geometry.height);
-          const auto source = (inset + client_y) * geometry.width;
-          const auto destination_offset = target_y * geometry.width;
-          std::copy_n(application_pixels.begin() +
-                          static_cast<std::ptrdiff_t>(source),
-                      geometry.width,
-                      local_pixels.begin() +
-                          static_cast<std::ptrdiff_t>(destination_offset));
-        }
-        application_pixels = std::move(local_pixels);
-      }
-      state.pending_application_exit_snapshot =
-          KernelSharedState::ApplicationExitSnapshot{
-              destination_port->receive_owner, std::move(application_pixels)};
-    }
     const auto preserve_locked_scene =
         state.application_suspension_reason ==
             KernelSharedState::ApplicationSuspensionReason::Lock &&

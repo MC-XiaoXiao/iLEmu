@@ -54,7 +54,7 @@ class CoreSurfaceHle {
         std::uint32_t pixel_format{};
         std::uint32_t references{1};
         bool owns_memory{};
-        std::vector<std::uint32_t> preserved_exit_snapshot_pixels;
+        std::vector<std::uint32_t> lock_options;
     };
     struct CreateRequest {
         std::uint32_t dictionary{};

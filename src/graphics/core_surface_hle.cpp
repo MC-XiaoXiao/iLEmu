@@ -354,23 +354,6 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
     }
     if (publish && !surfaces_->publish(call.memory(), backing))
         return 0;
-    std::vector<std::uint32_t> preserved_exit_snapshot_pixels;
-    const auto geometry =
-        display_ ? display_->geometry() : default_display_geometry;
-    if (shared_state_ && publish && owns_memory && width == geometry.width &&
-        height == geometry.height &&
-        bytes_per_row ==
-            geometry.width * core_surface_abi::bytes_per_bgra_pixel &&
-        pixel_format == surface_pixel_format_bgra) {
-        std::lock_guard lock{shared_state_->mach_mutex};
-        auto& pending = shared_state_->pending_application_exit_snapshot;
-        if (pending && pending->process_id == call.process_id() &&
-            pending->pixels.size() ==
-                static_cast<std::size_t>(width) * height) {
-            preserved_exit_snapshot_pixels = std::move(pending->pixels);
-            pending.reset();
-        }
-    }
     buffers_[client] = Buffer{client,
                               id,
                               base,
@@ -381,7 +364,7 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
                               pixel_format,
                               1,
                               owns_memory,
-                              std::move(preserved_exit_snapshot_pixels)};
+                              {}};
     clients_by_id_[id] = client;
     call.output().write(
         "[coresurface-hle] create pid=" + std::to_string(call.process_id()) +
@@ -565,38 +548,32 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
     } else if (symbol == "_CoreSurfaceClientBufferGetPlaneCount") {
         call.set_return(0);
     } else if (symbol == "_CoreSurfaceClientBufferLock") {
-        call.set_return(
-            surfaces_->synchronize_for_cpu(call.memory(), buffer->id)
-                ? success
-                : 1U);
+        const auto options = call.argument(1);
+        const auto synchronized = surfaces_->synchronize_for_cpu(
+            call.memory(), buffer->id,
+            (options & core_surface_abi::lock_avoid_sync) != 0);
+        if (synchronized)
+            buffer->lock_options.push_back(options);
+        call.set_return(synchronized ? success : 1U);
     } else if (symbol ==
                "_CoreSurfaceClientBufferFlushProcessorCaches") {
-        static_cast<void>(surfaces_->read_argb(call.memory(), buffer->id));
+        static_cast<void>(
+            surfaces_->synchronize_from_guest(call.memory(), buffer->id));
         call.set_return(success);
     } else if (symbol == "_CoreSurfaceClientBufferUnlock") {
-        if (!buffer->preserved_exit_snapshot_pixels.empty()) {
-            std::vector<std::byte> bytes(
-                buffer->preserved_exit_snapshot_pixels.size() *
-                core_surface_abi::bytes_per_bgra_pixel);
-            for (std::size_t index = 0;
-                 index < buffer->preserved_exit_snapshot_pixels.size();
-                 ++index) {
-                const auto pixel =
-                    buffer->preserved_exit_snapshot_pixels[index];
-                const auto offset =
-                    index * core_surface_abi::bytes_per_bgra_pixel;
-                bytes[offset] = static_cast<std::byte>(pixel);
-                bytes[offset + 1U] = static_cast<std::byte>(pixel >> 8U);
-                bytes[offset + 2U] = static_cast<std::byte>(pixel >> 16U);
-                bytes[offset + 3U] = static_cast<std::byte>(pixel >> 24U);
-            }
-            if (call.memory().copy_in(buffer->base, bytes)) {
-                buffer->preserved_exit_snapshot_pixels.clear();
-            }
+        // The public firmware wrapper has no unlock-options argument and
+        // leaves r1 untouched. Preserve the intent from the matching lock
+        // instead of interpreting that volatile register value.
+        auto options = std::uint32_t{};
+        if (!buffer->lock_options.empty()) {
+            options = buffer->lock_options.back();
+            buffer->lock_options.pop_back();
         }
-        static_cast<void>(
-            surfaces_->read_argb(call.memory(), buffer->id));
-        submit(*buffer, call);
+        if ((options & core_surface_abi::lock_read_only) == 0) {
+            static_cast<void>(surfaces_->synchronize_from_guest(
+                call.memory(), buffer->id));
+            submit(*buffer, call);
+        }
         call.set_return(success);
     } else if (symbol == "_CoreSurfaceClientBufferGetYCbCrMatrix" ||
                symbol == "_CoreSurfaceClientBufferCopyProperty") {

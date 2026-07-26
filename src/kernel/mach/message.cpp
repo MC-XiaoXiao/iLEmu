@@ -280,17 +280,12 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
     std::optional<std::uint32_t> graphics_event_type;
     std::optional<std::uint32_t> routed_reply_object;
     std::optional<std::string> service_source_create_path;
-    std::vector<std::uint32_t> exit_snapshot_pixels;
     std::optional<std::uint32_t> transferred_receive;
     std::vector<KernelSharedState::MachMessage::OolPayload> ool_payloads;
     std::vector<KernelSharedState::MachMessage::OolPortArray> ool_port_arrays;
     std::vector<std::pair<std::uint32_t, std::uint32_t>> ool_deallocations;
     if (bytes && mach_ipc::normalize_send_header(*bytes, registers[2])) {
       graphics_event_type = graphics_services_input::event_type(*bytes);
-      if (graphics_event_type == graphics_services_input::
-                                     application_will_resign_active_event_type) {
-        exit_snapshot_pixels = display_state_->snapshot().pixels;
-      }
       const auto bootstrap_lookup =
           *message_id ==
           mig_message_id(xnu792::mig::bootstrap::Routine::look_up);
@@ -589,8 +584,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
           if (graphics_event_type) {
             graphics_services_input::record_application_lifecycle_event_locked(
                 *shared_state_, process_.pid, remote_object,
-                *graphics_event_type, exit_snapshot_pixels,
-                scene_coordinator_.get());
+                *graphics_event_type, scene_coordinator_.get());
           }
           KernelSharedState::MachMessage queued;
           queued.bytes = *bytes;

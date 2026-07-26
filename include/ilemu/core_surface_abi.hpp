@@ -24,6 +24,9 @@ inline constexpr std::uint32_t client_pixel_format_offset = 32;
 inline constexpr std::uint32_t client_plane_count_offset = 40;
 
 inline constexpr std::uint32_t bytes_per_bgra_pixel = 4;
-inline constexpr std::uint32_t read_write_lock_options = 3;
+// CoreSurface predates the public IOSurface API but uses the same lock bits.
+// The iPhone OS 1.0 framework forwards these bits unchanged to IOKit method 2.
+inline constexpr std::uint32_t lock_read_only = 0x00000001U;
+inline constexpr std::uint32_t lock_avoid_sync = 0x00000002U;
 
 }  // namespace ilemu::core_surface_abi

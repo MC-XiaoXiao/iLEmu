@@ -479,10 +479,6 @@ struct KernelSharedState {
     Home,
     Lock,
   };
-  struct ApplicationExitSnapshot {
-    std::uint32_t process_id{};
-    std::vector<std::uint32_t> pixels;
-  };
   struct ApplicationTouchTransform {
     float presentation_offset_x{};
     float presentation_offset_y{};
@@ -640,11 +636,6 @@ struct KernelSharedState {
   // application scene. Track object identity so nested/repeated activation
   // callbacks cannot restore application input prematurely.
   std::set<std::uint32_t> active_springboard_alert_items;
-  // UIKit creates a new full-screen CoreSurface after willResignActive and
-  // asks SpringBoard to animate that surface. Preserve the final live scanout
-  // so compatibility geometry used for touch routing cannot relayout the
-  // first Home-animation frame.
-  std::optional<ApplicationExitSnapshot> pending_application_exit_snapshot;
   std::deque<PendingGraphicsInput> pending_graphics_inputs;
   std::map<std::uint32_t, MachSemaphore> mach_semaphores;
   std::map<std::uint32_t, MachTimer> mach_timers;
