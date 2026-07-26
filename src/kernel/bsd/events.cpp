@@ -1367,8 +1367,9 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       return;
     }
     if (*mib0 == darwin::sysctl::control_kernel &&
-        *mib1 == darwin::sysctl::kernel_process_arguments &&
-        registers[1] == 3) { // KERN_PROCARGS / pid
+        (*mib1 == darwin::sysctl::kernel_process_arguments ||
+         *mib1 == darwin::sysctl::kernel_process_arguments2) &&
+        registers[1] == 3) { // KERN_PROCARGS[2] / pid
       const auto requested_pid = memory_.read32(registers[0] + 8U);
       if (!requested_pid || registers[3] == 0) {
         bsd_error(cpu, bsd_support::bad_address);
@@ -1387,8 +1388,12 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       const auto path = record.executable_path.empty()
                             ? std::string{"/"} + record.command
                             : record.executable_path;
-      const auto bytes = darwin::sysctl::encode_process_arguments(
-          path, record.arguments, record.environment);
+      const auto bytes =
+          *mib1 == darwin::sysctl::kernel_process_arguments2
+              ? darwin::sysctl::encode_process_arguments2(
+                    path, record.arguments, record.environment)
+              : darwin::sysctl::encode_process_arguments(
+                    path, record.arguments, record.environment);
       const auto required = static_cast<std::uint32_t>(bytes.size());
       if (registers[2] == 0) {
         if (!memory_.write32(registers[3], required)) {
@@ -1410,11 +1415,107 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       bsd_success(cpu, 0);
       return;
     }
-    if (*mib0 == 1 && *mib1 == 14 && registers[1] == 4 &&
-        memory_.read32(registers[0] + 8).value_or(0xffffffffU) == 1U) {
-      // CTL_KERN/KERN_PROC/KERN_PROC_PID. XNU 792's 32-bit
-      // kinfo_proc is 492 bytes (extern_proc=196, eproc=296).
-      constexpr std::uint32_t kinfo_proc_size = 492;
+    const auto encode_process_info =
+        [this](std::uint32_t pid,
+               const KernelSharedState::ProcessRecord &record) {
+          // XNU 792's 32-bit kinfo_proc is 492 bytes
+          // (extern_proc=196, eproc=296).
+          std::vector<std::byte> bytes(
+              darwin::sysctl::arm32_kernel_process_info_size);
+          const auto put16 = [&](std::size_t offset, std::uint16_t value) {
+            bytes[offset] = static_cast<std::byte>(value);
+            bytes[offset + 1] = static_cast<std::byte>(value >> 8U);
+          };
+          const auto put32 = [&](std::size_t offset, std::uint32_t value) {
+            for (std::size_t byte = 0; byte < 4; ++byte) {
+              bytes[offset + byte] =
+                  static_cast<std::byte>(value >> (byte * 8U));
+            }
+          };
+          bytes[20] =
+              static_cast<std::byte>(record.exited ? 5U : 2U); // SZOMB/SRUN
+          put32(24, pid);
+          bytes[162] = static_cast<std::byte>(
+              pid == process_.pid ? process_.nice_value : 0);
+          for (std::size_t index = 0;
+               index < std::min<std::size_t>(16, record.command.size());
+               ++index) {
+            bytes[163 + index] =
+                static_cast<std::byte>(record.command[index]);
+          }
+          put16(188, static_cast<std::uint16_t>(record.exit_status));
+          put32(280, record.uid); // e_pcred.p_ruid
+          put32(284, record.uid); // e_pcred.p_svuid
+          put32(288, record.gid); // e_pcred.p_rgid
+          put32(292, record.gid); // e_pcred.p_svgid
+          put32(304, record.effective_uid); // e_ucred.cr_uid
+          put16(308, 1);          // e_ucred.cr_ngroups
+          put32(312, record.effective_gid); // e_ucred.cr_groups[0]
+          put32(416, record.parent_pid);
+          put32(420, record.process_group);
+          return bytes;
+        };
+    const auto process_selector =
+        *mib0 == darwin::sysctl::control_kernel &&
+                *mib1 == darwin::sysctl::kernel_process &&
+                registers[1] == 4
+            ? memory_.read32(registers[0] + 8)
+            : std::nullopt;
+    if (process_selector &&
+        *process_selector == darwin::sysctl::kernel_process_all) {
+      if (registers[3] == 0) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+      if (registers[4] != 0) {
+        bsd_error(cpu, darwin::error::operation_not_permitted);
+        return;
+      }
+      const auto record_size =
+          darwin::sysctl::arm32_kernel_process_info_size;
+      if (registers[2] == 0) {
+        const auto estimated =
+            static_cast<std::uint32_t>(shared_state_->processes.size() + 5U) *
+            record_size;
+        if (!memory_.write32(registers[3], estimated)) {
+          bsd_error(cpu, bsd_support::bad_address);
+        } else {
+          bsd_success(cpu, 0);
+        }
+        return;
+      }
+      const auto required =
+          static_cast<std::uint32_t>(shared_state_->processes.size()) *
+          record_size;
+      if (*old_size < required) {
+        if (!memory_.write32(registers[3], required)) {
+          bsd_error(cpu, bsd_support::bad_address);
+        } else {
+          bsd_error(cpu, darwin::error::no_memory);
+        }
+        return;
+      }
+      auto destination = registers[2];
+      for (const auto &[pid, record] : shared_state_->processes) {
+        const auto bytes = encode_process_info(pid, record);
+        if (!memory_.copy_in(destination, bytes)) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        destination += record_size;
+      }
+      if (!memory_.write32(registers[3], required)) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+      bsd_success(cpu, 0);
+      return;
+    }
+    if (process_selector &&
+        *process_selector == darwin::sysctl::kernel_process_id) {
+      // CTL_KERN/KERN_PROC/KERN_PROC_PID.
+      const auto kinfo_proc_size =
+          darwin::sysctl::arm32_kernel_process_info_size;
       const auto requested_pid = memory_.read32(registers[0] + 12);
       if (!requested_pid || registers[3] == 0) {
         bsd_error(cpu, bsd_support::bad_address);
@@ -1446,34 +1547,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
           bsd_error(cpu, 12); // ENOMEM
         return;
       }
-      std::vector<std::byte> bytes(kinfo_proc_size);
-      const auto put16 = [&](std::size_t offset, std::uint16_t value) {
-        bytes[offset] = static_cast<std::byte>(value);
-        bytes[offset + 1] = static_cast<std::byte>(value >> 8U);
-      };
-      const auto put32 = [&](std::size_t offset, std::uint32_t value) {
-        for (std::size_t byte = 0; byte < 4; ++byte) {
-          bytes[offset + byte] = static_cast<std::byte>(value >> (byte * 8U));
-        }
-      };
       const auto &record = process->second;
-      bytes[20] = static_cast<std::byte>(record.exited ? 5U : 2U); // SZOMB/SRUN
-      put32(24, *requested_pid);
-      bytes[162] = static_cast<std::byte>(process_.nice_value);
-      for (std::size_t index = 0;
-           index < std::min<std::size_t>(16, record.command.size()); ++index) {
-        bytes[163 + index] = static_cast<std::byte>(record.command[index]);
-      }
-      put16(188, static_cast<std::uint16_t>(record.exit_status));
-      put32(280, record.uid); // e_pcred.p_ruid
-      put32(284, record.uid); // e_pcred.p_svuid
-      put32(288, record.gid); // e_pcred.p_rgid
-      put32(292, record.gid); // e_pcred.p_svgid
-      put32(304, record.effective_uid); // e_ucred.cr_uid
-      put16(308, 1);          // e_ucred.cr_ngroups
-      put32(312, record.effective_gid); // e_ucred.cr_groups[0]
-      put32(416, record.parent_pid);
-      put32(420, record.process_group);
+      const auto bytes = encode_process_info(*requested_pid, record);
       if (!memory_.copy_in(registers[2], bytes) ||
           !memory_.write32(registers[3], kinfo_proc_size)) {
         bsd_error(cpu, bsd_support::bad_address);
