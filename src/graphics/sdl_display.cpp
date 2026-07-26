@@ -3,6 +3,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <stdexcept>
@@ -23,12 +24,28 @@
 #endif
 
 namespace ilemu {
+namespace {
+
+// Guest owners and firmware surface identifiers are narrower than the host
+// surface key. Reserve this owner for frames synthesized by the SDL presenter
+// itself, such as the black panel emitted while display power is off.
+constexpr auto sdl_presenter_surface_owner =
+    std::numeric_limits<std::uint64_t>::max();
+std::atomic<std::uint64_t> next_sdl_presenter_surface{1};
+
+} // namespace
 
 struct SdlDisplay::Impl {
   Impl(DisplayGeometry initial_geometry, DisplayGeometry input_geometry)
-      : geometry{initial_geometry}, input{input_geometry} {}
+      : geometry{initial_geometry},
+        cpu_present_surface_key{
+            sdl_presenter_surface_owner,
+            next_sdl_presenter_surface.fetch_add(1,
+                                                 std::memory_order_relaxed)},
+        input{input_geometry} {}
 
   DisplayGeometry geometry;
+  HostSurfaceKey cpu_present_surface_key;
 #if defined(ILEMU_HAS_SDL2)
   SDL_Window *window{};
   SDL_Renderer *renderer{};
@@ -76,10 +93,50 @@ struct SdlDisplay::Impl {
   std::optional<DisplayFrame> pending_native_frame;
   std::optional<DisplayFrame> failed_native_frame;
   std::shared_ptr<HostGraphicsDevice> host_graphics;
+  std::shared_ptr<HostSurface> cpu_present_surface;
   std::thread presentation_thread;
   bool presentation_stopping{};
   SdlInput input;
   bool running{true};
+
+  bool stage_cpu_frame_for_native_present(DisplayFrame &frame) {
+    if (frame.host_surface || !host_graphics ||
+        !host_graphics->native_presentation_available()) {
+      return frame.host_surface != nullptr;
+    }
+    const auto expected =
+        static_cast<std::size_t>(frame.width) * frame.height;
+    if (frame.pixels.size() != expected && frame.read_pixels)
+      frame.pixels = frame.read_pixels();
+    if (frame.pixels.size() != expected)
+      return false;
+    if (!cpu_present_surface) {
+      cpu_present_surface = host_graphics->create_surface(
+          cpu_present_surface_key,
+          HostSurfaceDescriptor{
+              frame.width, frame.height,
+              frame.width * static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+              0U, PerfSurfaceKind::Scanout},
+          frame.pixels);
+    } else {
+      const auto descriptor = cpu_present_surface->descriptor();
+      if (descriptor.width != frame.width ||
+          descriptor.height != frame.height) {
+        cpu_present_surface = host_graphics->create_surface(
+            cpu_present_surface_key,
+            HostSurfaceDescriptor{
+                frame.width, frame.height,
+                frame.width *
+                    static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+                0U, PerfSurfaceKind::Scanout},
+            frame.pixels);
+      } else {
+        cpu_present_surface->replace_cpu(frame.pixels);
+      }
+    }
+    frame.host_surface = cpu_present_surface;
+    return frame.host_surface != nullptr;
+  }
 
   void start_native_presenter() {
     if (presentation_thread.joinable())
@@ -244,6 +301,7 @@ void SdlDisplay::set_host_graphics(
   {
     std::lock_guard lock{impl_->frame_mutex};
     impl_->host_graphics = std::move(graphics);
+    impl_->cpu_present_surface.reset();
   }
 #if defined(ILEMU_HAS_SDL2)
   if (impl_->host_graphics &&
@@ -292,6 +350,8 @@ bool SdlDisplay::poll_events() {
     }
   }
   if (frame) {
+    if (!native_failed)
+      static_cast<void>(impl_->stage_cpu_frame_for_native_present(*frame));
     if (!native_failed && frame->host_surface && impl_->host_graphics &&
         impl_->host_graphics->native_presentation_available()) {
       {
