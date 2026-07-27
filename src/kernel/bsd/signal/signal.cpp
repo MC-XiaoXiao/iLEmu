@@ -1,9 +1,6 @@
 #include "ilemu/kernel.hpp"
 
 #include "ilemu/darwin_abi.hpp"
-#include "ilemu/performance.hpp"
-
-#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -63,22 +60,7 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal) {
     return 0;
   }
 
-  shared_state_->advisory_file_locks->release_process_record_locks(
-      process_.pid);
-  apple80211_hle_.reset(process_.pid);
-  release_process_mach_rights();
-  process_.exited = true;
-  process_.exit_status = 0;
-  process_.termination_signal = signal;
-  performance_counters().record_abnormal_exit();
-  if (auto record = shared_state_->processes.find(process_.pid);
-      record != shared_state_->processes.end()) {
-    record->second.exited = true;
-    record->second.exit_status = 0;
-    record->second.termination_signal = signal;
-  }
-  output_.write("[signal] terminate pid=" + std::to_string(process_.pid) +
-                " signal=" + std::to_string(signal) + "\n");
+  exit_process(0, signal);
   return 0;
 }
 
