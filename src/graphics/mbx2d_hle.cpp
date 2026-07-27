@@ -882,6 +882,13 @@ std::optional<HostCompositeMode>
 Mbx2dHle::host_composite_mode(const RenderState &state) const {
   if (!state.enabled_features.contains(mbx2d_abi::feature_blend))
     return HostCompositeMode::Copy;
+  if (!state.blend.complex &&
+      state.blend.source_factor ==
+          mbx2d_abi::layerkit_crossfade_source_word &&
+      state.blend.destination_factor ==
+          mbx2d_abi::layerkit_crossfade_destination_word) {
+    return HostCompositeMode::ConstantAlphaCrossfade;
+  }
   if (state.blend.complex &&
       state.blend.source_factor == mbx2d_abi::layerkit_mask_source_word &&
       state.blend.destination_factor ==
@@ -978,7 +985,7 @@ void Mbx2dHle::blit_copy(UserlandHleCall &call, bool context_api) {
   const auto composite_mode = host_composite_mode(*state);
   const auto try_host_copy =
       [&](HostRectangle source_rectangle,
-          HostRectangle destination_rectangle) {
+          HostRectangle destination_rectangle, HostRotation rotation) {
         return host_graphics_->accelerated() && source->host_surface &&
                destination->host_surface && source->backing &&
                destination->backing &&
@@ -989,7 +996,7 @@ void Mbx2dHle::blit_copy(UserlandHleCall &call, bool context_api) {
                command_encoder_->copy(
                    source->host_surface, destination->host_surface,
                    source_rectangle, destination_rectangle, *composite_mode,
-                   state->blend.global_alpha, HostFilter::Nearest);
+                   state->blend.global_alpha, HostFilter::Nearest, rotation);
       };
   const auto transform_enabled =
       state->scale_x_bits != mbx2d_abi::float_one_bits ||
@@ -1017,7 +1024,8 @@ void Mbx2dHle::blit_copy(UserlandHleCall &call, bool context_api) {
             {static_cast<std::int32_t>(region.destination_x),
              static_cast<std::int32_t>(region.destination_y),
              static_cast<std::uint32_t>(region.width),
-             static_cast<std::uint32_t>(region.height)})) {
+             static_cast<std::uint32_t>(region.height)},
+            HostRotation::Identity)) {
       call.set_return(mbx_success);
       return;
     }
@@ -1062,17 +1070,32 @@ void Mbx2dHle::blit_copy(UserlandHleCall &call, bool context_api) {
   };
   const auto scaled_width = scaled_dimension(region.width, scale_x);
   const auto scaled_height = scaled_dimension(region.height, scale_y);
+  std::optional<HostRotation> host_rotation;
+  if (rotation == mbx2d_abi::rotation_identity) {
+    host_rotation = HostRotation::Identity;
+  } else if (rotation == mbx2d_abi::rotation_clockwise_90) {
+    host_rotation = HostRotation::Clockwise90;
+  } else if (rotation == mbx2d_abi::rotation_180) {
+    host_rotation = HostRotation::Rotate180;
+  } else if (rotation == mbx2d_abi::rotation_clockwise_270) {
+    host_rotation = HostRotation::Clockwise270;
+  }
+  const auto quarter_turn =
+      rotation == mbx2d_abi::rotation_clockwise_90 ||
+      rotation == mbx2d_abi::rotation_clockwise_270;
+  const auto output_width = quarter_turn ? scaled_height : scaled_width;
+  const auto output_height = quarter_turn ? scaled_width : scaled_height;
   const auto destination_inside_scissor =
       !state->scissor.enabled ||
       (region.destination_x >= state->scissor.left &&
        region.destination_y >= state->scissor.top &&
-       region.destination_x + scaled_width <= state->scissor.right &&
-       region.destination_y + scaled_height <= state->scissor.bottom);
-  if (rotation == mbx2d_abi::rotation_identity && scaled_width > 0 &&
-      scaled_height > 0 && region.destination_x >= 0 &&
+       region.destination_x + output_width <= state->scissor.right &&
+       region.destination_y + output_height <= state->scissor.bottom);
+  if (host_rotation && output_width > 0 && output_height > 0 &&
+      region.destination_x >= 0 &&
       region.destination_y >= 0 &&
-      region.destination_x + scaled_width <= destination->width &&
-      region.destination_y + scaled_height <= destination->height &&
+      region.destination_x + output_width <= destination->width &&
+      region.destination_y + output_height <= destination->height &&
       destination_inside_scissor &&
       region.source_x <= std::numeric_limits<std::int32_t>::max() &&
       region.source_y <= std::numeric_limits<std::int32_t>::max() &&
@@ -1082,9 +1105,9 @@ void Mbx2dHle::blit_copy(UserlandHleCall &call, bool context_api) {
           std::numeric_limits<std::uint32_t>::max() &&
       static_cast<std::uint64_t>(region.height) <=
           std::numeric_limits<std::uint32_t>::max() &&
-      static_cast<std::uint64_t>(scaled_width) <=
+      static_cast<std::uint64_t>(output_width) <=
           std::numeric_limits<std::uint32_t>::max() &&
-      static_cast<std::uint64_t>(scaled_height) <=
+      static_cast<std::uint64_t>(output_height) <=
           std::numeric_limits<std::uint32_t>::max() &&
       try_host_copy(
           {static_cast<std::int32_t>(region.source_x),
@@ -1093,8 +1116,9 @@ void Mbx2dHle::blit_copy(UserlandHleCall &call, bool context_api) {
            static_cast<std::uint32_t>(region.height)},
           {static_cast<std::int32_t>(region.destination_x),
            static_cast<std::int32_t>(region.destination_y),
-           static_cast<std::uint32_t>(scaled_width),
-           static_cast<std::uint32_t>(scaled_height)})) {
+           static_cast<std::uint32_t>(output_width),
+           static_cast<std::uint32_t>(output_height)},
+          *host_rotation)) {
     call.set_return(mbx_success);
     return;
   }

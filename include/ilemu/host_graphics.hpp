@@ -34,15 +34,33 @@ struct HostRectangle {
     std::uint32_t height{};
 };
 
+struct HostPoint {
+    float x{};
+    float y{};
+};
+
+struct HostTexturedVertex {
+    HostPoint position{};
+    HostPoint texture{};
+};
+
 enum class HostCompositeMode : std::uint8_t {
     Copy,
     SourceOver,
     PremultipliedSourceOver,
+    ConstantAlphaCrossfade,
 };
 
 enum class HostFilter : std::uint8_t {
     Nearest,
     Linear,
+};
+
+enum class HostRotation : std::uint8_t {
+    Identity,
+    Clockwise90,
+    Rotate180,
+    Clockwise270,
 };
 
 // Cross-frontend surface identity. The CPU and GPU generations describe which
@@ -118,7 +136,24 @@ class CommandEncoder {
          HostRectangle source_rectangle, HostRectangle destination_rectangle,
          HostCompositeMode mode = HostCompositeMode::Copy,
          std::uint8_t global_alpha = 0xffU,
-         HostFilter filter = HostFilter::Nearest) = 0;
+         HostFilter filter = HostFilter::Nearest,
+         HostRotation rotation = HostRotation::Identity) = 0;
+    // Triangle-list coordinates use the top-left HostSurface pixel space.
+    // Backends may decline these optional primitives so the frontend can keep
+    // its established software rasterizer as the semantic fallback.
+    [[nodiscard]] virtual bool
+    fill_triangles(const std::shared_ptr<HostSurface>&,
+                   std::span<const HostPoint>, HostRectangle,
+                   std::uint32_t, HostCompositeMode, std::uint8_t) {
+        return false;
+    }
+    [[nodiscard]] virtual bool
+    copy_triangles(const std::shared_ptr<HostSurface>&,
+                   const std::shared_ptr<HostSurface>&,
+                   std::span<const HostTexturedVertex>, HostRectangle,
+                   HostCompositeMode, std::uint8_t, HostFilter) {
+        return false;
+    }
     // Submit never implies completion. finish() is the explicit wait point.
     [[nodiscard]] virtual bool submit() = 0;
     [[nodiscard]] virtual bool finish() = 0;

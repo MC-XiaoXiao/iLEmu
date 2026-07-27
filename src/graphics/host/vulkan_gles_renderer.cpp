@@ -376,6 +376,9 @@ struct PipelineKey {
     auto operator<=>(const PipelineKey&) const = default;
 };
 
+constexpr std::uint32_t constant_alpha_blend_factor = 0x8003U;
+constexpr std::uint32_t one_minus_constant_alpha_blend_factor = 0x8004U;
+
 class VulkanGlesRenderer final : public GlesRenderer {
   public:
     VulkanGlesRenderer(
@@ -535,7 +538,24 @@ class VulkanGlesRenderer final : public GlesRenderer {
         HostSurface& source, HostSurface& destination,
         HostRectangle source_rectangle,
         HostRectangle destination_rectangle, HostCompositeMode mode,
+        std::uint8_t global_alpha, HostFilter filter,
+        HostRotation rotation);
+    [[nodiscard]] bool encode_fill_triangles(
+        HostSurface& destination, std::span<const HostPoint> positions,
+        HostRectangle scissor, std::uint32_t argb, HostCompositeMode mode,
+        std::uint8_t global_alpha);
+    [[nodiscard]] bool encode_copy_triangles(
+        HostSurface& source, HostSurface& destination,
+        std::span<const HostTexturedVertex> vertices,
+        HostRectangle scissor, HostCompositeMode mode,
         std::uint8_t global_alpha, HostFilter filter);
+    [[nodiscard]] bool draw_host_texture(
+        Target& source, Target& destination,
+        HostSurfaceKey destination_key,
+        HostSurfaceDescriptor destination_descriptor,
+        std::span<const GpuVertex> vertices, HostRectangle viewport,
+        HostRectangle scissor, HostCompositeMode mode,
+        std::uint8_t global_alpha);
     [[nodiscard]] Target& prepare_host_surface(
         HostSurface& surface, const DisplayFrame& cpu_frame,
         std::uint64_t cpu_generation, std::uint64_t gpu_generation);
@@ -582,6 +602,7 @@ class VulkanGlesRenderer final : public GlesRenderer {
     VkPipelineLayout pipeline_layout_{};
     VkPipelineCache pipeline_cache_{};
     VkDescriptorPool descriptor_pool_{};
+    VkSampler host_clamp_sampler_{};
     VkShaderModule vertex_shader_{};
     VkShaderModule fragment_shader_{};
     std::map<PipelineKey, VkPipeline> pipelines_;
@@ -708,12 +729,44 @@ class VulkanGlesRenderer::Encoder final : public CommandEncoder {
               const std::shared_ptr<HostSurface>& destination,
               HostRectangle source_rectangle,
               HostRectangle destination_rectangle, HostCompositeMode mode,
-              std::uint8_t global_alpha, HostFilter filter) override {
+              std::uint8_t global_alpha, HostFilter filter,
+              HostRotation rotation) override {
         const auto encoded =
             source != nullptr && destination != nullptr &&
             renderer_.encode_copy(*source, *destination, source_rectangle,
                                   destination_rectangle, mode,
-                                  global_alpha, filter);
+                                  global_alpha, filter, rotation);
+        if (encoded)
+            performance_counters().record_host_copy();
+        return encoded;
+    }
+
+    bool fill_triangles(
+        const std::shared_ptr<HostSurface>& destination,
+        std::span<const HostPoint> positions, HostRectangle scissor,
+        std::uint32_t argb, HostCompositeMode mode,
+        std::uint8_t global_alpha) override {
+        const auto encoded =
+            destination != nullptr &&
+            renderer_.encode_fill_triangles(
+                *destination, positions, scissor, argb, mode,
+                global_alpha);
+        if (encoded)
+            performance_counters().record_host_fill();
+        return encoded;
+    }
+
+    bool copy_triangles(
+        const std::shared_ptr<HostSurface>& source,
+        const std::shared_ptr<HostSurface>& destination,
+        std::span<const HostTexturedVertex> vertices,
+        HostRectangle scissor, HostCompositeMode mode,
+        std::uint8_t global_alpha, HostFilter filter) override {
+        const auto encoded =
+            source != nullptr && destination != nullptr &&
+            renderer_.encode_copy_triangles(
+                *source, *destination, vertices, scissor, mode,
+                global_alpha, filter);
         if (encoded)
             performance_counters().record_host_copy();
         return encoded;
@@ -903,6 +956,25 @@ VulkanGlesRenderer::VulkanGlesRenderer(
             vkCreateDevice(physical_device_, &device_info, nullptr, &device_),
             "vkCreateDevice");
         vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
+        auto host_sampler_info =
+            make_vulkan_structure<VkSamplerCreateInfo>(
+                VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
+        host_sampler_info.magFilter = VK_FILTER_NEAREST;
+        host_sampler_info.minFilter = VK_FILTER_NEAREST;
+        host_sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        host_sampler_info.addressModeU =
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        host_sampler_info.addressModeV =
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        host_sampler_info.addressModeW =
+            VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        host_sampler_info.maxAnisotropy = 1.0F;
+        host_sampler_info.minLod = 0.0F;
+        host_sampler_info.maxLod = 0.0F;
+        require_success(
+            vkCreateSampler(device_, &host_sampler_info, nullptr,
+                            &host_clamp_sampler_),
+            "vkCreateSampler(host clamp)");
         if (presentation_surface_ != VK_NULL_HANDLE)
             static_cast<void>(create_presentation_swapchain());
 
@@ -1323,6 +1395,10 @@ void VulkanGlesRenderer::destroy() noexcept {
         if (descriptor_pool_ != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(device_, descriptor_pool_, nullptr);
         }
+        if (host_clamp_sampler_ != VK_NULL_HANDLE) {
+            vkDestroySampler(device_, host_clamp_sampler_, nullptr);
+            host_clamp_sampler_ = VK_NULL_HANDLE;
+        }
         if (pipeline_layout_ != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device_, pipeline_layout_, nullptr);
         }
@@ -1730,6 +1806,10 @@ VulkanGlesRenderer::blend_factor(std::uint32_t factor) const {
     case gles_abi::source_alpha: return VK_BLEND_FACTOR_SRC_ALPHA;
     case gles_abi::one_minus_source_alpha:
         return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    case constant_alpha_blend_factor:
+        return VK_BLEND_FACTOR_CONSTANT_ALPHA;
+    case one_minus_constant_alpha_blend_factor:
+        return VK_BLEND_FACTOR_ONE_MINUS_CONSTANT_ALPHA;
     default: return std::nullopt;
     }
 }
@@ -1805,10 +1885,18 @@ VkPipeline VulkanGlesRenderer::pipeline(const PipelineKey& key) {
     blend.colorBlendOp = VK_BLEND_OP_ADD;
     // The reference renderer preserves Porter-Duff alpha for the two
     // LayerKit blend modes instead of multiplying source alpha twice.
-    blend.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-    blend.dstAlphaBlendFactor = key.blend_enabled
-                                    ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
-                                    : VK_BLEND_FACTOR_ZERO;
+    const auto constant_alpha_crossfade =
+        key.blend_source == constant_alpha_blend_factor &&
+        key.blend_destination ==
+            one_minus_constant_alpha_blend_factor;
+    blend.srcAlphaBlendFactor =
+        constant_alpha_crossfade ? *source : VK_BLEND_FACTOR_ONE;
+    blend.dstAlphaBlendFactor =
+        constant_alpha_crossfade
+            ? *destination
+            : key.blend_enabled
+                  ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
+                  : VK_BLEND_FACTOR_ZERO;
     blend.alphaBlendOp = VK_BLEND_OP_ADD;
     blend.colorWriteMask = 0;
     if ((key.color_mask & 0x01U) != 0) {
@@ -1828,8 +1916,9 @@ VkPipeline VulkanGlesRenderer::pipeline(const PipelineKey& key) {
             VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO);
     blend_state.attachmentCount = 1;
     blend_state.pAttachments = &blend;
-    constexpr std::array dynamic_states{VK_DYNAMIC_STATE_VIEWPORT,
-                                        VK_DYNAMIC_STATE_SCISSOR};
+    constexpr std::array dynamic_states{
+        VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+        VK_DYNAMIC_STATE_BLEND_CONSTANTS};
     auto dynamic = make_vulkan_structure<VkPipelineDynamicStateCreateInfo>(
         VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO);
     dynamic.dynamicStateCount =
@@ -2546,7 +2635,10 @@ bool VulkanGlesRenderer::encode_fill(
         };
         const auto global =
             static_cast<float>(global_alpha) / 255.0F;
-        const auto alpha = channel(24) * global;
+        const auto crossfade =
+            mode == HostCompositeMode::ConstantAlphaCrossfade;
+        const auto alpha =
+            channel(24) * (crossfade ? 1.0F : global);
         const std::array<float, 4> color{
             channel(16) *
                 (mode == HostCompositeMode::PremultipliedSourceOver
@@ -2580,11 +2672,17 @@ bool VulkanGlesRenderer::encode_fill(
             static_cast<std::int32_t>(rectangle.width),
             static_cast<std::int32_t>(rectangle.height)};
         state.blend_enabled = true;
-        state.blend_source =
-            mode == HostCompositeMode::PremultipliedSourceOver
-                ? gles_abi::one
-                : gles_abi::source_alpha;
-        state.blend_destination = gles_abi::one_minus_source_alpha;
+        state.blend_source = crossfade
+                                 ? constant_alpha_blend_factor
+                                 : mode ==
+                                           HostCompositeMode::
+                                               PremultipliedSourceOver
+                                       ? gles_abi::one
+                                       : gles_abi::source_alpha;
+        state.blend_destination =
+            crossfade ? one_minus_constant_alpha_blend_factor
+                      : gles_abi::one_minus_source_alpha;
+        state.blend_constant = {global, global, global, global};
         if (!draw(cpu_frame, destination.key(), vertices,
                   gles_abi::triangle_strip, state)) {
             return false;
@@ -2672,12 +2770,286 @@ bool VulkanGlesRenderer::encode_fill(
     }
 }
 
+bool VulkanGlesRenderer::encode_fill_triangles(
+    HostSurface& destination, std::span<const HostPoint> positions,
+    HostRectangle scissor, std::uint32_t argb, HostCompositeMode mode,
+    std::uint8_t global_alpha) {
+    const auto descriptor = destination.descriptor();
+    if (scissor.x < 0 || scissor.y < 0 || scissor.width == 0 ||
+        scissor.height == 0 || scissor.width > descriptor.width ||
+        scissor.height > descriptor.height ||
+        static_cast<std::uint32_t>(scissor.x) >
+            descriptor.width - scissor.width ||
+        static_cast<std::uint32_t>(scissor.y) >
+            descriptor.height - scissor.height ||
+        positions.size() < 3 || positions.size() % 3 != 0 ||
+        std::ranges::any_of(positions, [](const HostPoint& point) {
+            return !std::isfinite(point.x) || !std::isfinite(point.y);
+        })) {
+        return false;
+    }
+
+    const auto channel = [argb](std::uint32_t shift) {
+        return static_cast<float>((argb >> shift) & 0xffU) / 255.0F;
+    };
+    const auto global = static_cast<float>(global_alpha) / 255.0F;
+    const auto crossfade =
+        mode == HostCompositeMode::ConstantAlphaCrossfade;
+    const auto premultiplied =
+        mode == HostCompositeMode::PremultipliedSourceOver;
+    const std::array<float, 4> color{
+        channel(16) * (premultiplied ? global : 1.0F),
+        channel(8) * (premultiplied ? global : 1.0F),
+        channel(0) * (premultiplied ? global : 1.0F),
+        channel(24) *
+            (mode == HostCompositeMode::Copy || crossfade ? 1.0F : global)};
+    std::vector<GlesRasterVertex> vertices(positions.size());
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        vertices[index].position = {
+            2.0F * positions[index].x /
+                    static_cast<float>(descriptor.width) -
+                1.0F,
+            1.0F -
+                2.0F * positions[index].y /
+                    static_cast<float>(descriptor.height),
+            0.0F, 1.0F};
+        vertices[index].color = color;
+    }
+    GlesRasterState state;
+    state.viewport_width = descriptor.width;
+    state.viewport_height = descriptor.height;
+    state.scissor_enabled = true;
+    state.scissor_box = {
+        scissor.x,
+        static_cast<std::int32_t>(
+            descriptor.height -
+            (static_cast<std::uint32_t>(scissor.y) + scissor.height)),
+        static_cast<std::int32_t>(scissor.width),
+        static_cast<std::int32_t>(scissor.height)};
+    state.blend_enabled = mode != HostCompositeMode::Copy;
+    state.blend_source =
+        crossfade
+            ? constant_alpha_blend_factor
+            : premultiplied ? gles_abi::one : gles_abi::source_alpha;
+    state.blend_destination =
+        crossfade ? one_minus_constant_alpha_blend_factor
+                  : gles_abi::one_minus_source_alpha;
+    state.blend_constant = {global, global, global, global};
+
+    const auto cpu_generation = destination.cpu_generation();
+    const auto gpu_generation = destination.gpu_generation();
+    DisplayFrame cpu_frame;
+    {
+        auto mapping =
+            destination.map_cpu(false, PerfCpuMapReason::HostUpload);
+        cpu_frame = mapping.frame();
+    }
+    try {
+        std::lock_guard lock{mutex_};
+        if (!prepare_host_surface(destination, cpu_frame, cpu_generation,
+                                  gpu_generation)
+                 .valid) {
+            return false;
+        }
+    } catch (...) {
+        last_failure_reason_.store(PerfFallbackReason::BackendFailure,
+                                   std::memory_order_relaxed);
+        std::lock_guard lock{mutex_};
+        static_cast<void>(vkDeviceWaitIdle(device_));
+        discard_commands();
+        return false;
+    }
+    if (!draw(cpu_frame, destination.key(), vertices,
+              gles_abi::triangles, state)) {
+        return false;
+    }
+    destination.mark_gpu_synchronized(cpu_generation);
+    static_cast<void>(destination.mark_gpu_write());
+    return true;
+}
+
+bool VulkanGlesRenderer::draw_host_texture(
+    Target& source, Target& destination, HostSurfaceKey destination_key,
+    HostSurfaceDescriptor destination_descriptor,
+    std::span<const GpuVertex> vertices, HostRectangle viewport,
+    HostRectangle scissor, HostCompositeMode mode,
+    std::uint8_t global_alpha) {
+    if (vertices.size() < 3 ||
+        vertices.size() >
+            std::numeric_limits<VkDeviceSize>::max() / sizeof(GpuVertex)) {
+        return false;
+    }
+    const auto crossfade =
+        mode == HostCompositeMode::ConstantAlphaCrossfade;
+    const auto selected_pipeline = pipeline(PipelineKey{
+        mode != HostCompositeMode::Copy,
+        mode == HostCompositeMode::Copy
+            ? gles_abi::one
+            : crossfade
+                  ? constant_alpha_blend_factor
+                  : mode ==
+                            HostCompositeMode::PremultipliedSourceOver
+                        ? gles_abi::one
+                        : gles_abi::source_alpha,
+        mode == HostCompositeMode::Copy
+            ? gles_abi::zero
+            : crossfade ? one_minus_constant_alpha_blend_factor
+                        : gles_abi::one_minus_source_alpha,
+        0x0fU});
+    if (selected_pipeline == VK_NULL_HANDLE)
+        return false;
+    if (command_slot().draw_count == maximum_batch_draws)
+        submit_commands(false);
+    wait_for_slot(command_slot());
+    const auto vertex_bytes =
+        static_cast<VkDeviceSize>(vertices.size()) * sizeof(GpuVertex);
+    if (command_slot().vertex.buffer == VK_NULL_HANDLE ||
+        vertex_bytes >
+            command_slot().vertex.size -
+                command_slot().vertex_bytes_used) {
+        submit_commands(false);
+        wait_for_slot(command_slot());
+        ensure_buffer(command_slot().vertex,
+                      std::max(minimum_vertex_arena_bytes, vertex_bytes),
+                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    }
+    auto& commands = command_slot();
+    ensure_buffer(commands.uniform,
+                  uniform_stride_ * maximum_batch_draws,
+                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+    const auto vertex_offset = commands.vertex_bytes_used;
+    const auto uniform_offset =
+        uniform_stride_ * static_cast<VkDeviceSize>(commands.draw_count);
+    GlesRasterState texture_state;
+    texture_state.texture_units[0].enabled = true;
+    texture_state.texture_units[0].environment.mode =
+        gles_abi::modulate;
+    const auto uniforms = fixed_function_state(texture_state);
+    upload(commands.vertex, vertices.data(),
+           static_cast<std::size_t>(vertex_bytes), vertex_offset);
+    upload(commands.uniform, &uniforms, sizeof(uniforms),
+           uniform_offset);
+
+    const auto descriptor = commands.descriptors[commands.draw_count];
+    VkDescriptorBufferInfo uniform_info{
+        commands.uniform.buffer, uniform_offset,
+        sizeof(GpuFixedFunctionState)};
+    const VkDescriptorImageInfo image_info{
+        host_clamp_sampler_, source.image.view,
+        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    std::array<VkWriteDescriptorSet, 3> writes{};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = descriptor;
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[0].pBufferInfo = &uniform_info;
+    for (std::uint32_t binding = 1; binding < writes.size(); ++binding) {
+        writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[binding].dstSet = descriptor;
+        writes[binding].dstBinding = binding;
+        writes[binding].descriptorCount = 1;
+        writes[binding].descriptorType =
+            VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+        writes[binding].pImageInfo = &image_info;
+    }
+    vkUpdateDescriptorSets(
+        device_, static_cast<std::uint32_t>(writes.size()),
+        writes.data(), 0, nullptr);
+
+    begin_commands();
+    end_render_pass();
+    if (source.layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+        VkPipelineStageFlags source_stage =
+            VK_PIPELINE_STAGE_TRANSFER_BIT;
+        VkAccessFlags source_access =
+            source.layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                ? VK_ACCESS_TRANSFER_READ_BIT
+                : VK_ACCESS_TRANSFER_WRITE_BIT;
+        if (source.layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+            source_stage =
+                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+            source_access = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                            VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+        }
+        transition_image(
+            commands.command, source.image.image, source.layout,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, source_stage,
+            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, source_access,
+            VK_ACCESS_SHADER_READ_BIT);
+        source.layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+    if (destination.layout !=
+        VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) {
+        VkPipelineStageFlags source_stage =
+            VK_PIPELINE_STAGE_TRANSFER_BIT;
+        VkAccessFlags source_access =
+            destination.layout == VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                ? VK_ACCESS_TRANSFER_READ_BIT
+                : VK_ACCESS_TRANSFER_WRITE_BIT;
+        if (destination.layout ==
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+            source_stage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+            source_access = VK_ACCESS_SHADER_READ_BIT;
+        }
+        transition_image(
+            commands.command, destination.image.image,
+            destination.layout,
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, source_stage,
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+            source_access, VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+        destination.layout =
+            VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    }
+    auto render_begin = make_vulkan_structure<VkRenderPassBeginInfo>(
+        VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
+    render_begin.renderPass = render_pass_;
+    render_begin.framebuffer = destination.framebuffer;
+    render_begin.renderArea.extent = {
+        destination_descriptor.width, destination_descriptor.height};
+    vkCmdBeginRenderPass(commands.command, &render_begin,
+                         VK_SUBPASS_CONTENTS_INLINE);
+    render_pass_open_ = true;
+    render_pass_target_ = destination_key;
+
+    vkCmdBindPipeline(commands.command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      selected_pipeline);
+    vkCmdBindVertexBuffers(commands.command, 0, 1,
+                           &commands.vertex.buffer, &vertex_offset);
+    vkCmdBindDescriptorSets(
+        commands.command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        pipeline_layout_, 0, 1, &descriptor, 0, nullptr);
+    VkViewport vulkan_viewport{};
+    vulkan_viewport.x = static_cast<float>(viewport.x);
+    vulkan_viewport.y = static_cast<float>(viewport.y);
+    vulkan_viewport.width = static_cast<float>(viewport.width);
+    vulkan_viewport.height = static_cast<float>(viewport.height);
+    vulkan_viewport.minDepth = 0.0F;
+    vulkan_viewport.maxDepth = 1.0F;
+    vkCmdSetViewport(commands.command, 0, 1, &vulkan_viewport);
+    VkRect2D vulkan_scissor{};
+    vulkan_scissor.offset = {scissor.x, scissor.y};
+    vulkan_scissor.extent = {scissor.width, scissor.height};
+    vkCmdSetScissor(commands.command, 0, 1, &vulkan_scissor);
+    const auto alpha = static_cast<float>(global_alpha) / 255.0F;
+    const std::array blend_constant{alpha, alpha, alpha, alpha};
+    vkCmdSetBlendConstants(commands.command, blend_constant.data());
+    vkCmdDraw(commands.command,
+              static_cast<std::uint32_t>(vertices.size()), 1, 0, 0);
+    ++commands.draw_count;
+    commands.vertex_bytes_used += vertex_bytes;
+    return true;
+}
+
 bool VulkanGlesRenderer::encode_copy(
     HostSurface& source, HostSurface& destination,
     HostRectangle source_rectangle, HostRectangle destination_rectangle,
-    HostCompositeMode mode, std::uint8_t global_alpha, HostFilter filter) {
+    HostCompositeMode mode, std::uint8_t global_alpha, HostFilter filter,
+    HostRotation rotation) {
     if (source.key() == destination.key() ||
-        (mode != HostCompositeMode::Copy &&
+        ((mode != HostCompositeMode::Copy ||
+          rotation != HostRotation::Identity) &&
          filter == HostFilter::Linear)) {
         return false;
     }
@@ -2727,7 +3099,8 @@ bool VulkanGlesRenderer::encode_copy(
                 destination_gpu_generation);
             if (!source_target.valid || !destination_target.valid)
                 return false;
-            if (mode != HostCompositeMode::Copy) {
+            if (mode != HostCompositeMode::Copy ||
+                rotation != HostRotation::Identity) {
                 if (command_slot().draw_count == maximum_batch_draws)
                     submit_commands(false);
                 wait_for_slot(command_slot());
@@ -2770,26 +3143,59 @@ bool VulkanGlesRenderer::encode_copy(
                     static_cast<float>(source_descriptor.height);
                 const auto alpha =
                     static_cast<float>(global_alpha) / 255.0F;
+                const auto crossfade =
+                    mode == HostCompositeMode::ConstantAlphaCrossfade;
                 const auto rgb =
                     mode ==
                             HostCompositeMode::PremultipliedSourceOver
                         ? alpha
                         : 1.0F;
                 const std::array<float, 4> color{
-                    rgb, rgb, rgb, alpha};
+                    rgb, rgb, rgb,
+                    mode == HostCompositeMode::Copy || crossfade
+                        ? 1.0F
+                        : alpha};
+                std::array<std::array<float, 2>, 4> texture{{
+                    {u0, v0},
+                    {u1, v0},
+                    {u0, v1},
+                    {u1, v1},
+                }};
+                if (rotation == HostRotation::Clockwise90) {
+                    texture = {{
+                        {u0, v1},
+                        {u0, v0},
+                        {u1, v1},
+                        {u1, v0},
+                    }};
+                } else if (rotation == HostRotation::Rotate180) {
+                    texture = {{
+                        {u1, v1},
+                        {u0, v1},
+                        {u1, v0},
+                        {u0, v0},
+                    }};
+                } else if (rotation == HostRotation::Clockwise270) {
+                    texture = {{
+                        {u1, v0},
+                        {u1, v1},
+                        {u0, v0},
+                        {u0, v1},
+                    }};
+                }
                 const std::array<GpuVertex, vertex_count> vertices{
                     GpuVertex{{-1.0F, 1.0F, 0.0F, 1.0F}, color,
-                              {u0, v0}, {}},
+                              texture[0], {}},
                     GpuVertex{{1.0F, 1.0F, 0.0F, 1.0F}, color,
-                              {u1, v0}, {}},
+                              texture[1], {}},
                     GpuVertex{{-1.0F, -1.0F, 0.0F, 1.0F}, color,
-                              {u0, v1}, {}},
+                              texture[2], {}},
                     GpuVertex{{-1.0F, -1.0F, 0.0F, 1.0F}, color,
-                              {u0, v1}, {}},
+                              texture[2], {}},
                     GpuVertex{{1.0F, 1.0F, 0.0F, 1.0F}, color,
-                              {u1, v0}, {}},
+                              texture[1], {}},
                     GpuVertex{{1.0F, -1.0F, 0.0F, 1.0F}, color,
-                              {u1, v1}, {}}};
+                              texture[3], {}}};
                 GlesRasterState composite_state;
                 composite_state.texture_units[0].enabled = true;
                 composite_state.texture_units[0].environment.mode =
@@ -2903,13 +3309,22 @@ bool VulkanGlesRenderer::encode_copy(
                 render_pass_target_ = destination.key();
                 const auto selected_pipeline = pipeline(
                     PipelineKey{
-                        true,
-                        mode ==
-                                HostCompositeMode::
-                                    PremultipliedSourceOver
+                        mode != HostCompositeMode::Copy,
+                        mode == HostCompositeMode::Copy
                             ? gles_abi::one
-                            : gles_abi::source_alpha,
-                                gles_abi::one_minus_source_alpha, 0x0fU});
+                            : crossfade
+                                  ? constant_alpha_blend_factor
+                                  : mode ==
+                                            HostCompositeMode::
+                                                PremultipliedSourceOver
+                                        ? gles_abi::one
+                                        : gles_abi::source_alpha,
+                        mode == HostCompositeMode::Copy
+                            ? gles_abi::zero
+                            : crossfade
+                                  ? one_minus_constant_alpha_blend_factor
+                                  : gles_abi::one_minus_source_alpha,
+                        0x0fU});
                 vkCmdBindPipeline(commands.command,
                                   VK_PIPELINE_BIND_POINT_GRAPHICS,
                                   selected_pipeline);
@@ -2937,6 +3352,10 @@ bool VulkanGlesRenderer::encode_copy(
                 scissor.extent = {destination_rectangle.width,
                                   destination_rectangle.height};
                 vkCmdSetScissor(commands.command, 0, 1, &scissor);
+                const std::array blend_constant{
+                    alpha, alpha, alpha, alpha};
+                vkCmdSetBlendConstants(
+                    commands.command, blend_constant.data());
                 vkCmdDraw(commands.command, vertex_count, 1, 0, 0);
                 ++commands.draw_count;
                 commands.vertex_bytes_used += vertex_bytes;
@@ -3072,6 +3491,124 @@ bool VulkanGlesRenderer::encode_copy(
             }
             add_damage(destination_target.dirty,
                        destination_rectangle);
+        }
+        source.mark_gpu_synchronized(source_cpu_generation);
+        destination.mark_gpu_synchronized(destination_cpu_generation);
+        static_cast<void>(destination.mark_gpu_write());
+        return true;
+    } catch (...) {
+        last_failure_reason_.store(PerfFallbackReason::BackendFailure,
+                                   std::memory_order_relaxed);
+        std::lock_guard lock{mutex_};
+        static_cast<void>(vkDeviceWaitIdle(device_));
+        discard_commands();
+        return false;
+    }
+}
+
+bool VulkanGlesRenderer::encode_copy_triangles(
+    HostSurface& source, HostSurface& destination,
+    std::span<const HostTexturedVertex> host_vertices,
+    HostRectangle scissor, HostCompositeMode mode,
+    std::uint8_t global_alpha, HostFilter filter) {
+    if (source.key() == destination.key() ||
+        filter != HostFilter::Nearest) {
+        return false;
+    }
+    const auto source_descriptor = source.descriptor();
+    const auto destination_descriptor = destination.descriptor();
+    const auto valid_scissor =
+        scissor.x >= 0 && scissor.y >= 0 && scissor.width != 0 &&
+        scissor.height != 0 &&
+        scissor.width <= destination_descriptor.width &&
+        scissor.height <= destination_descriptor.height &&
+        static_cast<std::uint32_t>(scissor.x) <=
+            destination_descriptor.width - scissor.width &&
+        static_cast<std::uint32_t>(scissor.y) <=
+            destination_descriptor.height - scissor.height;
+    const auto valid_positions = std::ranges::all_of(
+        host_vertices, [](const HostTexturedVertex& vertex) {
+            return std::isfinite(vertex.position.x) &&
+                   std::isfinite(vertex.position.y);
+        });
+    const auto valid_texture = std::ranges::all_of(
+        host_vertices, [](const HostTexturedVertex& vertex) {
+            return std::isfinite(vertex.texture.x) &&
+                   std::isfinite(vertex.texture.y);
+        });
+    if (!valid_scissor || !valid_positions || !valid_texture ||
+        host_vertices.size() < 3 || host_vertices.size() % 3 != 0 ||
+        source_descriptor.width == 0 || source_descriptor.height == 0 ||
+        destination_descriptor.width == 0 ||
+        destination_descriptor.height == 0) {
+        return false;
+    }
+
+    const auto alpha = static_cast<float>(global_alpha) / 255.0F;
+    const auto crossfade =
+        mode == HostCompositeMode::ConstantAlphaCrossfade;
+    const auto rgb =
+        mode == HostCompositeMode::PremultipliedSourceOver
+            ? alpha
+            : 1.0F;
+    const std::array<float, 4> color{
+        rgb, rgb, rgb,
+        mode == HostCompositeMode::Copy || crossfade ? 1.0F : alpha};
+    std::vector<GpuVertex> vertices(host_vertices.size());
+    for (std::size_t index = 0; index < vertices.size(); ++index) {
+        vertices[index] = GpuVertex{
+            {2.0F * host_vertices[index].position.x /
+                     static_cast<float>(destination_descriptor.width) -
+                 1.0F,
+             1.0F -
+                 2.0F * host_vertices[index].position.y /
+                     static_cast<float>(destination_descriptor.height),
+             0.0F, 1.0F},
+            color,
+            {host_vertices[index].texture.x /
+                 static_cast<float>(source_descriptor.width),
+             host_vertices[index].texture.y /
+                 static_cast<float>(source_descriptor.height)},
+            {}};
+    }
+
+    const auto source_cpu_generation = source.cpu_generation();
+    const auto source_gpu_generation = source.gpu_generation();
+    const auto destination_cpu_generation = destination.cpu_generation();
+    const auto destination_gpu_generation = destination.gpu_generation();
+    DisplayFrame source_frame;
+    DisplayFrame destination_frame;
+    {
+        auto mapping =
+            source.map_cpu(false, PerfCpuMapReason::HostUpload);
+        source_frame = mapping.frame();
+    }
+    {
+        auto mapping =
+            destination.map_cpu(false, PerfCpuMapReason::HostUpload);
+        destination_frame = mapping.frame();
+    }
+
+    try {
+        {
+            std::lock_guard lock{mutex_};
+            auto& source_target = prepare_host_surface(
+                source, source_frame, source_cpu_generation,
+                source_gpu_generation);
+            auto& destination_target = prepare_host_surface(
+                destination, destination_frame,
+                destination_cpu_generation,
+                destination_gpu_generation);
+            if (!source_target.valid || !destination_target.valid ||
+                !draw_host_texture(
+                    source_target, destination_target, destination.key(),
+                    destination_descriptor, vertices,
+                    {0, 0, destination_descriptor.width,
+                     destination_descriptor.height},
+                    scissor, mode, global_alpha)) {
+                return false;
+            }
+            add_damage(destination_target.dirty, scissor);
         }
         source.mark_gpu_synchronized(source_cpu_generation);
         destination.mark_gpu_synchronized(destination_cpu_generation);
@@ -3678,6 +4215,8 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         scissor.extent.height =
             static_cast<std::uint32_t>(scissor_top - scissor_bottom);
         vkCmdSetScissor(commands.command, 0, 1, &scissor);
+        vkCmdSetBlendConstants(
+            commands.command, state.blend_constant.data());
         vkCmdDraw(commands.command,
                   static_cast<std::uint32_t>(expanded.size()), 1, 0, 0);
         add_damage(

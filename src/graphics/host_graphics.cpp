@@ -48,6 +48,26 @@ std::uint32_t source_over(std::uint32_t source, std::uint32_t destination,
     return result;
 }
 
+std::uint32_t constant_alpha_crossfade(
+    std::uint32_t source, std::uint32_t destination,
+    std::uint8_t global_alpha) {
+    const auto scale = [](std::uint32_t value, std::uint32_t factor) {
+        return (value * factor + 127U) / 255U;
+    };
+    const auto alpha = static_cast<std::uint32_t>(global_alpha);
+    const auto inverse_alpha = 255U - alpha;
+    std::uint32_t result{};
+    for (std::uint32_t shift = 0; shift < 32U; shift += 8U) {
+        const auto source_channel =
+            scale((source >> shift) & 0xffU, alpha);
+        const auto destination_channel =
+            scale((destination >> shift) & 0xffU, inverse_alpha);
+        result |= std::min(255U, source_channel + destination_channel)
+                  << shift;
+    }
+    return result;
+}
+
 class CpuCommandEncoder final : public CommandEncoder {
   public:
     bool fill(const std::shared_ptr<HostSurface>& destination,
@@ -76,12 +96,18 @@ class CpuCommandEncoder final : public CommandEncoder {
                 static_cast<std::uint32_t>(rectangle.x);
             for (std::uint32_t x = 0; x < rectangle.width; ++x) {
                 auto& pixel = frame.pixels[row + x];
-                pixel = mode == HostCompositeMode::Copy
-                            ? argb
-                            : source_over(
-                                  argb, pixel, global_alpha,
-                                  mode == HostCompositeMode::
-                                              PremultipliedSourceOver);
+                if (mode == HostCompositeMode::Copy) {
+                    pixel = argb;
+                } else if (
+                    mode == HostCompositeMode::ConstantAlphaCrossfade) {
+                    pixel = constant_alpha_crossfade(
+                        argb, pixel, global_alpha);
+                } else {
+                    pixel = source_over(
+                        argb, pixel, global_alpha,
+                        mode ==
+                            HostCompositeMode::PremultipliedSourceOver);
+                }
             }
         }
         performance_counters().record_host_fill();
@@ -92,7 +118,8 @@ class CpuCommandEncoder final : public CommandEncoder {
               const std::shared_ptr<HostSurface>& destination,
               HostRectangle source_rectangle,
               HostRectangle destination_rectangle, HostCompositeMode mode,
-              std::uint8_t global_alpha, HostFilter filter) override {
+              std::uint8_t global_alpha, HostFilter filter,
+              HostRotation rotation) override {
         if (!source || !destination || source_rectangle.width == 0 ||
             source_rectangle.height == 0 ||
             destination_rectangle.width == 0 ||
@@ -127,18 +154,54 @@ class CpuCommandEncoder final : public CommandEncoder {
             static_cast<std::size_t>(destination_rectangle.width) *
             destination_rectangle.height);
         for (std::uint32_t y = 0; y < destination_rectangle.height; ++y) {
-            const auto source_y =
-                static_cast<std::uint32_t>(source_rectangle.y) +
-                static_cast<std::uint32_t>(
-                    static_cast<std::uint64_t>(y) *
-                    source_rectangle.height / destination_rectangle.height);
             for (std::uint32_t x = 0; x < destination_rectangle.width; ++x) {
-                const auto source_x =
-                    static_cast<std::uint32_t>(source_rectangle.x) +
-                    static_cast<std::uint32_t>(
+                std::uint32_t local_x{};
+                std::uint32_t local_y{};
+                if (rotation == HostRotation::Clockwise90) {
+                    local_x = static_cast<std::uint32_t>(
+                        static_cast<std::uint64_t>(y) *
+                        source_rectangle.width /
+                        destination_rectangle.height);
+                    local_y = source_rectangle.height - 1U -
+                              static_cast<std::uint32_t>(
+                                  static_cast<std::uint64_t>(x) *
+                                  source_rectangle.height /
+                                  destination_rectangle.width);
+                } else if (rotation == HostRotation::Rotate180) {
+                    local_x = source_rectangle.width - 1U -
+                              static_cast<std::uint32_t>(
+                                  static_cast<std::uint64_t>(x) *
+                                  source_rectangle.width /
+                                  destination_rectangle.width);
+                    local_y = source_rectangle.height - 1U -
+                              static_cast<std::uint32_t>(
+                                  static_cast<std::uint64_t>(y) *
+                                  source_rectangle.height /
+                                  destination_rectangle.height);
+                } else if (rotation == HostRotation::Clockwise270) {
+                    local_x = source_rectangle.width - 1U -
+                              static_cast<std::uint32_t>(
+                                  static_cast<std::uint64_t>(y) *
+                                  source_rectangle.width /
+                                  destination_rectangle.height);
+                    local_y = static_cast<std::uint32_t>(
+                        static_cast<std::uint64_t>(x) *
+                        source_rectangle.height /
+                        destination_rectangle.width);
+                } else {
+                    local_x = static_cast<std::uint32_t>(
                         static_cast<std::uint64_t>(x) *
                         source_rectangle.width /
                         destination_rectangle.width);
+                    local_y = static_cast<std::uint32_t>(
+                        static_cast<std::uint64_t>(y) *
+                        source_rectangle.height /
+                        destination_rectangle.height);
+                }
+                const auto source_x =
+                    static_cast<std::uint32_t>(source_rectangle.x) + local_x;
+                const auto source_y =
+                    static_cast<std::uint32_t>(source_rectangle.y) + local_y;
                 sampled[static_cast<std::size_t>(y) *
                             destination_rectangle.width +
                         x] =
@@ -163,13 +226,18 @@ class CpuCommandEncoder final : public CommandEncoder {
                             destination_frame.width +
                         static_cast<std::uint32_t>(destination_rectangle.x) +
                         x];
-                destination_pixel =
-                    mode == HostCompositeMode::Copy
-                        ? source_pixel
-                        : source_over(source_pixel, destination_pixel,
-                                      global_alpha,
-                                      mode == HostCompositeMode::
-                                                  PremultipliedSourceOver);
+                if (mode == HostCompositeMode::Copy) {
+                    destination_pixel = source_pixel;
+                } else if (
+                    mode == HostCompositeMode::ConstantAlphaCrossfade) {
+                    destination_pixel = constant_alpha_crossfade(
+                        source_pixel, destination_pixel, global_alpha);
+                } else {
+                    destination_pixel = source_over(
+                        source_pixel, destination_pixel, global_alpha,
+                        mode ==
+                            HostCompositeMode::PremultipliedSourceOver);
+                }
             }
         }
         performance_counters().record_host_copy();

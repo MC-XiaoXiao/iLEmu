@@ -58,6 +58,7 @@ struct GlesRasterState {
     std::array<bool, 4> color_mask{true, true, true, true};
     std::uint32_t blend_source{};
     std::uint32_t blend_destination{};
+    std::array<float, 4> blend_constant{};
     std::uint32_t cull_mode{gles_abi::back};
     std::uint32_t front_face{gles_abi::counter_clockwise};
     bool cull_enabled{};

@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "ilemu/address_space.hpp"
+#include "ilemu/gles_renderer.hpp"
 #include "ilemu/mbx2d_abi.hpp"
 #include "ilemu/userland_hle.hpp"
 
@@ -29,6 +30,20 @@ constexpr std::uint64_t scene_extent_denominator = 4;
 
 bool nearly_equal(float left, float right) {
   return std::abs(left - right) <= edge_tolerance;
+}
+
+bool triangles_share_only_diagonal(const std::array<Point, 4> &quad) {
+  const auto side = [&](std::size_t vertex) {
+    const auto diagonal_x = quad[2].x - quad[0].x;
+    const auto diagonal_y = quad[2].y - quad[0].y;
+    const auto point_x = quad[vertex].x - quad[0].x;
+    const auto point_y = quad[vertex].y - quad[0].y;
+    return diagonal_x * point_y - diagonal_y * point_x;
+  };
+  const auto first = side(1);
+  const auto second = side(3);
+  return (first > edge_tolerance && second < -edge_tolerance) ||
+         (first < -edge_tolerance && second > edge_tolerance);
 }
 
 bool covers_scene_extent(std::int64_t width, std::int64_t height,
@@ -110,6 +125,66 @@ float interpolate_triangle(const std::array<Point, 4> &values,
   return result;
 }
 
+Point expand_triangle_vertex(const std::array<Point, 4> &values,
+                             const std::array<std::size_t, 3> &triangle,
+                             std::size_t vertex) {
+  Point sum{};
+  for (const auto index : triangle) {
+    sum.x += values[index].x;
+    sum.y += values[index].y;
+  }
+  const auto &value = values[triangle[vertex]];
+  constexpr auto scale = 1.0F + 3.0F * edge_tolerance;
+  return {scale * value.x - edge_tolerance * sum.x,
+          scale * value.y - edge_tolerance * sum.y};
+}
+
+std::array<HostPoint, 6>
+conservative_fill_triangles(const std::array<Point, 4> &positions) {
+  // The software MBX path accepts barycentric weights down to -0.01. Expanding
+  // each triangle with the same affine transform preserves that coverage.
+  // Draw the firmware's second triangle first so Copy mode keeps the first
+  // triangle's priority in their conservative overlap.
+  constexpr std::array<std::array<std::size_t, 3>, 2> triangles{{
+      {0, 2, 3},
+      {0, 1, 2},
+  }};
+  std::array<HostPoint, 6> result{};
+  std::size_t output{};
+  for (const auto &triangle : triangles) {
+    for (std::size_t vertex = 0; vertex < triangle.size(); ++vertex) {
+      const auto point =
+          expand_triangle_vertex(positions, triangle, vertex);
+      result[output++] = {point.x, point.y};
+    }
+  }
+  return result;
+}
+
+std::array<HostTexturedVertex, 6> conservative_copy_triangles(
+    const std::array<Point, 4> &positions,
+    const std::array<Point, 4> &texture) {
+  constexpr std::array<std::array<std::size_t, 3>, 2> triangles{{
+      {0, 2, 3},
+      {0, 1, 2},
+  }};
+  std::array<HostTexturedVertex, 6> result{};
+  std::size_t output{};
+  for (const auto &triangle : triangles) {
+    for (std::size_t vertex = 0; vertex < triangle.size(); ++vertex) {
+      const auto position =
+          expand_triangle_vertex(positions, triangle, vertex);
+      const auto coordinate =
+          expand_triangle_vertex(texture, triangle, vertex);
+      result[output++] = {
+          {position.x, position.y},
+          {coordinate.x, coordinate.y},
+      };
+    }
+  }
+  return result;
+}
+
 } // namespace
 
 void Mbx2dHle::quad_color(UserlandHleCall &call) {
@@ -162,18 +237,6 @@ void Mbx2dHle::quad_color(UserlandHleCall &call) {
     call.set_return(mbx2d_abi::failure);
     return;
   }
-  if (covers_scene_extent(width, height, destination->width,
-                          destination->height)) {
-    prepare_destination_for_frame(
-        call, state_, DamageRegion{left, top, right, bottom}, 0U);
-  }
-  const auto destination_pixels =
-      read_region(*destination, left, top, width, height, call);
-  if (!destination_pixels) {
-    call.set_return(mbx2d_abi::failure);
-    return;
-  }
-
   const auto axis_aligned =
       nearly_equal((*positions)[0].x, left_value) &&
       nearly_equal((*positions)[0].y, top_value) &&
@@ -183,6 +246,64 @@ void Mbx2dHle::quad_color(UserlandHleCall &call) {
       nearly_equal((*positions)[2].y, bottom_value) &&
       nearly_equal((*positions)[3].x, left_value) &&
       nearly_equal((*positions)[3].y, bottom_value);
+  if (covers_scene_extent(width, height, destination->width,
+                          destination->height)) {
+    prepare_destination_for_frame(
+        call, state_, DamageRegion{left, top, right, bottom}, 0U);
+  }
+  const auto composite_mode = host_composite_mode(state_);
+  if (axis_aligned && host_graphics_->accelerated() &&
+      destination->host_surface && destination->backing &&
+      destination->backing->pixel_format == surface_pixel_format_bgra &&
+      composite_mode &&
+      left <= std::numeric_limits<std::int32_t>::max() &&
+      top <= std::numeric_limits<std::int32_t>::max() &&
+      static_cast<std::uint64_t>(width) <=
+          std::numeric_limits<std::uint32_t>::max() &&
+      static_cast<std::uint64_t>(height) <=
+          std::numeric_limits<std::uint32_t>::max() &&
+      command_encoder_->fill(
+          destination->host_surface,
+          {static_cast<std::int32_t>(left),
+           static_cast<std::int32_t>(top),
+           static_cast<std::uint32_t>(width),
+           static_cast<std::uint32_t>(height)},
+          call.argument(1), *composite_mode,
+          state_.blend.global_alpha)) {
+    call.set_return(mbx2d_abi::success);
+    return;
+  }
+  if (!axis_aligned && triangles_share_only_diagonal(*positions) &&
+      host_graphics_->accelerated() && destination->host_surface &&
+      destination->backing &&
+      destination->backing->pixel_format == surface_pixel_format_bgra &&
+      composite_mode && *composite_mode == HostCompositeMode::Copy &&
+      left <= std::numeric_limits<std::int32_t>::max() &&
+      top <= std::numeric_limits<std::int32_t>::max() &&
+      static_cast<std::uint64_t>(width) <=
+          std::numeric_limits<std::uint32_t>::max() &&
+      static_cast<std::uint64_t>(height) <=
+          std::numeric_limits<std::uint32_t>::max()) {
+    const auto triangles = conservative_fill_triangles(*positions);
+    if (command_encoder_->fill_triangles(
+            destination->host_surface, triangles,
+            {static_cast<std::int32_t>(left),
+             static_cast<std::int32_t>(top),
+             static_cast<std::uint32_t>(width),
+             static_cast<std::uint32_t>(height)},
+            call.argument(1), *composite_mode,
+            state_.blend.global_alpha)) {
+      call.set_return(mbx2d_abi::success);
+      return;
+    }
+  }
+  const auto destination_pixels =
+      read_region(*destination, left, top, width, height, call);
+  if (!destination_pixels) {
+    call.set_return(mbx2d_abi::failure);
+    return;
+  }
+
   std::vector<std::uint32_t> source_pixels(
       static_cast<std::size_t>(width * height), call.argument(1));
   std::vector<bool> covered;
@@ -247,10 +368,18 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
     return;
   }
 
-  auto left = static_cast<std::int64_t>(std::floor(left_value));
-  auto right = static_cast<std::int64_t>(std::ceil(right_value));
-  auto top = static_cast<std::int64_t>(std::floor(top_value));
-  auto bottom = static_cast<std::int64_t>(std::ceil(bottom_value));
+  const auto unclipped_left =
+      static_cast<std::int64_t>(std::floor(left_value));
+  const auto unclipped_right =
+      static_cast<std::int64_t>(std::ceil(right_value));
+  const auto unclipped_top =
+      static_cast<std::int64_t>(std::floor(top_value));
+  const auto unclipped_bottom =
+      static_cast<std::int64_t>(std::ceil(bottom_value));
+  auto left = unclipped_left;
+  auto right = unclipped_right;
+  auto top = unclipped_top;
+  auto bottom = unclipped_bottom;
   left = std::max<std::int64_t>(left, 0);
   top = std::max<std::int64_t>(top, 0);
   right = std::min<std::int64_t>(right, destination->width);
@@ -295,30 +424,14 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
 
   const auto source_width = source_right - source_left;
   const auto source_height = source_bottom - source_top;
-  const auto source_pixels = read_region(*source, source_left, source_top,
-                                         source_width, source_height, call);
   const auto width = right - left;
   const auto height = bottom - top;
-  if (!source_pixels ||
-      static_cast<std::uint64_t>(width) >
-          maximum_quad_pixels / static_cast<std::uint64_t>(height)) {
+  if (static_cast<std::uint64_t>(width) >
+      maximum_quad_pixels / static_cast<std::uint64_t>(height)) {
     call.set_return(mbx2d_abi::failure);
     return;
   }
 
-  if (covers_scene_extent(width, height, destination->width,
-                          destination->height)) {
-    prepare_destination_for_frame(
-        call, state_, DamageRegion{left, top, right, bottom},
-        state_.source ? state_.source->surface : 0U);
-  }
-  const auto destination_pixels =
-      read_region(*destination, left, top, width, height, call);
-  if (!destination_pixels) {
-    call.set_return(mbx2d_abi::failure);
-    return;
-  }
-  std::vector<std::uint32_t> sampled = *destination_pixels;
   const auto axis_aligned_affine =
       nearly_equal((*positions)[0].x, left_value) &&
       nearly_equal((*positions)[0].y, top_value) &&
@@ -332,6 +445,141 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
                    (*texture)[1].x + (*texture)[3].x) &&
       nearly_equal((*texture)[0].y + (*texture)[2].y,
                    (*texture)[1].y + (*texture)[3].y);
+  if (covers_scene_extent(width, height, destination->width,
+                          destination->height)) {
+    prepare_destination_for_frame(
+        call, state_, DamageRegion{left, top, right, bottom},
+        state_.source ? state_.source->surface : 0U);
+  }
+  const auto matches_texture =
+      [&](std::array<Point, 4> expected) {
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+          if (!nearly_equal((*texture)[index].x, expected[index].x) ||
+              !nearly_equal((*texture)[index].y, expected[index].y)) {
+            return false;
+          }
+        }
+        return true;
+      };
+  const auto source_left_f = static_cast<float>(source_left);
+  const auto source_right_f = static_cast<float>(source_right);
+  const auto source_top_f = static_cast<float>(source_top);
+  const auto source_bottom_f = static_cast<float>(source_bottom);
+  std::optional<HostRotation> host_rotation;
+  if (matches_texture({{{source_left_f, source_top_f},
+                        {source_right_f, source_top_f},
+                        {source_right_f, source_bottom_f},
+                        {source_left_f, source_bottom_f}}})) {
+    host_rotation = HostRotation::Identity;
+  } else if (
+      matches_texture({{{source_left_f, source_bottom_f},
+                        {source_left_f, source_top_f},
+                        {source_right_f, source_top_f},
+                        {source_right_f, source_bottom_f}}})) {
+    host_rotation = HostRotation::Clockwise90;
+  } else if (
+      matches_texture({{{source_right_f, source_bottom_f},
+                        {source_left_f, source_bottom_f},
+                        {source_left_f, source_top_f},
+                        {source_right_f, source_top_f}}})) {
+    host_rotation = HostRotation::Rotate180;
+  } else if (
+      matches_texture({{{source_right_f, source_top_f},
+                        {source_right_f, source_bottom_f},
+                        {source_left_f, source_bottom_f},
+                        {source_left_f, source_top_f}}})) {
+    host_rotation = HostRotation::Clockwise270;
+  }
+  const auto destination_unclipped =
+      left == unclipped_left && right == unclipped_right &&
+      top == unclipped_top && bottom == unclipped_bottom;
+  const auto destination_integral =
+      nearly_equal(left_value, static_cast<float>(unclipped_left)) &&
+      nearly_equal(right_value, static_cast<float>(unclipped_right)) &&
+      nearly_equal(top_value, static_cast<float>(unclipped_top)) &&
+      nearly_equal(bottom_value, static_cast<float>(unclipped_bottom));
+  const auto composite_mode = host_composite_mode(state_);
+  if (axis_aligned_affine && host_rotation && destination_unclipped &&
+      destination_integral && host_graphics_->accelerated() &&
+      source->host_surface && destination->host_surface && source->backing &&
+      destination->backing &&
+      source->backing->pixel_format == surface_pixel_format_bgra &&
+      destination->backing->pixel_format == surface_pixel_format_bgra &&
+      composite_mode &&
+      source_left <= std::numeric_limits<std::int32_t>::max() &&
+      source_top <= std::numeric_limits<std::int32_t>::max() &&
+      left <= std::numeric_limits<std::int32_t>::max() &&
+      top <= std::numeric_limits<std::int32_t>::max() &&
+      static_cast<std::uint64_t>(source_width) <=
+          std::numeric_limits<std::uint32_t>::max() &&
+      static_cast<std::uint64_t>(source_height) <=
+          std::numeric_limits<std::uint32_t>::max() &&
+      static_cast<std::uint64_t>(width) <=
+          std::numeric_limits<std::uint32_t>::max() &&
+      static_cast<std::uint64_t>(height) <=
+          std::numeric_limits<std::uint32_t>::max() &&
+      command_encoder_->copy(
+          source->host_surface, destination->host_surface,
+          {static_cast<std::int32_t>(source_left),
+           static_cast<std::int32_t>(source_top),
+           static_cast<std::uint32_t>(source_width),
+           static_cast<std::uint32_t>(source_height)},
+          {static_cast<std::int32_t>(left),
+           static_cast<std::int32_t>(top),
+           static_cast<std::uint32_t>(width),
+           static_cast<std::uint32_t>(height)},
+          *composite_mode, state_.blend.global_alpha, HostFilter::Nearest,
+          *host_rotation)) {
+    call.set_return(mbx2d_abi::success);
+    return;
+  }
+  const auto full_texture_extent =
+      nearly_equal(minimum_u, 0.0F) &&
+      nearly_equal(maximum_u, static_cast<float>(source->width)) &&
+      nearly_equal(minimum_v, 0.0F) &&
+      nearly_equal(maximum_v, static_cast<float>(source->height));
+  if (triangles_share_only_diagonal(*positions) &&
+      host_graphics_->accelerated() && source->host_surface &&
+      destination->host_surface && source->backing &&
+      destination->backing &&
+      source->backing->pixel_format == surface_pixel_format_bgra &&
+      destination->backing->pixel_format == surface_pixel_format_bgra &&
+      composite_mode && *composite_mode == HostCompositeMode::Copy &&
+      full_texture_extent &&
+      left <= std::numeric_limits<std::int32_t>::max() &&
+      top <= std::numeric_limits<std::int32_t>::max() &&
+      static_cast<std::uint64_t>(width) <=
+          std::numeric_limits<std::uint32_t>::max() &&
+      static_cast<std::uint64_t>(height) <=
+          std::numeric_limits<std::uint32_t>::max()) {
+    const auto triangles =
+        conservative_copy_triangles(*positions, *texture);
+    if (command_encoder_->copy_triangles(
+            source->host_surface, destination->host_surface,
+            triangles,
+            {static_cast<std::int32_t>(left),
+             static_cast<std::int32_t>(top),
+             static_cast<std::uint32_t>(width),
+             static_cast<std::uint32_t>(height)},
+            *composite_mode, state_.blend.global_alpha,
+            HostFilter::Nearest)) {
+      call.set_return(mbx2d_abi::success);
+      return;
+    }
+  }
+  const auto source_pixels = read_region(*source, source_left, source_top,
+                                         source_width, source_height, call);
+  if (!source_pixels) {
+    call.set_return(mbx2d_abi::failure);
+    return;
+  }
+  const auto destination_pixels =
+      read_region(*destination, left, top, width, height, call);
+  if (!destination_pixels) {
+    call.set_return(mbx2d_abi::failure);
+    return;
+  }
+  std::vector<std::uint32_t> sampled = *destination_pixels;
   std::vector<bool> covered;
   if (axis_aligned_affine) {
     const auto inverse_width = 1.0F / (right_value - left_value);
