@@ -57,7 +57,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
         duplicate != duplicated_descriptors_.end()) {
       fd = duplicate->second;
     }
-    if (send_socket_message(cpu, fd, registers[1]))
+    if (send_socket_message(cpu, fd, registers[1], registers[2]))
       return;
     const auto endpoint = socket_pair_endpoints_.find(fd);
     if (endpoint == socket_pair_endpoints_.end()) {
@@ -72,12 +72,28 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
       return;
     }
     const auto message = registers[1];
+    if (!memory_.accessible(message, darwin::socket::arm32_message::size,
+                            MemoryPermission::Read)) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
     const auto iov_address = memory_.read32(message + 8);
     const auto iov_count = memory_.read32(message + 12);
-    if (!iov_address || !iov_count || *iov_count > 1024) {
-      bsd_error(cpu, !iov_address || !iov_count
-                         ? bsd_support::bad_address
-                         : bsd_support::invalid_argument);
+    if (!iov_address || !iov_count) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
+    if (*iov_count > darwin::io::maximum_vector_count) {
+      bsd_error(cpu, bsd_support::invalid_argument);
+      return;
+    }
+    const auto iovec_bytes = static_cast<std::size_t>(*iov_count) *
+                             darwin::socket::arm32_iovec::size;
+    if (*iov_count != 0 &&
+        (*iov_address == 0 ||
+         !memory_.accessible(*iov_address, iovec_bytes,
+                             MemoryPermission::Read))) {
+      bsd_error(cpu, bsd_support::bad_address);
       return;
     }
     std::uint32_t total = 0;
@@ -108,9 +124,14 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
     const auto control_size = *control_size_value;
     std::vector<KernelSharedState::DescriptorTransfer> transfers;
     if (control_size != 0) {
-      if (*control_address == 0 || control_size > bsd_support::maximum_io) {
-        bsd_error(cpu, *control_address == 0 ? bsd_support::bad_address
-                                             : bsd_support::invalid_argument);
+      if (control_size > bsd_support::maximum_io) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+        return;
+      }
+      if (*control_address == 0 ||
+          !memory_.accessible(*control_address, control_size,
+                              MemoryPermission::Read)) {
+        bsd_error(cpu, bsd_support::bad_address);
         return;
       }
       for (std::uint32_t offset = 0; offset < control_size;) {
@@ -541,7 +562,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
       bsd_error(cpu, bsd_support::bad_file_descriptor);
       return;
     }
-    if (registers[2] < 2) {
+    if (registers[2] < 2 ||
+        registers[2] > bsd_support::maximum_socket_address_size) {
       bsd_error(cpu, bsd_support::invalid_argument);
       return;
     }
@@ -653,7 +675,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
       bsd_error(cpu, bsd_support::bad_file_descriptor);
       return;
     }
-    if (registers[2] < 2) {
+    if (registers[2] < 2 ||
+        registers[2] > bsd_support::maximum_socket_address_size) {
       bsd_error(cpu, bsd_support::invalid_argument);
       return;
     }
@@ -1000,20 +1023,80 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
       bsd_error(cpu, bsd_support::invalid_argument);
       return;
     }
-    std::uint32_t total = 0;
+    if (vector_count == 0) {
+      bsd_success(cpu, 0);
+      return;
+    }
+    const auto vector_bytes =
+        static_cast<std::size_t>(vector_count) *
+        darwin::socket::arm32_iovec::size;
+    if (vector_address == 0 ||
+        !memory_.accessible(vector_address, vector_bytes,
+                            MemoryPermission::Read)) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
+
+    struct GuestIovec {
+      std::uint32_t base{};
+      std::uint32_t size{};
+    };
+    std::vector<GuestIovec> iovecs;
+    iovecs.reserve(vector_count);
+    std::size_t payload_size = 0;
     for (std::uint32_t index = 0; index < vector_count; ++index) {
-      const auto base = memory_.read32(vector_address + index * 8U);
-      const auto size = memory_.read32(vector_address + index * 8U + 4U);
-      if (!base || !size) {
-        if (total != 0)
-          bsd_success(cpu, total);
-        else
-          bsd_error(cpu, bsd_support::bad_address);
+      const auto entry =
+          vector_address + index * darwin::socket::arm32_iovec::size;
+      const auto base =
+          memory_.read32(entry + darwin::socket::arm32_iovec::base_offset);
+      const auto size =
+          memory_.read32(entry + darwin::socket::arm32_iovec::length_offset);
+      if (!base || !size || (*size != 0U && *base == 0U)) {
+        bsd_error(cpu, bsd_support::bad_address);
         return;
       }
+      if (*size > bsd_support::maximum_io ||
+          payload_size > bsd_support::maximum_io - *size) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+        return;
+      }
+      iovecs.push_back(GuestIovec{*base, *size});
+      payload_size += *size;
+    }
+
+    auto host_fd = fd;
+    if (const auto duplicate = duplicated_descriptors_.find(host_fd);
+        duplicate != duplicated_descriptors_.end()) {
+      host_fd = duplicate->second;
+    }
+    if (host_sockets_.contains(host_fd)) {
+      if (payload_size == 0) {
+        bsd_success(cpu, 0);
+        return;
+      }
+      std::vector<std::byte> payload;
+      payload.reserve(payload_size);
+      for (const auto &iovec : iovecs) {
+        if (iovec.size == 0U)
+          continue;
+        const auto bytes = memory_.read_bytes(iovec.base, iovec.size);
+        if (!bytes) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        payload.insert(payload.end(), bytes->begin(), bytes->end());
+      }
+      const auto nonblocking =
+          (file_status_flags_[host_fd] & darwin::open_flag::non_block) != 0;
+      static_cast<void>(send_host_socket_bytes(
+          cpu, host_fd, std::move(payload), {}, nonblocking));
+      return;
+    }
+    std::uint32_t total = 0;
+    for (const auto &iovec : iovecs) {
       registers[0] = fd;
-      registers[1] = *base;
-      registers[2] = *size;
+      registers[1] = iovec.base;
+      registers[2] = iovec.size;
       dispatch_bsd(cpu, darwin::syscall::write);
       if ((cpu.cpsr() & bsd_support::carry_flag) != 0) {
         if (total != 0)
@@ -1021,7 +1104,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
         return;
       }
       total += registers[0];
-      if (registers[0] < *size)
+      if (registers[0] < iovec.size)
         break;
     }
     bsd_success(cpu, total);
@@ -1042,7 +1125,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
       bsd_error(cpu, bsd_support::invalid_argument);
       return;
     }
-    const auto bytes = memory_.read_bytes(registers[1], size);
+    auto bytes = memory_.read_bytes(registers[1], size);
     if (!bytes) {
       bsd_error(cpu, bsd_support::bad_address);
       return;
@@ -1058,7 +1141,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
     if (const auto host = host_sockets_.find(fd); host != host_sockets_.end()) {
       std::vector<std::byte> destination;
       if (registers[4] != 0 || registers[5] != 0) {
-        if (registers[4] == 0 || registers[5] < 2) {
+        if (registers[4] == 0 || registers[5] < 2 ||
+            registers[5] > bsd_support::maximum_socket_address_size) {
           bsd_error(cpu, bsd_support::invalid_argument);
           return;
         }
@@ -1069,22 +1153,11 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
         }
         destination = *address;
       }
-      const auto sent = host->second->send(*bytes, destination);
-      if (sent.status == HostSocketStatus::WouldBlock) {
-        bsd_error(cpu, bsd_support::would_block);
-      } else if (sent.status == HostSocketStatus::Error) {
-        output_.write("[network] sendto host fd=" + std::to_string(fd) +
-                      " bytes=" + std::to_string(bytes->size()) +
-                      " error=" + std::to_string(sent.darwin_error) + "\n");
-        bsd_error(cpu, sent.darwin_error);
-      } else {
-        if (socket_payload_trace_count_ < 32U) {
-          output_.write("[network] sendto host fd=" + std::to_string(fd) +
-                        " bytes=" + std::to_string(sent.transferred) + "\n");
-          ++socket_payload_trace_count_;
-        }
-        bsd_success(cpu, static_cast<std::uint32_t>(sent.transferred));
-      }
+      const auto nonblocking =
+          (registers[3] & darwin::socket::message_dont_wait) != 0 ||
+          (file_status_flags_[fd] & darwin::open_flag::non_block) != 0;
+      static_cast<void>(send_host_socket_bytes(
+          cpu, fd, std::move(*bytes), std::move(destination), nonblocking));
       return;
     }
     if (const auto endpoint = socket_pair_endpoints_.find(fd);

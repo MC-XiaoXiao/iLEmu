@@ -21,6 +21,7 @@ inline constexpr std::uint32_t already_connected = 56;
 inline constexpr std::uint32_t not_connected = 57;
 inline constexpr std::uint32_t connection_refused = 61;
 inline constexpr std::uint32_t not_implemented = 78;
+inline constexpr std::uint32_t maximum_socket_address_size = 255;
 inline constexpr std::size_t maximum_io = 16U * 1024U * 1024U;
 
 [[nodiscard]] hfs::Timestamp

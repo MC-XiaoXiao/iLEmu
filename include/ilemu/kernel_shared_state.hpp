@@ -34,6 +34,8 @@
 
 namespace ilemu {
 
+class HostSocket;
+
 struct ProcessContext {
   std::uint32_t pid{1};
   std::uint32_t parent_pid{};
@@ -125,6 +127,13 @@ struct PendingHostAccept {
   std::uint32_t address{};
   std::uint32_t length_address{};
   std::size_t processor{};
+};
+
+struct PendingHostWrite {
+  std::uint32_t fd{};
+  std::shared_ptr<HostSocket> socket;
+  std::vector<std::byte> bytes;
+  std::vector<std::byte> destination;
 };
 
 struct PendingUnixAccept {

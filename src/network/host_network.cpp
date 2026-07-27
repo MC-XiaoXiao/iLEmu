@@ -127,6 +127,7 @@ std::uint32_t translate_error(int error) {
     case EACCES: return darwin_error_permission_denied;
     case EFAULT: return 14;
     case EINVAL: return darwin_error_invalid_argument;
+    case EPIPE: return darwin::error::broken_pipe;
     case EMFILE: return 24;
     case ENFILE: return 23;
     case EAGAIN: return darwin_error_would_block;
@@ -184,12 +185,22 @@ HostSocketResult darwin_error_result(std::uint32_t error) {
     return result;
 }
 
-bool make_nonblocking(int descriptor) {
+bool configure_socket_descriptor(int descriptor) {
     const auto descriptor_flags = ::fcntl(descriptor, F_GETFD);
     const auto status_flags = ::fcntl(descriptor, F_GETFL);
-    return descriptor_flags >= 0 && status_flags >= 0 &&
-           ::fcntl(descriptor, F_SETFD, descriptor_flags | FD_CLOEXEC) == 0 &&
-           ::fcntl(descriptor, F_SETFL, status_flags | O_NONBLOCK) == 0;
+    if (descriptor_flags < 0 || status_flags < 0 ||
+        ::fcntl(descriptor, F_SETFD, descriptor_flags | FD_CLOEXEC) != 0 ||
+        ::fcntl(descriptor, F_SETFL, status_flags | O_NONBLOCK) != 0) {
+        return false;
+    }
+#if defined(SO_NOSIGPIPE)
+    const int suppress_sigpipe = 1;
+    if (::setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE,
+                     &suppress_sigpipe, sizeof(suppress_sigpipe)) != 0) {
+        return false;
+    }
+#endif
+    return true;
 }
 
 bool is_ipv4_loopback(in_addr address) {
@@ -420,7 +431,7 @@ HostSocketCreateResult HostSocket::create(
     }
     const auto descriptor = ::socket(family, type, static_cast<int>(protocol));
     if (descriptor < 0) return {{}, translate_error(errno)};
-    if (!make_nonblocking(descriptor)) {
+    if (!configure_socket_descriptor(descriptor)) {
         const auto error = errno;
         ::close(descriptor);
         return {{}, translate_error(error)};
@@ -501,7 +512,7 @@ HostSocketResult HostSocket::accept() {
     const auto accepted = ::accept(
         descriptor_, reinterpret_cast<sockaddr*>(&address), &length);
     if (accepted < 0) return error_result(errno);
-    if (!make_nonblocking(accepted)) {
+    if (!configure_socket_descriptor(accepted)) {
         const auto error = errno;
         ::close(accepted);
         return error_result(error);

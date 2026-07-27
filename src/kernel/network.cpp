@@ -32,7 +32,6 @@ constexpr std::uint32_t ebadf = 9;
 constexpr std::uint32_t efault = 14;
 constexpr std::uint32_t einval = 22;
 constexpr std::uint32_t enotconn = 57;
-constexpr std::size_t maximum_io = 16U * 1024U * 1024U;
 
 }  // namespace
 
@@ -113,6 +112,12 @@ std::vector<darwin::route::Entry> CompatibilityKernel::route_snapshot() const {
 bool CompatibilityKernel::receive_socket_message(
     Cpu& cpu, std::uint32_t fd, std::uint32_t message_address) {
     using namespace darwin::socket;
+    if (!memory_.accessible(message_address, arm32_message::size,
+                            MemoryPermission::Read |
+                                MemoryPermission::Write)) {
+        bsd_error(cpu, efault);
+        return true;
+    }
     const auto name_address =
         memory_.read32(message_address + arm32_message::name_offset);
     const auto name_capacity =
@@ -130,9 +135,19 @@ bool CompatibilityKernel::receive_socket_message(
         bsd_error(cpu, efault);
         return true;
     }
-    if (!iov_address || !iov_count || !control_address || !control_capacity ||
-        *iov_count > 1024) {
-        bsd_error(cpu, !iov_address || !iov_count ? efault : einval);
+    if (*iov_count > darwin::io::maximum_vector_count) {
+        bsd_error(cpu, einval);
+        return true;
+    }
+    const auto iovec_bytes =
+        static_cast<std::size_t>(*iov_count) * arm32_iovec::size;
+    if ((*iov_count != 0 &&
+         (*iov_address == 0 ||
+          !memory_.accessible(*iov_address, iovec_bytes,
+                              MemoryPermission::Read))) ||
+        (*name_capacity != 0 && *name_address == 0) ||
+        (*control_capacity != 0 && *control_address == 0)) {
+        bsd_error(cpu, efault);
         return true;
     }
 
@@ -150,8 +165,8 @@ bool CompatibilityKernel::receive_socket_message(
             memory_.read32(entry + arm32_iovec::length_offset);
         if (!base || !capacity ||
             (*capacity != 0 && *base == 0) ||
-            *capacity > maximum_io ||
-            receive_capacity > maximum_io - *capacity) {
+            *capacity > bsd_support::maximum_io ||
+            receive_capacity > bsd_support::maximum_io - *capacity) {
             bsd_error(cpu, !base || !capacity || (*capacity != 0 && *base == 0)
                                ? efault
                                : einval);

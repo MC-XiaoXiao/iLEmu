@@ -515,6 +515,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id) {
   pending_socket_reads_.clear();
   pending_host_connects_.clear();
   pending_host_accepts_.clear();
+  pending_host_writes_.clear();
   pending_unix_accepts_.clear();
   pending_flocks_.clear();
   pending_record_locks_.clear();
@@ -827,6 +828,30 @@ bool CompatibilityKernel::deliver_pending_io(Cpu &cpu) {
     cpu.clear_halt();
     return true;
   }
+  if (const auto pending = pending_host_writes_.find(cpu.processor_id());
+      pending != pending_host_writes_.end()) {
+    if (!pending->second.socket) {
+      bsd_error(cpu, ebadf);
+    } else {
+      const auto sent = pending->second.socket->send(
+          pending->second.bytes, pending->second.destination);
+      if (sent.status == HostSocketStatus::WouldBlock)
+        return false;
+      if (sent.status == HostSocketStatus::Error) {
+        bsd_error(cpu, sent.darwin_error);
+      } else {
+        bsd_success(cpu, static_cast<std::uint32_t>(sent.transferred));
+        output_.write("[network] write wake pid=" +
+                      std::to_string(process_.pid) + " fd=" +
+                      std::to_string(pending->second.fd) + " bytes=" +
+                      std::to_string(sent.transferred) + "\n");
+      }
+    }
+    pending_host_writes_.erase(pending);
+    process_.waiting_for_events = false;
+    cpu.clear_halt();
+    return true;
+  }
   if (const auto pending = pending_unix_accepts_.find(cpu.processor_id());
       pending != pending_unix_accepts_.end()) {
     if (!complete_unix_accept(cpu, pending->second.fd, pending->second.address,
@@ -1075,6 +1100,10 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const {
   if (const auto pending = pending_host_accepts_.find(processor);
       pending != pending_host_accepts_.end()) {
     return "accept(fd=" + std::to_string(pending->second.fd) + ")";
+  }
+  if (const auto pending = pending_host_writes_.find(processor);
+      pending != pending_host_writes_.end()) {
+    return "write(fd=" + std::to_string(pending->second.fd) + ")";
   }
   if (const auto pending = pending_unix_accepts_.find(processor);
       pending != pending_unix_accepts_.end()) {

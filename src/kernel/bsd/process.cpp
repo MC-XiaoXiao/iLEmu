@@ -73,6 +73,7 @@ void CompatibilityKernel::release_process_descriptors() {
   virtual_descriptors_.clear();
   bpf_descriptors_.clear();
   host_sockets_.clear();
+  pending_host_writes_.clear();
   pending_wifi_driver_events_.clear();
   virtual_udp_sockets_.clear();
   kernel_control_endpoints_.clear();

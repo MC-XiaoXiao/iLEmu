@@ -394,19 +394,15 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
         bsd_error(cpu, bsd_support::invalid_argument);
         return;
       }
-      const auto bytes = memory_.read_bytes(address, size);
+      auto bytes = memory_.read_bytes(address, size);
       if (!bytes) {
         bsd_error(cpu, bsd_support::bad_address);
         return;
       }
-      const auto sent = host->second->send(*bytes);
-      if (sent.status == HostSocketStatus::WouldBlock) {
-        bsd_error(cpu, bsd_support::would_block);
-      } else if (sent.status == HostSocketStatus::Error) {
-        bsd_error(cpu, sent.darwin_error);
-      } else {
-        bsd_success(cpu, static_cast<std::uint32_t>(sent.transferred));
-      }
+      const auto nonblocking =
+          (file_status_flags_[fd] & darwin::open_flag::non_block) != 0;
+      static_cast<void>(send_host_socket_bytes(
+          cpu, fd, std::move(*bytes), {}, nonblocking));
       return;
     }
     if (const auto udp = virtual_udp_sockets_.find(fd);

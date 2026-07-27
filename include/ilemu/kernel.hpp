@@ -402,7 +402,12 @@ private:
   bool receive_socket_message(Cpu &cpu, std::uint32_t fd,
                               std::uint32_t message_address);
   bool send_socket_message(Cpu &cpu, std::uint32_t fd,
-                           std::uint32_t message_address);
+                           std::uint32_t message_address,
+                           std::uint32_t flags);
+  bool send_host_socket_bytes(Cpu &cpu, std::uint32_t fd,
+                              std::vector<std::byte> bytes,
+                              std::vector<std::byte> destination,
+                              bool nonblocking);
   bool receive_bpf_bytes(Cpu &cpu, std::uint32_t fd, std::uint32_t address,
                          std::uint32_t size);
   bool write_bpf_bytes(Cpu &cpu, std::uint32_t fd, std::uint32_t address,
@@ -567,6 +572,7 @@ private:
   std::map<std::size_t, PendingSocketRead> pending_socket_reads_;
   std::map<std::size_t, PendingHostConnect> pending_host_connects_;
   std::map<std::size_t, PendingHostAccept> pending_host_accepts_;
+  std::map<std::size_t, PendingHostWrite> pending_host_writes_;
   std::map<std::size_t, PendingUnixAccept> pending_unix_accepts_;
   std::map<std::size_t, PendingFlock> pending_flocks_;
   std::map<std::size_t, PendingRecordLock> pending_record_locks_;
