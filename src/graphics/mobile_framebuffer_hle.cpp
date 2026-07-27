@@ -17,6 +17,7 @@
 #include "ilemu/core_surface_abi.hpp"
 #include "ilemu/display.hpp"
 #include "ilemu/gles_renderer.hpp"
+#include "ilemu/graphics_services_input.hpp"
 #include "ilemu/iokit_abi.hpp"
 #include "ilemu/kernel_shared_state.hpp"
 #include "ilemu/mobile_framebuffer_abi.hpp"
@@ -105,6 +106,11 @@ MobileFramebufferHle::MobileFramebufferHle(
         display_->present();
         performance_counters().record_vsync_guest_submit(
             call.process_id(), call.argument(0));
+        if (shared_state_) {
+          graphics_services_input::complete_home_transition_after_present(
+              *shared_state_, call.process_id(),
+              scene_coordinator_.get());
+        }
       }
     }
     call.set_return(iokit_abi::success);
@@ -196,12 +202,30 @@ bool MobileFramebufferHle::display_write_allowed(
       *shared_state_, call.process_id(),
       scene_coordinator_
           ? std::optional<bool>{
-                scene_coordinator_->client_scene_active(call.process_id())}
+                scene_coordinator_->client_scene_presentable(
+                    call.process_id())}
           : std::nullopt);
 }
 
 bool MobileFramebufferHle::has_active_layers() const {
   return !layers_.empty();
+}
+
+bool MobileFramebufferHle::application_surface_allowed(
+    std::uint32_t producer_process_id,
+    std::uint64_t publication_sequence) const {
+  if (!shared_state_ || producer_process_id == 0U ||
+      publication_sequence == 0U) {
+    return true;
+  }
+  if (!shared_state_->application_fullscreen_surface_suppression_active.load(
+          std::memory_order_acquire)) {
+    return true;
+  }
+  std::lock_guard lock{shared_state_->mach_mutex};
+  return !shared_state_
+              ->suppressed_application_fullscreen_surface_publications
+              .contains({producer_process_id, publication_sequence});
 }
 
 void MobileFramebufferHle::ensure_scanout_surface() {
@@ -246,14 +270,14 @@ bool MobileFramebufferHle::submit_host_layers() {
         !exact(rectangle.width) || !exact(rectangle.height) ||
         rectangle.x < 0.0F || rectangle.y < 0.0F ||
         rectangle.width <= 0.0F || rectangle.height <= 0.0F ||
-        rectangle.x >
-            static_cast<float>(std::numeric_limits<std::int32_t>::max()) ||
-        rectangle.y >
-            static_cast<float>(std::numeric_limits<std::int32_t>::max()) ||
-        rectangle.width >
-            static_cast<float>(std::numeric_limits<std::uint32_t>::max()) ||
-        rectangle.height >
-            static_cast<float>(std::numeric_limits<std::uint32_t>::max())) {
+        static_cast<double>(rectangle.x) >
+            static_cast<double>(std::numeric_limits<std::int32_t>::max()) ||
+        static_cast<double>(rectangle.y) >
+            static_cast<double>(std::numeric_limits<std::int32_t>::max()) ||
+        static_cast<double>(rectangle.width) >
+            static_cast<double>(std::numeric_limits<std::uint32_t>::max()) ||
+        static_cast<double>(rectangle.height) >
+            static_cast<double>(std::numeric_limits<std::uint32_t>::max())) {
       return std::nullopt;
     }
     return HostRectangle{
@@ -275,6 +299,12 @@ bool MobileFramebufferHle::submit_host_layers() {
   prepared_layers.reserve(layers_.size());
   for (const auto &[layer, state] : layers_) {
     const auto backing = surface_store_->find(state.surface_id);
+    if (backing &&
+        !application_surface_allowed(
+            backing->provenance.producer_process_id,
+            backing->provenance.publication_sequence)) {
+      continue;
+    }
     const auto source = surface_store_->host_surface(state.surface_id);
     const auto source_rectangle = exact_rectangle(state.source);
     const auto destination_rectangle = exact_rectangle(state.destination);
@@ -511,6 +541,12 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall &call) {
   for (const auto &[layer, state] : layers_) {
     static_cast<void>(layer);
     const auto backing = surface_store_->find(state.surface_id);
+    if (backing &&
+        !application_surface_allowed(
+            backing->provenance.producer_process_id,
+            backing->provenance.publication_sequence)) {
+      continue;
+    }
     auto source_pixels =
         surface_store_->read_argb(call.memory(), state.surface_id);
     if (!backing || !source_pixels || backing->width == 0 ||
@@ -615,7 +651,10 @@ void MobileFramebufferHle::record_presentation(UserlandHleCall &call) {
   presented_layers.reserve(layers_.size());
   for (const auto &[order, state] : layers_) {
     const auto backing = surface_store_->find(state.surface_id);
-    if (!backing)
+    if (!backing ||
+        !application_surface_allowed(
+            backing->provenance.producer_process_id,
+            backing->provenance.publication_sequence))
       continue;
     const auto scale_x = state.source.width / state.destination.width;
     const auto scale_y = state.source.height / state.destination.height;
@@ -652,8 +691,9 @@ void MobileFramebufferHle::set_background_color(UserlandHleCall &call) {
   const auto blue = channel(call.argument(3));
   const auto alpha = channel(call.argument(4));
   background_argb_ = (alpha << 24U) | (red << 16U) | (green << 8U) | blue;
-  if (display_ && display_write_allowed(call))
-    display_->clear(background_argb_);
+  // This updates the pending swap transaction.  Publishing the clear here
+  // exposes an incomplete frame when SpringBoard sets the background before
+  // its layers and SwapEnd, notably during Lock/wake handoff.
   call.set_return(iokit_abi::success);
 }
 

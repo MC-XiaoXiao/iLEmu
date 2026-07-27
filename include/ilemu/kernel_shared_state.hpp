@@ -316,6 +316,13 @@ struct KernelSharedState {
     std::uint32_t flags{};
   };
   struct MachMessage {
+    enum class GraphicsInputKind {
+      None,
+      Touch,
+      Home,
+      Lock,
+      OtherSystem,
+    };
     struct ReceivePointerFixup {
       std::uint32_t value_offset{};
       std::uint32_t target_offset{};
@@ -342,6 +349,9 @@ struct KernelSharedState {
     std::uint32_t sender_pid{};
     std::uint32_t sender_uid{};
     std::uint32_t sender_gid{};
+    std::uint64_t graphics_input_sequence{};
+    GraphicsInputKind graphics_input_kind{GraphicsInputKind::None};
+    std::optional<TouchPhase> graphics_touch_phase;
     std::vector<OolPayload> ool_payloads;
     std::vector<OolPortArray> ool_port_arrays;
     std::optional<std::uint32_t> reply_object;
@@ -473,11 +483,53 @@ struct KernelSharedState {
     Kind kind{Kind::Touch};
     TouchInput touch;
     std::uint32_t system_event_type{};
+    std::uint64_t input_sequence{};
+    MachMessage::GraphicsInputKind input_kind{
+        MachMessage::GraphicsInputKind::None};
+  };
+  struct PendingBootstrapServiceLookup {
+    std::string service_name;
+    std::uint32_t requester_process_id{};
+    std::uint64_t origin_touch_sequence{};
+    bool application_launch_candidate{};
   };
   enum class ApplicationSuspensionReason {
     None,
     Home,
     Lock,
+  };
+  enum class HostDisplayIntent {
+    GuestControlled,
+    LockedOff,
+    WakePending,
+  };
+  enum class ApplicationLaunchOrigin {
+    Spawn,
+    EventServiceLookup,
+  };
+  enum class ApplicationLaunchPhase {
+    Launching,
+    Active,
+    Suspended,
+    InterruptedHome,
+    HeldLock,
+  };
+  struct ApplicationLaunchAttempt {
+    std::uint64_t token{};
+    std::uint64_t origin_touch_sequence{};
+    ApplicationLaunchOrigin origin{ApplicationLaunchOrigin::Spawn};
+    ApplicationLaunchPhase phase{ApplicationLaunchPhase::Launching};
+  };
+  struct ApplicationLaunchBarrier {
+    ApplicationSuspensionReason reason{ApplicationSuspensionReason::None};
+    std::uint64_t input_sequence{};
+  };
+  struct HeldApplicationLaunch {
+    std::uint64_t origin_touch_sequence{};
+    std::uint64_t lock_input_sequence{};
+    std::uint32_t process_id{};
+    std::uint64_t launch_token{};
+    std::uint64_t unlock_up_sequence{};
   };
   struct ApplicationTouchTransform {
     float presentation_offset_x{};
@@ -597,7 +649,8 @@ struct KernelSharedState {
   // launchd remains the authority for the bootstrap namespace. These caches
   // only remember replies already observed on the emulated Mach IPC path so
   // host devices can address the same global ipc_port objects.
-  std::map<std::uint32_t, std::string> pending_bootstrap_service_lookups;
+  std::map<std::uint32_t, PendingBootstrapServiceLookup>
+      pending_bootstrap_service_lookups;
   std::map<std::string, std::uint32_t> bootstrap_service_objects;
   // A failed bootstrap lookup is commonly followed by a bounded polling
   // sleep while launchd starts an on-demand provider. Track the precise
@@ -620,6 +673,86 @@ struct KernelSharedState {
   ApplicationSuspensionReason application_suspension_reason{
       ApplicationSuspensionReason::None};
   std::optional<std::uint32_t> suspended_application_scene_process_id;
+  std::uint64_t next_graphics_input_sequence{1};
+  std::uint64_t springboard_last_consumed_touch_sequence{};
+  // Launch causality belongs to the gesture that selected an icon, not its
+  // final Up delivery. Home cancels that gesture; Lock only holds it until a
+  // successful unlock.
+  std::uint64_t springboard_active_touch_begin_sequence{};
+  std::uint64_t springboard_last_touch_begin_sequence{};
+  // At most one SpringBoard gesture may nominate the next foreground App.
+  // Bootstrap lookups and spawn consume this exact sequence; historical
+  // touches must never turn unrelated resident-service probes into launches.
+  std::uint64_t springboard_pending_launch_touch_sequence{};
+  // Input can be waiting in SpringBoard's Mach queue when a host Lock/Home
+  // command arrives. Keep the host-enqueue gesture boundary as well as the
+  // receive-side boundary above so a loaded guest cannot lose launch
+  // causality merely because it has not drained the touch message yet.
+  std::uint64_t springboard_enqueued_active_touch_begin_sequence{};
+  std::uint64_t springboard_enqueued_last_touch_begin_sequence{};
+  std::uint64_t springboard_enqueued_last_touch_end_sequence{};
+  // The first SpringBoard-directed gesture after Home wakes a locked display
+  // is the unlock gesture, not an application-launch intent. Retain its exact
+  // sequence range so service lookups caused by unlock cannot revive a held
+  // launch attempt.
+  bool springboard_unlock_touch_pending{};
+  bool springboard_unlock_touch_active{};
+  std::uint64_t springboard_unlock_touch_begin_sequence{};
+  std::uint64_t springboard_unlock_touch_end_sequence{};
+  float springboard_unlock_touch_start_x{};
+  float springboard_unlock_touch_start_y{};
+  std::uint64_t next_application_launch_token{1};
+  std::optional<ApplicationLaunchBarrier> application_launch_barrier;
+  // Home is a cancellation watermark independent of the latest Lock barrier.
+  // Keeping it monotonic prevents a later Lock from reviving an older launch.
+  std::uint64_t last_home_launch_barrier_sequence{};
+  // Every attempt is bound to an exact PID and a reliable SpringBoard target
+  // event. Scene/lifecycle callbacks may observe an attempt but never create
+  // one, so an old callback cannot consume a newer foreground intent.
+  std::map<std::uint32_t, ApplicationLaunchAttempt>
+      application_launch_attempts;
+  std::optional<std::uint32_t>
+      foreground_application_attempt_process_id;
+  // A Lock holds one exact foreground launch. The token may initially contain
+  // only the selecting gesture; a later spawn or service lookup binds its PID.
+  // Unlock records completion but activation remains owned by the firmware's
+  // subsequent lifecycle/scene commit.
+  std::optional<HeldApplicationLaunch> held_application_launch;
+  // Lock can preempt an already-running Home exit after SpringBoard has
+  // committed only a partial desktop transform. A deliberate unlock then
+  // requests one final Home redraw, even if the outgoing App has exited.
+  std::optional<std::uint64_t>
+      interrupted_home_exit_lock_sequence;
+  // CoreSurface publication sequences are immutable even if a transport ID
+  // or PID is later reused. Track only full-screen application publications:
+  // SpringBoard's home-screen icons also retain application provenance and
+  // must never be hidden merely because that application was interrupted.
+  std::map<std::uint32_t, std::set<std::uint64_t>>
+      application_fullscreen_surface_publications;
+  // While a launch is causally interrupted, new full-screen publications
+  // from that producer are suppressed as well as the ones already known.
+  std::set<std::uint32_t>
+      suppress_future_application_fullscreen_surface_processes;
+  std::set<std::pair<std::uint32_t, std::uint64_t>>
+      suppressed_application_fullscreen_surface_publications;
+  std::atomic_bool application_fullscreen_surface_suppression_active{false};
+  // Host Lock must win over a late userspace power-on. Conversely, once a
+  // wake begins, the trailing panel-off request from the preceding Lock must
+  // not turn the newly woken display black. Keep the power transaction
+  // separate from the guest-visible Home and Lock events.
+  HostDisplayIntent host_display_intent{HostDisplayIntent::GuestControlled};
+  // Each Lock Down starts one asynchronous SpringBoard panel-off request.
+  // Keep all unresolved generations: under load an older request can arrive
+  // several seconds after a later wake/lock cycle has already begun.
+  std::deque<std::uint64_t>
+      host_display_pending_lock_power_off_sequences;
+  std::uint64_t host_display_current_lock_down_sequence{};
+  std::uint64_t host_display_wake_after_lock_sequence{};
+  bool host_display_wake_power_on_acknowledged{};
+  // Sleep/Wake owns the hardware power domain. It may reveal the retained
+  // lock scene before SpringBoard catches up, but it never changes the
+  // identity of the Lock event delivered to the guest.
+  bool host_display_hardware_wake_pending{};
   std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t>
       application_scene_context_owners;
   std::map<std::uint32_t, ApplicationTouchTransform>
@@ -717,6 +850,10 @@ struct KernelSharedState {
 [[nodiscard]] inline bool active_application_owns_display_locked(
     const KernelSharedState &state, std::uint32_t process_id,
     std::optional<bool> migrated_scene_committed = std::nullopt) {
+  // The outgoing App remains sampleable as a texture for SpringBoard's native
+  // shrink animation, but suspension immediately revokes direct panel
+  // ownership. Conflating the two lets a late first App frame flash
+  // fullscreen after Home.
   if (state.application_touch_suspended ||
       state.active_application_event_object == 0U ||
       !state.active_application_scene ||

@@ -571,7 +571,8 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
           if (bootstrap_lookup && !bootstrap_service_name.empty() &&
               reply_object) {
             graphics_services_input::record_bootstrap_lookup_locked(
-                *shared_state_, *reply_object, bootstrap_service_name);
+                *shared_state_, *reply_object, bootstrap_service_name,
+                process_.pid);
           }
           if (bootstrap_registration && !bootstrap_service_name.empty()) {
             graphics_services_input::record_bootstrap_registration_locked(

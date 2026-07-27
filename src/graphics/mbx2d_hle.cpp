@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -16,6 +17,7 @@
 #include "ilemu/address_space.hpp"
 #include "ilemu/display.hpp"
 #include "ilemu/gles_renderer.hpp"
+#include "ilemu/kernel_shared_state.hpp"
 #include "ilemu/mbx2d_abi.hpp"
 #include "ilemu/output.hpp"
 #include "ilemu/presentation_tracker.hpp"
@@ -240,6 +242,11 @@ void Mbx2dHle::set_presentation_tracker(
   presentation_tracker_ = std::move(presentations);
 }
 
+void Mbx2dHle::set_shared_state(
+    std::shared_ptr<KernelSharedState> shared_state) {
+  shared_state_ = std::move(shared_state);
+}
+
 std::uint32_t Mbx2dHle::allocate_surface(std::uint32_t core_surface_id,
                                          bool framebuffer) {
   const auto handle = next_surface_++;
@@ -439,6 +446,26 @@ Mbx2dHle::resolve(const std::optional<Binding> &binding) const {
       false,
       backing->width,
       backing->height};
+}
+
+bool Mbx2dHle::source_surface_allowed(
+    const ResolvedSurface &surface) const {
+  if (!shared_state_ || !surface.backing)
+    return true;
+  if (!shared_state_->application_fullscreen_surface_suppression_active.load(
+          std::memory_order_acquire)) {
+    return true;
+  }
+  const auto &provenance = surface.backing->provenance;
+  if (provenance.producer_process_id == 0U ||
+      provenance.publication_sequence == 0U) {
+    return true;
+  }
+  std::lock_guard lock{shared_state_->mach_mutex};
+  return !shared_state_
+              ->suppressed_application_fullscreen_surface_publications
+              .contains({provenance.producer_process_id,
+                         provenance.publication_sequence});
 }
 
 bool Mbx2dHle::clip_region(BlitRegion &region, const ResolvedSurface *source,
@@ -938,6 +965,10 @@ void Mbx2dHle::blit_copy(UserlandHleCall &call, bool context_api) {
   const auto destination = resolve(state->destination);
   if (!source || !destination) {
     call.set_return(mbx_failure);
+    return;
+  }
+  if (!source_surface_allowed(*source)) {
+    call.set_return(mbx_success);
     return;
   }
   BlitRegion region{

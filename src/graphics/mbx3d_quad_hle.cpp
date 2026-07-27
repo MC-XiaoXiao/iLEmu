@@ -226,6 +226,10 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
     call.set_return(mbx2d_abi::failure);
     return;
   }
+  if (!source_surface_allowed(*source)) {
+    call.set_return(mbx2d_abi::success);
+    return;
+  }
 
   auto left_value = (*positions)[0].x;
   auto right_value = left_value;

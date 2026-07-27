@@ -1,4 +1,5 @@
 #include "ilemu/kernel.hpp"
+#include "ilemu/graphics_services_input.hpp"
 #include "ilemu/performance.hpp"
 
 #include <cstdint>
@@ -110,6 +111,9 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
     bsd_error(cpu, 8); // ENOEXEC
     return true;
   }
+  graphics_services_input::record_application_spawn(
+      *shared_state_, process_.pid, *child, *path, *arguments,
+      scene_coordinator_.get());
   performance_counters().record_exec();
   if (!memory_.write32(pid_address, *child)) {
     bsd_error(cpu, bsd_support::bad_address);

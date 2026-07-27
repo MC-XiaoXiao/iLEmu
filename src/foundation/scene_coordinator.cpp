@@ -51,7 +51,8 @@ void SceneCoordinator::activate_client_scene(
     return;
   for (auto &[process_id, scene] : client_scenes_) {
     if (process_id != client_process_id &&
-        scene.state == ClientSceneState::Active) {
+        (scene.state == ClientSceneState::Active ||
+         scene.state == ClientSceneState::Exiting)) {
       scene.state = ClientSceneState::Suspended;
     }
   }
@@ -66,12 +67,30 @@ void SceneCoordinator::suspend_client_scene(
     found->second.state = ClientSceneState::Suspended;
 }
 
+void SceneCoordinator::begin_client_scene_exit(
+    std::uint32_t client_process_id) {
+  std::lock_guard lock{mutex_};
+  const auto found = client_scenes_.find(client_process_id);
+  if (found != client_scenes_.end()) {
+    found->second.state = ClientSceneState::Exiting;
+  }
+}
+
 bool SceneCoordinator::client_scene_active(
     std::uint32_t client_process_id) const {
   std::lock_guard lock{mutex_};
   const auto found = client_scenes_.find(client_process_id);
   return found != client_scenes_.end() &&
          found->second.state == ClientSceneState::Active;
+}
+
+bool SceneCoordinator::client_scene_presentable(
+    std::uint32_t client_process_id) const {
+  std::lock_guard lock{mutex_};
+  const auto found = client_scenes_.find(client_process_id);
+  return found != client_scenes_.end() &&
+         (found->second.state == ClientSceneState::Active ||
+          found->second.state == ClientSceneState::Exiting);
 }
 
 std::optional<ClientScene>

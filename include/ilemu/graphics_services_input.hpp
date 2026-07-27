@@ -52,7 +52,8 @@ event_type(std::span<const std::byte> message);
 // caller must hold KernelSharedState::mach_mutex.
 void record_bootstrap_lookup_locked(KernelSharedState &state,
                                     std::uint32_t reply_object,
-                                    std::string_view service_name);
+                                    std::string_view service_name,
+                                    std::uint32_t requester_process_id = 0);
 void record_bootstrap_registration_locked(KernelSharedState &state,
                                           std::string_view service_name);
 [[nodiscard]] ServiceResolution record_bootstrap_reply_locked(
@@ -64,12 +65,19 @@ void record_bootstrap_registration_locked(KernelSharedState &state,
 // its event service is retained and flushed as soon as launchd replies.
 [[nodiscard]] EnqueueResult enqueue_touch(KernelSharedState &state,
                                           const TouchInput &input,
-                                          const SceneCoordinator *scenes =
+                                          SceneCoordinator *scenes = nullptr,
+                                          bool *home_recovery_requested =
                                               nullptr);
 
 // A complete Home Down/Up pair wakes a sleeping lock screen before touch.
 [[nodiscard]] EnqueueResult
-enqueue_system_button(KernelSharedState &state, const SystemButtonInput &input);
+enqueue_system_button(KernelSharedState &state, const SystemButtonInput &input,
+                      std::uint64_t *input_sequence = nullptr,
+                      bool begins_display_lock_transaction = false);
+
+// Marks the first subsequent SpringBoard touch gesture as lock-screen unlock
+// input. Its service lookups are not foreground launch intents.
+void record_lock_wake_request(KernelSharedState &state);
 
 // Publishes the firmware event for the new physical ringer/silent switch
 // position. The switch value remains in the device-state provider.
@@ -82,6 +90,15 @@ enqueue_ringer_switch_change(KernelSharedState &state, bool active);
 void activate_resolved_application(KernelSharedState &state,
                                    std::uint32_t process_id,
                                    SceneCoordinator *scenes = nullptr);
+
+// SpringBoard's successful, non-prewarmed posix_spawn is the earliest event
+// that identifies a cold foreground target exactly. It creates a PID-bound
+// launch token before scene or lifecycle callbacks can publish that App.
+void record_application_spawn(
+    KernelSharedState &state, std::uint32_t sender_process_id,
+    std::uint32_t process_id, std::string_view executable_path,
+    std::span<const std::string> arguments,
+    SceneCoordinator *scenes = nullptr);
 
 // Starts a new generation for a server-side LayerKit render context. The next
 // visible root commit binds the context to the then-pending App event route.
@@ -111,6 +128,14 @@ void release_application_process_locked(KernelSharedState &state,
 void suspend_active_application(
     KernelSharedState &state,
     KernelSharedState::ApplicationSuspensionReason reason,
+    SceneCoordinator *scenes = nullptr,
+    std::uint64_t system_input_sequence = 0);
+
+// Observes SpringBoard composition after Home. The first desktop frame starts
+// the native exit animation; final ownership remains with the ordered App
+// background event (or the next deliberate gesture as a stale-state fallback).
+void complete_home_transition_after_present(
+    KernelSharedState &state, std::uint32_t presenter_process_id,
     SceneCoordinator *scenes = nullptr);
 
 // Observes ordinary SpringBoard-to-application GSEvents while the caller holds

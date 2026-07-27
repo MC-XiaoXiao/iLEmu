@@ -112,6 +112,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   core_surface_hle_.set_scene_coordinator(scene_coordinator_);
   opengles_hle_.set_shared_state(shared_state_);
   opengles_hle_.set_scene_coordinator(scene_coordinator_);
+  mbx2d_hle_.set_shared_state(shared_state_);
   mobile_framebuffer_hle_.set_shared_state(shared_state_);
   mobile_framebuffer_hle_.set_scene_coordinator(scene_coordinator_);
   register_core_telephony_hle(
@@ -220,9 +221,11 @@ void CompatibilityKernel::enqueue_baseband_input(
 void CompatibilityKernel::enqueue_touch_input(const TouchInput &input) {
   const PerformanceLatencyScope latency{PerfLatencyKind::InputEnqueue};
   performance_counters().discard_pending_vsync_callbacks();
+  bool home_recovery_requested = false;
   const auto result =
       graphics_services_input::enqueue_touch(*shared_state_, input,
-                                             scene_coordinator_.get());
+                                             scene_coordinator_.get(),
+                                             &home_recovery_requested);
   const auto phase = [phase = input.phase] {
     switch (phase) {
     case TouchPhase::Down:
@@ -241,36 +244,98 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput &input) {
                 (result == graphics_services_input::EnqueueResult::Queued
                      ? " queued\n"
                      : " deferred\n"));
+  if (home_recovery_requested) {
+    output_.line(
+        "[input] recovery=interrupted-lock-launch action=home");
+    enqueue_system_button_impl(
+        SystemButtonInput{SystemButton::Home, SystemButtonPhase::Down}, true);
+    enqueue_system_button_impl(
+        SystemButtonInput{SystemButton::Home, SystemButtonPhase::Up}, true);
+  }
 }
 
 void CompatibilityKernel::enqueue_system_button(
     const SystemButtonInput &input) {
+  enqueue_system_button_impl(input, false);
+}
+
+void CompatibilityKernel::enqueue_system_button_impl(
+    const SystemButtonInput &input, bool force_home_transition) {
   const PerformanceLatencyScope latency{PerfLatencyKind::InputEnqueue};
   performance_counters().discard_pending_vsync_callbacks();
-  bool home_pressed_while_display_asleep = false;
-  if (input.button == SystemButton::Home &&
-      input.phase == SystemButtonPhase::Down) {
+  bool wake_button_pressed_while_display_asleep = false;
+  bool wake_only_system_button = false;
+  bool begins_display_lock_transaction = false;
+  if (input.phase == SystemButtonPhase::Down &&
+      (input.button == SystemButton::Home ||
+       input.button == SystemButton::Lock)) {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
-    if (shared_state_->requested_display_power_state.value_or(1U) == 0U) {
-      home_pressed_while_display_asleep = true;
+    const auto display_asleep =
+        shared_state_->requested_display_power_state.value_or(1U) == 0U;
+    if (display_asleep && !force_home_transition) {
+      wake_button_pressed_while_display_asleep = true;
+      wake_only_system_button = true;
+      shared_state_->host_display_intent =
+          KernelSharedState::HostDisplayIntent::WakePending;
+      shared_state_->host_display_wake_after_lock_sequence =
+          shared_state_->host_display_current_lock_down_sequence;
+      shared_state_->host_display_wake_power_on_acknowledged = false;
+      shared_state_->host_display_hardware_wake_pending =
+          input.button == SystemButton::Lock;
+      if (input.button == SystemButton::Lock) {
+        // Sleep/Wake owns panel power independently of SpringBoard. Preserve
+        // the physical Lock event below; only the display power transition is
+        // handled at the host boundary.
+        shared_state_->requested_display_power_state = 1U;
+      }
+    } else if (input.button == SystemButton::Lock &&
+               !force_home_transition) {
+      // Publish the host Lock intent before the GSEvent becomes visible.
+      // SpringBoard can consume the event on another guest CPU immediately
+      // after enqueue; publishing this later loses that receive-side
+      // acknowledgement and can strand the next wake indefinitely.
+      shared_state_->host_display_intent =
+          KernelSharedState::HostDisplayIntent::LockedOff;
+      shared_state_->requested_display_power_state = 0U;
+      shared_state_->host_display_wake_power_on_acknowledged = false;
+      shared_state_->host_display_hardware_wake_pending = false;
+      begins_display_lock_transaction = true;
+    } else if (!force_home_transition &&
+               input.button == SystemButton::Home &&
+               (shared_state_->springboard_unlock_touch_pending ||
+                shared_state_->springboard_unlock_touch_active)) {
+      // The LCD can already be on while SpringBoard still owns the lock
+      // scene. Home is then another wake notification, not an App-exit
+      // barrier.
+      wake_only_system_button = true;
     }
   }
-  // Sleeping Home is a wake request for SpringBoard, not a host-side panel
-  // transition. The firmware prepares its lock scene and then requests LCD
-  // power through IOKit; exposing the retained scanout here races that order.
+  if (wake_button_pressed_while_display_asleep) {
+    graphics_services_input::record_lock_wake_request(*shared_state_);
+  }
+  std::uint64_t system_input_sequence = 0;
+  const auto result = graphics_services_input::enqueue_system_button(
+      *shared_state_, input, &system_input_sequence,
+      begins_display_lock_transaction);
+  // A sleeping Home or Sleep/Wake button is a wake request for SpringBoard,
+  // not a new suspend transition. The firmware prepares its lock scene and
+  // then requests LCD power through IOKit.
   if ((input.button == SystemButton::Home ||
        input.button == SystemButton::Lock) &&
       input.phase == SystemButtonPhase::Down &&
-      !home_pressed_while_display_asleep) {
+      (!wake_only_system_button || force_home_transition)) {
     graphics_services_input::suspend_active_application(
         *shared_state_,
         input.button == SystemButton::Lock
             ? KernelSharedState::ApplicationSuspensionReason::Lock
             : KernelSharedState::ApplicationSuspensionReason::Home,
-        scene_coordinator_.get());
+        scene_coordinator_.get(), system_input_sequence);
   }
-  const auto result =
-      graphics_services_input::enqueue_system_button(*shared_state_, input);
+  if (input.button == SystemButton::Lock &&
+      input.phase == SystemButtonPhase::Down &&
+      !wake_button_pressed_while_display_asleep) {
+    display_state_->set_powered_on(false);
+  }
   const auto button = [value = input.button] {
     switch (value) {
     case SystemButton::Home:
@@ -332,16 +397,44 @@ std::vector<std::byte> CompatibilityKernel::take_baseband_output() {
 }
 
 bool CompatibilityKernel::refresh_display_scanout() {
-  const auto power_on = display_powered_on();
-  display_state_->set_powered_on(power_on);
-  if (!power_on)
+  bool power_on = false;
+  {
+    std::lock_guard mach_lock{shared_state_->mach_mutex};
+    power_on =
+        shared_state_->requested_display_power_state.value_or(1U) != 0U;
+  }
+
+  if (!power_on) {
+    display_state_->set_powered_on(false);
     return false;
+  }
+
+  const auto waking = !display_state_->powered_on();
   // Once SpringBoard uses transactional MobileFramebuffer layers, SwapEnd is
   // the sole frame boundary. Polling the legacy default surface here would
   // expose partially rendered offscreen buffers between layer transactions.
   if (mobile_framebuffer_hle_.has_active_layers()) {
+    display_state_->set_powered_on(true);
     return false;
   }
+
+  // Stage the legacy backing while the panel is still dark, then reveal the
+  // retained scanout.  Reversing this order exposes the pre-wake App or a
+  // partially cleared SpringBoard buffer for one host frame.
+  if (waking) {
+    const auto refreshed =
+        core_surface_hle_.refresh_default_scanout(memory_);
+    display_state_->set_powered_on(true);
+    if (refreshed) {
+      output_.write(
+          "[display] scanout pid=" + std::to_string(process_.pid) +
+          " frame=" +
+          std::to_string(display_state_->presented_frames()) + "\n");
+    }
+    return refreshed;
+  }
+
+  display_state_->set_powered_on(true);
   const auto now = shared_state_->clock.now();
   if (next_display_scanout_deadline_ && now < *next_display_scanout_deadline_) {
     return false;
@@ -1266,6 +1359,7 @@ void CompatibilityKernel::inherit_process_state(
   core_surface_hle_.set_scene_coordinator(scene_coordinator_);
   opengles_hle_.set_shared_state(shared_state_);
   opengles_hle_.set_scene_coordinator(scene_coordinator_);
+  mbx2d_hle_.set_shared_state(shared_state_);
   mobile_framebuffer_hle_.set_shared_state(shared_state_);
   mobile_framebuffer_hle_.set_presentation_tracker(presentation_tracker_);
   mobile_framebuffer_hle_.set_scene_coordinator(scene_coordinator_);

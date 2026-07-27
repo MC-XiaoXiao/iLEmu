@@ -163,8 +163,9 @@ bool OpenGlesHle::display_write_allowed(UserlandHleCall& call) const {
     return active_application_owns_display_locked(
         *shared_state_, call.process_id(),
         scene_coordinator_
-            ? std::optional<bool>{scene_coordinator_->client_scene_active(
-                  call.process_id())}
+            ? std::optional<bool>{
+                  scene_coordinator_->client_scene_presentable(
+                      call.process_id())}
             : std::nullopt);
 }
 

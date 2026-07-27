@@ -40,6 +40,9 @@ private:
     void submit_layers(UserlandHleCall& call);
     void record_presentation(UserlandHleCall& call);
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
+    [[nodiscard]] bool
+    application_surface_allowed(std::uint32_t producer_process_id,
+                                std::uint64_t publication_sequence) const;
     [[nodiscard]] bool submit_host_layers();
     void ensure_scanout_surface();
 

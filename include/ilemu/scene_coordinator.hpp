@@ -25,6 +25,7 @@ struct SceneTransform {
 enum class ClientSceneState {
   Committed,
   Active,
+  Exiting,
   Suspended,
 };
 
@@ -47,9 +48,12 @@ public:
   client_scene(std::uint32_t client_process_id) const;
   [[nodiscard]] std::optional<ClientScene> active_client_scene() const;
   void activate_client_scene(std::uint32_t client_process_id);
+  void begin_client_scene_exit(std::uint32_t client_process_id);
   void suspend_client_scene(std::uint32_t client_process_id);
   [[nodiscard]] bool
   client_scene_active(std::uint32_t client_process_id) const;
+  [[nodiscard]] bool
+  client_scene_presentable(std::uint32_t client_process_id) const;
   void retire_process(std::uint32_t process_id);
 
 private:

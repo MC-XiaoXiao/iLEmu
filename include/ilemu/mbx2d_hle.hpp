@@ -18,6 +18,7 @@ class UserlandHleCall;
 class UserlandHleRegistry;
 class DisplayState;
 class GlesRenderer;
+struct KernelSharedState;
 class PresentationTracker;
 
 // User-mode compatibility implementation for the MBX2D API consumed by
@@ -34,6 +35,7 @@ public:
   void set_display(std::shared_ptr<DisplayState> display);
   void set_presentation_tracker(
       std::shared_ptr<PresentationTracker> presentations);
+  void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);
 
 private:
   struct Surface {
@@ -122,6 +124,8 @@ private:
   void terminate(UserlandHleCall &call);
   [[nodiscard]] std::optional<ResolvedSurface>
   resolve(const std::optional<Binding> &binding) const;
+  [[nodiscard]] bool
+  source_surface_allowed(const ResolvedSurface &surface) const;
   [[nodiscard]] bool clip_region(BlitRegion &region,
                                  const ResolvedSurface *source,
                                  const ResolvedSurface &destination,
@@ -169,6 +173,7 @@ private:
   std::shared_ptr<DisplayState> display_;
   std::shared_ptr<SurfaceStore> surface_store_;
   std::shared_ptr<PresentationTracker> presentation_tracker_;
+  std::shared_ptr<KernelSharedState> shared_state_;
   std::shared_ptr<GlesRenderer> host_graphics_;
   std::unique_ptr<CommandEncoder> command_encoder_;
 };

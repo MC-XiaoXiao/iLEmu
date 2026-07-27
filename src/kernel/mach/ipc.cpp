@@ -373,9 +373,15 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
     return true;
   }
 
+  const auto delivered_sender_pid = pending_message.sender_pid;
+  const auto delivered_input_sequence =
+      pending_message.graphics_input_sequence;
+  const auto delivered_input_kind = pending_message.graphics_input_kind;
+  const auto delivered_touch_phase =
+      pending_message.graphics_touch_phase;
   queue->second.pop_front();
   output_.write(
-      "[mach] deliver sender=" + std::to_string(pending_message.sender_pid) +
+      "[mach] deliver sender=" + std::to_string(delivered_sender_pid) +
       " receiver=" + std::to_string(process_.pid) +
       " port=" + std::to_string(queued_port) +
       " id=" + std::to_string(received->message_id) +
@@ -389,6 +395,28 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
     static_cast<void>(
         shared_state_->mach_port_objects.increment_sequence_number(
             queued_port));
+    const auto receiver = shared_state_->processes.find(process_.pid);
+    if (delivered_input_sequence != 0U &&
+        delivered_input_kind ==
+            KernelSharedState::MachMessage::GraphicsInputKind::Touch &&
+        receiver != shared_state_->processes.end() &&
+        !receiver->second.exited &&
+        receiver->second.executable_path.ends_with(
+            "/SpringBoard.app/SpringBoard")) {
+      shared_state_->springboard_last_consumed_touch_sequence =
+          delivered_input_sequence;
+      if (delivered_touch_phase == TouchPhase::Down) {
+        shared_state_->springboard_active_touch_begin_sequence =
+            delivered_input_sequence;
+      } else if (delivered_touch_phase == TouchPhase::Up ||
+                 delivered_touch_phase == TouchPhase::Cancel) {
+        shared_state_->springboard_last_touch_begin_sequence =
+            shared_state_->springboard_active_touch_begin_sequence != 0U
+                ? shared_state_->springboard_active_touch_begin_sequence
+                : delivered_input_sequence;
+        shared_state_->springboard_active_touch_begin_sequence = 0U;
+      }
+    }
   }
   cpu.registers()[0] = copied ? 0U : 0x10004008U; // MACH_RCV_INVALID_DATA
   pending_mach_receives_.erase(pending);

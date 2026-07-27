@@ -213,10 +213,59 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
         scalar_output_capacity != 0U) {
       return MethodResult{iokit_abi::bad_argument, {}};
     }
+    auto requested_power_state =
+        static_cast<std::uint32_t>(scalar_input.front());
+    const auto wake_lock_power_off_pending = [&state] {
+      return state.host_display_wake_after_lock_sequence != 0U &&
+             std::find(
+                 state.host_display_pending_lock_power_off_sequences.begin(),
+                 state.host_display_pending_lock_power_off_sequences.end(),
+                 state.host_display_wake_after_lock_sequence) !=
+                 state.host_display_pending_lock_power_off_sequences.end();
+    };
+    if (state.host_display_intent ==
+        KernelSharedState::HostDisplayIntent::LockedOff) {
+      if (requested_power_state == 0U &&
+          !state.host_display_pending_lock_power_off_sequences.empty()) {
+        state.host_display_pending_lock_power_off_sequences.pop_front();
+      }
+      requested_power_state = 0U;
+    } else if (state.host_display_intent ==
+               KernelSharedState::HostDisplayIntent::WakePending) {
+      if (requested_power_state == 0U) {
+        const auto belongs_to_preceding_lock =
+            wake_lock_power_off_pending();
+        if (belongs_to_preceding_lock &&
+            !state.host_display_pending_lock_power_off_sequences.empty()) {
+          // Panel-off requests follow their Lock events in FIFO order. Consume
+          // exactly one generation; an old request cannot acknowledge a newer
+          // lock/wake cycle.
+          state.host_display_pending_lock_power_off_sequences.pop_front();
+          if (state.host_display_hardware_wake_pending ||
+              state.host_display_wake_power_on_acknowledged) {
+            requested_power_state = 1U;
+          }
+        } else if (state.host_display_hardware_wake_pending) {
+          // Sleep/Wake owns panel power until the guest acknowledges the
+          // wake. A guest-visible Lock event remains a Lock event; it does not
+          // get translated into Home merely to keep the LCD lit.
+          requested_power_state = 1U;
+        }
+      } else {
+        state.host_display_wake_power_on_acknowledged = true;
+      }
+      if (state.host_display_wake_power_on_acknowledged &&
+          !wake_lock_power_off_pending()) {
+        state.host_display_intent =
+            KernelSharedState::HostDisplayIntent::GuestControlled;
+        state.host_display_hardware_wake_pending = false;
+        state.host_display_wake_power_on_acknowledged = false;
+        state.host_display_wake_after_lock_sequence = 0U;
+      }
+    }
     state.iokit_display_connections[connection_object].requested_power_state =
-        static_cast<std::uint32_t>(scalar_input.front());
-    state.requested_display_power_state =
-        static_cast<std::uint32_t>(scalar_input.front());
+        requested_power_state;
+    state.requested_display_power_state = requested_power_state;
     return MethodResult{iokit_abi::success, {}};
   }
 

@@ -260,6 +260,9 @@ public:
   [[nodiscard]] std::string wait_reason(std::size_t processor) const;
 
 private:
+  void enqueue_system_button_impl(const SystemButtonInput &input,
+                                  bool force_home_transition);
+
   struct MachMessageRequest {
     std::uint32_t address{};
     std::uint32_t bits{};
