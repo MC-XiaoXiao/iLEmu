@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -82,6 +83,8 @@ CoreSurfaceHle::CoreSurfaceHle(
 void CoreSurfaceHle::reset() {
     buffers_.clear();
     clients_by_id_.clear();
+    free_client_buffers_.clear();
+    free_imported_mappings_.clear();
     unsupported_trace_count_ = 0;
     last_scanout_generation_.reset();
     last_scanout_pixels_.clear();
@@ -91,6 +94,8 @@ void CoreSurfaceHle::reset() {
 void CoreSurfaceHle::inherit_state(const CoreSurfaceHle& parent) {
     buffers_ = parent.buffers_;
     clients_by_id_ = parent.clients_by_id_;
+    free_client_buffers_ = parent.free_client_buffers_;
+    free_imported_mappings_ = parent.free_imported_mappings_;
     last_scanout_generation_ = parent.last_scanout_generation_;
     last_scanout_pixels_ = parent.last_scanout_pixels_;
     presentation_tracker_ = parent.presentation_tracker_;
@@ -322,9 +327,7 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
                               std::uint32_t height, std::uint32_t bytes_per_row,
                               std::uint32_t pixel_format, bool owns_memory,
                               std::uint32_t requested_id, bool publish) {
-    const auto client =
-        call.allocate_data(core_surface_abi::client_buffer_structure_size,
-                           client_buffer_alignment);
+    const auto client = acquire_client_buffer(call);
     if (client == 0)
         return 0;
     const auto id =
@@ -342,18 +345,60 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
         {core_surface_abi::client_plane_count_offset, 0},
     };
     for (const auto& [offset, value] : fields) {
-        if (!call.memory().write32(client + offset, value))
+        if (!call.memory().write32(client + offset, value)) {
+            recycle_client_buffer(client);
             return 0;
+        }
     }
     auto backing = SurfaceStore::Backing{
         id, base, size, width, height, bytes_per_row, pixel_format, {}};
     backing.provenance.producer_process_id = call.process_id();
     if (id == iokit_abi::apple_h1clcd_default_surface_id &&
         !call.memory().track_write_generation(base, size)) {
+        recycle_client_buffer(client);
         return 0;
     }
-    if (publish && !surfaces_->publish(call.memory(), backing))
+    if (publish && !surfaces_->publish(call.memory(), backing)) {
+        recycle_client_buffer(client);
         return 0;
+    }
+    const auto application_viewport_minimum_height =
+        display_ ? display_->height() -
+                       std::min(display_->height(), std::uint32_t{64})
+                 : 0U;
+    if (publish && shared_state_ && display_ &&
+        width == display_->width() &&
+        height >= application_viewport_minimum_height &&
+        height <= display_->height() &&
+        bytes_per_row ==
+            display_->width() * core_surface_abi::bytes_per_bgra_pixel) {
+        const auto published = surfaces_->find(id);
+        if (published && published->provenance.publication_sequence != 0U) {
+            std::lock_guard lock{shared_state_->mach_mutex};
+            const auto process = shared_state_->processes.find(
+                call.process_id());
+            if (process != shared_state_->processes.end() &&
+                process->second.executable_path.starts_with(
+                    "/Applications/")) {
+                const auto publication_sequence =
+                    published->provenance.publication_sequence;
+                shared_state_
+                    ->application_fullscreen_surface_publications
+                        [call.process_id()]
+                    .insert(publication_sequence);
+                if (shared_state_
+                        ->suppress_future_application_fullscreen_surface_processes
+                        .contains(call.process_id())) {
+                    shared_state_
+                        ->suppressed_application_fullscreen_surface_publications
+                        .emplace(call.process_id(), publication_sequence);
+                    shared_state_
+                        ->application_fullscreen_surface_suppression_active
+                        .store(true, std::memory_order_release);
+                }
+            }
+        }
+    }
     buffers_[client] = Buffer{client,
                               id,
                               base,
@@ -364,6 +409,9 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
                               pixel_format,
                               1,
                               owns_memory,
+                              0,
+                              0,
+                              0,
                               {}};
     clients_by_id_[id] = client;
     call.output().write(
@@ -372,6 +420,135 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
         " base=" + std::to_string(base) + " size=" + std::to_string(size) +
         "\n");
     return client;
+}
+
+std::uint32_t
+CoreSurfaceHle::acquire_client_buffer(UserlandHleCall& call) {
+    constexpr auto permissions =
+        MemoryPermission::Read | MemoryPermission::Write;
+    while (!free_client_buffers_.empty()) {
+        const auto client = free_client_buffers_.back();
+        free_client_buffers_.pop_back();
+        if (!call.memory().accessible(
+                client, core_surface_abi::client_buffer_structure_size,
+                permissions)) {
+            continue;
+        }
+        const std::array<std::byte,
+                         core_surface_abi::client_buffer_structure_size>
+            cleared{};
+        if (call.memory().copy_in(client, cleared))
+            return client;
+    }
+
+    const auto client =
+        call.allocate_data(core_surface_abi::client_buffer_structure_size,
+                           client_buffer_alignment);
+    if (client == 0)
+        return 0;
+    const std::array<std::byte, core_surface_abi::client_buffer_structure_size>
+        cleared{};
+    return call.memory().copy_in(client, cleared) ? client : 0;
+}
+
+void CoreSurfaceHle::recycle_client_buffer(std::uint32_t client) {
+    if (client != 0)
+        free_client_buffers_.push_back(client);
+}
+
+std::uint32_t
+CoreSurfaceHle::acquire_imported_mapping(UserlandHleCall& call,
+                                         std::uint32_t size) {
+    if (size == 0 || size % AddressSpace::page_size != 0)
+        return 0;
+
+    auto selected = free_imported_mappings_.end();
+    for (auto candidate = free_imported_mappings_.begin();
+         candidate != free_imported_mappings_.end();) {
+        bool occupied = false;
+        for (std::uint64_t page = candidate->first;
+             page < static_cast<std::uint64_t>(candidate->first) +
+                        candidate->second;
+             page += AddressSpace::page_size) {
+            if (call.memory().mapped(static_cast<std::uint32_t>(page))) {
+                occupied = true;
+                break;
+            }
+        }
+        if (occupied) {
+            candidate = free_imported_mappings_.erase(candidate);
+            continue;
+        }
+        if (candidate->second < size) {
+            ++candidate;
+            continue;
+        }
+        if (selected == free_imported_mappings_.end() ||
+            candidate->second < selected->second) {
+            selected = candidate;
+        }
+        ++candidate;
+    }
+    if (selected != free_imported_mappings_.end()) {
+        const auto address = selected->first;
+        const auto available = selected->second;
+        free_imported_mappings_.erase(selected);
+        if (available > size) {
+            free_imported_mappings_.emplace(address + size, available - size);
+        }
+        return address;
+    }
+
+    const auto address =
+        call.allocate_data(size, AddressSpace::page_size);
+    if (address == 0 || !call.memory().unmap(address, size))
+        return 0;
+    return address;
+}
+
+void CoreSurfaceHle::recycle_imported_mapping(std::uint32_t base,
+                                              std::uint32_t size) {
+    if (base == 0 || size == 0 ||
+        base % AddressSpace::page_size != 0 ||
+        size % AddressSpace::page_size != 0 ||
+        size > std::numeric_limits<std::uint32_t>::max() - base) {
+        return;
+    }
+
+    auto merged_base = base;
+    auto merged_end = static_cast<std::uint64_t>(base) + size;
+    auto next = free_imported_mappings_.lower_bound(base);
+    if (next != free_imported_mappings_.begin()) {
+        const auto previous = std::prev(next);
+        const auto previous_end =
+            static_cast<std::uint64_t>(previous->first) + previous->second;
+        if (previous_end >= merged_base) {
+            merged_base = previous->first;
+            merged_end = std::max(merged_end, previous_end);
+            free_imported_mappings_.erase(previous);
+        }
+    }
+    next = free_imported_mappings_.lower_bound(merged_base);
+    while (next != free_imported_mappings_.end() &&
+           next->first <= merged_end) {
+        merged_end =
+            std::max(merged_end, static_cast<std::uint64_t>(next->first) +
+                                     next->second);
+        next = free_imported_mappings_.erase(next);
+    }
+    free_imported_mappings_.emplace(
+        merged_base, static_cast<std::uint32_t>(merged_end - merged_base));
+}
+
+void CoreSurfaceHle::release_imported_mapping(AddressSpace& memory,
+                                              std::uint32_t base,
+                                              std::uint32_t size,
+                                              std::uint64_t
+                                                  mapping_lease_token) {
+    if (base != 0 && size != 0 &&
+        memory.unmap_mapping_lease(mapping_lease_token)) {
+        recycle_imported_mapping(base, size);
+    }
 }
 
 void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call) {
@@ -390,7 +567,7 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call) {
                 *shared_state_, call.process_id(),
                 scene_coordinator_
                     ? std::optional<bool>{scene_coordinator_
-                                              ->client_scene_active(
+                                              ->client_scene_presentable(
                                                   call.process_id())}
                     : std::nullopt)) {
             return;
@@ -458,19 +635,45 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
         const auto retain_existing = client != clients_by_id_.end();
         if (client == clients_by_id_.end()) {
             std::uint32_t created = 0;
-            if (const auto shared = surfaces_->shared_mapping(requested_id)) {
-                const auto mapping_address = call.allocate_data(
-                    shared->mapping_size, AddressSpace::page_size);
-                if (mapping_address != 0 &&
-                    call.memory().unmap(mapping_address,
-                                        shared->mapping_size)) {
+            if (const auto local = surfaces_->find(requested_id)) {
+                created = create_buffer(
+                    call, local->base, local->allocation_size, local->width,
+                    local->height, local->bytes_per_row, local->pixel_format,
+                    false, requested_id, false);
+            } else if (const auto shared =
+                           surfaces_->shared_mapping(requested_id)) {
+                const auto mapping_address =
+                    acquire_imported_mapping(call, shared->mapping_size);
+                if (mapping_address != 0) {
+                    std::uint64_t mapping_lease_token = 0;
                     if (const auto imported = surfaces_->import(
-                            call.memory(), requested_id, mapping_address)) {
+                            call.memory(), *shared, mapping_address,
+                            &mapping_lease_token)) {
                         created = create_buffer(
                             call, imported->base, imported->allocation_size,
                             imported->width, imported->height,
                             imported->bytes_per_row, imported->pixel_format,
                             false, requested_id, false);
+                        if (auto* buffer = find(created)) {
+                            buffer->imported_mapping_base = mapping_address;
+                            buffer->imported_mapping_size =
+                                shared->mapping_size;
+                            buffer->imported_mapping_lease_token =
+                                mapping_lease_token;
+                        } else {
+                            surfaces_->erase(requested_id);
+                            release_imported_mapping(
+                                call.memory(), mapping_address,
+                                shared->mapping_size,
+                                mapping_lease_token);
+                        }
+                    } else {
+                        // import() installs the complete page range or nothing.
+                        // Do not unmap on failure: the guest may have occupied
+                        // this candidate after the availability check. The
+                        // next acquisition revalidates every recycled page.
+                        recycle_imported_mapping(mapping_address,
+                                                 shared->mapping_size);
                     }
                 }
             } else {
@@ -514,6 +717,12 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
         if (buffer->references == 0) {
             const auto client = buffer->client;
             const auto id = buffer->id;
+            const auto imported_mapping_base =
+                buffer->imported_mapping_base;
+            const auto imported_mapping_size =
+                buffer->imported_mapping_size;
+            const auto imported_mapping_lease_token =
+                buffer->imported_mapping_lease_token;
             const auto indexed = clients_by_id_.find(id);
             if (indexed != clients_by_id_.end() &&
                 indexed->second == client) {
@@ -521,6 +730,10 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
             }
             buffers_.erase(client);
             surfaces_->erase(id);
+            release_imported_mapping(call.memory(), imported_mapping_base,
+                                     imported_mapping_size,
+                                     imported_mapping_lease_token);
+            recycle_client_buffer(client);
         }
         call.set_return(0);
     } else if (symbol == "_CoreSurfaceClientBufferGetID") {

@@ -54,6 +54,12 @@ class CoreSurfaceHle {
         std::uint32_t pixel_format{};
         std::uint32_t references{1};
         bool owns_memory{};
+        // Lookup imports a shared backing into this process' AddressSpace.
+        // Keep the exact page range so the final client release can drop the
+        // mapping without touching wrapped guest memory.
+        std::uint32_t imported_mapping_base{};
+        std::uint32_t imported_mapping_size{};
+        std::uint64_t imported_mapping_lease_token{};
         std::vector<std::uint32_t> lock_options;
     };
     struct CreateRequest {
@@ -83,11 +89,25 @@ class CoreSurfaceHle {
                   std::uint32_t bytes_per_row, std::uint32_t pixel_format,
                   bool owns_memory, std::uint32_t requested_id = 0,
                   bool publish = true);
+    [[nodiscard]] std::uint32_t
+    acquire_client_buffer(UserlandHleCall& call);
+    void recycle_client_buffer(std::uint32_t client);
+    [[nodiscard]] std::uint32_t
+    acquire_imported_mapping(UserlandHleCall& call, std::uint32_t size);
+    void recycle_imported_mapping(std::uint32_t base, std::uint32_t size);
+    void release_imported_mapping(AddressSpace& memory, std::uint32_t base,
+                                  std::uint32_t size,
+                                  std::uint64_t mapping_lease_token);
     [[nodiscard]] Buffer* find(std::uint32_t client);
     void submit(Buffer& buffer, UserlandHleCall& call);
 
     std::map<std::uint32_t, Buffer> buffers_;
     std::map<std::uint32_t, std::uint32_t> clients_by_id_;
+    std::vector<std::uint32_t> free_client_buffers_;
+    // Imported page ranges come from the HLE data arena, whose general-purpose
+    // allocator is intentionally monotonic. Reuse only ranges that this class
+    // allocated, unmapped, and observed through final client release.
+    std::map<std::uint32_t, std::uint32_t> free_imported_mappings_;
     std::size_t unsupported_trace_count_{};
     std::optional<std::uint64_t> last_scanout_generation_;
     std::vector<std::uint32_t> last_scanout_pixels_;

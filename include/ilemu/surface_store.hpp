@@ -76,6 +76,10 @@ class SurfaceStore {
     [[nodiscard]] std::optional<Backing> import(AddressSpace& memory,
                                                 std::uint32_t id,
                                                 std::uint32_t mapping_address);
+    [[nodiscard]] std::optional<Backing>
+    import(AddressSpace& memory, const SharedMapping& expected,
+           std::uint32_t mapping_address,
+           std::uint64_t* mapping_lease_token);
     void erase(std::uint32_t id);
     [[nodiscard]] std::optional<Backing> find(std::uint32_t id) const;
     [[nodiscard]] std::shared_ptr<HostSurface>

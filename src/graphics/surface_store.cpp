@@ -180,20 +180,39 @@ SurfaceStore::shared_mapping(std::uint32_t id) const {
 std::optional<SurfaceStore::Backing>
 SurfaceStore::import(AddressSpace& memory, std::uint32_t id,
                      std::uint32_t mapping_address) {
+    const auto expected = shared_mapping(id);
+    if (!expected)
+        return std::nullopt;
+    return import(memory, *expected, mapping_address, nullptr);
+}
+
+std::optional<SurfaceStore::Backing>
+SurfaceStore::import(AddressSpace& memory, const SharedMapping& expected,
+                     std::uint32_t mapping_address,
+                     std::uint64_t* mapping_lease_token) {
+    if (mapping_lease_token)
+        *mapping_lease_token = 0;
     const auto registry = registry_;
     std::scoped_lock lock{mutex_, registry->mutex};
-    if (const auto local = backings_.find(id); local != backings_.end())
+    const auto id = expected.metadata.id;
+    if (const auto local = backings_.find(id); local != backings_.end()) {
+        if (mapping_lease_token)
+            return std::nullopt;
         return local->second;
+    }
     const auto found = registry->objects.find(id);
     if (found == registry->objects.end())
         return std::nullopt;
     const auto& object = found->second;
-    if (mapping_address == 0 ||
+    if (object.metadata.provenance.publication_sequence !=
+            expected.metadata.provenance.publication_sequence ||
+        object.mapping_size != expected.mapping_size ||
+        mapping_address == 0 ||
         mapping_address % AddressSpace::page_size != 0 ||
         !memory.map_page_backings(
             mapping_address, object.mapping_size,
             MemoryPermission::Read | MemoryPermission::Write, object.pages,
-            AddressSpace::PageMappingMode::Shared)) {
+            AddressSpace::PageMappingMode::Shared, mapping_lease_token)) {
         return std::nullopt;
     }
     auto local = object.metadata;
