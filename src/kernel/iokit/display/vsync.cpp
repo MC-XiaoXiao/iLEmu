@@ -246,9 +246,9 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
             requested_power_state = 1U;
           }
         } else if (state.host_display_hardware_wake_pending) {
-          // Sleep/Wake owns panel power until the guest acknowledges the
-          // wake. A guest-visible Lock event remains a Lock event; it does not
-          // get translated into Home merely to keep the LCD lit.
+          // A physical Home or Sleep/Wake press owns panel power until the
+          // guest acknowledges the wake. The guest-visible event keeps its
+          // original identity.
           requested_power_state = 1U;
         }
       } else {

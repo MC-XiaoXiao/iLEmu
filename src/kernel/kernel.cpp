@@ -285,14 +285,12 @@ void CompatibilityKernel::enqueue_system_button_impl(
       shared_state_->host_display_wake_after_lock_sequence =
           shared_state_->host_display_current_lock_down_sequence;
       shared_state_->host_display_wake_power_on_acknowledged = false;
-      shared_state_->host_display_hardware_wake_pending =
-          input.button == SystemButton::Lock;
-      if (input.button == SystemButton::Lock) {
-        // Sleep/Wake owns panel power independently of SpringBoard. Preserve
-        // the physical Lock event below; only the display power transition is
-        // handled at the host boundary.
-        shared_state_->requested_display_power_state = 1U;
-      }
+      // Both physical Home and Sleep/Wake illuminate the panel before
+      // SpringBoard has finished rebuilding the lock scene. Preserve the
+      // original guest-visible event; only the host panel transition is
+      // synthesized here.
+      shared_state_->host_display_hardware_wake_pending = true;
+      shared_state_->requested_display_power_state = 1U;
     } else if (input.button == SystemButton::Lock &&
                !force_home_transition) {
       // Publish the host Lock intent before the GSEvent becomes visible.

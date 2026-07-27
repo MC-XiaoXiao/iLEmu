@@ -771,9 +771,9 @@ struct KernelSharedState {
   std::uint64_t host_display_current_lock_down_sequence{};
   std::uint64_t host_display_wake_after_lock_sequence{};
   bool host_display_wake_power_on_acknowledged{};
-  // Sleep/Wake owns the hardware power domain. It may reveal the retained
-  // lock scene before SpringBoard catches up, but it never changes the
-  // identity of the Lock event delivered to the guest.
+  // Physical Home and Sleep/Wake own the hardware power domain. They may
+  // reveal the retained lock scene before SpringBoard catches up, but never
+  // change the identity of the event delivered to the guest.
   bool host_display_hardware_wake_pending{};
   std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t>
       application_scene_context_owners;
