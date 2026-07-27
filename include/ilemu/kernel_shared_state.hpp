@@ -782,6 +782,11 @@ struct KernelSharedState {
   std::optional<PendingApplicationSceneTransform>
       latest_application_scene_transform;
   std::optional<ActiveApplicationScene> active_application_scene;
+  // A normal App-to-App handoff can deliver willResignActive before
+  // SpringBoard spawns the replacement. Retain that one process identity
+  // across the route teardown so the replacement spawn remains a foreground
+  // intent without borrowing an unrelated touch sequence.
+  std::optional<std::uint32_t> pending_application_handoff_process_id;
   // First-generation SpringBoard prewarms selected applications with the
   // userspace `--suspended` argument. Their first activation message binds the
   // remote event/scene plumbing but does not put that scene on the visual

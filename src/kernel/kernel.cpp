@@ -135,6 +135,11 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
           shared_state_->active_springboard_alert_items.erase(object);
         }
       });
+  graphics_services_input::register_springboard_application_handoff_animation(
+      userland_hle_, [this] {
+        return graphics_services_input::has_active_application_route(
+            *shared_state_);
+      });
   layerkit_hle_.register_handlers(userland_hle_, shared_state_,
                                   scene_coordinator_, output_);
   thread_ports_.emplace(0, process_.thread_port);

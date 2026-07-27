@@ -6,6 +6,7 @@
 #include <mutex>
 #include <vector>
 
+#include "ilemu/cpu.hpp"
 #include "ilemu/display.hpp"
 #include "ilemu/mig_wire_abi.hpp"
 #include "ilemu/scene_coordinator.hpp"
@@ -56,6 +57,11 @@ constexpr std::uint8_t path_active_proximity = 3;
 
 constexpr std::string_view springboard_image{
     "/System/Library/CoreServices/SpringBoard.app/SpringBoard"};
+constexpr std::string_view objc_image{"/usr/lib/libobjc.A.dylib"};
+constexpr std::string_view objc_get_class{"_objc_getClass"};
+constexpr std::string_view objc_message_send{"_objc_msgSend"};
+constexpr std::string_view selector_register_name{"_sel_registerName"};
+constexpr std::uint32_t application_display_setting = 2U;
 
 void write_word(std::span<std::byte> bytes, std::size_t offset,
                 std::uint32_t value) {
@@ -281,6 +287,87 @@ bool process_is_springboard_locked(const KernelSharedState &state,
   return process != state.processes.end() && !process->second.exited &&
          process->second.executable_path.ends_with(
              "/SpringBoard.app/SpringBoard");
+}
+
+bool has_active_application_route_locked(const KernelSharedState &state) {
+  if (!state.active_application_scene ||
+      state.active_application_event_object == 0U ||
+      state.application_touch_suspended ||
+      state.application_suspension_reason !=
+          KernelSharedState::ApplicationSuspensionReason::None) {
+    return false;
+  }
+  const auto &scene = *state.active_application_scene;
+  const auto port = state.mach_port_objects.lookup(scene.event_object);
+  if (!port || port->receive_owner != scene.process_id)
+    return false;
+  const auto process = state.processes.find(scene.process_id);
+  return process != state.processes.end() && !process->second.exited &&
+         process->second.executable_path.starts_with("/Applications/");
+}
+
+void animate_application_handoff(UserlandHleCall &call,
+                                 std::uint32_t application) {
+  const auto controller_class_name = call.intern_string("SBUIController");
+  const auto shared_instance_name = call.intern_string("sharedInstance");
+  const auto animate_launch_name =
+      call.intern_string("animateLaunchOfApplication:");
+  if (application == 0U || controller_class_name == 0U ||
+      shared_instance_name == 0U || animate_launch_name == 0U) {
+    return;
+  }
+
+  call.cpu().registers()[0] = controller_class_name;
+  static_cast<void>(call.call_guest_function(
+      objc_get_class,
+      [application, shared_instance_name,
+       animate_launch_name](UserlandHleCall &class_call) {
+        const auto controller_class = class_call.cpu().registers()[0];
+        if (controller_class == 0U)
+          return;
+        class_call.cpu().registers()[0] = shared_instance_name;
+        static_cast<void>(class_call.call_guest_function(
+            selector_register_name,
+            [application, controller_class,
+             animate_launch_name](UserlandHleCall &shared_selector_call) {
+              const auto shared_instance_selector =
+                  shared_selector_call.cpu().registers()[0];
+              if (shared_instance_selector == 0U)
+                return;
+              auto &registers = shared_selector_call.cpu().registers();
+              registers[0] = controller_class;
+              registers[1] = shared_instance_selector;
+              static_cast<void>(shared_selector_call.call_guest_function(
+                  objc_message_send,
+                  [application,
+                   animate_launch_name](UserlandHleCall &controller_call) {
+                    const auto controller =
+                        controller_call.cpu().registers()[0];
+                    if (controller == 0U)
+                      return;
+                    controller_call.cpu().registers()[0] =
+                        animate_launch_name;
+                    static_cast<void>(controller_call.call_guest_function(
+                        selector_register_name,
+                        [application,
+                         controller](UserlandHleCall &animate_selector_call) {
+                          const auto animate_selector =
+                              animate_selector_call.cpu().registers()[0];
+                          if (animate_selector == 0U)
+                            return;
+                          auto &message_registers =
+                              animate_selector_call.cpu().registers();
+                          message_registers[0] = controller;
+                          message_registers[1] = animate_selector;
+                          message_registers[2] = application;
+                          static_cast<void>(
+                              animate_selector_call.call_guest_function(
+                                  objc_message_send,
+                                  [](UserlandHleCall &) {}));
+                        }));
+                  }));
+            }));
+      }));
 }
 
 std::uint64_t allocate_application_launch_token_locked(
@@ -550,7 +637,29 @@ KernelSharedState::ApplicationLaunchAttempt &begin_launch_attempt_locked(
     KernelSharedState &state, std::uint32_t process_id,
     std::uint64_t origin_touch_sequence,
     KernelSharedState::ApplicationLaunchOrigin origin) {
-  auto phase = origin_touch_sequence == 0U
+  // A foreground application can ask SpringBoard to open another ordinary
+  // application (for example through the system URL launcher). Such a spawn
+  // has no SpringBoard icon touch sequence, but it is still a real foreground
+  // intent. Keep lookup-only/background work suspended while accepting this
+  // generic process-owned handoff.
+  const auto active_application_route =
+      has_active_application_route_locked(state);
+  const auto pending_application_handoff =
+      state.pending_application_handoff_process_id &&
+      [&state] {
+        const auto process = state.processes.find(
+            *state.pending_application_handoff_process_id);
+        return process != state.processes.end() && !process->second.exited &&
+               process->second.executable_path.starts_with("/Applications/");
+      }();
+  const auto programmatic_foreground_spawn =
+      origin == KernelSharedState::ApplicationLaunchOrigin::Spawn &&
+      origin_touch_sequence == 0U && active_application_route;
+  const auto handoff_foreground_spawn =
+      origin == KernelSharedState::ApplicationLaunchOrigin::Spawn &&
+      origin_touch_sequence == 0U && pending_application_handoff;
+  auto phase = origin_touch_sequence == 0U && !programmatic_foreground_spawn &&
+                       !handoff_foreground_spawn
                    ? KernelSharedState::ApplicationLaunchPhase::Suspended
                    : KernelSharedState::ApplicationLaunchPhase::Launching;
   const auto cancelled_by_home =
@@ -654,6 +763,10 @@ void apply_launch_barrier_locked(
       state.held_application_launch;
   state.application_launch_barrier =
       KernelSharedState::ApplicationLaunchBarrier{reason, input_sequence};
+  // A Home/Lock barrier supersedes an incomplete App-to-App transition. Do
+  // not let a later process spawn consume a foreground intent that the user
+  // has already interrupted.
+  state.pending_application_handoff_process_id.reset();
   state.interrupted_home_exit_lock_sequence.reset();
 
   if (reason == KernelSharedState::ApplicationSuspensionReason::Home) {
@@ -929,6 +1042,46 @@ void register_springboard_alert_observers(
         observer(object, false);
         call.resume_original_persistently();
       });
+}
+
+void register_springboard_application_handoff_animation(
+    UserlandHleRegistry &registry,
+    std::function<bool()> foreground_application_observer) {
+  registry.register_guest_function(std::string{objc_image},
+                                   std::string{objc_get_class});
+  registry.register_guest_function(std::string{objc_image},
+                                   std::string{selector_register_name});
+  registry.register_guest_function(std::string{objc_image},
+                                   std::string{objc_message_send});
+  registry.register_objc_instance_method(
+      std::string{springboard_image}, "SBDisplay",
+      "setActivationSetting:flag:",
+      "-[SBDisplay setActivationSetting:flag:]",
+      [foreground_application_observer =
+           std::move(foreground_application_observer)](
+          UserlandHleCall &call) {
+        const auto application = call.argument(0);
+        const auto setting = call.argument(2);
+        const auto flag = call.argument(3);
+        if (application == 0U || setting != application_display_setting ||
+            flag != 0U || !foreground_application_observer ||
+            !foreground_application_observer()) {
+          call.resume_original_persistently();
+          return;
+        }
+        // Finish the firmware's setting mutation exactly once, then schedule
+        // its native launch animation before applicationOpenURL:asPanel:
+        // continues into the display-stack push.
+        call.resume_original_persistently(
+            [application](UserlandHleCall &return_call) {
+              animate_application_handoff(return_call, application);
+            });
+      });
+}
+
+bool has_active_application_route(KernelSharedState &state) {
+  std::lock_guard lock{state.mach_mutex};
+  return has_active_application_route_locked(state);
 }
 
 std::optional<std::uint32_t> event_type(std::span<const std::byte> message) {
@@ -1472,6 +1625,10 @@ void record_application_spawn(
   } else {
     bind_held_launch_locked(state, process_id, *attempt);
   }
+  if (origin_touch_sequence == 0U &&
+      state.pending_application_handoff_process_id) {
+    state.pending_application_handoff_process_id.reset();
+  }
   if (state.springboard_pending_launch_touch_sequence ==
       origin_touch_sequence) {
     state.springboard_pending_launch_touch_sequence = 0U;
@@ -1767,6 +1924,9 @@ void release_application_process_locked(KernelSharedState &state,
   if (active_scene_owned) {
     state.active_application_scene.reset();
   }
+  if (state.pending_application_handoff_process_id == process_id) {
+    state.pending_application_handoff_process_id.reset();
+  }
   if (state.foreground_application_attempt_process_id == process_id) {
     state.foreground_application_attempt_process_id.reset();
   }
@@ -2058,11 +2218,15 @@ void record_application_lifecycle_event_locked(
     const auto prior_suspension_reason =
         state.application_suspension_reason;
     if (scenes) {
+      // A resign-active callback from a live App is the display-stack
+      // handoff boundary. Keep its committed scene presentable until
+      // SpringBoard has pushed the replacement display; only Lock retains a
+      // suspended scene without an outgoing display-stack transition.
       if (prior_suspension_reason ==
-          KernelSharedState::ApplicationSuspensionReason::Home) {
-        scenes->begin_client_scene_exit(process_id);
-      } else {
+          KernelSharedState::ApplicationSuspensionReason::Lock) {
         scenes->suspend_client_scene(process_id);
+      } else {
+        scenes->begin_client_scene_exit(process_id);
       }
     }
     state.application_touch_suspended = true;
@@ -2095,6 +2259,10 @@ void record_application_lifecycle_event_locked(
         state.foreground_application_attempt_process_id.reset();
       return;
     }
+    // Preserve one exact outgoing identity while SpringBoard performs a
+    // normal App-to-App handoff. It may deliver the replacement spawn after
+    // this callback has already retired the active input route.
+    state.pending_application_handoff_process_id = process_id;
     if (attempt) {
       attempt->phase =
           KernelSharedState::ApplicationLaunchPhase::Suspended;
