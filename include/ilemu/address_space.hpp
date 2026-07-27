@@ -84,7 +84,11 @@ public:
       std::uint32_t address, std::uint32_t size,
       MemoryPermission permissions,
       std::span<const std::shared_ptr<GuestPageBacking>> backings,
-      PageMappingMode mode);
+      PageMappingMode mode, std::uint64_t *mapping_lease_token = nullptr);
+  // A mapping lease is created atomically with a shared-page mapping. Any
+  // guest unmap touching that range invalidates the token, so a later owner
+  // release cannot erase unrelated pages remapped at the same virtual address.
+  bool unmap_mapping_lease(std::uint64_t mapping_lease_token);
   [[nodiscard]] std::optional<std::vector<std::byte>>
   read_bytes(std::uint32_t address, std::size_t size) const;
   [[nodiscard]] std::optional<std::string>
@@ -163,6 +167,10 @@ private:
     std::uint32_t begin{};
     std::uint64_t end{};
   };
+  struct MappingLease {
+    std::uint32_t begin{};
+    std::uint64_t end{};
+  };
   struct JitPageTableStorage;
   static constexpr std::size_t page_lookup_chunk_size = 1024;
   static constexpr std::size_t page_lookup_chunk_count =
@@ -200,6 +208,9 @@ private:
   [[nodiscard]] bool fault_file_pages(std::uint32_t address,
                                       std::size_t size);
   void unmap_file_mappings_locked(std::uint32_t address, std::uint64_t end);
+  void unmap_range_locked(std::uint32_t address, std::uint64_t end);
+  void invalidate_mapping_leases_locked(std::uint32_t address,
+                                        std::uint64_t end);
   void cache_page_locked(std::uint32_t address, Page &page);
   void uncache_page_locked(std::uint32_t address);
   void ensure_unique_page_map_locked();
@@ -251,6 +262,8 @@ private:
   bool jit_page_table_enabled_{};
   std::optional<TrackedWriteRange> tracked_write_range_;
   std::uint64_t write_generation_{};
+  std::map<std::uint64_t, MappingLease> mapping_leases_;
+  std::uint64_t next_mapping_lease_token_{1};
   std::shared_ptr<FilePageCache> file_page_cache_;
 };
 
