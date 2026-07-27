@@ -40,7 +40,8 @@ class CoreSurfaceHle {
     // CoreSurface ID. Unlike ordinary buffers, firmware draws into it while
     // it remains locked and the display controller scans it out at vsync.
     // Return true only when a newly visible frame was submitted.
-    bool refresh_default_scanout(AddressSpace& memory);
+    bool refresh_default_scanout(AddressSpace& memory,
+                                 std::uint32_t owner_process_id = 0);
 
   private:
     struct Buffer {

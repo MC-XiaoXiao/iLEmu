@@ -130,6 +130,11 @@ void CompatibilityKernel::exit_process(std::uint32_t status,
       process_.pid);
   apple80211_hle_.reset(process_.pid);
   release_process_descriptors();
+  // DisplayState is shared by all task facades. If this process was the
+  // producer of the last scanout, revoke that frame before its local HLE
+  // surfaces and deferred presenter callbacks disappear. A newer foreground
+  // process is left untouched.
+  display_state_->clear_if_owner(process_.pid);
   release_process_mach_rights();
   process_.exited = true;
   if (signal != 0)
@@ -206,6 +211,27 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
     if (target_pid == 0 || target_pid < -1) {
       bsd_error(cpu, bsd_support::invalid_argument);
       return;
+    }
+    // SpringBoard launches an application and then waits for its process
+    // object. That wait is an implementation detail, not a reason to stop
+    // servicing the system event port: Home/Lock must remain interruptible
+    // while Weather/Stocks are still loading. Mirror XNU's EINTR boundary for
+    // an application child and keep the run-loop thread schedulable.
+    if (target_pid > 0 &&
+        process_image_.ends_with("/SpringBoard.app/SpringBoard")) {
+      bool application_child = false;
+      {
+        std::lock_guard mach_lock{shared_state_->mach_mutex};
+        const auto child =
+            shared_state_->processes.find(static_cast<std::uint32_t>(target_pid));
+        application_child =
+            child != shared_state_->processes.end() && !child->second.exited &&
+            child->second.executable_path.starts_with("/Applications/");
+      }
+      if (application_child) {
+        bsd_error(cpu, darwin::error::interrupted);
+        return;
+      }
     }
     if ((options & 1U) != 0) { // WNOHANG
       const auto result = wait_child_handler_

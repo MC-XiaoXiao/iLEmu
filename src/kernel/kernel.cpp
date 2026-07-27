@@ -423,7 +423,7 @@ bool CompatibilityKernel::refresh_display_scanout() {
   // partially cleared SpringBoard buffer for one host frame.
   if (waking) {
     const auto refreshed =
-        core_surface_hle_.refresh_default_scanout(memory_);
+        core_surface_hle_.refresh_default_scanout(memory_, process_.pid);
     display_state_->set_powered_on(true);
     if (refreshed) {
       output_.write(
@@ -441,7 +441,8 @@ bool CompatibilityKernel::refresh_display_scanout() {
   }
   next_display_scanout_deadline_ =
       now + iokit_abi::display_vsync::period_absolute_time;
-  const auto refreshed = core_surface_hle_.refresh_default_scanout(memory_);
+  const auto refreshed =
+      core_surface_hle_.refresh_default_scanout(memory_, process_.pid);
   if (refreshed) {
     output_.write(
         "[display] scanout pid=" + std::to_string(process_.pid) +

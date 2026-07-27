@@ -483,7 +483,8 @@ bool OpenGlesHle::flush_surface(UserlandHleCall& call, std::uint32_t surface) {
     }
     if (!state.backing_identifier) {
         if (display_ && display_write_allowed(call))
-            display_->replace_pixels(std::move(frame.pixels));
+            display_->replace_pixels(std::move(frame.pixels),
+                                     call.process_id());
         state.refreshed_textures.clear();
         return true;
     }
@@ -527,7 +528,8 @@ bool OpenGlesHle::commit_render_target(UserlandHleCall& call,
     if (!display_)
         return false;
     if (display_write_allowed(call)) {
-        display_->replace_pixels(std::move(frame.pixels));
+        display_->replace_pixels(std::move(frame.pixels),
+                                 call.process_id());
     }
     return true;
 }
@@ -1005,7 +1007,7 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry) {
         const auto found = surfaces_.find(surface);
         if (found != surfaces_.end() && !found->second.backing_identifier &&
             display_ && display_write_allowed(call)) {
-            display_->present();
+            display_->present(call.process_id());
         }
         egl_error_ = egl_success;
         call.set_return(egl_true);

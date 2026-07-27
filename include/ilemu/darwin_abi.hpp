@@ -18,6 +18,7 @@ inline constexpr std::uint32_t no_such_device_or_address = 6;
 inline constexpr std::uint32_t argument_list_too_long = 7;
 inline constexpr std::uint32_t bad_file_descriptor = 9;
 inline constexpr std::uint32_t no_child_process = 10;
+inline constexpr std::uint32_t interrupted = 4;
 inline constexpr std::uint32_t no_memory = 12;
 inline constexpr std::uint32_t permission_denied = 13;
 inline constexpr std::uint32_t bad_address = 14;

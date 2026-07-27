@@ -43,7 +43,7 @@ private:
     [[nodiscard]] bool
     application_surface_allowed(std::uint32_t producer_process_id,
                                 std::uint64_t publication_sequence) const;
-    [[nodiscard]] bool submit_host_layers();
+    [[nodiscard]] bool submit_host_layers(std::uint32_t owner_process_id);
     void ensure_scanout_surface();
 
     struct Rectangle {

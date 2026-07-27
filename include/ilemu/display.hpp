@@ -20,11 +20,13 @@ struct DisplayFrame {
       std::uint32_t frame_width, std::uint32_t frame_height,
       std::uint64_t frame_sequence, std::vector<std::uint32_t> frame_pixels,
       std::shared_ptr<HostSurface> frame_surface = {},
-      std::function<std::vector<std::uint32_t>()> frame_reader = {})
+      std::function<std::vector<std::uint32_t>()> frame_reader = {},
+      std::uint32_t frame_owner_process_id = 0)
       : width{frame_width}, height{frame_height}, sequence{frame_sequence},
         pixels{std::move(frame_pixels)},
         host_surface{std::move(frame_surface)},
-        read_pixels{std::move(frame_reader)} {}
+        read_pixels{std::move(frame_reader)},
+        owner_process_id{frame_owner_process_id} {}
 
   std::uint32_t width{};
   std::uint32_t height{};
@@ -41,6 +43,10 @@ struct DisplayFrame {
   // invoke read_pixels only at an explicit screenshot/software boundary.
   std::shared_ptr<HostSurface> host_surface;
   std::function<std::vector<std::uint32_t>()> read_pixels;
+  // Process incarnation that last populated the shared display state. This
+  // lets teardown revoke only stale application content without clearing a
+  // newer foreground client's frame.
+  std::uint32_t owner_process_id{};
 };
 
 class DisplayState {
@@ -52,14 +58,19 @@ public:
 
   void set_presenter(Presenter presenter);
   void clear(std::uint32_t argb);
-  void replace_pixels(std::vector<std::uint32_t> pixels);
+  void replace_pixels(std::vector<std::uint32_t> pixels,
+                      std::uint32_t owner_process_id = 0);
   void replace_surface(
       std::shared_ptr<HostSurface> surface,
-      std::function<std::vector<std::uint32_t>()> read_pixels);
+      std::function<std::vector<std::uint32_t>()> read_pixels,
+      std::uint32_t owner_process_id = 0);
   // The framebuffer keeps its last scanout contents while the LCD is off.
   // Presenters and snapshots expose a black panel until power is restored.
   void set_powered_on(bool powered_on);
-  void present();
+  void present(std::uint32_t owner_process_id = 0);
+  // Detach content produced by an exited process and submit a safe black
+  // boundary. Returns false when a newer process already owns the scanout.
+  bool clear_if_owner(std::uint32_t owner_process_id);
 
   [[nodiscard]] DisplayFrame snapshot() const;
   [[nodiscard]] std::uint64_t presented_frames() const;
@@ -74,6 +85,7 @@ private:
   std::vector<std::uint32_t> pixels_;
   std::shared_ptr<HostSurface> host_surface_;
   std::function<std::vector<std::uint32_t>()> surface_reader_;
+  std::uint32_t content_owner_process_id_{};
   Presenter presenter_;
   std::uint64_t sequence_{};
   bool powered_on_{true};

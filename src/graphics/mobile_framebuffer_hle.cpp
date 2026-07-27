@@ -103,7 +103,7 @@ MobileFramebufferHle::MobileFramebufferHle(
       submit_layers(call);
       record_presentation(call);
       if (display_) {
-        display_->present();
+        display_->present(call.process_id());
         performance_counters().record_vsync_guest_submit(
             call.process_id(), call.argument(0));
         if (shared_state_) {
@@ -117,7 +117,7 @@ MobileFramebufferHle::MobileFramebufferHle(
   });
   add("_IOMobileFramebufferSwapSurface", [this](UserlandHleCall &call) {
     if (display_ && display_write_allowed(call))
-      display_->present();
+      display_->present(call.process_id());
     call.set_return(iokit_abi::success);
   });
   const auto success = [](UserlandHleCall &call) {
@@ -255,7 +255,8 @@ void MobileFramebufferHle::ensure_scanout_surface() {
   scanout_contents_valid_ = false;
 }
 
-bool MobileFramebufferHle::submit_host_layers() {
+bool MobileFramebufferHle::submit_host_layers(
+    std::uint32_t owner_process_id) {
   if (!display_ || !host_graphics_->accelerated() || !command_encoder_)
     return false;
   ensure_scanout_surface();
@@ -461,7 +462,8 @@ bool MobileFramebufferHle::submit_host_layers() {
         auto mapping = scanout->map_cpu(
             false, PerfCpuMapReason::DeferredDisplayRead);
         return mapping.frame().pixels;
-      });
+      },
+      owner_process_id);
   return true;
 }
 
@@ -527,7 +529,7 @@ void MobileFramebufferHle::set_layer(UserlandHleCall &call) {
 void MobileFramebufferHle::submit_layers(UserlandHleCall &call) {
   if (display_ == nullptr)
     return;
-  if (submit_host_layers())
+  if (submit_host_layers(call.process_id()))
     return;
   scanout_contents_valid_ = false;
   submitted_layers_.clear();
@@ -641,7 +643,7 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall &call) {
       }
     }
   }
-  display_->replace_pixels(std::move(composed));
+  display_->replace_pixels(std::move(composed), call.process_id());
 }
 
 void MobileFramebufferHle::record_presentation(UserlandHleCall &call) {

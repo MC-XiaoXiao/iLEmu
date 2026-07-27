@@ -32,9 +32,11 @@ void DisplayState::clear(std::uint32_t argb) {
   std::fill(pixels_.begin(), pixels_.end(), argb);
   host_surface_.reset();
   surface_reader_ = {};
+  content_owner_process_id_ = 0;
 }
 
-void DisplayState::replace_pixels(std::vector<std::uint32_t> pixels) {
+void DisplayState::replace_pixels(std::vector<std::uint32_t> pixels,
+                                  std::uint32_t owner_process_id) {
   const auto expected = geometry_.pixel_count();
   if (pixels.size() != expected)
     return;
@@ -42,16 +44,21 @@ void DisplayState::replace_pixels(std::vector<std::uint32_t> pixels) {
   pixels_ = std::move(pixels);
   host_surface_.reset();
   surface_reader_ = {};
+  if (owner_process_id != 0)
+    content_owner_process_id_ = owner_process_id;
 }
 
 void DisplayState::replace_surface(
     std::shared_ptr<HostSurface> surface,
-    std::function<std::vector<std::uint32_t>()> read_pixels) {
+    std::function<std::vector<std::uint32_t>()> read_pixels,
+    std::uint32_t owner_process_id) {
   if (!surface || !read_pixels)
     return;
   std::lock_guard lock{mutex_};
   host_surface_ = std::move(surface);
   surface_reader_ = std::move(read_pixels);
+  if (owner_process_id != 0)
+    content_owner_process_id_ = owner_process_id;
 }
 
 void DisplayState::set_powered_on(bool powered_on) {
@@ -68,10 +75,12 @@ void DisplayState::set_powered_on(bool powered_on) {
       return;
     if (powered_on_ && host_surface_) {
       frame = DisplayFrame{geometry_.width, geometry_.height, sequence_, {},
-                           host_surface_, surface_reader_};
+                           host_surface_, surface_reader_,
+                           content_owner_process_id_};
     } else {
       frame = DisplayFrame{geometry_.width, geometry_.height, sequence_,
-                           visible_pixels(pixels_, powered_on_)};
+                           visible_pixels(pixels_, powered_on_), {}, {},
+                           content_owner_process_id_};
     }
   }
   const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
@@ -83,21 +92,25 @@ void DisplayState::set_powered_on(bool powered_on) {
   presenter(frame);
 }
 
-void DisplayState::present() {
+void DisplayState::present(std::uint32_t owner_process_id) {
   Presenter presenter;
   DisplayFrame frame;
   {
     std::lock_guard lock{mutex_};
     ++sequence_;
+    if (owner_process_id != 0)
+      content_owner_process_id_ = owner_process_id;
     presenter = presenter_;
     if (!presenter)
       return;
     if (powered_on_ && host_surface_) {
       frame = DisplayFrame{geometry_.width, geometry_.height, sequence_, {},
-                           host_surface_, surface_reader_};
+                           host_surface_, surface_reader_,
+                           content_owner_process_id_};
     } else {
       frame = DisplayFrame{geometry_.width, geometry_.height, sequence_,
-                           visible_pixels(pixels_, powered_on_)};
+                           visible_pixels(pixels_, powered_on_), {}, {},
+                           content_owner_process_id_};
     }
   }
   const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
@@ -107,6 +120,36 @@ void DisplayState::present() {
     performance.record_display_submission(frame.submitted_at);
   }
   presenter(frame);
+}
+
+bool DisplayState::clear_if_owner(std::uint32_t owner_process_id) {
+  if (owner_process_id == 0)
+    return false;
+  Presenter presenter;
+  DisplayFrame frame;
+  {
+    std::lock_guard lock{mutex_};
+    if (content_owner_process_id_ != owner_process_id)
+      return false;
+    std::fill(pixels_.begin(), pixels_.end(), 0xff000000U);
+    host_surface_.reset();
+    surface_reader_ = {};
+    content_owner_process_id_ = 0;
+    ++sequence_;
+    presenter = presenter_;
+    if (!presenter)
+      return true;
+    frame = DisplayFrame{geometry_.width, geometry_.height, sequence_,
+                         pixels_};
+  }
+  const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
+  auto &performance = performance_counters();
+  if (performance.enabled()) {
+    frame.submitted_at = std::chrono::steady_clock::now();
+    performance.record_display_submission(frame.submitted_at);
+  }
+  presenter(frame);
+  return true;
 }
 
 DisplayFrame DisplayState::snapshot() const {
@@ -115,6 +158,7 @@ DisplayFrame DisplayState::snapshot() const {
   std::vector<std::uint32_t> pixels;
   std::uint64_t sequence{};
   bool powered_on{};
+  std::uint32_t owner_process_id{};
   {
     std::lock_guard lock{mutex_};
     reader = surface_reader_;
@@ -122,6 +166,7 @@ DisplayFrame DisplayState::snapshot() const {
     pixels = pixels_;
     sequence = sequence_;
     powered_on = powered_on_;
+    owner_process_id = content_owner_process_id_;
   }
   if (!powered_on) {
     pixels.assign(geometry_.pixel_count(), 0xff000000U);
@@ -132,7 +177,7 @@ DisplayFrame DisplayState::snapshot() const {
   }
   return DisplayFrame{geometry_.width, geometry_.height, sequence,
                       std::move(pixels), std::move(surface),
-                      std::move(reader)};
+                      std::move(reader), owner_process_id};
 }
 
 std::uint64_t DisplayState::presented_frames() const {

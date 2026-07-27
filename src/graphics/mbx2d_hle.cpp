@@ -182,7 +182,7 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry &registry,
     if (display_ &&
         (!presentation_tracker_ ||
          !presentation_tracker_->has_presented_frame()))
-      display_->present();
+      display_->present(call.process_id());
     call.set_return(mbx_success);
   };
   add("_mbx2DSwapSurface", present);
@@ -637,7 +637,7 @@ bool Mbx2dHle::write_region(const ResolvedSurface &surface, std::int64_t x,
       std::copy_n(pixels.begin() + source, static_cast<std::size_t>(width),
                   frame.pixels.begin() + destination);
     }
-    display_->replace_pixels(std::move(frame.pixels));
+    display_->replace_pixels(std::move(frame.pixels), call.process_id());
     return true;
   }
   if (!surface.backing ||
@@ -1178,13 +1178,14 @@ void Mbx2dHle::submit_destination(UserlandHleCall &call, bool context_api) {
           auto mapping = surface->map_cpu(
               false, PerfCpuMapReason::DeferredDisplayRead);
           return mapping.frame().pixels;
-        });
+        },
+        call.process_id());
     return;
   }
   const auto pixels = read_region(*destination, 0, 0, destination->width,
                                   destination->height, call);
   if (pixels) {
-    display_->replace_pixels(*pixels);
+    display_->replace_pixels(*pixels, call.process_id());
   }
 }
 

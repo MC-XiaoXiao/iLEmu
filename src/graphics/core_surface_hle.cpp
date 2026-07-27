@@ -121,7 +121,8 @@ void CoreSurfaceHle::set_scene_coordinator(
     scene_coordinator_ = std::move(scenes);
 }
 
-bool CoreSurfaceHle::refresh_default_scanout(AddressSpace& memory) {
+bool CoreSurfaceHle::refresh_default_scanout(AddressSpace& memory,
+                                             std::uint32_t owner_process_id) {
     if (!display_)
         return false;
     const auto backing =
@@ -149,8 +150,8 @@ bool CoreSurfaceHle::refresh_default_scanout(AddressSpace& memory) {
     }
 
     last_scanout_pixels_ = *pixels;
-    display_->replace_pixels(*pixels);
-    display_->present();
+    display_->replace_pixels(*pixels, owner_process_id);
+    display_->present(owner_process_id);
     return true;
 }
 
@@ -595,7 +596,7 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call) {
             (std::to_integer<std::uint32_t>((*bytes)[offset + 2U]) << 16U) |
             (std::to_integer<std::uint32_t>((*bytes)[offset + 3U]) << 24U);
     }
-    display_->replace_pixels(std::move(pixels));
+    display_->replace_pixels(std::move(pixels), call.process_id());
 }
 
 void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
