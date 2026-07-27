@@ -354,7 +354,7 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
     auto backing = SurfaceStore::Backing{
         id, base, size, width, height, bytes_per_row, pixel_format, {}};
     backing.provenance.producer_process_id = call.process_id();
-    if (id == iokit_abi::apple_h1clcd_default_surface_id &&
+    if (pixel_format == surface_pixel_format_bgra &&
         !call.memory().track_write_generation(base, size)) {
         recycle_client_buffer(client);
         return 0;

@@ -136,6 +136,20 @@ public:
   // Graphics scanout uses this to avoid copying an unchanged framebuffer.
   [[nodiscard]] std::optional<std::uint64_t> range_write_generation(
       std::uint32_t address, std::size_t size) const;
+  struct WrittenRange {
+    std::uint32_t address{};
+    std::uint32_t size{};
+  };
+  struct WriteGenerationChanges {
+    std::uint64_t generation{};
+    std::vector<WrittenRange> ranges;
+  };
+  // Returns page-granular ranges written after a consumer's last generation,
+  // clipped to the requested byte range. Tracking remains opt-in so unrelated
+  // Guest stores keep the direct JIT write path.
+  [[nodiscard]] std::optional<WriteGenerationChanges>
+  write_generation_changes(std::uint32_t address, std::size_t size,
+                           std::uint64_t after_generation) const;
   [[nodiscard]] std::size_t mapped_page_count() const;
   // Demand-zero mappings do not become resident until their first write.
   [[nodiscard]] std::size_t resident_page_count() const;
@@ -260,7 +274,7 @@ private:
   std::unique_ptr<JitPageTableStorage> jit_read_page_table_;
   std::unique_ptr<JitPageTableStorage> jit_write_page_table_;
   bool jit_page_table_enabled_{};
-  std::optional<TrackedWriteRange> tracked_write_range_;
+  std::vector<TrackedWriteRange> tracked_write_ranges_;
   std::uint64_t write_generation_{};
   std::map<std::uint64_t, MappingLease> mapping_leases_;
   std::uint64_t next_mapping_lease_token_{1};

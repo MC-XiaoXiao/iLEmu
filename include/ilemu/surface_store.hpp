@@ -116,12 +116,19 @@ class SurfaceStore {
 
     [[nodiscard]] std::optional<std::vector<std::uint32_t>>
     read_guest_argb(AddressSpace& memory, const Backing& backing) const;
+    [[nodiscard]] std::optional<std::vector<std::uint32_t>>
+    read_guest_argb_region(AddressSpace& memory, const Backing& backing,
+                           HostRectangle rectangle) const;
     [[nodiscard]] bool write_argb_region_to_guest(
         AddressSpace& memory, const Backing& backing, HostRectangle rectangle,
         std::span<const std::uint32_t> pixels) const;
+    void update_guest_sync_generation(AddressSpace& memory,
+                                      const Backing& backing) const;
 
     mutable std::mutex mutex_;
     std::map<std::uint32_t, Backing> backings_;
+    mutable std::map<std::uint32_t, std::uint64_t>
+        guest_sync_generations_;
     std::shared_ptr<SharedRegistry> registry_{
         std::make_shared<SharedRegistry>()};
 };

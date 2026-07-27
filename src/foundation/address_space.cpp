@@ -185,7 +185,7 @@ void AddressSpace::clear() {
   for (auto &chunk : page_lookup_) chunk.reset();
   for (auto &chunk : page_permissions_) chunk.reset();
   clear_jit_page_table_locked();
-  tracked_write_range_.reset();
+  tracked_write_ranges_.clear();
   mapping_leases_.clear();
 }
 
@@ -779,11 +779,13 @@ AddressSpace::writable_backing_locked(Page &page) {
 
 bool AddressSpace::tracks_write_locked(std::uint32_t address,
                                        std::size_t size) const {
-  if (!tracked_write_range_ || size == 0) return false;
+  if (tracked_write_ranges_.empty() || size == 0) return false;
   const auto begin = static_cast<std::uint64_t>(address);
   const auto end = begin + size;
-  return begin < tracked_write_range_->end &&
-         tracked_write_range_->begin < end;
+  return std::ranges::any_of(
+      tracked_write_ranges_, [begin, end](const TrackedWriteRange &range) {
+        return begin < range.end && range.begin < end;
+      });
 }
 
 void AddressSpace::mark_written_locked(std::uint32_t address,
@@ -1109,8 +1111,25 @@ bool AddressSpace::track_write_generation(std::uint32_t address,
   if (!range_accessible_locked(address, size, MemoryPermission::None)) {
     return false;
   }
-  tracked_write_range_ = TrackedWriteRange{
+  TrackedWriteRange tracked{
       address, static_cast<std::uint64_t>(address) + size};
+  for (std::size_t index = 0; index < tracked_write_ranges_.size();) {
+    const auto &existing = tracked_write_ranges_[index];
+    if (tracked.end < existing.begin || existing.end < tracked.begin) {
+      ++index;
+      continue;
+    }
+    tracked.begin = std::min(tracked.begin, existing.begin);
+    tracked.end = std::max(tracked.end, existing.end);
+    tracked_write_ranges_.erase(
+        tracked_write_ranges_.begin() +
+        static_cast<std::ptrdiff_t>(index));
+    index = 0;
+  }
+  tracked_write_ranges_.push_back(tracked);
+  std::ranges::sort(
+      tracked_write_ranges_, {},
+      [](const TrackedWriteRange &range) { return range.begin; });
   refresh_jit_page_range_locked(page_base(address),
                                 page_range_end(address, size));
   return true;
@@ -1133,6 +1152,51 @@ std::optional<std::uint64_t> AddressSpace::range_write_generation(
       generation = std::max(generation, page->write_generation);
   }
   return generation;
+}
+
+std::optional<AddressSpace::WriteGenerationChanges>
+AddressSpace::write_generation_changes(
+    std::uint32_t address, std::size_t size,
+    std::uint64_t after_generation) const {
+  if (size == 0 || range_overflows(address, size))
+    return std::nullopt;
+  const auto requested_begin = static_cast<std::uint64_t>(address);
+  const auto requested_end = requested_begin + size;
+  const auto first = page_base(address);
+  const auto end = page_range_end(address, size);
+  auto lock = read_lock();
+  if (!range_accessible_locked(address, size, MemoryPermission::None))
+    return std::nullopt;
+
+  WriteGenerationChanges result;
+  for (std::uint64_t base = first; base < end; base += page_size) {
+    const auto *page =
+        find_page_locked(static_cast<std::uint32_t>(base));
+    const auto generation = page ? page->write_generation : 0U;
+    result.generation = std::max(result.generation, generation);
+    if (generation <= after_generation)
+      continue;
+    const auto dirty_begin = std::max(base, requested_begin);
+    const auto dirty_end =
+        std::min(base + page_size, requested_end);
+    if (dirty_end <= dirty_begin)
+      continue;
+    if (!result.ranges.empty()) {
+      auto &previous = result.ranges.back();
+      const auto previous_end =
+          static_cast<std::uint64_t>(previous.address) + previous.size;
+      if (previous_end == dirty_begin) {
+        previous.size +=
+            static_cast<std::uint32_t>(dirty_end - dirty_begin);
+        continue;
+      }
+    }
+    result.ranges.push_back(
+        WrittenRange{
+            static_cast<std::uint32_t>(dirty_begin),
+            static_cast<std::uint32_t>(dirty_end - dirty_begin)});
+  }
+  return result;
 }
 
 std::size_t AddressSpace::mapped_page_count() const {
@@ -1197,7 +1261,7 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const {
   result->file_mappings_ = file_mappings_;
   result->rebuild_page_lookup_locked();
   result->page_permissions_ = page_permissions_;
-  result->tracked_write_range_ = tracked_write_range_;
+  result->tracked_write_ranges_ = tracked_write_ranges_;
   result->write_generation_ = write_generation_;
   result->mapping_leases_ = mapping_leases_;
   result->next_mapping_lease_token_ = next_mapping_lease_token_;
