@@ -59,6 +59,10 @@ class SoftwareGlesRenderer final : public GlesRenderer {
         static_cast<void>(targets);
     }
 
+    void release_owner(std::uint64_t owner) override {
+        static_cast<void>(owner);
+    }
+
     [[nodiscard]] std::string_view name() const override {
         return "iLEmu GLES 1.1 software";
     }
@@ -159,6 +163,11 @@ class FallbackGlesRenderer final : public GlesRenderer {
     void release(std::span<const GlesRenderTargetKey> targets) override {
         primary_->release(targets);
         fallback_->release(targets);
+    }
+
+    void release_owner(std::uint64_t owner) override {
+        primary_->release_owner(owner);
+        fallback_->release_owner(owner);
     }
 
     [[nodiscard]] std::string_view name() const override {

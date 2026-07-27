@@ -72,6 +72,11 @@ class GlesRenderer : public HostGraphicsDevice {
     // that batch prevents a host fence wait per individual surface.
     virtual void
     release(std::span<const GlesRenderTargetKey> targets) = 0;
+    // Drops every process-local target and sampled texture associated with an
+    // OpenGLES resource owner. The renderer is shared across guest processes,
+    // so retiring only render targets would otherwise leave per-process
+    // texture cache entries resident until the global LRU budget is reached.
+    virtual void release_owner(std::uint64_t owner) = 0;
     [[nodiscard]] virtual std::string_view name() const = 0;
     [[nodiscard]] virtual bool accelerated() const = 0;
     [[nodiscard]] virtual bool software_fallback_allowed() const = 0;

@@ -396,6 +396,7 @@ class VulkanGlesRenderer final : public GlesRenderer {
         std::optional<HostRectangle>* readback_damage) override;
     void invalidate(GlesRenderTargetKey target) override;
     void release(std::span<const GlesRenderTargetKey> targets) override;
+    void release_owner(std::uint64_t owner) override;
     [[nodiscard]] std::string_view name() const override {
         return renderer_name_;
     }
@@ -2157,6 +2158,64 @@ void VulkanGlesRenderer::release(
             vkDestroyFramebuffer(device_, found->second.framebuffer, nullptr);
         }
         targets_.erase(found);
+    }
+}
+
+void VulkanGlesRenderer::release_owner(std::uint64_t owner) {
+    if (owner == 0)
+        return;
+    const PerformanceLatencyScope latency{PerfLatencyKind::GlesTargetRelease};
+    std::lock_guard lock{mutex_};
+    const auto owns_target = [owner](const auto& entry) {
+        return entry.first.owner == owner;
+    };
+    const auto owns_texture = [owner](const auto& entry) {
+        return entry.first.owner == owner;
+    };
+    const auto has_target = std::ranges::any_of(targets_, owns_target);
+    const auto has_texture = std::ranges::any_of(texture_cache_, owns_texture);
+    if (!has_target && !has_texture) {
+        return;
+    }
+    // Recorded descriptors and render passes can still reference both maps.
+    // Submit once and wait once before retiring the complete process batch.
+    try {
+        if (command_recording_)
+            submit_commands(false);
+        wait_for_all_slots();
+    } catch (...) {
+        // Resource release is reached from process teardown and OpenGLES
+        // reset paths, both of which are noexcept from the guest's point of
+        // view. Leave the owner entries for the renderer-wide destructor
+        // after recording has been discarded rather than terminating the
+        // emulator while unwinding an exiting task.
+        last_failure_reason_.store(PerfFallbackReason::BackendFailure,
+                                   std::memory_order_relaxed);
+        static_cast<void>(vkDeviceWaitIdle(device_));
+        discard_commands();
+        return;
+    }
+    for (auto target = targets_.begin(); target != targets_.end();) {
+        if (target->first.owner != owner) {
+            ++target;
+            continue;
+        }
+        if (target->second.framebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(device_, target->second.framebuffer,
+                                 nullptr);
+        }
+        target = targets_.erase(target);
+    }
+    for (auto texture = texture_cache_.begin();
+         texture != texture_cache_.end();) {
+        if (texture->first.owner != owner) {
+            ++texture;
+            continue;
+        }
+        texture_cache_bytes_ -=
+            std::min(texture_cache_bytes_,
+                     texture->second.image.allocation_size);
+        texture = texture_cache_.erase(texture);
     }
 }
 

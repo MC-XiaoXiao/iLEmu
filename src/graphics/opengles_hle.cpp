@@ -97,11 +97,11 @@ OpenGlesHle::OpenGlesHle(UserlandHleRegistry& registry,
 }
 
 OpenGlesHle::~OpenGlesHle() {
-    release_unbacked_surfaces();
+    release_renderer_resources();
 }
 
 void OpenGlesHle::reset() {
-    release_unbacked_surfaces();
+    release_renderer_resources();
     threads_.clear();
     contexts_.clear();
     surfaces_.clear();
@@ -115,7 +115,7 @@ void OpenGlesHle::reset() {
 }
 
 void OpenGlesHle::inherit_state(const OpenGlesHle& parent) {
-    release_unbacked_surfaces();
+    release_renderer_resources();
     threads_ = parent.threads_;
     contexts_ = parent.contexts_;
     surfaces_ = parent.surfaces_;
@@ -127,14 +127,9 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent) {
     frame_count_ = parent.frame_count_;
 }
 
-void OpenGlesHle::release_unbacked_surfaces() {
-    std::vector<GlesRenderTargetKey> targets;
-    targets.reserve(surfaces_.size());
-    for (const auto& [surface, state] : surfaces_) {
-        if (!state.backing_identifier)
-            targets.push_back(render_target_key(surface));
-    }
-    renderer_->release(targets);
+void OpenGlesHle::release_renderer_resources() {
+    if (renderer_owner_ != 0)
+        renderer_->release_owner(renderer_owner_);
 }
 
 void OpenGlesHle::set_display(std::shared_ptr<DisplayState> display) {
