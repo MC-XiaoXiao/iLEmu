@@ -15,10 +15,7 @@ public:
 
   [[nodiscard]] std::uint64_t allowed_virtual_time() const;
   [[nodiscard]] std::chrono::nanoseconds
-  delay_until(
-      std::uint64_t virtual_time,
-      std::optional<std::chrono::steady_clock::time_point> host_deadline =
-          std::nullopt) const;
+  delay_until(std::uint64_t virtual_time) const;
   [[nodiscard]] std::chrono::nanoseconds limit_delay(
       std::chrono::nanoseconds delay,
       std::optional<std::chrono::steady_clock::time_point> host_deadline) const;

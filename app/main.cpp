@@ -1736,6 +1736,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
             output.line("[control] display wake requested before gesture");
           }
           live_touch_scheduler.schedule(command.gesture);
+          // Preserve stdin command order. In particular, "tap" followed by
+          // "lock" begins the touch before the button barrier even though the
+          // remainder of the gesture is paced over later host iterations.
+          for (const auto &input : live_touch_scheduler.poll()) {
+            initial_runtime->kernel->enqueue_touch_input(input);
+          }
           output.line(
               "[control] gesture=" + command.message +
               " scheduled events=" + std::to_string(command.gesture.size()));
@@ -1912,13 +1918,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
           realtime_pacer.emplace(current_time);
         }
       }
-      const auto delay = realtime_pacer->delay_until(
-          initial_runtime->kernel->current_absolute_time(),
-          next_host_control_deadline());
-      if (delay > std::chrono::nanoseconds::zero()) {
-        std::this_thread::sleep_for(std::min(
-            delay, std::chrono::duration_cast<std::chrono::nanoseconds>(
-                       interactive_maximum_sleep)));
+      const auto guest_ahead_delay = realtime_pacer->delay_until(
+          initial_runtime->kernel->current_absolute_time());
+      if (guest_ahead_delay > std::chrono::nanoseconds::zero()) {
+        const auto sleep_delay = realtime_pacer->limit_delay(
+            guest_ahead_delay, next_host_control_deadline());
+        if (sleep_delay > std::chrono::nanoseconds::zero()) {
+          std::this_thread::sleep_for(std::min(
+              sleep_delay,
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  interactive_maximum_sleep)));
+        }
+        // A due host control should wake the polling loop, not make a guest
+        // that is still ahead appear eligible to execute.
         continue;
       }
     }
@@ -2343,12 +2355,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
       }
       if (next_deadline) {
         if (realtime_pacer) {
-          const auto delay = realtime_pacer->delay_until(
-              *next_deadline, next_host_control_deadline());
-          if (delay > std::chrono::nanoseconds::zero()) {
-            std::this_thread::sleep_for(std::min(
-                delay, std::chrono::duration_cast<std::chrono::nanoseconds>(
-                           interactive_maximum_sleep)));
+          const auto guest_ahead_delay =
+              realtime_pacer->delay_until(*next_deadline);
+          if (guest_ahead_delay > std::chrono::nanoseconds::zero()) {
+            const auto sleep_delay = realtime_pacer->limit_delay(
+                guest_ahead_delay, next_host_control_deadline());
+            if (sleep_delay > std::chrono::nanoseconds::zero()) {
+              std::this_thread::sleep_for(std::min(
+                  sleep_delay,
+                  std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      interactive_maximum_sleep)));
+            }
+            // Keep guest-time advancement gated by the raw pacing result.
+            // A clipped host sleep only makes input polling responsive.
             continue;
           }
         }

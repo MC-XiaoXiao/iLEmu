@@ -28,9 +28,7 @@ std::uint64_t RealtimePacer::allowed_virtual_time() const {
 }
 
 std::chrono::nanoseconds
-RealtimePacer::delay_until(
-    std::uint64_t virtual_time,
-    std::optional<std::chrono::steady_clock::time_point> host_deadline) const {
+RealtimePacer::delay_until(std::uint64_t virtual_time) const {
   const auto allowed = allowed_virtual_time();
   if (virtual_time <= allowed) {
     return std::chrono::nanoseconds::zero();
@@ -38,10 +36,8 @@ RealtimePacer::delay_until(
   const auto delay = virtual_time - allowed;
   const auto maximum = static_cast<std::uint64_t>(
       std::chrono::nanoseconds::max().count());
-  return limit_delay(
-      std::chrono::nanoseconds{static_cast<std::chrono::nanoseconds::rep>(
-          std::min(delay, maximum))},
-      host_deadline);
+  return std::chrono::nanoseconds{
+      static_cast<std::chrono::nanoseconds::rep>(std::min(delay, maximum))};
 }
 
 std::chrono::nanoseconds RealtimePacer::limit_delay(
