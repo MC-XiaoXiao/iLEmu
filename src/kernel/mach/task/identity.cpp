@@ -53,6 +53,9 @@ bool initialize_root(KernelSharedState &state, ProcessContext &process) {
   state.task_port_pids.emplace(task_object, process.pid);
   state.task_thread_port_objects[process.pid][0] = thread_object;
   state.task_special_ports[task_object][4] = bootstrap_object;
+  // The task structure owns a kernel-held reference independent of the
+  // bootstrap receive name installed in the root ipc_space.
+  ++state.mach_kernel_send_rights[bootstrap_object];
   return install_kernel_send_port(state, process, process.host_port) &&
          install_kernel_send_port(state, process, process.clock_port) &&
          install_kernel_send_port(state, process,
@@ -100,6 +103,7 @@ bool inherit_child(KernelSharedState &state, const ProcessContext &parent,
 
   if (bootstrap_object) {
     state.task_special_ports[child_task_object][4] = *bootstrap_object;
+    ++state.mach_kernel_send_rights[*bootstrap_object];
     child.bootstrap_port =
         state.mach_namespaces
             .copyout_at_name(child.pid, *bootstrap_object, send_right,

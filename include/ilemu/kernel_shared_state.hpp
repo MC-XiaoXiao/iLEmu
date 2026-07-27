@@ -365,6 +365,10 @@ struct KernelSharedState {
     std::vector<OolPortArray> ool_port_arrays;
     std::optional<std::uint32_t> reply_object;
     std::optional<xnu792::ipc::Right> reply_right;
+    // A MOVE_SEND used as the message's remote port has no sender ipc_entry
+    // after copyin, but the queued message still keeps the destination port
+    // alive until receive/discard. Record that hold explicitly.
+    std::optional<std::uint32_t> destination_send_object;
     std::vector<PortTransfer> port_transfers;
     std::vector<ReceivePointerFixup> receive_pointer_fixups;
   };
@@ -642,6 +646,15 @@ struct KernelSharedState {
   // Send rights captured by queued messages count as extant for no-senders
   // even though they no longer need a sender-local ipc_entry.
   std::map<std::uint32_t, std::uint32_t> mach_inflight_send_rights;
+  // Kernel-owned task metadata (for example task special ports) retains a
+  // Send-like reference independently of every guest ipc_space. Keep that
+  // reference visible to no-senders and transient-object reclaimers.
+  std::map<std::uint32_t, std::uint32_t> mach_kernel_send_rights;
+  // Port teardown can discard a queued right that points back to the same
+  // object. Keep removal idempotent while that recursive ipc_right path is
+  // unwinding; otherwise the queue sidecar is visited after its owner has
+  // already been moved out and freed.
+  std::set<std::uint32_t> mach_ports_being_removed;
   std::map<std::uint32_t, std::vector<std::uint32_t>> mach_port_sets;
   // These maps are keyed by global IPC object identifiers, never by a
   // caller's task-local Mach name. Keep task identity separate from generic

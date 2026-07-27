@@ -32,6 +32,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <span>
 #include <sstream>
 #include <string_view>
@@ -401,7 +402,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
             resolve_name_with_right(*shared_state_, process_.pid, *remote_port,
                                     *destination_source_right);
       }
-      if (!destination_object ||
+      if (!destination_object || !destination_right ||
           (*destination_right != xnu792::ipc::Right::Send &&
            *destination_right != xnu792::ipc::Right::SendOnce)) {
         destination_object.reset();
@@ -441,6 +442,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
       if (routable) {
         std::optional<std::uint32_t> reply_object;
         std::optional<xnu792::ipc::Right> reply_right;
+        std::optional<std::uint32_t> destination_send_object;
         std::uint32_t reply_disposition = 0;
         std::vector<KernelSharedState::MachMessage::PortTransfer>
             port_transfers;
@@ -516,6 +518,74 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
           }
         }
 
+        // ipc_kmsg_copyin validates every MOVE right before mutating the
+        // sender's ipc_space. Do the same preflight here. Without it, a
+        // malformed message that repeats one MOVE_SEND/ MOVE_RECEIVE name
+        // could consume the first right, fail on the second, and leave the
+        // queue/in-flight bookkeeping inconsistent even though no message
+        // was enqueued.
+        if (routable) {
+          std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t>
+              moved_references;
+          const auto count_move = [&](std::uint32_t name,
+                                      std::uint32_t disposition) {
+            if (disposition != 16U && disposition != 17U &&
+                disposition != 18U) {
+              return true;
+            }
+            const auto source = source_right_for_disposition(disposition);
+            if (!source)
+              return false;
+            ++moved_references[{name, static_cast<std::uint32_t>(*source)}];
+            return true;
+          };
+          if (reply_object &&
+              !count_move(reply_name, reply_disposition)) {
+            routable = false;
+          }
+          if (routable) {
+            for (const auto &transfer : port_transfers) {
+              if (!count_move(transfer.sender_name,
+                              transfer.disposition)) {
+                routable = false;
+                break;
+              }
+            }
+          }
+          const auto destination_move_disposition = *bits & 0xffU;
+          if (routable && (destination_move_disposition == 17U ||
+                           destination_move_disposition == 18U) &&
+              !count_move(*remote_port, destination_move_disposition)) {
+            routable = false;
+          }
+          if (routable) {
+            for (const auto &[key, count] : moved_references) {
+              const auto source = static_cast<xnu792::ipc::Right>(key.second);
+              const auto entry = shared_state_->mach_namespaces.lookup(
+                  process_.pid, key.first);
+              if (!entry ||
+                  (entry->type & xnu792::ipc::type_mask(source)) == 0) {
+                routable = false;
+                break;
+              }
+              if (source == xnu792::ipc::Right::Receive) {
+                if (count != 1U)
+                  routable = false;
+              } else if (entry->user_references[
+                             static_cast<std::size_t>(source)] < count) {
+                routable = false;
+              }
+              if (!routable)
+                break;
+            }
+          }
+          if (!routable) {
+            // MACH_SEND_INVALID_RIGHT; no MOVE right has been consumed yet.
+            registers[0] = darwin::mach_message::send_invalid_right;
+            return;
+          }
+        }
+
         const auto consume_transfer = [&](std::uint32_t name,
                                           std::uint32_t disposition) {
           const auto source = source_right_for_disposition(disposition);
@@ -545,8 +615,15 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
         if (routable && ((*bits & 0xffU) == 17U || (*bits & 0xffU) == 18U) &&
             !consume_moved_right_locked(*shared_state_, process_.pid,
                                         *remote_port, *destination_right,
-                                        false)) {
+                                        true)) {
           routable = false;
+        } else if (routable && (*bits & 0xffU) == 17U &&
+                   destination_right &&
+                   *destination_right == xnu792::ipc::Right::Send) {
+          // MOVE_SEND removes the sender's last ipc_entry reference, but the
+          // queued destination still owns that Send right until delivery or
+          // discard. Keep it out of no-senders/reclaimer decisions.
+          destination_send_object = destination_object;
         }
         if (routable) {
           const auto retain_inflight = [&](std::uint32_t object,
@@ -567,6 +644,10 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
           for (const auto &transfer : port_transfers) {
             retain_inflight(transfer.object, transfer.right,
                             transfer.disposition);
+          }
+          if (destination_send_object) {
+            ++shared_state_->mach_inflight_send_rights[
+                *destination_send_object];
           }
           if (bootstrap_lookup && !bootstrap_service_name.empty() &&
               reply_object) {
@@ -598,6 +679,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
           queued.reply_object = reply_object;
           routed_reply_object = reply_object;
           queued.reply_right = reply_right;
+          queued.destination_send_object = destination_send_object;
           queued.port_transfers = std::move(port_transfers);
           shared_state_->mach_queues[remote_object].push_back(
               std::move(queued));

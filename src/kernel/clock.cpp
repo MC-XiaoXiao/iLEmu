@@ -248,7 +248,14 @@ void enqueue_clock_alarm_reply_locked(
     KernelSharedState& state, std::uint32_t reply_object,
     std::uint32_t code, std::uint32_t alarm_type,
     std::uint64_t alarm_time) {
-    using namespace xnu792::mig::clock_reply;
+  // A clock alarm retains a send-once reply right.  The receiving ipc_space
+  // may disappear before the deadline; never use operator[] here, because it
+  // would resurrect a queue for a dead port and make a later PID reuse see an
+  // unrelated reply.
+  if (!state.mach_port_objects.contains(reply_object)) {
+    return;
+  }
+  using namespace xnu792::mig::clock_reply;
     constexpr const auto& arguments = clock_alarm_reply_arguments;
     constexpr auto message_size =
         arguments[3].request_offset + arguments[3].wire_size;
@@ -299,6 +306,10 @@ void deliver_due_clock_alarms_locked(
          alarm != state.clock_alarms.end();) {
         if (alarm->second.deadline > deadline) {
             ++alarm;
+            continue;
+        }
+        if (!state.mach_port_objects.contains(alarm->second.reply_object)) {
+            alarm = state.clock_alarms.erase(alarm);
             continue;
         }
         enqueue_clock_alarm_reply_locked(

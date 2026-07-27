@@ -69,12 +69,28 @@ void enqueue_port_deleted_notification_locked(KernelSharedState &state,
                                               std::uint32_t deleted_name);
 void enqueue_send_once_notification_locked(KernelSharedState &state,
                                            std::uint32_t object);
-void enqueue_port_destroyed_notification_locked(KernelSharedState &state,
-                                                std::uint32_t notify_object,
-                                                std::uint32_t receive_object);
+[[nodiscard]] bool enqueue_port_destroyed_notification_locked(
+    KernelSharedState &state, std::uint32_t notify_object,
+    std::uint32_t receive_object);
 void discard_mach_message_rights_locked(
     KernelSharedState &state, const KernelSharedState::MachMessage &message);
 void remove_port_object_locked(KernelSharedState &state, std::uint32_t object);
+// Named VM entries are kernel-owned send-only ports. Reclaim them only after
+// the last namespace/in-flight Send reference disappears; unlike generic
+// ipc_port objects this cannot invalidate a receive right or a service port.
+void release_unreferenced_memory_entry_locked(KernelSharedState &state,
+                                              std::uint32_t object);
+// Task and thread ports are kernel-owned objects. When their task exits, all
+// outstanding Send names must become DeadName before the backing indexes are
+// dropped, matching ipc_space/task termination in XNU.
+void terminate_exited_task_ports_locked(KernelSharedState &state,
+                                        std::uint32_t pid);
+void terminate_exited_semaphores_locked(KernelSharedState &state,
+                                        std::uint32_t pid);
+void cleanup_exited_process_metadata_locked(KernelSharedState &state,
+                                            std::uint32_t pid);
+void release_unreferenced_iokit_object_locked(KernelSharedState &state,
+                                              std::uint32_t object);
 void cancel_dead_name_notification_locked(KernelSharedState &state,
                                           std::uint32_t task,
                                           std::uint32_t name);
@@ -87,6 +103,10 @@ void terminate_receive_object_locked(KernelSharedState &state,
                                      std::uint32_t object);
 void release_inflight_send_right_locked(KernelSharedState &state,
                                         std::uint32_t object);
+void retain_kernel_send_right_locked(KernelSharedState &state,
+                                     std::uint32_t object);
+void release_kernel_send_right_locked(KernelSharedState &state,
+                                      std::uint32_t object);
 [[nodiscard]] bool destroy_port_name_locked(KernelSharedState &state,
                                             std::uint32_t task,
                                             std::uint32_t name);

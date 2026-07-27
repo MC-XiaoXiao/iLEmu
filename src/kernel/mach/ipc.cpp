@@ -108,6 +108,85 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
     return true;
   }
 
+  // A queued message keeps the semantic right in its sidecar, but the
+  // backing ipc_port may have been retired while the receiver was asleep.
+  // Never let copyout recreate a live Send/Receive name for such an object.
+  // Send-like rights can still be represented as a dead name (the equivalent
+  // of ipc_right_copyout on a dead port); receive rights cannot be recovered
+  // once their port object is gone and invalidate the queued message.
+  const auto copyout_received_right =
+      [&](std::uint32_t object,
+          xnu792::ipc::Right right) -> std::optional<std::uint32_t> {
+    if (object == xnu792::ipc::null_name)
+      return std::nullopt;
+    if (!shared_state_->mach_port_objects.contains(object)) {
+      if (right != xnu792::ipc::Right::Send &&
+          right != xnu792::ipc::Right::SendOnce) {
+        return std::nullopt;
+      }
+      // Directly retired legacy objects may not have gone through
+      // terminate_receive_object_locked. Normalize any stale namespace send
+      // entries before installing the dead-name result so a PID/name reuse
+      // cannot observe a resurrected Send right.
+      static_cast<void>(
+          shared_state_->mach_namespaces.mark_object_dead(object));
+      return shared_state_->mach_namespaces.copyout(
+          process_.pid, object,
+          xnu792::ipc::type_mask(xnu792::ipc::Right::DeadName));
+    }
+    return shared_state_->mach_namespaces.copyout(
+        process_.pid, object, xnu792::ipc::type_mask(right));
+  };
+
+  const auto discard_queued_message = [&] {
+    auto discarded = std::move(queue->second.front());
+    queue->second.pop_front();
+    discard_mach_message_rights_locked(*shared_state_, discarded);
+  };
+  const auto fail_receive = [&](std::uint32_t error) {
+    discard_queued_message();
+    cpu.registers()[0] = error;
+    pending_mach_receives_.erase(pending);
+    process_.waiting_for_events = false;
+    cpu.clear_halt();
+    return true;
+  };
+
+  if (!shared_state_->mach_port_objects.contains(queued_port)) {
+    // A stale queue entry must not be copied out through a dead destination.
+    return fail_receive(0x10004008U); // MACH_RCV_INVALID_DATA
+  }
+
+  const auto send_bits = read_little_word(pending_message.bytes, 0);
+  const auto sender_reply_name = read_little_word(pending_message.bytes, 12);
+  std::optional<std::uint32_t> reply_object;
+  std::optional<xnu792::ipc::Right> reply_right;
+  if (sender_reply_name != xnu792::ipc::null_name) {
+    reply_object = pending_message.reply_object
+                       ? pending_message.reply_object
+                       : resolve_message_object(*shared_state_,
+                                                pending_message.sender_pid,
+                                                sender_reply_name);
+    reply_right = pending_message.reply_right
+                      ? pending_message.reply_right
+                      : right_for_disposition((send_bits >> 8U) & 0xffU);
+    // Preflight receive rights before destination copyout. This keeps a
+    // malformed/dead transfer from partially mutating the receiver's
+    // namespace and then failing halfway through delivery.
+    if (reply_right &&
+        ((!reply_object) ||
+         (*reply_right == xnu792::ipc::Right::Receive &&
+          !shared_state_->mach_port_objects.contains(*reply_object)))) {
+      return fail_receive(0x10004008U); // MACH_RCV_INVALID_DATA
+    }
+  }
+  for (const auto &transfer : pending_message.port_transfers) {
+    if (transfer.right == xnu792::ipc::Right::Receive &&
+        !shared_state_->mach_port_objects.contains(transfer.object)) {
+      return fail_receive(0x10004008U); // MACH_RCV_INVALID_DATA
+    }
+  }
+
   const auto destination_name = shared_state_->mach_namespaces.copyout(
       process_.pid, queued_port,
       xnu792::ipc::type_mask(xnu792::ipc::Right::Receive));
@@ -120,18 +199,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
   }
   write_little_word(received->bytes, 12, *destination_name);
 
-  const auto send_bits = read_little_word(pending_message.bytes, 0);
-  const auto sender_reply_name = read_little_word(pending_message.bytes, 12);
   if (sender_reply_name != xnu792::ipc::null_name) {
-    const auto reply_object =
-        pending_message.reply_object
-            ? pending_message.reply_object
-            : resolve_message_object(*shared_state_, pending_message.sender_pid,
-                                     sender_reply_name);
-    const auto right = pending_message.reply_right
-                           ? pending_message.reply_right
-                           : right_for_disposition((send_bits >> 8U) & 0xffU);
-    if (right) {
+    if (reply_right) {
       if (!reply_object) {
         cpu.registers()[0] = 0x10004008U;
         pending_mach_receives_.erase(pending);
@@ -139,8 +208,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
         cpu.clear_halt();
         return true;
       }
-      const auto reply_name = shared_state_->mach_namespaces.copyout(
-          process_.pid, *reply_object, xnu792::ipc::type_mask(*right));
+      const auto reply_name =
+          copyout_received_right(*reply_object, *reply_right);
       if (!reply_name) {
         cpu.registers()[0] = 0x10004008U;
         pending_mach_receives_.erase(pending);
@@ -149,7 +218,7 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
         return true;
       }
       write_little_word(received->bytes, 8, *reply_name);
-      if (*right == xnu792::ipc::Right::Send) {
+      if (*reply_right == xnu792::ipc::Right::Send) {
         release_inflight_send_right_locked(*shared_state_, *reply_object);
       }
     }
@@ -220,8 +289,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
         cpu.clear_halt();
         return true;
       }
-      const auto receiver_name = shared_state_->mach_namespaces.copyout(
-          process_.pid, *object, xnu792::ipc::type_mask(*right));
+      const auto receiver_name =
+          copyout_received_right(*object, *right);
       if (!receiver_name) {
         cpu.registers()[0] = 0x10004008U;
         pending_mach_receives_.erase(pending);
@@ -274,9 +343,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
         cpu.clear_halt();
         return true;
       }
-      const auto receiver_name = shared_state_->mach_namespaces.copyout(
-          process_.pid, transfer.object,
-          xnu792::ipc::type_mask(transfer.right));
+      const auto receiver_name =
+          copyout_received_right(transfer.object, transfer.right);
       if (!receiver_name) {
         cpu.registers()[0] = 0x10004008U;
         pending_mach_receives_.erase(pending);
@@ -379,7 +447,13 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
   const auto delivered_input_kind = pending_message.graphics_input_kind;
   const auto delivered_touch_phase =
       pending_message.graphics_touch_phase;
+  const auto delivered_destination_send_object =
+      pending_message.destination_send_object;
   queue->second.pop_front();
+  if (delivered_destination_send_object) {
+    release_inflight_send_right_locked(*shared_state_,
+                                       *delivered_destination_send_object);
+  }
   output_.write(
       "[mach] deliver sender=" + std::to_string(delivered_sender_pid) +
       " receiver=" + std::to_string(process_.pid) +

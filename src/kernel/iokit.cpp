@@ -1834,11 +1834,14 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
       return mach_rcv_invalid_data;
     {
       std::lock_guard mach_lock{shared_state.mach_mutex};
-      kernel_iokit::display::close_connection_locked(shared_state,
-                                                     remote_object);
-      shared_state.iokit_connections.erase(remote_object);
-      static_cast<void>(shared_state.mach_port_objects.erase(remote_object));
-      shared_state.mach_queues.erase(remote_object);
+      // ServiceClose is an ipc_port teardown, not just an IOKit map erase.
+      // Convert foreign Send rights to dead names and discard queued
+      // transfers through the common lifecycle path; the old direct erase
+      // left stale connection/notification state and could resurrect a queue
+      // when a delayed reply was copied out.
+      static_cast<void>(shared_state.mach_namespaces.mark_object_dead(
+          remote_object));
+      mach_support::remove_port_object_locked(shared_state, remote_object);
       static_cast<void>(
           shared_state.mach_namespaces.deallocate(process.pid, remote_port));
     }

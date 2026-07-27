@@ -346,8 +346,7 @@ void CompatibilityKernel::dispatch_mach(Cpu &cpu, std::uint32_t trap) {
         xnu792::ipc::type_mask(xnu792::ipc::Right::Receive));
     if (!name) {
       shared_state_->mach_timers.erase(object);
-      static_cast<void>(shared_state_->mach_port_objects.erase(object));
-      shared_state_->mach_queues.erase(object);
+      remove_port_object_locked(*shared_state_, object);
       registers[0] = xnu792::ipc::null_name;
       return;
     }
@@ -368,14 +367,14 @@ void CompatibilityKernel::dispatch_mach(Cpu &cpu, std::uint32_t trap) {
       registers[0] = darwin::mach::invalid_argument;
       return;
     }
-    const auto port = *object;
     shared_state_->mach_timers.erase(timer);
-    shared_state_->mach_queues.erase(port);
-    static_cast<void>(shared_state_->mach_port_objects.erase(port));
-    static_cast<void>(shared_state_->mach_namespaces.remove_type(
-        process_.pid, name,
-        xnu792::ipc::type_mask(xnu792::ipc::Right::Receive)));
-    registers[0] = darwin::mach::success;
+    // Tear down the task-local receive name through the common ipc_right
+    // path. It marks foreign Send names dead and drains queued rights before
+    // removing the backing timer port.
+    registers[0] = destroy_port_name_locked(*shared_state_, process_.pid,
+                                             name)
+                       ? darwin::mach::success
+                       : darwin::mach::invalid_argument;
     return;
   }
   case 93: { // mk_timer_arm_trap

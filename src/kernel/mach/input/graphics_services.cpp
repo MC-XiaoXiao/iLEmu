@@ -1677,6 +1677,17 @@ std::optional<std::uint32_t> record_application_scene_transform(
   const auto exact_home_exit =
       attempt &&
       attempt_is_home_exit_target_locked(state, process_id, *attempt);
+  // While the display is locked, SpringBoard publishes its own full-screen
+  // root using the same rendering process/context machinery. A launch token
+  // held behind that lock proves which App may resume after unlock; it does
+  // not make the current lock-screen root an App scene. Accept the App's next
+  // transform only after unlock promotes the token back to Launching.
+  if (exact_held_launch && state.application_touch_suspended &&
+      state.application_suspension_reason ==
+          KernelSharedState::ApplicationSuspensionReason::Lock &&
+      state.suspended_application_scene_process_id == process_id) {
+    return std::nullopt;
+  }
   const auto reactivation_in_progress =
       attempt &&
       (attempt_authorized_for_foreground_locked(state, process_id, *attempt) ||

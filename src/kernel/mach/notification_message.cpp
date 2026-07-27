@@ -160,9 +160,10 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
                                                       notify_object, name);
               }
             } else if (notify_object != 0) {
-              shared_state_->mach_dead_name_notifications.emplace(
-                  key, KernelSharedState::MachDeadNameNotificationRequest{
-                           entry->object, notify_object, sync});
+                shared_state_->mach_dead_name_notifications.emplace(
+                    key,
+                    KernelSharedState::MachDeadNameNotificationRequest{
+                        entry->object, notify_object, sync});
             }
           } else {
             const auto key = std::pair{entry->object, notification};
@@ -181,8 +182,9 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
             }
             if (notify_object != 0) {
               shared_state_->mach_notifications.emplace(
-                  key, KernelSharedState::MachNotificationRequest{notify_object,
-                                                                  sync});
+                  key,
+                  KernelSharedState::MachNotificationRequest{notify_object,
+                                                             sync});
               if (notification == mach_notify_no_senders) {
                 static_cast<void>(enqueue_no_senders_notification_locked(
                     *shared_state_, entry->object));

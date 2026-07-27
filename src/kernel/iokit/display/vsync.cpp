@@ -384,10 +384,19 @@ next_vsync_deadline_locked(const KernelSharedState &state) {
 
 void deliver_due_vsync_locked(KernelSharedState &state,
                               std::uint64_t deadline) {
-  for (auto &[connection, registration] : state.iokit_display_vsync) {
-    static_cast<void>(connection);
+  for (auto registration_it = state.iokit_display_vsync.begin();
+       registration_it != state.iokit_display_vsync.end();) {
+    auto &registration = registration_it->second;
+    // Vsync is driven by a kernel-owned timer, so it can fire after the
+    // client has torn down its ipc_space.  Do not recreate a queue for a dead
+    // notification port via operator[]; retire the registration instead.
+    if (!state.mach_port_objects.contains(registration.notification_port)) {
+      registration_it = state.iokit_display_vsync.erase(registration_it);
+      continue;
+    }
     if (!registration.enabled || !registration.next_deadline ||
         *registration.next_deadline > deadline) {
+      ++registration_it;
       continue;
     }
     auto &queue = state.mach_queues[registration.notification_port];
@@ -404,6 +413,7 @@ void deliver_due_vsync_locked(KernelSharedState &state,
     const auto elapsed = deadline - *registration.next_deadline;
     registration.next_deadline =
         *registration.next_deadline + (elapsed / period + 1U) * period;
+    ++registration_it;
   }
 }
 

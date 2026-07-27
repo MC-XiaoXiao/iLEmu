@@ -35,6 +35,12 @@ void CompatibilityKernel::release_process_mach_rights() {
   scene_coordinator_->retire_process(process_.pid);
   presentation_tracker_->retire_process(
       process_.pid, surface_store_->publication_watermark());
+  // A blocked receive/wait is a thread-local continuation, not a surviving
+  // Mach right. Drop it with the task so a later PID/processor reuse cannot
+  // consume a stale message or semaphore wakeup.
+  pending_mach_receives_.clear();
+  pending_semaphore_waits_.clear();
+  process_.waiting_for_events = false;
   std::lock_guard mach_lock{shared_state_->mach_mutex};
   auto entries = shared_state_->mach_namespaces.entries(process_.pid);
 
@@ -60,7 +66,17 @@ void CompatibilityKernel::release_process_mach_rights() {
     static_cast<void>(mach_support::destroy_port_name_locked(
         *shared_state_, process_.pid, entry.name));
   }
+  // In XNU a task/thread kernel port is terminated when its task dies. This
+  // converts foreign Send rights to DeadName before the PID indexes go away;
+  // simply erasing the indexes would leave apparently live capabilities in
+  // other ipc_spaces.
+  mach_support::terminate_exited_task_ports_locked(*shared_state_,
+                                                    process_.pid);
+  mach_support::terminate_exited_semaphores_locked(*shared_state_,
+                                                    process_.pid);
   shared_state_->mach_namespaces.destroy_task(process_.pid);
+  mach_support::cleanup_exited_process_metadata_locked(*shared_state_,
+                                                        process_.pid);
 }
 
 void CompatibilityKernel::release_process_descriptors() {
@@ -94,22 +110,30 @@ void CompatibilityKernel::exit_process(std::uint32_t status,
                                        std::uint32_t signal) {
   if (process_.exited)
     return;
+  process_.exit_status = status;
+  process_.termination_signal = signal;
+  // Publish the dead identity before tearing down its ports. Mach/graphics
+  // observers share this record and must stop routing work to the PID while
+  // ipc_space termination is in progress. The CompatibilityKernel-local flag
+  // remains false until teardown completes, so the process cannot be reaped
+  // out from under this cleanup.
+  {
+    std::lock_guard mach_lock{shared_state_->mach_mutex};
+    if (auto record = shared_state_->processes.find(process_.pid);
+        record != shared_state_->processes.end()) {
+      record->second.exited = true;
+      record->second.exit_status = status;
+      record->second.termination_signal = signal;
+    }
+  }
   shared_state_->advisory_file_locks->release_process_record_locks(
       process_.pid);
   apple80211_hle_.reset(process_.pid);
   release_process_descriptors();
   release_process_mach_rights();
   process_.exited = true;
-  process_.exit_status = status;
-  process_.termination_signal = signal;
   if (signal != 0)
     performance_counters().record_abnormal_exit();
-  if (auto record = shared_state_->processes.find(process_.pid);
-      record != shared_state_->processes.end()) {
-    record->second.exited = true;
-    record->second.exit_status = status;
-    record->second.termination_signal = signal;
-  }
   output_.write("[process] exit pid=" + std::to_string(process_.pid) +
                 " status=" + std::to_string(status) +
                 (signal != 0 ? " signal=" + std::to_string(signal)

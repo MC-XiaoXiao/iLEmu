@@ -176,8 +176,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
       }
       if (port_name == 0) {
         std::lock_guard mach_lock{shared_state_->mach_mutex};
-        static_cast<void>(shared_state_->mach_port_objects.erase(port_object));
-        shared_state_->mach_queues.erase(port_object);
+        remove_port_object_locked(*shared_state_, port_object);
         if (thread_terminate_handler_) {
           static_cast<void>(thread_terminate_handler_(process_.pid,
                                                       *processor));
