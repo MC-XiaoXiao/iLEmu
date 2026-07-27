@@ -125,66 +125,6 @@ float interpolate_triangle(const std::array<Point, 4> &values,
   return result;
 }
 
-Point expand_triangle_vertex(const std::array<Point, 4> &values,
-                             const std::array<std::size_t, 3> &triangle,
-                             std::size_t vertex) {
-  Point sum{};
-  for (const auto index : triangle) {
-    sum.x += values[index].x;
-    sum.y += values[index].y;
-  }
-  const auto &value = values[triangle[vertex]];
-  constexpr auto scale = 1.0F + 3.0F * edge_tolerance;
-  return {scale * value.x - edge_tolerance * sum.x,
-          scale * value.y - edge_tolerance * sum.y};
-}
-
-std::array<HostPoint, 6>
-conservative_fill_triangles(const std::array<Point, 4> &positions) {
-  // The software MBX path accepts barycentric weights down to -0.01. Expanding
-  // each triangle with the same affine transform preserves that coverage.
-  // Draw the firmware's second triangle first so Copy mode keeps the first
-  // triangle's priority in their conservative overlap.
-  constexpr std::array<std::array<std::size_t, 3>, 2> triangles{{
-      {0, 2, 3},
-      {0, 1, 2},
-  }};
-  std::array<HostPoint, 6> result{};
-  std::size_t output{};
-  for (const auto &triangle : triangles) {
-    for (std::size_t vertex = 0; vertex < triangle.size(); ++vertex) {
-      const auto point =
-          expand_triangle_vertex(positions, triangle, vertex);
-      result[output++] = {point.x, point.y};
-    }
-  }
-  return result;
-}
-
-std::array<HostTexturedVertex, 6> conservative_copy_triangles(
-    const std::array<Point, 4> &positions,
-    const std::array<Point, 4> &texture) {
-  constexpr std::array<std::array<std::size_t, 3>, 2> triangles{{
-      {0, 2, 3},
-      {0, 1, 2},
-  }};
-  std::array<HostTexturedVertex, 6> result{};
-  std::size_t output{};
-  for (const auto &triangle : triangles) {
-    for (std::size_t vertex = 0; vertex < triangle.size(); ++vertex) {
-      const auto position =
-          expand_triangle_vertex(positions, triangle, vertex);
-      const auto coordinate =
-          expand_triangle_vertex(texture, triangle, vertex);
-      result[output++] = {
-          {position.x, position.y},
-          {coordinate.x, coordinate.y},
-      };
-    }
-  }
-  return result;
-}
-
 } // namespace
 
 void Mbx2dHle::quad_color(UserlandHleCall &call) {
@@ -277,16 +217,20 @@ void Mbx2dHle::quad_color(UserlandHleCall &call) {
       host_graphics_->accelerated() && destination->host_surface &&
       destination->backing &&
       destination->backing->pixel_format == surface_pixel_format_bgra &&
-      composite_mode && *composite_mode == HostCompositeMode::Copy &&
+      composite_mode &&
       left <= std::numeric_limits<std::int32_t>::max() &&
       top <= std::numeric_limits<std::int32_t>::max() &&
       static_cast<std::uint64_t>(width) <=
           std::numeric_limits<std::uint32_t>::max() &&
       static_cast<std::uint64_t>(height) <=
           std::numeric_limits<std::uint32_t>::max()) {
-    const auto triangles = conservative_fill_triangles(*positions);
-    if (command_encoder_->fill_triangles(
-            destination->host_surface, triangles,
+    std::array<HostPoint, 4> quad{};
+    for (std::size_t index = 0; index < quad.size(); ++index) {
+      quad[index] = {
+          (*positions)[index].x, (*positions)[index].y};
+    }
+    if (command_encoder_->fill_quad(
+            destination->host_surface, quad,
             {static_cast<std::int32_t>(left),
              static_cast<std::int32_t>(top),
              static_cast<std::uint32_t>(width),
@@ -544,7 +488,7 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
       destination->backing &&
       source->backing->pixel_format == surface_pixel_format_bgra &&
       destination->backing->pixel_format == surface_pixel_format_bgra &&
-      composite_mode && *composite_mode == HostCompositeMode::Copy &&
+      composite_mode &&
       full_texture_extent &&
       left <= std::numeric_limits<std::int32_t>::max() &&
       top <= std::numeric_limits<std::int32_t>::max() &&
@@ -552,11 +496,19 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
           std::numeric_limits<std::uint32_t>::max() &&
       static_cast<std::uint64_t>(height) <=
           std::numeric_limits<std::uint32_t>::max()) {
-    const auto triangles =
-        conservative_copy_triangles(*positions, *texture);
-    if (command_encoder_->copy_triangles(
+    std::array<HostTexturedVertex, 4> quad{};
+    for (std::size_t index = 0; index < quad.size(); ++index) {
+      quad[index] = {
+          {(*positions)[index].x, (*positions)[index].y},
+          {(*texture)[index].x, (*texture)[index].y}};
+    }
+    if (command_encoder_->copy_quad(
             source->host_surface, destination->host_surface,
-            triangles,
+            quad,
+            {static_cast<std::int32_t>(source_left),
+             static_cast<std::int32_t>(source_top),
+             static_cast<std::uint32_t>(source_width),
+             static_cast<std::uint32_t>(source_height)},
             {static_cast<std::int32_t>(left),
              static_cast<std::int32_t>(top),
              static_cast<std::uint32_t>(width),

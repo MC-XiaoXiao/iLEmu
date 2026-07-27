@@ -341,37 +341,138 @@ bool MobileFramebufferHle::submit_host_layers(
   const auto bottom = [](const HostRectangle &rectangle) {
     return static_cast<std::int64_t>(rectangle.y) + rectangle.height;
   };
-  const auto intersects = [&](const HostRectangle &left,
-                              const HostRectangle &right_rectangle) {
-    return static_cast<std::int64_t>(left.x) < right(right_rectangle) &&
-           static_cast<std::int64_t>(right_rectangle.x) < right(left) &&
-           static_cast<std::int64_t>(left.y) < bottom(right_rectangle) &&
-           static_cast<std::int64_t>(right_rectangle.y) < bottom(left);
-  };
-  const auto contains = [&](const HostRectangle &outer,
-                            const HostRectangle &inner) {
-    return outer.x <= inner.x && outer.y <= inner.y &&
-           right(outer) >= right(inner) && bottom(outer) >= bottom(inner);
-  };
-  std::optional<HostRectangle> damage;
-  const auto add_damage = [&](const HostRectangle &rectangle) {
-    if (!damage) {
-      damage = rectangle;
-      return;
-    }
-    const auto left = std::min(damage->x, rectangle.x);
-    const auto top = std::min(damage->y, rectangle.y);
-    const auto damage_right = std::max(right(*damage), right(rectangle));
-    const auto damage_bottom = std::max(bottom(*damage), bottom(rectangle));
-    damage = HostRectangle{
-        left, top, static_cast<std::uint32_t>(damage_right - left),
-        static_cast<std::uint32_t>(damage_bottom - top)};
+  const auto intersection =
+      [&](const HostRectangle &left,
+          const HostRectangle &right_rectangle)
+      -> std::optional<HostRectangle> {
+    const auto x = std::max(left.x, right_rectangle.x);
+    const auto y = std::max(left.y, right_rectangle.y);
+    const auto x_end = std::min(right(left), right(right_rectangle));
+    const auto y_end = std::min(bottom(left), bottom(right_rectangle));
+    if (x_end <= x || y_end <= y)
+      return std::nullopt;
+    return HostRectangle{
+        x, y, static_cast<std::uint32_t>(x_end - x),
+        static_cast<std::uint32_t>(y_end - y)};
   };
   const auto full_display = HostRectangle{
       0, 0, display_->width(), display_->height()};
+  std::vector<HostRectangle> damage;
+  const auto add_damage = [&](HostRectangle rectangle) {
+    const auto clipped = intersection(rectangle, full_display);
+    if (!clipped)
+      return;
+    rectangle = *clipped;
+    for (std::size_t index = 0; index < damage.size();) {
+      const auto touches =
+          static_cast<std::int64_t>(rectangle.x) <=
+              right(damage[index]) &&
+          static_cast<std::int64_t>(damage[index].x) <=
+              right(rectangle) &&
+          static_cast<std::int64_t>(rectangle.y) <=
+              bottom(damage[index]) &&
+          static_cast<std::int64_t>(damage[index].y) <=
+              bottom(rectangle);
+      if (!touches) {
+        ++index;
+        continue;
+      }
+      const auto x = std::min(rectangle.x, damage[index].x);
+      const auto y = std::min(rectangle.y, damage[index].y);
+      const auto x_end =
+          std::max(right(rectangle), right(damage[index]));
+      const auto y_end =
+          std::max(bottom(rectangle), bottom(damage[index]));
+      rectangle = {
+          x, y, static_cast<std::uint32_t>(x_end - x),
+          static_cast<std::uint32_t>(y_end - y)};
+      damage.erase(damage.begin() +
+                   static_cast<std::ptrdiff_t>(index));
+      index = 0;
+    }
+    damage.push_back(rectangle);
+    // Keep command growth bounded if a pathological producer updates many
+    // isolated regions in one SwapEnd. The fallback remains a conservative
+    // union, not a layer-driven full-screen expansion.
+    constexpr std::size_t maximum_damage_rectangles = 32;
+    if (damage.size() > maximum_damage_rectangles) {
+      auto merged = damage.front();
+      for (std::size_t index = 1; index < damage.size(); ++index) {
+        const auto x = std::min(merged.x, damage[index].x);
+        const auto y = std::min(merged.y, damage[index].y);
+        const auto x_end = std::max(right(merged), right(damage[index]));
+        const auto y_end = std::max(bottom(merged), bottom(damage[index]));
+        merged = {
+            x, y, static_cast<std::uint32_t>(x_end - x),
+            static_cast<std::uint32_t>(y_end - y)};
+      }
+      damage.assign(1, merged);
+    }
+  };
+  const auto propagate_source_damage =
+      [&](HostRectangle source_damage, HostRectangle source_rectangle,
+          HostRectangle destination_rectangle)
+      -> std::optional<HostRectangle> {
+    const auto affected = intersection(source_damage, source_rectangle);
+    if (!affected)
+      return std::nullopt;
+    const auto relative_left =
+        static_cast<std::uint64_t>(affected->x -
+                                   source_rectangle.x);
+    const auto relative_top =
+        static_cast<std::uint64_t>(affected->y -
+                                   source_rectangle.y);
+    const auto relative_right =
+        static_cast<std::uint64_t>(
+            right(*affected) - source_rectangle.x);
+    const auto relative_bottom =
+        static_cast<std::uint64_t>(
+            bottom(*affected) - source_rectangle.y);
+    const auto scale_floor = [](std::uint64_t value,
+                                std::uint32_t destination,
+                                std::uint32_t source) {
+      return value * destination / source;
+    };
+    const auto scale_ceil = [](std::uint64_t value,
+                               std::uint32_t destination,
+                               std::uint32_t source) {
+      return (value * destination + source - 1U) / source;
+    };
+    const auto x =
+        static_cast<std::int64_t>(destination_rectangle.x) +
+        static_cast<std::int64_t>(
+            scale_floor(relative_left, destination_rectangle.width,
+                        source_rectangle.width));
+    const auto y =
+        static_cast<std::int64_t>(destination_rectangle.y) +
+        static_cast<std::int64_t>(
+            scale_floor(relative_top, destination_rectangle.height,
+                        source_rectangle.height));
+    const auto x_end =
+        static_cast<std::int64_t>(destination_rectangle.x) +
+        static_cast<std::int64_t>(
+            scale_ceil(relative_right, destination_rectangle.width,
+                       source_rectangle.width));
+    const auto y_end =
+        static_cast<std::int64_t>(destination_rectangle.y) +
+        static_cast<std::int64_t>(
+            scale_ceil(relative_bottom, destination_rectangle.height,
+                       source_rectangle.height));
+    if (x_end <= x || y_end <= y ||
+        x < std::numeric_limits<std::int32_t>::min() ||
+        y < std::numeric_limits<std::int32_t>::min() ||
+        x > std::numeric_limits<std::int32_t>::max() ||
+        y > std::numeric_limits<std::int32_t>::max()) {
+      return std::nullopt;
+    }
+    return HostRectangle{
+        static_cast<std::int32_t>(x), static_cast<std::int32_t>(y),
+        static_cast<std::uint32_t>(x_end - x),
+        static_cast<std::uint32_t>(y_end - y)};
+  };
   if (!scanout_contents_valid_ ||
       submitted_background_argb_ != background_argb_) {
-    damage = full_display;
+    add_damage(full_display);
   } else {
     for (const auto &[order, submitted] : submitted_layers_) {
       const auto current = std::find_if(
@@ -385,13 +486,22 @@ bool MobileFramebufferHle::submit_host_layers(
         continue;
       }
       if (current->state != submitted.state ||
-          current->source->key() != submitted.surface_key ||
-          current->generation != submitted.generation) {
+          current->source->key() != submitted.surface_key) {
         if (const auto old_destination =
                 exact_rectangle(submitted.state.destination)) {
           add_damage(*old_destination);
         }
         add_damage(current->destination_rectangle);
+      } else if (current->generation != submitted.generation) {
+        const auto source_damage =
+            current->source->damage_since(submitted.generation);
+        for (const auto rectangle : source_damage) {
+          if (const auto transformed = propagate_source_damage(
+                  rectangle, current->source_rectangle,
+                  current->destination_rectangle)) {
+            add_damage(*transformed);
+          }
+        }
       }
     }
     for (const auto &current : prepared_layers) {
@@ -400,40 +510,28 @@ bool MobileFramebufferHle::submit_host_layers(
     }
   }
 
-  // Expanding to the complete destination of every intersecting layer makes
-  // it safe to replay those layers without a backend-specific clip/scissor.
-  // The fixed point also preserves z-order where the bounding box reaches an
-  // otherwise unchanged layer.
-  if (damage && !contains(*damage, full_display)) {
-    bool expanded{};
-    do {
-      expanded = false;
-      for (const auto &layer : prepared_layers) {
-        if (intersects(*damage, layer.destination_rectangle) &&
-            !contains(*damage, layer.destination_rectangle)) {
-          add_damage(layer.destination_rectangle);
-          expanded = true;
-        }
-      }
-    } while (expanded);
-  }
-
-  if (damage) {
-    if (!command_encoder_->fill(scanout_surface_, *damage,
-                                background_argb_)) {
-      scanout_contents_valid_ = false;
-      return false;
-    }
-    for (const auto &layer : prepared_layers) {
-      if (!intersects(*damage, layer.destination_rectangle))
-        continue;
-      if (!command_encoder_->copy(
-              layer.source, scanout_surface_, layer.source_rectangle,
-              layer.destination_rectangle,
-              HostCompositeMode::PremultipliedSourceOver, 0xffU,
-              HostFilter::Nearest)) {
+  if (!damage.empty()) {
+    for (const auto rectangle : damage) {
+      if (!command_encoder_->fill(scanout_surface_, rectangle,
+                                  background_argb_)) {
         scanout_contents_valid_ = false;
         return false;
+      }
+    }
+    for (const auto &layer : prepared_layers) {
+      for (const auto rectangle : damage) {
+        const auto clip =
+            intersection(rectangle, layer.destination_rectangle);
+        if (!clip)
+          continue;
+        if (!command_encoder_->copy(
+                layer.source, scanout_surface_,
+                layer.source_rectangle, layer.destination_rectangle,
+                HostCompositeMode::PremultipliedSourceOver, 0xffU,
+                HostFilter::Nearest, HostRotation::Identity, *clip)) {
+          scanout_contents_valid_ = false;
+          return false;
+        }
       }
     }
     if (!command_encoder_->submit()) {

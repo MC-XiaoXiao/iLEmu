@@ -2,10 +2,12 @@
 
 #include <compare>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <span>
+#include <vector>
 
 #include "ilemu/display.hpp"
 #include "ilemu/performance.hpp"
@@ -32,6 +34,8 @@ struct HostRectangle {
     std::int32_t y{};
     std::uint32_t width{};
     std::uint32_t height{};
+
+    bool operator==(const HostRectangle&) const = default;
 };
 
 struct HostPoint {
@@ -77,6 +81,10 @@ class HostSurface {
         [[nodiscard]] const DisplayFrame& frame() const {
             return surface_->cpu_frame_;
         }
+        // Narrows a write mapping to the pixels actually modified. Omitting
+        // this keeps the conservative full-surface damage used by callers
+        // that expose the raw mapping to arbitrary software.
+        void set_damage(HostRectangle damage) { damage_ = damage; }
 
       private:
         friend class HostSurface;
@@ -85,6 +93,7 @@ class HostSurface {
         HostSurface* surface_{};
         std::unique_lock<std::mutex> lock_;
         bool write_{};
+        std::optional<HostRectangle> damage_;
     };
 
     HostSurface(HostSurfaceKey key, HostSurfaceDescriptor descriptor,
@@ -103,14 +112,33 @@ class HostSurface {
     void replace_cpu_region(HostRectangle rectangle,
                             std::span<const std::uint32_t> pixels);
     [[nodiscard]] std::optional<HostRectangle> cpu_damage() const;
+    [[nodiscard]] std::vector<HostRectangle>
+    cpu_damage_rectangles() const;
+    // Returns all retained pixel damage newer than generation. If the caller
+    // is older than the bounded history, the conservative full surface is
+    // returned.
+    [[nodiscard]] std::vector<HostRectangle>
+    damage_since(std::uint64_t generation) const;
     // Called after queueing a native image write and after a completed
     // GPU-to-CPU transfer, respectively.
     [[nodiscard]] std::uint64_t mark_gpu_write();
+    [[nodiscard]] std::uint64_t mark_gpu_write(HostRectangle damage);
+    [[nodiscard]] std::uint64_t
+    mark_gpu_write(std::span<const HostRectangle> damage);
     void mark_cpu_synchronized(std::uint64_t gpu_generation);
     void mark_gpu_synchronized(std::uint64_t cpu_generation);
 
   private:
-    void mark_cpu_write_locked();
+    struct DamageRecord {
+        std::uint64_t generation{};
+        std::vector<HostRectangle> rectangles;
+    };
+
+    void mark_cpu_write_locked(
+        std::optional<HostRectangle> damage = std::nullopt);
+    void record_damage_locked(
+        std::uint64_t generation,
+        std::span<const HostRectangle> rectangles);
 
     HostSurfaceKey key_;
     HostSurfaceDescriptor descriptor_;
@@ -119,7 +147,9 @@ class HostSurface {
     std::uint64_t next_generation_{1};
     std::uint64_t cpu_generation_{1};
     std::uint64_t gpu_generation_{};
-    std::optional<HostRectangle> cpu_damage_;
+    std::vector<HostRectangle> cpu_damage_;
+    std::deque<DamageRecord> damage_history_;
+    std::uint64_t discarded_damage_generation_{};
 };
 
 class CommandEncoder {
@@ -137,7 +167,26 @@ class CommandEncoder {
          HostCompositeMode mode = HostCompositeMode::Copy,
          std::uint8_t global_alpha = 0xffU,
          HostFilter filter = HostFilter::Nearest,
-         HostRotation rotation = HostRotation::Identity) = 0;
+         HostRotation rotation = HostRotation::Identity,
+         std::optional<HostRectangle> clip = std::nullopt) = 0;
+    // Four-vertex quads preserve the firmware rasterizer's triangle order:
+    // (0, 1, 2) has priority over (0, 2, 3) in their tolerance overlap.
+    // The software encoder is the pixel-reference implementation; native
+    // backends must apply blending at most once per covered pixel.
+    [[nodiscard]] virtual bool
+    fill_quad(const std::shared_ptr<HostSurface>&,
+              std::span<const HostPoint>, HostRectangle,
+              std::uint32_t, HostCompositeMode, std::uint8_t) {
+        return false;
+    }
+    [[nodiscard]] virtual bool
+    copy_quad(const std::shared_ptr<HostSurface>&,
+              const std::shared_ptr<HostSurface>&,
+              std::span<const HostTexturedVertex>, HostRectangle,
+              HostRectangle, HostCompositeMode, std::uint8_t,
+              HostFilter) {
+        return false;
+    }
     // Triangle-list coordinates use the top-left HostSurface pixel space.
     // Backends may decline these optional primitives so the frontend can keep
     // its established software rasterizer as the semantic fallback.

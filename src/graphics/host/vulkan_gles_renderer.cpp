@@ -48,6 +48,53 @@ constexpr VkDeviceSize mebibyte = 1024U * 1024U;
 constexpr VkDeviceSize default_texture_cache_budget = 128U * mebibyte;
 constexpr VkDeviceSize maximum_texture_cache_budget = 256U * mebibyte;
 constexpr std::size_t maximum_texture_cache_entries = 4096;
+constexpr HostSurfaceKey quad_white_surface_key{
+    std::numeric_limits<std::uint64_t>::max(),
+    std::numeric_limits<std::uint64_t>::max()};
+constexpr float host_quad_edge_tolerance = 0.01F;
+
+VkImageAspectFlags stencil_aspect(VkFormat format) {
+    return format == VK_FORMAT_S8_UINT
+               ? VK_IMAGE_ASPECT_STENCIL_BIT
+               : VK_IMAGE_ASPECT_DEPTH_BIT |
+                     VK_IMAGE_ASPECT_STENCIL_BIT;
+}
+
+HostPoint expand_quad_triangle_vertex(
+    std::span<const HostPoint> values,
+    const std::array<std::size_t, 3>& triangle,
+    std::size_t vertex) {
+    HostPoint sum{};
+    for (const auto index : triangle) {
+        sum.x += values[index].x;
+        sum.y += values[index].y;
+    }
+    const auto& value = values[triangle[vertex]];
+    constexpr auto scale = 1.0F + 3.0F * host_quad_edge_tolerance;
+    return {
+        scale * value.x - host_quad_edge_tolerance * sum.x,
+        scale * value.y - host_quad_edge_tolerance * sum.y};
+}
+
+bool valid_host_quad(std::span<const HostPoint> positions) {
+    if (positions.size() != 4)
+        return false;
+    const auto diagonal_x = positions[2].x - positions[0].x;
+    const auto diagonal_y = positions[2].y - positions[0].y;
+    const auto side = [&](std::size_t vertex) {
+        const auto point_x =
+            positions[vertex].x - positions[0].x;
+        const auto point_y =
+            positions[vertex].y - positions[0].y;
+        return diagonal_x * point_y - diagonal_y * point_x;
+    };
+    const auto first = side(1);
+    const auto second = side(3);
+    return (first > host_quad_edge_tolerance &&
+            second < -host_quad_edge_tolerance) ||
+           (first < -host_quad_edge_tolerance &&
+            second > host_quad_edge_tolerance);
+}
 
 void add_damage(std::optional<HostRectangle>& damage,
                 HostRectangle rectangle) {
@@ -368,10 +415,17 @@ static_assert(sizeof(GpuVertex) == 48);
 static_assert(sizeof(GpuTextureEnvironment) == 112);
 
 struct PipelineKey {
+    enum class StencilMode : std::uint8_t {
+        Disabled,
+        WriteFirstTriangle,
+        TestOutsideFirstTriangle,
+    };
+
     bool blend_enabled{};
     std::uint32_t blend_source{};
     std::uint32_t blend_destination{};
     std::uint8_t color_mask{};
+    StencilMode stencil_mode{};
 
     auto operator<=>(const PipelineKey&) const = default;
 };
@@ -467,8 +521,10 @@ class VulkanGlesRenderer final : public GlesRenderer {
 
     struct Target {
         Image image;
+        Image stencil;
         Buffer download;
         VkFramebuffer framebuffer{};
+        VkFramebuffer stencil_framebuffer{};
         VkImageLayout layout{VK_IMAGE_LAYOUT_UNDEFINED};
         std::uint64_t cpu_generation{};
         PerfSurfaceKind kind{PerfSurfaceKind::GlesRenderTarget};
@@ -507,12 +563,16 @@ class VulkanGlesRenderer final : public GlesRenderer {
                   VkMemoryPropertyFlags preferred = 0) const;
     [[nodiscard]] Image create_image(std::uint32_t width, std::uint32_t height,
                                      VkImageUsageFlags usage, bool sampled,
-                                     bool rectangle) const;
+                                     bool rectangle,
+                                     VkFormat format = color_format,
+                                     VkImageAspectFlags aspect =
+                                         VK_IMAGE_ASPECT_COLOR_BIT) const;
     void ensure_buffer(Buffer& buffer, VkDeviceSize size,
                        VkBufferUsageFlags usage) const;
     [[nodiscard]] Target&
     ensure_target(GlesRenderTargetKey key, std::uint32_t width,
                   std::uint32_t height);
+    void ensure_stencil_framebuffer(Target& target);
     void upload(Buffer& buffer, const void* data, std::size_t size,
                 VkDeviceSize offset = 0,
                 PerfSurfaceKind surface = PerfSurfaceKind::Unknown) const;
@@ -539,7 +599,7 @@ class VulkanGlesRenderer final : public GlesRenderer {
         HostRectangle source_rectangle,
         HostRectangle destination_rectangle, HostCompositeMode mode,
         std::uint8_t global_alpha, HostFilter filter,
-        HostRotation rotation);
+        HostRotation rotation, std::optional<HostRectangle> clip);
     [[nodiscard]] bool encode_fill_triangles(
         HostSurface& destination, std::span<const HostPoint> positions,
         HostRectangle scissor, std::uint32_t argb, HostCompositeMode mode,
@@ -549,13 +609,24 @@ class VulkanGlesRenderer final : public GlesRenderer {
         std::span<const HostTexturedVertex> vertices,
         HostRectangle scissor, HostCompositeMode mode,
         std::uint8_t global_alpha, HostFilter filter);
+    [[nodiscard]] bool encode_fill_quad(
+        HostSurface& destination, std::span<const HostPoint> positions,
+        HostRectangle scissor, std::uint32_t argb,
+        HostCompositeMode mode, std::uint8_t global_alpha);
+    [[nodiscard]] bool encode_copy_quad(
+        HostSurface& source, HostSurface& destination,
+        std::span<const HostTexturedVertex> vertices,
+        HostRectangle source_rectangle, HostRectangle scissor,
+        HostCompositeMode mode, std::uint8_t global_alpha,
+        HostFilter filter);
     [[nodiscard]] bool draw_host_texture(
         Target& source, Target& destination,
         HostSurfaceKey destination_key,
         HostSurfaceDescriptor destination_descriptor,
         std::span<const GpuVertex> vertices, HostRectangle viewport,
         HostRectangle scissor, HostCompositeMode mode,
-        std::uint8_t global_alpha);
+        std::uint8_t global_alpha,
+        bool ordered_quad = false);
     [[nodiscard]] Target& prepare_host_surface(
         HostSurface& surface, const DisplayFrame& cpu_frame,
         std::uint64_t cpu_generation, std::uint64_t gpu_generation);
@@ -592,12 +663,14 @@ class VulkanGlesRenderer final : public GlesRenderer {
     std::vector<VkImageLayout> presentation_layouts_;
     std::vector<VkSemaphore> presentation_render_finished_;
     VkPhysicalDevice physical_device_{};
+    VkFormat stencil_format_{VK_FORMAT_UNDEFINED};
     VkDevice device_{};
     VkQueue queue_{};
     std::uint32_t queue_family_{};
     VkPhysicalDeviceMemoryProperties memory_properties_{};
     VkCommandPool command_pool_{};
     VkRenderPass render_pass_{};
+    VkRenderPass stencil_render_pass_{};
     VkDescriptorSetLayout descriptor_layout_{};
     VkPipelineLayout pipeline_layout_{};
     VkPipelineCache pipeline_cache_{};
@@ -607,6 +680,7 @@ class VulkanGlesRenderer final : public GlesRenderer {
     VkShaderModule fragment_shader_{};
     std::map<PipelineKey, VkPipeline> pipelines_;
     std::map<GlesRenderTargetKey, Target> targets_;
+    std::shared_ptr<HostSurface> quad_white_surface_;
     std::map<TextureKey, CachedTexture> texture_cache_;
     VkDeviceSize texture_cache_bytes_{};
     VkDeviceSize texture_cache_budget_bytes_{
@@ -730,12 +804,45 @@ class VulkanGlesRenderer::Encoder final : public CommandEncoder {
               HostRectangle source_rectangle,
               HostRectangle destination_rectangle, HostCompositeMode mode,
               std::uint8_t global_alpha, HostFilter filter,
-              HostRotation rotation) override {
+              HostRotation rotation,
+              std::optional<HostRectangle> clip) override {
         const auto encoded =
             source != nullptr && destination != nullptr &&
             renderer_.encode_copy(*source, *destination, source_rectangle,
                                   destination_rectangle, mode,
-                                  global_alpha, filter, rotation);
+                                  global_alpha, filter, rotation, clip);
+        if (encoded)
+            performance_counters().record_host_copy();
+        return encoded;
+    }
+
+    bool fill_quad(
+        const std::shared_ptr<HostSurface>& destination,
+        std::span<const HostPoint> positions, HostRectangle scissor,
+        std::uint32_t argb, HostCompositeMode mode,
+        std::uint8_t global_alpha) override {
+        const auto encoded =
+            destination != nullptr &&
+            renderer_.encode_fill_quad(
+                *destination, positions, scissor, argb, mode,
+                global_alpha);
+        if (encoded)
+            performance_counters().record_host_fill();
+        return encoded;
+    }
+
+    bool copy_quad(
+        const std::shared_ptr<HostSurface>& source,
+        const std::shared_ptr<HostSurface>& destination,
+        std::span<const HostTexturedVertex> vertices,
+        HostRectangle source_rectangle, HostRectangle scissor,
+        HostCompositeMode mode, std::uint8_t global_alpha,
+        HostFilter filter) override {
+        const auto encoded =
+            source != nullptr && destination != nullptr &&
+            renderer_.encode_copy_quad(
+                *source, *destination, vertices, source_rectangle,
+                scissor, mode, global_alpha, filter);
         if (encoded)
             performance_counters().record_host_copy();
         return encoded;
@@ -814,6 +921,13 @@ VulkanGlesRenderer::VulkanGlesRenderer(
                      : VulkanPresenterConfiguration{}},
       pipeline_cache_path_{std::move(pipeline_cache)} {
     try {
+        constexpr std::array<std::uint32_t, 1> white{0xffffffffU};
+        quad_white_surface_ = make_host_surface(
+            quad_white_surface_key,
+            HostSurfaceDescriptor{
+                1U, 1U, sizeof(std::uint32_t), 0U,
+                PerfSurfaceKind::Unknown},
+            white);
         auto application = make_vulkan_structure<VkApplicationInfo>(
             VK_STRUCTURE_TYPE_APPLICATION_INFO);
         application.pApplicationName = "iLEmu";
@@ -905,6 +1019,22 @@ VulkanGlesRenderer::VulkanGlesRenderer(
         if (physical_device_ == VK_NULL_HANDLE) {
             throw std::runtime_error{
                 "Vulkan exposes no hardware graphics queue"};
+        }
+        for (const auto format :
+             {VK_FORMAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT,
+              VK_FORMAT_D32_SFLOAT_S8_UINT}) {
+            VkFormatProperties properties{};
+            vkGetPhysicalDeviceFormatProperties(
+                physical_device_, format, &properties);
+            if ((properties.optimalTilingFeatures &
+                 VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) != 0) {
+                stencil_format_ = format;
+                break;
+            }
+        }
+        if (stencil_format_ == VK_FORMAT_UNDEFINED) {
+            throw std::runtime_error{
+                "Vulkan exposes no stencil attachment format"};
         }
 
         VkPhysicalDeviceProperties physical_properties{};
@@ -1048,14 +1178,16 @@ VulkanGlesRenderer::VulkanGlesRenderer(
         VkSubpassDependency dependency{};
         dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
         dependency.dstSubpass = 0;
-        dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
-        dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.srcStageMask =
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+        dependency.dstStageMask =
+            VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         dependency.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
                                    VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         auto render_pass_info = make_vulkan_structure<VkRenderPassCreateInfo>(
             VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO);
-        render_pass_info.attachmentCount = 1;
+        render_pass_info.attachmentCount = 1U;
         render_pass_info.pAttachments = &attachment;
         render_pass_info.subpassCount = 1;
         render_pass_info.pSubpasses = &subpass;
@@ -1064,6 +1196,42 @@ VulkanGlesRenderer::VulkanGlesRenderer(
         require_success(vkCreateRenderPass(device_, &render_pass_info, nullptr,
                                            &render_pass_),
                         "vkCreateRenderPass");
+
+        std::array<VkAttachmentDescription, 2> stencil_attachments{};
+        stencil_attachments[0] = attachment;
+        auto& stencil_attachment = stencil_attachments[1];
+        stencil_attachment.format = stencil_format_;
+        stencil_attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+        stencil_attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        stencil_attachment.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        stencil_attachment.stencilLoadOp =
+            VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+        stencil_attachment.stencilStoreOp =
+            VK_ATTACHMENT_STORE_OP_DONT_CARE;
+        stencil_attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        stencil_attachment.finalLayout =
+            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        VkAttachmentReference stencil_reference{
+            1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+        subpass.pDepthStencilAttachment = &stencil_reference;
+        dependency.srcStageMask |=
+            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        dependency.dstStageMask |=
+            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+        dependency.srcAccessMask |=
+            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        dependency.dstAccessMask |=
+            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        render_pass_info.attachmentCount =
+            static_cast<std::uint32_t>(stencil_attachments.size());
+        render_pass_info.pAttachments = stencil_attachments.data();
+        require_success(
+            vkCreateRenderPass(
+                device_, &render_pass_info, nullptr,
+                &stencil_render_pass_),
+            "vkCreateRenderPass(stencil)");
 
         std::array<VkDescriptorSetLayoutBinding, 3> bindings{};
         bindings[0].binding = 0;
@@ -1370,6 +1538,11 @@ void VulkanGlesRenderer::destroy() noexcept {
                 vkDestroyFramebuffer(device_, target.framebuffer, nullptr);
                 target.framebuffer = VK_NULL_HANDLE;
             }
+            if (target.stencil_framebuffer != VK_NULL_HANDLE) {
+                vkDestroyFramebuffer(
+                    device_, target.stencil_framebuffer, nullptr);
+                target.stencil_framebuffer = VK_NULL_HANDLE;
+            }
         }
         targets_.clear();
         texture_cache_.clear();
@@ -1407,6 +1580,10 @@ void VulkanGlesRenderer::destroy() noexcept {
         }
         if (render_pass_ != VK_NULL_HANDLE) {
             vkDestroyRenderPass(device_, render_pass_, nullptr);
+        }
+        if (stencil_render_pass_ != VK_NULL_HANDLE) {
+            vkDestroyRenderPass(
+                device_, stencil_render_pass_, nullptr);
         }
         if (pipeline_cache_ != VK_NULL_HANDLE) {
             vkDestroyPipelineCache(device_, pipeline_cache_, nullptr);
@@ -1502,7 +1679,8 @@ VulkanGlesRenderer::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
 VulkanGlesRenderer::Image
 VulkanGlesRenderer::create_image(std::uint32_t width, std::uint32_t height,
                                  VkImageUsageFlags usage, bool sampled,
-                                 bool rectangle) const {
+                                 bool rectangle, VkFormat format,
+                                 VkImageAspectFlags aspect) const {
     Image result;
     result.device = device_;
     result.width = width;
@@ -1511,7 +1689,7 @@ VulkanGlesRenderer::create_image(std::uint32_t width, std::uint32_t height,
     auto image_info = make_vulkan_structure<VkImageCreateInfo>(
         VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
     image_info.imageType = VK_IMAGE_TYPE_2D;
-    image_info.format = color_format;
+    image_info.format = format;
     image_info.extent = {width, height, 1};
     image_info.mipLevels = 1;
     image_info.arrayLayers = 1;
@@ -1540,11 +1718,11 @@ VulkanGlesRenderer::create_image(std::uint32_t width, std::uint32_t height,
         VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
     view_info.image = result.image;
     view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    view_info.format = color_format;
+    view_info.format = format;
     view_info.components = {
         VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
         VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY};
-    view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    view_info.subresourceRange.aspectMask = aspect;
     view_info.subresourceRange.levelCount = 1;
     view_info.subresourceRange.layerCount = 1;
     require_success(
@@ -1602,6 +1780,12 @@ VulkanGlesRenderer::ensure_target(GlesRenderTargetKey key,
         vkDestroyFramebuffer(device_, target.framebuffer, nullptr);
         target.framebuffer = VK_NULL_HANDLE;
     }
+    if (target.stencil_framebuffer != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(
+            device_, target.stencil_framebuffer, nullptr);
+        target.stencil_framebuffer = VK_NULL_HANDLE;
+    }
+    target.stencil = {};
     target.image = create_image(width, height,
                                 VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                     VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
@@ -1611,7 +1795,7 @@ VulkanGlesRenderer::ensure_target(GlesRenderTargetKey key,
     auto framebuffer_info = make_vulkan_structure<VkFramebufferCreateInfo>(
         VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
     framebuffer_info.renderPass = render_pass_;
-    framebuffer_info.attachmentCount = 1;
+    framebuffer_info.attachmentCount = 1U;
     framebuffer_info.pAttachments = &target.image.view;
     framebuffer_info.width = width;
     framebuffer_info.height = height;
@@ -1625,6 +1809,31 @@ VulkanGlesRenderer::ensure_target(GlesRenderTargetKey key,
     target.cpu_generation = 0;
     target.layout = VK_IMAGE_LAYOUT_UNDEFINED;
     return target;
+}
+
+void VulkanGlesRenderer::ensure_stencil_framebuffer(Target& target) {
+    if (target.stencil_framebuffer != VK_NULL_HANDLE)
+        return;
+    target.stencil = create_image(
+        target.image.width, target.image.height,
+        VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, false, false,
+        stencil_format_, stencil_aspect(stencil_format_));
+    const std::array attachments{
+        target.image.view, target.stencil.view};
+    auto framebuffer_info = make_vulkan_structure<VkFramebufferCreateInfo>(
+        VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
+    framebuffer_info.renderPass = stencil_render_pass_;
+    framebuffer_info.attachmentCount =
+        static_cast<std::uint32_t>(attachments.size());
+    framebuffer_info.pAttachments = attachments.data();
+    framebuffer_info.width = target.image.width;
+    framebuffer_info.height = target.image.height;
+    framebuffer_info.layers = 1U;
+    require_success(
+        vkCreateFramebuffer(
+            device_, &framebuffer_info, nullptr,
+            &target.stencil_framebuffer),
+        "vkCreateFramebuffer(stencil)");
 }
 
 void VulkanGlesRenderer::upload(Buffer& buffer, const void* data,
@@ -1875,6 +2084,38 @@ VkPipeline VulkanGlesRenderer::pipeline(const PipelineKey& key) {
         make_vulkan_structure<VkPipelineMultisampleStateCreateInfo>(
             VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO);
     multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    auto depth_stencil =
+        make_vulkan_structure<VkPipelineDepthStencilStateCreateInfo>(
+            VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO);
+    if (key.stencil_mode != PipelineKey::StencilMode::Disabled) {
+        depth_stencil.stencilTestEnable = VK_TRUE;
+        VkStencilOpState stencil{};
+        stencil.failOp = VK_STENCIL_OP_KEEP;
+        stencil.passOp =
+            key.stencil_mode ==
+                    PipelineKey::StencilMode::WriteFirstTriangle
+                ? VK_STENCIL_OP_REPLACE
+                : VK_STENCIL_OP_KEEP;
+        stencil.depthFailOp = VK_STENCIL_OP_KEEP;
+        stencil.compareOp =
+            key.stencil_mode ==
+                    PipelineKey::StencilMode::WriteFirstTriangle
+                ? VK_COMPARE_OP_ALWAYS
+                : VK_COMPARE_OP_EQUAL;
+        stencil.compareMask = 0xffU;
+        stencil.writeMask =
+            key.stencil_mode ==
+                    PipelineKey::StencilMode::WriteFirstTriangle
+                ? 0xffU
+                : 0U;
+        stencil.reference =
+            key.stencil_mode ==
+                    PipelineKey::StencilMode::WriteFirstTriangle
+                ? 1U
+                : 0U;
+        depth_stencil.front = stencil;
+        depth_stencil.back = stencil;
+    }
 
     VkPipelineColorBlendAttachmentState blend{};
     blend.blendEnable = key.blend_enabled ? VK_TRUE : VK_FALSE;
@@ -1934,10 +2175,14 @@ VkPipeline VulkanGlesRenderer::pipeline(const PipelineKey& key) {
     info.pViewportState = &viewport;
     info.pRasterizationState = &rasterization;
     info.pMultisampleState = &multisample;
+    info.pDepthStencilState = &depth_stencil;
     info.pColorBlendState = &blend_state;
     info.pDynamicState = &dynamic;
     info.layout = pipeline_layout_;
-    info.renderPass = render_pass_;
+    info.renderPass =
+        key.stencil_mode == PipelineKey::StencilMode::Disabled
+            ? render_pass_
+            : stencil_render_pass_;
     info.subpass = 0;
     VkPipeline created{};
     require_success(vkCreateGraphicsPipelines(device_, pipeline_cache_, 1, &info,
@@ -2246,6 +2491,10 @@ void VulkanGlesRenderer::release(
         if (found->second.framebuffer != VK_NULL_HANDLE) {
             vkDestroyFramebuffer(device_, found->second.framebuffer, nullptr);
         }
+        if (found->second.stencil_framebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(
+                device_, found->second.stencil_framebuffer, nullptr);
+        }
         targets_.erase(found);
     }
 }
@@ -2292,6 +2541,10 @@ void VulkanGlesRenderer::release_owner(std::uint64_t owner) {
         if (target->second.framebuffer != VK_NULL_HANDLE) {
             vkDestroyFramebuffer(device_, target->second.framebuffer,
                                  nullptr);
+        }
+        if (target->second.stencil_framebuffer != VK_NULL_HANDLE) {
+            vkDestroyFramebuffer(
+                device_, target->second.stencil_framebuffer, nullptr);
         }
         target = targets_.erase(target);
     }
@@ -2399,6 +2652,20 @@ VulkanGlesRenderer::present_target(Target& target) {
             : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
         VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
         VK_ACCESS_TRANSFER_WRITE_BIT);
+    const auto viewport = fit_display_viewport(
+        {target.image.width, target.image.height},
+        {presentation_extent_.width, presentation_extent_.height});
+    if (viewport.x != 0 || viewport.y != 0 ||
+        viewport.width != presentation_extent_.width ||
+        viewport.height != presentation_extent_.height) {
+        const VkClearColorValue black{{0.0F, 0.0F, 0.0F, 1.0F}};
+        const VkImageSubresourceRange full_color{
+            VK_IMAGE_ASPECT_COLOR_BIT, 0U, 1U, 0U, 1U};
+        vkCmdClearColorImage(
+            commands.command, presentation_images_[image_index],
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &black, 1U,
+            &full_color);
+    }
     VkImageBlit blit{};
     blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     blit.srcSubresource.layerCount = 1;
@@ -2407,9 +2674,11 @@ VulkanGlesRenderer::present_target(Target& target) {
         static_cast<std::int32_t>(target.image.height), 1};
     blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     blit.dstSubresource.layerCount = 1;
+    blit.dstOffsets[0] = {
+        viewport.x, viewport.y, 0};
     blit.dstOffsets[1] = {
-        static_cast<std::int32_t>(presentation_extent_.width),
-        static_cast<std::int32_t>(presentation_extent_.height), 1};
+        viewport.x + static_cast<std::int32_t>(viewport.width),
+        viewport.y + static_cast<std::int32_t>(viewport.height), 1};
     vkCmdBlitImage(
         commands.command, target.image.image,
         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -2500,48 +2769,62 @@ VulkanGlesRenderer::Target& VulkanGlesRenderer::prepare_host_surface(
         return target;
     }
 
-    auto upload_rectangle =
+    const auto full_rectangle =
         HostRectangle{0, 0, descriptor.width, descriptor.height};
+    std::vector<HostRectangle> upload_rectangles{full_rectangle};
     if (target.valid && target.cpu_generation != 0) {
-        if (const auto damage = surface.cpu_damage();
-            damage && damage->x >= 0 && damage->y >= 0 &&
-            damage->width != 0 && damage->height != 0 &&
-            damage->width <= descriptor.width &&
-            damage->height <= descriptor.height &&
-            static_cast<std::uint32_t>(damage->x) <=
-                descriptor.width - damage->width &&
-            static_cast<std::uint32_t>(damage->y) <=
-                descriptor.height - damage->height) {
-            upload_rectangle = *damage;
+        const auto valid_rectangle =
+            [&descriptor](HostRectangle rectangle) {
+                return rectangle.x >= 0 && rectangle.y >= 0 &&
+                       rectangle.width != 0 && rectangle.height != 0 &&
+                       rectangle.width <= descriptor.width &&
+                       rectangle.height <= descriptor.height &&
+                       static_cast<std::uint32_t>(rectangle.x) <=
+                           descriptor.width - rectangle.width &&
+                       static_cast<std::uint32_t>(rectangle.y) <=
+                           descriptor.height - rectangle.height;
+            };
+        auto damage = surface.cpu_damage_rectangles();
+        if (!damage.empty() &&
+            std::ranges::all_of(damage, valid_rectangle)) {
+            upload_rectangles = std::move(damage);
         }
     }
-    std::vector<std::uint32_t> upload_pixels;
     const auto full_upload =
-        upload_rectangle.x == 0 && upload_rectangle.y == 0 &&
-        upload_rectangle.width == descriptor.width &&
-        upload_rectangle.height == descriptor.height;
+        upload_rectangles.size() == 1 &&
+        upload_rectangles.front() == full_rectangle;
+    std::size_t upload_pixel_count{};
+    for (const auto rectangle : upload_rectangles) {
+        const auto rectangle_pixels =
+            static_cast<std::size_t>(rectangle.width) * rectangle.height;
+        if (rectangle_pixels >
+            std::numeric_limits<std::size_t>::max() - upload_pixel_count) {
+            return target;
+        }
+        upload_pixel_count += rectangle_pixels;
+    }
+    std::vector<std::uint32_t> upload_pixels;
     const std::uint32_t* upload_source = cpu_frame.pixels.data();
     if (!full_upload) {
-        upload_pixels.resize(
-            static_cast<std::size_t>(upload_rectangle.width) *
-            upload_rectangle.height);
-        for (std::uint32_t row = 0; row < upload_rectangle.height; ++row) {
-            std::copy_n(
-                cpu_frame.pixels.begin() +
+        upload_pixels.reserve(upload_pixel_count);
+        for (const auto rectangle : upload_rectangles) {
+            for (std::uint32_t row = 0; row < rectangle.height; ++row) {
+                const auto begin =
+                    cpu_frame.pixels.begin() +
                     static_cast<std::size_t>(
-                        static_cast<std::uint32_t>(upload_rectangle.y) + row) *
+                        static_cast<std::uint32_t>(rectangle.y) + row) *
                         descriptor.width +
-                    static_cast<std::uint32_t>(upload_rectangle.x),
-                upload_rectangle.width,
-                upload_pixels.begin() +
-                    static_cast<std::size_t>(row) *
-                        upload_rectangle.width);
+                    static_cast<std::uint32_t>(rectangle.x);
+                upload_pixels.insert(
+                    upload_pixels.end(), begin,
+                    begin + rectangle.width);
+            }
         }
         upload_source = upload_pixels.data();
     }
     const auto byte_count =
-        static_cast<VkDeviceSize>(upload_rectangle.width) *
-        upload_rectangle.height * sizeof(std::uint32_t);
+        static_cast<VkDeviceSize>(upload_pixel_count) *
+        sizeof(std::uint32_t);
     const auto align_staging = [](VkDeviceSize value) {
         return (value + staging_alignment - 1U) &
                ~(staging_alignment - 1U);
@@ -2585,16 +2868,26 @@ VulkanGlesRenderer::Target& VulkanGlesRenderer::prepare_host_surface(
                      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, source_stage,
                      VK_PIPELINE_STAGE_TRANSFER_BIT, source_access,
                      VK_ACCESS_TRANSFER_WRITE_BIT);
-    VkBufferImageCopy copy{};
-    copy.bufferOffset = staging_offset;
-    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    copy.imageSubresource.layerCount = 1;
-    copy.imageOffset = {upload_rectangle.x, upload_rectangle.y, 0};
-    copy.imageExtent = {
-        upload_rectangle.width, upload_rectangle.height, 1};
+    std::vector<VkBufferImageCopy> copies;
+    copies.reserve(upload_rectangles.size());
+    VkDeviceSize copy_offset = staging_offset;
+    for (const auto rectangle : upload_rectangles) {
+        VkBufferImageCopy copy{};
+        copy.bufferOffset = copy_offset;
+        copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        copy.imageSubresource.layerCount = 1;
+        copy.imageOffset = {rectangle.x, rectangle.y, 0};
+        copy.imageExtent = {rectangle.width, rectangle.height, 1};
+        copies.push_back(copy);
+        copy_offset +=
+            static_cast<VkDeviceSize>(rectangle.width) *
+            rectangle.height * sizeof(std::uint32_t);
+    }
     vkCmdCopyBufferToImage(commands.command, commands.staging.buffer,
                            target.image.image,
-                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           static_cast<std::uint32_t>(copies.size()),
+                           copies.data());
     target.layout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     target.cpu_generation = cpu_generation;
     target.valid = true;
@@ -2688,7 +2981,7 @@ bool VulkanGlesRenderer::encode_fill(
             return false;
         }
         destination.mark_gpu_synchronized(cpu_generation);
-        static_cast<void>(destination.mark_gpu_write());
+        static_cast<void>(destination.mark_gpu_write(rectangle));
         return true;
     }
 
@@ -2758,7 +3051,7 @@ bool VulkanGlesRenderer::encode_fill(
             add_damage(target.dirty, rectangle);
         }
         destination.mark_gpu_synchronized(cpu_generation);
-        static_cast<void>(destination.mark_gpu_write());
+        static_cast<void>(destination.mark_gpu_write(rectangle));
         return true;
     } catch (...) {
         last_failure_reason_.store(PerfFallbackReason::BackendFailure,
@@ -2864,8 +3157,271 @@ bool VulkanGlesRenderer::encode_fill_triangles(
         return false;
     }
     destination.mark_gpu_synchronized(cpu_generation);
-    static_cast<void>(destination.mark_gpu_write());
+    static_cast<void>(destination.mark_gpu_write(scissor));
     return true;
+}
+
+bool VulkanGlesRenderer::encode_fill_quad(
+    HostSurface& destination, std::span<const HostPoint> positions,
+    HostRectangle scissor, std::uint32_t argb, HostCompositeMode mode,
+    std::uint8_t global_alpha) {
+    const auto descriptor = destination.descriptor();
+    const auto valid_scissor =
+        scissor.x >= 0 && scissor.y >= 0 &&
+        scissor.width != 0 && scissor.height != 0 &&
+        scissor.width <= descriptor.width &&
+        scissor.height <= descriptor.height &&
+        static_cast<std::uint32_t>(scissor.x) <=
+            descriptor.width - scissor.width &&
+        static_cast<std::uint32_t>(scissor.y) <=
+            descriptor.height - scissor.height;
+    if (!valid_scissor || !valid_host_quad(positions) ||
+        std::ranges::any_of(positions, [](const HostPoint point) {
+            return !std::isfinite(point.x) ||
+                   !std::isfinite(point.y);
+        }) ||
+        !quad_white_surface_) {
+        return false;
+    }
+
+    const auto channel = [argb](std::uint32_t shift) {
+        return static_cast<float>((argb >> shift) & 0xffU) / 255.0F;
+    };
+    const auto alpha = static_cast<float>(global_alpha) / 255.0F;
+    const auto crossfade =
+        mode == HostCompositeMode::ConstantAlphaCrossfade;
+    const auto premultiplied =
+        mode == HostCompositeMode::PremultipliedSourceOver;
+    const std::array<float, 4> color{
+        channel(16) * (premultiplied ? alpha : 1.0F),
+        channel(8) * (premultiplied ? alpha : 1.0F),
+        channel(0) * (premultiplied ? alpha : 1.0F),
+        channel(24) *
+            (mode == HostCompositeMode::Copy || crossfade
+                 ? 1.0F
+                 : alpha)};
+    constexpr std::array<std::array<std::size_t, 3>, 2> triangles{{
+        {0, 1, 2},
+        {0, 2, 3},
+    }};
+    std::array<GpuVertex, 6> vertices{};
+    std::size_t output{};
+    for (const auto& triangle : triangles) {
+        for (std::size_t vertex = 0; vertex < triangle.size(); ++vertex) {
+            const auto position =
+                expand_quad_triangle_vertex(
+                    positions, triangle, vertex);
+            vertices[output++] = {
+                {2.0F * position.x /
+                         static_cast<float>(descriptor.width) -
+                     1.0F,
+                 1.0F -
+                     2.0F * position.y /
+                         static_cast<float>(descriptor.height),
+                 0.0F, 1.0F},
+                color, {0.5F, 0.5F}, {}};
+        }
+    }
+
+    const auto white_cpu_generation =
+        quad_white_surface_->cpu_generation();
+    const auto white_gpu_generation =
+        quad_white_surface_->gpu_generation();
+    const auto destination_cpu_generation =
+        destination.cpu_generation();
+    const auto destination_gpu_generation =
+        destination.gpu_generation();
+    DisplayFrame white_frame;
+    DisplayFrame destination_frame;
+    {
+        auto mapping = quad_white_surface_->map_cpu(
+            false, PerfCpuMapReason::HostUpload);
+        white_frame = mapping.frame();
+    }
+    {
+        auto mapping = destination.map_cpu(
+            false, PerfCpuMapReason::HostUpload);
+        destination_frame = mapping.frame();
+    }
+    try {
+        {
+            std::lock_guard lock{mutex_};
+            auto& white_target = prepare_host_surface(
+                *quad_white_surface_, white_frame,
+                white_cpu_generation, white_gpu_generation);
+            auto& destination_target = prepare_host_surface(
+                destination, destination_frame,
+                destination_cpu_generation,
+                destination_gpu_generation);
+            if (!white_target.valid || !destination_target.valid ||
+                !draw_host_texture(
+                    white_target, destination_target,
+                    destination.key(), descriptor, vertices,
+                    {0, 0, descriptor.width, descriptor.height},
+                    scissor, mode, global_alpha, true)) {
+                return false;
+            }
+            add_damage(destination_target.dirty, scissor);
+        }
+        quad_white_surface_->mark_gpu_synchronized(
+            white_cpu_generation);
+        destination.mark_gpu_synchronized(
+            destination_cpu_generation);
+        static_cast<void>(destination.mark_gpu_write(scissor));
+        return true;
+    } catch (...) {
+        last_failure_reason_.store(PerfFallbackReason::BackendFailure,
+                                   std::memory_order_relaxed);
+        std::lock_guard lock{mutex_};
+        static_cast<void>(vkDeviceWaitIdle(device_));
+        discard_commands();
+        return false;
+    }
+}
+
+bool VulkanGlesRenderer::encode_copy_quad(
+    HostSurface& source, HostSurface& destination,
+    std::span<const HostTexturedVertex> host_vertices,
+    HostRectangle source_rectangle, HostRectangle scissor,
+    HostCompositeMode mode, std::uint8_t global_alpha,
+    HostFilter filter) {
+    if (source.key() == destination.key() ||
+        filter != HostFilter::Nearest || host_vertices.size() != 4) {
+        return false;
+    }
+    const auto source_descriptor = source.descriptor();
+    const auto destination_descriptor = destination.descriptor();
+    const auto full_source =
+        source_rectangle.x == 0 && source_rectangle.y == 0 &&
+        source_rectangle.width == source_descriptor.width &&
+        source_rectangle.height == source_descriptor.height;
+    const auto valid_scissor =
+        scissor.x >= 0 && scissor.y >= 0 &&
+        scissor.width != 0 && scissor.height != 0 &&
+        scissor.width <= destination_descriptor.width &&
+        scissor.height <= destination_descriptor.height &&
+        static_cast<std::uint32_t>(scissor.x) <=
+            destination_descriptor.width - scissor.width &&
+        static_cast<std::uint32_t>(scissor.y) <=
+            destination_descriptor.height - scissor.height;
+    std::array<HostPoint, 4> positions{};
+    std::array<HostPoint, 4> texture{};
+    for (std::size_t index = 0; index < host_vertices.size(); ++index) {
+        positions[index] = host_vertices[index].position;
+        texture[index] = host_vertices[index].texture;
+    }
+    if (!full_source || !valid_scissor ||
+        source_descriptor.width == 0 ||
+        source_descriptor.height == 0 ||
+        destination_descriptor.width == 0 ||
+        destination_descriptor.height == 0 ||
+        !valid_host_quad(positions) ||
+        std::ranges::any_of(
+            host_vertices, [](const HostTexturedVertex vertex) {
+                return !std::isfinite(vertex.position.x) ||
+                       !std::isfinite(vertex.position.y) ||
+                       !std::isfinite(vertex.texture.x) ||
+                       !std::isfinite(vertex.texture.y);
+            })) {
+        return false;
+    }
+
+    const auto alpha = static_cast<float>(global_alpha) / 255.0F;
+    const auto crossfade =
+        mode == HostCompositeMode::ConstantAlphaCrossfade;
+    const auto rgb =
+        mode == HostCompositeMode::PremultipliedSourceOver
+            ? alpha
+            : 1.0F;
+    const std::array<float, 4> color{
+        rgb, rgb, rgb,
+        mode == HostCompositeMode::Copy || crossfade ? 1.0F : alpha};
+    constexpr std::array<std::array<std::size_t, 3>, 2> triangles{{
+        {0, 1, 2},
+        {0, 2, 3},
+    }};
+    std::array<GpuVertex, 6> vertices{};
+    std::size_t output{};
+    for (const auto& triangle : triangles) {
+        for (std::size_t vertex = 0; vertex < triangle.size(); ++vertex) {
+            const auto position =
+                expand_quad_triangle_vertex(
+                    positions, triangle, vertex);
+            const auto coordinate =
+                expand_quad_triangle_vertex(
+                    texture, triangle, vertex);
+            vertices[output++] = {
+                {2.0F * position.x /
+                         static_cast<float>(
+                             destination_descriptor.width) -
+                     1.0F,
+                 1.0F -
+                     2.0F * position.y /
+                         static_cast<float>(
+                             destination_descriptor.height),
+                 0.0F, 1.0F},
+                color,
+                {coordinate.x /
+                     static_cast<float>(source_descriptor.width),
+                 coordinate.y /
+                     static_cast<float>(source_descriptor.height)},
+                {}};
+        }
+    }
+
+    const auto source_cpu_generation = source.cpu_generation();
+    const auto source_gpu_generation = source.gpu_generation();
+    const auto destination_cpu_generation =
+        destination.cpu_generation();
+    const auto destination_gpu_generation =
+        destination.gpu_generation();
+    DisplayFrame source_frame;
+    DisplayFrame destination_frame;
+    {
+        auto mapping =
+            source.map_cpu(false, PerfCpuMapReason::HostUpload);
+        source_frame = mapping.frame();
+    }
+    {
+        auto mapping = destination.map_cpu(
+            false, PerfCpuMapReason::HostUpload);
+        destination_frame = mapping.frame();
+    }
+    try {
+        {
+            std::lock_guard lock{mutex_};
+            auto& source_target = prepare_host_surface(
+                source, source_frame, source_cpu_generation,
+                source_gpu_generation);
+            auto& destination_target = prepare_host_surface(
+                destination, destination_frame,
+                destination_cpu_generation,
+                destination_gpu_generation);
+            if (!source_target.valid || !destination_target.valid ||
+                !draw_host_texture(
+                    source_target, destination_target,
+                    destination.key(), destination_descriptor,
+                    vertices,
+                    {0, 0, destination_descriptor.width,
+                     destination_descriptor.height},
+                    scissor, mode, global_alpha, true)) {
+                return false;
+            }
+            add_damage(destination_target.dirty, scissor);
+        }
+        source.mark_gpu_synchronized(source_cpu_generation);
+        destination.mark_gpu_synchronized(
+            destination_cpu_generation);
+        static_cast<void>(destination.mark_gpu_write(scissor));
+        return true;
+    } catch (...) {
+        last_failure_reason_.store(PerfFallbackReason::BackendFailure,
+                                   std::memory_order_relaxed);
+        std::lock_guard lock{mutex_};
+        static_cast<void>(vkDeviceWaitIdle(device_));
+        discard_commands();
+        return false;
+    }
 }
 
 bool VulkanGlesRenderer::draw_host_texture(
@@ -2873,15 +3429,16 @@ bool VulkanGlesRenderer::draw_host_texture(
     HostSurfaceDescriptor destination_descriptor,
     std::span<const GpuVertex> vertices, HostRectangle viewport,
     HostRectangle scissor, HostCompositeMode mode,
-    std::uint8_t global_alpha) {
+    std::uint8_t global_alpha, bool ordered_quad) {
     if (vertices.size() < 3 ||
+        (ordered_quad && vertices.size() != 6) ||
         vertices.size() >
             std::numeric_limits<VkDeviceSize>::max() / sizeof(GpuVertex)) {
         return false;
     }
     const auto crossfade =
         mode == HostCompositeMode::ConstantAlphaCrossfade;
-    const auto selected_pipeline = pipeline(PipelineKey{
+    auto pipeline_key = PipelineKey{
         mode != HostCompositeMode::Copy,
         mode == HostCompositeMode::Copy
             ? gles_abi::one
@@ -2895,9 +3452,24 @@ bool VulkanGlesRenderer::draw_host_texture(
             ? gles_abi::zero
             : crossfade ? one_minus_constant_alpha_blend_factor
                         : gles_abi::one_minus_source_alpha,
-        0x0fU});
+        0x0fU};
+    const auto selected_pipeline = pipeline(pipeline_key);
     if (selected_pipeline == VK_NULL_HANDLE)
         return false;
+    VkPipeline first_triangle_pipeline{};
+    VkPipeline outside_first_triangle_pipeline{};
+    if (ordered_quad) {
+        pipeline_key.stencil_mode =
+            PipelineKey::StencilMode::WriteFirstTriangle;
+        first_triangle_pipeline = pipeline(pipeline_key);
+        pipeline_key.stencil_mode =
+            PipelineKey::StencilMode::TestOutsideFirstTriangle;
+        outside_first_triangle_pipeline = pipeline(pipeline_key);
+        if (first_triangle_pipeline == VK_NULL_HANDLE ||
+            outside_first_triangle_pipeline == VK_NULL_HANDLE) {
+            return false;
+        }
+    }
     if (command_slot().draw_count == maximum_batch_draws)
         submit_commands(false);
     wait_for_slot(command_slot());
@@ -3002,10 +3574,15 @@ bool VulkanGlesRenderer::draw_host_texture(
         destination.layout =
             VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
+    if (ordered_quad)
+        ensure_stencil_framebuffer(destination);
     auto render_begin = make_vulkan_structure<VkRenderPassBeginInfo>(
         VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
-    render_begin.renderPass = render_pass_;
-    render_begin.framebuffer = destination.framebuffer;
+    render_begin.renderPass =
+        ordered_quad ? stencil_render_pass_ : render_pass_;
+    render_begin.framebuffer =
+        ordered_quad ? destination.stencil_framebuffer
+                     : destination.framebuffer;
     render_begin.renderArea.extent = {
         destination_descriptor.width, destination_descriptor.height};
     vkCmdBeginRenderPass(commands.command, &render_begin,
@@ -3013,8 +3590,9 @@ bool VulkanGlesRenderer::draw_host_texture(
     render_pass_open_ = true;
     render_pass_target_ = destination_key;
 
-    vkCmdBindPipeline(commands.command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      selected_pipeline);
+    vkCmdBindPipeline(
+        commands.command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+        ordered_quad ? first_triangle_pipeline : selected_pipeline);
     vkCmdBindVertexBuffers(commands.command, 0, 1,
                            &commands.vertex.buffer, &vertex_offset);
     vkCmdBindDescriptorSets(
@@ -3035,8 +3613,26 @@ bool VulkanGlesRenderer::draw_host_texture(
     const auto alpha = static_cast<float>(global_alpha) / 255.0F;
     const std::array blend_constant{alpha, alpha, alpha, alpha};
     vkCmdSetBlendConstants(commands.command, blend_constant.data());
-    vkCmdDraw(commands.command,
-              static_cast<std::uint32_t>(vertices.size()), 1, 0, 0);
+    if (ordered_quad) {
+        VkClearAttachment stencil_clear{};
+        stencil_clear.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
+        stencil_clear.clearValue.depthStencil.stencil = 0U;
+        VkClearRect clear_rectangle{};
+        clear_rectangle.rect = vulkan_scissor;
+        clear_rectangle.layerCount = 1U;
+        vkCmdClearAttachments(
+            commands.command, 1U, &stencil_clear, 1U,
+            &clear_rectangle);
+        vkCmdDraw(commands.command, 3U, 1U, 0U, 0U);
+        vkCmdBindPipeline(
+            commands.command, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            outside_first_triangle_pipeline);
+        vkCmdDraw(commands.command, 3U, 1U, 3U, 0U);
+    } else {
+        vkCmdDraw(
+            commands.command,
+            static_cast<std::uint32_t>(vertices.size()), 1U, 0U, 0U);
+    }
     ++commands.draw_count;
     commands.vertex_bytes_used += vertex_bytes;
     return true;
@@ -3046,7 +3642,7 @@ bool VulkanGlesRenderer::encode_copy(
     HostSurface& source, HostSurface& destination,
     HostRectangle source_rectangle, HostRectangle destination_rectangle,
     HostCompositeMode mode, std::uint8_t global_alpha, HostFilter filter,
-    HostRotation rotation) {
+    HostRotation rotation, std::optional<HostRectangle> clip) {
     if (source.key() == destination.key() ||
         ((mode != HostCompositeMode::Copy ||
           rotation != HostRotation::Identity) &&
@@ -3067,9 +3663,33 @@ bool VulkanGlesRenderer::encode_copy(
                    descriptor.height - rectangle.height;
     };
     if (!valid(source_descriptor, source_rectangle) ||
-        !valid(destination_descriptor, destination_rectangle)) {
+        !valid(destination_descriptor, destination_rectangle) ||
+        (clip && !valid(destination_descriptor, *clip))) {
         return false;
     }
+    const auto right = [](HostRectangle rectangle) {
+        return static_cast<std::int64_t>(rectangle.x) + rectangle.width;
+    };
+    const auto bottom = [](HostRectangle rectangle) {
+        return static_cast<std::int64_t>(rectangle.y) + rectangle.height;
+    };
+    auto scissor_rectangle = clip.value_or(destination_rectangle);
+    const auto scissor_left =
+        std::max(scissor_rectangle.x, destination_rectangle.x);
+    const auto scissor_top =
+        std::max(scissor_rectangle.y, destination_rectangle.y);
+    const auto scissor_right =
+        std::min(right(scissor_rectangle), right(destination_rectangle));
+    const auto scissor_bottom =
+        std::min(bottom(scissor_rectangle), bottom(destination_rectangle));
+    if (scissor_right <= scissor_left ||
+        scissor_bottom <= scissor_top) {
+        return true;
+    }
+    scissor_rectangle = {
+        scissor_left, scissor_top,
+        static_cast<std::uint32_t>(scissor_right - scissor_left),
+        static_cast<std::uint32_t>(scissor_bottom - scissor_top)};
 
     const auto source_cpu_generation = source.cpu_generation();
     const auto source_gpu_generation = source.gpu_generation();
@@ -3100,7 +3720,8 @@ bool VulkanGlesRenderer::encode_copy(
             if (!source_target.valid || !destination_target.valid)
                 return false;
             if (mode != HostCompositeMode::Copy ||
-                rotation != HostRotation::Identity) {
+                rotation != HostRotation::Identity ||
+                scissor_rectangle != destination_rectangle) {
                 if (command_slot().draw_count == maximum_batch_draws)
                     submit_commands(false);
                 wait_for_slot(command_slot());
@@ -3347,10 +3968,10 @@ bool VulkanGlesRenderer::encode_copy(
                 viewport.maxDepth = 1.0F;
                 vkCmdSetViewport(commands.command, 0, 1, &viewport);
                 VkRect2D scissor{};
-                scissor.offset = {destination_rectangle.x,
-                                  destination_rectangle.y};
-                scissor.extent = {destination_rectangle.width,
-                                  destination_rectangle.height};
+                scissor.offset = {scissor_rectangle.x,
+                                  scissor_rectangle.y};
+                scissor.extent = {scissor_rectangle.width,
+                                  scissor_rectangle.height};
                 vkCmdSetScissor(commands.command, 0, 1, &scissor);
                 const std::array blend_constant{
                     alpha, alpha, alpha, alpha};
@@ -3489,12 +4110,12 @@ bool VulkanGlesRenderer::encode_copy(
                                                      : VK_FILTER_NEAREST);
                 }
             }
-            add_damage(destination_target.dirty,
-                       destination_rectangle);
+            add_damage(destination_target.dirty, scissor_rectangle);
         }
         source.mark_gpu_synchronized(source_cpu_generation);
         destination.mark_gpu_synchronized(destination_cpu_generation);
-        static_cast<void>(destination.mark_gpu_write());
+        static_cast<void>(
+            destination.mark_gpu_write(scissor_rectangle));
         return true;
     } catch (...) {
         last_failure_reason_.store(PerfFallbackReason::BackendFailure,
@@ -3612,7 +4233,7 @@ bool VulkanGlesRenderer::encode_copy_triangles(
         }
         source.mark_gpu_synchronized(source_cpu_generation);
         destination.mark_gpu_synchronized(destination_cpu_generation);
-        static_cast<void>(destination.mark_gpu_write());
+        static_cast<void>(destination.mark_gpu_write(scissor));
         return true;
     } catch (...) {
         last_failure_reason_.store(PerfFallbackReason::BackendFailure,

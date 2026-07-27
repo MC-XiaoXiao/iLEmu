@@ -1,5 +1,6 @@
 #include "ilemu/sdl_display.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -57,6 +58,7 @@ struct SdlDisplay::Impl {
   void ensure_cpu_presenter() {
     if (renderer != nullptr && texture != nullptr)
       return;
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
     renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
     if (renderer == nullptr)
       renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
@@ -455,8 +457,25 @@ bool SdlDisplay::poll_events() {
         throw std::runtime_error{"SDL texture upload failed: " +
                                  std::string{SDL_GetError()}};
       }
+      int output_width{};
+      int output_height{};
+      if (SDL_GetRendererOutputSize(
+              impl_->renderer, &output_width, &output_height) != 0) {
+        throw std::runtime_error{
+            "SDL renderer output query failed: " +
+            std::string{SDL_GetError()}};
+      }
+      const auto viewport = fit_display_viewport(
+          {frame->width, frame->height},
+          {static_cast<std::uint32_t>(std::max(output_width, 0)),
+           static_cast<std::uint32_t>(std::max(output_height, 0))});
+      const SDL_Rect destination{
+          viewport.x, viewport.y, static_cast<int>(viewport.width),
+          static_cast<int>(viewport.height)};
+      SDL_SetRenderDrawColor(impl_->renderer, 0U, 0U, 0U, 255U);
       SDL_RenderClear(impl_->renderer);
-      SDL_RenderCopy(impl_->renderer, impl_->texture, nullptr, nullptr);
+      SDL_RenderCopy(
+          impl_->renderer, impl_->texture, nullptr, &destination);
       SDL_RenderPresent(impl_->renderer);
       performance_counters().record_cpu_present_fallback(
           frame->submitted_at);
