@@ -33,6 +33,12 @@ constexpr std::string_view core_surface_image{
 constexpr std::string_view core_foundation_image{
     "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"};
 constexpr std::string_view client_buffer_prefix{"_CoreSurfaceClientBuffer"};
+constexpr std::string_view client_buffer_alloc{
+    "_CoreSurfaceClientBufferAlloc"};
+constexpr std::string_view client_buffer_wrap_image{
+    "_CoreSurfaceClientBufferWrapClientImage"};
+constexpr std::string_view client_buffer_wrap_image_transport{
+    "__coreSurfaceClientBufferWrapClientImage"};
 
 constexpr std::size_t client_buffer_alignment = 16;
 constexpr std::size_t pixel_buffer_alignment = 64;
@@ -74,6 +80,22 @@ CoreSurfaceHle::CoreSurfaceHle(
     registry.register_prefix(std::string{core_surface_image},
                              std::string{client_buffer_prefix},
                              [this](UserlandHleCall& call) { dispatch(call); });
+    // These public helpers construct the firmware's CFRuntime wrapper around
+    // a transport client. Keep that native object lifecycle and intercept
+    // only the private transport transaction that would otherwise require
+    // the unavailable CoreSurface kernel user client.
+    for (const auto symbol :
+         {client_buffer_alloc, client_buffer_wrap_image}) {
+        registry.register_function(
+            std::string{core_surface_image}, std::string{symbol},
+            [](UserlandHleCall& call) {
+                call.resume_original_persistently();
+            });
+    }
+    registry.register_function(
+        std::string{core_surface_image},
+        std::string{client_buffer_wrap_image_transport},
+        [this](UserlandHleCall& call) { dispatch(call); });
     registry.register_guest_function(std::string{core_foundation_image},
                                      "_CFDictionaryGetValue");
     registry.register_guest_function(std::string{core_foundation_image},
@@ -601,24 +623,52 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call) {
 
 void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
     const auto symbol = call.symbol();
-    if (symbol == "_CoreSurfaceClientBufferCreate") {
-        create_from_dictionary(call, call.argument(0));
+    if (symbol == client_buffer_wrap_image_transport) {
+        const auto width = call.argument(0);
+        const auto height = call.argument(1);
+        const auto pixel_format = call.argument(2);
+        const auto bytes_per_row = call.argument(3);
+        const auto allocation_size = call.argument(4);
+        const auto base = call.argument(5);
+        const auto output = call.argument(6);
+        const auto bytes_per_pixel =
+            pixel_format == surface_pixel_format_bgra
+                ? core_surface_abi::bytes_per_bgra_pixel
+            : pixel_format == surface_pixel_format_rgb555 ? 2U
+                                                          : 0U;
+        const auto row_bytes =
+            static_cast<std::uint64_t>(width) * bytes_per_pixel;
+        const auto required =
+            height == 0
+                ? 0
+                : static_cast<std::uint64_t>(height - 1U) * bytes_per_row +
+                      row_bytes;
+        if (output == 0 || !call.memory().mapped(output, sizeof(std::uint32_t)) ||
+            base == 0 || width == 0 || height == 0 ||
+            bytes_per_pixel == 0 || row_bytes > bytes_per_row ||
+            required == 0 || required > allocation_size ||
+            allocation_size > maximum_surface_bytes ||
+            !call.memory().mapped(base, allocation_size)) {
+            call.set_return(1);
+            return;
+        }
+        const auto client =
+            create_buffer(call, base, allocation_size, width, height,
+                          bytes_per_row, pixel_format, false);
+        const auto* buffer = find(client);
+        // The firmware's CoreSurfaceClientBufferAlloc owns the public wrapper
+        // and expects the transport transaction to return its numeric object
+        // identifier. Keep the HLE client private to the transport layer.
+        if (buffer == nullptr ||
+            !call.memory().write32(output, buffer->id)) {
+            call.set_return(1);
+            return;
+        }
+        call.set_return(success);
         return;
     }
-    if (symbol == "_CoreSurfaceClientBufferAlloc") {
-        const auto geometry =
-            display_ ? display_->geometry() : default_display_geometry;
-        const auto size =
-            geometry.pixel_count() * core_surface_abi::bytes_per_bgra_pixel;
-        const auto base = call.allocate_data(size, pixel_buffer_alignment);
-        call.set_return(
-            base == 0
-                ? 0
-                : create_buffer(
-                      call, base, static_cast<std::uint32_t>(size),
-                      geometry.width, geometry.height,
-                      geometry.width * core_surface_abi::bytes_per_bgra_pixel,
-                      surface_pixel_format_bgra, true, call.argument(0)));
+    if (symbol == "_CoreSurfaceClientBufferCreate") {
+        create_from_dictionary(call, call.argument(0));
         return;
     }
     if (symbol == "_CoreSurfaceClientBufferWrapClientMemory") {
@@ -698,7 +748,26 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
         return;
     }
 
-    auto* buffer = find(call.argument(0));
+    const auto argument = call.argument(0);
+    auto* buffer = find(argument);
+    if (buffer == nullptr) {
+        // Firmware-created CoreSurfaceClientBuffer objects store the transport
+        // identifier at offset 4. Also accept a direct transport identifier
+        // for callers that cross the private ABI without a public wrapper.
+        auto client = clients_by_id_.find(argument);
+        if (client == clients_by_id_.end() &&
+            argument <= std::numeric_limits<std::uint32_t>::max() -
+                            core_surface_abi::client_identifier_offset) {
+            if (const auto identifier = call.memory().read32(
+                    argument +
+                    core_surface_abi::client_identifier_offset)) {
+                client = clients_by_id_.find(*identifier);
+            }
+        }
+        if (client != clients_by_id_.end()) {
+            buffer = find(client->second);
+        }
+    }
     if (buffer == nullptr) {
         call.set_return(0);
         return;
@@ -708,7 +777,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
         static_cast<void>(call.memory().write32(
             buffer->client + core_surface_abi::client_reference_count_offset,
             buffer->references));
-        call.set_return(buffer->client);
+        call.set_return(argument);
     } else if (symbol == "_CoreSurfaceClientBufferRelease") {
         if (buffer->references != 0)
             --buffer->references;
