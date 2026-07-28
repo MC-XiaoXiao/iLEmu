@@ -566,7 +566,7 @@ Mbx2dHle::read_region(const ResolvedSurface &surface, std::int64_t x,
   }
   if (!surface.backing ||
       (surface.backing->pixel_format != surface_pixel_format_bgra &&
-       surface.backing->pixel_format != surface_pixel_format_rgb555)) {
+       !surface_is_rgb555(surface.backing->pixel_format))) {
     return std::nullopt;
   }
   if (surface.host_surface &&
@@ -595,7 +595,7 @@ Mbx2dHle::read_region(const ResolvedSurface &surface, std::int64_t x,
         address, static_cast<std::size_t>(width) * backing_bytes_per_pixel);
     if (!bytes)
       return std::nullopt;
-    if (backing.pixel_format == surface_pixel_format_rgb555) {
+    if (surface_is_rgb555(backing.pixel_format)) {
       for (std::int64_t column = 0; column < width; ++column) {
         const auto byte = static_cast<std::size_t>(column) * 2U;
         const auto packed =
@@ -653,7 +653,7 @@ bool Mbx2dHle::write_region(const ResolvedSurface &surface, std::int64_t x,
   }
   if (!surface.backing ||
       (surface.backing->pixel_format != surface_pixel_format_bgra &&
-       surface.backing->pixel_format != surface_pixel_format_rgb555)) {
+       !surface_is_rgb555(surface.backing->pixel_format))) {
     return false;
   }
   const auto &backing = *surface.backing;
@@ -680,7 +680,7 @@ bool Mbx2dHle::write_region(const ResolvedSurface &surface, std::int64_t x,
   std::vector<std::byte> encoded(static_cast<std::size_t>(width) *
                                  backing_bytes_per_pixel);
   for (std::int64_t row = 0; row < height; ++row) {
-    if (backing.pixel_format == surface_pixel_format_rgb555) {
+    if (surface_is_rgb555(backing.pixel_format)) {
       for (std::int64_t column = 0; column < width; ++column) {
         const auto pixel =
             pixels[static_cast<std::size_t>(row * width + column)];

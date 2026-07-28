@@ -27,16 +27,26 @@ inline constexpr std::uint32_t surface_pixel_format_bgra =
     surface_fourcc('B', 'G', 'R', 'A');
 inline constexpr std::uint32_t surface_pixel_format_rgb555 =
     surface_fourcc('R', 'G', '1', '5');
+// Public CoreSurface client images use 'L555' for the same little-endian,
+// opaque RGB555 layout exposed to MBX clients as 'RG15'. Keep both names so
+// imported metadata still reports the format chosen by the firmware.
+inline constexpr std::uint32_t surface_pixel_format_rgb555_le =
+    surface_fourcc('L', '5', '5', '5');
 // Legacy CoreSurface's little-endian ARGB1555 client-image format. The
 // firmware names it 's551': bit 15 is alpha and bits 14:0 are RGB555.
 inline constexpr std::uint32_t surface_pixel_format_argb1555 =
     surface_fourcc('s', '5', '5', '1');
 
+constexpr bool surface_is_rgb555(std::uint32_t pixel_format) {
+    return pixel_format == surface_pixel_format_rgb555 ||
+           pixel_format == surface_pixel_format_rgb555_le;
+}
+
 constexpr std::uint32_t
 surface_bytes_per_pixel(std::uint32_t pixel_format) {
     if (pixel_format == surface_pixel_format_bgra)
         return 4U;
-    if (pixel_format == surface_pixel_format_rgb555 ||
+    if (surface_is_rgb555(pixel_format) ||
         pixel_format == surface_pixel_format_argb1555) {
         return 2U;
     }
