@@ -255,8 +255,7 @@ void MobileFramebufferHle::ensure_scanout_surface() {
   scanout_contents_valid_ = false;
 }
 
-bool MobileFramebufferHle::submit_host_layers(
-    std::uint32_t owner_process_id) {
+bool MobileFramebufferHle::submit_host_layers(UserlandHleCall &call) {
   if (!display_ || !host_graphics_->accelerated() || !command_encoder_)
     return false;
   ensure_scanout_surface();
@@ -307,6 +306,14 @@ bool MobileFramebufferHle::submit_host_layers(
       continue;
     }
     const auto source = surface_store_->host_surface(state.surface_id);
+    // Page-granular guest dirtiness cannot be merged safely into a surface
+    // whose complete contents are newer on the GPU. CPU-owned layers still
+    // need their direct mapped writes imported before presentation.
+    if (source && source->gpu_generation() <= source->cpu_generation() &&
+        !surface_store_->synchronize_from_guest(call.memory(),
+                                                state.surface_id)) {
+      return false;
+    }
     const auto source_rectangle = exact_rectangle(state.source);
     const auto destination_rectangle = exact_rectangle(state.destination);
     if (!backing || backing->pixel_format != surface_pixel_format_bgra ||
@@ -561,7 +568,7 @@ bool MobileFramebufferHle::submit_host_layers(
             false, PerfCpuMapReason::DeferredDisplayRead);
         return mapping.frame().pixels;
       },
-      owner_process_id);
+      call.process_id());
   return true;
 }
 
@@ -627,7 +634,7 @@ void MobileFramebufferHle::set_layer(UserlandHleCall &call) {
 void MobileFramebufferHle::submit_layers(UserlandHleCall &call) {
   if (display_ == nullptr)
     return;
-  if (submit_host_layers(call.process_id()))
+  if (submit_host_layers(call))
     return;
   scanout_contents_valid_ = false;
   submitted_layers_.clear();

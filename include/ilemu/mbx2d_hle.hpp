@@ -124,6 +124,8 @@ private:
   void terminate(UserlandHleCall &call);
   [[nodiscard]] std::optional<ResolvedSurface>
   resolve(const std::optional<Binding> &binding) const;
+  [[nodiscard]] bool synchronize_host_source(
+      UserlandHleCall &call, const ResolvedSurface &surface) const;
   [[nodiscard]] bool
   source_surface_allowed(const ResolvedSurface &surface) const;
   [[nodiscard]] bool clip_region(BlitRegion &region,

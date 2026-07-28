@@ -448,6 +448,22 @@ Mbx2dHle::resolve(const std::optional<Binding> &binding) const {
       backing->height};
 }
 
+bool Mbx2dHle::synchronize_host_source(
+    UserlandHleCall &call, const ResolvedSurface &surface) const {
+  if (!surface.host_surface || surface.core_surface_id == 0)
+    return true;
+  if (surface.host_surface->gpu_generation() >
+      surface.host_surface->cpu_generation()) {
+    return true;
+  }
+  // Guest dirty ranges are page-granular, so importing them into a newer GPU
+  // surface can overwrite unrelated retained pixels. Direct mapped writes are
+  // safe to import while the CPU owns the latest complete contents; explicit
+  // CoreSurface lock/unlock transitions update that ownership separately.
+  return surface_store_->synchronize_from_guest(
+      call.memory(), surface.core_surface_id);
+}
+
 bool Mbx2dHle::source_surface_allowed(
     const ResolvedSurface &surface) const {
   if (!shared_state_ || !surface.backing)
@@ -983,10 +999,13 @@ void Mbx2dHle::blit_copy(UserlandHleCall &call, bool context_api) {
       signed_argument(call, first + 2U), signed_argument(call, first + 3U),
       signed_argument(call, first + 4U), signed_argument(call, first + 5U)};
   const auto composite_mode = host_composite_mode(*state);
+  const auto host_source_current =
+      synchronize_host_source(call, *source);
   const auto try_host_copy =
       [&](HostRectangle source_rectangle,
           HostRectangle destination_rectangle, HostRotation rotation) {
-        return host_graphics_->accelerated() && source->host_surface &&
+        return host_graphics_->accelerated() && host_source_current &&
+               source->host_surface &&
                destination->host_surface && source->backing &&
                destination->backing &&
                source->backing->pixel_format == surface_pixel_format_bgra &&

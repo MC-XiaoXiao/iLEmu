@@ -443,9 +443,12 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
       nearly_equal(top_value, static_cast<float>(unclipped_top)) &&
       nearly_equal(bottom_value, static_cast<float>(unclipped_bottom));
   const auto composite_mode = host_composite_mode(state_);
+  const auto host_source_current =
+      synchronize_host_source(call, *source);
   if (axis_aligned_affine && host_rotation && destination_unclipped &&
       destination_integral && host_graphics_->accelerated() &&
-      source->host_surface && destination->host_surface && source->backing &&
+      host_source_current && source->host_surface &&
+      destination->host_surface && source->backing &&
       destination->backing &&
       source->backing->pixel_format == surface_pixel_format_bgra &&
       destination->backing->pixel_format == surface_pixel_format_bgra &&
@@ -483,7 +486,8 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
       nearly_equal(minimum_v, 0.0F) &&
       nearly_equal(maximum_v, static_cast<float>(source->height));
   if (triangles_share_only_diagonal(*positions) &&
-      host_graphics_->accelerated() && source->host_surface &&
+      host_graphics_->accelerated() && host_source_current &&
+      source->host_surface &&
       destination->host_surface && source->backing &&
       destination->backing &&
       source->backing->pixel_format == surface_pixel_format_bgra &&
