@@ -4049,10 +4049,25 @@ bool VulkanGlesRenderer::encode_copy(
                         VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
                 }
 
-                if (source_rectangle.width ==
-                        destination_rectangle.width &&
-                    source_rectangle.height ==
-                        destination_rectangle.height) {
+                // Exact whole-resource copies remain the cheapest transfer.
+                // For partial copies, use a nearest blit: translated Vulkan
+                // drivers can otherwise expose source-image tiling artifacts
+                // when the resources have different extents.
+                const auto whole_resource_copy =
+                    source_rectangle.x == 0 && source_rectangle.y == 0 &&
+                    destination_rectangle.x == 0 &&
+                    destination_rectangle.y == 0 &&
+                    source_rectangle.width == source_descriptor.width &&
+                    source_rectangle.height == source_descriptor.height &&
+                    destination_rectangle.width ==
+                        destination_descriptor.width &&
+                    destination_rectangle.height ==
+                        destination_descriptor.height &&
+                    source_descriptor.width ==
+                        destination_descriptor.width &&
+                    source_descriptor.height ==
+                        destination_descriptor.height;
+                if (whole_resource_copy) {
                     VkImageCopy copy{};
                     copy.srcSubresource.aspectMask =
                         VK_IMAGE_ASPECT_COLOR_BIT;
