@@ -816,6 +816,8 @@ struct KernelSharedState {
   std::set<std::pair<std::uint32_t, std::uint32_t>> semaphore_terminations;
   std::map<std::uint32_t, std::deque<std::uint32_t>> iokit_iterators;
   std::map<std::uint32_t, IOKitService> iokit_services;
+  std::uint32_t iokit_registry_root_object{
+      mach_task_identity::initial_io_registry_options_name};
   std::map<std::uint32_t, IOKitConnection> iokit_connections;
   std::map<std::uint32_t, IOKitInterestNotification>
       iokit_interest_notifications;

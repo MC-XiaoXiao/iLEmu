@@ -4,6 +4,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -96,6 +97,8 @@ constexpr const auto &service_open_connect_type =
 
 constexpr std::string_view platform_expert_class{"IOPlatformExpertDevice"};
 constexpr std::string_view model_number_property{"model-number"};
+constexpr std::string_view compatible_property{"compatible"};
+constexpr std::string_view apple_arm_compatible{"AppleARM"};
 
 static_assert(
     device_mig::id(device_mig::Routine::io_service_get_matching_services) ==
@@ -273,6 +276,26 @@ std::vector<std::byte> bytes_from_string(std::string_view value) {
     return static_cast<std::byte>(character);
   });
   return bytes;
+}
+
+std::vector<std::byte> platform_compatible_bytes(std::string_view board_config) {
+  auto bytes = bytes_from_string(board_config);
+  bytes.push_back(std::byte{0});
+  const auto architecture = bytes_from_string(apple_arm_compatible);
+  bytes.insert(bytes.end(), architecture.begin(), architecture.end());
+  bytes.push_back(std::byte{0});
+  return bytes;
+}
+
+std::map<std::string, KernelSharedState::IOKitRegistryProperty>
+registry_root_properties(const KernelSharedState &shared_state) {
+  std::map<std::string, KernelSharedState::IOKitRegistryProperty> properties;
+  properties.emplace(
+      std::string{compatible_property},
+      KernelSharedState::IOKitRegistryProperty{
+          KernelSharedState::IOKitRegistryProperty::Kind::Data,
+          platform_compatible_bytes(shared_state.device_board_config)});
+  return properties;
 }
 
 std::string xml_escape(std::span<const std::byte> value) {
@@ -759,8 +782,10 @@ void populate_matching_services_locked(KernelSharedState &shared_state,
        contains_text(matching, io_network_interface_class))) {
     services.push_back(ensure_wifi_interface_service_locked(shared_state));
   }
-  if (shared_state.wifi_service_available &&
-      contains_text(matching, io_network_stack_class)) {
+  // IONetworkStack represents the guest kernel's networking subsystem, not
+  // an external Wi-Fi uplink. It remains published for loopback and local IPC
+  // even when the host policy intentionally exposes no radio/backend.
+  if (contains_text(matching, io_network_stack_class)) {
     services.push_back(ensure_network_stack_service_locked(shared_state));
   }
   if (shared_state.wifi_service_available &&
@@ -1381,8 +1406,19 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
     std::size_t property_count = 0;
     {
       std::lock_guard mach_lock{shared_state.mach_mutex};
-      if (const auto service = shared_state.iokit_services.find(remote_object);
-          service != shared_state.iokit_services.end()) {
+      if (shared_state.iokit_registry_root_object == remote_object) {
+        auto properties = registry_root_properties(shared_state);
+        if (const auto service =
+                shared_state.iokit_services.find(remote_object);
+            service != shared_state.iokit_services.end()) {
+          properties.insert(service->second.properties.begin(),
+                            service->second.properties.end());
+        }
+        serialized = serialize_properties(properties);
+        property_count = properties.size();
+      } else if (const auto service =
+                     shared_state.iokit_services.find(remote_object);
+                 service != shared_state.iokit_services.end()) {
         serialized = serialize_properties(service->second.properties);
         property_count = service->second.properties.size();
       }
@@ -1502,11 +1538,19 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
     std::optional<KernelSharedState::IOKitRegistryProperty> property;
     {
       std::lock_guard mach_lock{shared_state.mach_mutex};
-      const auto service = shared_state.iokit_services.find(remote_object);
-      if (service != shared_state.iokit_services.end()) {
-        const auto value = service->second.properties.find(property_name);
-        if (value != service->second.properties.end())
+      if (shared_state.iokit_registry_root_object == remote_object) {
+        const auto properties = registry_root_properties(shared_state);
+        const auto value = properties.find(property_name);
+        if (value != properties.end())
           property = value->second;
+      }
+      if (!property) {
+        const auto service = shared_state.iokit_services.find(remote_object);
+        if (service != shared_state.iokit_services.end()) {
+          const auto value = service->second.properties.find(property_name);
+          if (value != service->second.properties.end())
+            property = value->second;
+        }
       }
     }
     if (!property) {
