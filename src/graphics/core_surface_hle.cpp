@@ -844,10 +844,10 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
             surfaces_->synchronize_from_guest(call.memory(), buffer->id));
         call.set_return(success);
     } else if (symbol == "_CoreSurfaceClientBufferUnlock") {
-        // The public firmware wrapper has no unlock-options argument and
-        // leaves r1 untouched. Preserve the intent from the matching lock
-        // instead of interpreting that volatile register value.
-        auto options = std::uint32_t{};
+        // A matching explicit Lock is authoritative. WrapClientImage also
+        // owns an implicit lock and later calls Unlock with its options in r1,
+        // so preserve that firmware argument when no explicit Lock was seen.
+        auto options = call.argument(1);
         if (!buffer->lock_options.empty()) {
             options = buffer->lock_options.back();
             buffer->lock_options.pop_back();
