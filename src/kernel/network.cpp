@@ -1181,6 +1181,13 @@ void CompatibilityKernel::synchronize_interface_routes(
 bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const {
     if (file_descriptors_.contains(fd)) return true;
     if (bpf_descriptor_readable(fd)) return true;
+    if (const auto descriptor = virtual_descriptors_.find(fd);
+        descriptor != virtual_descriptors_.end() &&
+        descriptor->second == "random") {
+        // Entropy character devices always have bytes available. OpenSSL's
+        // RAND_poll probes them with select(2) before issuing read(2).
+        return true;
+    }
     if (const auto pending = pending_wifi_driver_events_.find(fd);
         pending != pending_wifi_driver_events_.end() &&
         pending->second != 0) {
