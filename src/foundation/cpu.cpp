@@ -301,6 +301,7 @@ public:
 
     CpuRunResult run(Cpu& cpu, std::uint64_t ticks, bool single_step) {
         const std::scoped_lock lock{execution_mutex_};
+        memory_.synchronize_shared_write_tracking();
         ensure_jit();
         load_state(cpu);
         callbacks_->begin(single_step ? 1 : ticks);

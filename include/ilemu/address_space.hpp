@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -52,6 +53,11 @@ public:
   // access to pass through callbacks. Existing JITs retain a valid all-null
   // table after this call.
   void disable_jit_page_table();
+  // A physical page can become write-tracked after another AddressSpace has
+  // already cached a direct JIT write pointer to it. The execution boundary
+  // calls this safe point before re-entering Dynarmic so those old aliases are
+  // redirected through the checked write callbacks.
+  void synchronize_shared_write_tracking();
 
   bool map(std::uint32_t address, std::uint32_t size,
            MemoryPermission permissions);
@@ -144,12 +150,22 @@ public:
     std::uint64_t generation{};
     std::vector<WrittenRange> ranges;
   };
+  struct SharedWriteGenerationChanges {
+    std::vector<std::uint64_t> page_generations;
+    std::vector<WrittenRange> ranges;
+  };
   // Returns page-granular ranges written after a consumer's last generation,
   // clipped to the requested byte range. Tracking remains opt-in so unrelated
   // Guest stores keep the direct JIT write path.
   [[nodiscard]] std::optional<WriteGenerationChanges>
   write_generation_changes(std::uint32_t address, std::size_t size,
                            std::uint64_t after_generation) const;
+  // Shared page generations are attached to physical backings rather than a
+  // process-local vm_map, so writes through another task remain visible.
+  [[nodiscard]] std::optional<SharedWriteGenerationChanges>
+  shared_write_generation_changes(
+      std::uint32_t address, std::size_t size,
+      std::span<const std::uint64_t> after_page_generations = {}) const;
   [[nodiscard]] std::size_t mapped_page_count() const;
   // Demand-zero mappings do not become resident until their first write.
   [[nodiscard]] std::size_t resident_page_count() const;
@@ -233,10 +249,12 @@ private:
   void refresh_jit_page_locked(std::uint32_t address);
   void refresh_jit_page_range_locked(std::uint32_t address,
                                      std::uint64_t end);
+  void invalidate_shared_write_jit_pages_locked();
   void clear_jit_page_table_locked();
   [[nodiscard]] static std::byte read_byte_locked(const Page *page,
                                                   std::uint32_t offset);
   [[nodiscard]] static GuestPageBacking &writable_backing_locked(Page &page);
+  static void mark_shared_backing_written_locked(Page &page);
   [[nodiscard]] bool tracks_write_locked(std::uint32_t address,
                                          std::size_t size) const;
   void mark_written_locked(std::uint32_t address, std::size_t size);
@@ -274,6 +292,7 @@ private:
   std::unique_ptr<JitPageTableStorage> jit_read_page_table_;
   std::unique_ptr<JitPageTableStorage> jit_write_page_table_;
   bool jit_page_table_enabled_{};
+  std::atomic<std::uint64_t> observed_shared_write_tracking_epoch_{};
   std::vector<TrackedWriteRange> tracked_write_ranges_;
   std::uint64_t write_generation_{};
   std::map<std::uint64_t, MappingLease> mapping_leases_;

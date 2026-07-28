@@ -11,6 +11,8 @@ namespace {
 constexpr std::uint64_t file_prefetch_bytes =
     guest_file_prefetch_pages * guest_memory_page_size;
 
+std::atomic<std::uint64_t> global_shared_write_tracking_epoch{};
+
 [[nodiscard]] std::string stable_path(const std::filesystem::path &path) {
   std::error_code error;
   const auto canonical = std::filesystem::canonical(path, error);
@@ -86,6 +88,37 @@ void GuestPageBacking::materialize() const {
     }
   }
   file_backing_.reset();
+}
+
+bool GuestPageBacking::enable_shared_write_tracking() {
+  bool expected = false;
+  if (!shared_write_tracking_.compare_exchange_strong(
+          expected, true, std::memory_order_acq_rel,
+          std::memory_order_acquire)) {
+    return false;
+  }
+  static_cast<void>(global_shared_write_tracking_epoch.fetch_add(
+      1, std::memory_order_release));
+  return true;
+}
+
+bool GuestPageBacking::shared_write_tracking_enabled() const {
+  return shared_write_tracking_.load(std::memory_order_acquire);
+}
+
+std::uint64_t GuestPageBacking::shared_write_tracking_epoch() {
+  return global_shared_write_tracking_epoch.load(std::memory_order_acquire);
+}
+
+std::uint64_t GuestPageBacking::shared_write_generation() const {
+  return shared_write_generation_.load(std::memory_order_acquire);
+}
+
+void GuestPageBacking::mark_shared_write() {
+  if (!shared_write_tracking_enabled())
+    return;
+  static_cast<void>(
+      shared_write_generation_.fetch_add(1, std::memory_order_release));
 }
 
 bool FilePageCache::Key::operator<(const Key &other) const {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -49,6 +50,14 @@ struct GuestPageBacking {
   // File-backed mappings are materialized on first guest access. Anonymous
   // and IPC-backed pages have no source and remain ordinary byte arrays.
   void materialize() const;
+  // A consumer of a shared mapping can opt its physical page into a common
+  // write generation. Later aliases then retain cross-address-space dirty
+  // visibility without observing or copying each individual store.
+  [[nodiscard]] bool enable_shared_write_tracking();
+  [[nodiscard]] bool shared_write_tracking_enabled() const;
+  [[nodiscard]] static std::uint64_t shared_write_tracking_epoch();
+  [[nodiscard]] std::uint64_t shared_write_generation() const;
+  void mark_shared_write();
 
 private:
   friend class FilePageCache;
@@ -60,6 +69,8 @@ private:
   // Set before this page is published and never changed afterwards. This
   // avoids taking the page lock for anonymous and already-private pages.
   bool has_file_source_{};
+  std::atomic<bool> shared_write_tracking_{};
+  std::atomic<std::uint64_t> shared_write_generation_{};
 };
 
 // Process-family cache for immutable firmware file pages. AddressSpace keeps a

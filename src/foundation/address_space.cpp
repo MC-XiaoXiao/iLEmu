@@ -73,7 +73,9 @@ struct AddressSpace::JitPageTableStorage {
 };
 
 AddressSpace::AddressSpace()
-    : file_page_cache_{std::make_shared<FilePageCache>()} {}
+    : observed_shared_write_tracking_epoch_{
+          GuestPageBacking::shared_write_tracking_epoch()},
+      file_page_cache_{std::make_shared<FilePageCache>()} {}
 
 AddressSpace::~AddressSpace() = default;
 
@@ -114,6 +116,26 @@ void AddressSpace::disable_jit_page_table() {
   auto lock = write_lock();
   jit_page_table_enabled_ = false;
   clear_jit_page_table_locked();
+}
+
+void AddressSpace::synchronize_shared_write_tracking() {
+  auto target = GuestPageBacking::shared_write_tracking_epoch();
+  if (target ==
+      observed_shared_write_tracking_epoch_.load(std::memory_order_acquire)) {
+    return;
+  }
+  auto lock = write_lock();
+  // Capture the target again after serializing parallel address-space users.
+  // A still newer epoch published during the scan remains pending for the
+  // next safe point rather than being accidentally acknowledged here.
+  target = GuestPageBacking::shared_write_tracking_epoch();
+  if (target ==
+      observed_shared_write_tracking_epoch_.load(std::memory_order_relaxed)) {
+    return;
+  }
+  invalidate_shared_write_jit_pages_locked();
+  observed_shared_write_tracking_epoch_.store(target,
+                                              std::memory_order_release);
 }
 
 AddressSpace::ReadLock AddressSpace::read_lock() const {
@@ -223,6 +245,7 @@ bool AddressSpace::copy_in(std::uint32_t address,
     auto &backing = writable_backing_locked(page);
     std::copy_n(data.begin() + static_cast<std::ptrdiff_t>(copied), chunk,
                 backing.bytes.begin() + offset);
+    mark_shared_backing_written_locked(page);
     refresh_jit_page_locked(current);
     copied += chunk;
   }
@@ -312,6 +335,7 @@ AddressSpace::share_pages(std::uint32_t address, std::uint32_t size) {
 
   std::vector<std::shared_ptr<GuestPageBacking>> result;
   result.reserve(size / page_size);
+  bool has_tracked_shared_backing = false;
   for (std::uint64_t base = address; base < end; base += page_size) {
     auto &page = ensure_page_locked(static_cast<std::uint32_t>(base));
     if (!page.backing) {
@@ -324,9 +348,15 @@ AddressSpace::share_pages(std::uint32_t address, std::uint32_t size) {
     page.file_cached = false;
     page.shared_writable = true;
     page.copy_on_write_possible = false;
+    if (tracks_write_locked(static_cast<std::uint32_t>(base), page_size)) {
+      static_cast<void>(page.backing->enable_shared_write_tracking());
+      has_tracked_shared_backing = true;
+    }
     refresh_jit_page_locked(static_cast<std::uint32_t>(base));
     result.push_back(page.backing);
   }
+  if (has_tracked_shared_backing)
+    invalidate_shared_write_jit_pages_locked();
   return result;
 }
 
@@ -357,6 +387,7 @@ bool AddressSpace::map_page_backings(
     if (pages_->contains(base))
       return false;
   }
+  bool has_tracked_shared_backing = false;
   for (std::size_t index = 0; index < backings.size(); ++index) {
     const auto base =
         address + static_cast<std::uint32_t>(index * page_size);
@@ -364,10 +395,16 @@ bool AddressSpace::map_page_backings(
         base, Page{backings[index], 0, false, shared_writable,
                    !shared_writable});
     static_cast<void>(inserted);
+    if (shared_writable && tracks_write_locked(base, page_size)) {
+      static_cast<void>(page->second.backing->enable_shared_write_tracking());
+      has_tracked_shared_backing = true;
+    }
     cache_page_locked(base, page->second);
   }
   vm_map_.map_or(address, end, permissions);
   add_page_permissions_locked(address, end, permissions);
+  if (has_tracked_shared_backing)
+    invalidate_shared_write_jit_pages_locked();
   refresh_jit_page_range_locked(address, end);
   if (mapping_lease_token) {
     auto token = next_mapping_lease_token_++;
@@ -728,7 +765,9 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address) {
       mapped_page_flag | permission_bits(MemoryPermission::Read) |
       permission_bits(MemoryPermission::Write));
   if (!write_entry || (flags & write_required) != write_required ||
-      tracks_write_locked(base, page_size)) {
+      tracks_write_locked(base, page_size) ||
+      (page != nullptr && page->backing &&
+       page->backing->shared_write_tracking_enabled())) {
     return;
   }
   if (page == nullptr || !page->backing || page->file_cached ||
@@ -747,6 +786,16 @@ void AddressSpace::refresh_jit_page_range_locked(std::uint32_t address,
   const auto first = page_base(address);
   for (std::uint64_t base = first; base < end; base += page_size) {
     refresh_jit_page_locked(static_cast<std::uint32_t>(base));
+  }
+}
+
+void AddressSpace::invalidate_shared_write_jit_pages_locked() {
+  if (!jit_write_page_table_)
+    return;
+  auto **entries = jit_write_page_table_->entries();
+  for (const auto &[address, page] : *pages_) {
+    if (page.backing && page.backing->shared_write_tracking_enabled())
+      entries[address / page_size] = nullptr;
   }
 }
 
@@ -775,6 +824,11 @@ AddressSpace::writable_backing_locked(Page &page) {
   page.file_cached = false;
   page.copy_on_write_possible = false;
   return *page.backing;
+}
+
+void AddressSpace::mark_shared_backing_written_locked(Page &page) {
+  if (page.backing)
+    page.backing->mark_shared_write();
 }
 
 bool AddressSpace::tracks_write_locked(std::uint32_t address,
@@ -883,6 +937,7 @@ bool AddressSpace::write_integer(std::uint32_t address, T value) {
       backing.bytes[offset + index] = static_cast<std::byte>(
           (value >> (index * 8U)) & static_cast<T>(0xffU));
     }
+    mark_shared_backing_written_locked(page);
     if (tracks_write_locked(address, sizeof(T))) {
       page.write_generation = ++write_generation_;
     }
@@ -898,6 +953,7 @@ bool AddressSpace::write_integer(std::uint32_t address, T value) {
     refresh_jit_page_locked(current);
     backing.bytes[current & (page_size - 1U)] =
         static_cast<std::byte>((value >> (i * 8U)) & static_cast<T>(0xffU));
+    mark_shared_backing_written_locked(page);
   }
   mark_written_locked(address, sizeof(T));
   return true;
@@ -934,6 +990,7 @@ bool AddressSpace::compare_exchange_integer(std::uint32_t address, T expected,
       backing.bytes[offset + index] = static_cast<std::byte>(
           (value >> (index * 8U)) & static_cast<T>(0xffU));
     }
+    mark_shared_backing_written_locked(page);
     if (tracks_write_locked(address, sizeof(T))) {
       page.write_generation = ++write_generation_;
     }
@@ -964,6 +1021,7 @@ bool AddressSpace::compare_exchange_integer(std::uint32_t address, T expected,
     refresh_jit_page_locked(current);
     backing.bytes[current & (page_size - 1U)] =
         static_cast<std::byte>((value >> (i * 8U)) & static_cast<T>(0xffU));
+    mark_shared_backing_written_locked(page);
   }
   mark_written_locked(address, sizeof(T));
   return true;
@@ -999,6 +1057,7 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address,
       backing.bytes[offset + index] = static_cast<std::byte>(
           (value >> (index * 8U)) & static_cast<T>(0xffU));
     }
+    mark_shared_backing_written_locked(page);
     if (tracks_write_locked(address, sizeof(T))) {
       page.write_generation = ++write_generation_;
     }
@@ -1027,6 +1086,7 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address,
     backing.bytes[current & (page_size - 1U)] =
         static_cast<std::byte>((value >> (index * 8U)) &
                                static_cast<T>(0xffU));
+    mark_shared_backing_written_locked(page);
   }
   mark_written_locked(address, sizeof(T));
   return previous;
@@ -1130,8 +1190,19 @@ bool AddressSpace::track_write_generation(std::uint32_t address,
   std::ranges::sort(
       tracked_write_ranges_, {},
       [](const TrackedWriteRange &range) { return range.begin; });
-  refresh_jit_page_range_locked(page_base(address),
-                                page_range_end(address, size));
+  bool has_shared_backing = false;
+  const auto tracking_end = page_range_end(address, size);
+  for (std::uint64_t base = page_base(address); base < tracking_end;
+       base += page_size) {
+    auto *page = find_page_locked(static_cast<std::uint32_t>(base));
+    if (page == nullptr || !page->shared_writable || !page->backing)
+      continue;
+    static_cast<void>(page->backing->enable_shared_write_tracking());
+    has_shared_backing = true;
+  }
+  if (has_shared_backing)
+    invalidate_shared_write_jit_pages_locked();
+  refresh_jit_page_range_locked(page_base(address), tracking_end);
   return true;
 }
 
@@ -1175,6 +1246,56 @@ AddressSpace::write_generation_changes(
     const auto generation = page ? page->write_generation : 0U;
     result.generation = std::max(result.generation, generation);
     if (generation <= after_generation)
+      continue;
+    const auto dirty_begin = std::max(base, requested_begin);
+    const auto dirty_end = std::min(base + page_size, requested_end);
+    if (dirty_end <= dirty_begin)
+      continue;
+    if (!result.ranges.empty()) {
+      auto &previous = result.ranges.back();
+      const auto previous_end =
+          static_cast<std::uint64_t>(previous.address) + previous.size;
+      if (previous_end == dirty_begin) {
+        previous.size += static_cast<std::uint32_t>(dirty_end - dirty_begin);
+        continue;
+      }
+    }
+    result.ranges.push_back(
+        WrittenRange{static_cast<std::uint32_t>(dirty_begin),
+                     static_cast<std::uint32_t>(dirty_end - dirty_begin)});
+  }
+  return result;
+}
+
+std::optional<AddressSpace::SharedWriteGenerationChanges>
+AddressSpace::shared_write_generation_changes(
+    std::uint32_t address, std::size_t size,
+    std::span<const std::uint64_t> after_page_generations) const {
+  if (size == 0 || range_overflows(address, size))
+    return std::nullopt;
+  const auto requested_begin = static_cast<std::uint64_t>(address);
+  const auto requested_end = requested_begin + size;
+  const auto first = page_base(address);
+  const auto end = page_range_end(address, size);
+  auto lock = read_lock();
+  if (!range_accessible_locked(address, size, MemoryPermission::None))
+    return std::nullopt;
+
+  SharedWriteGenerationChanges result;
+  const auto range_page_count =
+      static_cast<std::size_t>((end - first) / page_size);
+  result.page_generations.reserve(range_page_count);
+  const auto has_baseline = after_page_generations.size() == range_page_count;
+  std::size_t page_index = 0;
+  for (std::uint64_t base = first; base < end; base += page_size) {
+    const auto *page = find_page_locked(static_cast<std::uint32_t>(base));
+    const auto generation =
+        page && page->backing ? page->backing->shared_write_generation() : 0U;
+    result.page_generations.push_back(generation);
+    const auto changed =
+        !has_baseline || generation != after_page_generations[page_index];
+    ++page_index;
+    if (!changed)
       continue;
     const auto dirty_begin = std::max(base, requested_begin);
     const auto dirty_end =
