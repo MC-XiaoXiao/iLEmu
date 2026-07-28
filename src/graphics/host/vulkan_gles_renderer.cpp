@@ -629,7 +629,8 @@ class VulkanGlesRenderer final : public GlesRenderer {
         bool ordered_quad = false);
     [[nodiscard]] Target& prepare_host_surface(
         HostSurface& surface, const DisplayFrame& cpu_frame,
-        std::uint64_t cpu_generation, std::uint64_t gpu_generation);
+        std::uint64_t cpu_generation, std::uint64_t gpu_generation,
+        std::vector<HostRectangle> cpu_damage);
     [[nodiscard]] bool create_presentation_swapchain();
     [[nodiscard]] bool recreate_presentation_surface();
     void destroy_presentation_swapchain() noexcept;
@@ -2750,7 +2751,8 @@ VulkanGlesRenderer::present_target(Target& target) {
 
 VulkanGlesRenderer::Target& VulkanGlesRenderer::prepare_host_surface(
     HostSurface& surface, const DisplayFrame& cpu_frame,
-    std::uint64_t cpu_generation, std::uint64_t gpu_generation) {
+    std::uint64_t cpu_generation, std::uint64_t gpu_generation,
+    std::vector<HostRectangle> cpu_damage) {
     const auto descriptor = surface.descriptor();
     auto& target =
         ensure_target(surface.key(), descriptor.width, descriptor.height);
@@ -2784,10 +2786,9 @@ VulkanGlesRenderer::Target& VulkanGlesRenderer::prepare_host_surface(
                        static_cast<std::uint32_t>(rectangle.y) <=
                            descriptor.height - rectangle.height;
             };
-        auto damage = surface.cpu_damage_rectangles();
-        if (!damage.empty() &&
-            std::ranges::all_of(damage, valid_rectangle)) {
-            upload_rectangles = std::move(damage);
+        if (!cpu_damage.empty() &&
+            std::ranges::all_of(cpu_damage, valid_rectangle)) {
+            upload_rectangles = std::move(cpu_damage);
         }
     }
     const auto full_upload =
@@ -2985,11 +2986,15 @@ bool VulkanGlesRenderer::encode_fill(
         return true;
     }
 
+    auto cpu_damage = cpu_generation > gpu_generation
+                          ? destination.cpu_damage_rectangles()
+                          : std::vector<HostRectangle>{};
     try {
         {
             std::lock_guard lock{mutex_};
             auto& target = prepare_host_surface(
-                destination, cpu_frame, cpu_generation, gpu_generation);
+                destination, cpu_frame, cpu_generation, gpu_generation,
+                std::move(cpu_damage));
             if (!target.valid)
                 return false;
             begin_commands();
@@ -3137,10 +3142,13 @@ bool VulkanGlesRenderer::encode_fill_triangles(
             destination.map_cpu(false, PerfCpuMapReason::HostUpload);
         cpu_frame = mapping.frame();
     }
+    auto cpu_damage = cpu_generation > gpu_generation
+                          ? destination.cpu_damage_rectangles()
+                          : std::vector<HostRectangle>{};
     try {
         std::lock_guard lock{mutex_};
         if (!prepare_host_surface(destination, cpu_frame, cpu_generation,
-                                  gpu_generation)
+                                  gpu_generation, std::move(cpu_damage))
                  .valid) {
             return false;
         }
@@ -3243,16 +3251,26 @@ bool VulkanGlesRenderer::encode_fill_quad(
             false, PerfCpuMapReason::HostUpload);
         destination_frame = mapping.frame();
     }
+    auto white_cpu_damage =
+        white_cpu_generation > white_gpu_generation
+            ? quad_white_surface_->cpu_damage_rectangles()
+            : std::vector<HostRectangle>{};
+    auto destination_cpu_damage =
+        destination_cpu_generation > destination_gpu_generation
+            ? destination.cpu_damage_rectangles()
+            : std::vector<HostRectangle>{};
     try {
         {
             std::lock_guard lock{mutex_};
             auto& white_target = prepare_host_surface(
                 *quad_white_surface_, white_frame,
-                white_cpu_generation, white_gpu_generation);
+                white_cpu_generation, white_gpu_generation,
+                std::move(white_cpu_damage));
             auto& destination_target = prepare_host_surface(
                 destination, destination_frame,
                 destination_cpu_generation,
-                destination_gpu_generation);
+                destination_gpu_generation,
+                std::move(destination_cpu_damage));
             if (!white_target.valid || !destination_target.valid ||
                 !draw_host_texture(
                     white_target, destination_target,
@@ -3387,16 +3405,25 @@ bool VulkanGlesRenderer::encode_copy_quad(
             false, PerfCpuMapReason::HostUpload);
         destination_frame = mapping.frame();
     }
+    auto source_cpu_damage =
+        source_cpu_generation > source_gpu_generation
+            ? source.cpu_damage_rectangles()
+            : std::vector<HostRectangle>{};
+    auto destination_cpu_damage =
+        destination_cpu_generation > destination_gpu_generation
+            ? destination.cpu_damage_rectangles()
+            : std::vector<HostRectangle>{};
     try {
         {
             std::lock_guard lock{mutex_};
             auto& source_target = prepare_host_surface(
                 source, source_frame, source_cpu_generation,
-                source_gpu_generation);
+                source_gpu_generation, std::move(source_cpu_damage));
             auto& destination_target = prepare_host_surface(
                 destination, destination_frame,
                 destination_cpu_generation,
-                destination_gpu_generation);
+                destination_gpu_generation,
+                std::move(destination_cpu_damage));
             if (!source_target.valid || !destination_target.valid ||
                 !draw_host_texture(
                     source_target, destination_target,
@@ -3707,16 +3734,25 @@ bool VulkanGlesRenderer::encode_copy(
             false, PerfCpuMapReason::HostUpload);
         destination_frame = mapping.frame();
     }
+    auto source_cpu_damage =
+        source_cpu_generation > source_gpu_generation
+            ? source.cpu_damage_rectangles()
+            : std::vector<HostRectangle>{};
+    auto destination_cpu_damage =
+        destination_cpu_generation > destination_gpu_generation
+            ? destination.cpu_damage_rectangles()
+            : std::vector<HostRectangle>{};
 
     try {
         {
             std::lock_guard lock{mutex_};
             auto& source_target = prepare_host_surface(
                 source, source_frame, source_cpu_generation,
-                source_gpu_generation);
+                source_gpu_generation, std::move(source_cpu_damage));
             auto& destination_target = prepare_host_surface(
                 destination, destination_frame, destination_cpu_generation,
-                destination_gpu_generation);
+                destination_gpu_generation,
+                std::move(destination_cpu_damage));
             if (!source_target.valid || !destination_target.valid)
                 return false;
             if (mode != HostCompositeMode::Copy ||
@@ -4224,17 +4260,26 @@ bool VulkanGlesRenderer::encode_copy_triangles(
             destination.map_cpu(false, PerfCpuMapReason::HostUpload);
         destination_frame = mapping.frame();
     }
+    auto source_cpu_damage =
+        source_cpu_generation > source_gpu_generation
+            ? source.cpu_damage_rectangles()
+            : std::vector<HostRectangle>{};
+    auto destination_cpu_damage =
+        destination_cpu_generation > destination_gpu_generation
+            ? destination.cpu_damage_rectangles()
+            : std::vector<HostRectangle>{};
 
     try {
         {
             std::lock_guard lock{mutex_};
             auto& source_target = prepare_host_surface(
                 source, source_frame, source_cpu_generation,
-                source_gpu_generation);
+                source_gpu_generation, std::move(source_cpu_damage));
             auto& destination_target = prepare_host_surface(
                 destination, destination_frame,
                 destination_cpu_generation,
-                destination_gpu_generation);
+                destination_gpu_generation,
+                std::move(destination_cpu_damage));
             if (!source_target.valid || !destination_target.valid ||
                 !draw_host_texture(
                     source_target, destination_target, destination.key(),
@@ -4262,6 +4307,7 @@ bool VulkanGlesRenderer::encode_copy_triangles(
 
 HostNativeImage
 VulkanGlesRenderer::native_image(const HostSurface& surface) const {
+    const auto gpu_generation = surface.gpu_generation();
     std::lock_guard lock{mutex_};
     const auto found = targets_.find(surface.key());
     if (found == targets_.end() || !found->second.valid)
@@ -4272,7 +4318,7 @@ VulkanGlesRenderer::native_image(const HostSurface& surface) const {
         reinterpret_cast<std::uintptr_t>(found->second.image.image),
         static_cast<std::uint32_t>(found->second.layout),
         surface.descriptor(),
-        surface.gpu_generation()};
+        gpu_generation};
 }
 
 std::unique_ptr<CommandEncoder>
@@ -4294,12 +4340,16 @@ HostGraphicsDevice::PresentResult VulkanGlesRenderer::present(
             surface->map_cpu(false, PerfCpuMapReason::NativePresent);
         cpu_frame = mapping.frame();
     }
+    auto cpu_damage = cpu_generation > gpu_generation
+                          ? surface->cpu_damage_rectangles()
+                          : std::vector<HostRectangle>{};
     try {
         auto presented = PresentResult::Failed;
         {
             std::lock_guard lock{mutex_};
             auto& target = prepare_host_surface(
-                *surface, cpu_frame, cpu_generation, gpu_generation);
+                *surface, cpu_frame, cpu_generation, gpu_generation,
+                std::move(cpu_damage));
             if (!target.valid)
                 return PresentResult::Failed;
             presented = present_target(target);
@@ -4321,6 +4371,27 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                               std::span<const GlesRasterVertex> vertices,
                               std::uint32_t mode,
                               const GlesRasterState& state) {
+    // CPU readback takes HostSurface before the renderer mutex.  Resolve the
+    // inverse dependency here before serializing Vulkan state so texture
+    // selection cannot deadlock a concurrent readback.
+    std::array<std::shared_ptr<HostSurface>, gles_abi::texture_unit_count>
+        gpu_newer_host_surfaces{};
+    for (std::size_t index = 0; index < gpu_newer_host_surfaces.size();
+         ++index) {
+        const auto& unit = state.texture_units[index];
+        if (!unit.enabled || unit.texture == 0 || state.resources == nullptr)
+            continue;
+        const auto* texture = state.resources->texture(unit.texture);
+        if (!texture) continue;
+        const auto level = texture->levels.find(0);
+        if (level == texture->levels.end() || !level->second.host_surface ||
+            level->second.host_surface->key() == target) {
+            continue;
+        }
+        const auto& surface = *level->second.host_surface;
+        if (surface.gpu_generation() > surface.cpu_generation())
+            gpu_newer_host_surfaces[index] = level->second.host_surface;
+    }
     std::lock_guard lock{mutex_};
     last_failure_reason_.store(PerfFallbackReason::None,
                                std::memory_order_relaxed);
@@ -4470,8 +4541,7 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
             const auto height = level ? level->height : 1U;
             if (level && level->host_surface &&
                 level->host_surface->key() != target &&
-                level->host_surface->gpu_generation() >
-                    level->host_surface->cpu_generation()) {
+                gpu_newer_host_surfaces[index] == level->host_surface) {
                 const auto native =
                     targets_.find(level->host_surface->key());
                 if (native != targets_.end() && native->second.valid &&
