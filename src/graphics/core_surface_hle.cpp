@@ -80,8 +80,8 @@ CoreSurfaceHle::CoreSurfaceHle(
     registry.register_prefix(std::string{core_surface_image},
                              std::string{client_buffer_prefix},
                              [this](UserlandHleCall& call) { dispatch(call); });
-    // These public helpers construct the firmware's CFRuntime wrapper around
-    // a transport client. Keep that native object lifecycle and intercept
+    // These public helpers construct the firmware's client wrapper around a
+    // transport identifier. Keep that native object lifecycle and intercept
     // only the private transport transaction that would otherwise require
     // the unavailable CoreSurface kernel user client.
     for (const auto symbol :
@@ -262,10 +262,7 @@ void CoreSurfaceHle::finish_create_from_dictionary(
 
     if (format == 0)
         format = surface_pixel_format_bgra;
-    const auto bytes_per_pixel = format == surface_pixel_format_bgra
-                                     ? core_surface_abi::bytes_per_bgra_pixel
-                                 : format == surface_pixel_format_rgb555 ? 2U
-                                                                         : 0U;
+    const auto bytes_per_pixel = surface_bytes_per_pixel(format);
     const auto row_bytes =
         static_cast<std::uint64_t>(surface_width) * bytes_per_pixel;
     if (bytes_per_row == 0 &&
@@ -631,11 +628,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
         const auto allocation_size = call.argument(4);
         const auto base = call.argument(5);
         const auto output = call.argument(6);
-        const auto bytes_per_pixel =
-            pixel_format == surface_pixel_format_bgra
-                ? core_surface_abi::bytes_per_bgra_pixel
-            : pixel_format == surface_pixel_format_rgb555 ? 2U
-                                                          : 0U;
+        const auto bytes_per_pixel = surface_bytes_per_pixel(pixel_format);
         const auto row_bytes =
             static_cast<std::uint64_t>(width) * bytes_per_pixel;
         const auto required =

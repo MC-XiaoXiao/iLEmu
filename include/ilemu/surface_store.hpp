@@ -27,6 +27,21 @@ inline constexpr std::uint32_t surface_pixel_format_bgra =
     surface_fourcc('B', 'G', 'R', 'A');
 inline constexpr std::uint32_t surface_pixel_format_rgb555 =
     surface_fourcc('R', 'G', '1', '5');
+// Legacy CoreSurface's little-endian ARGB1555 client-image format. The
+// firmware names it 's551': bit 15 is alpha and bits 14:0 are RGB555.
+inline constexpr std::uint32_t surface_pixel_format_argb1555 =
+    surface_fourcc('s', '5', '5', '1');
+
+constexpr std::uint32_t
+surface_bytes_per_pixel(std::uint32_t pixel_format) {
+    if (pixel_format == surface_pixel_format_bgra)
+        return 4U;
+    if (pixel_format == surface_pixel_format_rgb555 ||
+        pixel_format == surface_pixel_format_argb1555) {
+        return 2U;
+    }
+    return 0U;
+}
 
 // Each process owns one SurfaceStore with process-local virtual addresses.
 // Stores inherited across fork/spawn share a registry of page backings so a
