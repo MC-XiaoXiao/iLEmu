@@ -26,7 +26,6 @@ constexpr std::string_view core_foundation_image{
 constexpr std::string_view springboard_image{
     "/System/Library/CoreServices/SpringBoard.app/SpringBoard"};
 constexpr std::string_view application_directory{"Applications/"};
-constexpr std::uint32_t springboard_telephony_checked_in_method{0x0002a9f4U};
 constexpr std::string_view offline_sim_status_export{
     "_kCTSIMSupportSIMStatusNotInserted"};
 constexpr std::string_view create_call_from_info{
@@ -67,7 +66,8 @@ constexpr std::array<std::string_view, 4> offline_scalar_queries{
 
 // These direct queries return retained CF objects. With no registered carrier
 // there is no operator or service-provider name to expose.
-constexpr std::array<std::string_view, 3> offline_direct_string_queries{
+constexpr std::array<std::string_view, 4> offline_direct_string_queries{
+    "_CTRegistrationCopyAbbreviatedOperatorName",
     "_CTRegistrationCopyOperatorName",
     "_CTRegistrationCopyServiceProviderName",
     "_CTSettingCopyMyPhoneNumber",
@@ -499,9 +499,9 @@ void register_core_telephony_hle(
     // its pre-check-in state and pass nil into SBStatusBarNoServiceView. Report
     // the already-implemented offline CoreTelephony boundary as checked in so
     // SpringBoard chooses and localizes its own NO_SERVICE/SEARCHING string.
-    registry.register_address(
-        std::string{springboard_image},
-        springboard_telephony_checked_in_method,
+    registry.register_objc_instance_method(
+        std::string{springboard_image}, "SBStatusBarController",
+        "telephonyControllerCheckedIn",
         "-[SBStatusBarController telephonyControllerCheckedIn]",
         [](UserlandHleCall& call) { call.set_return(1); });
 
@@ -700,13 +700,7 @@ void register_core_telephony_hle(
     for (const auto symbol : offline_direct_string_queries) {
         registry.register_function(
             std::string{core_telephony_image}, std::string{symbol},
-            [](UserlandHleCall& call) {
-                if (is_offline_ui_client(call)) {
-                    call.set_return(0);
-                } else {
-                    call.resume_original();
-                }
-            });
+            [](UserlandHleCall& call) { call.set_return(0); });
     }
     for (const auto symbol : offline_server_string_queries) {
         registry.register_function(
@@ -746,29 +740,6 @@ void register_core_telephony_hle(
         std::string{core_telephony_image},
         "__CTServerConnectionSelectNetwork",
         [](UserlandHleCall& call) { return_server_success(call); });
-
-    // Let the firmware construct a genuine CFRuntime telephony-center object,
-    // while suppressing only its attempt to establish the unavailable
-    // CommCenter/baseband channel. Its observer APIs remain native so service
-    // completions can use the firmware's local CFNotificationCenter path.
-    registry.register_function(
-        std::string{core_telephony_image}, "__EstablishServerConnection",
-        [](UserlandHleCall& call) {
-            if (is_offline_ui_client(call)) {
-                call.set_return(0);
-            } else {
-                call.resume_original();
-            }
-        });
-    registry.register_function(
-        std::string{core_telephony_image}, "__KillServerConnection",
-        [](UserlandHleCall& call) {
-            if (is_offline_ui_client(call)) {
-                call.set_return(0);
-            } else {
-                call.resume_original();
-            }
-        });
 
 }
 
