@@ -3,6 +3,7 @@ add_library(ilemu_device_state STATIC
     network_preferences.cpp)
 add_library(iLEmu::device_state ALIAS ilemu_device_state)
 ilemu_configure_module(ilemu_device_state)
+target_link_libraries(ilemu_device_state PRIVATE iLEmu::foundation)
 if(TARGET PkgConfig::PLIST)
     target_link_libraries(ilemu_device_state PRIVATE PkgConfig::PLIST)
     target_compile_definitions(ilemu_device_state PRIVATE

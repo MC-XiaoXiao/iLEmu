@@ -4,14 +4,21 @@
 #include <stdexcept>
 #include <string>
 
+#include "ilemu/macho.hpp"
+
 namespace ilemu {
 namespace {
 
 constexpr std::string_view activation_state_key{"-ActivationState"};
 constexpr std::string_view activation_acknowledged_key{
     "-ActivationStateAcknowledged"};
+constexpr std::string_view springboard_registered_key{
+    "-SBLockdownEverRegisteredKey"};
 constexpr std::string_view cached_activation_state_key{
     "com.apple.mobile.lockdown_cache-ActivationState"};
+constexpr std::string_view springboard_path{
+    "System/Library/CoreServices/SpringBoard.app/SpringBoard"};
+constexpr std::string_view brick_state_symbol{"_kLockdownBrickStateKey"};
 
 std::string initial_plist() {
     return "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
@@ -83,8 +90,17 @@ std::optional<LockdownActivation> parse_lockdown_activation(
     return std::nullopt;
 }
 
+LockdownFirmwareProfile detect_lockdown_firmware_profile(
+    const std::filesystem::path& rootfs) {
+    LockdownFirmwareProfile profile;
+    const auto image = MachOImage::parse(rootfs / springboard_path);
+    profile.brick_state = image.find_symbol(brick_state_symbol) != nullptr;
+    return profile;
+}
+
 LockdownProfileResult apply_lockdown_profile(
-    const std::filesystem::path& rootfs, LockdownActivation activation) {
+    const std::filesystem::path& rootfs, LockdownActivation activation,
+    const LockdownFirmwareProfile& profile) {
     const auto path = rootfs / "private/var/root/Library/Lockdown/data_ark.plist";
     if (activation == LockdownActivation::Preserve) return {path, false};
 
@@ -96,6 +112,13 @@ LockdownProfileResult apply_lockdown_profile(
                      : "<string>Unactivated</string>");
     upsert(xml, activation_acknowledged_key,
            activated ? "<true/>" : "<false/>");
+    if (profile.registration_state) {
+        // SpringBoard treats registration as a separate part of the Lockdown
+        // device state. An activated simulator models a device whose
+        // activation has completed; unactivated restores first-run state.
+        upsert(xml, springboard_registered_key,
+               activated ? "<true/>" : "<false/>");
+    }
     // lockdownd publishes its effective state through this persisted cache.
     // Keep it in sync with the requested device profile so a prior offline
     // baseband boot cannot override --activation on the next launch.

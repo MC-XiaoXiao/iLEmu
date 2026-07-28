@@ -74,7 +74,9 @@ constexpr std::uint32_t root_disk_device =
 CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
                                          std::filesystem::path rootfs,
                                          DeviceProfile device,
-                                         std::optional<bool> activated)
+                                         std::optional<bool> activated,
+                                         LockdownFirmwareProfile
+                                             lockdown_profile)
     : memory_{memory}, output_{output}, rootfs_{std::move(rootfs)},
       device_profile_{device},
       hfs_metadata_{rootfs_},
@@ -123,7 +125,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
       });
   register_dns_configuration_hle(userland_hle_);
   register_app_support_hle(userland_hle_);
-  register_lockdown_hle(userland_hle_, activated);
+  register_lockdown_hle(userland_hle_, activated, lockdown_profile);
   register_bluetooth_manager_hle(userland_hle_);
   register_mbx_connect_hle(userland_hle_);
   graphics_services_input::register_springboard_alert_observers(

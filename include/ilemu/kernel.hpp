@@ -33,6 +33,7 @@
 #include "ilemu/host_network.hpp"
 #include "ilemu/kernel_control.hpp"
 #include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/lockdown_profile.hpp"
 #include "ilemu/layerkit_hle.hpp"
 #include "ilemu/mach_arm_thread_abi.hpp"
 #include "ilemu/mbx2d_hle.hpp"
@@ -107,7 +108,8 @@ public:
   CompatibilityKernel(AddressSpace &memory, Output &output,
                       std::filesystem::path rootfs = {},
                       DeviceProfile device = DeviceProfile::default_profile(),
-                      std::optional<bool> activated = std::nullopt);
+                      std::optional<bool> activated = std::nullopt,
+                      LockdownFirmwareProfile lockdown_profile = {});
 
   void attach(Cpu &cpu);
   void dispatch(Cpu &cpu, std::uint32_t svc_immediate);

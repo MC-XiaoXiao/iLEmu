@@ -942,10 +942,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
     throw std::runtime_error{
         "--activation must be activated, unactivated, or preserve"};
   }
-  const auto activation_result = apply_lockdown_profile(*rootfs, *activation);
+  const auto lockdown_profile = detect_lockdown_firmware_profile(*rootfs);
+  const auto activation_result =
+      apply_lockdown_profile(*rootfs, *activation, lockdown_profile);
   output.line("[device-state] activation=" + activation_value +
               " path=" + activation_result.path.string() +
-              " changed=" + std::to_string(activation_result.changed));
+              " changed=" + std::to_string(activation_result.changed) +
+              " registration-profile=" +
+              std::to_string(lockdown_profile.registration_state) +
+              " brick-profile=" +
+              std::to_string(lockdown_profile.brick_state));
   const auto activation_override =
       *activation == LockdownActivation::Preserve
           ? std::optional<bool>{}
@@ -1116,7 +1122,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
       configured_jit_code_cache_size);
   initial->kernel =
       std::make_unique<CompatibilityKernel>(*initial->memory, output, *rootfs,
-                                            device, activation_override);
+                                            device, activation_override,
+                                            lockdown_profile);
   initial->cpus->set_process_id(initial->kernel->process().pid);
   std::shared_ptr<SdlAudioSink> audio_sink;
   if (SdlAudioSink::available()) {
@@ -1349,7 +1356,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
             PerformanceLatencyScope latency{
                 PerfLatencyKind::ProcessCreateKernel};
             child->kernel = std::make_unique<CompatibilityKernel>(
-                *child->memory, output, *rootfs, device, activation_override);
+                *child->memory, output, *rootfs, device, activation_override,
+                lockdown_profile);
           }
           if (inheritance ==
               CompatibilityKernel::ProcessInheritance::SpawnExec) {
