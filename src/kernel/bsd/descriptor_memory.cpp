@@ -957,8 +957,11 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
       bsd_error(cpu, bsd_support::invalid_argument);
       return;
     }
+    const auto mapped_size = static_cast<std::uint32_t>(
+        (static_cast<std::uint64_t>(size) + AddressSpace::page_size - 1U) &
+        ~(static_cast<std::uint64_t>(AddressSpace::page_size) - 1U));
     const auto overlaps = [&](std::uint32_t candidate) {
-      for (std::uint64_t page = 0; page < size;
+      for (std::uint64_t page = 0; page < mapped_size;
            page += AddressSpace::page_size) {
         if (memory_.mapped(candidate + static_cast<std::uint32_t>(page))) {
           return true;
@@ -973,7 +976,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
           address += AddressSpace::page_size;
       }
     } else {
-      memory_.unmap(address, size);
+      memory_.unmap(address, mapped_size);
     }
     MemoryPermission permissions = MemoryPermission::None;
     if ((protection & 1U) != 0)
@@ -982,29 +985,48 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
       permissions |= MemoryPermission::Write;
     if ((protection & 4U) != 0)
       permissions |= MemoryPermission::Execute;
-    if (!memory_.map(address, size, permissions)) {
-      bsd_error(cpu, 12); // ENOMEM
-      return;
-    }
     if ((flags & darwin::map_flag::anonymous) == 0) {
       const auto found = file_descriptors_.find(fd);
       if (found == file_descriptors_.end()) {
         bsd_error(cpu, bsd_support::bad_file_descriptor);
         return;
       }
-      std::ifstream stream{found->second, std::ios::binary};
-      stream.seekg(static_cast<std::streamoff>(offset));
-      if (!stream) {
-        bsd_error(cpu, bsd_support::invalid_argument);
-        return;
-      }
-      std::vector<std::byte> bytes(size);
-      stream.read(reinterpret_cast<char *>(bytes.data()),
-                  static_cast<std::streamsize>(bytes.size()));
-      bytes.resize(static_cast<std::size_t>(stream.gcount()));
-      if (!memory_.copy_in(address, bytes)) {
-        bsd_error(cpu, bsd_support::bad_address);
-        return;
+      if ((flags & darwin::map_flag::shared) != 0) {
+        auto pages = shared_state_->shared_mapping_page_cache->load_pages(
+            found->second, offset, size);
+        if (!pages) {
+          bsd_error(cpu, bsd_support::invalid_argument);
+          return;
+        }
+        for (const auto &page : *pages)
+          page->materialize();
+        if (!memory_.map_page_backings(
+                address, mapped_size, permissions, *pages,
+                AddressSpace::PageMappingMode::Shared)) {
+          bsd_error(cpu, darwin::error::no_memory);
+          return;
+        }
+      } else {
+        if (!memory_.map(address, mapped_size, permissions)) {
+          bsd_error(cpu, darwin::error::no_memory);
+          return;
+        }
+        std::ifstream stream{found->second, std::ios::binary};
+        stream.seekg(static_cast<std::streamoff>(offset));
+        if (!stream) {
+          memory_.unmap(address, mapped_size);
+          bsd_error(cpu, bsd_support::invalid_argument);
+          return;
+        }
+        std::vector<std::byte> bytes(size);
+        stream.read(reinterpret_cast<char *>(bytes.data()),
+                    static_cast<std::streamsize>(bytes.size()));
+        bytes.resize(static_cast<std::size_t>(stream.gcount()));
+        if (!memory_.copy_in(address, bytes)) {
+          memory_.unmap(address, mapped_size);
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
       }
       static_cast<void>(install_mapped_user_image(
           cpu, found->second, address, size, offset));
@@ -1018,13 +1040,20 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
                       " file=" + found->second.string() + "\n");
         ++mapping_trace_count_;
       }
-    } else if (mapping_trace_count_ < 64U) {
-      output_.write("[mmap] pid=" + std::to_string(process_.pid) + " address=" +
-                    std::to_string(address) + " size=" + std::to_string(size) +
-                    " offset=" + std::to_string(offset) +
-                    " prot=" + std::to_string(protection) +
-                    " flags=" + std::to_string(flags) + " anonymous\n");
-      ++mapping_trace_count_;
+    } else {
+      if (!memory_.map(address, mapped_size, permissions)) {
+        bsd_error(cpu, darwin::error::no_memory);
+        return;
+      }
+      if (mapping_trace_count_ < 64U) {
+        output_.write("[mmap] pid=" + std::to_string(process_.pid) +
+                      " address=" + std::to_string(address) +
+                      " size=" + std::to_string(size) +
+                      " offset=" + std::to_string(offset) +
+                      " prot=" + std::to_string(protection) +
+                      " flags=" + std::to_string(flags) + " anonymous\n");
+        ++mapping_trace_count_;
+      }
     }
     bsd_success(cpu, address);
     return;

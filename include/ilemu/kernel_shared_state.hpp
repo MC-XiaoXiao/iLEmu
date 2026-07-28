@@ -854,6 +854,12 @@ struct KernelSharedState {
   std::set<std::string> unix_socket_nodes;
   std::uint32_t next_shared_memory_object{1};
   std::map<std::string, std::filesystem::path> shared_memory_objects;
+  // File-backed MAP_SHARED mappings use one physical page cache across tasks.
+  // The host file is only the initial pager source; guest stores remain in the
+  // simulator's shared memory object and become immediately visible through
+  // every mapping of the same file identity.
+  std::shared_ptr<FilePageCache> shared_mapping_page_cache{
+      std::make_shared<FilePageCache>()};
   // Hard links have distinct catalog IDs but share one HFS file record.
   // Metadata mutations therefore follow the permanent inode identity.
   std::map<std::uint32_t, hfs::MetadataOverride> hfs_metadata_overrides;

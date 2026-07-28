@@ -328,6 +328,8 @@ inline constexpr std::size_t diagnostic_payload_bytes = 48;
 } // namespace io
 
 namespace map_flag {
+inline constexpr std::uint32_t shared = 0x0001;
+inline constexpr std::uint32_t private_copy = 0x0002;
 inline constexpr std::uint32_t fixed = 0x0010;
 inline constexpr std::uint32_t anonymous = 0x1000;
 } // namespace map_flag
