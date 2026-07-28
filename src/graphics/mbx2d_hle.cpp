@@ -452,14 +452,9 @@ bool Mbx2dHle::synchronize_host_source(
     UserlandHleCall &call, const ResolvedSurface &surface) const {
   if (!surface.host_surface || surface.core_surface_id == 0)
     return true;
-  if (surface.host_surface->gpu_generation() >
-      surface.host_surface->cpu_generation()) {
-    return true;
-  }
-  // Guest dirty ranges are page-granular, so importing them into a newer GPU
-  // surface can overwrite unrelated retained pixels. Direct mapped writes are
-  // safe to import while the CPU owns the latest complete contents; explicit
-  // CoreSurface lock/unlock transitions update that ownership separately.
+  // LayerKit can retain an MBX handle across multiple guest-side revisions
+  // without issuing another FlushSurfaces call. Publish exact guest changes
+  // when that handle is consumed, preserving unrelated GPU-owned pixels.
   return surface_store_->synchronize_from_guest(
       call.memory(), surface.core_surface_id);
 }
@@ -1253,7 +1248,18 @@ void Mbx2dHle::flush_surfaces(UserlandHleCall &call) {
     }
     const auto surface =
         call.memory().read32(static_cast<std::uint32_t>(address));
-    if (!surface || !surfaces_.contains(*surface)) {
+    const auto found = surface ? surfaces_.find(*surface) : surfaces_.end();
+    if (found == surfaces_.end()) {
+      call.set_return(mbx_failure);
+      return;
+    }
+    const auto core_surface_id = found->second.core_surface_id;
+    // Both lists are unified-memory visibility barriers. Source publication
+    // makes CPU-rendered pixels available to a retained handle; destination
+    // invalidation does the same before GPU commands consume prior contents.
+    // Exact merging preserves unrelated native pixels in either direction.
+    if (core_surface_id != 0 && !surface_store_->synchronize_from_guest(
+                                    call.memory(), core_surface_id)) {
       call.set_return(mbx_failure);
       return;
     }
