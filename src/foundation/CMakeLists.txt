@@ -7,6 +7,7 @@ add_library(ilemu_foundation STATIC
     darwin_notify_state_hle.cpp
     device_profile.cpp
     display.cpp
+    jit_translation_profile.cpp
     macho.cpp
     output.cpp
     performance.cpp

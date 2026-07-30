@@ -2,11 +2,13 @@
 
 #include <array>
 #include <chrono>
+#include <deque>
 #include <mutex>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 
 #if defined(__GNUC__) || defined(__clang__)
@@ -19,6 +21,7 @@
 #pragma GCC diagnostic pop
 #endif
 
+#include "ilemu/jit_translation_profile.hpp"
 #include "ilemu/performance.hpp"
 
 namespace ilemu {
@@ -59,12 +62,20 @@ public:
 
     bool PreCodeReadHook(
         bool, Dynarmic::A32::VAddr, Dynarmic::A32::IREmitter& ir) override {
-        if (ir.block.CycleCount() == 0)
+        if (ir.block.CycleCount() == 0) {
             performance_counters().record_translation_block();
+        }
         // This fork's translator continues normal decoding when the hook returns
         // true. Returning false is reserved for a hook that already emitted an IR
         // terminal. (The comment in UserCallbacks currently says the opposite.)
         return true;
+    }
+
+    void CodeTranslationCompleted(
+        std::uint64_t location_descriptor) noexcept override {
+        if (translation_profile_) {
+            translation_profile_->record(location_descriptor);
+        }
     }
 
     std::optional<std::uint32_t> MemoryReadCode(std::uint32_t address) override {
@@ -147,6 +158,7 @@ public:
 
     void CallSVC(std::uint32_t immediate) override {
         performance_counters().record_svc();
+        ++svc_calls_;
         svc_ = immediate;
         if (owner_->svc_dispatch_mode_ == SvcDispatchMode::Deferred) {
             jit_->HaltExecution(Dynarmic::HaltReason::UserDefined2);
@@ -190,6 +202,7 @@ public:
         ticks_remaining_ = ticks;
         consumed_ = 0;
         svc_.reset();
+        svc_calls_ = 0;
         fault_.reset();
         breakpoint_.reset();
         exception_.clear();
@@ -197,7 +210,8 @@ public:
 
     CpuRunResult result(Dynarmic::HaltReason reason) const {
         return CpuRunResult{
-            reason, consumed_, svc_, fault_, breakpoint_, exception_};
+            reason, consumed_, svc_, svc_calls_, fault_, breakpoint_,
+            exception_};
     }
 
     [[nodiscard]] const ArmCpuModel& cpu_model() const {
@@ -208,6 +222,10 @@ public:
     }
     [[nodiscard]] std::uint8_t** jit_write_page_table() {
         return memory_.jit_write_page_table();
+    }
+    void set_translation_profile(
+        std::shared_ptr<JitTranslationProfile> profile) {
+        translation_profile_ = std::move(profile);
     }
 private:
     template<typename T, typename Member>
@@ -271,9 +289,11 @@ private:
     std::uint64_t ticks_remaining_{};
     std::uint64_t consumed_{};
     std::optional<std::uint32_t> svc_;
+    std::uint64_t svc_calls_{};
     std::optional<MemoryFault> fault_;
     std::optional<std::uint32_t> breakpoint_;
     std::string exception_;
+    std::shared_ptr<JitTranslationProfile> translation_profile_;
 };
 
 class JitExecutor {
@@ -348,6 +368,74 @@ public:
     void clear_exclusive_state() {
         ensure_jit();
         jit_->ClearExclusiveState();
+    }
+
+    void set_translation_profile(
+        std::shared_ptr<JitTranslationProfile> profile) {
+        const auto locations =
+            profile ? profile->snapshot() : std::vector<std::uint64_t>{};
+        {
+            const std::lock_guard execution_lock{execution_mutex_};
+            callbacks_->set_translation_profile(profile);
+        }
+        const std::lock_guard queue_lock{precompile_queue_mutex_};
+        pending_precompile_entries_.clear();
+        seen_precompile_entries_.clear();
+        for (auto location = locations.rbegin();
+             location != locations.rend() &&
+             pending_precompile_entries_.size() <
+                 jit_translation_profile_maximum_locations;
+             ++location) {
+            if (*location != 0 &&
+                seen_precompile_entries_.insert(*location).second) {
+                pending_precompile_entries_.push_back(*location);
+            }
+        }
+    }
+
+    std::size_t precompile_pending(
+        std::size_t maximum_blocks, std::uint64_t budget_nanoseconds) {
+        if (maximum_blocks == 0 || budget_nanoseconds == 0) {
+            return 0;
+        }
+        {
+            const std::lock_guard queue_lock{precompile_queue_mutex_};
+            if (pending_precompile_entries_.empty()) {
+                return 0;
+            }
+        }
+        const std::lock_guard execution_lock{execution_mutex_};
+        memory_.synchronize_shared_write_tracking();
+        ensure_jit();
+        constexpr std::size_t cache_reserve = 8U * 1024U * 1024U;
+        const auto started = std::chrono::steady_clock::now();
+        std::size_t compiled = 0;
+        while (compiled < maximum_blocks) {
+            if (jit_code_cache_used(*jit_) + cache_reserve >= code_cache_size_) {
+                break;
+            }
+            std::optional<std::uint64_t> entry;
+            {
+                const std::lock_guard queue_lock{precompile_queue_mutex_};
+                if (pending_precompile_entries_.empty()) {
+                    break;
+                }
+                entry = pending_precompile_entries_.front();
+                pending_precompile_entries_.pop_front();
+            }
+            callbacks_->begin(0);
+            jit_->Precompile(*entry);
+            ++compiled;
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - started);
+            if (static_cast<std::uint64_t>(elapsed.count()) >=
+                budget_nanoseconds) {
+                break;
+            }
+        }
+        record_code_cache_usage();
+        return compiled;
     }
 
     void reset_live_state() {
@@ -506,6 +594,9 @@ private:
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
     std::size_t code_cache_size_{64U * 1024U * 1024U};
     std::uint64_t recorded_jit_code_cache_bytes_{};
+    std::deque<std::uint64_t> pending_precompile_entries_;
+    std::unordered_set<std::uint64_t> seen_precompile_entries_;
+    std::mutex precompile_queue_mutex_;
     std::mutex execution_mutex_;
 };
 
@@ -563,6 +654,30 @@ public:
         memory_.disable_jit_page_table();
     }
 
+    void set_translation_profile(
+        std::shared_ptr<JitTranslationProfile> profile) {
+        for (auto& executor : executors_) {
+            executor->set_translation_profile(profile);
+        }
+    }
+
+    std::size_t precompile_pending(
+        std::size_t maximum_blocks, std::uint64_t budget_nanoseconds) {
+        if (executors_.empty()) {
+            return 0;
+        }
+        const auto blocks_per_executor =
+            std::max<std::size_t>(1, maximum_blocks / executors_.size());
+        const auto budget_per_executor =
+            std::max<std::uint64_t>(1, budget_nanoseconds / executors_.size());
+        std::size_t compiled = 0;
+        for (auto& executor : executors_) {
+            compiled += executor->precompile_pending(
+                blocks_per_executor, budget_per_executor);
+        }
+        return compiled;
+    }
+
 private:
     AddressSpace& memory_;
     std::vector<std::unique_ptr<JitExecutor>> executors_;
@@ -583,10 +698,16 @@ Cpu::Cpu(
 Cpu::~Cpu() = default;
 
 CpuRunResult Cpu::run(std::uint64_t ticks, std::size_t execution_slot) {
+    if (!execution_pool_) {
+        throw std::logic_error{"CPU execution resources have been released"};
+    }
     return execution_pool_->executor(execution_slot).run(*this, ticks, false);
 }
 
 CpuRunResult Cpu::step(std::size_t execution_slot) {
+    if (!execution_pool_) {
+        throw std::logic_error{"CPU execution resources have been released"};
+    }
     return execution_pool_->executor(execution_slot).run(*this, 1, true);
 }
 
@@ -597,10 +718,14 @@ void Cpu::reset() {
     }
 }
 void Cpu::clear_cache() {
-    execution_pool_->clear_cache();
+    if (execution_pool_) {
+        execution_pool_->clear_cache();
+    }
 }
 void Cpu::invalidate_cache_range(std::uint32_t address, std::size_t length) {
-    execution_pool_->invalidate_cache_range(address, length);
+    if (execution_pool_) {
+        execution_pool_->invalidate_cache_range(address, length);
+    }
 }
 void Cpu::clear_halt() {
     requested_halt_reason_ = {};
@@ -671,7 +796,7 @@ void Cpu::set_svc_dispatch_mode(SvcDispatchMode mode) {
 }
 void Cpu::set_memory_write_watchpoint(
     std::uint32_t address, MemoryWriteHandler handler) {
-    if (handler) {
+    if (handler && execution_pool_) {
         execution_pool_->disable_jit_page_table();
     }
     memory_write_watch_address_ = address;
@@ -680,7 +805,16 @@ void Cpu::set_memory_write_watchpoint(
 void Cpu::set_debug_breakpoints_enabled(bool enabled) {
     debug_breakpoints_enabled_ = enabled;
 }
+void Cpu::set_translation_profile(
+    std::shared_ptr<JitTranslationProfile> profile) {
+    if (execution_pool_) {
+        execution_pool_->set_translation_profile(std::move(profile));
+    }
+}
 void Cpu::clear_exclusive_state(std::size_t execution_slot) {
+    if (!execution_pool_) {
+        return;
+    }
     // The local state gates STREX. The next LDREX overwrites this serialized
     // processor's single global slot, so clearing the local state is enough
     // and avoids taking the global monitor lock on every context switch.
@@ -770,7 +904,43 @@ void CpuCluster::invalidate_cache_range(
     execution_pool_->invalidate_cache_range(address, length);
 }
 
+void CpuCluster::set_translation_profile(
+    std::shared_ptr<JitTranslationProfile> profile) {
+    execution_pool_->set_translation_profile(std::move(profile));
+}
+
+std::size_t CpuCluster::precompile_pending(
+    std::size_t maximum_blocks, std::uint64_t budget_nanoseconds) {
+    if (!execution_pool_) {
+        return 0;
+    }
+    return execution_pool_->precompile_pending(
+        maximum_blocks, budget_nanoseconds);
+}
+
+std::shared_ptr<CpuExecutionPool>
+CpuCluster::release_execution_resources() {
+    if (!execution_pool_) {
+        return {};
+    }
+    for (const auto& cpu : cpus_) {
+        if (cpu->active_executor_ != nullptr) {
+            throw std::logic_error{
+                "cannot release CPU execution resources while executing"};
+        }
+    }
+    auto retired = std::move(execution_pool_);
+    for (auto& cpu : cpus_) {
+        cpu->execution_pool_.reset();
+    }
+    return retired;
+}
+
 std::vector<CpuRunResult> CpuCluster::run_parallel(std::uint64_t ticks_per_cpu) {
+    if (!execution_pool_) {
+        throw std::logic_error{
+            "CPU execution resources have been released"};
+    }
     if (serialized_execution_ && cpus_.size() > 1) {
         throw std::logic_error{
             "serialized CPU contexts cannot execute in parallel"};

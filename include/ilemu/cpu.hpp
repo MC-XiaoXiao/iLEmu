@@ -17,10 +17,13 @@
 
 namespace ilemu {
 
+class JitTranslationProfile;
+
 struct CpuRunResult {
     Dynarmic::HaltReason reason{};
     std::uint64_t ticks_consumed{};
     std::optional<std::uint32_t> svc;
+    std::uint64_t svc_calls{};
     std::optional<MemoryFault> fault;
     std::optional<std::uint32_t> debug_breakpoint;
     std::string exception;
@@ -80,6 +83,8 @@ public:
     void set_memory_write_watchpoint(
         std::uint32_t address, MemoryWriteHandler handler);
     void set_debug_breakpoints_enabled(bool enabled);
+    void set_translation_profile(
+        std::shared_ptr<JitTranslationProfile> profile);
     // The scheduler calls this when a different guest thread is dispatched on
     // the same serialized virtual processor.
     void clear_exclusive_state(std::size_t execution_slot = 0);
@@ -143,6 +148,20 @@ public:
     void set_jit_code_cache_size(std::size_t bytes);
     void clear_cache();
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
+    void set_translation_profile(
+        std::shared_ptr<JitTranslationProfile> profile);
+    std::size_t precompile_pending(
+        std::size_t maximum_blocks, std::uint64_t budget_nanoseconds);
+    // A dead guest task keeps its small register context until the parent
+    // reaps the process, but no longer needs executable host code. Detach the
+    // shared execution pool so its JIT caches can be destroyed off the
+    // scheduler thread while the Cpu objects remain available as a zombie
+    // task record.
+    [[nodiscard]] std::shared_ptr<CpuExecutionPool>
+    release_execution_resources();
+    [[nodiscard]] bool has_execution_resources() const {
+        return execution_pool_ != nullptr;
+    }
 
     std::vector<CpuRunResult> run_parallel(std::uint64_t ticks_per_cpu);
 
