@@ -35,6 +35,7 @@
 #include "ilemu/gdb_rsp.hpp"
 #include "ilemu/gles_renderer.hpp"
 #include "ilemu/guest_parallelism_policy.hpp"
+#include "ilemu/iokit_abi.hpp"
 #include "ilemu/jit_translation_profile.hpp"
 #include "ilemu/kernel.hpp"
 #include "ilemu/live_control.hpp"
@@ -1722,6 +1723,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
   };
   std::optional<std::string> display_performance_window;
   Runtime *display_scanout_owner = nullptr;
+  auto observed_display_submissions =
+      initial_runtime->kernel->display_submitted_frames();
+  auto last_display_submission = std::chrono::steady_clock::now();
+  std::optional<std::chrono::steady_clock::time_point> guest_idle_since;
   if (!bounded_execution) {
     realtime_pacer.emplace(initial_runtime->kernel->current_absolute_time());
     const auto host_wall_time =
@@ -1957,10 +1962,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
             }
           }
         } else {
-          // The host is currently slower than the calibrated guest clock.
-          // Rebase pacing at the achieved virtual time so this deficit is not
-          // injected later as one large timer jump when the guest next idles.
-          realtime_pacer.emplace(current_time);
+          // Short host-side execution and HLE work belongs inside the current
+          // display period. Preserve that phase so the following sleep is
+          // shortened instead of making every frame take work + one period.
+          // Rebase only sustained overload; this still bounds the timer jump
+          // when a CPU-bound guest eventually becomes idle.
+          const auto deficit = host_time - current_time;
+          if (deficit >
+              iokit_abi::display_vsync::period_absolute_time) {
+            realtime_pacer.emplace(current_time);
+          }
         }
       }
       const auto guest_ahead_delay = realtime_pacer->delay_until(
@@ -2408,6 +2419,17 @@ void boot(const std::vector<std::string> &args, Output &output) {
         static_cast<void>(
             display_scanout_owner->kernel->refresh_display_scanout());
     }
+    const auto display_submissions =
+        initial_runtime->kernel->display_submitted_frames();
+    if (display_submissions != observed_display_submissions) {
+      observed_display_submissions = display_submissions;
+      last_display_submission = std::chrono::steady_clock::now();
+    }
+    if (ran_thread) {
+      guest_idle_since.reset();
+    } else if (!guest_idle_since) {
+      guest_idle_since = std::chrono::steady_clock::now();
+    }
     if (!ran_thread) {
       if (gdb_server && gdb_server->poll_interrupt()) {
         const auto stopped_thread =
@@ -2433,6 +2455,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
         continue;
       }
+      std::optional<std::uint64_t> next_deadline;
+      for (const auto &runtime : runtimes) {
+        const auto deadline = runtime->kernel->next_timer_deadline();
+        if (deadline && (!next_deadline || *deadline < *next_deadline)) {
+          next_deadline = deadline;
+        }
+      }
       Runtime *active_runtime = nullptr;
       if (const auto active_process =
               initial_runtime->kernel->active_client_process_id()) {
@@ -2446,12 +2475,49 @@ void boot(const std::vector<std::string> &args, Output &output) {
       }
       constexpr std::size_t idle_precompile_block_budget = 32;
       constexpr std::uint64_t idle_precompile_time_budget_ns = 500000;
-      const auto precompile_idle_runtime = [](Runtime *runtime) {
+      // A Dynarmic block compile is not preemptible. Keep a conservative
+      // reserve beyond the nominal batch budget so profile warming cannot
+      // consume the next guest timer or host-input deadline.
+      constexpr auto idle_precompile_deadline_reserve =
+          std::chrono::milliseconds{20};
+      constexpr auto idle_precompile_display_quiet_period =
+          std::chrono::milliseconds{100};
+      constexpr auto idle_precompile_no_deadline_quiet_period =
+          std::chrono::milliseconds{20};
+      const auto available_precompile_budget = [&]() {
+        if (!realtime_pacer)
+          return idle_precompile_time_budget_ns;
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_display_submission <
+            idle_precompile_display_quiet_period) {
+          return std::uint64_t{0};
+        }
+        auto available = std::chrono::nanoseconds::max();
+        if (next_deadline) {
+          available = realtime_pacer->delay_until(*next_deadline);
+        } else if (!guest_idle_since ||
+                   now - *guest_idle_since <
+                       idle_precompile_no_deadline_quiet_period) {
+          return std::uint64_t{0};
+        }
+        available = realtime_pacer->limit_delay(
+            available, next_host_control_deadline());
+        if (available <= idle_precompile_deadline_reserve)
+          return std::uint64_t{0};
+        const auto budget = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            available - idle_precompile_deadline_reserve);
+        return std::min(
+            idle_precompile_time_budget_ns,
+            static_cast<std::uint64_t>(budget.count()));
+      };
+      const auto precompile_idle_runtime = [&](Runtime *runtime) {
         if (runtime == nullptr || runtime->kernel->process().exited)
           return;
+        const auto budget = available_precompile_budget();
+        if (budget == 0)
+          return;
         static_cast<void>(runtime->cpus->precompile_pending(
-            idle_precompile_block_budget,
-            idle_precompile_time_budget_ns));
+            idle_precompile_block_budget, budget));
       };
       precompile_idle_runtime(active_runtime);
       // The scanout publisher may be a background compositor while an App is
@@ -2460,13 +2526,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // every guest thread is idle.
       if (display_scanout_owner != active_runtime)
         precompile_idle_runtime(display_scanout_owner);
-      std::optional<std::uint64_t> next_deadline;
-      for (const auto &runtime : runtimes) {
-        const auto deadline = runtime->kernel->next_timer_deadline();
-        if (deadline && (!next_deadline || *deadline < *next_deadline)) {
-          next_deadline = deadline;
-        }
-      }
       if (next_deadline) {
         if (realtime_pacer) {
           const auto guest_ahead_delay =

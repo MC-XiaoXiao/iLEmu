@@ -72,7 +72,8 @@ public:
     }
 
     void CodeTranslationCompleted(
-        std::uint64_t location_descriptor) noexcept override {
+        std::uint64_t location_descriptor,
+        std::uint64_t) noexcept override {
         if (translation_profile_) {
             translation_profile_->record(location_descriptor);
         }
