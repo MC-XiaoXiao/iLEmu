@@ -47,6 +47,19 @@ std::string_view hle_subsystem(std::string_view image_suffix) {
   return name.empty() ? std::string_view{"unknown"} : name;
 }
 
+// Temporary frame-hitch diagnostic. Split MBX calls by their firmware symbol
+// while preserving the normal subsystem aggregation for every other HLE.
+std::string_view hle_performance_bucket(std::string_view image_suffix,
+                                        std::string_view symbol) {
+  if (symbol.starts_with("_mbx") ||
+      symbol.starts_with("_CoreSurface") ||
+      symbol.starts_with("__coreSurface") ||
+      symbol.starts_with("_IOMobileFramebuffer")) {
+    return symbol;
+  }
+  return hle_subsystem(image_suffix);
+}
+
 std::array<std::byte, 4> little_endian_word(std::uint32_t value) {
   return {
       static_cast<std::byte>(value & 0xffU),
@@ -785,7 +798,7 @@ bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
   if (measure_hle) {
     const auto elapsed = std::chrono::steady_clock::now() - hle_start;
     performance_counters().record_hle(
-        hle_subsystem(registration->image_suffix),
+        hle_performance_bucket(registration->image_suffix, symbol),
         static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed)
                 .count()));

@@ -56,6 +56,42 @@ enum class PerfSurfaceKind : std::uint8_t {
 inline constexpr auto perf_surface_kind_count =
     static_cast<std::size_t>(PerfSurfaceKind::Count);
 
+// Temporary frame-hitch probe. Remove after the Vulkan submission stalls are
+// localized.
+enum class PerfSubmitReason : std::uint8_t {
+    Other,
+    MbxFlush,
+    MbxFinish,
+    MbxSurfaceFlush,
+    Compositor,
+    GlesSync,
+    Presentation,
+    StagingCapacity,
+    CpuReadback,
+    ResourceLifetime,
+    BatchCapacity,
+    TextureHazard,
+    Count,
+};
+
+inline constexpr auto perf_submit_reason_count =
+    static_cast<std::size_t>(PerfSubmitReason::Count);
+
+// Temporary per-frame HLE work probe. Remove after the cold unlock stall is
+// localized.
+enum class PerfDiagnosticGraphicsHleKind : std::uint8_t {
+    BlitCopy,
+    BlitColor,
+    QuadCopy,
+    SynchronizeHostSource,
+    HostCopyEncode,
+    HostQuadEncode,
+    Count,
+};
+
+inline constexpr auto perf_diagnostic_graphics_hle_count =
+    static_cast<std::size_t>(PerfDiagnosticGraphicsHleKind::Count);
+
 enum class PerfLatencyKind : std::uint8_t {
     InputEnqueue,
     DisplayPresent,
@@ -132,6 +168,7 @@ struct PerformanceSnapshot {
     std::uint64_t page_faults{};
     std::uint64_t draws{};
     std::uint64_t submits{};
+    std::array<std::uint64_t, perf_submit_reason_count> submit_reasons{};
     std::uint64_t fence_waits{};
     std::uint64_t fence_wait_nanoseconds{};
     std::uint64_t upload_bytes{};
@@ -192,7 +229,7 @@ class PerformanceCounters {
     void record_page_miss();
     void record_page_fault();
     void record_draw();
-    void record_submit();
+    void record_submit(PerfSubmitReason reason = PerfSubmitReason::Other);
     void record_fence_wait(std::uint64_t nanoseconds);
     void record_upload(std::uint64_t bytes,
                        PerfSurfaceKind surface = PerfSurfaceKind::Unknown);
@@ -201,7 +238,19 @@ class PerformanceCounters {
     void record_host_fill();
     void record_host_copy();
     void record_display_submission(
+        std::uint64_t frame_sequence, std::uint32_t owner_process_id,
         std::chrono::steady_clock::time_point submitted_at);
+    // Temporary frame-hitch timeline probes. Remove these together with the
+    // ordered display diagnostics once the exit/unlock stall is localized.
+    void record_diagnostic_display_dequeue(
+        std::uint64_t frame_sequence,
+        std::chrono::steady_clock::time_point dequeued_at);
+    void record_diagnostic_native_queue(
+        std::uint64_t frame_sequence,
+        std::chrono::steady_clock::time_point queued_at);
+    void record_diagnostic_native_dequeue(
+        std::uint64_t frame_sequence,
+        std::chrono::steady_clock::time_point dequeued_at);
     void record_display_mailbox_coalesced();
     void record_display_vsync_budget(std::uint64_t original_ticks,
                                      std::uint64_t limited_ticks);
@@ -210,8 +259,10 @@ class PerformanceCounters {
     void record_native_present_skipped();
     void record_native_present_failure();
     void record_native_present(
+        std::uint64_t frame_sequence,
         std::chrono::steady_clock::time_point submitted_at);
     void record_cpu_present_fallback(
+        std::uint64_t frame_sequence,
         std::chrono::steady_clock::time_point submitted_at = {});
     void record_cpu_map(bool write, PerfCpuMapReason reason);
     void record_vsync_due(std::uint32_t process_id,
@@ -226,6 +277,8 @@ class PerformanceCounters {
                                    std::uint32_t framebuffer);
     void discard_pending_vsync_callbacks();
     void record_hle(std::string_view subsystem, std::uint64_t nanoseconds);
+    void record_diagnostic_graphics_hle(
+        PerfDiagnosticGraphicsHleKind kind, std::uint64_t nanoseconds);
     void record_fork();
     void record_exec();
     void record_abnormal_exit();
@@ -270,7 +323,7 @@ class PerformanceCounters {
     void record_display_window_latency_locked(PerfLatencyKind kind,
                                               std::uint64_t nanoseconds);
     void record_present_completion(
-        bool native,
+        bool native, std::uint64_t frame_sequence,
         std::chrono::steady_clock::time_point submitted_at);
 
     std::atomic<bool> enabled_{false};
@@ -288,6 +341,8 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> page_faults_{};
     std::atomic<std::uint64_t> draws_{};
     std::atomic<std::uint64_t> submits_{};
+    std::array<std::atomic<std::uint64_t>, perf_submit_reason_count>
+        submit_reasons_{};
     std::atomic<std::uint64_t> fence_waits_{};
     std::atomic<std::uint64_t> fence_wait_nanoseconds_{};
     std::atomic<std::uint64_t> upload_bytes_{};
@@ -346,6 +401,14 @@ class PerformanceCounters {
     mutable std::mutex hle_mutex_;
     std::map<std::string, HlePerformanceSnapshot, std::less<>>
         hle_subsystems_;
+    std::atomic<std::uint64_t> diagnostic_hle_calls_{};
+    std::atomic<std::uint64_t> diagnostic_hle_nanoseconds_{};
+    std::array<std::atomic<std::uint64_t>,
+               perf_diagnostic_graphics_hle_count>
+        diagnostic_graphics_hle_calls_{};
+    std::array<std::atomic<std::uint64_t>,
+               perf_diagnostic_graphics_hle_count>
+        diagnostic_graphics_hle_nanoseconds_{};
 };
 
 [[nodiscard]] PerformanceCounters& performance_counters();

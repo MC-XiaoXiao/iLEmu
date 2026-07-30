@@ -98,6 +98,7 @@ struct SdlDisplay::Impl {
   std::shared_ptr<HostGraphicsDevice> host_graphics;
   std::shared_ptr<HostSurface> cpu_present_surface;
   std::thread presentation_thread;
+  std::atomic<std::uint64_t> presented_frames{};
   bool presentation_stopping{};
   bool presentation_active{};
   SdlInput input;
@@ -161,10 +162,17 @@ struct SdlDisplay::Impl {
         lock.unlock();
         auto &performance = performance_counters();
         const auto telemetry_enabled = performance.enabled();
+        const auto native_dequeued_at =
+            telemetry_enabled ? std::chrono::steady_clock::now()
+                              : std::chrono::steady_clock::time_point{};
+        if (telemetry_enabled) {
+          performance.record_diagnostic_native_dequeue(
+              frame.sequence, native_dequeued_at);
+        }
         if (telemetry_enabled && frame.native_queued_at !=
             std::chrono::steady_clock::time_point{}) {
-          const auto residence = std::chrono::steady_clock::now() -
-                                 frame.native_queued_at;
+          const auto residence =
+              native_dequeued_at - frame.native_queued_at;
           performance.record_latency(
               PerfLatencyKind::NativeMailbox,
               static_cast<std::uint64_t>(
@@ -178,7 +186,9 @@ struct SdlDisplay::Impl {
                                 ? graphics->present(frame.host_surface)
                                 : HostGraphicsDevice::PresentResult::Failed;
         if (result == HostGraphicsDevice::PresentResult::Queued) {
-          performance.record_native_present(frame.submitted_at);
+          presented_frames.fetch_add(1, std::memory_order_release);
+          performance.record_native_present(
+              frame.sequence, frame.submitted_at);
         } else if (result == HostGraphicsDevice::PresentResult::Skipped) {
           performance.record_native_present_skipped();
         } else {
@@ -385,6 +395,10 @@ void SdlDisplay::flush_presentation() {
 #endif
 }
 
+std::uint64_t SdlDisplay::presented_frames() const {
+  return impl_->presented_frames.load(std::memory_order_acquire);
+}
+
 bool SdlDisplay::poll_events() {
 #if defined(ILEMU_HAS_SDL2)
   // SDL events are latency-sensitive and must be drained before any CPU
@@ -410,10 +424,17 @@ bool SdlDisplay::poll_events() {
   if (frame) {
     auto &performance = performance_counters();
     const auto telemetry_enabled = performance.enabled();
+    const auto display_dequeued_at =
+        telemetry_enabled ? std::chrono::steady_clock::now()
+                          : std::chrono::steady_clock::time_point{};
+    if (telemetry_enabled) {
+      performance.record_diagnostic_display_dequeue(
+          frame->sequence, display_dequeued_at);
+    }
     if (telemetry_enabled && frame->submitted_at !=
         std::chrono::steady_clock::time_point{}) {
-      const auto residence = std::chrono::steady_clock::now() -
-                             frame->submitted_at;
+      const auto residence =
+          display_dequeued_at - frame->submitted_at;
       performance.record_latency(
           PerfLatencyKind::DisplayMailbox,
           static_cast<std::uint64_t>(
@@ -424,6 +445,8 @@ bool SdlDisplay::poll_events() {
       static_cast<void>(impl_->stage_cpu_frame_for_native_present(*frame));
     if (!native_failed && frame->host_surface && impl_->host_graphics &&
         impl_->host_graphics->native_presentation_available()) {
+      const auto native_sequence = frame->sequence;
+      std::chrono::steady_clock::time_point native_queued_at;
       {
         std::lock_guard lock{impl_->frame_mutex};
         if (impl_->pending_native_frame) {
@@ -432,7 +455,12 @@ bool SdlDisplay::poll_events() {
         }
         if (telemetry_enabled)
           frame->native_queued_at = std::chrono::steady_clock::now();
+        native_queued_at = frame->native_queued_at;
         impl_->pending_native_frame = std::move(*frame);
+      }
+      if (telemetry_enabled) {
+        performance.record_diagnostic_native_queue(
+            native_sequence, native_queued_at);
       }
       impl_->presentation_available.notify_one();
       frame.reset();
@@ -477,8 +505,9 @@ bool SdlDisplay::poll_events() {
       SDL_RenderCopy(
           impl_->renderer, impl_->texture, nullptr, &destination);
       SDL_RenderPresent(impl_->renderer);
+      impl_->presented_frames.fetch_add(1, std::memory_order_release);
       performance_counters().record_cpu_present_fallback(
-          frame->submitted_at);
+          frame->sequence, frame->submitted_at);
     }
   }
 #endif

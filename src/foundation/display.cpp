@@ -87,7 +87,8 @@ void DisplayState::set_powered_on(bool powered_on) {
   auto &performance = performance_counters();
   if (performance.enabled()) {
     frame.submitted_at = std::chrono::steady_clock::now();
-    performance.record_display_submission(frame.submitted_at);
+    performance.record_display_submission(
+        frame.sequence, frame.owner_process_id, frame.submitted_at);
   }
   presenter(frame);
 }
@@ -117,7 +118,8 @@ void DisplayState::present(std::uint32_t owner_process_id) {
   auto &performance = performance_counters();
   if (performance.enabled()) {
     frame.submitted_at = std::chrono::steady_clock::now();
-    performance.record_display_submission(frame.submitted_at);
+    performance.record_display_submission(
+        frame.sequence, frame.owner_process_id, frame.submitted_at);
   }
   presenter(frame);
 }
@@ -146,7 +148,8 @@ bool DisplayState::clear_if_owner(std::uint32_t owner_process_id) {
   auto &performance = performance_counters();
   if (performance.enabled()) {
     frame.submitted_at = std::chrono::steady_clock::now();
-    performance.record_display_submission(frame.submitted_at);
+    performance.record_display_submission(
+        frame.sequence, frame.owner_process_id, frame.submitted_at);
   }
   presenter(frame);
   return true;

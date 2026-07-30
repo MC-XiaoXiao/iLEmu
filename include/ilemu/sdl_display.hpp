@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -28,6 +29,9 @@ public:
   void set_host_graphics(std::shared_ptr<HostGraphicsDevice> graphics);
   void present(const DisplayFrame &frame);
   void flush_presentation();
+  // Counts frames accepted by the native swapchain, or completed by the SDL
+  // software presenter. Frames coalesced in either mailbox are not counted.
+  [[nodiscard]] std::uint64_t presented_frames() const;
   // Returns false after the user closes the window.
   [[nodiscard]] bool poll_events();
   [[nodiscard]] std::vector<TouchInput> take_touch_events();
