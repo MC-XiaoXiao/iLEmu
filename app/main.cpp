@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <variant>
 #include <vector>
 
 #include <dynarmic/interface/A32/disassembler.h>
@@ -33,6 +34,8 @@
 #include "ilemu/frame_file_presenter.hpp"
 #include "ilemu/gdb_rsp.hpp"
 #include "ilemu/gles_renderer.hpp"
+#include "ilemu/guest_parallelism_policy.hpp"
+#include "ilemu/jit_translation_profile.hpp"
 #include "ilemu/kernel.hpp"
 #include "ilemu/live_control.hpp"
 #include "ilemu/live_touch_scheduler.hpp"
@@ -137,6 +140,8 @@ struct Runtime {
   std::unique_ptr<CompatibilityKernel> kernel;
   std::vector<bool> allocated;
   std::optional<PendingExec> pending_exec;
+  std::optional<std::chrono::steady_clock::time_point>
+      execution_reclaim_after;
   bool fresh_spawn_address_space{};
 
   ~Runtime() {
@@ -158,15 +163,12 @@ public:
   ~RuntimeReaper() { finish(); }
 
   void retire(std::unique_ptr<Runtime> runtime) {
-    if (!runtime)
-      return;
-    {
-      std::lock_guard lock{mutex_};
-      if (stopping_)
-        throw std::logic_error{"cannot retire a Runtime after reaper stop"};
-      pending_.push_back(std::move(runtime));
-    }
-    work_available_.notify_one();
+    retire_resource(std::move(runtime));
+  }
+
+  void retire_execution_resources(
+      std::shared_ptr<CpuExecutionPool> resources) {
+    retire_resource(std::move(resources));
   }
 
   void finish() {
@@ -188,6 +190,23 @@ public:
   }
 
 private:
+  using RetiredResource =
+      std::variant<std::monostate, std::unique_ptr<Runtime>,
+                   std::shared_ptr<CpuExecutionPool>>;
+
+  template <typename Resource>
+  void retire_resource(Resource resource) {
+    if (!resource)
+      return;
+    {
+      std::lock_guard lock{mutex_};
+      if (stopping_)
+        throw std::logic_error{"cannot retire a Runtime after reaper stop"};
+      pending_.push_back(std::move(resource));
+    }
+    work_available_.notify_one();
+  }
+
   void worker_loop() {
     std::unique_lock lock{mutex_};
     for (;;) {
@@ -198,11 +217,11 @@ private:
           break;
         continue;
       }
-      auto runtime = std::move(pending_.front());
+      auto resource = std::move(pending_.front());
       pending_.pop_front();
       active_ = true;
       lock.unlock();
-      runtime.reset();
+      resource = std::monostate{};
       lock.lock();
       active_ = false;
       idle_.notify_all();
@@ -213,7 +232,7 @@ private:
   std::mutex mutex_;
   std::condition_variable work_available_;
   std::condition_variable idle_;
-  std::deque<std::unique_ptr<Runtime>> pending_;
+  std::deque<RetiredResource> pending_;
   bool active_{};
   bool stopping_{};
   bool joined_{};
@@ -227,6 +246,7 @@ struct PreparedGuestSlice {
   Cpu *cpu{};
   std::uint64_t tick_budget{};
   bool single_step{};
+  bool deferred_svc{};
   CpuRunResult result;
   std::exception_ptr error;
 };
@@ -518,6 +538,7 @@ std::string usage() {
          "[--watch-address ADDR] [--gdb PORT] "
          "[--display headless|sdl] [--network isolated|loopback|host] "
          "[--gles-backend auto|software|vulkan] [--gpu] "
+         "[--host-cache DIR] "
          "[--display-size WIDTHxHEIGHT] "
          "[--activation activated|unactivated|preserve] "
          "[--frame-output FILE] [--touch-replay FILE] [--control-stdin] "
@@ -549,6 +570,21 @@ std::optional<std::string> option(const std::vector<std::string> &args,
     }
   }
   return std::nullopt;
+}
+
+std::filesystem::path host_cache_directory(
+    const std::vector<std::string> &args,
+    const std::filesystem::path &rootfs) {
+  if (const auto configured = option(args, "--host-cache")) {
+    return std::filesystem::path{*configured};
+  }
+  const auto normalized = rootfs.lexically_normal();
+  auto rootfs_name = normalized.filename();
+  if (rootfs_name.empty() || rootfs_name == "." ||
+      rootfs_name == normalized.root_name()) {
+    rootfs_name = "rootfs";
+  }
+  return normalized.parent_path() / ".ilegacysim-cache" / rootfs_name;
 }
 
 bool flag(const std::vector<std::string> &args, std::string_view name) {
@@ -920,10 +956,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
   if (!rootfs) {
     throw std::runtime_error{"boot requires --rootfs"};
   }
+  const auto host_cache =
+      host_cache_directory(args, std::filesystem::path{*rootfs});
   const auto gles_backend = parse_gles_backend(args);
   configure_gles_pipeline_cache(
-      std::filesystem::path{*rootfs} / "var/db/ilegacysim" /
-      "vulkan-pipeline-cache.bin");
+      host_cache / "vulkan-pipeline-cache.bin");
   configure_gles_backend(gles_backend);
   const auto binary = option(args, "--binary").value_or("/sbin/launchd");
   auto device = DeviceProfile::default_profile();
@@ -1113,6 +1150,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
   auto process = loader.load(binary, {}, initial_environment);
   RuntimeReaper runtime_reaper;
   std::vector<std::unique_ptr<Runtime>> runtimes;
+  JitTranslationProfileStore translation_profiles{
+      host_cache /
+      "jit-translation-profiles"};
+  const auto translation_profile_for =
+      [&translation_profiles](std::string_view executable_path) {
+        return translation_profiles.profile_for(executable_path);
+      };
+  const auto assign_translation_profile =
+      [&translation_profile_for](
+          CpuCluster &cpus, std::string_view executable_path) {
+        cpus.set_translation_profile(
+            translation_profile_for(executable_path));
+      };
   auto initial = std::make_unique<Runtime>();
   initial->memory = std::move(initial_memory);
   initial->cpus = std::make_unique<CpuCluster>(
@@ -1120,6 +1170,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       guest_processor_count, *cpu_model);
   initial->cpus->set_jit_code_cache_size(
       configured_jit_code_cache_size);
+  assign_translation_profile(*initial->cpus, process.executable_path);
   initial->kernel =
       std::make_unique<CompatibilityKernel>(*initial->memory, output, *rootfs,
                                             device, activation_override,
@@ -1179,6 +1230,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       guest_ticks_per_second /
           xnu792::scheduler::scheduler_ticks_per_second,
       guest_processor_count};
+  GuestParallelismPolicy guest_parallelism_policy{guest_ticks_per_second};
   std::optional<XnuThreadId> last_serial_thread;
 
   std::uint32_t next_pid = 2;
@@ -1263,7 +1315,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
           return allocate_slot(*added);
         });
     runtime.kernel->set_thread_terminate_handler(
-        [runtime_ptr, &scheduler](std::uint32_t pid, std::size_t processor) {
+        [runtime_ptr, &scheduler,
+         &guest_parallelism_policy](std::uint32_t pid,
+                                    std::size_t processor) {
           if (pid != runtime_ptr->kernel->process().pid ||
               processor >= runtime_ptr->allocated.size() ||
               !runtime_ptr->allocated[processor] ||
@@ -1271,6 +1325,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   XnuThreadId{pid, static_cast<std::uint32_t>(processor)})) {
             return false;
           }
+          guest_parallelism_policy.forget(
+              XnuThreadId{pid, static_cast<std::uint32_t>(processor)});
           runtime_ptr->allocated[processor] = false;
           return true;
         });
@@ -1457,6 +1513,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
               child_runtime.kernel->set_process_arguments(loaded.arguments,
                                                           environment);
               child_runtime.kernel->set_process_image(path);
+              assign_translation_profile(
+                  *child_runtime.cpus, loaded.executable_path);
               child_runtime.kernel->prepare_exec(0);
               auto &child_cpu = child_runtime.cpus->cpu(0);
               child_cpu.reset();
@@ -1478,6 +1536,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                         " error=" + error.what());
             child_runtime.kernel->exit_process(127);
             scheduler.remove_process(child_pid);
+            guest_parallelism_policy.forget_process(child_pid);
             std::fill(child_runtime.allocated.begin(),
                       child_runtime.allocated.end(), false);
             return false;
@@ -1491,14 +1550,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
               static_cast<std::uint32_t>(thread_slot)});
         });
     runtime.kernel->set_signal_delivery_handler(
-        [&runtimes, &scheduler](std::uint32_t target_pid,
-                                std::uint32_t signal) {
+        [&runtimes, &scheduler,
+         &guest_parallelism_policy](std::uint32_t target_pid,
+                                    std::uint32_t signal) {
           for (auto &target : runtimes) {
             if (target->kernel->process().pid != target_pid)
               continue;
             const auto error = target->kernel->deliver_signal(signal);
             if (error == 0 && target->kernel->process().exited) {
               scheduler.remove_process(target_pid);
+              guest_parallelism_policy.forget_process(target_pid);
             }
             return error;
           }
@@ -1857,11 +1918,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
           }
           break;
         case LiveControlCommandKind::Status: {
-          const auto frame = initial_runtime->kernel->display_snapshot();
+          const auto submitted_frame =
+              initial_runtime->kernel->display_submitted_frames();
+          const auto frame = sdl_display ? sdl_display->presented_frames()
+                                         : submitted_frame;
           const auto active_process =
               initial_runtime->kernel->active_client_process_id();
           output.line(
-              "[control] status frame=" + std::to_string(frame.sequence) +
+              "[control] status frame=" + std::to_string(frame) +
+              " submitted-frame=" + std::to_string(submitted_frame) +
               " processes=" + std::to_string(runtimes.size()) +
               " threads=" + std::to_string(scheduler.thread_count()) +
               " runnable=" + std::to_string(scheduler.runnable_count()) +
@@ -1953,10 +2018,34 @@ void boot(const std::vector<std::string> &args, Output &output) {
           continue;
         }
         auto &waiting_cpu = runtime->cpus->cpu(processor);
-        if (runtime->kernel->deliver_pending_io(waiting_cpu) ||
-            runtime->kernel->deliver_pending_mach(waiting_cpu)) {
+        if (runtime->kernel->deliver_pending_event(waiting_cpu)) {
           static_cast<void>(scheduler.make_runnable(thread));
         }
+      }
+    }
+    // XNU keeps a compact zombie process record until its parent waits, but
+    // the dead task's translated host code has no guest-visible lifetime.
+    // Give the compositor a short, generic grace interval before background
+    // reclamation: destroying a large JIT immediately after Home otherwise
+    // competes with the exit animation for host CPU. The FIFO reaper destroys
+    // the pool before any later retirement of the owning Runtime, preserving
+    // the AddressSpace and exclusive-monitor lifetimes.
+    constexpr auto execution_reclaim_grace = std::chrono::milliseconds{1500};
+    const auto reclaim_now = std::chrono::steady_clock::now();
+    for (auto &runtime : runtimes) {
+      if (runtime->kernel->process().exited &&
+          runtime->cpus->has_execution_resources()) {
+        if (!runtime->execution_reclaim_after) {
+          runtime->execution_reclaim_after =
+              reclaim_now + execution_reclaim_grace;
+        }
+        if (reclaim_now < *runtime->execution_reclaim_after ||
+            scheduler.runnable_count() != 0) {
+          continue;
+        }
+        runtime_reaper.retire_execution_resources(
+            runtime->cpus->release_execution_resources());
+        runtime->execution_reclaim_after.reset();
       }
     }
     for (auto &parent : runtimes) {
@@ -2031,6 +2120,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
           reservable_ticks -=
               std::min(reservable_ticks, scheduled->tick_budget);
         }
+        if (scheduled_batch.size() == 1U &&
+            guest_processor_count > 1U &&
+            guest_parallelism_policy.should_serialize(
+                scheduled->thread)) {
+          break;
+        }
       }
       // A debugger-selected thread is the only thread allowed to make
       // progress for this resume request.
@@ -2070,6 +2165,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
       }
       if (selected_runtime->kernel->process().exited) {
         scheduler.remove_process(selected_runtime->kernel->process().pid);
+        guest_parallelism_policy.forget_process(
+            selected_runtime->kernel->process().pid);
         continue;
       }
       const auto index =
@@ -2094,7 +2191,23 @@ void boot(const std::vector<std::string> &args, Output &output) {
           &cpu,
           slice,
           debug_request && debug_request->kind == GdbResumeKind::Step,
+          false,
       });
+    }
+
+    const auto parallel_guest_batch =
+        prepared_slices.size() > 1U &&
+        std::none_of(
+            prepared_slices.begin(), prepared_slices.end(),
+            [&guest_parallelism_policy](const auto &prepared) {
+              return guest_parallelism_policy.should_serialize(
+                  prepared.scheduled.thread);
+            });
+    for (auto &prepared : prepared_slices) {
+      prepared.deferred_svc = parallel_guest_batch;
+      prepared.cpu->set_svc_dispatch_mode(
+          parallel_guest_batch ? SvcDispatchMode::Deferred
+                               : SvcDispatchMode::Immediate);
     }
 
     if (guest_processor_count == 1 && !prepared_slices.empty() &&
@@ -2109,10 +2222,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
           prepared_slices.front().scheduled.processor);
       last_serial_thread = prepared_slices.front().scheduled.thread;
     }
-    if (prepared_slices.size() == 1) {
-      GuestSliceWorkerPool::execute(prepared_slices.front());
-    } else if (!prepared_slices.empty()) {
+    if (parallel_guest_batch) {
       guest_slice_workers->run(prepared_slices);
+    } else {
+      for (auto &prepared : prepared_slices) {
+        if (scheduler.contains(prepared.scheduled.thread))
+          GuestSliceWorkerPool::execute(prepared);
+      }
     }
 
     const bool ran_thread = !prepared_slices.empty();
@@ -2128,7 +2244,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
       const auto index = prepared.thread_index;
       auto &cpu = *prepared.cpu;
       auto result = std::move(prepared.result);
-      if (guest_processor_count > 1 && result.svc) {
+      guest_parallelism_policy.observe(
+          scheduled->thread, result.ticks_consumed, result.svc_calls);
+      if (prepared.deferred_svc && result.svc) {
         runtime.kernel->dispatch(cpu, *result.svc);
         // UserDefined2 stopped the Dynarmic worker at the SVC. Only
         // the reason explicitly requested by the serial kernel
@@ -2183,6 +2301,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         runtime.kernel->set_process_arguments(loaded.arguments,
                                               pending.environment);
         runtime.kernel->set_process_image(pending.path);
+        assign_translation_profile(*runtime.cpus, loaded.executable_path);
         runtime.kernel->prepare_exec(pending.processor);
         auto &exec_cpu = runtime.cpus->cpu(pending.processor);
         exec_cpu.reset();
@@ -2197,6 +2316,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
             scheduled->thread, result.ticks_consumed,
             XnuSliceCompletion::Terminate, XnuTimeAccounting::Deferred));
         scheduler.remove_process(runtime.kernel->process().pid);
+        guest_parallelism_policy.forget_process(
+            runtime.kernel->process().pid);
         std::fill(runtime.allocated.begin(), runtime.allocated.end(), false);
         runtime.allocated[pending.processor] = true;
         static_cast<void>(scheduler.register_thread(
@@ -2260,6 +2381,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         if (completion == XnuSliceCompletion::Terminate &&
             runtime.kernel->process().exited) {
           scheduler.remove_process(runtime.kernel->process().pid);
+          guest_parallelism_policy.forget_process(
+              runtime.kernel->process().pid);
         }
       }
       if (gdb_server && gdb_server->poll_interrupt()) {
@@ -2354,6 +2477,33 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
         continue;
       }
+      Runtime *active_runtime = nullptr;
+      if (const auto active_process =
+              initial_runtime->kernel->active_client_process_id()) {
+        const auto active = std::find_if(
+            runtimes.begin(), runtimes.end(),
+            [active_process](const auto &candidate) {
+              return candidate->kernel->process().pid == *active_process;
+            });
+        if (active != runtimes.end())
+          active_runtime = active->get();
+      }
+      constexpr std::size_t idle_precompile_block_budget = 32;
+      constexpr std::uint64_t idle_precompile_time_budget_ns = 500000;
+      const auto precompile_idle_runtime = [](Runtime *runtime) {
+        if (runtime == nullptr || runtime->kernel->process().exited)
+          return;
+        static_cast<void>(runtime->cpus->precompile_pending(
+            idle_precompile_block_budget,
+            idle_precompile_time_budget_ns));
+      };
+      precompile_idle_runtime(active_runtime);
+      // The scanout publisher may be a background compositor while an App is
+      // active. Its cached exit/unlock paths are just as latency-sensitive as
+      // the foreground process, so consume their host-only profile hints while
+      // every guest thread is idle.
+      if (display_scanout_owner != active_runtime)
+        precompile_idle_runtime(display_scanout_owner);
       std::optional<std::uint64_t> next_deadline;
       for (const auto &runtime : runtimes) {
         const auto deadline = runtime->kernel->next_timer_deadline();
