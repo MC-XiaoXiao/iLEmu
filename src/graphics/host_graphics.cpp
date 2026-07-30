@@ -514,8 +514,8 @@ class CpuCommandEncoder final : public CommandEncoder {
         return true;
     }
 
-    bool submit() override { return true; }
-    bool finish() override { return true; }
+    bool submit(PerfSubmitReason) override { return true; }
+    bool finish(PerfSubmitReason) override { return true; }
 };
 
 } // namespace

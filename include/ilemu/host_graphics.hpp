@@ -204,8 +204,10 @@ class CommandEncoder {
         return false;
     }
     // Submit never implies completion. finish() is the explicit wait point.
-    [[nodiscard]] virtual bool submit() = 0;
-    [[nodiscard]] virtual bool finish() = 0;
+    [[nodiscard]] virtual bool submit(
+        PerfSubmitReason reason = PerfSubmitReason::Other) = 0;
+    [[nodiscard]] virtual bool finish(
+        PerfSubmitReason reason = PerfSubmitReason::Other) = 0;
 };
 
 struct HostNativeImage {

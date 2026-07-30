@@ -1,6 +1,5 @@
 #include "vulkan_gles_renderer.hpp"
-
-#include <vulkan/vulkan.h>
+#include "vulkan_memory_allocator.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,6 +14,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -39,7 +39,7 @@ constexpr VkFormat color_format = VK_FORMAT_B8G8R8A8_UNORM;
 constexpr std::uint64_t fence_timeout_nanoseconds = 5'000'000'000ULL;
 constexpr std::uint64_t acquire_timeout_nanoseconds = 2'000'000ULL;
 constexpr std::size_t maximum_batch_draws = 128;
-constexpr std::size_t command_ring_size = 3;
+constexpr std::size_t command_ring_size = 6;
 constexpr VkDeviceSize minimum_vertex_arena_bytes = 1U << 20U;
 constexpr VkDeviceSize minimum_staging_arena_bytes = 4U << 20U;
 constexpr VkDeviceSize staging_alignment = 256U;
@@ -48,6 +48,8 @@ constexpr VkDeviceSize mebibyte = 1024U * 1024U;
 constexpr VkDeviceSize default_texture_cache_budget = 128U * mebibyte;
 constexpr VkDeviceSize maximum_texture_cache_budget = 256U * mebibyte;
 constexpr std::size_t maximum_texture_cache_entries = 4096;
+constexpr VkDeviceSize render_target_pool_budget = 32U * mebibyte;
+constexpr std::size_t maximum_render_target_pool_entries = 64;
 constexpr HostSurfaceKey quad_white_surface_key{
     std::numeric_limits<std::uint64_t>::max(),
     std::numeric_limits<std::uint64_t>::max()};
@@ -168,6 +170,7 @@ struct TextureEnvironment {
     ivec4 rgb_operands;
     ivec4 alpha_operands;
     vec4 scales_rectangle;
+    vec4 clamp_rectangle;
 };
 
 layout(std140, binding = 0) uniform FixedFunctionState {
@@ -213,8 +216,13 @@ float combine_component(int mode, float a, float b, float c) {
 }
 
 vec4 sample_image(
-    sampler2D image, vec2 coordinate, bool rectangle_coordinates) {
+    sampler2D image, vec2 coordinate, bool rectangle_coordinates,
+    bool clamp_coordinates, vec4 clamp_rectangle) {
     if (!rectangle_coordinates) return texture(image, coordinate);
+    if (clamp_coordinates) {
+        coordinate = clamp(
+            coordinate, clamp_rectangle.xy, clamp_rectangle.zw);
+    }
     vec2 size = vec2(textureSize(image, 0));
     vec2 texel = (floor(coordinate) + vec2(0.5)) / size;
     return texture(image, texel);
@@ -287,14 +295,18 @@ void main() {
     if (fixed_state.units[0].mode_combine_enabled.w != 0) {
         vec4 sampled = sample_image(
             image0, texture0,
-            fixed_state.units[0].scales_rectangle.z != 0.0);
+            fixed_state.units[0].scales_rectangle.z != 0.0,
+            fixed_state.units[0].scales_rectangle.w != 0.0,
+            fixed_state.units[0].clamp_rectangle);
         result = apply_environment(
             fixed_state.units[0], sampled, primary_color, result);
     }
     if (fixed_state.units[1].mode_combine_enabled.w != 0) {
         vec4 sampled = sample_image(
             image1, texture1,
-            fixed_state.units[1].scales_rectangle.z != 0.0);
+            fixed_state.units[1].scales_rectangle.z != 0.0,
+            fixed_state.units[1].scales_rectangle.w != 0.0,
+            fixed_state.units[1].clamp_rectangle);
         result = apply_environment(
             fixed_state.units[1], sampled, primary_color, result);
     }
@@ -405,6 +417,7 @@ struct alignas(16) GpuTextureEnvironment {
     std::array<std::int32_t, 4> rgb_operands{};
     std::array<std::int32_t, 4> alpha_operands{};
     std::array<float, 4> scales_rectangle{};
+    std::array<float, 4> clamp_rectangle{};
 };
 
 struct alignas(16) GpuFixedFunctionState {
@@ -412,7 +425,7 @@ struct alignas(16) GpuFixedFunctionState {
 };
 
 static_assert(sizeof(GpuVertex) == 48);
-static_assert(sizeof(GpuTextureEnvironment) == 112);
+static_assert(sizeof(GpuTextureEnvironment) == 128);
 
 struct PipelineKey {
     enum class StencilMode : std::uint8_t {
@@ -493,9 +506,10 @@ class VulkanGlesRenderer final : public GlesRenderer {
     };
 
     struct Image {
+        VmaAllocator allocator{};
+        VmaAllocation allocation{};
         VkDevice device{};
         VkImage image{};
-        VkDeviceMemory memory{};
         VkImageView view{};
         VkSampler sampler{};
         std::uint32_t width{};
@@ -509,11 +523,15 @@ class VulkanGlesRenderer final : public GlesRenderer {
         Image(Image&& other) noexcept;
         Image& operator=(Image&& other) noexcept;
         ~Image();
+
+        void reset() noexcept;
     };
 
     struct TextureKey {
         std::uint64_t owner{};
+        HostSurfaceKey surface{};
         std::uint32_t name{};
+        bool uses_surface{};
         bool rectangle{};
 
         auto operator<=>(const TextureKey&) const = default;
@@ -530,6 +548,19 @@ class VulkanGlesRenderer final : public GlesRenderer {
         PerfSurfaceKind kind{PerfSurfaceKind::GlesRenderTarget};
         bool valid{};
         std::optional<HostRectangle> dirty;
+    };
+
+    struct PooledTarget {
+        Target target;
+        VkDeviceSize allocation_size{};
+        std::uint64_t last_used{};
+    };
+
+    struct SurfacePreparation {
+        std::uint64_t cpu_generation{};
+        std::uint64_t gpu_generation{};
+        DisplayFrame cpu_frame;
+        std::vector<HostRectangle> cpu_damage;
     };
 
     struct CachedTexture {
@@ -561,6 +592,7 @@ class VulkanGlesRenderer final : public GlesRenderer {
     create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
                   VkMemoryPropertyFlags required,
                   VkMemoryPropertyFlags preferred = 0) const;
+    void create_color_image_pool();
     [[nodiscard]] Image create_image(std::uint32_t width, std::uint32_t height,
                                      VkImageUsageFlags usage, bool sampled,
                                      bool rectangle,
@@ -572,6 +604,13 @@ class VulkanGlesRenderer final : public GlesRenderer {
     [[nodiscard]] Target&
     ensure_target(GlesRenderTargetKey key, std::uint32_t width,
                   std::uint32_t height);
+    [[nodiscard]] std::optional<Target>
+    take_pooled_target(std::uint32_t width, std::uint32_t height);
+    void pool_target(Target&& target);
+    void trim_target_pool();
+    void destroy_target_framebuffers(Target& target) noexcept;
+    [[nodiscard]] static VkDeviceSize
+    target_allocation_size(const Target& target);
     void ensure_stencil_framebuffer(Target& target);
     void upload(Buffer& buffer, const void* data, std::size_t size,
                 VkDeviceSize offset = 0,
@@ -581,7 +620,9 @@ class VulkanGlesRenderer final : public GlesRenderer {
         PerfSurfaceKind surface = PerfSurfaceKind::Unknown) const;
     void begin_commands();
     void submit_commands(
-        bool wait = true, VkSemaphore wait_semaphore = VK_NULL_HANDLE,
+        bool wait = true,
+        PerfSubmitReason reason = PerfSubmitReason::Other,
+        VkSemaphore wait_semaphore = VK_NULL_HANDLE,
         VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT,
         VkSemaphore signal_semaphore = VK_NULL_HANDLE);
     void wait_for_slot(CommandSlot& slot);
@@ -626,11 +667,14 @@ class VulkanGlesRenderer final : public GlesRenderer {
         std::span<const GpuVertex> vertices, HostRectangle viewport,
         HostRectangle scissor, HostCompositeMode mode,
         std::uint8_t global_alpha,
-        bool ordered_quad = false);
+        bool ordered_quad = false,
+        std::optional<HostRectangle> source_clamp = std::nullopt);
     [[nodiscard]] Target& prepare_host_surface(
         HostSurface& surface, const DisplayFrame& cpu_frame,
         std::uint64_t cpu_generation, std::uint64_t gpu_generation,
         std::vector<HostRectangle> cpu_damage);
+    [[nodiscard]] SurfacePreparation
+    capture_surface_preparation(HostSurface& surface);
     [[nodiscard]] bool create_presentation_swapchain();
     [[nodiscard]] bool recreate_presentation_surface();
     void destroy_presentation_swapchain() noexcept;
@@ -666,6 +710,8 @@ class VulkanGlesRenderer final : public GlesRenderer {
     VkPhysicalDevice physical_device_{};
     VkFormat stencil_format_{VK_FORMAT_UNDEFINED};
     VkDevice device_{};
+    VmaAllocator image_allocator_{};
+    VmaPool color_image_pool_{};
     VkQueue queue_{};
     std::uint32_t queue_family_{};
     VkPhysicalDeviceMemoryProperties memory_properties_{};
@@ -681,6 +727,10 @@ class VulkanGlesRenderer final : public GlesRenderer {
     VkShaderModule fragment_shader_{};
     std::map<PipelineKey, VkPipeline> pipelines_;
     std::map<GlesRenderTargetKey, Target> targets_;
+    std::multimap<std::pair<std::uint32_t, std::uint32_t>, PooledTarget>
+        target_pool_;
+    VkDeviceSize target_pool_bytes_{};
+    std::uint64_t target_pool_use_sequence_{};
     std::shared_ptr<HostSurface> quad_white_surface_;
     std::map<TextureKey, CachedTexture> texture_cache_;
     VkDeviceSize texture_cache_bytes_{};
@@ -738,9 +788,10 @@ VulkanGlesRenderer::Buffer::~Buffer() {
 }
 
 VulkanGlesRenderer::Image::Image(Image&& other) noexcept
-    : device{std::exchange(other.device, VK_NULL_HANDLE)},
+    : allocator{std::exchange(other.allocator, nullptr)},
+      allocation{std::exchange(other.allocation, nullptr)},
+      device{std::exchange(other.device, VK_NULL_HANDLE)},
       image{std::exchange(other.image, VK_NULL_HANDLE)},
-      memory{std::exchange(other.memory, VK_NULL_HANDLE)},
       view{std::exchange(other.view, VK_NULL_HANDLE)},
       sampler{std::exchange(other.sampler, VK_NULL_HANDLE)},
       width{std::exchange(other.width, 0)},
@@ -752,17 +803,11 @@ VulkanGlesRenderer::Image&
 VulkanGlesRenderer::Image::operator=(Image&& other) noexcept {
     if (this == &other)
         return *this;
-    if (sampler != VK_NULL_HANDLE)
-        vkDestroySampler(device, sampler, nullptr);
-    if (view != VK_NULL_HANDLE)
-        vkDestroyImageView(device, view, nullptr);
-    if (image != VK_NULL_HANDLE)
-        vkDestroyImage(device, image, nullptr);
-    if (memory != VK_NULL_HANDLE)
-        vkFreeMemory(device, memory, nullptr);
+    reset();
+    allocator = std::exchange(other.allocator, nullptr);
+    allocation = std::exchange(other.allocation, nullptr);
     device = std::exchange(other.device, VK_NULL_HANDLE);
     image = std::exchange(other.image, VK_NULL_HANDLE);
-    memory = std::exchange(other.memory, VK_NULL_HANDLE);
     view = std::exchange(other.view, VK_NULL_HANDLE);
     sampler = std::exchange(other.sampler, VK_NULL_HANDLE);
     width = std::exchange(other.width, 0);
@@ -773,14 +818,22 @@ VulkanGlesRenderer::Image::operator=(Image&& other) noexcept {
 }
 
 VulkanGlesRenderer::Image::~Image() {
+    reset();
+}
+
+void VulkanGlesRenderer::Image::reset() noexcept {
     if (sampler != VK_NULL_HANDLE)
         vkDestroySampler(device, sampler, nullptr);
     if (view != VK_NULL_HANDLE)
         vkDestroyImageView(device, view, nullptr);
-    if (image != VK_NULL_HANDLE)
-        vkDestroyImage(device, image, nullptr);
-    if (memory != VK_NULL_HANDLE)
-        vkFreeMemory(device, memory, nullptr);
+    if (allocator != nullptr)
+        vmaDestroyImage(allocator, image, allocation);
+    allocator = nullptr;
+    allocation = nullptr;
+    device = VK_NULL_HANDLE;
+    image = VK_NULL_HANDLE;
+    view = VK_NULL_HANDLE;
+    sampler = VK_NULL_HANDLE;
 }
 
 class VulkanGlesRenderer::Encoder final : public CommandEncoder {
@@ -880,10 +933,10 @@ class VulkanGlesRenderer::Encoder final : public CommandEncoder {
         return encoded;
     }
 
-    bool submit() override {
+    bool submit(PerfSubmitReason reason) override {
         std::lock_guard lock{renderer_.mutex_};
         try {
-            renderer_.submit_commands(false);
+            renderer_.submit_commands(false, reason);
             return true;
         } catch (...) {
             renderer_.last_failure_reason_.store(
@@ -895,10 +948,10 @@ class VulkanGlesRenderer::Encoder final : public CommandEncoder {
         }
     }
 
-    bool finish() override {
+    bool finish(PerfSubmitReason reason) override {
         std::lock_guard lock{renderer_.mutex_};
         try {
-            renderer_.submit_commands(true);
+            renderer_.submit_commands(true, reason);
             return true;
         } catch (...) {
             renderer_.last_failure_reason_.store(
@@ -1086,6 +1139,17 @@ VulkanGlesRenderer::VulkanGlesRenderer(
         require_success(
             vkCreateDevice(physical_device_, &device_info, nullptr, &device_),
             "vkCreateDevice");
+        VmaAllocatorCreateInfo allocator_info{};
+        allocator_info.physicalDevice = physical_device_;
+        allocator_info.device = device_;
+        allocator_info.instance = instance_;
+        allocator_info.vulkanApiVersion = VK_API_VERSION_1_0;
+        allocator_info.preferredLargeHeapBlockSize =
+            render_target_pool_budget;
+        require_success(
+            vmaCreateAllocator(&allocator_info, &image_allocator_),
+            "vmaCreateAllocator");
+        create_color_image_pool();
         vkGetDeviceQueue(device_, queue_family_, 0, &queue_);
         auto host_sampler_info =
             make_vulkan_structure<VkSamplerCreateInfo>(
@@ -1535,19 +1599,25 @@ void VulkanGlesRenderer::destroy() noexcept {
         }
         for (auto& [key, target] : targets_) {
             static_cast<void>(key);
-            if (target.framebuffer != VK_NULL_HANDLE) {
-                vkDestroyFramebuffer(device_, target.framebuffer, nullptr);
-                target.framebuffer = VK_NULL_HANDLE;
-            }
-            if (target.stencil_framebuffer != VK_NULL_HANDLE) {
-                vkDestroyFramebuffer(
-                    device_, target.stencil_framebuffer, nullptr);
-                target.stencil_framebuffer = VK_NULL_HANDLE;
-            }
+            destroy_target_framebuffers(target);
         }
         targets_.clear();
+        for (auto& [dimensions, pooled] : target_pool_) {
+            static_cast<void>(dimensions);
+            destroy_target_framebuffers(pooled.target);
+        }
+        target_pool_.clear();
+        target_pool_bytes_ = 0;
         texture_cache_.clear();
         texture_cache_bytes_ = 0;
+        if (color_image_pool_ != nullptr) {
+            vmaDestroyPool(image_allocator_, color_image_pool_);
+            color_image_pool_ = nullptr;
+        }
+        if (image_allocator_ != nullptr) {
+            vmaDestroyAllocator(image_allocator_);
+            image_allocator_ = nullptr;
+        }
         for (auto& slot : command_slots_) {
             slot.staging = {};
             slot.vertex = {};
@@ -1677,12 +1747,51 @@ VulkanGlesRenderer::create_buffer(VkDeviceSize size, VkBufferUsageFlags usage,
     return result;
 }
 
+void VulkanGlesRenderer::create_color_image_pool() {
+    auto image_info = make_vulkan_structure<VkImageCreateInfo>(
+        VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
+    image_info.imageType = VK_IMAGE_TYPE_2D;
+    image_info.format = color_format;
+    image_info.extent = {1U, 1U, 1U};
+    image_info.mipLevels = 1U;
+    image_info.arrayLayers = 1U;
+    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
+    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
+    image_info.usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+        VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+        VK_IMAGE_USAGE_SAMPLED_BIT;
+    image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo allocation_info{};
+    allocation_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    allocation_info.requiredFlags =
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    std::uint32_t memory_type{};
+    if (vmaFindMemoryTypeIndexForImageInfo(
+            image_allocator_, &image_info, &allocation_info,
+            &memory_type) != VK_SUCCESS) {
+        return;
+    }
+
+    VmaPoolCreateInfo pool_info{};
+    pool_info.memoryTypeIndex = memory_type;
+    pool_info.blockSize = render_target_pool_budget;
+    pool_info.minBlockCount = 1U;
+    static_cast<void>(
+        vmaCreatePool(
+            image_allocator_, &pool_info, &color_image_pool_));
+}
+
 VulkanGlesRenderer::Image
 VulkanGlesRenderer::create_image(std::uint32_t width, std::uint32_t height,
                                  VkImageUsageFlags usage, bool sampled,
                                  bool rectangle, VkFormat format,
                                  VkImageAspectFlags aspect) const {
     Image result;
+    result.allocator = image_allocator_;
     result.device = device_;
     result.width = width;
     result.height = height;
@@ -1699,21 +1808,19 @@ VulkanGlesRenderer::create_image(std::uint32_t width, std::uint32_t height,
     image_info.usage = usage;
     image_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    require_success(vkCreateImage(device_, &image_info, nullptr, &result.image),
-                    "vkCreateImage");
-    VkMemoryRequirements requirements{};
-    vkGetImageMemoryRequirements(device_, result.image, &requirements);
-    result.allocation_size = requirements.size;
-    auto allocation = make_vulkan_structure<VkMemoryAllocateInfo>(
-        VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO);
-    allocation.allocationSize = requirements.size;
-    allocation.memoryTypeIndex = find_memory_type(
-        requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    VmaAllocationCreateInfo allocation_info{};
+    allocation_info.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    allocation_info.requiredFlags =
+        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+    if (format == color_format)
+        allocation_info.pool = color_image_pool_;
+    VmaAllocationInfo allocated{};
     require_success(
-        vkAllocateMemory(device_, &allocation, nullptr, &result.memory),
-        "vkAllocateMemory(image)");
-    require_success(vkBindImageMemory(device_, result.image, result.memory, 0),
-                    "vkBindImageMemory");
+        vmaCreateImage(
+            image_allocator_, &image_info, &allocation_info,
+            &result.image, &result.allocation, &allocated),
+        "vmaCreateImage");
+    result.allocation_size = allocated.size;
 
     auto view_info = make_vulkan_structure<VkImageViewCreateInfo>(
         VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO);
@@ -1764,35 +1871,47 @@ VulkanGlesRenderer::Target&
 VulkanGlesRenderer::ensure_target(GlesRenderTargetKey key,
                                   std::uint32_t width,
                                   std::uint32_t height) {
-    auto& target = targets_[key];
-    if (target.image.image != VK_NULL_HANDLE &&
-        target.image.width == width && target.image.height == height) {
-        return target;
+    auto found = targets_.find(key);
+    if (found != targets_.end() &&
+        found->second.image.image != VK_NULL_HANDLE &&
+        found->second.image.width == width &&
+        found->second.image.height == height) {
+        return found->second;
     }
     // Recorded draws may still reference the old image and framebuffer.
     // Submission includes a fence wait, so only retire them after the command
     // buffer can no longer access either object.
-    if (target.image.image != VK_NULL_HANDLE) {
+    if (found != targets_.end() &&
+        found->second.image.image != VK_NULL_HANDLE) {
         if (command_recording_)
-            submit_commands(false);
+            submit_commands(false, PerfSubmitReason::ResourceLifetime);
         wait_for_all_slots();
+        auto retired = std::move(found->second);
+        targets_.erase(found);
+        pool_target(std::move(retired));
+    } else if (found != targets_.end()) {
+        targets_.erase(found);
     }
-    if (target.framebuffer != VK_NULL_HANDLE) {
-        vkDestroyFramebuffer(device_, target.framebuffer, nullptr);
-        target.framebuffer = VK_NULL_HANDLE;
+
+    if (auto pooled = take_pooled_target(width, height)) {
+        pooled->cpu_generation = 0;
+        pooled->kind = PerfSurfaceKind::GlesRenderTarget;
+        pooled->valid = false;
+        pooled->dirty.reset();
+        const auto [reused, inserted] =
+            targets_.emplace(key, std::move(*pooled));
+        static_cast<void>(inserted);
+        return reused->second;
     }
-    if (target.stencil_framebuffer != VK_NULL_HANDLE) {
-        vkDestroyFramebuffer(
-            device_, target.stencil_framebuffer, nullptr);
-        target.stencil_framebuffer = VK_NULL_HANDLE;
-    }
-    target.stencil = {};
-    target.image = create_image(width, height,
-                                VK_IMAGE_USAGE_TRANSFER_DST_BIT |
-                                    VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
-                                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
-                                    VK_IMAGE_USAGE_SAMPLED_BIT,
-                                true, false);
+
+    Target target;
+    target.image = create_image(
+        width, height,
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+            VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+            VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+            VK_IMAGE_USAGE_SAMPLED_BIT,
+        true, false);
     auto framebuffer_info = make_vulkan_structure<VkFramebufferCreateInfo>(
         VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO);
     framebuffer_info.renderPass = render_pass_;
@@ -1809,7 +1928,92 @@ VulkanGlesRenderer::ensure_target(GlesRenderTargetKey key,
     target.dirty.reset();
     target.cpu_generation = 0;
     target.layout = VK_IMAGE_LAYOUT_UNDEFINED;
-    return target;
+    auto [created, inserted] =
+        targets_.emplace(key, std::move(target));
+    static_cast<void>(inserted);
+    return created->second;
+}
+
+std::optional<VulkanGlesRenderer::Target>
+VulkanGlesRenderer::take_pooled_target(std::uint32_t width,
+                                      std::uint32_t height) {
+    const auto range = target_pool_.equal_range({width, height});
+    if (range.first == range.second)
+        return std::nullopt;
+    auto selected = range.first;
+    for (auto candidate = std::next(range.first);
+         candidate != range.second; ++candidate) {
+        if (candidate->second.last_used > selected->second.last_used)
+            selected = candidate;
+    }
+    Target result = std::move(selected->second.target);
+    target_pool_bytes_ -=
+        std::min(target_pool_bytes_, selected->second.allocation_size);
+    target_pool_.erase(selected);
+    return result;
+}
+
+void VulkanGlesRenderer::pool_target(Target&& target) {
+    if (target.image.image == VK_NULL_HANDLE)
+        return;
+    target.cpu_generation = 0;
+    target.valid = false;
+    target.dirty.reset();
+    const auto allocation_size = target_allocation_size(target);
+    if (allocation_size > render_target_pool_budget) {
+        destroy_target_framebuffers(target);
+        return;
+    }
+    const auto dimensions =
+        std::pair{target.image.width, target.image.height};
+    target_pool_bytes_ += allocation_size;
+    target_pool_.emplace(
+        dimensions,
+        PooledTarget{std::move(target), allocation_size,
+                     ++target_pool_use_sequence_});
+    trim_target_pool();
+}
+
+void VulkanGlesRenderer::trim_target_pool() {
+    while (target_pool_bytes_ > render_target_pool_budget ||
+           target_pool_.size() > maximum_render_target_pool_entries) {
+        const auto oldest = std::ranges::min_element(
+            target_pool_, {}, [](const auto& entry) {
+                return entry.second.last_used;
+            });
+        if (oldest == target_pool_.end())
+            break;
+        target_pool_bytes_ -=
+            std::min(target_pool_bytes_, oldest->second.allocation_size);
+        destroy_target_framebuffers(oldest->second.target);
+        target_pool_.erase(oldest);
+    }
+}
+
+void VulkanGlesRenderer::destroy_target_framebuffers(
+    Target& target) noexcept {
+    if (target.framebuffer != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(device_, target.framebuffer, nullptr);
+        target.framebuffer = VK_NULL_HANDLE;
+    }
+    if (target.stencil_framebuffer != VK_NULL_HANDLE) {
+        vkDestroyFramebuffer(device_, target.stencil_framebuffer, nullptr);
+        target.stencil_framebuffer = VK_NULL_HANDLE;
+    }
+}
+
+VkDeviceSize VulkanGlesRenderer::target_allocation_size(
+    const Target& target) {
+    constexpr auto maximum = std::numeric_limits<VkDeviceSize>::max();
+    if (target.image.allocation_size >
+        maximum - target.stencil.allocation_size) {
+        return maximum;
+    }
+    const auto images =
+        target.image.allocation_size + target.stencil.allocation_size;
+    return images > maximum - target.download.size
+               ? maximum
+               : images + target.download.size;
 }
 
 void VulkanGlesRenderer::ensure_stencil_framebuffer(Target& target) {
@@ -1924,7 +2128,7 @@ void VulkanGlesRenderer::end_render_pass() {
 }
 
 void VulkanGlesRenderer::submit_commands(
-    bool wait, VkSemaphore wait_semaphore,
+    bool wait, PerfSubmitReason reason, VkSemaphore wait_semaphore,
     VkPipelineStageFlags wait_stage, VkSemaphore signal_semaphore) {
     if (!command_recording_) {
         if (wait)
@@ -1954,7 +2158,7 @@ void VulkanGlesRenderer::submit_commands(
     require_success(vkQueueSubmit(queue_, 1, &submit, submitted.fence),
                     "vkQueueSubmit");
     submitted.in_flight = true;
-    performance_counters().record_submit();
+    performance_counters().record_submit(reason);
     submitted.draw_count = 0;
     submitted.staging_bytes_used = 0;
     submitted.vertex_bytes_used = 0;
@@ -2388,7 +2592,7 @@ bool VulkanGlesRenderer::synchronize(
                              VK_PIPELINE_STAGE_TRANSFER_BIT,
                              VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
                              &host_barrier, 0, nullptr);
-        submit_commands();
+        submit_commands(true, PerfSubmitReason::CpuReadback);
         std::vector<std::uint32_t> pixels(damage_pixels);
         download(surface.download, pixels.data(),
                  static_cast<std::size_t>(damage_bytes), surface.kind);
@@ -2428,7 +2632,7 @@ bool VulkanGlesRenderer::flush(GlesRenderTargetKey target) {
     if (!targets_.contains(target))
         return true;
     try {
-        submit_commands(false);
+        submit_commands(false, PerfSubmitReason::GlesSync);
         return true;
     } catch (...) {
         last_failure_reason_.store(PerfFallbackReason::BackendFailure,
@@ -2451,7 +2655,7 @@ bool VulkanGlesRenderer::finish(GlesRenderTargetKey target) {
     if (!targets_.contains(target))
         return true;
     try {
-        submit_commands(true);
+        submit_commands(true, PerfSubmitReason::GlesSync);
         return true;
     } catch (...) {
         last_failure_reason_.store(PerfFallbackReason::BackendFailure,
@@ -2468,7 +2672,7 @@ void VulkanGlesRenderer::invalidate(GlesRenderTargetKey target) {
     if (found == targets_.end())
         return;
     if (command_recording_)
-        submit_commands(false);
+        submit_commands(false, PerfSubmitReason::ResourceLifetime);
     wait_for_all_slots();
     found->second.valid = false;
     found->second.dirty.reset();
@@ -2483,20 +2687,15 @@ void VulkanGlesRenderer::release(
     if (!has_target)
         return;
     if (command_recording_)
-        submit_commands(false);
+        submit_commands(false, PerfSubmitReason::ResourceLifetime);
     wait_for_all_slots();
     for (const auto target : targets) {
         const auto found = targets_.find(target);
         if (found == targets_.end())
             continue;
-        if (found->second.framebuffer != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(device_, found->second.framebuffer, nullptr);
-        }
-        if (found->second.stencil_framebuffer != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(
-                device_, found->second.stencil_framebuffer, nullptr);
-        }
+        auto retired = std::move(found->second);
         targets_.erase(found);
+        pool_target(std::move(retired));
     }
 }
 
@@ -2520,7 +2719,7 @@ void VulkanGlesRenderer::release_owner(std::uint64_t owner) {
     // Submit once and wait once before retiring the complete process batch.
     try {
         if (command_recording_)
-            submit_commands(false);
+            submit_commands(false, PerfSubmitReason::ResourceLifetime);
         wait_for_all_slots();
     } catch (...) {
         // Resource release is reached from process teardown and OpenGLES
@@ -2539,15 +2738,9 @@ void VulkanGlesRenderer::release_owner(std::uint64_t owner) {
             ++target;
             continue;
         }
-        if (target->second.framebuffer != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(device_, target->second.framebuffer,
-                                 nullptr);
-        }
-        if (target->second.stencil_framebuffer != VK_NULL_HANDLE) {
-            vkDestroyFramebuffer(
-                device_, target->second.stencil_framebuffer, nullptr);
-        }
+        auto retired = std::move(target->second);
         target = targets_.erase(target);
+        pool_target(std::move(retired));
     }
     for (auto texture = texture_cache_.begin();
          texture != texture_cache_.end();) {
@@ -2573,7 +2766,7 @@ VulkanGlesRenderer::present_target(Target& target) {
     // DZN and other translation layers may retain a presented image beyond
     // the render fence. Keep presentation in the next ring slot so compositor
     // and presentation semaphore lifetimes cannot alias.
-    submit_commands(false);
+    submit_commands(false, PerfSubmitReason::Presentation);
     auto* slot = &command_slot();
     wait_for_slot(*slot);
 
@@ -2703,7 +2896,7 @@ VulkanGlesRenderer::present_target(Target& target) {
     }
     const auto render_finished =
         presentation_render_finished_[image_index];
-    submit_commands(false, image_available,
+    submit_commands(false, PerfSubmitReason::Presentation, image_available,
                     VK_PIPELINE_STAGE_TRANSFER_BIT, render_finished);
 
     auto present =
@@ -2770,7 +2963,6 @@ VulkanGlesRenderer::Target& VulkanGlesRenderer::prepare_host_surface(
             static_cast<std::size_t>(descriptor.width) * descriptor.height) {
         return target;
     }
-
     const auto full_rectangle =
         HostRectangle{0, 0, descriptor.width, descriptor.height};
     std::vector<HostRectangle> upload_rectangles{full_rectangle};
@@ -2833,9 +3025,9 @@ VulkanGlesRenderer::Target& VulkanGlesRenderer::prepare_host_surface(
     auto required_end =
         align_staging(command_slot().staging_bytes_used) + byte_count;
     if (command_recording_ &&
-        (command_slot().staging.buffer == VK_NULL_HANDLE ||
-         required_end > command_slot().staging.size)) {
-        submit_commands(false);
+        command_slot().staging.buffer != VK_NULL_HANDLE &&
+        required_end > command_slot().staging.size) {
+        submit_commands(false, PerfSubmitReason::StagingCapacity);
         required_end = byte_count;
     }
     wait_for_slot(command_slot());
@@ -2900,6 +3092,38 @@ VulkanGlesRenderer::Target& VulkanGlesRenderer::prepare_host_surface(
     return target;
 }
 
+VulkanGlesRenderer::SurfacePreparation
+VulkanGlesRenderer::capture_surface_preparation(HostSurface& surface) {
+    SurfacePreparation preparation;
+    preparation.cpu_generation = surface.cpu_generation();
+    preparation.gpu_generation = surface.gpu_generation();
+
+    bool needs_cpu_frame = true;
+    {
+        std::lock_guard lock{mutex_};
+        const auto target = targets_.find(surface.key());
+        if (target != targets_.end() && target->second.valid &&
+            (preparation.cpu_generation <= target->second.cpu_generation ||
+             (preparation.gpu_generation != 0 &&
+              preparation.cpu_generation == preparation.gpu_generation))) {
+            needs_cpu_frame = false;
+        }
+    }
+    if (preparation.cpu_generation < preparation.gpu_generation)
+        needs_cpu_frame = false;
+    if (!needs_cpu_frame)
+        return preparation;
+
+    {
+        auto mapping =
+            surface.map_cpu(false, PerfCpuMapReason::HostUpload);
+        preparation.cpu_frame = mapping.frame();
+    }
+    if (preparation.cpu_generation > preparation.gpu_generation)
+        preparation.cpu_damage = surface.cpu_damage_rectangles();
+    return preparation;
+}
+
 bool VulkanGlesRenderer::encode_fill(
     HostSurface& destination, HostRectangle rectangle, std::uint32_t argb,
     HostCompositeMode mode, std::uint8_t global_alpha) {
@@ -2914,87 +3138,33 @@ bool VulkanGlesRenderer::encode_fill(
         return false;
     }
 
-    const auto cpu_generation = destination.cpu_generation();
-    const auto gpu_generation = destination.gpu_generation();
-    DisplayFrame cpu_frame;
-    {
-        auto mapping = destination.map_cpu(
-            false, PerfCpuMapReason::HostUpload);
-        cpu_frame = mapping.frame();
-    }
-
     if (mode != HostCompositeMode::Copy) {
-        const auto channel = [argb](std::uint32_t shift) {
-            return static_cast<float>((argb >> shift) & 0xffU) / 255.0F;
-        };
-        const auto global =
-            static_cast<float>(global_alpha) / 255.0F;
-        const auto crossfade =
-            mode == HostCompositeMode::ConstantAlphaCrossfade;
-        const auto alpha =
-            channel(24) * (crossfade ? 1.0F : global);
-        const std::array<float, 4> color{
-            channel(16) *
-                (mode == HostCompositeMode::PremultipliedSourceOver
-                     ? global
-                     : 1.0F),
-            channel(8) *
-                (mode == HostCompositeMode::PremultipliedSourceOver
-                     ? global
-                     : 1.0F),
-            channel(0) *
-                (mode == HostCompositeMode::PremultipliedSourceOver
-                     ? global
-                     : 1.0F),
-            alpha};
-        std::array<GlesRasterVertex, 4> vertices{};
-        vertices[0].position = {-1.0F, -1.0F, 0.0F, 1.0F};
-        vertices[1].position = {1.0F, -1.0F, 0.0F, 1.0F};
-        vertices[2].position = {-1.0F, 1.0F, 0.0F, 1.0F};
-        vertices[3].position = {1.0F, 1.0F, 0.0F, 1.0F};
-        for (auto& vertex : vertices)
-            vertex.color = color;
-        GlesRasterState state;
-        state.viewport_width = descriptor.width;
-        state.viewport_height = descriptor.height;
-        state.scissor_enabled = true;
-        state.scissor_box = {
-            rectangle.x,
-            static_cast<std::int32_t>(
-                descriptor.height -
-                (static_cast<std::uint32_t>(rectangle.y) + rectangle.height)),
-            static_cast<std::int32_t>(rectangle.width),
-            static_cast<std::int32_t>(rectangle.height)};
-        state.blend_enabled = true;
-        state.blend_source = crossfade
-                                 ? constant_alpha_blend_factor
-                                 : mode ==
-                                           HostCompositeMode::
-                                               PremultipliedSourceOver
-                                       ? gles_abi::one
-                                       : gles_abi::source_alpha;
-        state.blend_destination =
-            crossfade ? one_minus_constant_alpha_blend_factor
-                      : gles_abi::one_minus_source_alpha;
-        state.blend_constant = {global, global, global, global};
-        if (!draw(cpu_frame, destination.key(), vertices,
-                  gles_abi::triangle_strip, state)) {
-            return false;
-        }
-        destination.mark_gpu_synchronized(cpu_generation);
-        static_cast<void>(destination.mark_gpu_write(rectangle));
-        return true;
+        const auto left = static_cast<float>(rectangle.x);
+        const auto top = static_cast<float>(rectangle.y);
+        const auto right =
+            left + static_cast<float>(rectangle.width);
+        const auto bottom =
+            top + static_cast<float>(rectangle.height);
+        const std::array<HostPoint, 4> positions{{
+            {left, top},
+            {right, top},
+            {right, bottom},
+            {left, bottom},
+        }};
+        return encode_fill_quad(
+            destination, positions, rectangle, argb, mode, global_alpha);
     }
 
-    auto cpu_damage = cpu_generation > gpu_generation
-                          ? destination.cpu_damage_rectangles()
-                          : std::vector<HostRectangle>{};
+    auto destination_preparation =
+        capture_surface_preparation(destination);
     try {
         {
             std::lock_guard lock{mutex_};
             auto& target = prepare_host_surface(
-                destination, cpu_frame, cpu_generation, gpu_generation,
-                std::move(cpu_damage));
+                destination, destination_preparation.cpu_frame,
+                destination_preparation.cpu_generation,
+                destination_preparation.gpu_generation,
+                std::move(destination_preparation.cpu_damage));
             if (!target.valid)
                 return false;
             begin_commands();
@@ -3055,7 +3225,8 @@ bool VulkanGlesRenderer::encode_fill(
                                   &clear);
             add_damage(target.dirty, rectangle);
         }
-        destination.mark_gpu_synchronized(cpu_generation);
+        destination.mark_gpu_synchronized(
+            destination_preparation.cpu_generation);
         static_cast<void>(destination.mark_gpu_write(rectangle));
         return true;
     } catch (...) {
@@ -3231,46 +3402,23 @@ bool VulkanGlesRenderer::encode_fill_quad(
         }
     }
 
-    const auto white_cpu_generation =
-        quad_white_surface_->cpu_generation();
-    const auto white_gpu_generation =
-        quad_white_surface_->gpu_generation();
-    const auto destination_cpu_generation =
-        destination.cpu_generation();
-    const auto destination_gpu_generation =
-        destination.gpu_generation();
-    DisplayFrame white_frame;
-    DisplayFrame destination_frame;
-    {
-        auto mapping = quad_white_surface_->map_cpu(
-            false, PerfCpuMapReason::HostUpload);
-        white_frame = mapping.frame();
-    }
-    {
-        auto mapping = destination.map_cpu(
-            false, PerfCpuMapReason::HostUpload);
-        destination_frame = mapping.frame();
-    }
-    auto white_cpu_damage =
-        white_cpu_generation > white_gpu_generation
-            ? quad_white_surface_->cpu_damage_rectangles()
-            : std::vector<HostRectangle>{};
-    auto destination_cpu_damage =
-        destination_cpu_generation > destination_gpu_generation
-            ? destination.cpu_damage_rectangles()
-            : std::vector<HostRectangle>{};
+    auto white_preparation =
+        capture_surface_preparation(*quad_white_surface_);
+    auto destination_preparation =
+        capture_surface_preparation(destination);
     try {
         {
             std::lock_guard lock{mutex_};
             auto& white_target = prepare_host_surface(
-                *quad_white_surface_, white_frame,
-                white_cpu_generation, white_gpu_generation,
-                std::move(white_cpu_damage));
+                *quad_white_surface_, white_preparation.cpu_frame,
+                white_preparation.cpu_generation,
+                white_preparation.gpu_generation,
+                std::move(white_preparation.cpu_damage));
             auto& destination_target = prepare_host_surface(
-                destination, destination_frame,
-                destination_cpu_generation,
-                destination_gpu_generation,
-                std::move(destination_cpu_damage));
+                destination, destination_preparation.cpu_frame,
+                destination_preparation.cpu_generation,
+                destination_preparation.gpu_generation,
+                std::move(destination_preparation.cpu_damage));
             if (!white_target.valid || !destination_target.valid ||
                 !draw_host_texture(
                     white_target, destination_target,
@@ -3282,9 +3430,9 @@ bool VulkanGlesRenderer::encode_fill_quad(
             add_damage(destination_target.dirty, scissor);
         }
         quad_white_surface_->mark_gpu_synchronized(
-            white_cpu_generation);
+            white_preparation.cpu_generation);
         destination.mark_gpu_synchronized(
-            destination_cpu_generation);
+            destination_preparation.cpu_generation);
         static_cast<void>(destination.mark_gpu_write(scissor));
         return true;
     } catch (...) {
@@ -3309,6 +3457,15 @@ bool VulkanGlesRenderer::encode_copy_quad(
     }
     const auto source_descriptor = source.descriptor();
     const auto destination_descriptor = destination.descriptor();
+    const auto valid_source =
+        source_rectangle.x >= 0 && source_rectangle.y >= 0 &&
+        source_rectangle.width != 0 && source_rectangle.height != 0 &&
+        source_rectangle.width <= source_descriptor.width &&
+        source_rectangle.height <= source_descriptor.height &&
+        static_cast<std::uint32_t>(source_rectangle.x) <=
+            source_descriptor.width - source_rectangle.width &&
+        static_cast<std::uint32_t>(source_rectangle.y) <=
+            source_descriptor.height - source_rectangle.height;
     const auto full_source =
         source_rectangle.x == 0 && source_rectangle.y == 0 &&
         source_rectangle.width == source_descriptor.width &&
@@ -3328,7 +3485,7 @@ bool VulkanGlesRenderer::encode_copy_quad(
         positions[index] = host_vertices[index].position;
         texture[index] = host_vertices[index].texture;
     }
-    if (!full_source || !valid_scissor ||
+    if (!valid_source || !valid_scissor ||
         source_descriptor.width == 0 ||
         source_descriptor.height == 0 ||
         destination_descriptor.width == 0 ||
@@ -3368,6 +3525,16 @@ bool VulkanGlesRenderer::encode_copy_quad(
             const auto coordinate =
                 expand_quad_triangle_vertex(
                     texture, triangle, vertex);
+            const std::array<float, 2> gpu_coordinate =
+                full_source
+                    ? std::array{
+                          coordinate.x /
+                              static_cast<float>(
+                                  source_descriptor.width),
+                          coordinate.y /
+                              static_cast<float>(
+                                  source_descriptor.height)}
+                    : std::array{coordinate.x, coordinate.y};
             vertices[output++] = {
                 {2.0F * position.x /
                          static_cast<float>(
@@ -3378,52 +3545,26 @@ bool VulkanGlesRenderer::encode_copy_quad(
                          static_cast<float>(
                              destination_descriptor.height),
                  0.0F, 1.0F},
-                color,
-                {coordinate.x /
-                     static_cast<float>(source_descriptor.width),
-                 coordinate.y /
-                     static_cast<float>(source_descriptor.height)},
-                {}};
+                color, gpu_coordinate, {}};
         }
     }
 
-    const auto source_cpu_generation = source.cpu_generation();
-    const auto source_gpu_generation = source.gpu_generation();
-    const auto destination_cpu_generation =
-        destination.cpu_generation();
-    const auto destination_gpu_generation =
-        destination.gpu_generation();
-    DisplayFrame source_frame;
-    DisplayFrame destination_frame;
-    {
-        auto mapping =
-            source.map_cpu(false, PerfCpuMapReason::HostUpload);
-        source_frame = mapping.frame();
-    }
-    {
-        auto mapping = destination.map_cpu(
-            false, PerfCpuMapReason::HostUpload);
-        destination_frame = mapping.frame();
-    }
-    auto source_cpu_damage =
-        source_cpu_generation > source_gpu_generation
-            ? source.cpu_damage_rectangles()
-            : std::vector<HostRectangle>{};
-    auto destination_cpu_damage =
-        destination_cpu_generation > destination_gpu_generation
-            ? destination.cpu_damage_rectangles()
-            : std::vector<HostRectangle>{};
+    auto source_preparation = capture_surface_preparation(source);
+    auto destination_preparation =
+        capture_surface_preparation(destination);
     try {
         {
             std::lock_guard lock{mutex_};
             auto& source_target = prepare_host_surface(
-                source, source_frame, source_cpu_generation,
-                source_gpu_generation, std::move(source_cpu_damage));
+                source, source_preparation.cpu_frame,
+                source_preparation.cpu_generation,
+                source_preparation.gpu_generation,
+                std::move(source_preparation.cpu_damage));
             auto& destination_target = prepare_host_surface(
-                destination, destination_frame,
-                destination_cpu_generation,
-                destination_gpu_generation,
-                std::move(destination_cpu_damage));
+                destination, destination_preparation.cpu_frame,
+                destination_preparation.cpu_generation,
+                destination_preparation.gpu_generation,
+                std::move(destination_preparation.cpu_damage));
             if (!source_target.valid || !destination_target.valid ||
                 !draw_host_texture(
                     source_target, destination_target,
@@ -3431,14 +3572,17 @@ bool VulkanGlesRenderer::encode_copy_quad(
                     vertices,
                     {0, 0, destination_descriptor.width,
                      destination_descriptor.height},
-                    scissor, mode, global_alpha, true)) {
+                    scissor, mode, global_alpha, true,
+                    full_source
+                        ? std::optional<HostRectangle>{}
+                        : std::optional{source_rectangle})) {
                 return false;
             }
             add_damage(destination_target.dirty, scissor);
         }
-        source.mark_gpu_synchronized(source_cpu_generation);
+        source.mark_gpu_synchronized(source_preparation.cpu_generation);
         destination.mark_gpu_synchronized(
-            destination_cpu_generation);
+            destination_preparation.cpu_generation);
         static_cast<void>(destination.mark_gpu_write(scissor));
         return true;
     } catch (...) {
@@ -3456,7 +3600,8 @@ bool VulkanGlesRenderer::draw_host_texture(
     HostSurfaceDescriptor destination_descriptor,
     std::span<const GpuVertex> vertices, HostRectangle viewport,
     HostRectangle scissor, HostCompositeMode mode,
-    std::uint8_t global_alpha, bool ordered_quad) {
+    std::uint8_t global_alpha, bool ordered_quad,
+    std::optional<HostRectangle> source_clamp) {
     if (vertices.size() < 3 ||
         (ordered_quad && vertices.size() != 6) ||
         vertices.size() >
@@ -3498,20 +3643,20 @@ bool VulkanGlesRenderer::draw_host_texture(
         }
     }
     if (command_slot().draw_count == maximum_batch_draws)
-        submit_commands(false);
+        submit_commands(false, PerfSubmitReason::BatchCapacity);
     wait_for_slot(command_slot());
     const auto vertex_bytes =
         static_cast<VkDeviceSize>(vertices.size()) * sizeof(GpuVertex);
-    if (command_slot().vertex.buffer == VK_NULL_HANDLE ||
-        vertex_bytes >
-            command_slot().vertex.size -
-                command_slot().vertex_bytes_used) {
-        submit_commands(false);
+    if (command_slot().vertex.buffer != VK_NULL_HANDLE &&
+        (vertex_bytes > command_slot().vertex.size ||
+         command_slot().vertex_bytes_used >
+             command_slot().vertex.size - vertex_bytes)) {
+        submit_commands(false, PerfSubmitReason::BatchCapacity);
         wait_for_slot(command_slot());
-        ensure_buffer(command_slot().vertex,
-                      std::max(minimum_vertex_arena_bytes, vertex_bytes),
-                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     }
+    ensure_buffer(command_slot().vertex,
+                  std::max(minimum_vertex_arena_bytes, vertex_bytes),
+                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     auto& commands = command_slot();
     ensure_buffer(commands.uniform,
                   uniform_stride_ * maximum_batch_draws,
@@ -3523,7 +3668,22 @@ bool VulkanGlesRenderer::draw_host_texture(
     texture_state.texture_units[0].enabled = true;
     texture_state.texture_units[0].environment.mode =
         gles_abi::modulate;
-    const auto uniforms = fixed_function_state(texture_state);
+    texture_state.texture_units[0].rectangle =
+        source_clamp.has_value();
+    auto uniforms = fixed_function_state(texture_state);
+    if (source_clamp) {
+        auto& unit = uniforms.units[0];
+        unit.scales_rectangle[3] = 1.0F;
+        unit.clamp_rectangle = {
+            static_cast<float>(source_clamp->x),
+            static_cast<float>(source_clamp->y),
+            static_cast<float>(
+                static_cast<std::int64_t>(source_clamp->x) +
+                source_clamp->width - 1),
+            static_cast<float>(
+                static_cast<std::int64_t>(source_clamp->y) +
+                source_clamp->height - 1)};
+    }
     upload(commands.vertex, vertices.data(),
            static_cast<std::size_t>(vertex_bytes), vertex_offset);
     upload(commands.uniform, &uniforms, sizeof(uniforms),
@@ -3718,62 +3878,46 @@ bool VulkanGlesRenderer::encode_copy(
         static_cast<std::uint32_t>(scissor_right - scissor_left),
         static_cast<std::uint32_t>(scissor_bottom - scissor_top)};
 
-    const auto source_cpu_generation = source.cpu_generation();
-    const auto source_gpu_generation = source.gpu_generation();
-    const auto destination_cpu_generation = destination.cpu_generation();
-    const auto destination_gpu_generation = destination.gpu_generation();
-    DisplayFrame source_frame;
-    DisplayFrame destination_frame;
-    {
-        auto mapping =
-            source.map_cpu(false, PerfCpuMapReason::HostUpload);
-        source_frame = mapping.frame();
-    }
-    {
-        auto mapping = destination.map_cpu(
-            false, PerfCpuMapReason::HostUpload);
-        destination_frame = mapping.frame();
-    }
-    auto source_cpu_damage =
-        source_cpu_generation > source_gpu_generation
-            ? source.cpu_damage_rectangles()
-            : std::vector<HostRectangle>{};
-    auto destination_cpu_damage =
-        destination_cpu_generation > destination_gpu_generation
-            ? destination.cpu_damage_rectangles()
-            : std::vector<HostRectangle>{};
+    auto source_preparation = capture_surface_preparation(source);
+    auto destination_preparation =
+        capture_surface_preparation(destination);
 
     try {
         {
             std::lock_guard lock{mutex_};
             auto& source_target = prepare_host_surface(
-                source, source_frame, source_cpu_generation,
-                source_gpu_generation, std::move(source_cpu_damage));
+                source, source_preparation.cpu_frame,
+                source_preparation.cpu_generation,
+                source_preparation.gpu_generation,
+                std::move(source_preparation.cpu_damage));
             auto& destination_target = prepare_host_surface(
-                destination, destination_frame, destination_cpu_generation,
-                destination_gpu_generation,
-                std::move(destination_cpu_damage));
+                destination, destination_preparation.cpu_frame,
+                destination_preparation.cpu_generation,
+                destination_preparation.gpu_generation,
+                std::move(destination_preparation.cpu_damage));
             if (!source_target.valid || !destination_target.valid)
                 return false;
             if (mode != HostCompositeMode::Copy ||
                 rotation != HostRotation::Identity ||
                 scissor_rectangle != destination_rectangle) {
                 if (command_slot().draw_count == maximum_batch_draws)
-                    submit_commands(false);
+                    submit_commands(false,
+                                    PerfSubmitReason::BatchCapacity);
                 wait_for_slot(command_slot());
                 constexpr auto vertex_count = 6U;
                 constexpr auto vertex_bytes =
                     vertex_count * sizeof(GpuVertex);
-                if (command_slot().vertex.buffer == VK_NULL_HANDLE ||
-                    vertex_bytes >
-                        command_slot().vertex.size -
-                            command_slot().vertex_bytes_used) {
-                    submit_commands(false);
+                if (command_slot().vertex.buffer != VK_NULL_HANDLE &&
+                    (vertex_bytes > command_slot().vertex.size ||
+                     command_slot().vertex_bytes_used >
+                         command_slot().vertex.size - vertex_bytes)) {
+                    submit_commands(false,
+                                    PerfSubmitReason::BatchCapacity);
                     wait_for_slot(command_slot());
-                    ensure_buffer(command_slot().vertex,
-                                  minimum_vertex_arena_bytes,
-                                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
                 }
+                ensure_buffer(command_slot().vertex,
+                              minimum_vertex_arena_bytes,
+                              VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
                 auto& commands = command_slot();
                 ensure_buffer(commands.uniform,
                               uniform_stride_ * maximum_batch_draws,
@@ -4163,8 +4307,9 @@ bool VulkanGlesRenderer::encode_copy(
             }
             add_damage(destination_target.dirty, scissor_rectangle);
         }
-        source.mark_gpu_synchronized(source_cpu_generation);
-        destination.mark_gpu_synchronized(destination_cpu_generation);
+        source.mark_gpu_synchronized(source_preparation.cpu_generation);
+        destination.mark_gpu_synchronized(
+            destination_preparation.cpu_generation);
         static_cast<void>(
             destination.mark_gpu_write(scissor_rectangle));
         return true;
@@ -4244,42 +4389,23 @@ bool VulkanGlesRenderer::encode_copy_triangles(
             {}};
     }
 
-    const auto source_cpu_generation = source.cpu_generation();
-    const auto source_gpu_generation = source.gpu_generation();
-    const auto destination_cpu_generation = destination.cpu_generation();
-    const auto destination_gpu_generation = destination.gpu_generation();
-    DisplayFrame source_frame;
-    DisplayFrame destination_frame;
-    {
-        auto mapping =
-            source.map_cpu(false, PerfCpuMapReason::HostUpload);
-        source_frame = mapping.frame();
-    }
-    {
-        auto mapping =
-            destination.map_cpu(false, PerfCpuMapReason::HostUpload);
-        destination_frame = mapping.frame();
-    }
-    auto source_cpu_damage =
-        source_cpu_generation > source_gpu_generation
-            ? source.cpu_damage_rectangles()
-            : std::vector<HostRectangle>{};
-    auto destination_cpu_damage =
-        destination_cpu_generation > destination_gpu_generation
-            ? destination.cpu_damage_rectangles()
-            : std::vector<HostRectangle>{};
+    auto source_preparation = capture_surface_preparation(source);
+    auto destination_preparation =
+        capture_surface_preparation(destination);
 
     try {
         {
             std::lock_guard lock{mutex_};
             auto& source_target = prepare_host_surface(
-                source, source_frame, source_cpu_generation,
-                source_gpu_generation, std::move(source_cpu_damage));
+                source, source_preparation.cpu_frame,
+                source_preparation.cpu_generation,
+                source_preparation.gpu_generation,
+                std::move(source_preparation.cpu_damage));
             auto& destination_target = prepare_host_surface(
-                destination, destination_frame,
-                destination_cpu_generation,
-                destination_gpu_generation,
-                std::move(destination_cpu_damage));
+                destination, destination_preparation.cpu_frame,
+                destination_preparation.cpu_generation,
+                destination_preparation.gpu_generation,
+                std::move(destination_preparation.cpu_damage));
             if (!source_target.valid || !destination_target.valid ||
                 !draw_host_texture(
                     source_target, destination_target, destination.key(),
@@ -4291,8 +4417,9 @@ bool VulkanGlesRenderer::encode_copy_triangles(
             }
             add_damage(destination_target.dirty, scissor);
         }
-        source.mark_gpu_synchronized(source_cpu_generation);
-        destination.mark_gpu_synchronized(destination_cpu_generation);
+        source.mark_gpu_synchronized(source_preparation.cpu_generation);
+        destination.mark_gpu_synchronized(
+            destination_preparation.cpu_generation);
         static_cast<void>(destination.mark_gpu_write(scissor));
         return true;
     } catch (...) {
@@ -4486,7 +4613,7 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                        maximum_texture_cache_entries;
         };
         if (texture_cache_over_budget() && command_recording_) {
-            submit_commands(false);
+            submit_commands(false, PerfSubmitReason::TextureHazard);
         }
         if (texture_cache_over_budget()) {
             wait_for_all_slots();
@@ -4563,17 +4690,26 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                 level ? level->argb.data() : white_pixel.data();
             const auto byte_count = static_cast<VkDeviceSize>(width) * height *
                                     sizeof(std::uint32_t);
-            const auto key = TextureKey{
-                level ? state.resource_owner : 0,
-                level ? unit.texture : 0,
-                unit.rectangle};
+            TextureKey key;
+            key.owner = level ? state.resource_owner : 0;
+            key.rectangle = unit.rectangle;
+            if (level && level->host_surface) {
+                // CoreSurface is the pixel resource. GLES texture names are
+                // transient views and older firmware routinely deletes and
+                // recreates those names while retaining the same surface.
+                key.surface = level->host_surface->key();
+                key.uses_surface = true;
+            } else {
+                key.name = level ? unit.texture : 0;
+            }
             auto& cached = texture_cache_[key];
             cached.last_used = ++texture_use_sequence_;
             if (cached.image.image == VK_NULL_HANDLE ||
                 cached.image.width != width ||
                 cached.image.height != height) {
                 if (cached.image.image != VK_NULL_HANDLE) {
-                    submit_commands(false);
+                    submit_commands(
+                        false, PerfSubmitReason::ResourceLifetime);
                     wait_for_all_slots();
                 }
                 auto replacement = create_image(
@@ -4596,7 +4732,8 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                 cached.revision != texture_revisions[index];
             if (texture_changed[index] &&
                 cached.last_upload_batch == batch_sequence_) {
-                submit_commands(false);
+                submit_commands(false,
+                                PerfSubmitReason::TextureHazard);
             }
             for (std::size_t previous = 0; previous < index; ++previous) {
                 if (selected_textures[previous] == &cached) {
@@ -4608,7 +4745,8 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
 
         if (texture_cache_over_budget()) {
             if (command_recording_)
-                submit_commands(false);
+                submit_commands(false,
+                                PerfSubmitReason::TextureHazard);
             wait_for_all_slots();
             while (texture_cache_over_budget()) {
                 auto oldest = texture_cache_.end();
@@ -4637,19 +4775,19 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         }
 
         if (command_slot().draw_count == maximum_batch_draws) {
-            submit_commands(false);
+            submit_commands(false, PerfSubmitReason::BatchCapacity);
         }
         wait_for_slot(command_slot());
-        if (command_slot().vertex.buffer == VK_NULL_HANDLE ||
-            vertex_bytes >
-                command_slot().vertex.size -
-                    command_slot().vertex_bytes_used) {
-            submit_commands(false);
+        if (command_slot().vertex.buffer != VK_NULL_HANDLE &&
+            (vertex_bytes > command_slot().vertex.size ||
+             command_slot().vertex_bytes_used >
+                 command_slot().vertex.size - vertex_bytes)) {
+            submit_commands(false, PerfSubmitReason::BatchCapacity);
             wait_for_slot(command_slot());
-            ensure_buffer(command_slot().vertex,
-                          std::max(vertex_bytes, minimum_vertex_arena_bytes),
-                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         }
+        ensure_buffer(command_slot().vertex,
+                      std::max(vertex_bytes, minimum_vertex_arena_bytes),
+                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         const auto align_staging = [](VkDeviceSize value) {
             return (value + staging_alignment - 1U) &
                    ~(staging_alignment - 1U);
@@ -4665,9 +4803,11 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                     selected_byte_counts[index];
             }
         }
-        if (staging_end > command_slot().staging.size) {
+        if (command_slot().staging.buffer != VK_NULL_HANDLE &&
+            staging_end > command_slot().staging.size) {
             if (command_recording_)
-                submit_commands(false);
+                submit_commands(false,
+                                PerfSubmitReason::StagingCapacity);
             wait_for_slot(command_slot());
             staging_end = 0;
             if (!gpu_target.valid)
@@ -4680,11 +4820,11 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                         selected_byte_counts[index];
                 }
             }
-            ensure_buffer(
-                command_slot().staging,
-                std::max(staging_end, minimum_staging_arena_bytes),
-                VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         }
+        ensure_buffer(
+            command_slot().staging,
+            std::max(staging_end, minimum_staging_arena_bytes),
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
         auto& commands = command_slot();
         ensure_buffer(commands.uniform,
                       uniform_stride_ * maximum_batch_draws,

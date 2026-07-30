@@ -30,6 +30,7 @@ struct TextureEnvironment {
     ivec4 rgb_operands;
     ivec4 alpha_operands;
     vec4 scales_rectangle;
+    vec4 clamp_rectangle;
 };
 
 layout(std140, binding = 0) uniform FixedFunctionState {
@@ -75,8 +76,13 @@ float combine_component(int mode, float a, float b, float c) {
 }
 
 vec4 sample_image(
-    sampler2D image, vec2 coordinate, bool rectangle_coordinates) {
+    sampler2D image, vec2 coordinate, bool rectangle_coordinates,
+    bool clamp_coordinates, vec4 clamp_rectangle) {
     if (!rectangle_coordinates) return texture(image, coordinate);
+    if (clamp_coordinates) {
+        coordinate = clamp(
+            coordinate, clamp_rectangle.xy, clamp_rectangle.zw);
+    }
     vec2 size = vec2(textureSize(image, 0));
     vec2 texel = (floor(coordinate) + vec2(0.5)) / size;
     return texture(image, texel);
@@ -149,14 +155,18 @@ void main() {
     if (fixed_state.units[0].mode_combine_enabled.w != 0) {
         vec4 sampled = sample_image(
             image0, texture0,
-            fixed_state.units[0].scales_rectangle.z != 0.0);
+            fixed_state.units[0].scales_rectangle.z != 0.0,
+            fixed_state.units[0].scales_rectangle.w != 0.0,
+            fixed_state.units[0].clamp_rectangle);
         result = apply_environment(
             fixed_state.units[0], sampled, primary_color, result);
     }
     if (fixed_state.units[1].mode_combine_enabled.w != 0) {
         vec4 sampled = sample_image(
             image1, texture1,
-            fixed_state.units[1].scales_rectangle.z != 0.0);
+            fixed_state.units[1].scales_rectangle.z != 0.0,
+            fixed_state.units[1].scales_rectangle.w != 0.0,
+            fixed_state.units[1].clamp_rectangle);
         result = apply_environment(
             fixed_state.units[1], sampled, primary_color, result);
     }
