@@ -335,7 +335,11 @@ AddressSpace::share_pages(std::uint32_t address, std::uint32_t size) {
 
   std::vector<std::shared_ptr<GuestPageBacking>> result;
   result.reserve(size / page_size);
+  const auto initial_tracking_epoch =
+      GuestPageBacking::shared_write_tracking_epoch();
+  std::size_t tracking_transitions = 0;
   bool has_tracked_shared_backing = false;
+  bool tracked_backing_may_have_aliases = false;
   for (std::uint64_t base = address; base < end; base += page_size) {
     auto &page = ensure_page_locked(static_cast<std::uint32_t>(base));
     if (!page.backing) {
@@ -349,14 +353,23 @@ AddressSpace::share_pages(std::uint32_t address, std::uint32_t size) {
     page.shared_writable = true;
     page.copy_on_write_possible = false;
     if (tracks_write_locked(static_cast<std::uint32_t>(base), page_size)) {
-      static_cast<void>(page.backing->enable_shared_write_tracking());
+      // A private page has no other virtual alias whose direct JIT write
+      // entry can become stale. refresh_jit_page_locked below handles this
+      // mapping directly; retain the full scan only for genuinely shared
+      // backings or a concurrently published tracking transition.
+      tracked_backing_may_have_aliases |= !page.backing.unique();
+      if (page.backing->enable_shared_write_tracking())
+        ++tracking_transitions;
       has_tracked_shared_backing = true;
     }
     refresh_jit_page_locked(static_cast<std::uint32_t>(base));
     result.push_back(page.backing);
   }
-  if (has_tracked_shared_backing)
-    invalidate_shared_write_jit_pages_locked();
+  if (has_tracked_shared_backing) {
+    finish_shared_write_tracking_locked(
+        initial_tracking_epoch, tracking_transitions,
+        tracked_backing_may_have_aliases);
+  }
   return result;
 }
 
@@ -380,6 +393,9 @@ bool AddressSpace::map_page_backings(
   if (vm_map_.overlaps(address, end)) return false;
   invalidate_mapping_leases_locked(address, end);
   const auto shared_writable = mode == PageMappingMode::Shared;
+  const auto initial_tracking_epoch =
+      GuestPageBacking::shared_write_tracking_epoch();
+  std::size_t tracking_transitions = 0;
   ensure_unique_page_map_locked();
   for (std::size_t index = 0; index < backings.size(); ++index) {
     const auto base =
@@ -396,15 +412,20 @@ bool AddressSpace::map_page_backings(
                    !shared_writable});
     static_cast<void>(inserted);
     if (shared_writable && tracks_write_locked(base, page_size)) {
-      static_cast<void>(page->second.backing->enable_shared_write_tracking());
+      if (page->second.backing->enable_shared_write_tracking())
+        ++tracking_transitions;
       has_tracked_shared_backing = true;
     }
     cache_page_locked(base, page->second);
   }
   vm_map_.map_or(address, end, permissions);
   add_page_permissions_locked(address, end, permissions);
-  if (has_tracked_shared_backing)
-    invalidate_shared_write_jit_pages_locked();
+  if (has_tracked_shared_backing) {
+    // Imported backings are supplied by an existing shared object and can
+    // already have aliases in this task.
+    finish_shared_write_tracking_locked(initial_tracking_epoch,
+                                        tracking_transitions, true);
+  }
   refresh_jit_page_range_locked(address, end);
   if (mapping_lease_token) {
     auto token = next_mapping_lease_token_++;
@@ -732,6 +753,7 @@ void AddressSpace::ensure_jit_page_tables_locked() {
     jit_read_page_table_ = std::make_unique<JitPageTableStorage>();
   if (!jit_write_page_table_)
     jit_write_page_table_ = std::make_unique<JitPageTableStorage>();
+  direct_jit_write_pages_.clear();
   for (const auto &[address, page] : *pages_) {
     static_cast<void>(page);
     refresh_jit_page_locked(address);
@@ -748,7 +770,12 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address) {
                           ? &jit_write_page_table_->entries()[base / page_size]
                           : nullptr;
   if (read_entry) *read_entry = nullptr;
-  if (write_entry) *write_entry = nullptr;
+  if (write_entry) {
+    if (*write_entry != nullptr) {
+      *write_entry = nullptr;
+      direct_jit_write_pages_.erase(base);
+    }
+  }
   if (!jit_page_table_enabled_) return;
 
   const auto flags = page_permission_locked(base / page_size);
@@ -776,6 +803,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address) {
   }
   *write_entry =
       reinterpret_cast<std::uint8_t *>(page->backing->bytes.data());
+  direct_jit_write_pages_.insert(base);
 }
 
 void AddressSpace::refresh_jit_page_range_locked(std::uint32_t address,
@@ -793,15 +821,38 @@ void AddressSpace::invalidate_shared_write_jit_pages_locked() {
   if (!jit_write_page_table_)
     return;
   auto **entries = jit_write_page_table_->entries();
-  for (const auto &[address, page] : *pages_) {
-    if (page.backing && page.backing->shared_write_tracking_enabled())
-      entries[address / page_size] = nullptr;
+  for (auto address = direct_jit_write_pages_.begin();
+       address != direct_jit_write_pages_.end();) {
+    const auto *page = find_page_locked(*address);
+    if (page && page->backing &&
+        page->backing->shared_write_tracking_enabled()) {
+      entries[*address / page_size] = nullptr;
+      address = direct_jit_write_pages_.erase(address);
+    } else {
+      ++address;
+    }
   }
+}
+
+void AddressSpace::finish_shared_write_tracking_locked(
+    std::uint64_t initial_epoch, std::size_t local_transitions,
+    bool backing_may_have_aliases) {
+  // Capture before scanning. A transition racing after this point retains a
+  // newer epoch and is handled by the next execution safe point.
+  const auto observed_epoch =
+      GuestPageBacking::shared_write_tracking_epoch();
+  const auto expected_epoch =
+      initial_epoch + static_cast<std::uint64_t>(local_transitions);
+  if (backing_may_have_aliases || observed_epoch != expected_epoch)
+    invalidate_shared_write_jit_pages_locked();
+  observed_shared_write_tracking_epoch_.store(observed_epoch,
+                                              std::memory_order_release);
 }
 
 void AddressSpace::clear_jit_page_table_locked() {
   if (jit_read_page_table_) jit_read_page_table_->clear();
   if (jit_write_page_table_) jit_write_page_table_->clear();
+  direct_jit_write_pages_.clear();
 }
 
 std::byte AddressSpace::read_byte_locked(const Page *page,
@@ -1190,6 +1241,9 @@ bool AddressSpace::track_write_generation(std::uint32_t address,
   std::ranges::sort(
       tracked_write_ranges_, {},
       [](const TrackedWriteRange &range) { return range.begin; });
+  const auto initial_tracking_epoch =
+      GuestPageBacking::shared_write_tracking_epoch();
+  std::size_t tracking_transitions = 0;
   bool has_shared_backing = false;
   const auto tracking_end = page_range_end(address, size);
   for (std::uint64_t base = page_base(address); base < tracking_end;
@@ -1197,11 +1251,14 @@ bool AddressSpace::track_write_generation(std::uint32_t address,
     auto *page = find_page_locked(static_cast<std::uint32_t>(base));
     if (page == nullptr || !page->shared_writable || !page->backing)
       continue;
-    static_cast<void>(page->backing->enable_shared_write_tracking());
+    if (page->backing->enable_shared_write_tracking())
+      ++tracking_transitions;
     has_shared_backing = true;
   }
-  if (has_shared_backing)
-    invalidate_shared_write_jit_pages_locked();
+  if (has_shared_backing) {
+    finish_shared_write_tracking_locked(initial_tracking_epoch,
+                                        tracking_transitions, true);
+  }
   refresh_jit_page_range_locked(page_base(address), tracking_end);
   return true;
 }

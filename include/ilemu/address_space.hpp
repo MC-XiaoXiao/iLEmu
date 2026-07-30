@@ -12,6 +12,7 @@
 #include <shared_mutex>
 #include <span>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "ilemu/file_page_cache.hpp"
@@ -249,6 +250,9 @@ private:
   void refresh_jit_page_locked(std::uint32_t address);
   void refresh_jit_page_range_locked(std::uint32_t address,
                                      std::uint64_t end);
+  void finish_shared_write_tracking_locked(
+      std::uint64_t initial_epoch, std::size_t local_transitions,
+      bool backing_may_have_aliases);
   void invalidate_shared_write_jit_pages_locked();
   void clear_jit_page_table_locked();
   [[nodiscard]] static std::byte read_byte_locked(const Page *page,
@@ -291,6 +295,11 @@ private:
       page_permissions_{};
   std::unique_ptr<JitPageTableStorage> jit_read_page_table_;
   std::unique_ptr<JitPageTableStorage> jit_write_page_table_;
+  // Only pages with a live direct-write entry can need invalidation when a
+  // physical backing becomes write-tracked in another address space.  Keep a
+  // sparse index instead of rescanning every resident guest page at each
+  // CoreSurface/Mach shared-memory publication.
+  std::unordered_set<std::uint32_t> direct_jit_write_pages_;
   bool jit_page_table_enabled_{};
   std::atomic<std::uint64_t> observed_shared_write_tracking_epoch_{};
   std::vector<TrackedWriteRange> tracked_write_ranges_;
