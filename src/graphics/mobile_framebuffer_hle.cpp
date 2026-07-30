@@ -541,7 +541,7 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall &call) {
         }
       }
     }
-    if (!command_encoder_->submit()) {
+    if (!command_encoder_->submit(PerfSubmitReason::Compositor)) {
       scanout_contents_valid_ = false;
       return false;
     }

@@ -29,6 +29,7 @@ public:
   Mbx2dHle(UserlandHleRegistry &registry, std::shared_ptr<DisplayState> display,
            std::shared_ptr<SurfaceStore> surfaces = {},
            std::shared_ptr<PresentationTracker> presentations = {});
+  ~Mbx2dHle();
 
   void reset();
   void inherit_state(const Mbx2dHle &parent);
@@ -43,6 +44,11 @@ private:
     std::uint32_t core_surface_id{};
     bool framebuffer{};
     std::optional<SurfaceStore::Backing> client_backing;
+    // Raw client memory is CPU-owned. A source-only host snapshot is refreshed
+    // at the firmware's FlushSurfaces publication boundary and never exposed
+    // as an MBX destination.
+    std::shared_ptr<HostSurface> client_host_source;
+    bool client_host_source_dirty{true};
   };
   struct Binding {
     std::uint32_t surface{};
@@ -81,6 +87,7 @@ private:
     bool framebuffer{};
     std::uint32_t width{};
     std::uint32_t height{};
+    std::uint32_t surface_handle{};
   };
   struct BlitRegion {
     std::int64_t source_x{};
@@ -102,6 +109,12 @@ private:
   [[nodiscard]] std::uint32_t
   allocate_client_surface(std::uint32_t base, std::uint32_t allocation_size,
                           std::uint32_t width);
+  [[nodiscard]] std::optional<ResolvedSurface>
+  resolve_source(UserlandHleCall &call,
+                 const std::optional<Binding> &binding);
+  void retire_client_host_source(Surface &surface);
+  void release_retired_client_host_sources();
+  void release_client_renderer_resources();
   [[nodiscard]] std::uint32_t allocate_context();
   [[nodiscard]] RenderState *select_state(UserlandHleCall &call,
                                           bool context_api);
@@ -154,7 +167,8 @@ private:
                  UserlandHleCall &call);
   [[nodiscard]] std::optional<HostCompositeMode>
   host_composite_mode(const RenderState &state) const;
-  [[nodiscard]] bool submit_host_commands(bool wait);
+  [[nodiscard]] bool submit_host_commands(bool wait,
+                                          PerfSubmitReason reason);
   void submit_destination(UserlandHleCall &call, bool context_api);
   void deferred(UserlandHleCall &call);
 
@@ -176,6 +190,9 @@ private:
   std::shared_ptr<SurfaceStore> surface_store_;
   std::shared_ptr<PresentationTracker> presentation_tracker_;
   std::shared_ptr<KernelSharedState> shared_state_;
+  std::uint64_t renderer_owner_{};
+  std::uint64_t next_client_host_source_{1};
+  std::vector<HostSurfaceKey> retired_client_host_sources_;
   std::shared_ptr<GlesRenderer> host_graphics_;
   std::unique_ptr<CommandEncoder> command_encoder_;
 };

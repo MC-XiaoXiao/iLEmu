@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -72,15 +71,6 @@ bool is_valid_display(std::uint32_t display) {
     return display == egl_default_display;
 }
 
-std::uint64_t allocate_renderer_owner() {
-    static std::atomic<std::uint64_t> next_owner{1};
-    for (;;) {
-        const auto owner = next_owner.fetch_add(1, std::memory_order_relaxed);
-        if (owner != 0)
-            return owner;
-    }
-}
-
 } // namespace
 
 OpenGlesHle::OpenGlesHle(UserlandHleRegistry& registry,
@@ -89,7 +79,7 @@ OpenGlesHle::OpenGlesHle(UserlandHleRegistry& registry,
     : display_{std::move(display)},
       surface_store_{surfaces ? std::move(surfaces)
                               : std::make_shared<SurfaceStore>()},
-      renderer_owner_{allocate_renderer_owner()},
+      renderer_owner_{allocate_gles_renderer_owner()},
       renderer_{shared_gles_renderer()},
       command_encoder_{renderer_->create_command_encoder()} {
     register_egl(registry);
@@ -106,7 +96,7 @@ void OpenGlesHle::reset() {
     contexts_.clear();
     surfaces_.clear();
     resources_.reset();
-    renderer_owner_ = allocate_renderer_owner();
+    renderer_owner_ = allocate_gles_renderer_owner();
     next_context_ = 0x00010001U;
     next_surface_ = 0x00020001U;
     egl_error_ = egl_success;
@@ -120,7 +110,7 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent) {
     contexts_ = parent.contexts_;
     surfaces_ = parent.surfaces_;
     resources_.inherit_state(parent.resources_);
-    renderer_owner_ = allocate_renderer_owner();
+    renderer_owner_ = allocate_gles_renderer_owner();
     next_context_ = parent.next_context_;
     next_surface_ = parent.next_surface_;
     egl_error_ = parent.egl_error_;
@@ -709,7 +699,7 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed) {
         if (identifier &&
             !surface_store_->write_argb(
                 call.memory(), *identifier, target->pixels)) {
-            rendered = false;
+                rendered = false;
         }
     }
     if (rendered && !pixmap_target) {

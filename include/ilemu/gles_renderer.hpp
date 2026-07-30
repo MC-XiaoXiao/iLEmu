@@ -93,6 +93,9 @@ struct VulkanPresenterConfiguration {
 // guest processes. Per-process EGL/GLES resources remain in OpenGlesHle.
 // Configure the host policy before the first renderer is requested.
 void configure_gles_backend(GlesBackend backend);
+// Allocates a host-wide namespace for process-local renderer resources.
+// Owner zero remains reserved for shared CoreSurface targets.
+[[nodiscard]] std::uint64_t allocate_gles_renderer_owner();
 // The command-line host points this at its writable data partition before the
 // first renderer is created. Empty disables persistent Vulkan pipeline data.
 void configure_gles_pipeline_cache(std::filesystem::path path);

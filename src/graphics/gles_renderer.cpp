@@ -1,6 +1,7 @@
 #include "ilemu/gles_renderer.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -321,6 +322,16 @@ void configure_gles_backend(GlesBackend backend) {
             "GLES backend cannot change after renderer initialization"};
     }
     state.backend = backend;
+}
+
+std::uint64_t allocate_gles_renderer_owner() {
+    static std::atomic<std::uint64_t> next_owner{1};
+    for (;;) {
+        const auto owner =
+            next_owner.fetch_add(1, std::memory_order_relaxed);
+        if (owner != 0)
+            return owner;
+    }
 }
 
 void configure_gles_pipeline_cache(std::filesystem::path path) {
