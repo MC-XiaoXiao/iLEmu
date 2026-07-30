@@ -827,7 +827,12 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
         const auto options = call.argument(1);
         const auto synchronized = surfaces_->synchronize_for_cpu(
             call.memory(), buffer->id,
-            (options & core_surface_abi::lock_avoid_sync) != 0);
+            SurfaceStore::CpuSynchronizationOptions{
+                .avoid_sync =
+                    (options & core_surface_abi::lock_avoid_sync) != 0,
+                .read_only =
+                    (options & core_surface_abi::lock_read_only) != 0,
+            });
         if (synchronized)
             buffer->lock_options.push_back(options);
         call.set_return(synchronized ? success : 1U);

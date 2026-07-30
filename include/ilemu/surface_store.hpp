@@ -59,6 +59,11 @@ surface_bytes_per_pixel(std::uint32_t pixel_format) {
 // space without assuming that both tasks chose the same virtual address.
 class SurfaceStore {
   public:
+    struct CpuSynchronizationOptions {
+        bool avoid_sync{};
+        bool read_only{};
+    };
+
     ~SurfaceStore();
 
     struct Provenance {
@@ -115,7 +120,8 @@ class SurfaceStore {
     // pixels are copied into the guest mapping for firmware access.
     [[nodiscard]] bool synchronize_for_cpu(AddressSpace& memory,
                                            std::uint32_t id,
-                                           bool avoid_sync = false) const;
+                                           CpuSynchronizationOptions options)
+        const;
     // Imports guest CPU writes even when a newer GPU generation exists. This
     // is the unlock/flush direction, not a GPU readback request.
     [[nodiscard]] bool synchronize_from_guest(AddressSpace& memory,

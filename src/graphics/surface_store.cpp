@@ -464,7 +464,7 @@ SurfaceStore::read_guest_argb_region(
 
 bool SurfaceStore::synchronize_for_cpu(AddressSpace& memory,
                                        std::uint32_t id,
-                                       bool avoid_sync) const {
+                                       CpuSynchronizationOptions options) const {
     const auto backing = find(id);
     if (!backing)
         return false;
@@ -473,10 +473,13 @@ bool SurfaceStore::synchronize_for_cpu(AddressSpace& memory,
     const auto surface = host_surface(id);
     if (!surface || surface->gpu_generation() <= surface->cpu_generation())
         return true;
-    // AvoidSync accepts ownership without waiting for a GPU readback. It is a
-    // synchronization policy, not a try-lock flag, so the firmware lock still
-    // succeeds when native contents are newer.
-    if (avoid_sync) return true;
+    // Real devices expose one shared surface allocation. ReadOnly|AvoidSync
+    // can therefore consume producer-complete pixels without an extra cache
+    // operation. Our native renderer has a separate GPU image, so skipping
+    // materialization here would expose stale Guest bytes (for example to the
+    // firmware snapshot encoder). Preserve AvoidSync only for writable
+    // ownership, where the caller did not request readable contents.
+    if (options.avoid_sync && !options.read_only) return true;
 
     const auto sync_state = shared_sync_state(id);
     if (!sync_state) return false;

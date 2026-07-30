@@ -611,7 +611,7 @@ Mbx2dHle::read_region(const ResolvedSurface &surface, std::int64_t x,
       surface.host_surface->gpu_generation() >
           surface.host_surface->cpu_generation() &&
       !surface_store_->synchronize_for_cpu(call.memory(),
-                                            surface.core_surface_id)) {
+                                            surface.core_surface_id, {})) {
     return std::nullopt;
   }
   const auto &backing = *surface.backing;
@@ -702,7 +702,7 @@ bool Mbx2dHle::write_region(const ResolvedSurface &surface, std::int64_t x,
       surface.host_surface->gpu_generation() >
           surface.host_surface->cpu_generation() &&
       !surface_store_->synchronize_for_cpu(call.memory(),
-                                            surface.core_surface_id)) {
+                                            surface.core_surface_id, {})) {
     return false;
   }
   const auto backing_bytes_per_pixel =
@@ -935,6 +935,13 @@ std::optional<HostCompositeMode>
 Mbx2dHle::host_composite_mode(const RenderState &state) const {
   if (!state.enabled_features.contains(mbx2d_abi::feature_blend))
     return HostCompositeMode::Copy;
+  if (!state.blend.complex &&
+      state.blend.source_factor ==
+          mbx2d_abi::layerkit_source_over_source_word &&
+      state.blend.destination_factor ==
+          mbx2d_abi::layerkit_source_over_destination_word) {
+    return HostCompositeMode::PremultipliedSourceOver;
+  }
   if (!state.blend.complex &&
       state.blend.source_factor ==
           mbx2d_abi::layerkit_crossfade_source_word &&
