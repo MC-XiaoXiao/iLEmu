@@ -101,8 +101,6 @@ public:
   using SchedulerPreemptionQuery = std::function<bool(std::size_t)>;
   using SignalDeliveryHandler =
       std::function<std::uint32_t(std::uint32_t, std::uint32_t)>;
-  using WaitChildHandler =
-      std::function<WaitChildResult(std::int32_t, bool)>;
   using TaskMemoryRegionQuery = std::function<
       std::optional<AddressSpace::MappingRegion>(std::uint32_t, std::uint32_t)>;
 
@@ -118,7 +116,8 @@ public:
   [[nodiscard]] ProcessContext &process() { return process_; }
   [[nodiscard]] const ProcessContext &process() const { return process_; }
   void exit_process(std::uint32_t status, std::uint32_t signal = 0);
-  bool reap_process();
+  [[nodiscard]] WaitChildResult wait_child(std::int32_t target_pid,
+                                           bool reap);
   void set_halt_on_unknown(bool value) { halt_on_unknown_ = value; }
   void set_thread_create_handler(ThreadCreateHandler handler) {
     thread_create_handler_ = std::move(handler);
@@ -167,9 +166,6 @@ public:
   }
   void set_signal_delivery_handler(SignalDeliveryHandler handler) {
     signal_delivery_handler_ = std::move(handler);
-  }
-  void set_wait_child_handler(WaitChildHandler handler) {
-    wait_child_handler_ = std::move(handler);
   }
   void set_task_memory_region_query(TaskMemoryRegionQuery query) {
     task_memory_region_query_ = std::move(query);
@@ -573,7 +569,6 @@ private:
   TaskPriorityHandler task_priority_handler_;
   SchedulerPreemptionQuery scheduler_preemption_query_;
   SignalDeliveryHandler signal_delivery_handler_;
-  WaitChildHandler wait_child_handler_;
   TaskMemoryRegionQuery task_memory_region_query_;
   std::map<std::size_t, SchedulerYieldRequest> scheduler_yields_;
   std::map<std::size_t, PendingWait> pending_waits_;

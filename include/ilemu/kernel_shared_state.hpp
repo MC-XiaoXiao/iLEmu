@@ -62,7 +62,6 @@ struct ProcessContext {
   std::int32_t thread_base_priority{xnu792::scheduler::default_base_priority};
   std::int32_t nice_value{};
   bool exited{};
-  bool reaped{};
   bool waiting_for_events{};
   std::uint32_t exit_status{};
   std::uint32_t termination_signal{};

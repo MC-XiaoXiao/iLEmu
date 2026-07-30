@@ -1565,34 +1565,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
           }
           return darwin::error::no_such_process;
         });
-    runtime.kernel->set_wait_child_handler(
-        [runtime_ptr, &runtimes](std::int32_t target_pid, bool reap) {
-          CompatibilityKernel::WaitChildResult result;
-          for (auto &child : runtimes) {
-            const auto &child_process = child->kernel->process();
-            if (child_process.reaped ||
-                child_process.parent_pid !=
-                    runtime_ptr->kernel->process().pid ||
-                (target_pid != -1 &&
-                 static_cast<std::uint32_t>(target_pid) !=
-                     child_process.pid)) {
-              continue;
-            }
-            result.has_child = true;
-            if (!child_process.exited) {
-              continue;
-            }
-            result.child_pid = child_process.pid;
-            result.status = child_process.termination_signal != 0
-                                ? child_process.termination_signal & 0x7fU
-                                : (child_process.exit_status & 0xffU) << 8U;
-            if (reap) {
-              static_cast<void>(child->kernel->reap_process());
-            }
-            break;
-          }
-          return result;
-        });
     runtime.kernel->set_task_memory_region_query(
         [&runtimes](std::uint32_t pid, std::uint32_t address)
             -> std::optional<AddressSpace::MappingRegion> {
@@ -2051,35 +2023,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
     for (auto &parent : runtimes) {
       const auto pending_waits = parent->kernel->pending_waits();
       for (const auto &[processor, pending] : pending_waits) {
-        bool has_waitable_child = false;
-        bool completed = false;
-        for (auto &child : runtimes) {
-          const auto &child_process = child->kernel->process();
-          if (child_process.reaped ||
-              child_process.parent_pid != parent->kernel->process().pid ||
-              (pending.target_pid != -1 &&
-               static_cast<std::uint32_t>(pending.target_pid) !=
-                   child_process.pid)) {
-            continue;
-          }
-          has_waitable_child = true;
-          if (!child_process.exited)
-            continue;
-          const auto wait_status =
-              child_process.termination_signal != 0
-                  ? child_process.termination_signal & 0x7fU
-                  : (child_process.exit_status & 0xffU) << 8U;
-          if (parent->kernel->complete_wait(parent->cpus->cpu(processor),
-                                            child_process.pid, wait_status)) {
-            static_cast<void>(child->kernel->reap_process());
-            static_cast<void>(scheduler.make_runnable(
-                XnuThreadId{parent->kernel->process().pid,
-                            static_cast<std::uint32_t>(processor)}));
-            completed = true;
-          }
-          break;
-        }
-        if (!completed && !has_waitable_child) {
+        const auto child = parent->kernel->wait_child(
+            pending.target_pid, false);
+        if (child.child_pid &&
+            parent->kernel->complete_wait(
+                parent->cpus->cpu(processor), *child.child_pid,
+                child.status)) {
+          static_cast<void>(parent->kernel->wait_child(
+              static_cast<std::int32_t>(*child.child_pid), true));
+          static_cast<void>(scheduler.make_runnable(
+              XnuThreadId{parent->kernel->process().pid,
+                          static_cast<std::uint32_t>(processor)}));
+        } else if (!child.has_child) {
           if (parent->kernel->fail_wait(parent->cpus->cpu(processor), 10)) {
             static_cast<void>(scheduler.make_runnable(
                 XnuThreadId{parent->kernel->process().pid,
@@ -2090,7 +2045,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
     }
     for (auto runtime = runtimes.begin(); runtime != runtimes.end();) {
       if (runtime->get() != initial_runtime &&
-          (*runtime)->kernel->process().reaped) {
+          (*runtime)->kernel->process().exited &&
+          !(*runtime)->cpus->has_execution_resources()) {
         if (runtime->get() == display_scanout_owner)
           display_scanout_owner = nullptr;
         runtime_reaper.retire(std::move(*runtime));

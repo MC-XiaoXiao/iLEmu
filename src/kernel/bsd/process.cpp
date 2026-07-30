@@ -114,9 +114,8 @@ void CompatibilityKernel::exit_process(std::uint32_t status,
   process_.termination_signal = signal;
   // Publish the dead identity before tearing down its ports. Mach/graphics
   // observers share this record and must stop routing work to the PID while
-  // ipc_space termination is in progress. The CompatibilityKernel-local flag
-  // remains false until teardown completes, so the process cannot be reaped
-  // out from under this cleanup.
+  // ipc_space termination is in progress. The shared record remains as a
+  // lightweight zombie until its parent consumes it with wait_child().
   {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
     if (auto record = shared_state_->processes.find(process_.pid);
@@ -146,12 +145,31 @@ void CompatibilityKernel::exit_process(std::uint32_t status,
                 "\n");
 }
 
-bool CompatibilityKernel::reap_process() {
-  if (!process_.exited || process_.reaped)
-    return false;
-  process_.reaped = true;
-  shared_state_->processes.erase(process_.pid);
-  return true;
+CompatibilityKernel::WaitChildResult
+CompatibilityKernel::wait_child(std::int32_t target_pid, bool reap) {
+  WaitChildResult result;
+  std::lock_guard mach_lock{shared_state_->mach_mutex};
+  for (auto child = shared_state_->processes.begin();
+       child != shared_state_->processes.end(); ++child) {
+    const auto child_pid = child->first;
+    const auto &record = child->second;
+    if (record.parent_pid != process_.pid ||
+        (target_pid != -1 &&
+         static_cast<std::uint32_t>(target_pid) != child_pid)) {
+      continue;
+    }
+    result.has_child = true;
+    if (!record.exited)
+      continue;
+    result.child_pid = child_pid;
+    result.status = record.termination_signal != 0
+                        ? record.termination_signal & 0x7fU
+                        : (record.exit_status & 0xffU) << 8U;
+    if (reap)
+      shared_state_->processes.erase(child);
+    break;
+  }
+  return result;
 }
 
 void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
@@ -234,9 +252,7 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
       }
     }
     if ((options & 1U) != 0) { // WNOHANG
-      const auto result = wait_child_handler_
-                              ? wait_child_handler_(target_pid, false)
-                              : WaitChildResult{};
+      const auto result = wait_child(target_pid, false);
       if (!result.has_child) {
         bsd_error(cpu, darwin::error::no_child_process);
         return;
@@ -250,10 +266,8 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
         bsd_error(cpu, bsd_support::bad_address);
         return;
       }
-      if (wait_child_handler_) {
-        static_cast<void>(wait_child_handler_(
-            static_cast<std::int32_t>(*result.child_pid), true));
-      }
+      static_cast<void>(wait_child(
+          static_cast<std::int32_t>(*result.child_pid), true));
       output_.write("[process] reap-nohang parent=" +
                     std::to_string(process_.pid) +
                     " child=" + std::to_string(*result.child_pid) + "\n");
