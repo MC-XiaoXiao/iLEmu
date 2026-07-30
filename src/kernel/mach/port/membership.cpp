@@ -72,6 +72,7 @@ bool CompatibilityKernel::dispatch_mach_port_membership_message(
   std::size_t resulting_member_count = 0;
   {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
+    bool added_to_port_set = false;
     const auto target =
         target_task_for_port(*shared_state_, process_.pid, request.remote_port);
     const auto member_entry =
@@ -115,6 +116,7 @@ bool CompatibilityKernel::dispatch_mach_port_membership_message(
           if (std::find(members.begin(), members.end(), member_entry->object) ==
               members.end()) {
             members.push_back(member_entry->object);
+            added_to_port_set = true;
           }
         } else if (!removed) {
           result = kernel_not_in_set;
@@ -131,6 +133,7 @@ bool CompatibilityKernel::dispatch_mach_port_membership_message(
             result = kernel_already_in_set;
           } else {
             members.push_back(member_entry->object);
+            added_to_port_set = true;
           }
         } else if (existing == members.end()) {
           result = kernel_not_in_set;
@@ -139,6 +142,8 @@ bool CompatibilityKernel::dispatch_mach_port_membership_message(
         }
       }
     }
+    if (added_to_port_set)
+      shared_state_->note_mach_queue_topology_change_locked();
     if (set_object != 0) {
       const auto members = shared_state_->mach_port_sets.find(set_object);
       if (members != shared_state_->mach_port_sets.end())

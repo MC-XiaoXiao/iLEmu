@@ -7,9 +7,8 @@ namespace ilemu::xnu792::ipc {
 namespace {
 
 constexpr std::size_t right_count = 5;
-constexpr MachTypeMask reference_counted_types = type_mask(Right::Send) |
-                                                 type_mask(Right::SendOnce) |
-                                                 type_mask(Right::DeadName);
+constexpr MachTypeMask reference_counted_types =
+    type_mask(Right::Send) | type_mask(Right::DeadName);
 
 constexpr std::size_t right_index(Right right) {
   return static_cast<std::size_t>(right);
@@ -56,6 +55,33 @@ void MachNamespaceTable::create_task(TaskId task) { spaces_.try_emplace(task); }
 
 void MachNamespaceTable::destroy_task(TaskId task) { spaces_.erase(task); }
 
+void MachNamespaceTable::index_name(Space &space, MachObject object,
+                                    MachName name) {
+  auto &names = space.names_by_object[object];
+  const auto position = std::lower_bound(names.begin(), names.end(), name);
+  if (position == names.end() || *position != name)
+    names.insert(position, name);
+}
+
+void MachNamespaceTable::unindex_name(Space &space, MachObject object,
+                                      MachName name) {
+  const auto object_names = space.names_by_object.find(object);
+  if (object_names == space.names_by_object.end())
+    return;
+  auto &names = object_names->second;
+  const auto position = std::lower_bound(names.begin(), names.end(), name);
+  if (position != names.end() && *position == name)
+    names.erase(position);
+  if (names.empty())
+    space.names_by_object.erase(object_names);
+}
+
+const std::vector<MachName> *
+MachNamespaceTable::indexed_names(const Space &space, MachObject object) {
+  const auto names = space.names_by_object.find(object);
+  return names == space.names_by_object.end() ? nullptr : &names->second;
+}
+
 bool MachNamespaceTable::install(TaskId task, MachName name, MachObject object,
                                  MachTypeMask type,
                                  std::uint32_t user_references) {
@@ -70,6 +96,7 @@ bool MachNamespaceTable::install(TaskId task, MachName name, MachObject object,
     return true;
   }
   space.entries.emplace(name, make_entry(object, type, user_references));
+  index_name(space, object, name);
   return true;
 }
 
@@ -87,6 +114,7 @@ std::optional<MachName> MachNamespaceTable::allocate(TaskId task,
     candidate += name_index_stride;
   }
   space.entries.emplace(candidate, make_entry(object, type, 1));
+  index_name(space, object, candidate);
   if (candidate <= std::numeric_limits<MachName>::max() - name_index_stride) {
     space.next_name = candidate + name_index_stride;
   }
@@ -96,10 +124,16 @@ std::optional<MachName> MachNamespaceTable::allocate(TaskId task,
 std::optional<MachName>
 MachNamespaceTable::copyout(TaskId task, MachObject object, MachTypeMask type) {
   auto &space = spaces_[task];
-  for (auto &[name, entry] : space.entries) {
-    if (entry.object != object)
-      continue;
-    add_types(entry, type, 1, true);
+  // Unlike ordinary Send rights, SendOnce rights never coalesce in an
+  // ipc_space and always have exactly one user reference. Distinct
+  // outstanding RPC reply rights to the same receive object therefore need
+  // distinct task-local names.
+  if ((type & type_mask(Right::SendOnce)) != 0)
+    return allocate(task, object, type);
+  if (const auto names = indexed_names(space, object);
+      names && !names->empty()) {
+    const auto name = names->front();
+    add_types(space.entries.at(name), type, 1, true);
     return name;
   }
   return allocate(task, object, type);
@@ -110,10 +144,19 @@ MachNamespaceTable::copyout_at_name(TaskId task, MachObject object,
                                     MachTypeMask type,
                                     MachName preferred_name) {
   auto &space = spaces_[task];
-  for (auto &[name, entry] : space.entries) {
-    if (entry.object != object)
-      continue;
-    add_types(entry, type, 1, true);
+  if ((type & type_mask(Right::SendOnce)) != 0) {
+    if (object != null_name && type != 0 && valid_name(preferred_name) &&
+        !space.entries.contains(preferred_name)) {
+      space.entries.emplace(preferred_name, make_entry(object, type, 1));
+      index_name(space, object, preferred_name);
+      return preferred_name;
+    }
+    return allocate(task, object, type);
+  }
+  if (const auto names = indexed_names(space, object);
+      names && !names->empty()) {
+    const auto name = names->front();
+    add_types(space.entries.at(name), type, 1, true);
     return name;
   }
   if (object == null_name || type == 0 || !valid_name(preferred_name) ||
@@ -121,6 +164,7 @@ MachNamespaceTable::copyout_at_name(TaskId task, MachObject object,
     return allocate(task, object, type);
   }
   space.entries.emplace(preferred_name, make_entry(object, type, 1));
+  index_name(space, object, preferred_name);
   return preferred_name;
 }
 
@@ -146,11 +190,9 @@ std::optional<MachName> MachNamespaceTable::name_for(TaskId task,
   const auto space = spaces_.find(task);
   if (space == spaces_.end())
     return std::nullopt;
-  for (const auto &[name, entry] : space->second.entries) {
-    if (entry.object == object)
-      return name;
-  }
-  return std::nullopt;
+  const auto names = indexed_names(space->second, object);
+  return names && !names->empty() ? std::optional{names->front()}
+                                  : std::nullopt;
 }
 
 std::optional<MachTypeMask> MachNamespaceTable::type(TaskId task,
@@ -187,9 +229,12 @@ std::size_t MachNamespaceTable::right_reference_count(MachObject object,
   std::size_t count = 0;
   for (const auto &[task, space] : spaces_) {
     static_cast<void>(task);
-    for (const auto &[name, entry] : space.entries) {
-      static_cast<void>(name);
-      if (entry.object == object && (entry.type & mask) != 0) {
+    const auto names = indexed_names(space, object);
+    if (!names)
+      continue;
+    for (const auto name : *names) {
+      const auto &entry = space.entries.at(name);
+      if ((entry.type & mask) != 0) {
         count += entry.user_references[right_index(right)];
       }
     }
@@ -219,8 +264,11 @@ bool MachNamespaceTable::rename(TaskId task, MachName old_name,
   if (old_entry == space->second.entries.end())
     return false;
   auto entry = old_entry->second;
+  const auto object = entry.object;
   space->second.entries.erase(old_entry);
   space->second.entries.emplace(new_name, std::move(entry));
+  unindex_name(space->second, object, old_name);
+  index_name(space->second, object, new_name);
   return true;
 }
 
@@ -256,8 +304,10 @@ bool MachNamespaceTable::modify_references(TaskId task, MachName name,
   references -= static_cast<std::uint32_t>(magnitude);
   if (references == 0) {
     entry->second.type &= ~mask;
-    if (entry->second.type == 0)
+    if (entry->second.type == 0) {
+      unindex_name(space->second, entry->second.object, name);
       space->second.entries.erase(entry);
+    }
   }
   return true;
 }
@@ -271,6 +321,7 @@ std::optional<NameEntry> MachNamespaceTable::destroy_name(TaskId task,
   if (entry == space->second.entries.end())
     return std::nullopt;
   auto removed = entry->second;
+  unindex_name(space->second, removed.object, name);
   space->second.entries.erase(entry);
   return removed;
 }
@@ -282,9 +333,12 @@ MachNamespaceTable::mark_object_dead(MachObject object) {
   const auto send_once_index = right_index(Right::SendOnce);
   const auto dead_index = right_index(Right::DeadName);
   for (auto &[task, space] : spaces_) {
-    for (auto &[name, entry] : space.entries) {
-      if (entry.object != object ||
-          (entry.type &
+    const auto names = indexed_names(space, object);
+    if (!names)
+      continue;
+    for (const auto name : *names) {
+      auto &entry = space.entries.at(name);
+      if ((entry.type &
            (type_mask(Right::Send) | type_mask(Right::SendOnce))) == 0) {
         continue;
       }
@@ -322,8 +376,10 @@ bool MachNamespaceTable::remove_type(TaskId task, MachName name,
       entry->second.user_references[index] = 0;
     }
   }
-  if (entry->second.type == 0)
+  if (entry->second.type == 0) {
+    unindex_name(space->second, entry->second.object, name);
     space->second.entries.erase(entry);
+  }
   return true;
 }
 
@@ -351,8 +407,10 @@ bool MachNamespaceTable::deallocate(TaskId task, MachName name) {
   }
   references = 0;
   entry->second.type &= ~type_mask(released);
-  if (entry->second.type == 0)
+  if (entry->second.type == 0) {
+    unindex_name(space->second, entry->second.object, name);
     space->second.entries.erase(entry);
+  }
   return true;
 }
 

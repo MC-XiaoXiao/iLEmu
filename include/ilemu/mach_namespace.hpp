@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 namespace ilemu::xnu792::ipc {
@@ -98,8 +99,16 @@ private:
   struct Space {
     MachName next_name{first_dynamic_name};
     std::map<MachName, NameEntry> entries;
+    // Most ipc objects have one name in a task, but aliases are legal. Keep
+    // the names sorted so name_for/copyout preserve the same lowest-name
+    // result as the authoritative ipc_entry map without scanning that map.
+    std::unordered_map<MachObject, std::vector<MachName>> names_by_object;
   };
 
+  static void index_name(Space &space, MachObject object, MachName name);
+  static void unindex_name(Space &space, MachObject object, MachName name);
+  [[nodiscard]] static const std::vector<MachName> *
+  indexed_names(const Space &space, MachObject object);
   [[nodiscard]] static bool valid_name(MachName name);
   std::map<TaskId, Space> spaces_;
 };

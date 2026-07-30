@@ -231,7 +231,8 @@ bool enqueue_no_senders_notification_locked(KernelSharedState &state,
   write_little_word(message.bytes, 28, 1); // little-endian NDR
   write_little_word(message.bytes, 32, port_object->make_send_count);
   message.destination = request->second.notify_object;
-  state.mach_queues[message.destination].push_back(std::move(message));
+  const auto destination = message.destination;
+  state.enqueue_mach_message_locked(destination, std::move(message));
   state.mach_notifications.erase(request);
   return true;
 }
@@ -253,7 +254,7 @@ void enqueue_dead_name_notification_locked(KernelSharedState &state,
   write_little_word(message.bytes, 28, 1);
   write_little_word(message.bytes, 32, dead_name);
   message.destination = notify_object;
-  state.mach_queues[notify_object].push_back(std::move(message));
+  state.enqueue_mach_message_locked(notify_object, std::move(message));
 }
 
 void enqueue_port_deleted_notification_locked(KernelSharedState &state,
@@ -273,7 +274,7 @@ void enqueue_port_deleted_notification_locked(KernelSharedState &state,
   write_little_word(message.bytes, 28, 1);
   write_little_word(message.bytes, 32, deleted_name);
   message.destination = notify_object;
-  state.mach_queues[notify_object].push_back(std::move(message));
+  state.enqueue_mach_message_locked(notify_object, std::move(message));
 }
 
 void enqueue_send_once_notification_locked(KernelSharedState &state,
@@ -289,7 +290,7 @@ void enqueue_send_once_notification_locked(KernelSharedState &state,
   write_little_word(message.bytes, 8, object);
   write_little_word(message.bytes, 20, mach_notify_send_once);
   message.destination = object;
-  state.mach_queues[object].push_back(std::move(message));
+  state.enqueue_mach_message_locked(object, std::move(message));
 }
 
 bool enqueue_port_destroyed_notification_locked(KernelSharedState &state,
@@ -316,7 +317,7 @@ bool enqueue_port_destroyed_notification_locked(KernelSharedState &state,
       KernelSharedState::MachMessage::PortTransfer{
           28U, receive_object, std::nullopt, receive_object,
           xnu792::ipc::Right::Receive, 16U});
-  state.mach_queues[notify_object].push_back(std::move(message));
+  state.enqueue_mach_message_locked(notify_object, std::move(message));
   return true;
 }
 
@@ -532,10 +533,17 @@ void cleanup_exited_process_metadata_locked(KernelSharedState &state,
   // Bootstrap lookup/retry records are task-local observer state, not Mach
   // rights.  Drop both sides on exit so a recycled PID cannot inherit a
   // stale launch service or wake a retry belonging to its predecessor.
-  std::erase_if(state.pending_bootstrap_service_lookups,
-                [pid](const auto &entry) {
-                  return entry.second.requester_process_id == pid;
-                });
+  for (auto pending = state.pending_bootstrap_service_lookups.begin();
+       pending != state.pending_bootstrap_service_lookups.end();) {
+    std::erase_if(pending->second, [pid](const auto &lookup) {
+      return lookup.requester_process_id == pid;
+    });
+    if (pending->second.empty()) {
+      pending = state.pending_bootstrap_service_lookups.erase(pending);
+    } else {
+      ++pending;
+    }
+  }
   state.pending_bootstrap_retries.erase(pid);
 
   // The ordinary namespace walk removes the backing objects through their

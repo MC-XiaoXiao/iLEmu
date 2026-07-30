@@ -43,6 +43,21 @@ using namespace mach_support;
 
 bool CompatibilityKernel::deliver_pending_mach(Cpu &cpu) {
   std::lock_guard kernel_lock{mutex_};
+  return deliver_pending_mach_if_ready_locked(cpu);
+}
+
+bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(Cpu &cpu) {
+  const auto pending = pending_mach_receives_.find(cpu.processor_id());
+  if (pending == pending_mach_receives_.end())
+    return false;
+  const auto queue_generation =
+      shared_state_->mach_queue_generation_snapshot();
+  if (pending->second.receive_object &&
+      pending->second.observed_queue_generation == queue_generation &&
+      (!pending->second.deadline ||
+       shared_state_->clock.now() < *pending->second.deadline)) {
+    return false;
+  }
   std::lock_guard mach_lock{shared_state_->mach_mutex};
   return deliver_pending_mach_locked(cpu);
 }
@@ -52,11 +67,14 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
   if (pending == pending_mach_receives_.end())
     return false;
 
-  const auto resolved_receive = shared_state_->mach_namespaces.resolve(
-      process_.pid, pending->second.receive_name);
-  if (!resolved_receive)
-    return false;
-  auto queued_port = *resolved_receive;
+  if (!pending->second.receive_object) {
+    const auto resolved_receive = shared_state_->mach_namespaces.resolve(
+        process_.pid, pending->second.receive_name);
+    if (!resolved_receive)
+      return false;
+    pending->second.receive_object = *resolved_receive;
+  }
+  auto queued_port = *pending->second.receive_object;
   auto queue = shared_state_->mach_queues.find(queued_port);
   if (queue == shared_state_->mach_queues.end() || queue->second.empty()) {
     if (const auto port_set = shared_state_->mach_port_sets.find(queued_port);
@@ -82,6 +100,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
       cpu.clear_halt();
       return true;
     }
+    pending->second.observed_queue_generation =
+        shared_state_->mach_queue_generation_snapshot();
     return false;
   }
 

@@ -287,7 +287,7 @@ void enqueue_clock_alarm_reply_locked(
         static_cast<std::uint32_t>(
             alarm_time % darwin::mach::clock::nanoseconds_per_second));
     message.destination = reply_object;
-    state.mach_queues[reply_object].push_back(std::move(message));
+    state.enqueue_mach_message_locked(reply_object, std::move(message));
 }
 
 std::optional<std::uint64_t> next_clock_alarm_deadline_locked(

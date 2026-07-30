@@ -259,9 +259,9 @@ void queue_locked(KernelSharedState &state, std::uint32_t destination,
       abi = process->second.graphics_input_abi;
     }
   }
-  state.mach_queues[destination].push_back(
-      make_touch_message(destination, state.clock.now(), input, abi,
-                         input_sequence));
+  state.enqueue_mach_message_locked(
+      destination, make_touch_message(destination, state.clock.now(), input,
+                                      abi, input_sequence));
 }
 
 void queue_simple_event_locked(KernelSharedState &state,
@@ -270,8 +270,10 @@ void queue_simple_event_locked(KernelSharedState &state,
                                std::uint64_t input_sequence,
                                KernelSharedState::MachMessage::GraphicsInputKind
                                    input_kind) {
-  state.mach_queues[destination].push_back(make_simple_event_message(
-      destination, state.clock.now(), event_type, input_sequence, input_kind));
+  state.enqueue_mach_message_locked(
+      destination,
+      make_simple_event_message(destination, state.clock.now(), event_type,
+                                input_sequence, input_kind));
 }
 
 bool object_owned_by_process_locked(const KernelSharedState &state,
@@ -1102,14 +1104,14 @@ void record_bootstrap_lookup_locked(KernelSharedState &state,
   if (reply_object != 0 && !service_name.empty()) {
     const auto origin_touch_sequence =
         springboard_launch_origin_touch_sequence_locked(state);
-    state.pending_bootstrap_service_lookups[reply_object] =
+    state.pending_bootstrap_service_lookups[reply_object].push_back(
         KernelSharedState::PendingBootstrapServiceLookup{
             std::string{service_name}, requester_process_id,
             origin_touch_sequence,
             process_is_springboard_locked(state, requester_process_id) &&
                 !state.springboard_unlock_touch_pending &&
                 !state.springboard_unlock_touch_active &&
-                origin_touch_sequence != 0U};
+                origin_touch_sequence != 0U});
   }
 }
 
@@ -1130,12 +1132,16 @@ ServiceResolution record_bootstrap_reply_locked(
     std::uint32_t receiver_process_id) {
   const auto pending =
       state.pending_bootstrap_service_lookups.find(reply_object);
-  if (pending == state.pending_bootstrap_service_lookups.end())
+  if (pending == state.pending_bootstrap_service_lookups.end() ||
+      pending->second.empty()) {
     return {};
+  }
 
-  const auto lookup = std::move(pending->second);
+  const auto lookup = std::move(pending->second.front());
+  pending->second.pop_front();
+  if (pending->second.empty())
+    state.pending_bootstrap_service_lookups.erase(pending);
   const auto service_name = lookup.service_name;
-  state.pending_bootstrap_service_lookups.erase(pending);
   const auto service = std::find_if(
       transfers.begin(), transfers.end(), [](const auto &transfer) {
         return transfer.right == xnu792::ipc::Right::Send;

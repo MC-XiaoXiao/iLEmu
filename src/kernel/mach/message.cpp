@@ -80,7 +80,8 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
     }
     pending_mach_receives_[cpu.processor_id()] =
         PendingMachReceive{message_address, registers[3],       registers[4],
-                           registers[1],    cpu.processor_id(), deadline};
+                           registers[1],    cpu.processor_id(), deadline,
+                           std::nullopt,      0};
     process_.waiting_for_events = true;
     {
       std::lock_guard mach_lock{shared_state_->mach_mutex};
@@ -387,20 +388,25 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
       const auto destination_source_right =
           source_right_for_disposition(destination_disposition);
       auto destination_object =
-          destination_right
+          destination_source_right
               ? resolve_name_with_right(*shared_state_, process_.pid,
-                                        *remote_port, *destination_right)
+                                        *remote_port,
+                                        *destination_source_right)
               : std::nullopt;
+      bool destination_uses_received_type = false;
       // Received MIG headers retain MAKE_SEND/MAKE_SEND_ONCE in some old
       // libSystem paths even though copyout installed the resulting send
       // right. Locally-created messages such as pthread's recycle message,
       // however, legitimately address a receive right with MAKE_SEND. Accept
-      // both representations while preserving the resulting right type.
-      if (!destination_object && destination_source_right &&
+      // both representations while preserving the resulting right type. A
+      // retained MAKE_SEND_ONCE is a use of the already-copied-out SendOnce
+      // right and must consume it just like MOVE_SEND_ONCE.
+      if (!destination_object && destination_right &&
           destination_source_right != destination_right) {
         destination_object =
             resolve_name_with_right(*shared_state_, process_.pid, *remote_port,
-                                    *destination_source_right);
+                                    *destination_right);
+        destination_uses_received_type = destination_object.has_value();
       }
       if (!destination_object || !destination_right ||
           (*destination_right != xnu792::ipc::Right::Send &&
@@ -612,12 +618,18 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
             }
           }
         }
-        if (routable && ((*bits & 0xffU) == 17U || (*bits & 0xffU) == 18U) &&
+        const auto destination_move_disposition = *bits & 0xffU;
+        const auto consumes_destination_right =
+            destination_move_disposition == 17U ||
+            destination_move_disposition == 18U ||
+            (destination_move_disposition == 21U &&
+             destination_uses_received_type);
+        if (routable && consumes_destination_right &&
             !consume_moved_right_locked(*shared_state_, process_.pid,
                                         *remote_port, *destination_right,
                                         true)) {
           routable = false;
-        } else if (routable && (*bits & 0xffU) == 17U &&
+        } else if (routable && destination_move_disposition == 17U &&
                    destination_right &&
                    *destination_right == xnu792::ipc::Right::Send) {
           // MOVE_SEND removes the sender's last ipc_entry reference, but the
@@ -681,8 +693,8 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
           queued.reply_right = reply_right;
           queued.destination_send_object = destination_send_object;
           queued.port_transfers = std::move(port_transfers);
-          shared_state_->mach_queues[remote_object].push_back(
-              std::move(queued));
+          shared_state_->enqueue_mach_message_locked(remote_object,
+                                                     std::move(queued));
           remote_owner = shared_state_->mach_port_objects.lookup(remote_object)
                              .value_or(xnu792::ipc::PortObject{})
                              .receive_owner;

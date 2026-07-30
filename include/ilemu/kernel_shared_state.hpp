@@ -91,6 +91,14 @@ struct PendingMachReceive {
   std::uint32_t options{};
   std::size_t processor{};
   std::optional<std::uint64_t> deadline;
+  // mach_msg resolves the task-local name when the receive starts, then
+  // blocks on the ipc object. Cache that object after the first resolution so
+  // scheduler polling does not repeatedly walk the task namespace.
+  std::optional<std::uint32_t> receive_object;
+  // The shared queue generation observed while this receive last found no
+  // message. A new enqueue or a port-set addition advances the generation,
+  // while an unchanged value proves another locked tree walk cannot succeed.
+  std::uint64_t observed_queue_generation{};
 };
 
 struct PendingKevent {
@@ -668,10 +676,37 @@ struct KernelSharedState {
   std::map<std::uint32_t, std::map<std::uint32_t, std::uint32_t>>
       task_special_ports;
   std::map<std::uint32_t, std::deque<MachMessage>> mach_queues;
+  // Queue producers may run on host input/device threads while guest kernels
+  // poll from the scheduler. Keep the cheap readiness snapshot lock-free;
+  // the queue and every generation transition remain serialized by
+  // mach_mutex.
+  std::atomic_uint64_t mach_queue_generation{1};
+
+  // The caller holds mach_mutex. Centralizing enqueue makes it impossible for
+  // a new message source to publish data without also waking cached empty
+  // receives on the next scheduler pass.
+  void enqueue_mach_message_locked(std::uint32_t destination,
+                                   MachMessage message) {
+    mach_queues[destination].push_back(std::move(message));
+    mach_queue_generation.fetch_add(1, std::memory_order_release);
+  }
+
+  // Adding a populated port to a set can make an already queued message
+  // newly visible without enqueueing another message.
+  void note_mach_queue_topology_change_locked() {
+    mach_queue_generation.fetch_add(1, std::memory_order_release);
+  }
+
+  [[nodiscard]] std::uint64_t mach_queue_generation_snapshot() const {
+    return mach_queue_generation.load(std::memory_order_acquire);
+  }
   // launchd remains the authority for the bootstrap namespace. These caches
   // only remember replies already observed on the emulated Mach IPC path so
   // host devices can address the same global ipc_port objects.
-  std::map<std::uint32_t, PendingBootstrapServiceLookup>
+  // A Mach reply port can carry more than one outstanding bootstrap lookup.
+  // Replies preserve queue order, so retain every request instead of letting
+  // a later lookup overwrite the metadata needed to classify an earlier one.
+  std::map<std::uint32_t, std::deque<PendingBootstrapServiceLookup>>
       pending_bootstrap_service_lookups;
   std::map<std::string, std::uint32_t> bootstrap_service_objects;
   // A failed bootstrap lookup is commonly followed by a bounded polling

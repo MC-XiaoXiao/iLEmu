@@ -402,7 +402,9 @@ void deliver_due_vsync_locked(KernelSharedState &state,
     auto &queue = state.mach_queues[registration.notification_port];
     if (!queue_has_vsync(queue)) {
       ++registration.sequence;
-      queue.push_back(make_vsync_message(registration, deadline));
+      state.enqueue_mach_message_locked(
+          registration.notification_port,
+          make_vsync_message(registration, deadline));
       performance_counters().record_vsync_due(
           registration.owner_pid,
           registration.async_reference

@@ -205,7 +205,7 @@ void CompatibilityKernel::configure_darwin_notify_state() {
         write_word(darwin::mig_wire::header_identifier_offset, token);
         message.destination = *destination;
         message.sender_pid = 0;
-        state->mach_queues[*destination].push_back(std::move(message));
+        state->enqueue_mach_message_locked(*destination, std::move(message));
       });
 }
 
@@ -750,6 +750,17 @@ std::optional<std::uint32_t> CompatibilityKernel::import_descriptor(
 
 bool CompatibilityKernel::deliver_pending_io(Cpu &cpu) {
   std::lock_guard lock{mutex_};
+  return deliver_pending_io_locked(cpu);
+}
+
+bool CompatibilityKernel::deliver_pending_event(Cpu &cpu) {
+  std::lock_guard lock{mutex_};
+  if (pending_mach_receives_.contains(cpu.processor_id()))
+    return deliver_pending_mach_if_ready_locked(cpu);
+  return deliver_pending_io_locked(cpu);
+}
+
+bool CompatibilityKernel::deliver_pending_io_locked(Cpu &cpu) {
   if (const auto pending = pending_record_locks_.find(cpu.processor_id());
       pending != pending_record_locks_.end()) {
     if (!shared_state_->advisory_file_locks->try_set_record_lock(
@@ -1268,7 +1279,7 @@ void CompatibilityKernel::advance_absolute_time(std::uint64_t deadline) {
       put32(16, 0);
       put32(20, 0);
       message.destination = port;
-      shared_state_->mach_queues[port].push_back(std::move(message));
+      shared_state_->enqueue_mach_message_locked(port, std::move(message));
       timer.deadline.reset();
       output_.write("[timer] expired port=" + std::to_string(port) + "\n");
     }

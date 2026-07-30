@@ -14,6 +14,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -188,6 +189,9 @@ public:
   [[nodiscard]] DisplayFrame display_snapshot() const {
     return display_state_->snapshot();
   }
+  [[nodiscard]] std::uint64_t display_submitted_frames() const {
+    return display_state_->presented_frames();
+  }
   [[nodiscard]] std::optional<std::uint32_t>
   active_client_process_id() const {
     const auto active_scene = scene_coordinator_->active_client_scene();
@@ -250,6 +254,9 @@ public:
   bool fail_wait(Cpu &cpu, std::uint32_t error);
   bool deliver_pending_mach(Cpu &cpu);
   bool deliver_pending_io(Cpu &cpu);
+  // Scheduler-facing event dispatch. A guest thread can block in only one
+  // syscall at a time, so this avoids probing every unrelated pending table.
+  bool deliver_pending_event(Cpu &cpu);
   [[nodiscard]] std::optional<std::uint64_t> next_timer_deadline() const;
   [[nodiscard]] std::optional<std::uint64_t>
   next_display_vsync_deadline() const;
@@ -400,7 +407,9 @@ private:
       std::uint64_t file_offset);
   void install_commpage();
   void configure_darwin_notify_state();
+  bool deliver_pending_mach_if_ready_locked(Cpu &cpu);
   bool deliver_pending_mach_locked(Cpu &cpu);
+  bool deliver_pending_io_locked(Cpu &cpu);
   bool receive_socket_message(Cpu &cpu, std::uint32_t fd,
                               std::uint32_t message_address);
   bool send_socket_message(Cpu &cpu, std::uint32_t fd,
@@ -515,7 +524,7 @@ private:
   std::map<std::uint32_t, std::uint32_t> file_status_flags_;
   std::map<std::uint32_t, std::uint32_t> descriptor_flags_;
   std::map<std::uint32_t, AioCompletion> aio_completions_;
-  std::map<std::uint32_t, std::string> virtual_descriptors_;
+  std::unordered_map<std::uint32_t, std::string> virtual_descriptors_;
   bsd::offline_serial_device::State offline_serial_state_;
   std::map<std::uint32_t, std::shared_ptr<darwin::bpf::DescriptorState>>
       bpf_descriptors_;
