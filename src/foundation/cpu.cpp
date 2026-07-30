@@ -398,11 +398,13 @@ public:
         if (maximum_blocks == 0 || budget_nanoseconds == 0) {
             return 0;
         }
+        std::size_t candidates_remaining = 0;
         {
             const std::lock_guard queue_lock{precompile_queue_mutex_};
             if (pending_precompile_entries_.empty()) {
                 return 0;
             }
+            candidates_remaining = pending_precompile_entries_.size();
         }
         const std::lock_guard execution_lock{execution_mutex_};
         memory_.synchronize_shared_write_tracking();
@@ -410,7 +412,7 @@ public:
         constexpr std::size_t cache_reserve = 8U * 1024U * 1024U;
         const auto started = std::chrono::steady_clock::now();
         std::size_t compiled = 0;
-        while (compiled < maximum_blocks) {
+        while (compiled < maximum_blocks && candidates_remaining != 0) {
             if (jit_code_cache_used(*jit_) + cache_reserve >= code_cache_size_) {
                 break;
             }
@@ -423,9 +425,23 @@ public:
                 entry = pending_precompile_entries_.front();
                 pending_precompile_entries_.pop_front();
             }
-            callbacks_->begin(0);
-            jit_->Precompile(*entry);
-            ++compiled;
+            --candidates_remaining;
+            const auto pc = static_cast<std::uint32_t>(*entry);
+            const auto code_address = pc & ~std::uint32_t{3};
+            if (!memory_.accessible(
+                    code_address, sizeof(std::uint32_t),
+                    MemoryPermission::Execute)) {
+                // A persisted profile can name a dylib before Guest dyld maps
+                // it. Dynarmic would otherwise cache a NoExecute block which
+                // remains stale after the mapping appears. Defer the hint
+                // until its code page is executable instead.
+                const std::lock_guard queue_lock{precompile_queue_mutex_};
+                pending_precompile_entries_.push_back(*entry);
+            } else {
+                callbacks_->begin(0);
+                jit_->Precompile(*entry);
+                ++compiled;
+            }
             const auto elapsed =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - started);
