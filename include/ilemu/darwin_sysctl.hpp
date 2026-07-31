@@ -15,6 +15,7 @@ inline constexpr std::uint32_t control_unspecified = 0;
 inline constexpr std::uint32_t control_kernel = 1;
 inline constexpr std::uint32_t control_hardware = 6;
 inline constexpr std::uint32_t operation_name_to_oid = 3;
+inline constexpr std::uint32_t kernel_security_level = 9;
 inline constexpr std::uint32_t kernel_process = 14;
 inline constexpr std::uint32_t kernel_process_arguments = 38;
 inline constexpr std::uint32_t kernel_process_arguments2 = 49;

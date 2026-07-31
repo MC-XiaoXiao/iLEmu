@@ -635,6 +635,7 @@ struct KernelSharedState {
   }
 
   std::uint32_t desired_vnodes{65'536};
+  std::atomic<std::int32_t> security_level{};
   std::string hostname{"localhost"};
   std::array<std::uint32_t, 2> task_for_pid_groups{};
   mutable std::mutex network_mutex;

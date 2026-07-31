@@ -1723,6 +1723,54 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       bsd_success(cpu, 0);
       return;
     }
+    if (*mib0 == darwin::sysctl::control_kernel &&
+        *mib1 == darwin::sysctl::kernel_security_level &&
+        registers[1] == 2) { // KERN_SECURELVL
+      const auto previous =
+          shared_state_->security_level.load(std::memory_order_relaxed);
+      std::optional<std::int32_t> requested_level;
+      if (registers[4] != 0) {
+        if (registers[5] != sizeof(std::int32_t)) {
+          bsd_error(cpu, bsd_support::invalid_argument);
+          return;
+        }
+        const auto requested = memory_.read32(registers[4]);
+        if (!requested) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        const auto level = static_cast<std::int32_t>(*requested);
+        if (level < previous && process_.pid != 1) {
+          bsd_error(cpu, darwin::error::operation_not_permitted);
+          return;
+        }
+        requested_level = level;
+      }
+      if (registers[3] != 0) {
+        constexpr std::uint32_t value_size = sizeof(std::int32_t);
+        if (!memory_.write32(registers[3], value_size)) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        if (registers[2] != 0) {
+          if (*old_size < value_size) {
+            bsd_error(cpu, darwin::error::no_memory);
+            return;
+          }
+          if (!memory_.write32(registers[2],
+                               static_cast<std::uint32_t>(previous))) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+          }
+        }
+      }
+      if (requested_level) {
+        shared_state_->security_level.store(*requested_level,
+                                            std::memory_order_relaxed);
+      }
+      bsd_success(cpu, 0);
+      return;
+    }
     if (*mib0 == 1 && *mib1 == 5) { // KERN_MAXVNODES (read/write)
       const auto previous = shared_state_->desired_vnodes;
       if (registers[4] != 0) {
