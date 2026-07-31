@@ -15,9 +15,15 @@ namespace ilemu {
 namespace {
 
 constexpr std::uint32_t posix_spawn_syscall = 244U;
+constexpr std::uint16_t posix_spawn_setexec = 0x0040U;
 constexpr std::uint16_t posix_spawn_start_suspended = 0x0080U;
 constexpr std::uint32_t maximum_vector_entries = 4096U;
 constexpr std::uint32_t maximum_string_size = 64U * 1024U;
+
+struct PosixSpawnAttributes {
+  bool setexec{};
+  bool start_suspended{};
+};
 
 std::optional<std::vector<std::string>>
 read_string_vector(const AddressSpace &memory, std::uint32_t address) {
@@ -38,6 +44,27 @@ read_string_vector(const AddressSpace &memory, std::uint32_t address) {
   return std::nullopt;
 }
 
+std::optional<PosixSpawnAttributes>
+read_spawn_attributes(const AddressSpace &memory, std::uint32_t address) {
+  PosixSpawnAttributes result;
+  if (address == 0)
+    return result;
+
+  const auto attribute_size = memory.read32(address);
+  const auto attribute_address = memory.read32(address + 4U);
+  if (!attribute_size || !attribute_address) {
+    return std::nullopt;
+  }
+  if (*attribute_size >= sizeof(std::uint16_t) && *attribute_address != 0) {
+    const auto flags = memory.read16(*attribute_address);
+    if (!flags)
+      return std::nullopt;
+    result.setexec = (*flags & posix_spawn_setexec) != 0;
+    result.start_suspended = (*flags & posix_spawn_start_suspended) != 0;
+  }
+  return result;
+}
+
 } // namespace
 
 bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
@@ -51,34 +78,20 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
   std::optional<std::string> path;
   std::optional<std::vector<std::string>> arguments;
   std::optional<std::vector<std::string>> environment;
+  std::optional<PosixSpawnAttributes> attributes;
   {
     PerformanceLatencyScope decode_latency{PerfLatencyKind::PosixSpawnDecode};
     path = memory_.read_c_string(registers[1]);
     arguments = read_string_vector(memory_, registers[3]);
     environment = read_string_vector(memory_, registers[4]);
+    attributes = read_spawn_attributes(memory_, registers[2]);
   }
-  if (pid_address == 0 || !path || !arguments || !environment) {
+  if (pid_address == 0 || !path || !arguments || !environment ||
+      !attributes) {
     bsd_error(cpu, bsd_support::bad_address);
     return true;
   }
 
-  bool start_suspended = false;
-  if (registers[2] != 0) {
-    const auto attribute_size = memory_.read32(registers[2]);
-    const auto attribute_address = memory_.read32(registers[2] + 4U);
-    if (!attribute_size || !attribute_address) {
-      bsd_error(cpu, bsd_support::bad_address);
-      return true;
-    }
-    if (*attribute_size >= sizeof(std::uint16_t) && *attribute_address != 0) {
-      const auto flags = memory_.read16(*attribute_address);
-      if (!flags) {
-        bsd_error(cpu, bsd_support::bad_address);
-        return true;
-      }
-      start_suspended = (*flags & posix_spawn_start_suspended) != 0;
-    }
-  }
   // `--suspended` is an application argument used by first-generation
   // SpringBoard's prewarm protocol, not a kernel spawn attribute. The child
   // must run through dyld and suspend itself in userspace. Only the actual
@@ -88,6 +101,28 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
   if (!std::filesystem::is_regular_file(resolve_guest_path(*path),
                                         path_error)) {
     bsd_error(cpu, 2); // ENOENT
+    return true;
+  }
+
+  if (attributes->setexec) {
+    if (!exec_handler_ ||
+        !exec_handler_(cpu, *path, *arguments, *environment)) {
+      bsd_error(cpu, 8); // ENOEXEC
+      return true;
+    }
+    performance_counters().record_exec();
+    std::ostringstream message;
+    message << "[process] spawn-setexec pid=" << process_.pid
+            << " suspended=" << attributes->start_suspended << " " << *path
+            << " argv=";
+    for (std::size_t index = 0; index < arguments->size(); ++index) {
+      if (index != 0)
+        message << ',';
+      message << '"' << (*arguments)[index] << '"';
+    }
+    message << '\n';
+    output_.write(message.str());
+    cpu.halt(Dynarmic::HaltReason::UserDefined6);
     return true;
   }
 
@@ -107,7 +142,7 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
   performance_counters().record_fork();
   if (!spawn_exec_handler_ ||
       !spawn_exec_handler_(*child, *path, *arguments, *environment,
-                           start_suspended)) {
+                           attributes->start_suspended)) {
     bsd_error(cpu, 8); // ENOEXEC
     return true;
   }
@@ -122,7 +157,8 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
 
   std::ostringstream message;
   message << "[process] spawn parent=" << process_.pid << " child=" << *child
-          << " suspended=" << start_suspended << " " << *path << " argv=";
+          << " suspended=" << attributes->start_suspended << " " << *path
+          << " argv=";
   for (std::size_t index = 0; index < arguments->size(); ++index) {
     if (index != 0)
       message << ',';

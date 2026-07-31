@@ -215,18 +215,17 @@ std::uint32_t write_connect_method_reply(AddressSpace &memory,
       std::min<std::size_t>(result.scalar_output.size(), maximum_scalar_count));
   const auto inband_count = static_cast<std::uint32_t>(
       std::min<std::size_t>(result.inband_output.size(), maximum_inband_size));
-  const auto reply_size =
-      inband_output_offset(scalar_count) + align_mig_field(inband_count);
-  if (reply_size > receive_size)
+  const auto encoded_reply_size = reply_size(scalar_count, inband_count);
+  if (encoded_reply_size > receive_size)
     return mach_rcv_invalid_data;
-  const std::vector<std::byte> cleared_reply(reply_size);
+  const std::vector<std::byte> cleared_reply(encoded_reply_size);
   if (!memory.copy_in(address, cleared_reply))
     return mach_rcv_invalid_data;
   const auto write = [&](std::uint32_t offset, std::uint32_t value) {
     return memory.write32(address + offset, value);
   };
   if (!write(darwin::mig_wire::header_bits_offset, mach_reply_bits) ||
-      !write(darwin::mig_wire::header_size_offset, reply_size) ||
+      !write(darwin::mig_wire::header_size_offset, encoded_reply_size) ||
       !write(darwin::mig_wire::header_remote_port_offset, local_port) ||
       !write(darwin::mig_wire::header_identifier_offset,
              message_id + mig_reply_id_delta) ||
@@ -255,6 +254,9 @@ std::uint32_t write_connect_method_reply(AddressSpace &memory,
       !memory.copy_in(address + inband_output_offset(scalar_count),
                       std::span<const std::byte>{result.inband_output.data(),
                                                  inband_count})) {
+    return mach_rcv_invalid_data;
+  }
+  if (!write(out_of_line_output_size_offset(scalar_count, inband_count), 0)) {
     return mach_rcv_invalid_data;
   }
   return 0;
@@ -464,6 +466,47 @@ bool trace_repeated_call(std::uint64_t count) {
          (count != 0 && (count & (count - 1U)) == 0);
 }
 
+std::string_view user_client_profile_name(
+    KernelSharedState::IOKitUserClientProfile profile) {
+  switch (profile) {
+  case KernelSharedState::IOKitUserClientProfile::Generic:
+    return "generic";
+  case KernelSharedState::IOKitUserClientProfile::Display:
+    return "display";
+  case KernelSharedState::IOKitUserClientProfile::None:
+    break;
+  }
+  return "none";
+}
+
+std::uint32_t connection_type_for_profile(
+    KernelSharedState::IOKitUserClientProfile profile,
+    std::uint32_t requested_type) {
+  if (profile == KernelSharedState::IOKitUserClientProfile::Display)
+    return iokit_abi::apple_h1clcd_service_type;
+  if (profile == KernelSharedState::IOKitUserClientProfile::Generic)
+    return iokit_abi::generic_user_client_type;
+  return requested_type;
+}
+
+std::uint32_t write_status_reply(AddressSpace &memory, std::uint32_t address,
+                                 std::uint32_t local_port,
+                                 std::uint32_t message_id,
+                                 std::uint32_t result) {
+  const std::array<std::uint32_t, 9> reply{
+      mach_reply_bits,
+      36U,
+      local_port,
+      0,
+      0,
+      message_id + mig_reply_id_delta,
+      mach_ndr_native,
+      mach_ndr_little_endian,
+      result,
+  };
+  return write_reply(memory, address, reply);
+}
+
 std::string format_call_site(AddressSpace &memory,
                              const IOKitMachCallSite &call_site) {
   if (call_site.program_counter == 0 && call_site.link_register == 0 &&
@@ -514,8 +557,13 @@ ensure_mobile_framebuffer_service_locked(KernelSharedState &shared_state) {
   shared_state.mach_queues.try_emplace(port);
   shared_state.iokit_services.emplace(
       port,
-      KernelSharedState::IOKitService{std::string{apple_h1clcd_class},
-                                      {std::string{mobile_framebuffer_class}}});
+      KernelSharedState::IOKitService{
+          std::string{apple_h1clcd_class},
+          {std::string{mobile_framebuffer_class}},
+          {},
+          {},
+          0,
+          KernelSharedState::IOKitUserClientProfile::Display});
   return port;
 }
 
@@ -647,9 +695,14 @@ ensure_network_stack_service_locked(KernelSharedState &shared_state) {
   static_cast<void>(shared_state.mach_port_objects.create(object));
   shared_state.mach_queues.try_emplace(object);
   shared_state.iokit_services.emplace(
-      object, KernelSharedState::IOKitService{
-                  std::string{io_network_stack_class}, {"IOService"}, {},
-                  "IOService:/IONetworkStack"});
+      object,
+      KernelSharedState::IOKitService{
+          std::string{io_network_stack_class},
+          {"IOService"},
+          {},
+          "IOService:/IONetworkStack",
+          0,
+          KernelSharedState::IOKitUserClientProfile::Generic});
   return object;
 }
 
@@ -822,6 +875,25 @@ std::uint32_t write_port_reply(AddressSpace &memory, std::uint32_t address,
   return write_reply(memory, address, reply);
 }
 
+std::optional<KernelSharedState::IOKitUserClientProfile>
+service_user_client_profile_locked(const KernelSharedState &shared_state,
+                                   std::uint32_t service_object) {
+  const auto service = shared_state.iokit_services.find(service_object);
+  if (service == shared_state.iokit_services.end())
+    return std::nullopt;
+  return service->second.user_client_profile;
+}
+
+std::optional<KernelSharedState::IOKitUserClientProfile>
+connection_user_client_profile_locked(const KernelSharedState &shared_state,
+                                      std::uint32_t connection_object) {
+  const auto connection = shared_state.iokit_connections.find(connection_object);
+  if (connection == shared_state.iokit_connections.end())
+    return std::nullopt;
+  return service_user_client_profile_locked(shared_state,
+                                            connection->second.service_port);
+}
+
 } // namespace
 
 std::optional<std::uint32_t>
@@ -861,6 +933,43 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
               message_address, send_size, receive_size, remote_object,
               local_port)) {
     return display_result;
+  }
+  if (message_id == static_cast<std::uint32_t>(
+                        iokit_abi::Message::ConnectSetNotificationPort)) {
+    std::optional<KernelSharedState::IOKitUserClientProfile> profile;
+    {
+      std::lock_guard mach_lock{shared_state.mach_mutex};
+      profile =
+          connection_user_client_profile_locked(shared_state, remote_object);
+    }
+    if (profile &&
+        *profile != KernelSharedState::IOKitUserClientProfile::Display) {
+      output.write("[iokit] notification-port pid=" +
+                   std::to_string(process.pid) +
+                   " connection-object=" + std::to_string(remote_object) +
+                   " profile=" + std::string{user_client_profile_name(*profile)} +
+                   " result=unsupported\n");
+      return write_status_reply(memory, message_address, local_port, message_id,
+                                iokit_abi::unsupported);
+    }
+  }
+  if (message_id ==
+      static_cast<std::uint32_t>(iokit_abi::Message::ConnectMapMemory)) {
+    std::optional<KernelSharedState::IOKitUserClientProfile> profile;
+    {
+      std::lock_guard mach_lock{shared_state.mach_mutex};
+      profile =
+          connection_user_client_profile_locked(shared_state, remote_object);
+    }
+    if (profile &&
+        *profile != KernelSharedState::IOKitUserClientProfile::Display) {
+      output.write("[iokit] map-memory pid=" + std::to_string(process.pid) +
+                   " connection-object=" + std::to_string(remote_object) +
+                   " profile=" + std::string{user_client_profile_name(*profile)} +
+                   " result=unsupported\n");
+      return write_status_reply(memory, message_address, local_port, message_id,
+                                iokit_abi::unsupported);
+    }
   }
   if (message_id ==
       device_mig::id(device_mig::Routine::io_make_matching)) {
@@ -1748,10 +1857,11 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
       connection_name =
           copyout_send_locked(shared_state, process.pid, connection_object);
     }
-    output.write("[iokit] open-display pid=" + std::to_string(process.pid) +
+    output.write("[iokit] open pid=" + std::to_string(process.pid) +
                  " service-object=" + std::to_string(remote_object) +
                  " connection-name=" + std::to_string(connection_name) +
                  " connection-object=" + std::to_string(connection_object) +
+                 " type=" + std::to_string(connect_type) +
                  "\n");
     return write_port_reply(memory, message_address, local_port, message_id,
                             connection_name);
@@ -1773,17 +1883,16 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
     std::uint32_t connection_object = 0;
     std::uint32_t connection_name = 0;
     bool supported_service = false;
-    bool display_service = false;
+    KernelSharedState::IOKitUserClientProfile profile{
+        KernelSharedState::IOKitUserClientProfile::None};
     {
       std::lock_guard mach_lock{shared_state.mach_mutex};
-      display_service =
-          remote_object == shared_state.mobile_framebuffer_service &&
-          shared_state.iokit_services.contains(remote_object);
       const auto service = shared_state.iokit_services.find(remote_object);
-      const auto network_stack_service =
-          service != shared_state.iokit_services.end() &&
-          service->second.class_name == io_network_stack_class;
-      supported_service = display_service || network_stack_service;
+      if (service != shared_state.iokit_services.end()) {
+        profile = service->second.user_client_profile;
+        supported_service =
+            profile != KernelSharedState::IOKitUserClientProfile::None;
+      }
       if (supported_service) {
         connection_object = shared_state.allocate_mach_object();
         static_cast<void>(
@@ -1792,7 +1901,9 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
         shared_state.iokit_connections.emplace(
             connection_object, KernelSharedState::IOKitConnection{
                                    remote_object, process.pid,
-                                   iokit_abi::apple_h1clcd_service_type});
+                                   connection_type_for_profile(
+                                       profile,
+                                       iokit_abi::apple_h1clcd_service_type)});
         connection_name =
             copyout_send_locked(shared_state, process.pid, connection_object);
       }
@@ -1808,6 +1919,7 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
                  " service-object=" + std::to_string(remote_object) +
                  " connection-name=" + std::to_string(connection_name) +
                  " connection-object=" + std::to_string(connection_object) +
+                 " profile=" + std::string{user_client_profile_name(profile)} +
                  " result=" +
                  (supported_service ? "success" : "unsupported") +
                  "\n");

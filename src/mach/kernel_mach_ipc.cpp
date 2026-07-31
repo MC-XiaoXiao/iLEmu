@@ -89,6 +89,8 @@ prepare_received_message(const KernelSharedState::MachMessage &message,
 
   const auto send_bits =
       read_word(result.bytes, darwin::mig_wire::header_bits_offset);
+  const auto remote_disposition = send_bits & 0xffU;
+  const auto local_disposition = (send_bits >> 8U) & 0xffU;
   result.caller_header_size =
       read_word(result.bytes, darwin::mig_wire::header_size_offset);
   const auto reply_port =
@@ -96,8 +98,12 @@ prepare_received_message(const KernelSharedState::MachMessage &message,
   result.message_id =
       read_word(result.bytes, darwin::mig_wire::header_identifier_offset);
   write_word(result.bytes, darwin::mig_wire::header_bits_offset,
-             (send_bits & 0xffff0000U) | ((send_bits >> 8U) & 0xffU) |
-                 ((send_bits & 0xffU) << 8U));
+             (send_bits & 0xffff0000U) |
+                 darwin::mig_wire::received_port_disposition(
+                     local_disposition) |
+                 (darwin::mig_wire::received_port_disposition(
+                      remote_disposition)
+                  << 8U));
   write_word(result.bytes, darwin::mig_wire::header_remote_port_offset,
              reply_port);
   write_word(result.bytes, darwin::mig_wire::header_local_port_offset,

@@ -101,6 +101,16 @@ bool inherit_child(KernelSharedState &state, const ProcessContext &parent,
   state.task_port_pids[child_task_object] = child.pid;
   state.task_thread_port_objects[child.pid][0] = child_thread_object;
 
+  if (const auto actions =
+          state.task_exception_actions.find(*parent_task_object);
+      actions != state.task_exception_actions.end()) {
+    state.task_exception_actions[child_task_object] = actions->second;
+    for (const auto &action : actions->second) {
+      if (action.port_object != xnu792::ipc::null_name)
+        ++state.mach_kernel_send_rights[action.port_object];
+    }
+  }
+
   if (bootstrap_object) {
     state.task_special_ports[child_task_object][4] = *bootstrap_object;
     ++state.mach_kernel_send_rights[*bootstrap_object];

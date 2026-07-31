@@ -11,7 +11,7 @@ namespace ilemu {
 namespace {
 
 constexpr std::string_view app_support_image{
-    "/System/Library/Frameworks/AppSupport.framework/AppSupport"};
+    "/AppSupport.framework/AppSupport"};
 constexpr std::uint32_t sqlite_error = 1U;
 
 constexpr std::array<std::string_view, 3> transaction_operations{

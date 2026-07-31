@@ -9,7 +9,7 @@ namespace ilemu {
 namespace {
 
 constexpr std::string_view mobile_bluetooth_image{
-    "/System/Library/Frameworks/MobileBluetooth.framework/MobileBluetooth"};
+    "/MobileBluetooth.framework/MobileBluetooth"};
 
 }  // namespace
 

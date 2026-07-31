@@ -60,6 +60,31 @@ constexpr std::uint32_t port_descriptor_metadata(std::uint32_t disposition) {
 }
 
 constexpr std::uint32_t
+received_port_disposition(std::uint32_t send_disposition) {
+  switch (send_disposition) {
+  case disposition_move_receive:
+    return disposition_move_receive;
+  case disposition_move_send:
+  case disposition_copy_send:
+  case disposition_make_send:
+    return disposition_move_send;
+  case disposition_move_send_once:
+  case disposition_make_send_once:
+    return disposition_move_send_once;
+  default:
+    return send_disposition;
+  }
+}
+
+constexpr std::uint32_t
+replace_descriptor_disposition(std::uint32_t metadata,
+                               std::uint32_t disposition) {
+  constexpr auto mask = 0xffU << descriptor_disposition_shift;
+  return (metadata & ~mask) |
+         (disposition << descriptor_disposition_shift);
+}
+
+constexpr std::uint32_t
 ool_descriptor_metadata(bool deallocate,
                         std::uint32_t copy = ool_copy_virtual) {
   return (ool_descriptor_type << descriptor_type_shift) |
@@ -129,6 +154,14 @@ static_assert(complex_reply_word(1, 0) == 48);
 static_assert(message_bits(disposition_copy_send, disposition_make_send_once,
                            true) == 0x80001513U);
 static_assert(port_descriptor_metadata(disposition_move_send) == 0x00110000U);
+static_assert(received_port_disposition(disposition_copy_send) ==
+              disposition_move_send);
+static_assert(received_port_disposition(disposition_make_send_once) ==
+              disposition_move_send_once);
+static_assert(replace_descriptor_disposition(
+                  port_descriptor_metadata(disposition_copy_send),
+                  disposition_move_send) ==
+              port_descriptor_metadata(disposition_move_send));
 static_assert(ool_descriptor_metadata(true) == 0x01000101U);
 static_assert(ool_ports_descriptor_metadata(disposition_move_send, true) ==
               0x02110101U);

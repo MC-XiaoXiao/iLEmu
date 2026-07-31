@@ -29,9 +29,9 @@ namespace ilemu {
 namespace {
 
 constexpr std::string_view core_surface_image{
-    "/System/Library/Frameworks/CoreSurface.framework/CoreSurface"};
+    "/CoreSurface.framework/CoreSurface"};
 constexpr std::string_view core_foundation_image{
-    "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"};
+    "/CoreFoundation.framework/CoreFoundation"};
 constexpr std::string_view client_buffer_prefix{"_CoreSurfaceClientBuffer"};
 constexpr std::string_view client_buffer_alloc{
     "_CoreSurfaceClientBufferAlloc"};

@@ -107,7 +107,15 @@ inline constexpr std::uint32_t set_record_lock_wait = 9;
 // data or persistence, so the compatibility VFS may accept them as advisory.
 inline constexpr std::uint32_t set_read_ahead = 45;
 inline constexpr std::uint32_t set_no_cache = 48;
+inline constexpr std::uint32_t get_path = 50;
+inline constexpr std::uint32_t add_detached_signatures = 59;
 } // namespace fcntl_command
+
+namespace ptrace_request {
+inline constexpr std::uint32_t trace_me = 0;
+inline constexpr std::uint32_t attach = 10;
+inline constexpr std::uint32_t deny_attach = 31;
+} // namespace ptrace_request
 
 namespace record_lock {
 inline constexpr std::uint16_t read = 1;
@@ -225,6 +233,8 @@ inline constexpr std::uint32_t read = 3;
 inline constexpr std::uint32_t write = 4;
 inline constexpr std::uint32_t open = 5;
 inline constexpr std::uint32_t close = 6;
+inline constexpr std::uint32_t set_user_id = 23;
+inline constexpr std::uint32_t ptrace = 26;
 inline constexpr std::uint32_t kill = 37;
 inline constexpr std::uint32_t get_process_group = 81;
 inline constexpr std::uint32_t unlink = 10;
@@ -244,6 +254,7 @@ inline constexpr std::uint32_t get_peer_name = 31;
 inline constexpr std::uint32_t get_socket_name = 32;
 inline constexpr std::uint32_t ioctl = 54;
 inline constexpr std::uint32_t memory_protect = 74;
+inline constexpr std::uint32_t set_groups = 80;
 inline constexpr std::uint32_t get_descriptor_table_size = 89;
 inline constexpr std::uint32_t duplicate_to = 90;
 inline constexpr std::uint32_t fcntl = 92;
@@ -261,6 +272,7 @@ inline constexpr std::uint32_t send_to = 133;
 inline constexpr std::uint32_t shutdown = 134;
 inline constexpr std::uint32_t socket_pair = 135;
 inline constexpr std::uint32_t update_file_times = 138;
+inline constexpr std::uint32_t set_group_id = 181;
 inline constexpr std::uint32_t set_effective_group_id = 182;
 inline constexpr std::uint32_t set_effective_user_id = 183;
 inline constexpr std::uint32_t get_resource_limit = 194;
@@ -274,6 +286,7 @@ inline constexpr std::uint32_t remove_extended_attribute = 238;
 inline constexpr std::uint32_t remove_extended_attribute_fd = 239;
 inline constexpr std::uint32_t list_extended_attributes = 240;
 inline constexpr std::uint32_t list_extended_attributes_fd = 241;
+inline constexpr std::uint32_t init_groups = 243;
 inline constexpr std::uint32_t aio_synchronize = 313;
 inline constexpr std::uint32_t aio_return = 314;
 inline constexpr std::uint32_t aio_suspend = 315;
@@ -286,6 +299,7 @@ inline constexpr std::uint32_t disable_thread_signal = 331;
 inline constexpr std::uint32_t semaphore_wait_signal = 334;
 inline constexpr std::uint32_t kqueue = 362;
 inline constexpr std::uint32_t kevent = 363;
+inline constexpr std::uint32_t mac_syscall = 381;
 } // namespace syscall
 
 namespace flock_operation {

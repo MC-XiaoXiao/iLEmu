@@ -53,6 +53,42 @@ void State::set_h5_transport_mode(bool enabled) {
   h5_transport_mode_ = enabled;
 }
 
+std::size_t State::minimum_receive_bytes() const {
+  const std::lock_guard lock{mutex_};
+  return minimum_receive_bytes_;
+}
+
+void State::set_minimum_receive_bytes(std::size_t bytes) {
+  const std::lock_guard lock{mutex_};
+  minimum_receive_bytes_ = bytes;
+}
+
+std::uint32_t State::register_mux_channel(std::string_view name) {
+  const std::lock_guard lock{mutex_};
+  if (!name.empty()) {
+    const auto key = std::string{name};
+    if (const auto found = mux_channels_.find(key); found != mux_channels_.end()) {
+      return found->second;
+    }
+    const auto unit = next_mux_channel_++;
+    mux_channels_.emplace(key, unit);
+    return unit;
+  }
+  return next_mux_channel_++;
+}
+
+std::optional<std::uint32_t> State::mux_channel(std::string_view name) const {
+  const std::lock_guard lock{mutex_};
+  if (name.empty()) {
+    return std::nullopt;
+  }
+  const auto found = mux_channels_.find(std::string{name});
+  if (found == mux_channels_.end()) {
+    return std::nullopt;
+  }
+  return found->second;
+}
+
 void State::enqueue_receive(std::span<const std::byte> bytes) {
   const std::lock_guard lock{mutex_};
   receive_queue_.insert(receive_queue_.end(), bytes.begin(), bytes.end());
@@ -60,6 +96,10 @@ void State::enqueue_receive(std::span<const std::byte> bytes) {
 
 std::vector<std::byte> State::receive(std::size_t maximum) {
   const std::lock_guard lock{mutex_};
+  if (minimum_receive_bytes_ != 0 &&
+      receive_queue_.size() < minimum_receive_bytes_) {
+    return {};
+  }
   const auto count = std::min(maximum, receive_queue_.size());
   std::vector<std::byte> bytes;
   bytes.reserve(count);
@@ -72,6 +112,10 @@ std::vector<std::byte> State::receive(std::size_t maximum) {
 
 std::size_t State::pending_receive_bytes() const {
   const std::lock_guard lock{mutex_};
+  if (minimum_receive_bytes_ != 0 &&
+      receive_queue_.size() < minimum_receive_bytes_) {
+    return 0;
+  }
   return receive_queue_.size();
 }
 
@@ -88,6 +132,9 @@ std::vector<std::byte> State::take_transmitted() {
   return bytes;
 }
 
-bool is_path(std::string_view candidate) { return candidate == path; }
+bool is_path(std::string_view candidate) {
+  return candidate == path || candidate == spi_mux_path ||
+         candidate == h5_mux_path;
+}
 
 } // namespace ilemu::bsd::baseband_device

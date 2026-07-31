@@ -10,7 +10,7 @@ namespace ilemu {
 namespace {
 
 constexpr std::string_view mbx_connect_image{
-    "/System/Library/Frameworks/MBXConnect.framework/MBXConnect"};
+    "/MBXConnect.framework/MBXConnect"};
 constexpr std::uint32_t success = 0;
 constexpr std::array<std::string_view, 5> control_symbols{
     "_mbxSetClockGateWorkaroundMode",

@@ -24,7 +24,7 @@ namespace ilemu {
 namespace {
 
 constexpr std::string_view core_audio_image{
-    "/System/Library/Frameworks/CoreAudio.framework/CoreAudio"};
+    "/CoreAudio.framework/CoreAudio"};
 constexpr std::uint32_t wolfson_device = 2;
 constexpr std::uint32_t wolfson_stream = 3;
 constexpr std::uint32_t baseband_output_device = 4;

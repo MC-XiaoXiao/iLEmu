@@ -10,7 +10,7 @@ namespace ilemu {
 namespace {
 
 constexpr std::string_view audio_toolbox_image{
-    "/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox"};
+    "/AudioToolbox.framework/AudioToolbox"};
 
 } // namespace
 

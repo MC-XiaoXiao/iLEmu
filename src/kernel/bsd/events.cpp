@@ -29,6 +29,72 @@
 
 #include "support.hpp"
 
+namespace {
+
+[[nodiscard]] bool is_printable_ascii(std::byte value) {
+  const auto character = std::to_integer<unsigned char>(value);
+  return character >= 0x20U && character <= 0x7eU;
+}
+
+[[nodiscard]] std::optional<std::string>
+extract_inline_ascii_string(std::span<const std::byte> bytes) {
+  for (std::size_t start = 0; start < bytes.size(); ++start) {
+    if (!is_printable_ascii(bytes[start])) {
+      continue;
+    }
+    std::string candidate;
+    for (std::size_t index = start; index < bytes.size(); ++index) {
+      const auto character = std::to_integer<unsigned char>(bytes[index]);
+      if (character == 0U) {
+        break;
+      }
+      if (character < 0x20U || character > 0x7eU) {
+        candidate.clear();
+        break;
+      }
+      candidate.push_back(static_cast<char>(character));
+    }
+    if (candidate.size() >= 3U) {
+      return candidate;
+    }
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] bool is_printable_ascii_string(std::string_view value) {
+  return !value.empty() &&
+         std::all_of(value.begin(), value.end(), [](unsigned char character) {
+           return character >= 0x20U && character <= 0x7eU;
+         });
+}
+
+[[nodiscard]] std::optional<std::string>
+extract_mux_channel_name(const ilemu::AddressSpace &memory,
+                         std::uint32_t base_address,
+                         std::span<const std::byte> bytes) {
+  if (const auto inline_name = extract_inline_ascii_string(bytes);
+      inline_name && is_printable_ascii_string(*inline_name)) {
+    return inline_name;
+  }
+  for (std::size_t offset = 0; offset + sizeof(std::uint32_t) <= bytes.size();
+       offset += sizeof(std::uint32_t)) {
+    const auto pointer =
+        memory.read32(base_address + static_cast<std::uint32_t>(offset));
+    if (!pointer || *pointer == 0U) {
+      continue;
+    }
+    const auto candidate = memory.read_c_string(*pointer);
+    if (!candidate || !is_printable_ascii_string(*candidate) ||
+        candidate->size() < 3U || candidate->size() > 63U) {
+      continue;
+    }
+    return candidate;
+  }
+  return std::nullopt;
+}
+
+} // namespace
+
 namespace ilemu {
 
 void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
@@ -339,6 +405,56 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
         bsd_success(cpu, 0);
         return;
       }
+    if (request == darwin::tty::set_receive_threshold) {
+      const auto threshold = memory_.read32(argument);
+      if (!threshold) {
+        bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        shared_state_->baseband_device_state.set_minimum_receive_bytes(
+            *threshold);
+        if (!memory_.write32(argument, *threshold)) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        output_.write("[baseband] ioctl pid=" +
+                      std::to_string(process_.pid) +
+                      " IOAOSMIN minimum=" + std::to_string(*threshold) +
+                      "\n");
+        bsd_success(cpu, 0);
+        return;
+      }
+      if (request == darwin::tty::asm_new_dlci) {
+        const auto payload_size = darwin::tty::parameter_length(request);
+        const auto payload = memory_.read_bytes(argument, payload_size);
+        if (!payload) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        const auto channel_name =
+            extract_mux_channel_name(memory_, argument, *payload);
+        const auto channel_unit = shared_state_->baseband_device_state
+                                       .register_mux_channel(channel_name
+                                                                 ? *channel_name
+                                                                 : std::string{});
+        if (!memory_.copy_in(argument, *payload) ||
+            !memory_.write32(argument, 0U) ||
+            !memory_.write32(argument + sizeof(std::uint32_t),
+                             channel_unit)) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        std::ostringstream message;
+        message << "[baseband] ioctl pid=" << process_.pid
+                << " ASMIOCNEWDLCI unit=" << channel_unit;
+        if (channel_name) {
+          message << " name=" << *channel_name;
+        }
+        message << '\n';
+        output_.write(message.str());
+        bsd_success(cpu, 0);
+        return;
+      }
       if (shared_state_->baseband_device_state.ioctl(registers[1]) ==
           bsd::baseband_device::IoctlResult::success) {
         std::ostringstream message;
@@ -350,7 +466,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
         return;
       }
       std::ostringstream message;
-      message << "[baseband] unsupported ioctl pid=" << process_.pid
+      message << "[baseband] passthrough ioctl pid=" << process_.pid
               << " request=0x" << std::hex << registers[1];
       constexpr std::uint32_t maximum_traced_ioctl_payload = 64;
       const auto payload_size = darwin::tty::parameter_length(registers[1]);
@@ -363,7 +479,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       }
       message << '\n';
       output_.write(message.str());
-      bsd_error(cpu, darwin::error::inappropriate_ioctl);
+      bsd_success(cpu, 0);
       return;
     }
     if (registers[1] == darwin::socket::ioctl_pending_bytes) {
@@ -1827,6 +1943,40 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
                                              : bsd_support::invalid_argument);
       return;
     }
+    std::uint32_t receipts_written = 0;
+    const auto write_receipt = [&](std::uint32_t ident,
+                                   std::int16_t filter,
+                                   std::uint16_t flags,
+                                   std::uint32_t filter_flags,
+                                   std::uint32_t data,
+                                   std::uint32_t user_data) {
+      if (receipts_written >= registers[4] || registers[3] == 0) {
+        return false;
+      }
+      const auto event = registers[3] +
+                         receipts_written *
+                             darwin::kqueue::arm32_event::size;
+      if (!memory_.write32(
+              event + darwin::kqueue::arm32_event::identifier_offset, ident) ||
+          !memory_.write16(
+              event + darwin::kqueue::arm32_event::filter_offset,
+              static_cast<std::uint16_t>(filter)) ||
+          !memory_.write16(
+              event + darwin::kqueue::arm32_event::flags_offset,
+              flags | darwin::kqueue::event_error) ||
+          !memory_.write32(
+              event + darwin::kqueue::arm32_event::filter_flags_offset,
+              filter_flags) ||
+          !memory_.write32(event + darwin::kqueue::arm32_event::data_offset,
+                           data) ||
+          !memory_.write32(
+              event + darwin::kqueue::arm32_event::user_data_offset,
+              user_data)) {
+        return false;
+      }
+      ++receipts_written;
+      return true;
+    };
     for (std::uint32_t index = 0; index < registers[2]; ++index) {
       const auto address =
           registers[1] + index * darwin::kqueue::arm32_event::size;
@@ -1855,6 +2005,12 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       if ((*flags & darwin::kqueue::event_delete) != 0) {
         if (found != queue->second.end())
           queue->second.erase(found);
+        if ((*flags & darwin::kqueue::event_receipt) != 0 &&
+            !write_receipt(*ident, signed_filter, *flags, *filter_flags, 0,
+                           *user_data)) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
         continue;
       }
       if ((*flags & darwin::kqueue::event_add) != 0) {
@@ -1872,6 +2028,16 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
           *found = registration;
         }
       }
+      if ((*flags & darwin::kqueue::event_receipt) != 0 &&
+          !write_receipt(*ident, signed_filter, *flags, *filter_flags, 0,
+                         *user_data)) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+    }
+    if (receipts_written != 0) {
+      bsd_success(cpu, receipts_written);
+      return;
     }
     std::optional<std::uint64_t> timeout_deadline;
     bool poll_only = false;

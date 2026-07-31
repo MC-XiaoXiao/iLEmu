@@ -383,6 +383,26 @@ void remove_port_object_locked(KernelSharedState &state, std::uint32_t object) {
       ++special;
     }
   }
+  if (auto task = state.task_exception_actions.find(object);
+      task != state.task_exception_actions.end()) {
+    std::vector<std::uint32_t> held_ports;
+    for (const auto &action : task->second) {
+      if (action.port_object != xnu792::ipc::null_name &&
+          action.port_object != object) {
+        held_ports.push_back(action.port_object);
+      }
+    }
+    state.task_exception_actions.erase(task);
+    for (const auto held_port : held_ports)
+      release_kernel_send_right_locked(state, held_port);
+  }
+  for (auto &[task_object, actions] : state.task_exception_actions) {
+    static_cast<void>(task_object);
+    for (auto &action : actions) {
+      if (action.port_object == object)
+        action.port_object = xnu792::ipc::null_name;
+    }
+  }
   // Kernel-held special-port references cannot outlive their backing port.
   // In-flight message holds are tracked separately and are deliberately
   // retained until their queue sidecar is delivered or discarded.

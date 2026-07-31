@@ -4,6 +4,7 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dmg="${1:-${project_root}/firmwares/iPhone1,1_1.0_1A543a/694-5262-39-decrypted.dmg}"
 output="${2:-${project_root}/build/rootfs}"
+partition="${3:-}"
 image="${project_root}/build/firmware/iphoneos-1.0-hfsx.img"
 archive="${project_root}/build/firmware/iphoneos-1.0-rootfs.tar"
 
@@ -18,7 +19,26 @@ if [[ ! -x "${project_root}/tools/hfsfuse/hfstar" ]]; then
     exit 1
 fi
 
-"${project_root}/tools/dmg2img/dmg2img" -p 3 -i "${dmg}" -o "${image}"
+if [[ -z "${partition}" ]]; then
+    mapfile -t hfs_partitions < <(
+        "${project_root}/tools/dmg2img/dmg2img" -l -i "${dmg}" 2>&1 |
+            sed -nE \
+                's/^partition ([0-9]+):.*\(Apple_HFSX? : [0-9]+\)$/\1/p'
+    )
+    if [[ "${#hfs_partitions[@]}" -ne 1 ]]; then
+        echo "Expected exactly one Apple_HFS/HFSX partition in ${dmg}; found ${#hfs_partitions[@]}." >&2
+        echo "Pass the partition number as the third argument when the image is ambiguous." >&2
+        exit 1
+    fi
+    partition="${hfs_partitions[0]}"
+elif [[ ! "${partition}" =~ ^[0-9]+$ ]]; then
+    echo "Partition must be a non-negative integer: ${partition}" >&2
+    exit 1
+fi
+
+echo "Extracting Apple HFS partition ${partition} from ${dmg}"
+"${project_root}/tools/dmg2img/dmg2img" \
+    -p "${partition}" -i "${dmg}" -o "${image}"
 "${project_root}/tools/hfsfuse/hfstar" \
     -W --rsrc-ext .ilemu-rsrc "${image}" "${archive}"
 if tar --version 2>/dev/null | grep -q "GNU tar"; then

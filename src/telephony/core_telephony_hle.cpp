@@ -20,9 +20,9 @@ namespace ilemu {
 namespace {
 
 constexpr std::string_view core_telephony_image{
-    "/System/Library/Frameworks/CoreTelephony.framework/CoreTelephony"};
+    "/CoreTelephony.framework/CoreTelephony"};
 constexpr std::string_view core_foundation_image{
-    "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"};
+    "/CoreFoundation.framework/CoreFoundation"};
 constexpr std::string_view springboard_image{
     "/System/Library/CoreServices/SpringBoard.app/SpringBoard"};
 constexpr std::string_view application_directory{"Applications/"};
@@ -131,6 +131,22 @@ void return_server_value(UserlandHleCall& call, std::uint32_t value) {
     if (result == 0 || value_output == 0 ||
         !call.write32(result, 0) || !call.write32(result + 4U, 0) ||
         !call.write32(value_output, value)) {
+        call.set_return(0);
+        return;
+    }
+    call.set_return(result);
+}
+
+void return_server_boolean(UserlandHleCall& call, bool value) {
+    if (!is_offline_ui_client(call)) {
+        call.resume_original();
+        return;
+    }
+    const auto result = call.argument(0);
+    const auto value_output = call.argument(2);
+    if (result == 0 || value_output == 0 ||
+        !call.write32(result, 0) || !call.write32(result + 4U, 0) ||
+        !call.memory().write8(value_output, value ? 1U : 0U)) {
         call.set_return(0);
         return;
     }
@@ -732,7 +748,7 @@ void register_core_telephony_hle(
     registry.register_function(
         std::string{core_telephony_image},
         "__CTServerConnectionNetworkTimeUpdatesAllowed",
-        [](UserlandHleCall& call) { return_server_value(call, 0); });
+        [](UserlandHleCall& call) { return_server_boolean(call, false); });
     // Automatic carrier selection eventually dereferences the connection's
     // CommCenter CFMachPort. Baseband transport is intentionally parked, so
     // terminate the request at the user-space CoreTelephony boundary.

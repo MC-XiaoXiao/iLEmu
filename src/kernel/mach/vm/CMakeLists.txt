@@ -3,6 +3,7 @@ add_library(ilemu_kernel_mach_vm STATIC
     copy.cpp
     map.cpp
     memory_entry.cpp
+    protect.cpp
     purgable.cpp
     read.cpp
     region.cpp)

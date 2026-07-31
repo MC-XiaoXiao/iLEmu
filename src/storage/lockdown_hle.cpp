@@ -14,7 +14,7 @@ namespace {
 
 constexpr std::string_view lockdown_image{"/usr/lib/liblockdown.dylib"};
 constexpr std::string_view core_foundation_image{
-    "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation"};
+    "/CoreFoundation.framework/CoreFoundation"};
 constexpr std::string_view copy_value{"_lockdown_copy_value"};
 constexpr std::string_view activation_state_key{"_kLockdownActivationStateKey"};
 constexpr std::string_view brick_state_key{"_kLockdownBrickStateKey"};

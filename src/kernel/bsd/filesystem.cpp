@@ -2,6 +2,7 @@
 
 #include "ilemu/baseband_device.hpp"
 #include "ilemu/offline_serial_device.hpp"
+#include "ilemu/null_device.hpp"
 #include "ilemu/darwin_abi.hpp"
 #include "ilemu/darwin_bpf_abi.hpp"
 #include "ilemu/darwin_kqueue_abi.hpp"
@@ -34,6 +35,61 @@
 #include "support.hpp"
 
 namespace ilemu {
+namespace {
+
+constexpr std::uint32_t random_device_minor = 0;
+constexpr std::uint32_t console_device_minor = 1;
+constexpr std::uint32_t wifi_event_device_minor = 2;
+
+[[nodiscard]] std::optional<std::uint32_t>
+virtual_character_device_minor(std::string_view descriptor_kind) {
+  if (descriptor_kind == "random") {
+    return random_device_minor;
+  }
+  if (descriptor_kind == "console") {
+    return console_device_minor;
+  }
+  if (descriptor_kind == bsd::null_device::descriptor_kind) {
+    return bsd::null_device::device_minor;
+  }
+  if (descriptor_kind ==
+      darwin::network::apple80211_driver::event_descriptor_kind) {
+    return wifi_event_device_minor;
+  }
+  if (descriptor_kind == bsd::baseband_device::descriptor_kind) {
+    return bsd::baseband_device::device_minor;
+  }
+  if (descriptor_kind == bsd::offline_serial_device::descriptor_kind) {
+    return bsd::offline_serial_device::device_minor;
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] std::optional<std::uint32_t>
+virtual_character_path_minor(std::string_view path) {
+  if (path == "/dev/random" || path == "/dev/urandom" ||
+      path == "/dev/srandom") {
+    return random_device_minor;
+  }
+  if (path == "/dev/console") {
+    return console_device_minor;
+  }
+  if (bsd::null_device::is_path(path)) {
+    return bsd::null_device::device_minor;
+  }
+  if (path == darwin::network::apple80211_driver::event_device_path) {
+    return wifi_event_device_minor;
+  }
+  if (bsd::baseband_device::is_path(path)) {
+    return bsd::baseband_device::device_minor;
+  }
+  if (bsd::offline_serial_device::is_path(path)) {
+    return bsd::offline_serial_device::device_minor;
+  }
+  return std::nullopt;
+}
+
+} // namespace
 
 void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
                                                   std::uint32_t number) {
@@ -212,6 +268,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     }
     if (*path == "/dev/random" || *path == "/dev/urandom" ||
         *path == "/dev/srandom" || *path == "/dev/console" ||
+        bsd::null_device::is_path(*path) ||
         bsd::baseband_device::is_path(*path) ||
         bsd::offline_serial_device::is_path(*path)) {
       const auto fd = allocate_file_descriptor();
@@ -220,6 +277,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
         return;
       }
       const auto kind = *path == "/dev/console" ? std::string_view{"console"}
+                        : bsd::null_device::is_path(*path)
+                            ? bsd::null_device::descriptor_kind
                         : bsd::baseband_device::is_path(*path)
                             ? bsd::baseband_device::descriptor_kind
                         : bsd::offline_serial_device::is_path(*path)
@@ -466,7 +525,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     }
     output_.write("[vfs] access " + *path + "\n");
     if (*path == "/dev/console" || *path == "/dev/random" ||
-        *path == "/dev/urandom" || *path == "/dev/disk0s1" ||
+        *path == "/dev/urandom" || *path == "/dev/srandom" ||
+        bsd::null_device::is_path(*path) ||
+        *path == "/dev/disk0s1" ||
         *path == "/dev/disk0s2" || *path == "/dev/rdisk0s1" ||
         *path == "/dev/rdisk0s2" ||
         *path == darwin::network::apple80211_driver::event_device_path ||
@@ -892,6 +953,30 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     bsd_success(cpu, 0);
     return;
   }
+  case 345: { // statfs64
+    const auto path = memory_.read_c_string(registers[0]);
+    if (!path) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
+    output_.write("[vfs] statfs64 " + *path + "\n");
+    std::error_code error;
+    const auto virtual_path =
+        virtual_character_path_minor(*path) || darwin::bpf::device_minor(*path) ||
+        *path == "/dev/disk0s1" || *path == "/dev/disk0s2" ||
+        *path == "/dev/rdisk0s1" || *path == "/dev/rdisk0s2";
+    if (!virtual_path &&
+        !std::filesystem::exists(resolve_guest_path(*path), error)) {
+      bsd_error(cpu, darwin::error::no_entry);
+      return;
+    }
+    if (!write_guest_statfs64(registers[1])) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
+    bsd_success(cpu, 0);
+    return;
+  }
   case 159: { // unmount
     const auto path = memory_.read_c_string(registers[0]);
     if (!path) {
@@ -956,6 +1041,46 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       bsd_success(cpu, 0);
     }
     return;
+  case 346: { // fstatfs64
+    auto descriptor = registers[0];
+    if (const auto duplicate = duplicated_descriptors_.find(descriptor);
+        duplicate != duplicated_descriptors_.end()) {
+      descriptor = duplicate->second;
+    }
+    if (!file_descriptors_.contains(descriptor) &&
+        !virtual_descriptors_.contains(descriptor) &&
+        !virtual_block_descriptors_.contains(descriptor) &&
+        !bpf_descriptors_.contains(descriptor) && descriptor > 2) {
+      bsd_error(cpu, bsd_support::bad_file_descriptor);
+      return;
+    }
+    if (!write_guest_statfs64(registers[1])) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
+    bsd_success(cpu, 0);
+    return;
+  }
+  case 347: { // getfsstat64
+    const auto mount_count =
+        static_cast<std::uint32_t>(shared_state_->mounts.size());
+    if (registers[0] == 0) {
+      bsd_success(cpu, mount_count);
+      return;
+    }
+    constexpr std::uint32_t guest_statfs64_size = 2168;
+    const auto capacity = registers[1] / guest_statfs64_size;
+    const auto count = std::min(capacity, mount_count);
+    for (std::uint32_t index = 0; index < count; ++index) {
+      if (!write_guest_statfs64(registers[0] +
+                                index * guest_statfs64_size)) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+    }
+    bsd_success(cpu, count);
+    return;
+  }
   case 201: { // ftruncate
     auto fd = registers[0];
     if (const auto duplicate = duplicated_descriptors_.find(fd);
@@ -987,7 +1112,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     bsd_success(cpu, 0);
     return;
   }
-  case 196: { // getdirentries
+  case 196:  // getdirentries
+  case 344: { // getdirentries64
     auto fd = registers[0];
     if (const auto duplicate = duplicated_descriptors_.find(fd);
         duplicate != duplicated_descriptors_.end()) {
@@ -1065,10 +1191,15 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       add_virtual("rdisk0s1", 2); // DT_CHR
       add_virtual("rdisk0s2", 2);
       add_virtual("console", 2);
+      add_virtual("null", 2);
+      add_virtual("autofs_nowait", 2);
       add_virtual("random", 2);
       add_virtual("urandom", 2);
       add_virtual("bpf0", 2);
       add_virtual(std::string{bsd::baseband_device::directory_name}, 2);
+      add_virtual(std::string{bsd::baseband_device::spi_mux_directory_name},
+                  2);
+      add_virtual(std::string{bsd::baseband_device::h5_mux_directory_name}, 2);
       add_virtual(std::string{bsd::offline_serial_device::directory_name}, 2);
       std::ostringstream directory_trace;
       directory_trace << "[vfs] virtual /dev enumeration entries="
@@ -1083,33 +1214,65 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     if (entry_index > entries.size())
       entry_index = entries.size();
     const auto initial_index = entry_index;
+    const auto extended_entries = number == 344;
     std::vector<std::byte> bytes;
     bytes.reserve(registers[2]);
+    const auto put16 = [&](std::size_t offset, std::uint16_t value) {
+      bytes[offset] = static_cast<std::byte>(value & 0xffU);
+      bytes[offset + 1] = static_cast<std::byte>(value >> 8U);
+    };
+    const auto put32 = [&](std::size_t offset, std::uint32_t value) {
+      for (std::size_t byte = 0; byte < 4; ++byte) {
+        bytes[offset + byte] =
+            static_cast<std::byte>(value >> (byte * 8U));
+      }
+    };
+    const auto put64 = [&](std::size_t offset, std::uint64_t value) {
+      for (std::size_t byte = 0; byte < 8; ++byte) {
+        bytes[offset + byte] =
+            static_cast<std::byte>(value >> (byte * 8U));
+      }
+    };
     while (entry_index < entries.size()) {
       const auto &entry = entries[entry_index];
-      const auto record_size =
-          static_cast<std::uint16_t>((8U + entry.name.size() + 1U + 3U) & ~3U);
+      const auto record_size = extended_entries
+                                   ? static_cast<std::uint16_t>(
+                                         (25U + entry.name.size() + 7U) & ~7U)
+                                   : static_cast<std::uint16_t>(
+                                         (8U + entry.name.size() + 1U + 3U) &
+                                         ~3U);
       if (record_size > registers[2] - bytes.size())
         break;
       const auto start = bytes.size();
       bytes.resize(start + record_size);
-      for (std::size_t byte = 0; byte < 4; ++byte) {
-        bytes[start + byte] =
-            static_cast<std::byte>(entry.catalog_id >> (byte * 8U));
-      }
-      bytes[start + 4] = static_cast<std::byte>(record_size);
-      bytes[start + 5] = static_cast<std::byte>(record_size >> 8U);
-      bytes[start + 6] = static_cast<std::byte>(entry.type);
-      bytes[start + 7] = static_cast<std::byte>(entry.name.size());
-      for (std::size_t byte = 0; byte < entry.name.size(); ++byte) {
-        bytes[start + 8 + byte] = static_cast<std::byte>(entry.name[byte]);
+      if (extended_entries) {
+        put64(start, entry.catalog_id);
+        put64(start + 8, entry_index + 1U);
+        put16(start + 16, record_size);
+        put16(start + 18, static_cast<std::uint16_t>(entry.name.size()));
+        bytes[start + 20] = static_cast<std::byte>(entry.type);
+        for (std::size_t byte = 0; byte < entry.name.size(); ++byte) {
+          bytes[start + 21 + byte] = static_cast<std::byte>(entry.name[byte]);
+        }
+      } else {
+        put32(start, entry.catalog_id);
+        put16(start + 4, record_size);
+        bytes[start + 6] = static_cast<std::byte>(entry.type);
+        bytes[start + 7] = static_cast<std::byte>(entry.name.size());
+        for (std::size_t byte = 0; byte < entry.name.size(); ++byte) {
+          bytes[start + 8 + byte] = static_cast<std::byte>(entry.name[byte]);
+        }
       }
       ++entry_index;
     }
-    if (!memory_.copy_in(registers[1], bytes) ||
-        (registers[3] != 0 &&
-         !memory_.write32(registers[3],
-                          static_cast<std::uint32_t>(initial_index)))) {
+    const auto position_written =
+        registers[3] == 0 ||
+        (extended_entries
+             ? memory_.write64(registers[3],
+                               static_cast<std::uint64_t>(entry_index))
+             : memory_.write32(registers[3],
+                               static_cast<std::uint32_t>(initial_index)));
+    if (!memory_.copy_in(registers[1], bytes) || !position_written) {
       bsd_error(cpu, bsd_support::bad_address);
       return;
     }
@@ -1656,6 +1819,138 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     bsd_success(cpu, 0);
     return;
   }
+  case 338: // stat64
+  case 340: // lstat64
+  case 341: // stat64_extended
+  case 342: { // lstat64_extended
+    const auto path = memory_.read_c_string(registers[0]);
+    if (!path) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
+    output_.write("[vfs] stat64 " + *path + "\n");
+    const auto finish_extended_security = [&]() -> bool {
+      if ((number == 341 || number == 342) && registers[3] != 0 &&
+          !memory_.write32(registers[3], 0)) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return false;
+      }
+      return true;
+    };
+    if (const auto minor = virtual_character_path_minor(*path)) {
+      if (!write_guest_device_stat64(registers[1], *minor, true)) {
+        bsd_error(cpu, bsd_support::bad_address);
+      } else if (finish_extended_security()) {
+        bsd_success(cpu, 0);
+      }
+      return;
+    }
+    if (const auto minor = darwin::bpf::device_minor(*path)) {
+      if (!write_guest_device_stat64(registers[1], 32U + *minor, true)) {
+        bsd_error(cpu, bsd_support::bad_address);
+      } else if (finish_extended_security()) {
+        bsd_success(cpu, 0);
+      }
+      return;
+    }
+    if (*path == "/dev/disk0s1" || *path == "/dev/disk0s2" ||
+        *path == "/dev/rdisk0s1" || *path == "/dev/rdisk0s2") {
+      const auto minor = path->ends_with("s1") ? 1U : 2U;
+      if (!write_guest_device_stat64(registers[1], minor,
+                                     path->starts_with("/dev/rdisk"))) {
+        bsd_error(cpu, bsd_support::bad_address);
+      } else if (finish_extended_security()) {
+        bsd_success(cpu, 0);
+      }
+      return;
+    }
+    const auto follow_symlink = number == 338 || number == 341;
+    const auto host = resolve_guest_path(*path, follow_symlink);
+    std::error_code error;
+    const auto status = follow_symlink
+                            ? std::filesystem::status(host, error)
+                            : std::filesystem::symlink_status(host, error);
+    if (error || status.type() == std::filesystem::file_type::not_found) {
+      bsd_error(cpu, darwin::error::no_entry);
+      return;
+    }
+    if (!write_guest_stat64(registers[1], host, follow_symlink)) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
+    if (!finish_extended_security()) {
+      return;
+    }
+    bsd_success(cpu, 0);
+    return;
+  }
+  case 339:  // fstat64
+  case 343: { // fstat64_extended
+    auto descriptor = registers[0];
+    if (const auto duplicate = duplicated_descriptors_.find(descriptor);
+        duplicate != duplicated_descriptors_.end()) {
+      descriptor = duplicate->second;
+    }
+    const auto finish_extended_security = [&]() -> bool {
+      if (number == 343 && registers[3] != 0 &&
+          !memory_.write32(registers[3], 0)) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return false;
+      }
+      return true;
+    };
+    if (const auto block = virtual_block_descriptors_.find(descriptor);
+        block != virtual_block_descriptors_.end()) {
+      if (!write_guest_device_stat64(registers[1], block->second.first,
+                                     block->second.second)) {
+        bsd_error(cpu, bsd_support::bad_address);
+      } else if (finish_extended_security()) {
+        bsd_success(cpu, 0);
+      }
+      return;
+    }
+    if (const auto bpf = bpf_descriptors_.find(descriptor);
+        bpf != bpf_descriptors_.end()) {
+      if (!write_guest_device_stat64(registers[1],
+                                     32U + bpf->second->minor, true)) {
+        bsd_error(cpu, bsd_support::bad_address);
+      } else if (finish_extended_security()) {
+        bsd_success(cpu, 0);
+      }
+      return;
+    }
+    if (const auto device = virtual_descriptors_.find(descriptor);
+        device != virtual_descriptors_.end()) {
+      const auto minor = virtual_character_device_minor(device->second);
+      if (!minor) {
+        bsd_error(cpu, bsd_support::bad_file_descriptor);
+        return;
+      }
+      if (!write_guest_device_stat64(registers[1], *minor, true)) {
+        bsd_error(cpu, bsd_support::bad_address);
+      } else if (finish_extended_security()) {
+        bsd_success(cpu, 0);
+      }
+      return;
+    }
+    const auto found = file_descriptors_.find(descriptor);
+    if (found == file_descriptors_.end()) {
+      bsd_error(cpu, bsd_support::bad_file_descriptor);
+      return;
+    }
+    const auto description = ensure_regular_file_open_description(descriptor);
+    if (!write_guest_stat64(
+            registers[1], found->second, true,
+            description ? description->host_descriptor() : -1)) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
+    if (!finish_extended_security()) {
+      return;
+    }
+    bsd_success(cpu, 0);
+    return;
+  }
   case 188:   // stat
   case 190: { // lstat
     const auto path = memory_.read_c_string(registers[0]);
@@ -1664,12 +1959,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       return;
     }
     output_.write("[vfs] stat " + *path + "\n");
-    if (bsd::baseband_device::is_path(*path) ||
-        bsd::offline_serial_device::is_path(*path)) {
-      const auto minor = bsd::baseband_device::is_path(*path)
-                             ? bsd::baseband_device::device_minor
-                             : bsd::offline_serial_device::device_minor;
-      if (!write_guest_device_stat(registers[1], minor, true)) {
+    if (const auto minor = virtual_character_path_minor(*path)) {
+      if (!write_guest_device_stat(registers[1], *minor, true)) {
         bsd_error(cpu, bsd_support::bad_address);
       } else {
         bsd_success(cpu, 0);
@@ -1739,27 +2030,13 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       return;
     }
     if (const auto device = virtual_descriptors_.find(descriptor);
-        device != virtual_descriptors_.end() &&
-        (device->second == "random" || device->second == "console" ||
-         device->second ==
-             darwin::network::apple80211_driver::event_descriptor_kind ||
-         device->second == bsd::baseband_device::descriptor_kind ||
-         device->second == bsd::offline_serial_device::descriptor_kind)) {
-      constexpr std::uint32_t random_device_minor = 0;
-      constexpr std::uint32_t console_device_minor = 1;
-      constexpr std::uint32_t wifi_event_device_minor = 2;
-      const auto minor = device->second == "random" ? random_device_minor
-                         : device->second == "console"
-                             ? console_device_minor
-                         : device->second ==
-                                   darwin::network::apple80211_driver::
-                                       event_descriptor_kind
-                             ? wifi_event_device_minor
-                         : device->second ==
-                                   bsd::offline_serial_device::descriptor_kind
-                             ? bsd::offline_serial_device::device_minor
-                             : bsd::baseband_device::device_minor;
-      if (!write_guest_device_stat(registers[1], minor, true)) {
+        device != virtual_descriptors_.end()) {
+      const auto minor = virtual_character_device_minor(device->second);
+      if (!minor) {
+        bsd_error(cpu, bsd_support::bad_file_descriptor);
+        return;
+      }
+      if (!write_guest_device_stat(registers[1], *minor, true)) {
         bsd_error(cpu, bsd_support::bad_address);
       } else {
         bsd_success(cpu, 0);

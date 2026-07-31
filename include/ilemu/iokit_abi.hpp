@@ -29,6 +29,7 @@ enum class AppleH1ClcdSelector : std::uint32_t {
   GetLayerDefaultSurface = 3,
   SetVSyncNotificationsV1 = 8,
   SetVSyncNotifications = 9,
+  RequestPowerChangeV2 = 12,
   RequestPowerChangeV1 = 13,
   RequestPowerChange = 14,
 };
@@ -42,6 +43,8 @@ constexpr bool is_apple_h1clcd_vsync_selector(std::uint32_t selector) {
 
 constexpr bool is_apple_h1clcd_power_selector(std::uint32_t selector) {
   return selector == static_cast<std::uint32_t>(
+                         AppleH1ClcdSelector::RequestPowerChangeV2) ||
+         selector == static_cast<std::uint32_t>(
                          AppleH1ClcdSelector::RequestPowerChangeV1) ||
          selector == static_cast<std::uint32_t>(
                          AppleH1ClcdSelector::RequestPowerChange);
@@ -58,6 +61,7 @@ inline constexpr std::uint32_t service_busy_state_quiet = 0;
 
 inline constexpr std::uint32_t apple_h1clcd_service_type = 0;
 inline constexpr std::uint32_t power_root_service_type = 0;
+inline constexpr std::uint32_t generic_user_client_type = 0xffffffffU;
 // CoreSurface IDs are transport handles, not guest pointers. Keep the display
 // driver's reserved surface outside the IDs normally allocated at process
 // startup; CoreSurfaceHle advances its allocator after a lookup of this ID.
@@ -117,9 +121,10 @@ inline constexpr std::uint32_t trailing_request_size = 24;
 inline constexpr std::uint32_t minimum_request_size =
     scalar_input_offset + inband_count_size + trailing_request_size;
 
-// MIG compresses the reply to the actual scalar and inband counts. The
-// generated validator rebases its fixed-array view by scalar_count * 8 - 128,
-// so inband output follows the last returned scalar rather than all 16 slots.
+// MIG compresses the reply to the actual scalar and inband counts. Generated
+// clients rebase their fixed-array view by scalar_count * 8 - 128, so inband
+// output follows the last returned scalar rather than all 16 slots. The final
+// word reports the size of the optional out-of-line output.
 inline constexpr std::uint32_t return_code_offset = 32;
 inline constexpr std::uint32_t scalar_output_count_offset = 36;
 inline constexpr std::uint32_t scalar_output_offset = 40;
@@ -129,9 +134,24 @@ constexpr std::uint32_t inband_output_count_offset(std::uint32_t scalar_count) {
 constexpr std::uint32_t inband_output_offset(std::uint32_t scalar_count) {
   return inband_output_count_offset(scalar_count) + sizeof(std::uint32_t);
 }
-inline constexpr std::uint32_t minimum_reply_size = inband_output_offset(0);
+constexpr std::uint32_t aligned_inband_output_size(
+    std::uint32_t inband_count) {
+  return (inband_count + sizeof(std::uint32_t) - 1U) &
+         ~(sizeof(std::uint32_t) - 1U);
+}
+constexpr std::uint32_t out_of_line_output_size_offset(
+    std::uint32_t scalar_count, std::uint32_t inband_count) {
+  return inband_output_offset(scalar_count) +
+         aligned_inband_output_size(inband_count);
+}
+constexpr std::uint32_t reply_size(std::uint32_t scalar_count,
+                                   std::uint32_t inband_count) {
+  return out_of_line_output_size_offset(scalar_count, inband_count) +
+         sizeof(std::uint32_t);
+}
+inline constexpr std::uint32_t minimum_reply_size = reply_size(0, 0);
 inline constexpr std::uint32_t maximum_reply_size =
-    inband_output_offset(maximum_scalar_count) + maximum_inband_size;
+    reply_size(maximum_scalar_count, maximum_inband_size);
 // Literal receive capacity passed by the firmware _io_connect_method stub.
 inline constexpr std::uint32_t firmware_receive_buffer_size = 0x10b8U;
 

@@ -20,6 +20,10 @@ constexpr std::uint32_t mig_message_id(Routine routine) {
 }
 
 inline constexpr std::size_t maximum_message_io = 16U * 1024U * 1024U;
+// OOL memory descriptors describe VM-backed data and are not part of the
+// inline Mach message size. Keep a separate host-allocation guard large enough
+// for the fixed-size buffers used by system MIG servers.
+inline constexpr std::size_t maximum_ool_payload = 64U * 1024U * 1024U;
 inline constexpr std::uint32_t default_dynamic_base = 0x10000000U;
 inline constexpr std::uint32_t ool_receive_base = 0x1d000000U;
 inline constexpr std::uint32_t ool_results_base = 0x1f000000U;

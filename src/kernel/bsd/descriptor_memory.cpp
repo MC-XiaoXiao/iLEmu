@@ -2,6 +2,7 @@
 
 #include "ilemu/baseband_device.hpp"
 #include "ilemu/offline_serial_device.hpp"
+#include "ilemu/null_device.hpp"
 #include "ilemu/darwin_abi.hpp"
 #include "ilemu/darwin_kqueue_abi.hpp"
 #include "ilemu/darwin_network_abi.hpp"
@@ -162,7 +163,8 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
       file_offsets_[fd] = offset + count;
     } else if (const auto console_device = virtual_descriptors_.find(fd);
                console_device != virtual_descriptors_.end() &&
-               console_device->second == "console") {
+               (console_device->second == "console" ||
+                console_device->second == bsd::null_device::descriptor_kind)) {
       bytes.clear();
     } else if (const auto file = file_descriptors_.find(fd);
                file != file_descriptors_.end()) {
@@ -456,6 +458,16 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
                                             [1U - endpoint->second.side];
       destination.insert(destination.end(), bytes->begin(), bytes->end());
       bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));
+      return;
+    }
+    if (const auto device = virtual_descriptors_.find(fd);
+        device != virtual_descriptors_.end() &&
+        device->second == bsd::null_device::descriptor_kind) {
+      if (size > bsd_support::maximum_io) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+        return;
+      }
+      bsd_success(cpu, static_cast<std::uint32_t>(size));
       return;
     }
     if (const auto device = virtual_descriptors_.find(fd);
@@ -909,6 +921,55 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
       // effect, so accepting the requested Boolean policy is sufficient.
       bsd_success(cpu, 0);
       return;
+    case darwin::fcntl_command::add_detached_signatures:
+      // F_ADDSIGS lets dyld attach a detached code-signature blob to a vnode
+      // before validating mmap'ed pages. iLEmu does not model AMFI/code-signing
+      // enforcement, but the kernel ABI still needs to accept a readable
+      // fsignatures_t registration record so dyld can continue loading images.
+      if (registers[2] == 0 ||
+          !memory_.accessible(registers[2], 16, MemoryPermission::Read)) {
+        bsd_error(cpu, bsd_support::bad_address);
+      } else {
+        bsd_success(cpu, 0);
+      }
+      return;
+    case darwin::fcntl_command::get_path: {
+      auto descriptor = fd;
+      if (const auto duplicate = duplicated_descriptors_.find(descriptor);
+          duplicate != duplicated_descriptors_.end()) {
+        descriptor = duplicate->second;
+      }
+      const auto file = file_descriptors_.find(descriptor);
+      if (file == file_descriptors_.end() || rootfs_.empty()) {
+        bsd_error(cpu, bsd_support::bad_file_descriptor);
+        return;
+      }
+      const auto root = rootfs_.lexically_normal();
+      const auto host = file->second.lexically_normal();
+      std::string guest_path;
+      if (host == root) {
+        guest_path = "/";
+      } else {
+        const auto relative = host.lexically_relative(root);
+        if (relative.empty() || relative == "." ||
+            *relative.begin() == "..") {
+          bsd_error(cpu, darwin::error::no_entry);
+          return;
+        }
+        guest_path = "/" + relative.generic_string();
+      }
+      std::vector<std::byte> bytes(guest_path.size() + 1U);
+      std::transform(guest_path.begin(), guest_path.end(), bytes.begin(),
+                     [](char character) {
+                       return static_cast<std::byte>(character);
+                     });
+      if (!memory_.copy_in(registers[2], bytes)) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+      bsd_success(cpu, 0);
+      return;
+    }
     default:
       output_.write("[vfs] unsupported fcntl pid=" +
                     std::to_string(process_.pid) + " fd=" +

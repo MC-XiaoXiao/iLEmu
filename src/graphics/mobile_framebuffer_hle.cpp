@@ -32,7 +32,7 @@ namespace ilemu {
 namespace {
 
 constexpr std::string_view framebuffer_image{
-    "/System/Library/Frameworks/IOMobileFramebuffer.framework/"
+    "/IOMobileFramebuffer.framework/"
     "IOMobileFramebuffer"};
 std::atomic<std::uint64_t> next_scanout_surface{1};
 

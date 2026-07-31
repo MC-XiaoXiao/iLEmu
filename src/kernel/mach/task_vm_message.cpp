@@ -43,6 +43,7 @@ using namespace mach_support;
 bool CompatibilityKernel::dispatch_mach_task_vm_message(
     Cpu &cpu, const MachMessageRequest &request) {
   if (dispatch_mach_vm_allocate_message(cpu, request) ||
+      dispatch_mach_vm_protect_message(cpu, request) ||
       dispatch_mach_vm_copy_message(cpu, request) ||
       dispatch_mach_vm_read_message(cpu, request) ||
       dispatch_mach_vm_purgable_message(cpu, request) ||
@@ -205,46 +206,6 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
       }
       return true;
     }
-  }
-  if (*message_id == mig_message_id(xnu792::mig::vm_map::Routine::vm_protect) &&
-      registers[3] >= 36) {
-    const auto address =
-        memory_
-            .read32(message_address +
-                    xnu792::mig::vm_map::vm_protect_arguments[1].request_offset)
-            .value_or(0);
-    const auto size =
-        memory_
-            .read32(message_address +
-                    xnu792::mig::vm_map::vm_protect_arguments[2].request_offset)
-            .value_or(0);
-    const auto protection =
-        memory_
-            .read32(message_address +
-                    xnu792::mig::vm_map::vm_protect_arguments[4].request_offset)
-            .value_or(0);
-    MemoryPermission permissions = MemoryPermission::None;
-    if ((protection & 1U) != 0)
-      permissions |= MemoryPermission::Read;
-    if ((protection & 2U) != 0)
-      permissions |= MemoryPermission::Write;
-    if ((protection & 4U) != 0)
-      permissions |= MemoryPermission::Execute;
-    const auto protect_ok = memory_.protect(address, size, permissions);
-    const std::array<std::uint32_t, 9> reply{
-        18,          36,          *local_port,          0, 0, *message_id + 100,
-        0x00000000U, 0x00000001U, protect_ok ? 0U : 1U,
-    };
-    for (std::size_t index = 0; index < reply.size(); ++index) {
-      if (!memory_.write32(message_address +
-                               static_cast<std::uint32_t>(index * 4U),
-                           reply[index])) {
-        registers[0] = 0x10004008U;
-        return true;
-      }
-    }
-    registers[0] = 0;
-    return true;
   }
   if (*message_id ==
           mig_message_id(xnu792::mig::task::Routine::mach_ports_lookup) &&

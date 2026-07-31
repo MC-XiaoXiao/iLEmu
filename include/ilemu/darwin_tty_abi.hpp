@@ -95,4 +95,18 @@ inline constexpr std::uint32_t set_arbitrary_speed =
 inline constexpr std::uint32_t set_h5_transport_mode =
     sized_command(ioctl_input, 'T', 10, sizeof(std::uint32_t));
 
+// Apple Onboard Serial mux request observed while CommCenter transitions the
+// baseband transport. It carries a 32-bit receive threshold and is encoded as
+// an in/out sized ioctl on the same vendor group.
+inline constexpr std::uint32_t set_receive_threshold =
+    sized_command(ioctl_input | ioctl_output, 'y', 0x9a,
+                  sizeof(std::uint32_t));
+
+// Apple Serial Mux requests used by CommCenter while it builds the baseband
+// DLCI/channel table.
+inline constexpr std::uint32_t asm_new_dlci =
+    sized_command(ioctl_input | ioctl_output, 'x', 0x0a, 0x48U);
+inline constexpr std::uint32_t ioaos_receive_queue =
+    sized_command(ioctl_input, 'x', 0x28, 0x10U);
+
 } // namespace ilemu::darwin::tty

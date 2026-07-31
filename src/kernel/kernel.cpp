@@ -1674,6 +1674,110 @@ bool CompatibilityKernel::write_guest_device_stat(std::uint32_t address,
   return memory_.copy_in(address, bytes);
 }
 
+bool CompatibilityKernel::write_guest_stat64(std::uint32_t address,
+                                             const std::filesystem::path &path,
+                                             bool follow_symlink,
+                                             int host_descriptor) {
+  // Darwin 9 ARM32 struct stat64 keeps 64-bit inode, size, block count, and
+  // qspare fields, while time_t/long timespec members remain 32-bit and
+  // 64-bit integers are only 4-byte aligned on this firmware ABI.
+  std::array<std::byte, 108> bytes{};
+  auto put16 = [&](std::size_t offset, std::uint16_t value) {
+    bytes[offset] = static_cast<std::byte>(value & 0xffU);
+    bytes[offset + 1] = static_cast<std::byte>(value >> 8U);
+  };
+  auto put32 = [&](std::size_t offset, std::uint32_t value) {
+    for (std::size_t i = 0; i < 4; ++i) {
+      bytes[offset + i] = static_cast<std::byte>((value >> (i * 8U)) & 0xffU);
+    }
+  };
+  auto put64 = [&](std::size_t offset, std::uint64_t value) {
+    for (std::size_t i = 0; i < 8; ++i) {
+      bytes[offset + i] = static_cast<std::byte>((value >> (i * 8U)) & 0xffU);
+    }
+  };
+  auto put_time = [&](std::size_t offset, const hfs::Timestamp &timestamp) {
+    put32(offset, static_cast<std::uint32_t>(timestamp.seconds));
+    put32(offset + 4U, static_cast<std::uint32_t>(timestamp.nanoseconds));
+  };
+
+  auto metadata = query_hfs_metadata(path, follow_symlink);
+  if (host_descriptor >= 0) {
+    struct stat status {};
+    if (::fstat(host_descriptor, &status) != 0)
+      return false;
+    struct stat path_status {};
+    const auto path_result = follow_symlink ? ::stat(path.c_str(), &path_status)
+                                            : ::lstat(path.c_str(), &path_status);
+    if (path_result != 0 || path_status.st_dev != status.st_dev ||
+        path_status.st_ino != status.st_ino) {
+      hfs::Metadata open_file;
+      open_file.name = path.filename().string();
+      open_file.catalog_id = static_cast<std::uint32_t>(status.st_ino);
+      open_file.permanent_id = open_file.catalog_id;
+      open_file.mode = static_cast<std::uint32_t>(status.st_mode);
+      open_file.owner = static_cast<std::uint32_t>(status.st_uid);
+      open_file.group = static_cast<std::uint32_t>(status.st_gid);
+      open_file.link_count = static_cast<std::uint32_t>(status.st_nlink);
+      open_file.data_length = static_cast<std::uint64_t>(status.st_size);
+      open_file.data_allocation_size =
+          static_cast<std::uint64_t>(status.st_blocks) * 512U;
+      open_file.directory = S_ISDIR(status.st_mode);
+      metadata = std::move(open_file);
+    }
+  }
+  if (!metadata)
+    return false;
+
+  put32(0, root_disk_device);                           // st_dev
+  put16(4, static_cast<std::uint16_t>(metadata->mode)); // st_mode
+  put16(6, static_cast<std::uint16_t>(
+               std::min(metadata->link_count,
+                        static_cast<std::uint32_t>(
+                            std::numeric_limits<std::uint16_t>::max()))));
+  put64(8, metadata->permanent_id); // st_ino
+  put32(16, metadata->owner);
+  put32(20, metadata->group);
+  put32(24, 0); // st_rdev
+  put_time(28, metadata->access_time);
+  put_time(36, metadata->modification_time);
+  put_time(44, metadata->change_time);
+  put_time(52, metadata->creation_time);
+  put64(60, metadata->data_length);
+  put64(68, (metadata->data_allocation_size + 511U) / 512U);
+  put32(76, AddressSpace::page_size);
+  put32(80, metadata->flags);
+  return memory_.copy_in(address, bytes);
+}
+
+bool CompatibilityKernel::write_guest_device_stat64(std::uint32_t address,
+                                                    std::uint32_t minor,
+                                                    bool character_device) {
+  std::array<std::byte, 108> bytes{};
+  const auto put16 = [&](std::size_t offset, std::uint16_t value) {
+    bytes[offset] = static_cast<std::byte>(value & 0xffU);
+    bytes[offset + 1] = static_cast<std::byte>(value >> 8U);
+  };
+  const auto put32 = [&](std::size_t offset, std::uint32_t value) {
+    for (std::size_t byte = 0; byte < 4; ++byte) {
+      bytes[offset + byte] = static_cast<std::byte>(value >> (byte * 8U));
+    }
+  };
+  const auto put64 = [&](std::size_t offset, std::uint64_t value) {
+    for (std::size_t byte = 0; byte < 8; ++byte) {
+      bytes[offset + byte] = static_cast<std::byte>(value >> (byte * 8U));
+    }
+  };
+  put32(0, 1);              // st_dev
+  put16(4, static_cast<std::uint16_t>((character_device ? 0020000U : 0060000U) |
+                                      0640U));
+  put16(6, 1);              // st_nlink
+  put64(8, 0x100U + minor); // stable virtual inode
+  put32(24, (virtual_disk_major << 24U) | minor);
+  put32(76, AddressSpace::page_size);
+  return memory_.copy_in(address, bytes);
+}
+
 bool CompatibilityKernel::write_guest_statfs(std::uint32_t address) {
   // Darwin 8's 32-bit legacy statfs layout is 272 bytes.
   std::array<std::byte, 272> bytes{};
@@ -1710,6 +1814,50 @@ bool CompatibilityKernel::write_guest_statfs(std::uint32_t address) {
   put_string(60, 15, "hfs");
   put_string(75, 90, "/");
   put_string(165, 90, "/dev/disk0s1");
+  return memory_.copy_in(address, bytes);
+}
+
+bool CompatibilityKernel::write_guest_statfs64(std::uint32_t address) {
+  // Darwin 9's 32-bit statfs64 ABI.  See xnu-1228 bsd/sys/mount.h:
+  // two 32-bit sizes, five 64-bit counters, fsid_t, owner/type/flags/subtype,
+  // then fixed-size type and path strings.
+  std::array<std::byte, 2168> bytes{};
+  const auto put32 = [&](std::size_t offset, std::uint32_t value) {
+    for (std::size_t index = 0; index < 4; ++index) {
+      bytes[offset + index] =
+          static_cast<std::byte>((value >> (index * 8U)) & 0xffU);
+    }
+  };
+  const auto put64 = [&](std::size_t offset, std::uint64_t value) {
+    for (std::size_t index = 0; index < 8; ++index) {
+      bytes[offset + index] =
+          static_cast<std::byte>((value >> (index * 8U)) & 0xffU);
+    }
+  };
+  const auto put_string = [&](std::size_t offset, std::size_t capacity,
+                              std::string_view value) {
+    const auto count = std::min(capacity - 1, value.size());
+    for (std::size_t index = 0; index < count; ++index) {
+      bytes[offset + index] = static_cast<std::byte>(value[index]);
+    }
+  };
+
+  const hfs::VolumeMetadata volume;
+  put32(0, volume.block_size);
+  put32(4, volume.io_block_size);
+  put64(8, volume.total_blocks);
+  put64(16, volume.free_blocks);
+  put64(24, volume.free_blocks);
+  put64(32, 0xffff'ffffULL); // HFS reports no practical inode ceiling
+  put64(40, 0xffff'ffffULL - volume.next_catalog_id);
+  put32(48, 1); // fsid[0]
+  put32(56, 0); // owner
+  put32(60, volume.filesystem_type);
+  put32(64, volume.mount_flags);
+  put32(68, 0); // f_fssubtype
+  put_string(72, 16, "hfs");
+  put_string(88, 1024, volume.mount_point);
+  put_string(1112, 1024, volume.mounted_device);
   return memory_.copy_in(address, bytes);
 }
 

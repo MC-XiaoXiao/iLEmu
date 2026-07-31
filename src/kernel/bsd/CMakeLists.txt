@@ -5,6 +5,7 @@ add_subdirectory(signal)
 add_subdirectory(filesystem)
 add_subdirectory(network)
 add_subdirectory(process)
+add_subdirectory(security)
 add_subdirectory(vm)
 
 target_sources(ilemu_kernel PRIVATE
@@ -29,6 +30,7 @@ target_link_libraries(ilemu_kernel PRIVATE
     iLEmu::kernel_bsd_virtual_udp_syscalls
     iLEmu::kernel_bsd_virtual_udp
     iLEmu::kernel_bsd_process
+    iLEmu::kernel_bsd_security
     iLEmu::kernel_bsd_vm_shared_region
     iLEmu::kernel_bsd_signal
     iLEmu::kernel_bsd_sysctl)

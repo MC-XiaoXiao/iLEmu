@@ -9,6 +9,8 @@ inline constexpr std::int16_t filter_write = -2;
 
 inline constexpr std::uint16_t event_add = 0x0001;
 inline constexpr std::uint16_t event_delete = 0x0002;
+inline constexpr std::uint16_t event_receipt = 0x0040;
+inline constexpr std::uint16_t event_error = 0x4000;
 
 namespace arm32_event {
 inline constexpr std::uint32_t identifier_offset = 0;

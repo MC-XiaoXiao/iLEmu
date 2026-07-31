@@ -26,7 +26,7 @@ namespace ilemu {
 namespace {
 
 constexpr std::string_view opengles_image{
-    "/System/Library/Frameworks/OpenGLES.framework/OpenGLES"};
+    "/OpenGLES.framework/OpenGLES"};
 
 constexpr std::uint32_t egl_false = 0;
 constexpr std::uint32_t egl_true = 1;

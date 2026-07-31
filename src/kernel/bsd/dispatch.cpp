@@ -27,8 +27,65 @@
 #include "support.hpp"
 
 namespace ilemu {
+namespace {
+
+std::optional<std::uint32_t> canonical_no_cancel_syscall(
+    std::uint32_t number) {
+  // Darwin 9 adds non-cancellation syscall entry points for libSystem's
+  // pthread cancellation boundary. The kernel operation is otherwise the same
+  // as the cancellable BSD syscall, so reuse the existing compatibility path.
+  switch (number) {
+  case 396: // read_nocancel
+    return darwin::syscall::read;
+  case 397: // write_nocancel
+    return darwin::syscall::write;
+  case 398: // open_nocancel
+    return darwin::syscall::open;
+  case 399: // close_nocancel
+    return darwin::syscall::close;
+  case 400: // wait4_nocancel
+    return 7U;
+  case 401: // recvmsg_nocancel
+    return darwin::syscall::receive_message;
+  case 402: // sendmsg_nocancel
+    return darwin::syscall::send_message;
+  case 403: // recvfrom_nocancel
+    return darwin::syscall::receive_from;
+  case 404: // accept_nocancel
+    return darwin::syscall::accept;
+  case 406: // fcntl_nocancel
+    return darwin::syscall::fcntl;
+  case 407: // select_nocancel
+    return darwin::syscall::select;
+  case 408: // fsync_nocancel
+    return darwin::syscall::synchronize_file;
+  case 409: // connect_nocancel
+    return darwin::syscall::connect;
+  case 412: // writev_nocancel
+    return darwin::syscall::write_vector;
+  case 413: // sendto_nocancel
+    return darwin::syscall::send_to;
+  case 414: // pread_nocancel
+    return 153U;
+  case 415: // pwrite_nocancel
+    return 154U;
+  case 421: // aio_suspend_nocancel
+    return darwin::syscall::aio_suspend;
+  case 423: // __semwait_signal_nocancel
+    return darwin::syscall::semaphore_wait_signal;
+  default:
+    return std::nullopt;
+  }
+}
+
+} // namespace
 
 void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
+  if (const auto canonical = canonical_no_cancel_syscall(number)) {
+    dispatch_bsd(cpu, *canonical);
+    return;
+  }
+
   switch (number) {
   case 0:
   case 1:
@@ -36,6 +93,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case 66:
   case 7:
   case 20:
+  case darwin::syscall::set_user_id:
   case 24:
   case 25:
   case 39:
@@ -54,8 +112,11 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case 116:
   case darwin::syscall::set_time_of_day:
   case 147:
+  case darwin::syscall::set_groups:
+  case darwin::syscall::set_group_id:
   case darwin::syscall::set_effective_group_id:
   case darwin::syscall::set_effective_user_id:
+  case darwin::syscall::init_groups:
   case darwin::syscall::get_resource_limit:
   case darwin::syscall::set_resource_limit:
   case darwin::syscall::disable_thread_signal:
@@ -103,6 +164,16 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case 199:
   case 220:
   case 221:
+  case 344:
+  case 338:
+  case 339:
+  case 340:
+  case 341:
+  case 342:
+  case 343:
+  case 345:
+  case 346:
+  case 347:
   case darwin::syscall::get_extended_attribute:
   case darwin::syscall::get_extended_attribute_fd:
   case darwin::syscall::set_extended_attribute:
@@ -131,6 +202,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case 267:
     dispatch_bsd_descriptor_memory(cpu, number);
     return;
+  case 294:
+  case 295:
   case 299:
   case 300:
     static_cast<void>(dispatch_bsd_shared_region(cpu, number));
@@ -144,6 +217,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case darwin::syscall::aio_write:
     dispatch_bsd_aio(cpu, number);
     return;
+  case darwin::syscall::ptrace:
   case 180:
     static_cast<void>(dispatch_bsd_debug(cpu, number));
     return;
@@ -171,6 +245,9 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case 362:
   case 363:
     dispatch_bsd_events(cpu, number);
+    return;
+  case darwin::syscall::mac_syscall:
+    static_cast<void>(dispatch_bsd_security(cpu, number));
     return;
   default:
     trace_unknown(cpu, "BSD syscall", number);

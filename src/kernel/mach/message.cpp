@@ -96,7 +96,11 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
     }
     cpu.halt(Dynarmic::HaltReason::UserDefined5);
   };
-  if (registers[2] == 0 && (registers[1] & 0x2U) != 0) {
+  const auto wants_send =
+      (registers[1] & darwin::mach_message::option_send) != 0;
+  const auto wants_receive =
+      (registers[1] & darwin::mach_message::option_receive) != 0;
+  if (!wants_send && wants_receive) {
     begin_receive();
     return;
   }
@@ -125,11 +129,49 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
       dispatch_mach_port_message(cpu, request) ||
       dispatch_mach_task_enumeration_message(cpu, request) ||
       dispatch_mach_task_info_message(cpu, request) ||
+      dispatch_mach_task_exception_message(cpu, request) ||
       dispatch_mach_thread_lifecycle_message(cpu, request) ||
       dispatch_mach_thread_state_message(cpu, request) ||
       dispatch_mach_task_vm_message(cpu, request) ||
       dispatch_mach_rights_message(cpu, request) ||
       dispatch_mach_notification_message(cpu, request)) {
+    return;
+  }
+  if (*message_id == 418U && registers[2] >= 48U) { // protocol_vproc.log
+    const auto priority = memory_.read32(message_address + 32U).value_or(0);
+    const auto error = memory_.read32(message_address + 36U).value_or(0);
+    const auto count = memory_.read32(message_address + 44U).value_or(0);
+    const auto available =
+        registers[2] > 48U ? std::min<std::uint32_t>(count, registers[2] - 48U)
+                            : 0U;
+    std::string message;
+    if (available != 0) {
+      if (const auto bytes = memory_.read_bytes(message_address + 48U,
+                                                std::min<std::uint32_t>(
+                                                    available, 2048U))) {
+        for (const auto byte : *bytes) {
+          const auto character = std::to_integer<unsigned char>(byte);
+          if (character == 0)
+            break;
+          message.push_back(character >= 0x20U && character <= 0x7eU
+                                ? static_cast<char>(character)
+                                : '.');
+        }
+      }
+    }
+    output_.write("[launchd-log] pid=" + std::to_string(process_.pid) +
+                  " priority=" + std::to_string(priority) +
+                  " error=" + std::to_string(error) +
+                  (message.empty() ? std::string{}
+                                   : " message=" + message) +
+                  "\n");
+    const std::array<std::uint32_t, 9> reply{
+        18U,         36U,         *local_port, 0U, 0U, *message_id + 100U,
+        0x00000000U, 0x00000001U, 0U,
+    };
+    registers[0] = write_message_words(memory_, message_address, reply)
+                       ? 0U
+                       : 0x10004008U;
     return;
   }
   if (const auto result = handle_iokit_mach_request(
@@ -268,7 +310,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
     registers[0] = 0;
     return;
   }
-  if ((registers[1] & 0x1U) != 0 && registers[2] >= 24 &&
+  if (wants_send && registers[2] >= 24 &&
       registers[2] <= 64U * 1024U) {
     auto bytes = memory_.read_bytes(message_address, registers[2]);
     std::uint32_t remote_object = 0;
@@ -333,7 +375,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
         if (descriptor.kind ==
             mach_transport::DescriptorKind::OutOfLineMemory) {
           const auto size = descriptor.count_or_size;
-          if (size > maximum_message_io ||
+          if (size > maximum_ool_payload ||
               (size != 0 && descriptor.address_or_name == 0)) {
             registers[0] = 0x1000000eU;
             return;
@@ -768,7 +810,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
               " bytes=" + std::to_string(registers[2]) + "\n");
         }
       }
-      if ((registers[1] & 0x2U) != 0) {
+      if (wants_receive) {
         begin_receive();
       } else {
         registers[0] = 0;
@@ -795,7 +837,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
   // Invalid destination names are an ordinary Mach IPC result. MIG servers
   // also use a null destination when a demux routine returns MIG_NO_REPLY;
   // neither case is an unknown kernel call and neither may halt the guest.
-  if ((registers[1] & darwin::mach_message::option_send) != 0 &&
+  if (wants_send &&
       registers[2] >= darwin::mig_wire::message_header_size &&
       registers[2] <= 64U * 1024U &&
       (*remote_port == xnu792::ipc::null_name || !unsupported_known_right)) {

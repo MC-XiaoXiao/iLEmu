@@ -20,7 +20,7 @@ namespace {
 constexpr std::string_view aeropuerto_image{
     "/System/Library/SystemConfiguration/Aeropuerto.bundle/Aeropuerto"};
 constexpr std::string_view preferences_image{
-    "/System/Library/Frameworks/Preferences.framework/Preferences"};
+    "/Preferences.framework/Preferences"};
 constexpr std::array apple80211_provider_images{
     aeropuerto_image,
     preferences_image,

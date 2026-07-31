@@ -29,7 +29,7 @@ namespace ilemu {
 namespace {
 
 constexpr std::string_view mbx2d_image{
-    "/System/Library/Frameworks/MBX2D.framework/MBX2D"};
+    "/MBX2D.framework/MBX2D"};
 constexpr std::size_t maximum_deferred_traces = 64;
 constexpr std::uint32_t mbx_success = mbx2d_abi::success;
 constexpr std::uint32_t mbx_failure = mbx2d_abi::failure;

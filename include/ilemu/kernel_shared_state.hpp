@@ -450,12 +450,18 @@ struct KernelSharedState {
     Kind kind{Kind::Data};
     std::vector<std::byte> value;
   };
+  enum class IOKitUserClientProfile {
+    None,
+    Generic,
+    Display,
+  };
   struct IOKitService {
     std::string class_name;
     std::vector<std::string> conforms_to;
     std::map<std::string, IOKitRegistryProperty> properties;
     std::string registry_path;
     std::uint32_t parent_object{};
+    IOKitUserClientProfile user_client_profile{IOKitUserClientProfile::None};
 
     IOKitService() = default;
     IOKitService(std::string service_class,
@@ -463,12 +469,15 @@ struct KernelSharedState {
                  std::map<std::string, IOKitRegistryProperty>
                      registry_properties = {},
                  std::string service_registry_path = {},
-                 std::uint32_t service_parent_object = 0)
+                 std::uint32_t service_parent_object = 0,
+                 IOKitUserClientProfile service_user_client_profile =
+                     IOKitUserClientProfile::None)
         : class_name(std::move(service_class)),
           conforms_to(std::move(service_conformance)),
           properties(std::move(registry_properties)),
           registry_path(std::move(service_registry_path)),
-          parent_object(service_parent_object) {}
+          parent_object(service_parent_object),
+          user_client_profile(service_user_client_profile) {}
   };
   struct IOKitConnection {
     std::uint32_t service_port{};
@@ -586,6 +595,16 @@ struct KernelSharedState {
     std::uint32_t protection{};
     bool purgable{};
   };
+  struct TaskExceptionAction {
+    std::uint32_t port_object{};
+    std::uint32_t behavior{};
+    std::uint32_t flavor{};
+
+    bool operator==(const TaskExceptionAction &) const = default;
+  };
+  static constexpr std::size_t task_exception_type_count = 11;
+  using TaskExceptionActions =
+      std::array<TaskExceptionAction, task_exception_type_count>;
   struct MachNotificationRequest {
     std::uint32_t notify_object{};
     std::uint32_t sync{};
@@ -674,6 +693,9 @@ struct KernelSharedState {
       task_thread_port_objects;
   std::map<std::uint32_t, std::map<std::uint32_t, std::uint32_t>>
       task_special_ports;
+  // XNU stores exception actions on the task object, not in the caller's
+  // task-local IPC namespace. Port fields therefore use global IPC objects.
+  std::map<std::uint32_t, TaskExceptionActions> task_exception_actions;
   std::map<std::uint32_t, std::deque<MachMessage>> mach_queues;
   // Queue producers may run on host input/device threads while guest kernels
   // poll from the scheduler. Keep the cheap readiness snapshot lock-free;

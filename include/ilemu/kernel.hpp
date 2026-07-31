@@ -306,6 +306,7 @@ private:
   void dispatch_bsd_descriptor_memory(Cpu &cpu, std::uint32_t number);
   [[nodiscard]] bool dispatch_bsd_shared_region(Cpu &cpu, std::uint32_t number);
   [[nodiscard]] bool dispatch_bsd_debug(Cpu &cpu, std::uint32_t number);
+  [[nodiscard]] bool dispatch_bsd_security(Cpu &cpu, std::uint32_t number);
   void dispatch_bsd_socket(Cpu &cpu, std::uint32_t number);
   void dispatch_bsd_events(Cpu &cpu, std::uint32_t number);
   [[nodiscard]] bool ioctl_bpf_device(Cpu &cpu, std::uint32_t fd);
@@ -341,6 +342,9 @@ private:
   dispatch_mach_task_info_message(Cpu &cpu,
                                   const MachMessageRequest &request);
   [[nodiscard]] bool
+  dispatch_mach_task_exception_message(Cpu &cpu,
+                                       const MachMessageRequest &request);
+  [[nodiscard]] bool
   dispatch_mach_thread_state_message(Cpu &cpu,
                                      const MachMessageRequest &request);
   [[nodiscard]] bool
@@ -350,6 +354,9 @@ private:
   [[nodiscard]] bool
   dispatch_mach_vm_allocate_message(Cpu &cpu,
                                     const MachMessageRequest &request);
+  [[nodiscard]] bool
+  dispatch_mach_vm_protect_message(Cpu &cpu,
+                                   const MachMessageRequest &request);
   [[nodiscard]] bool
   dispatch_mach_vm_copy_message(Cpu &cpu, const MachMessageRequest &request);
   [[nodiscard]] bool
@@ -396,7 +403,14 @@ private:
                         int host_descriptor = -1);
   bool write_guest_device_stat(std::uint32_t address, std::uint32_t minor,
                                bool character_device);
+  bool write_guest_stat64(std::uint32_t address,
+                          const std::filesystem::path &path,
+                          bool follow_symlink = true,
+                          int host_descriptor = -1);
+  bool write_guest_device_stat64(std::uint32_t address, std::uint32_t minor,
+                                 bool character_device);
   bool write_guest_statfs(std::uint32_t address);
+  bool write_guest_statfs64(std::uint32_t address);
   std::size_t install_mapped_user_image(
       Cpu &cpu, const std::filesystem::path &image_path,
       std::uint32_t mapping_address, std::uint32_t mapping_size,

@@ -32,8 +32,14 @@ std::uint32_t ensure_service_locked(KernelSharedState &state) {
   static_cast<void>(state.mach_port_objects.create(object));
   state.mach_queues.try_emplace(object);
   state.iokit_services.emplace(
-      object, KernelSharedState::IOKitService{std::string{service_class},
-                                              {"IOService"}});
+      object,
+      KernelSharedState::IOKitService{
+          std::string{service_class},
+          {"IOService"},
+          {},
+          {},
+          0,
+          KernelSharedState::IOKitUserClientProfile::Generic});
   return object;
 }
 

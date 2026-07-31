@@ -319,6 +319,11 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
         return true;
       }
       write_little_word(received->bytes, offset, *receiver_name);
+      write_little_word(
+          received->bytes, offset + 8U,
+          darwin::mig_wire::replace_descriptor_disposition(
+              descriptor_word,
+              darwin::mig_wire::received_port_disposition(disposition)));
       if (*right == xnu792::ipc::Right::Send) {
         release_inflight_send_right_locked(*shared_state_, *object);
       }
@@ -386,6 +391,16 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
             transfer.object, process_.pid));
       }
     }
+    const auto descriptor_word =
+        read_little_word(received->bytes, array.descriptor_offset + 8U);
+    const auto disposition =
+        (descriptor_word >> darwin::mig_wire::descriptor_disposition_shift) &
+        0xffU;
+    write_little_word(
+        received->bytes, array.descriptor_offset + 8U,
+        darwin::mig_wire::replace_descriptor_disposition(
+            descriptor_word,
+            darwin::mig_wire::received_port_disposition(disposition)));
 
     std::uint32_t copied_address = 0;
     if (!names.empty()) {
