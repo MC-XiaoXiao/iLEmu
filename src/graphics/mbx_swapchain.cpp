@@ -98,7 +98,11 @@ void Mbx2dHle::prepare_destination_for_frame(
     if (const auto previous = destination_scene_damage_.find(surface);
         previous != destination_scene_damage_.end() &&
         previous_source != destination_scene_sources_.end() &&
-        previous_source->second == source_surface) {
+        previous_source->second == source_surface &&
+        !(damage.left >= previous->second.left &&
+          damage.top >= previous->second.top &&
+          damage.right <= previous->second.right &&
+          damage.bottom <= previous->second.bottom)) {
         damage.left = std::min(damage.left, previous->second.left);
         damage.top = std::min(damage.top, previous->second.top);
         damage.right = std::max(damage.right, previous->second.right);
@@ -107,10 +111,11 @@ void Mbx2dHle::prepare_destination_for_frame(
     const auto width = damage.right - damage.left;
     const auto height = damage.bottom - damage.top;
     // LayerKit retains unchanged sibling layers in the swap backing. Extend
-    // invalidation across old and new bounds only while the same large source
-    // moves. A replacement source starts a new scene generation; clearing the
-    // outgoing source's larger bounds would erase retained siblings outside
-    // the replacement's local bounds until their next dirty update.
+    // invalidation across old and new bounds while the same large source moves,
+    // but not when it contracts inside its old bounds: the exposed area has
+    // already been composed from retained siblings in the current pass.
+    // Clearing that area here would replace those pixels with black after they
+    // were drawn. A replacement source likewise starts a new scene generation.
     bool cleared{};
     if (width > 0 && height > 0 && host_graphics_->accelerated() &&
         destination->host_surface && destination->backing &&
