@@ -74,6 +74,8 @@ struct KeventRegistration {
   std::uint32_t filter_flags{};
   std::int32_t data{};
   std::uint32_t user_data{};
+  std::uint64_t process_exec_generation{};
+  std::uint64_t process_exit_generation{};
 };
 
 struct PendingWait {
@@ -415,7 +417,8 @@ struct KernelSharedState {
   };
   enum class GraphicsInputAbi {
     LegacyMouse,
-    UIKitHand,
+    Darwin9_0,
+    Darwin9_3,
   };
   struct ProcessRecord {
     std::uint32_t parent_pid{};
@@ -431,7 +434,12 @@ struct KernelSharedState {
     std::string executable_path;
     std::vector<std::string> arguments;
     std::vector<std::string> environment;
-    GraphicsInputAbi graphics_input_abi{GraphicsInputAbi::UIKitHand};
+    GraphicsInputAbi graphics_input_abi{GraphicsInputAbi::Darwin9_0};
+  };
+  struct ProcessKeventState {
+    std::uint64_t exec_generation{};
+    std::uint64_t exit_generation{};
+    std::uint32_t wait_status{};
   };
   struct IOKitNotification {
     std::uint32_t owner_pid{};
@@ -686,6 +694,10 @@ struct KernelSharedState {
   // caller's task-local Mach name. Keep task identity separate from generic
   // receive ownership so pid_for_task cannot mistake a service for a task.
   std::map<std::uint32_t, std::uint32_t> task_port_pids;
+  // XNU exposes itk_nself as a distinct, read-only task-name capability.
+  // Keeping it separate prevents task_name_for_pid from accidentally
+  // granting task-control MIG operations through an identity-only port.
+  std::map<std::uint32_t, std::uint32_t> task_name_port_pids;
   // Global thread-port objects indexed by task PID and that task's logical
   // thread slot. Task-local names are produced only when a caller receives
   // task_threads(), preserving ipc_space separation.
@@ -925,6 +937,10 @@ struct KernelSharedState {
            std::map<std::string, std::optional<std::vector<std::byte>>>>
       hfs_named_attribute_overrides;
   std::map<std::uint32_t, ProcessRecord> processes;
+  // EVFILT_PROC is edge-triggered and may outlive the process-table zombie.
+  // Retain compact per-PID generations so an exec/exit between kevent
+  // registration and the next scheduler poll cannot be lost.
+  std::map<std::uint32_t, ProcessKeventState> process_kevent_states;
   std::shared_ptr<bsd::AdvisoryFileLockRegistry> advisory_file_locks{
       std::make_shared<bsd::AdvisoryFileLockRegistry>()};
   std::mutex mach_mutex;

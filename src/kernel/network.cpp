@@ -1322,17 +1322,47 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
     const auto queue = kqueues_.find(queue_fd);
     if (queue == kqueues_.end()) return std::nullopt;
     std::uint32_t written = 0;
-    for (const auto& registration : queue->second) {
-        const auto ready = registration.filter == darwin::kqueue::filter_read
-                               ? descriptor_readable(registration.ident)
-                           : registration.filter == darwin::kqueue::filter_write
-                               ? descriptor_writable(registration.ident)
-                               : false;
+    for (auto registration = queue->second.begin();
+         registration != queue->second.end();) {
+        std::uint32_t filter_flags = 0;
+        std::uint32_t available = 1;
+        auto result_flags = std::uint16_t{};
+        if (registration->filter == darwin::kqueue::filter_process) {
+            std::lock_guard lock{shared_state_->mach_mutex};
+            const auto process =
+                shared_state_->process_kevent_states.find(registration->ident);
+            if (process != shared_state_->process_kevent_states.end()) {
+                if ((registration->filter_flags &
+                     darwin::kqueue::process_note_exec) != 0U &&
+                    process->second.exec_generation !=
+                        registration->process_exec_generation) {
+                    filter_flags |= darwin::kqueue::process_note_exec;
+                }
+                if ((registration->filter_flags &
+                     darwin::kqueue::process_note_exit) != 0U &&
+                    process->second.exit_generation !=
+                        registration->process_exit_generation) {
+                    filter_flags |= darwin::kqueue::process_note_exit;
+                    available = process->second.wait_status;
+                    result_flags |= darwin::kqueue::event_end_of_file |
+                                    darwin::kqueue::event_one_shot;
+                }
+            }
+            result_flags |= darwin::kqueue::event_clear;
+        }
+        const auto ready =
+            registration->filter == darwin::kqueue::filter_read
+                ? descriptor_readable(registration->ident)
+            : registration->filter == darwin::kqueue::filter_write
+                ? descriptor_writable(registration->ident)
+            : registration->filter == darwin::kqueue::filter_process
+                ? filter_flags != 0U
+                : false;
         if (written == event_count || !ready) {
+            ++registration;
             continue;
         }
-        std::uint32_t available = 1;
-        if (const auto endpoint = socket_pair_endpoints_.find(registration.ident);
+        if (const auto endpoint = socket_pair_endpoints_.find(registration->ident);
             endpoint != socket_pair_endpoints_.end()) {
             std::lock_guard socket_lock{shared_state_->socket_mutex};
             available = static_cast<std::uint32_t>(
@@ -1344,22 +1374,42 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                            written * darwin::kqueue::arm32_event::size;
         if (!memory_.write32(
                 event + darwin::kqueue::arm32_event::identifier_offset,
-                registration.ident) ||
+                registration->ident) ||
             !memory_.write16(
                 event + darwin::kqueue::arm32_event::filter_offset,
-                static_cast<std::uint16_t>(registration.filter)) ||
+                static_cast<std::uint16_t>(registration->filter)) ||
             !memory_.write16(
-                event + darwin::kqueue::arm32_event::flags_offset, 0) ||
+                event + darwin::kqueue::arm32_event::flags_offset,
+                result_flags) ||
             !memory_.write32(
-                event + darwin::kqueue::arm32_event::filter_flags_offset, 0) ||
+                event + darwin::kqueue::arm32_event::filter_flags_offset,
+                filter_flags) ||
             !memory_.write32(
                 event + darwin::kqueue::arm32_event::data_offset, available) ||
             !memory_.write32(
                 event + darwin::kqueue::arm32_event::user_data_offset,
-                registration.user_data)) {
+                registration->user_data)) {
             return std::nullopt;
         }
         ++written;
+        if ((filter_flags & darwin::kqueue::process_note_exit) != 0U) {
+            registration = queue->second.erase(registration);
+        } else {
+            if (registration->filter ==
+                darwin::kqueue::filter_process) {
+                std::lock_guard lock{shared_state_->mach_mutex};
+                const auto process =
+                    shared_state_->process_kevent_states.find(
+                        registration->ident);
+                if (process != shared_state_->process_kevent_states.end()) {
+                    registration->process_exec_generation =
+                        process->second.exec_generation;
+                    registration->process_exit_generation =
+                        process->second.exit_generation;
+                }
+            }
+            ++registration;
+        }
     }
     return written;
 }

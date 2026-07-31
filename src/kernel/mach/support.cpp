@@ -160,6 +160,24 @@ target_task_for_port(const KernelSharedState &state, std::uint32_t caller,
              : std::optional<std::uint32_t>{task->second};
 }
 
+std::optional<std::uint32_t>
+target_task_name_for_port(const KernelSharedState &state,
+                          std::uint32_t caller, std::uint32_t task_name) {
+  const auto object = resolve_name_with_right(
+      state, caller, task_name, xnu792::ipc::Right::Send);
+  if (!object)
+    return std::nullopt;
+  if (const auto task = state.task_port_pids.find(*object);
+      task != state.task_port_pids.end()) {
+    return task->second;
+  }
+  if (const auto task_name_port = state.task_name_port_pids.find(*object);
+      task_name_port != state.task_name_port_pids.end()) {
+    return task_name_port->second;
+  }
+  return std::nullopt;
+}
+
 std::optional<std::pair<std::uint32_t, std::uint32_t>>
 find_thread_owner(const KernelSharedState &state, std::uint32_t object) {
   for (const auto &[pid, threads] : state.task_thread_port_objects) {
@@ -358,6 +376,7 @@ void remove_port_object_locked(KernelSharedState &state, std::uint32_t object) {
     state.mach_inflight_send_rights.erase(inflight);
   }
   state.task_port_pids.erase(object);
+  state.task_name_port_pids.erase(object);
   for (auto task = state.task_thread_port_objects.begin();
        task != state.task_thread_port_objects.end();) {
     std::erase_if(task->second, [object](const auto &entry) {
@@ -459,6 +478,10 @@ void terminate_exited_task_ports_locked(KernelSharedState &state,
     if (owner == pid)
       objects.push_back(object);
   }
+  for (const auto &[object, owner] : state.task_name_port_pids) {
+    if (owner == pid)
+      objects.push_back(object);
+  }
   if (const auto threads = state.task_thread_port_objects.find(pid);
       threads != state.task_thread_port_objects.end()) {
     for (const auto &[slot, object] : threads->second) {
@@ -533,6 +556,8 @@ void cleanup_exited_process_metadata_locked(KernelSharedState &state,
     release_kernel_send_right_locked(state, object);
   state.task_thread_port_objects.erase(pid);
   std::erase_if(state.task_port_pids,
+                [pid](const auto &entry) { return entry.second == pid; });
+  std::erase_if(state.task_name_port_pids,
                 [pid](const auto &entry) { return entry.second == pid; });
   // Ordinary notification requests are owned by the target ipc_entry/port,
   // not by the task that supplied the send-once right.  Do not cancel them

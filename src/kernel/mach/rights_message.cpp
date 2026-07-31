@@ -58,12 +58,10 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
        *message_id ==
            mig_message_id(xnu792::mig::task::Routine::semaphore_destroy) ||
        *message_id ==
-           mig_message_id(xnu792::mig::thread_act::Routine::thread_policy) ||
-       *message_id ==
-           mig_message_id(xnu792::mig::vm_map::Routine::vm_deallocate)) &&
+           mig_message_id(xnu792::mig::thread_act::Routine::thread_policy)) &&
       registers[3] >= 36) {
     // mach_port_deallocate / mach_port_insert_right / semaphore_destroy /
-    // thread_policy / vm_deallocate
+    // thread_policy
     std::uint32_t kernel_result = 0;
     if (*message_id ==
         mig_message_id(xnu792::mig::mach_port::Routine::mach_port_deallocate)) {
@@ -408,18 +406,6 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                                       ? port_name
                                       : xnu792::ipc::null_name;
       }
-    } else if (*message_id ==
-               mig_message_id(xnu792::mig::vm_map::Routine::vm_deallocate)) {
-      memory_.unmap(memory_
-                        .read32(message_address +
-                                xnu792::mig::vm_map::vm_deallocate_arguments[1]
-                                    .request_offset)
-                        .value_or(0),
-                    memory_
-                        .read32(message_address +
-                                xnu792::mig::vm_map::vm_deallocate_arguments[2]
-                                    .request_offset)
-                        .value_or(0));
     }
     const std::array<std::uint32_t, 9> reply{
         18,          36,          *local_port,   0, 0, *message_id + 100,

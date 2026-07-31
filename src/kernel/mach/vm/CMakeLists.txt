@@ -1,6 +1,7 @@
 add_library(ilemu_kernel_mach_vm STATIC
     allocate.cpp
     copy.cpp
+    deallocate.cpp
     map.cpp
     memory_entry.cpp
     protect.cpp

@@ -13,6 +13,9 @@
 namespace ilemu {
 namespace {
 
+// Darwin also publishes this routine in the mach_vm subsystem. ARM32 keeps
+// the same scalar request/reply layout while the subsystem-relative ID moves.
+constexpr std::uint32_t mach_vm_purgable_control_identifier = 4818U;
 constexpr std::uint32_t request_size = 44U;
 constexpr std::uint32_t reply_size = 40U;
 constexpr std::uint32_t kern_invalid_argument = 4U;
@@ -33,8 +36,11 @@ bool CompatibilityKernel::dispatch_mach_vm_purgable_message(
   using namespace mach_support;
   using namespace mach_vm_support;
 
+  const auto is_mach_vm =
+      request.identifier == mach_vm_purgable_control_identifier;
   if (request.identifier !=
-      mig_message_id(xnu792::mig::vm_map::Routine::vm_purgable_control)) {
+          mig_message_id(xnu792::mig::vm_map::Routine::vm_purgable_control) &&
+      !is_mach_vm) {
     return false;
   }
 
@@ -105,6 +111,9 @@ bool CompatibilityKernel::dispatch_mach_vm_purgable_message(
     return fail_transport();
 
   output_.write("[vm] purgable pid=" + std::to_string(process_.pid) +
+                " interface=" +
+                (is_mach_vm ? std::string{"mach_vm"}
+                            : std::string{"vm_map"}) +
                 " address=" + std::to_string(*address) +
                 " control=" + std::to_string(*control) +
                 " input-state=" + std::to_string(*input_state) +

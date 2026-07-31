@@ -21,6 +21,7 @@ inline constexpr std::uint32_t kernel_process_arguments2 = 49;
 inline constexpr std::uint32_t kernel_process_all = 0;
 inline constexpr std::uint32_t kernel_process_id = 1;
 inline constexpr std::uint32_t arm32_kernel_process_info_size = 492;
+inline constexpr std::uint32_t process_flag_exec = 0x00004000;
 
 inline constexpr std::uint32_t hardware_machine = 1;
 inline constexpr std::uint32_t hardware_model = 2;

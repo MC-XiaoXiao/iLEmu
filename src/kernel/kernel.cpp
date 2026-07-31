@@ -11,6 +11,7 @@
 #include "ilemu/darwin_resource_abi.hpp"
 #include "ilemu/darwin_route_socket.hpp"
 #include "ilemu/graphics_services_input.hpp"
+#include "ilemu/graphics_services_profile.hpp"
 #include "ilemu/iokit_abi.hpp"
 #include "ilemu/kernel_clock.hpp"
 #include "ilemu/kernel_iokit.hpp"
@@ -539,13 +540,36 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
       cpu, process_.pid, image_path, mapping_address, mapping_size,
       file_offset);
   constexpr std::string_view uikit_image{"/UIKit.framework/UIKit"};
+  constexpr std::string_view graphics_services_image{
+      "/GraphicsServices.framework/GraphicsServices"};
   const auto path = image_path.generic_string();
   if (path.ends_with(uikit_image)) {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
     if (const auto process = shared_state_->processes.find(process_.pid);
-        process != shared_state_->processes.end()) {
+        process != shared_state_->processes.end() &&
+        process->second.graphics_input_abi ==
+            KernelSharedState::GraphicsInputAbi::LegacyMouse) {
       process->second.graphics_input_abi =
-          KernelSharedState::GraphicsInputAbi::UIKitHand;
+          KernelSharedState::GraphicsInputAbi::Darwin9_0;
+    }
+  } else if (path.ends_with(graphics_services_image)) {
+    const auto profile =
+        GraphicsServicesInputProfile::detect(MachOImage::parse(image_path));
+    if (profile) {
+      std::lock_guard mach_lock{shared_state_->mach_mutex};
+      if (const auto process = shared_state_->processes.find(process_.pid);
+          process != shared_state_->processes.end() &&
+          process->second.graphics_input_abi != *profile) {
+        process->second.graphics_input_abi = *profile;
+        output_.write(
+            "[input] GraphicsServices touch ABI profile=" +
+            std::string{*profile ==
+                                KernelSharedState::GraphicsInputAbi::
+                                    Darwin9_3
+                            ? "darwin9.3"
+                            : "darwin9.0"} +
+            " pid=" + std::to_string(process_.pid) + "\n");
+      }
     }
   }
   return installed;
@@ -592,6 +616,14 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path) {
       KernelSharedState::GraphicsInputAbi::LegacyMouse;
   if (record.arguments.empty())
     record.arguments.push_back(record.executable_path);
+  {
+    std::lock_guard lock{shared_state_->mach_mutex};
+    auto &events =
+        shared_state_->process_kevent_states[process_.pid];
+    ++events.exec_generation;
+    if (events.exec_generation == 0U)
+      events.exec_generation = 1U;
+  }
 }
 
 void CompatibilityKernel::set_process_arguments(

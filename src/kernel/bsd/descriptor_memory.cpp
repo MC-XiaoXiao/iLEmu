@@ -1014,14 +1014,23 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
     const auto fd = registers[4];
     const auto offset = static_cast<std::uint64_t>(registers[5]) |
                         (static_cast<std::uint64_t>(registers[6]) << 32U);
-    if (size == 0 || size > bsd_support::maximum_io) {
+    if (size == 0) {
       bsd_error(cpu, bsd_support::invalid_argument);
       return;
     }
-    const auto mapped_size = static_cast<std::uint32_t>(
+    const auto mapped_size_64 =
         (static_cast<std::uint64_t>(size) + AddressSpace::page_size - 1U) &
-        ~(static_cast<std::uint64_t>(AddressSpace::page_size) - 1U));
+        ~(static_cast<std::uint64_t>(AddressSpace::page_size) - 1U);
+    if (mapped_size_64 > std::numeric_limits<std::uint32_t>::max()) {
+      bsd_error(cpu, bsd_support::invalid_argument);
+      return;
+    }
+    const auto mapped_size = static_cast<std::uint32_t>(mapped_size_64);
     const auto overlaps = [&](std::uint32_t candidate) {
+      if (mapped_size - 1U >
+          std::numeric_limits<std::uint32_t>::max() - candidate) {
+        return true;
+      }
       for (std::uint64_t page = 0; page < mapped_size;
            page += AddressSpace::page_size) {
         if (memory_.mapped(candidate + static_cast<std::uint32_t>(page))) {
@@ -1033,10 +1042,23 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
     if ((flags & darwin::map_flag::fixed) == 0) {
       if (address == 0 || overlaps(address)) {
         address = 0x10000000U;
-        while (overlaps(address))
+        while (overlaps(address) &&
+               address <= std::numeric_limits<std::uint32_t>::max() -
+                              AddressSpace::page_size) {
           address += AddressSpace::page_size;
+        }
+        if (overlaps(address)) {
+          bsd_error(cpu, darwin::error::no_memory);
+          return;
+        }
       }
     } else {
+      if (overlaps(address) &&
+          mapped_size - 1U >
+              std::numeric_limits<std::uint32_t>::max() - address) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+        return;
+      }
       memory_.unmap(address, mapped_size);
     }
     MemoryPermission permissions = MemoryPermission::None;
@@ -1068,24 +1090,12 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
           return;
         }
       } else {
-        if (!memory_.map(address, mapped_size, permissions)) {
+        // MAP_PRIVATE file pages already have a lazy copy-on-write backing in
+        // AddressSpace. Reuse it instead of treating mmap length as a single
+        // read(2) buffer; valid mappings may be much larger than maximum_io.
+        if (!memory_.map_file(address, mapped_size, permissions, found->second,
+                              offset)) {
           bsd_error(cpu, darwin::error::no_memory);
-          return;
-        }
-        std::ifstream stream{found->second, std::ios::binary};
-        stream.seekg(static_cast<std::streamoff>(offset));
-        if (!stream) {
-          memory_.unmap(address, mapped_size);
-          bsd_error(cpu, bsd_support::invalid_argument);
-          return;
-        }
-        std::vector<std::byte> bytes(size);
-        stream.read(reinterpret_cast<char *>(bytes.data()),
-                    static_cast<std::streamsize>(bytes.size()));
-        bytes.resize(static_cast<std::size_t>(stream.gcount()));
-        if (!memory_.copy_in(address, bytes)) {
-          memory_.unmap(address, mapped_size);
-          bsd_error(cpu, bsd_support::bad_address);
           return;
         }
       }

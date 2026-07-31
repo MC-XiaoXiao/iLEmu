@@ -1551,6 +1551,15 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
           bytes[20] =
               static_cast<std::byte>(record.exited ? 5U : 2U); // SZOMB/SRUN
           put32(24, pid);
+          if (const auto state =
+                  shared_state_->process_kevent_states.find(pid);
+              state != shared_state_->process_kevent_states.end() &&
+              state->second.exec_generation != 0U) {
+            // extern_proc.p_flag. P_EXEC is the level state paired with the
+            // edge-triggered NOTE_EXEC notification: clients attach their
+            // knote first, then inspect this bit to close the exec race.
+            put32(16, darwin::sysctl::process_flag_exec);
+          }
           bytes[162] = static_cast<std::byte>(
               pid == process_.pid ? process_.nice_value : 0);
           for (std::size_t index = 0;
@@ -2022,6 +2031,17 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
             static_cast<std::int32_t>(*data),
             *user_data,
         };
+        if (signed_filter == darwin::kqueue::filter_process) {
+          std::lock_guard lock{shared_state_->mach_mutex};
+          const auto process =
+              shared_state_->process_kevent_states.find(*ident);
+          if (process != shared_state_->process_kevent_states.end()) {
+            registration.process_exec_generation =
+                process->second.exec_generation;
+            registration.process_exit_generation =
+                process->second.exit_generation;
+          }
+        }
         if (found == queue->second.end()) {
           queue->second.push_back(registration);
         } else {

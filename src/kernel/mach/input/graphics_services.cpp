@@ -8,6 +8,7 @@
 
 #include "ilemu/cpu.hpp"
 #include "ilemu/display.hpp"
+#include "ilemu/graphics_services_profile.hpp"
 #include "ilemu/mig_wire_abi.hpp"
 #include "ilemu/scene_coordinator.hpp"
 #include "ilemu/userland_hle.hpp"
@@ -31,12 +32,6 @@ constexpr std::uint32_t lock_button_up_event_type = 1011;
 constexpr std::uint32_t ringer_switch_off_event_type = 1012;
 constexpr std::uint32_t ringer_switch_on_event_type = 1013;
 constexpr std::size_t event_record_size = 48;
-constexpr std::size_t hand_info_size = 20;
-constexpr std::size_t path_info_size = 16;
-constexpr std::size_t event_payload_size =
-    event_record_size + hand_info_size + path_info_size;
-constexpr std::size_t hand_message_size =
-    darwin::mig_wire::message_header_size + event_payload_size;
 constexpr std::size_t simple_event_message_size =
     darwin::mig_wire::message_header_size + event_record_size;
 
@@ -44,13 +39,6 @@ constexpr std::size_t record_location_offset = 8;
 constexpr std::size_t record_window_location_offset = 16;
 constexpr std::size_t record_timestamp_offset = 24;
 constexpr std::size_t record_info_size_offset = 44;
-constexpr std::size_t hand_offset =
-    darwin::mig_wire::message_header_size + event_record_size;
-constexpr std::size_t hand_path_count_offset = hand_offset + 17;
-constexpr std::size_t path_offset = hand_offset + hand_info_size;
-constexpr std::size_t path_pressure_offset = path_offset + 4;
-constexpr std::size_t path_location_offset = path_offset + 8;
-
 constexpr std::uint8_t path_index = 1;
 constexpr std::uint8_t path_identity = 2;
 constexpr std::uint8_t path_active_proximity = 3;
@@ -81,24 +69,6 @@ std::uint32_t read_word(std::span<const std::byte> bytes, std::size_t offset) {
              << (byte * 8U);
   }
   return value;
-}
-
-std::uint32_t hand_type(TouchPhase phase) {
-  // These are the values consumed by this firmware's UIKit binary, not the
-  // values published by reconstructed headers for later iPhone OS releases.
-  // UIWindow::sendEvent: branches on 1 (down), 2 (drag), and 5 (up). In
-  // particular, 0 reaches the correct window but is ignored before _mouseDown:.
-  switch (phase) {
-  case TouchPhase::Down:
-    return 1;
-  case TouchPhase::Move:
-    return 2;
-  case TouchPhase::Up:
-    return 5;
-  case TouchPhase::Cancel:
-    return 3;
-  }
-  return 3;
 }
 
 std::uint32_t mouse_event_type(TouchPhase phase) {
@@ -172,6 +142,18 @@ KernelSharedState::MachMessage make_touch_message(std::uint32_t destination,
                                                   KernelSharedState::
                                                       GraphicsInputAbi abi,
                                                   std::uint64_t input_sequence) {
+  const auto &profile = GraphicsServicesInputProfile::for_abi(abi);
+  const auto hand_offset =
+      darwin::mig_wire::message_header_size + event_record_size;
+  const auto path_offset = hand_offset + profile.hand_info_size;
+  const auto hand_message_size =
+      path_offset + profile.path_info_size;
+  const auto hand_path_count_offset =
+      hand_offset + profile.hand_path_count_offset;
+  const auto path_pressure_offset = path_offset + 4;
+  const auto path_location_offset =
+      path_offset + profile.path_location_offset;
+
   KernelSharedState::MachMessage message;
   message.bytes.resize(hand_message_size, std::byte{0});
   message.destination = destination;
@@ -192,7 +174,7 @@ KernelSharedState::MachMessage make_touch_message(std::uint32_t destination,
 
   const auto record = darwin::mig_wire::message_header_size;
   write_word(message.bytes, record,
-             abi == KernelSharedState::GraphicsInputAbi::UIKitHand
+             abi != KernelSharedState::GraphicsInputAbi::LegacyMouse
                  ? hand_event_type
                  : mouse_event_type(input.phase));
   write_float(message.bytes, record + record_location_offset, input.x);
@@ -205,14 +187,22 @@ KernelSharedState::MachMessage make_touch_message(std::uint32_t destination,
   write_word(message.bytes, record + record_timestamp_offset + 4,
              static_cast<std::uint32_t>(timestamp >> 32U));
   write_word(message.bytes, record + record_info_size_offset,
-             static_cast<std::uint32_t>(hand_info_size + path_info_size));
+             static_cast<std::uint32_t>(profile.hand_info_size +
+                                        profile.path_info_size));
 
-  write_word(message.bytes, hand_offset, hand_type(input.phase));
+  write_word(message.bytes, hand_offset, profile.hand_type(input.phase));
   message.bytes[hand_path_count_offset] = std::byte{1};
   message.bytes[path_offset] = static_cast<std::byte>(path_index);
-  message.bytes[path_offset + 1] = static_cast<std::byte>(path_identity);
+  message.bytes[path_offset + 1] = static_cast<std::byte>(
+      profile.path_carries_phase ? profile.path_type(input.phase)
+                                 : path_identity);
+  const auto path_is_active =
+      active(input.phase) ||
+      (profile.terminal_path_is_active &&
+       (input.phase == TouchPhase::Up ||
+        input.phase == TouchPhase::Cancel));
   message.bytes[path_offset + 2] =
-      static_cast<std::byte>(active(input.phase) ? path_active_proximity : 0);
+      static_cast<std::byte>(path_is_active ? path_active_proximity : 0);
   write_float(message.bytes, path_pressure_offset,
               active(input.phase) ? 1.0F : 0.0F);
   write_float(message.bytes, path_location_offset, input.x);
@@ -252,7 +242,7 @@ make_simple_event_message(std::uint32_t destination, std::uint64_t timestamp,
 
 void queue_locked(KernelSharedState &state, std::uint32_t destination,
                   const TouchInput &input, std::uint64_t input_sequence) {
-  auto abi = KernelSharedState::GraphicsInputAbi::UIKitHand;
+  auto abi = KernelSharedState::GraphicsInputAbi::Darwin9_0;
   if (const auto port = state.mach_port_objects.lookup(destination)) {
     if (const auto process = state.processes.find(port->receive_owner);
         process != state.processes.end()) {

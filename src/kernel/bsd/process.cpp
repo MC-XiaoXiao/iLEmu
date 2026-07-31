@@ -124,6 +124,13 @@ void CompatibilityKernel::exit_process(std::uint32_t status,
       record->second.exit_status = status;
       record->second.termination_signal = signal;
     }
+    auto &events =
+        shared_state_->process_kevent_states[process_.pid];
+    ++events.exit_generation;
+    if (events.exit_generation == 0U)
+      events.exit_generation = 1U;
+    events.wait_status =
+        signal != 0U ? signal & 0x7fU : (status & 0xffU) << 8U;
   }
   shared_state_->advisory_file_locks->release_process_record_locks(
       process_.pid);

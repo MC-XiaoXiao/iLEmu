@@ -137,9 +137,15 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
 
   std::error_code error;
   const auto file_size = std::filesystem::file_size(path, error);
-  if (error || file_offset > file_size || size > file_size - file_offset) {
+  if (error || file_offset > file_size) {
     return std::nullopt;
   }
+  const auto available = file_size - file_offset;
+  const auto page_rounded_available =
+      (available + guest_memory_page_size - 1U) &
+      ~(static_cast<std::uintmax_t>(guest_memory_page_size) - 1U);
+  if (size > page_rounded_available)
+    return std::nullopt;
   const auto modified = std::filesystem::last_write_time(path, error);
   if (error) return std::nullopt;
   const auto normalized_path = stable_path(path);
@@ -164,7 +170,7 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   if (error || final_modified != modified) return std::nullopt;
 
   auto mapping = std::make_shared<GuestFileBacking>(
-      path, file_offset, file_offset + size);
+      path, file_offset, file_offset + std::min<std::uintmax_t>(size, available));
   mapping->cache_path = normalized_path;
   mapping->file_size = file_size;
   mapping->modified = modified;

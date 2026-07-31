@@ -110,6 +110,61 @@ void CompatibilityKernel::dispatch_mach(Cpu &cpu, std::uint32_t trap) {
   case 29: // host_self_trap
     registers[0] = process_.host_port;
     return;
+  case 44: { // task_name_for_pid(target_task, pid, task_name_out)
+    constexpr std::uint32_t kern_failure = 5;
+    const auto target_task = registers[0];
+    const auto requested_pid = registers[1];
+    const auto output_address = registers[2];
+    std::uint32_t result_port = 0; // MACH_PORT_NULL on failure
+    std::uint32_t result = kern_failure;
+    {
+      std::lock_guard mach_lock{shared_state_->mach_mutex};
+      const auto caller_task_object = resolve_name_with_right(
+          *shared_state_, process_.pid, target_task, xnu792::ipc::Right::Send);
+      const auto caller_task =
+          caller_task_object
+              ? shared_state_->task_port_pids.find(*caller_task_object)
+              : shared_state_->task_port_pids.end();
+      const auto target_process = shared_state_->processes.find(requested_pid);
+      if (caller_task != shared_state_->task_port_pids.end() &&
+          caller_task->second == process_.pid &&
+          target_process != shared_state_->processes.end() &&
+          !target_process->second.exited &&
+          (requested_pid == process_.pid || process_.effective_uid == 0 ||
+           (target_process->second.uid == process_.effective_uid &&
+            target_process->second.effective_uid ==
+                process_.effective_uid))) {
+        auto task_name_port =
+            std::find_if(shared_state_->task_name_port_pids.begin(),
+                         shared_state_->task_name_port_pids.end(),
+                         [requested_pid](const auto &entry) {
+                           return entry.second == requested_pid;
+                         });
+        if (task_name_port == shared_state_->task_name_port_pids.end()) {
+          const auto object = shared_state_->allocate_mach_object();
+          if (shared_state_->mach_port_objects.create(object)) {
+            task_name_port =
+                shared_state_->task_name_port_pids
+                    .emplace(object, requested_pid)
+                    .first;
+          }
+        }
+        if (task_name_port != shared_state_->task_name_port_pids.end()) {
+          result_port =
+              shared_state_->mach_namespaces
+                  .copyout(process_.pid, task_name_port->first,
+                           xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
+                  .value_or(0);
+          if (result_port != 0)
+            result = 0; // KERN_SUCCESS
+        }
+      }
+    }
+    // XNU deliberately ignores copyout failure for these legacy traps.
+    static_cast<void>(memory_.write32(output_address, result_port));
+    registers[0] = result;
+    return;
+  }
   case 45: { // task_for_pid(target_task, pid, task_name_out)
     constexpr std::uint32_t kern_failure = 5;
     const auto target_task = registers[0];

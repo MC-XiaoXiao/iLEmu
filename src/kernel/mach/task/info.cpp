@@ -73,8 +73,8 @@ bool CompatibilityKernel::dispatch_mach_task_info_message(
   std::optional<std::uint32_t> target_pid;
   {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
-    target_pid = target_task_for_port(*shared_state_, process_.pid,
-                                      request.remote_port);
+    target_pid = target_task_name_for_port(*shared_state_, process_.pid,
+                                           request.remote_port);
   }
   const auto word_count = flavor ? requested_word_count(*flavor) : 0U;
   if (!flavor || !capacity || !target_pid || word_count == 0U ||

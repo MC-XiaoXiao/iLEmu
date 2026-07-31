@@ -53,6 +53,9 @@ source_right_for_disposition(std::uint32_t disposition);
 [[nodiscard]] std::optional<std::uint32_t>
 target_task_for_port(const KernelSharedState &state, std::uint32_t caller,
                      std::uint32_t task_name);
+[[nodiscard]] std::optional<std::uint32_t>
+target_task_name_for_port(const KernelSharedState &state,
+                          std::uint32_t caller, std::uint32_t task_name);
 [[nodiscard]] std::optional<std::pair<std::uint32_t, std::uint32_t>>
 find_thread_owner(const KernelSharedState &state, std::uint32_t object);
 [[nodiscard]] std::optional<std::uint32_t>

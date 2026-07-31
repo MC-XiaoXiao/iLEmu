@@ -355,6 +355,9 @@ private:
   dispatch_mach_vm_allocate_message(Cpu &cpu,
                                     const MachMessageRequest &request);
   [[nodiscard]] bool
+  dispatch_mach_vm_deallocate_message(Cpu &cpu,
+                                      const MachMessageRequest &request);
+  [[nodiscard]] bool
   dispatch_mach_vm_protect_message(Cpu &cpu,
                                    const MachMessageRequest &request);
   [[nodiscard]] bool

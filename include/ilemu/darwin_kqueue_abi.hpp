@@ -6,11 +6,19 @@ namespace ilemu::darwin::kqueue {
 
 inline constexpr std::int16_t filter_read = -1;
 inline constexpr std::int16_t filter_write = -2;
+inline constexpr std::int16_t filter_process = -5;
 
 inline constexpr std::uint16_t event_add = 0x0001;
 inline constexpr std::uint16_t event_delete = 0x0002;
+inline constexpr std::uint16_t event_enable = 0x0004;
+inline constexpr std::uint16_t event_one_shot = 0x0010;
+inline constexpr std::uint16_t event_clear = 0x0020;
 inline constexpr std::uint16_t event_receipt = 0x0040;
 inline constexpr std::uint16_t event_error = 0x4000;
+inline constexpr std::uint16_t event_end_of_file = 0x8000;
+
+inline constexpr std::uint32_t process_note_exec = 0x20000000U;
+inline constexpr std::uint32_t process_note_exit = 0x80000000U;
 
 namespace arm32_event {
 inline constexpr std::uint32_t identifier_offset = 0;
