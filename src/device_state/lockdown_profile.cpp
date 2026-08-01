@@ -22,6 +22,7 @@ constexpr std::string_view springboard_registered_key{
     "-SBLockdownEverRegisteredKey"};
 constexpr std::string_view cached_activation_state_key{
     "com.apple.mobile.lockdown_cache-ActivationState"};
+constexpr std::string_view persisted_brick_state_key{"-BrickState"};
 constexpr std::string_view springboard_path{
     "System/Library/CoreServices/SpringBoard.app/SpringBoard"};
 constexpr std::string_view brick_state_symbol{"_kLockdownBrickStateKey"};
@@ -212,7 +213,11 @@ LockdownProfileResult apply_lockdown_profile(
     ensure_bool(root.get(), activation_acknowledged_key.data(), activated,
                 changed);
     if (profile.registration_state) {
-        ensure_bool(root.get(), springboard_registered_key.data(), activated,
+        ensure_string(root.get(), springboard_registered_key.data(), "0",
+                      changed);
+    }
+    if (profile.brick_state) {
+        ensure_bool(root.get(), persisted_brick_state_key.data(), !activated,
                     changed);
     }
     ensure_string(root.get(), cached_activation_state_key.data(),
@@ -229,11 +234,20 @@ LockdownProfileResult apply_lockdown_profile(
     upsert(xml, activation_acknowledged_key,
            activated ? "<true/>" : "<false/>");
     if (profile.registration_state) {
-        // SpringBoard treats registration as a separate part of the Lockdown
-        // device state. An activated simulator models a device whose
-        // activation has completed; unactivated restores first-run state.
+        // This is cellular-network registration history, not device
+        // activation. The default offline modem has never registered; a real
+        // or replayed baseband remains free to update the firmware-owned key.
+        // SpringBoard stores and parses this value as a decimal CFString.
         upsert(xml, springboard_registered_key,
-               activated ? "<true/>" : "<false/>");
+               "<string>0</string>");
+    }
+    if (profile.brick_state) {
+        // Later Lockdown profiles persist the repair-mode bit independently
+        // of ActivationState. Keep both sides of that firmware-owned state in
+        // agreement; the runtime query adapter remains authoritative after
+        // boot if the emulated baseband refreshes its cache.
+        upsert(xml, persisted_brick_state_key,
+               activated ? "<false/>" : "<true/>");
     }
     // lockdownd publishes its effective state through this persisted cache.
     // Keep it in sync with the requested device profile so a prior offline
