@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
@@ -100,6 +101,11 @@ struct PendingMachReceive {
   // message. A new enqueue or a port-set addition advances the generation,
   // while an unchanged value proves another locked tree walk cannot succeed.
   std::uint64_t observed_queue_generation{};
+  // XNU places a blocked receiver into a FIFO wait queue. Keep the insertion
+  // order so a port linked to more than one port set wakes the same waiter
+  // that ipc_mqueue_post would select, rather than whichever emulated CPU is
+  // polled first.
+  std::uint64_t wait_queue_sequence{};
 };
 
 struct PendingKevent {
@@ -690,7 +696,105 @@ struct KernelSharedState {
   // unwinding; otherwise the queue sidecar is visited after its owner has
   // already been moved out and freed.
   std::set<std::uint32_t> mach_ports_being_removed;
+  struct MachPortSetLink {
+    std::uint32_t set_object{};
+    std::uint64_t wait_queue_sequence{};
+  };
   std::map<std::uint32_t, std::vector<std::uint32_t>> mach_port_sets;
+  // XNU 792 links a port's wait queue to every containing port-set wait
+  // queue. The links share FIFO order with direct receive waiters, so the
+  // reverse topology and its insertion sequence are semantic state rather
+  // than a derived lookup cache.
+  std::map<std::uint32_t, std::vector<MachPortSetLink>>
+      mach_port_set_links_by_member;
+  std::uint64_t next_mach_wait_queue_sequence{1};
+
+  [[nodiscard]] std::uint64_t allocate_mach_wait_queue_sequence_locked() {
+    auto sequence = next_mach_wait_queue_sequence++;
+    if (sequence == 0U) {
+      sequence = 1U;
+      next_mach_wait_queue_sequence = 2U;
+    }
+    return sequence;
+  }
+
+  [[nodiscard]] bool create_mach_port_set_locked(std::uint32_t set_object) {
+    return mach_port_sets.try_emplace(set_object).second;
+  }
+
+  [[nodiscard]] bool
+  insert_mach_port_set_member_locked(std::uint32_t set_object,
+                                     std::uint32_t member_object) {
+    const auto set = mach_port_sets.find(set_object);
+    if (set == mach_port_sets.end() ||
+        std::find(set->second.begin(), set->second.end(), member_object) !=
+            set->second.end()) {
+      return false;
+    }
+    set->second.push_back(member_object);
+    mach_port_set_links_by_member[member_object].push_back(MachPortSetLink{
+        set_object, allocate_mach_wait_queue_sequence_locked()});
+    note_mach_queue_topology_change_locked();
+    return true;
+  }
+
+  [[nodiscard]] bool
+  extract_mach_port_set_member_locked(std::uint32_t set_object,
+                                      std::uint32_t member_object) {
+    const auto set = mach_port_sets.find(set_object);
+    if (set == mach_port_sets.end())
+      return false;
+    const auto member =
+        std::find(set->second.begin(), set->second.end(), member_object);
+    if (member == set->second.end())
+      return false;
+    set->second.erase(member);
+    if (const auto links = mach_port_set_links_by_member.find(member_object);
+        links != mach_port_set_links_by_member.end()) {
+      std::erase_if(links->second, [set_object](const auto &link) {
+        return link.set_object == set_object;
+      });
+      if (links->second.empty())
+        mach_port_set_links_by_member.erase(links);
+    }
+    note_mach_queue_topology_change_locked();
+    return true;
+  }
+
+  [[nodiscard]] bool
+  remove_mach_port_set_member_from_all_locked(std::uint32_t member_object) {
+    const auto links = mach_port_set_links_by_member.find(member_object);
+    if (links == mach_port_set_links_by_member.end())
+      return false;
+    for (const auto &link : links->second) {
+      if (const auto set = mach_port_sets.find(link.set_object);
+          set != mach_port_sets.end()) {
+        std::erase(set->second, member_object);
+      }
+    }
+    mach_port_set_links_by_member.erase(links);
+    note_mach_queue_topology_change_locked();
+    return true;
+  }
+
+  [[nodiscard]] bool erase_mach_port_set_locked(std::uint32_t set_object) {
+    const auto set = mach_port_sets.find(set_object);
+    if (set == mach_port_sets.end())
+      return false;
+    for (const auto member_object : set->second) {
+      if (const auto links = mach_port_set_links_by_member.find(member_object);
+          links != mach_port_set_links_by_member.end()) {
+        std::erase_if(links->second, [set_object](const auto &link) {
+          return link.set_object == set_object;
+        });
+        if (links->second.empty())
+          mach_port_set_links_by_member.erase(links);
+      }
+    }
+    mach_port_sets.erase(set);
+    note_mach_queue_topology_change_locked();
+    return true;
+  }
   // These maps are keyed by global IPC object identifiers, never by a
   // caller's task-local Mach name. Keep task identity separate from generic
   // receive ownership so pid_for_task cannot mistake a service for a task.

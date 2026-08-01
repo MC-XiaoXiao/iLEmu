@@ -30,7 +30,6 @@
 #include <iterator>
 #include <limits>
 #include <span>
-#include <sstream>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -62,6 +61,69 @@ bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(Cpu &cpu) {
   return deliver_pending_mach_locked(cpu);
 }
 
+std::optional<std::size_t>
+CompatibilityKernel::preferred_pending_mach_receiver_locked(
+    std::uint32_t queued_port) {
+  struct Candidate {
+    std::uint64_t port_queue_sequence{};
+    std::uint64_t receiver_sequence{};
+    std::size_t processor{};
+  };
+  std::optional<Candidate> selected;
+  const auto consider = [&](Candidate candidate) {
+    if (!selected ||
+        candidate.port_queue_sequence < selected->port_queue_sequence ||
+        (candidate.port_queue_sequence == selected->port_queue_sequence &&
+         candidate.receiver_sequence < selected->receiver_sequence)) {
+      selected = candidate;
+    }
+  };
+
+  // XNU 792 represents a receive port as a compound FIFO wait queue. Direct
+  // waiters are queue elements, while each containing port set contributes a
+  // persistent link whose own FIFO contains that set's waiters. Posting to
+  // the port walks those elements recursively and wakes the first receiver.
+  // Reconstruct that choice here so host CPU polling order cannot redirect a
+  // shared-port message to a later port set.
+  for (auto &[processor, pending] : pending_mach_receives_) {
+    if (!pending.receive_object) {
+      pending.receive_object = shared_state_->mach_namespaces.resolve(
+          process_.pid, pending.receive_name);
+    }
+    if (pending.receive_object && *pending.receive_object == queued_port) {
+      consider(Candidate{pending.wait_queue_sequence,
+                         pending.wait_queue_sequence, processor});
+    }
+  }
+
+  if (const auto links =
+          shared_state_->mach_port_set_links_by_member.find(queued_port);
+      links != shared_state_->mach_port_set_links_by_member.end()) {
+    for (const auto &link : links->second) {
+      std::optional<Candidate> set_receiver;
+      for (const auto &[processor, pending] : pending_mach_receives_) {
+        if (!pending.receive_object ||
+            *pending.receive_object != link.set_object) {
+          continue;
+        }
+        const Candidate candidate{link.wait_queue_sequence,
+                                  pending.wait_queue_sequence, processor};
+        if (!set_receiver ||
+            candidate.receiver_sequence <
+                set_receiver->receiver_sequence) {
+          set_receiver = candidate;
+        }
+      }
+      if (set_receiver) {
+        consider(*set_receiver);
+      }
+    }
+  }
+  if (!selected)
+    return std::nullopt;
+  return selected->processor;
+}
+
 bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
   const auto pending = pending_mach_receives_.find(cpu.processor_id());
   if (pending == pending_mach_receives_.end())
@@ -75,19 +137,29 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
     pending->second.receive_object = *resolved_receive;
   }
   auto queued_port = *pending->second.receive_object;
-  auto queue = shared_state_->mach_queues.find(queued_port);
-  if (queue == shared_state_->mach_queues.end() || queue->second.empty()) {
+  auto queue = shared_state_->mach_queues.end();
+  bool has_visible_message = false;
+  const auto select_queue = [&](std::uint32_t candidate_port) {
+    const auto candidate = shared_state_->mach_queues.find(candidate_port);
+    if (candidate == shared_state_->mach_queues.end() ||
+        candidate->second.empty()) {
+      return false;
+    }
+    has_visible_message = true;
+    const auto receiver = preferred_pending_mach_receiver_locked(candidate_port);
+    if (!receiver || *receiver != cpu.processor_id())
+      return false;
+    queued_port = candidate_port;
+    queue = candidate;
+    return true;
+  };
+
+  if (!select_queue(queued_port)) {
     if (const auto port_set = shared_state_->mach_port_sets.find(queued_port);
         port_set != shared_state_->mach_port_sets.end()) {
-      queue = shared_state_->mach_queues.end();
       for (const auto member : port_set->second) {
-        const auto candidate = shared_state_->mach_queues.find(member);
-        if (candidate != shared_state_->mach_queues.end() &&
-            !candidate->second.empty()) {
-          queued_port = member;
-          queue = candidate;
+        if (select_queue(member))
           break;
-        }
       }
     }
   }
@@ -100,8 +172,13 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
       cpu.clear_halt();
       return true;
     }
-    pending->second.observed_queue_generation =
-        shared_state_->mach_queue_generation_snapshot();
+    // If another FIFO waiter owns an already-queued message, do not cache the
+    // current generation as empty. Once that waiter consumes the front item,
+    // this receiver may become eligible for the next item without an enqueue.
+    if (!has_visible_message) {
+      pending->second.observed_queue_generation =
+          shared_state_->mach_queue_generation_snapshot();
+    }
     return false;
   }
 
@@ -328,10 +405,9 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
         release_inflight_send_right_locked(*shared_state_, *object);
       }
       if (*right == xnu792::ipc::Right::Receive) {
-        for (auto &[set_object, members] : shared_state_->mach_port_sets) {
-          static_cast<void>(set_object);
-          std::erase(members, *object);
-        }
+        static_cast<void>(
+            shared_state_->remove_mach_port_set_member_from_all_locked(
+                *object));
         static_cast<void>(shared_state_->mach_port_objects.set_receive_owner(
             *object, process_.pid));
         if (captured == pending_message.port_transfers.end() &&
@@ -383,10 +459,9 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
       if (transfer.right == xnu792::ipc::Right::Send) {
         release_inflight_send_right_locked(*shared_state_, transfer.object);
       } else if (transfer.right == xnu792::ipc::Right::Receive) {
-        for (auto &[set_object, members] : shared_state_->mach_port_sets) {
-          static_cast<void>(set_object);
-          std::erase(members, transfer.object);
-        }
+        static_cast<void>(
+            shared_state_->remove_mach_port_set_member_from_all_locked(
+                transfer.object));
         static_cast<void>(shared_state_->mach_port_objects.set_receive_owner(
             transfer.object, process_.pid));
       }

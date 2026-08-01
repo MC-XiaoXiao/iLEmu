@@ -309,7 +309,26 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                    : std::nullopt;
         if (target && entry &&
             (entry->type &
-             xnu792::ipc::type_mask(xnu792::ipc::Right::Receive)) != 0) {
+             xnu792::ipc::type_mask(xnu792::ipc::Right::PortSet)) != 0) {
+          // A port-set name has a receive right for the set itself, not for
+          // an individual queue.  Darwin reports the aggregate pending
+          // depth here; GraphicsServices uses it to decide whether its
+          // heartbeat may remain paused after a timeout.
+          if (const auto set =
+                  shared_state_->mach_port_sets.find(entry->object);
+              set != shared_state_->mach_port_sets.end()) {
+            for (const auto member : set->second) {
+              if (const auto queue = shared_state_->mach_queues.find(member);
+                  queue != shared_state_->mach_queues.end()) {
+                msgcount += static_cast<std::uint32_t>(queue->second.size());
+              }
+            }
+          }
+          result = 0;
+        } else if (target && entry &&
+                   (entry->type &
+                    xnu792::ipc::type_mask(xnu792::ipc::Right::Receive)) !=
+                       0) {
           for (const auto &[set_name, members] :
                shared_state_->mach_port_sets) {
             if (std::find(members.begin(), members.end(), entry->object) !=

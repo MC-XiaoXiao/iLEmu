@@ -187,7 +187,8 @@ bool CompatibilityKernel::dispatch_mach_port_message(
               shared_state_->mach_port_objects.create(object, *target));
           shared_state_->mach_queues.try_emplace(object);
         } else if (right == 3U) {
-          shared_state_->mach_port_sets.try_emplace(object);
+          static_cast<void>(
+              shared_state_->create_mach_port_set_locked(object));
         }
       }
     }
@@ -238,7 +239,8 @@ bool CompatibilityKernel::dispatch_mach_port_message(
                 shared_state_->mach_port_objects.create(object, *target));
             shared_state_->mach_queues.try_emplace(object);
           } else if (right == 3U) {
-            shared_state_->mach_port_sets.try_emplace(object);
+            static_cast<void>(
+                shared_state_->create_mach_port_set_locked(object));
           }
         }
       }

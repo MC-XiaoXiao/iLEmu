@@ -72,7 +72,6 @@ bool CompatibilityKernel::dispatch_mach_port_membership_message(
   std::size_t resulting_member_count = 0;
   {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
-    bool added_to_port_set = false;
     const auto target =
         target_task_for_port(*shared_state_, process_.pid, request.remote_port);
     const auto member_entry =
@@ -103,47 +102,30 @@ bool CompatibilityKernel::dispatch_mach_port_membership_message(
     }
     if (result == kernel_success) {
       if (routine == Routine::mach_port_move_member) {
-        bool removed = false;
-        for (auto &[candidate_set_object, members] :
-             shared_state_->mach_port_sets) {
-          static_cast<void>(candidate_set_object);
-          const auto previous_size = members.size();
-          std::erase(members, member_entry->object);
-          removed = removed || members.size() != previous_size;
-        }
+        const auto removed =
+            shared_state_->remove_mach_port_set_member_from_all_locked(
+                member_entry->object);
         if (set_entry) {
-          auto &members = shared_state_->mach_port_sets[set_entry->object];
-          if (std::find(members.begin(), members.end(), member_entry->object) ==
-              members.end()) {
-            members.push_back(member_entry->object);
-            added_to_port_set = true;
-          }
+          static_cast<void>(shared_state_->insert_mach_port_set_member_locked(
+              set_entry->object, member_entry->object));
         } else if (!removed) {
           result = kernel_not_in_set;
         }
       } else {
-        auto &members = shared_state_->mach_port_sets[set_entry->object];
-        const auto existing =
-            std::find(members.begin(), members.end(), member_entry->object);
         if (routine == Routine::mach_port_insert_member) {
           // Darwin 8's ipc_port has ip_pset_count and one mqueue link per
           // containing set. KERN_ALREADY_IN_SET applies only to the requested
           // set; the same receive right may belong to another set as well.
-          if (existing != members.end()) {
+          if (!shared_state_->insert_mach_port_set_member_locked(
+                  set_entry->object, member_entry->object)) {
             result = kernel_already_in_set;
-          } else {
-            members.push_back(member_entry->object);
-            added_to_port_set = true;
           }
-        } else if (existing == members.end()) {
+        } else if (!shared_state_->extract_mach_port_set_member_locked(
+                       set_entry->object, member_entry->object)) {
           result = kernel_not_in_set;
-        } else {
-          members.erase(existing);
         }
       }
     }
-    if (added_to_port_set)
-      shared_state_->note_mach_queue_topology_change_locked();
     if (set_object != 0) {
       const auto members = shared_state_->mach_port_sets.find(set_object);
       if (members != shared_state_->mach_port_sets.end())

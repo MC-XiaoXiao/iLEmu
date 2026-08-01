@@ -149,9 +149,8 @@ target_task_for_port(const KernelSharedState &state, std::uint32_t caller,
   // task/semaphore traps require a send right in the caller's ipc_space;
   // accepting a receive or dead-name entry here lets an unrelated port be
   // used as an owner and leaves teardown metadata attached to the wrong PID.
-  const auto task_object =
-      resolve_name_with_right(state, caller, task_name,
-                              xnu792::ipc::Right::Send);
+  const auto task_object = resolve_name_with_right(state, caller, task_name,
+                                                   xnu792::ipc::Right::Send);
   if (!task_object)
     return std::nullopt;
   const auto task = state.task_port_pids.find(*task_object);
@@ -161,10 +160,10 @@ target_task_for_port(const KernelSharedState &state, std::uint32_t caller,
 }
 
 std::optional<std::uint32_t>
-target_task_name_for_port(const KernelSharedState &state,
-                          std::uint32_t caller, std::uint32_t task_name) {
-  const auto object = resolve_name_with_right(
-      state, caller, task_name, xnu792::ipc::Right::Send);
+target_task_name_for_port(const KernelSharedState &state, std::uint32_t caller,
+                          std::uint32_t task_name) {
+  const auto object = resolve_name_with_right(state, caller, task_name,
+                                              xnu792::ipc::Right::Send);
   if (!object)
     return std::nullopt;
   if (const auto task = state.task_port_pids.find(*object);
@@ -215,9 +214,8 @@ bool enqueue_no_senders_notification_locked(KernelSharedState &state,
   const auto request = state.mach_notifications.find(key);
   const auto port_object = state.mach_port_objects.lookup(object);
   const auto inflight = state.mach_inflight_send_rights.find(object);
-  const auto has_inflight =
-      inflight != state.mach_inflight_send_rights.end() &&
-      inflight->second != 0;
+  const auto has_inflight = inflight != state.mach_inflight_send_rights.end() &&
+                            inflight->second != 0;
   const auto kernel_hold = state.mach_kernel_send_rights.find(object);
   const auto has_kernel_hold =
       kernel_hold != state.mach_kernel_send_rights.end() &&
@@ -331,10 +329,9 @@ bool enqueue_port_destroyed_notification_locked(KernelSharedState &state,
   // Keep the transferred receive right in the semantic sidecar as well as in
   // the wire descriptor.  Queue discard must terminate this right instead of
   // losing it when the notification endpoint disappears.
-  message.port_transfers.push_back(
-      KernelSharedState::MachMessage::PortTransfer{
-          28U, receive_object, std::nullopt, receive_object,
-          xnu792::ipc::Right::Receive, 16U});
+  message.port_transfers.push_back(KernelSharedState::MachMessage::PortTransfer{
+      28U, receive_object, std::nullopt, receive_object,
+      xnu792::ipc::Right::Receive, 16U});
   state.enqueue_mach_message_locked(notify_object, std::move(message));
   return true;
 }
@@ -351,11 +348,8 @@ void remove_port_object_locked(KernelSharedState &state, std::uint32_t object) {
     ~RemovalGuard() { state.mach_ports_being_removed.erase(object); }
   } removal_guard{state, object};
 
-  for (auto &[set_object, members] : state.mach_port_sets) {
-    static_cast<void>(set_object);
-    std::erase(members, object);
-  }
-  state.mach_port_sets.erase(object);
+  static_cast<void>(state.remove_mach_port_set_member_from_all_locked(object));
+  static_cast<void>(state.erase_mach_port_set_locked(object));
   if (auto queue = state.mach_queues.find(object);
       queue != state.mach_queues.end()) {
     auto discarded = std::move(queue->second);
@@ -431,10 +425,14 @@ void remove_port_object_locked(KernelSharedState &state, std::uint32_t object) {
   state.mach_memory_entries.erase(object);
   state.iokit_iterators.erase(object);
   state.iokit_connections.erase(object);
+  state.iokit_audio_connections.erase(object);
   state.iokit_services.erase(object);
   state.iokit_interest_notifications.erase(object);
   if (state.mobile_framebuffer_service == object) {
     state.mobile_framebuffer_service = 0;
+  }
+  if (state.ioaudio2_service == object) {
+    state.ioaudio2_service = 0;
   }
   if (state.wifi_service == object) {
     state.wifi_service = 0;
@@ -610,17 +608,15 @@ void cleanup_exited_process_metadata_locked(KernelSharedState &state,
       owned_objects.push_back(object);
   }
   std::sort(owned_objects.begin(), owned_objects.end());
-  owned_objects.erase(
-      std::unique(owned_objects.begin(), owned_objects.end()),
-      owned_objects.end());
+  owned_objects.erase(std::unique(owned_objects.begin(), owned_objects.end()),
+                      owned_objects.end());
   for (const auto object : owned_objects) {
     if (state.mach_port_objects.contains(object))
       terminate_receive_object_locked(state, object);
   }
-  std::erase_if(state.iokit_notifications,
-                [pid](const auto &notification) {
-                  return notification.owner_pid == pid;
-                });
+  std::erase_if(state.iokit_notifications, [pid](const auto &notification) {
+    return notification.owner_pid == pid;
+  });
   std::erase_if(state.iokit_display_vsync, [pid](const auto &entry) {
     return entry.second.owner_pid == pid;
   });
@@ -632,9 +628,8 @@ void release_unreferenced_iokit_object_locked(KernelSharedState &state,
       state.iokit_iterators.contains(object) ||
       state.iokit_connections.contains(object) ||
       state.iokit_interest_notifications.contains(object);
-  if (!transient_iokit_object ||
-      state.mach_namespaces.right_reference_count(
-          object, xnu792::ipc::Right::Send) != 0) {
+  if (!transient_iokit_object || state.mach_namespaces.right_reference_count(
+                                     object, xnu792::ipc::Right::Send) != 0) {
     return;
   }
   const auto inflight = state.mach_inflight_send_rights.find(object);
@@ -680,10 +675,8 @@ bool consume_moved_right_locked(KernelSharedState &state, std::uint32_t task,
                                            xnu792::ipc::type_mask(right))) {
       return false;
     }
-    for (auto &[set_object, members] : state.mach_port_sets) {
-      static_cast<void>(set_object);
-      std::erase(members, entry->object);
-    }
+    static_cast<void>(
+        state.remove_mach_port_set_member_from_all_locked(entry->object));
     static_cast<void>(
         state.mach_port_objects.set_receive_owner(entry->object, 0));
     return true;
@@ -709,10 +702,7 @@ void terminate_receive_object_locked(KernelSharedState &state,
                                      std::uint32_t object) {
   if (state.mach_ports_being_removed.contains(object))
     return;
-  for (auto &[set_object, members] : state.mach_port_sets) {
-    static_cast<void>(set_object);
-    std::erase(members, object);
-  }
+  static_cast<void>(state.remove_mach_port_set_member_from_all_locked(object));
 
   const auto destroyed_key = std::pair{object, mach_notify_port_destroyed};
   const auto destroyed_request = state.mach_notifications.find(destroyed_key);

@@ -78,13 +78,21 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
                      ? std::numeric_limits<std::uint64_t>::max()
                      : now + interval;
     }
-    pending_mach_receives_[cpu.processor_id()] =
-        PendingMachReceive{message_address, registers[3],       registers[4],
-                           registers[1],    cpu.processor_id(), deadline,
-                           std::nullopt,      0};
-    process_.waiting_for_events = true;
     {
       std::lock_guard mach_lock{shared_state_->mach_mutex};
+      const auto receive_object = shared_state_->mach_namespaces.resolve(
+          process_.pid, registers[4]);
+      pending_mach_receives_[cpu.processor_id()] = PendingMachReceive{
+          message_address,
+          registers[3],
+          registers[4],
+          registers[1],
+          cpu.processor_id(),
+          deadline,
+          receive_object,
+          0,
+          shared_state_->allocate_mach_wait_queue_sequence_locked()};
+      process_.waiting_for_events = true;
       if (deliver_pending_mach_locked(cpu))
         return;
     }
@@ -179,6 +187,13 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
           message_address, registers[2], registers[3], *remote_port,
           *local_port,
           IOKitMachCallSite{registers[15], registers[14], registers[7]})) {
+    // A flattened UIKit client may establish its display timing after its
+    // event route, with no LayerKit context to provide another callback. The
+    // common readiness helper validates process identity, launch intent,
+    // prewarm state, event ownership, and live display participation before
+    // it can publish a foreground scene, so unrelated IOKit traffic is inert.
+    graphics_services_input::activate_resolved_application(
+        *shared_state_, process_.pid, scene_coordinator_.get());
     registers[0] = *result;
     return;
   }
@@ -718,7 +733,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
                 bootstrap_service_name);
           }
           if (graphics_event_type) {
-            graphics_services_input::record_application_lifecycle_event_locked(
+            graphics_services_input::record_application_event_delivery_locked(
                 *shared_state_, process_.pid, remote_object,
                 *graphics_event_type, scene_coordinator_.get());
           }

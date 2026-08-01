@@ -421,6 +421,8 @@ private:
   void install_commpage();
   void configure_darwin_notify_state();
   bool deliver_pending_mach_if_ready_locked(Cpu &cpu);
+  [[nodiscard]] std::optional<std::size_t>
+  preferred_pending_mach_receiver_locked(std::uint32_t queued_port);
   bool deliver_pending_mach_locked(Cpu &cpu);
   bool deliver_pending_io_locked(Cpu &cpu);
   bool receive_socket_message(Cpu &cpu, std::uint32_t fd,
