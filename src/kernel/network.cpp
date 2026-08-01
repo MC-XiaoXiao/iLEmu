@@ -1418,7 +1418,9 @@ void CompatibilityKernel::detach_kevents_for_descriptor(std::uint32_t fd) {
     for (auto& [queue_fd, registrations] : kqueues_) {
         (void)queue_fd;
         std::erase_if(registrations, [fd](const auto& registration) {
-            return registration.ident == fd;
+            return registration.ident == fd &&
+                   (registration.filter == darwin::kqueue::filter_read ||
+                    registration.filter == darwin::kqueue::filter_write);
         });
     }
 }
