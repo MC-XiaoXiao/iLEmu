@@ -82,9 +82,9 @@ public:
     [[nodiscard]] const MachStub* find_stub(std::uint32_t address) const;
     [[nodiscard]] std::optional<std::uint16_t> read_vm_u16(std::uint32_t address) const;
     [[nodiscard]] std::optional<std::uint32_t> read_vm_u32(std::uint32_t address) const;
-    // Resolve an Objective-C 1.x method implementation from the image's
-    // metadata. This covers stripped firmware methods without relying on a
-    // version-specific virtual address.
+    // Resolve an Objective-C instance-method implementation from the image's
+    // runtime metadata. This covers stripped firmware methods without relying
+    // on a version-specific virtual address.
     [[nodiscard]] std::optional<std::uint32_t> find_objc_instance_method(
         std::string_view class_name, std::string_view selector) const;
 
