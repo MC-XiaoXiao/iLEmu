@@ -21,8 +21,14 @@ constexpr std::uint32_t stack_size = 0x00100000U;
 constexpr std::uint32_t stack_top = stack_base + stack_size;
 constexpr std::size_t maximum_interpreter_line = 256;
 constexpr std::size_t maximum_interpreter_depth = 4;
-constexpr std::string_view layerkit_auto_ogl_name{"LK_AUTO_ENABLE_OGL="};
-constexpr std::string_view layerkit_auto_ogl_setting{"LK_AUTO_ENABLE_OGL=1"};
+constexpr std::array<std::string_view, 2> adaptive_ogl_names{
+    "CA_AUTO_ENABLE_OGL=",
+    "LK_AUTO_ENABLE_OGL=",
+};
+constexpr std::array<std::string_view, 2> adaptive_ogl_settings{
+    "CA_AUTO_ENABLE_OGL=1",
+    "LK_AUTO_ENABLE_OGL=1",
+};
 
 struct InterpreterDirective {
     std::string path;
@@ -139,14 +145,23 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
             "SHELL=/bin/sh",
         };
     }
-    // LayerKit's device launch environment enables its adaptive renderer.
-    // Preserve an explicit guest choice, otherwise keep the firmware's MBX2D
-    // fast path while allowing complex/3D updates to select GLES.
-    if (std::none_of(environment.begin(), environment.end(),
-                     [](const std::string& variable) {
-                         return variable.starts_with(layerkit_auto_ogl_name);
-                     })) {
-        environment.emplace_back(layerkit_auto_ogl_setting);
+    // CoreAnimation and its LayerKit predecessor use aliases for the same
+    // adaptive renderer switch. Preserve an explicit guest choice through
+    // either alias; otherwise allow complex updates to select GLES while
+    // ordinary composition remains on the firmware's MBX2D fast path.
+    const auto adaptive_ogl_is_explicit =
+        std::any_of(environment.begin(), environment.end(),
+                    [](const std::string& variable) {
+                        return std::any_of(
+                            adaptive_ogl_names.begin(),
+                            adaptive_ogl_names.end(),
+                            [&variable](std::string_view name) {
+                                return variable.starts_with(name);
+                            });
+                    });
+    if (!adaptive_ogl_is_explicit) {
+        for (const auto setting : adaptive_ogl_settings)
+            environment.emplace_back(setting);
     }
 
     std::uint32_t string_cursor = stack_top;
