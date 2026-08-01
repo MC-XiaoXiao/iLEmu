@@ -22,6 +22,7 @@
 #include "ilemu/audio.hpp"
 #include "ilemu/audio_toolbox_hle.hpp"
 #include "ilemu/core_audio_hle.hpp"
+#include "ilemu/core_media_hle.hpp"
 #include "ilemu/apple80211_hle.hpp"
 #include "ilemu/core_surface_hle.hpp"
 #include "ilemu/cpu.hpp"
@@ -515,6 +516,7 @@ private:
   UserlandHleRegistry userland_hle_;
   DarwinNotifyStateHle darwin_notify_state_hle_;
   AudioToolboxHle audio_toolbox_hle_;
+  CoreMediaHle core_media_hle_;
   CoreAudioHle core_audio_hle_;
   Apple80211Hle apple80211_hle_;
   std::shared_ptr<SurfaceStore> surface_store_{

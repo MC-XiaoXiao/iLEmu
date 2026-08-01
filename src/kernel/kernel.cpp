@@ -86,6 +86,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
       userland_hle_{memory_, output_},
       darwin_notify_state_hle_{userland_hle_},
       audio_toolbox_hle_{userland_hle_},
+      core_media_hle_{userland_hle_},
       core_audio_hle_{userland_hle_, audio_service_},
       apple80211_hle_{
           userland_hle_, wifi_state_,
