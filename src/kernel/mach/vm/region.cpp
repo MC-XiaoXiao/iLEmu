@@ -24,6 +24,11 @@ constexpr std::uint32_t basic_info_flavor = 10U;
 constexpr std::uint32_t basic_info_64_word_count = 9U;
 constexpr std::uint32_t basic_info_word_count = 8U;
 constexpr std::uint32_t copy_inheritance = 1U;
+// XNU 792 publishes the same ARM32 request/reply contract in its mach_vm
+// subsystem. The 5A347 libSystem stub sends 44 bytes and reads the same
+// address/size/count offsets as vm_region_64; only the routine number differs.
+constexpr std::uint32_t mach_vm_region_identifier = 4816U;
+constexpr std::uint32_t region_request_size = 44U;
 constexpr std::uint32_t region_reply_prefix_size = 60U;
 constexpr std::uint32_t kern_invalid_argument = 4U;
 
@@ -44,10 +49,17 @@ darwin_permissions(MemoryPermission permissions) {
 bool CompatibilityKernel::dispatch_mach_vm_region_message(
     Cpu &cpu, const MachMessageRequest &request) {
   using xnu792::mig::vm_map::Routine;
-  if (request.identifier != mig_message_id(Routine::vm_region_64))
+  const auto is_mach_vm = request.identifier == mach_vm_region_identifier;
+  if (request.identifier != mig_message_id(Routine::vm_region_64) &&
+      !is_mach_vm) {
     return false;
+  }
 
   auto &registers = cpu.registers();
+  if (registers[2] < region_request_size) {
+    registers[0] = mach_receive_invalid_data;
+    return true;
+  }
   const auto &arguments = xnu792::mig::vm_map::vm_region_64_arguments;
   const auto address =
       memory_.read32(request.address + arguments[1].request_offset);
@@ -79,6 +91,9 @@ bool CompatibilityKernel::dispatch_mach_vm_region_message(
     }
     output_.write("[vm] region caller=" + std::to_string(process_.pid) +
                   " target=" + std::to_string(target_pid.value_or(0)) +
+                  " interface=" +
+                  (is_mach_vm ? std::string{"mach_vm"}
+                              : std::string{"vm_map"}) +
                   " address=" + std::to_string(*address) +
                   " flavor=" + std::to_string(*flavor) +
                   " capacity=" + std::to_string(*capacity) +
@@ -151,6 +166,9 @@ bool CompatibilityKernel::dispatch_mach_vm_region_message(
 
   output_.write("[vm] region caller=" + std::to_string(process_.pid) +
                 " target=" + std::to_string(*target_pid) +
+                " interface=" +
+                (is_mach_vm ? std::string{"mach_vm"}
+                            : std::string{"vm_map"}) +
                 " requested=" + std::to_string(*address) +
                 " address=" + std::to_string(region->address) +
                 " size=" +
