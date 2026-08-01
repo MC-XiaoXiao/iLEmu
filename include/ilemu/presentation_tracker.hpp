@@ -58,8 +58,27 @@ struct PresentationScene {
   std::optional<PresentationTransform> screen_to_surface;
 };
 
-// Initially observational: recording a frame never controls rendering or input.
-// Future consumers can use the snapshot without coupling the common scene model
+struct PresentationHit {
+  std::uint32_t order{};
+  std::uint32_t surface_id{};
+  SurfaceStore::Provenance surface_provenance;
+};
+
+// One immutable point query against a completed display transaction. Layers
+// are returned front-to-back so consumers can skip non-interactive assets
+// without racing a newer transaction between successive queries.
+struct PresentationHitTest {
+  std::uint64_t frame_sequence{};
+  std::uint32_t submitting_process_id{};
+  // Preserve the semantic client from the same immutable frame. Early
+  // compositors can flatten App pixels into system-owned physical surfaces,
+  // so provenance alone does not describe the interactive scene.
+  std::optional<ClientScene> logical_client_scene;
+  std::vector<PresentationHit> layers_front_to_back;
+};
+
+// Recording remains observational and never controls rendering. Consumers can
+// query the completed snapshot without coupling the common presentation model
 // to LayerKit, MobileFramebuffer, QuartzCore, IOSurface, or SDL.
 class PresentationTracker {
 public:
@@ -71,6 +90,8 @@ public:
   [[nodiscard]] std::vector<PresentationScene> latest_scenes() const;
   [[nodiscard]] std::optional<PresentationScene>
   latest_scene(std::uint32_t producer_process_id) const;
+  [[nodiscard]] std::optional<PresentationHitTest>
+  hit_test(float x, float y) const;
   [[nodiscard]] bool has_presented_frame() const;
 
   // Ignore surfaces from this process incarnation at or below the publication

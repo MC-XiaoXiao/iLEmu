@@ -24,7 +24,7 @@ std::uint32_t Mbx2dHle::allocate_client_surface(
     surfaces_.emplace(
         handle,
         Surface{
-            handle, 0, false,
+            handle, 0, false, false,
             SurfaceStore::Backing{
                 0, base, allocation_size, width, 0, 0,
                 0, {}},

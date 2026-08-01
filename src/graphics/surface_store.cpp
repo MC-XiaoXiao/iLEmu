@@ -83,6 +83,7 @@ void SurfaceStore::reset() {
             }
         }
         backings_.clear();
+        backing_references_.clear();
     }
     release_gles_render_targets(released_targets);
 }
@@ -93,12 +94,14 @@ void SurfaceStore::inherit_state(const SurfaceStore& parent) {
     reset();
 
     std::map<std::uint32_t, Backing> inherited;
+    std::map<std::uint32_t, std::size_t> inherited_references;
     std::shared_ptr<SharedRegistry> inherited_registry;
     {
         std::lock_guard parent_lock{parent.mutex_};
         inherited_registry = parent.registry_;
         std::lock_guard registry_lock{inherited_registry->mutex};
         inherited = parent.backings_;
+        inherited_references = parent.backing_references_;
         for (const auto& [id, backing] : inherited) {
             static_cast<void>(backing);
             const auto object = inherited_registry->objects.find(id);
@@ -109,6 +112,7 @@ void SurfaceStore::inherit_state(const SurfaceStore& parent) {
     {
         std::lock_guard lock{mutex_};
         backings_ = std::move(inherited);
+        backing_references_ = std::move(inherited_references);
         registry_ = std::move(inherited_registry);
     }
 }
@@ -188,6 +192,7 @@ bool SurfaceStore::publish(AddressSpace& memory, Backing backing) {
         if (registry->next_identifier <= backing.id)
             registry->next_identifier = backing.id + 1U;
         backings_.insert_or_assign(backing.id, std::move(backing));
+        backing_references_.insert_or_assign(published_id, 1U);
     }
     if (const auto pixels = read_argb(memory, published_id)) {
         if (const auto surface = host_surface(published_id))
@@ -254,16 +259,39 @@ SurfaceStore::import(AddressSpace& memory, const SharedMapping& expected,
     auto local = object.metadata;
     local.base = mapping_address + object.page_offset;
     backings_.insert_or_assign(id, local);
+    backing_references_.insert_or_assign(id, 1U);
     ++found->second.store_references;
     return local;
 }
 
-void SurfaceStore::erase(std::uint32_t id) {
+bool SurfaceStore::retain(std::uint32_t id) {
+    std::lock_guard lock{mutex_};
+    if (!backings_.contains(id))
+        return false;
+    auto reference = backing_references_.find(id);
+    if (reference == backing_references_.end())
+        reference = backing_references_.emplace(id, 1U).first;
+    if (reference->second == std::numeric_limits<std::size_t>::max())
+        return false;
+    ++reference->second;
+    return true;
+}
+
+void SurfaceStore::release(std::uint32_t id) {
     const auto registry = registry_;
     std::optional<std::uint64_t> released_target;
     {
         std::scoped_lock lock{mutex_, registry->mutex};
-        if (backings_.erase(id) == 0) return;
+        const auto backing = backings_.find(id);
+        if (backing == backings_.end())
+            return;
+        const auto reference = backing_references_.find(id);
+        if (reference != backing_references_.end() && reference->second > 1U) {
+            --reference->second;
+            return;
+        }
+        backing_references_.erase(id);
+        backings_.erase(backing);
         const auto object = registry->objects.find(id);
         if (object == registry->objects.end())
             return;

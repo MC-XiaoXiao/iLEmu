@@ -705,7 +705,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
                             buffer->imported_mapping_lease_token =
                                 mapping_lease_token;
                         } else {
-                            surfaces_->erase(requested_id);
+                            surfaces_->release(requested_id);
                             release_imported_mapping(
                                 call.memory(), mapping_address,
                                 shared->mapping_size,
@@ -792,7 +792,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
                 clients_by_id_.erase(indexed);
             }
             buffers_.erase(client);
-            surfaces_->erase(id);
+            surfaces_->release(id);
             release_imported_mapping(call.memory(), imported_mapping_base,
                                      imported_mapping_size,
                                      imported_mapping_lease_token);

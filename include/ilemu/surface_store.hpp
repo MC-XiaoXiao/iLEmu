@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
@@ -110,7 +111,11 @@ class SurfaceStore {
     import(AddressSpace& memory, const SharedMapping& expected,
            std::uint32_t mapping_address,
            std::uint64_t* mapping_lease_token);
-    void erase(std::uint32_t id);
+    // CoreSurface wrappers and graphics API surfaces own the shared backing
+    // independently. Retain/release local ownership without duplicating the
+    // process mapping or the registry's per-store reference.
+    [[nodiscard]] bool retain(std::uint32_t id);
+    void release(std::uint32_t id);
     [[nodiscard]] std::optional<Backing> find(std::uint32_t id) const;
     [[nodiscard]] std::shared_ptr<HostSurface>
     host_surface(std::uint32_t id) const;
@@ -167,6 +172,7 @@ class SurfaceStore {
 
     mutable std::mutex mutex_;
     std::map<std::uint32_t, Backing> backings_;
+    std::map<std::uint32_t, std::size_t> backing_references_;
     std::shared_ptr<SharedRegistry> registry_{
         std::make_shared<SharedRegistry>()};
 };

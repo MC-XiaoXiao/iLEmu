@@ -43,6 +43,7 @@ private:
     std::uint32_t handle{};
     std::uint32_t core_surface_id{};
     bool framebuffer{};
+    bool retains_core_surface{};
     std::optional<SurfaceStore::Backing> client_backing;
     // Raw client memory is CPU-owned. A source-only host snapshot is refreshed
     // at the firmware's FlushSurfaces publication boundary and never exposed
@@ -106,6 +107,8 @@ private:
 
   [[nodiscard]] std::uint32_t
   allocate_surface(std::uint32_t core_surface_id = 0, bool framebuffer = false);
+  void release_core_surface_reference(Surface &surface);
+  void release_core_surface_references();
   [[nodiscard]] std::uint32_t
   allocate_client_surface(std::uint32_t base, std::uint32_t allocation_size,
                           std::uint32_t width);

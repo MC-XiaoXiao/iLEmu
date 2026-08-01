@@ -89,8 +89,10 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry &registry,
   });
   const auto release = [this](UserlandHleCall &call) {
     const auto surface = call.argument(0);
-    if (const auto found = surfaces_.find(surface); found != surfaces_.end())
+    if (const auto found = surfaces_.find(surface); found != surfaces_.end()) {
       retire_client_host_source(found->second);
+      release_core_surface_reference(found->second);
+    }
     surfaces_.erase(surface);
     initialized_destinations_.erase(surface);
     destination_frame_sequences_.erase(surface);
@@ -213,10 +215,12 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry &registry,
 
 Mbx2dHle::~Mbx2dHle() {
   release_client_renderer_resources();
+  release_core_surface_references();
 }
 
 void Mbx2dHle::reset() {
   release_client_renderer_resources();
+  release_core_surface_references();
   renderer_owner_ = allocate_gles_renderer_owner();
   next_client_host_source_ = 1;
   contexts_.clear();
@@ -235,6 +239,7 @@ void Mbx2dHle::reset() {
 
 void Mbx2dHle::inherit_state(const Mbx2dHle &parent) {
   release_client_renderer_resources();
+  release_core_surface_references();
   renderer_owner_ = allocate_gles_renderer_owner();
   next_client_host_source_ = 1;
   contexts_ = parent.contexts_;
@@ -277,10 +282,27 @@ void Mbx2dHle::set_shared_state(
 std::uint32_t Mbx2dHle::allocate_surface(std::uint32_t core_surface_id,
                                          bool framebuffer) {
   const auto handle = next_surface_++;
+  const auto retains_core_surface =
+      core_surface_id != 0U && surface_store_->retain(core_surface_id);
   surfaces_.emplace(
       handle,
-      Surface{handle, core_surface_id, framebuffer, std::nullopt, {}, true});
+      Surface{handle, core_surface_id, framebuffer, retains_core_surface,
+              std::nullopt, {}, true});
   return handle;
+}
+
+void Mbx2dHle::release_core_surface_reference(Surface &surface) {
+  if (!surface.retains_core_surface)
+    return;
+  surface_store_->release(surface.core_surface_id);
+  surface.retains_core_surface = false;
+}
+
+void Mbx2dHle::release_core_surface_references() {
+  for (auto &[handle, surface] : surfaces_) {
+    static_cast<void>(handle);
+    release_core_surface_reference(surface);
+  }
 }
 
 std::uint32_t Mbx2dHle::allocate_context() {
