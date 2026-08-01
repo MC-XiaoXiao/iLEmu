@@ -7,8 +7,8 @@
 #include <map>
 #include <mutex>
 #include <optional>
-#include <sstream>
 #include <span>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -17,6 +17,8 @@
 #include "ilemu/address_space.hpp"
 #include "ilemu/device_mig_ids.hpp"
 #include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel_iokit_audio.hpp"
+#include "ilemu/kernel_iokit_audio_profile.hpp"
 #include "ilemu/kernel_iokit_baseband.hpp"
 #include "ilemu/kernel_iokit_display.hpp"
 #include "ilemu/kernel_shared_state.hpp"
@@ -280,7 +282,8 @@ std::vector<std::byte> bytes_from_string(std::string_view value) {
   return bytes;
 }
 
-std::vector<std::byte> platform_compatible_bytes(std::string_view board_config) {
+std::vector<std::byte>
+platform_compatible_bytes(std::string_view board_config) {
   auto bytes = bytes_from_string(board_config);
   bytes.push_back(std::byte{0});
   const auto architecture = bytes_from_string(apple_arm_compatible);
@@ -339,7 +342,8 @@ serialized_matching_string(std::span<const std::byte> matching,
   const auto key_offset = text.find(key_marker);
   if (key_offset == std::string::npos)
     return std::nullopt;
-  const auto string_offset = text.find("<string", key_offset + key_marker.size());
+  const auto string_offset =
+      text.find("<string", key_offset + key_marker.size());
   if (string_offset == std::string::npos)
     return std::nullopt;
   const auto value_offset = text.find('>', string_offset);
@@ -349,8 +353,8 @@ serialized_matching_string(std::span<const std::byte> matching,
   if (end_offset == std::string::npos)
     return std::nullopt;
 
-  std::string value{text.substr(value_offset + 1U,
-                                end_offset - value_offset - 1U)};
+  std::string value{
+      text.substr(value_offset + 1U, end_offset - value_offset - 1U)};
   const std::array<std::pair<std::string_view, std::string_view>, 3>
       replacements{{{"&amp;", "&"}, {"&lt;", "<"}, {"&gt;", ">"}}};
   for (const auto &[encoded, decoded] : replacements) {
@@ -379,30 +383,44 @@ std::string base64_encode(std::span<const std::byte> value) {
     const auto combined = (first << 16U) | (second << 8U) | third;
     encoded.push_back(alphabet[(combined >> 18U) & 0x3fU]);
     encoded.push_back(alphabet[(combined >> 12U) & 0x3fU]);
-    encoded.push_back(offset + 1U < value.size()
-                          ? alphabet[(combined >> 6U) & 0x3fU]
-                          : '=');
-    encoded.push_back(offset + 2U < value.size()
-                          ? alphabet[combined & 0x3fU]
-                          : '=');
+    encoded.push_back(
+        offset + 1U < value.size() ? alphabet[(combined >> 6U) & 0x3fU] : '=');
+    encoded.push_back(offset + 2U < value.size() ? alphabet[combined & 0x3fU]
+                                                 : '=');
   }
   return encoded;
 }
 
-std::vector<std::byte> serialize_property(
-    const KernelSharedState::IOKitRegistryProperty &property) {
-  std::string serialized;
-  if (property.kind ==
-      KernelSharedState::IOKitRegistryProperty::Kind::String) {
-    serialized = "<string ID=\"0\">" + xml_escape(property.value) +
-                 "</string>";
-  } else if (property.kind ==
-             KernelSharedState::IOKitRegistryProperty::Kind::Boolean) {
-    serialized = !property.value.empty() && property.value.front() != std::byte{0}
-                     ? "<true/>"
-                     : "<false/>";
-  } else if (property.kind ==
-             KernelSharedState::IOKitRegistryProperty::Kind::Number) {
+std::string
+serialize_property_xml(const KernelSharedState::IOKitRegistryProperty &property,
+                       std::size_t &identifier);
+
+std::string serialize_dictionary_xml(
+    const std::map<std::string, KernelSharedState::IOKitRegistryProperty>
+        &properties,
+    std::size_t &identifier) {
+  std::string serialized{"<dict ID=\"" + std::to_string(identifier++) + "\">"};
+  for (const auto &[name, property] : properties) {
+    serialized += "<key>" + xml_escape(bytes_from_string(name)) + "</key>";
+    serialized += serialize_property_xml(property, identifier);
+  }
+  serialized += "</dict>";
+  return serialized;
+}
+
+std::string
+serialize_property_xml(const KernelSharedState::IOKitRegistryProperty &property,
+                       std::size_t &identifier) {
+  using Kind = KernelSharedState::IOKitRegistryProperty::Kind;
+  switch (property.kind) {
+  case Kind::String:
+    return "<string ID=\"" + std::to_string(identifier++) + "\">" +
+           xml_escape(property.value) + "</string>";
+  case Kind::Boolean:
+    return !property.value.empty() && property.value.front() != std::byte{0}
+               ? "<true/>"
+               : "<false/>";
+  case Kind::Number: {
     std::uint32_t value = 0;
     for (std::size_t index = 0;
          index < std::min(property.value.size(), sizeof(value)); ++index) {
@@ -410,52 +428,41 @@ std::vector<std::byte> serialize_property(
                << (index * 8U);
     }
     std::ostringstream stream;
-    stream << "<integer size=\"32\">0x" << std::hex << value << "</integer>";
-    serialized = stream.str();
-  } else {
-    serialized = "<data ID=\"0\">" + base64_encode(property.value) +
-                 "</data>";
+    stream << "<integer size=\"32\" ID=\"" << identifier++ << "\">0x"
+           << std::hex << value << "</integer>";
+    return stream.str();
   }
+  case Kind::Array: {
+    std::string serialized{"<array ID=\"" + std::to_string(identifier++) +
+                           "\">"};
+    for (const auto &element : property.array_value)
+      serialized += serialize_property_xml(element, identifier);
+    serialized += "</array>";
+    return serialized;
+  }
+  case Kind::Dictionary:
+    return serialize_dictionary_xml(property.dictionary_value, identifier);
+  case Kind::Data:
+    return "<data ID=\"" + std::to_string(identifier++) + "\">" +
+           base64_encode(property.value) + "</data>";
+  }
+  return {};
+}
+
+std::vector<std::byte>
+serialize_property(const KernelSharedState::IOKitRegistryProperty &property) {
+  std::size_t identifier = 0;
+  auto serialized = serialize_property_xml(property, identifier);
   // Darwin 8 OSSerialize::getLength() includes its trailing NUL.
   serialized.push_back('\0');
   return bytes_from_string(serialized);
 }
 
 std::vector<std::byte> serialize_properties(
-    const std::map<std::string,
-                   KernelSharedState::IOKitRegistryProperty> &properties) {
-  std::string serialized{"<dict ID=\"0\">"};
-  std::size_t identifier = 1;
-  for (const auto &[name, property] : properties) {
-    serialized += "<key>" + xml_escape(bytes_from_string(name)) + "</key>";
-    if (property.kind ==
-        KernelSharedState::IOKitRegistryProperty::Kind::String) {
-      serialized += "<string ID=\"" + std::to_string(identifier++) + "\">" +
-                    xml_escape(property.value) + "</string>";
-    } else if (property.kind ==
-               KernelSharedState::IOKitRegistryProperty::Kind::Boolean) {
-      serialized +=
-          !property.value.empty() && property.value.front() != std::byte{0}
-              ? "<true/>"
-              : "<false/>";
-    } else if (property.kind ==
-               KernelSharedState::IOKitRegistryProperty::Kind::Number) {
-      std::uint32_t value = 0;
-      for (std::size_t index = 0;
-           index < std::min(property.value.size(), sizeof(value)); ++index) {
-        value |= static_cast<std::uint32_t>(property.value[index])
-                 << (index * 8U);
-      }
-      std::ostringstream stream;
-      stream << "<integer size=\"32\" ID=\"" << identifier++ << "\">0x"
-             << std::hex << value << "</integer>";
-      serialized += stream.str();
-    } else {
-      serialized += "<data ID=\"" + std::to_string(identifier++) + "\">" +
-                    base64_encode(property.value) + "</data>";
-    }
-  }
-  serialized += "</dict>";
+    const std::map<std::string, KernelSharedState::IOKitRegistryProperty>
+        &properties) {
+  std::size_t identifier = 0;
+  auto serialized = serialize_dictionary_xml(properties, identifier);
   serialized.push_back('\0');
   return bytes_from_string(serialized);
 }
@@ -466,24 +473,28 @@ bool trace_repeated_call(std::uint64_t count) {
          (count != 0 && (count & (count - 1U)) == 0);
 }
 
-std::string_view user_client_profile_name(
-    KernelSharedState::IOKitUserClientProfile profile) {
+std::string_view
+user_client_profile_name(KernelSharedState::IOKitUserClientProfile profile) {
   switch (profile) {
   case KernelSharedState::IOKitUserClientProfile::Generic:
     return "generic";
   case KernelSharedState::IOKitUserClientProfile::Display:
     return "display";
+  case KernelSharedState::IOKitUserClientProfile::Audio:
+    return "audio";
   case KernelSharedState::IOKitUserClientProfile::None:
     break;
   }
   return "none";
 }
 
-std::uint32_t connection_type_for_profile(
-    KernelSharedState::IOKitUserClientProfile profile,
-    std::uint32_t requested_type) {
+std::uint32_t
+connection_type_for_profile(KernelSharedState::IOKitUserClientProfile profile,
+                            std::uint32_t requested_type) {
   if (profile == KernelSharedState::IOKitUserClientProfile::Display)
     return iokit_abi::apple_h1clcd_service_type;
+  if (profile == KernelSharedState::IOKitUserClientProfile::Audio)
+    return kernel_iokit::audio::IOKitAudioAbiProfile::io_audio2().service_type;
   if (profile == KernelSharedState::IOKitUserClientProfile::Generic)
     return iokit_abi::generic_user_client_type;
   return requested_type;
@@ -556,24 +567,23 @@ ensure_mobile_framebuffer_service_locked(KernelSharedState &shared_state) {
   static_cast<void>(shared_state.mach_port_objects.create(port));
   shared_state.mach_queues.try_emplace(port);
   shared_state.iokit_services.emplace(
-      port,
-      KernelSharedState::IOKitService{
-          std::string{apple_h1clcd_class},
-          {std::string{mobile_framebuffer_class}},
-          {},
-          {},
-          0,
-          KernelSharedState::IOKitUserClientProfile::Display});
+      port, KernelSharedState::IOKitService{
+                std::string{apple_h1clcd_class},
+                {std::string{mobile_framebuffer_class}},
+                {},
+                {},
+                0,
+                KernelSharedState::IOKitUserClientProfile::Display});
   return port;
 }
 
 std::uint32_t
 ensure_platform_expert_service_locked(KernelSharedState &shared_state) {
-  const auto existing = std::find_if(
-      shared_state.iokit_services.begin(), shared_state.iokit_services.end(),
-      [](const auto &entry) {
-        return entry.second.class_name == platform_expert_class;
-      });
+  const auto existing =
+      std::find_if(shared_state.iokit_services.begin(),
+                   shared_state.iokit_services.end(), [](const auto &entry) {
+                     return entry.second.class_name == platform_expert_class;
+                   });
   if (existing != shared_state.iokit_services.end())
     return existing->first;
 
@@ -594,11 +604,11 @@ ensure_platform_expert_service_locked(KernelSharedState &shared_state) {
 
 std::uint32_t
 ensure_usb_device_mux_service_locked(KernelSharedState &shared_state) {
-  const auto existing = std::find_if(
-      shared_state.iokit_services.begin(), shared_state.iokit_services.end(),
-      [](const auto &entry) {
-        return entry.second.class_name == io_ipod_usb_device_class;
-      });
+  const auto existing =
+      std::find_if(shared_state.iokit_services.begin(),
+                   shared_state.iokit_services.end(), [](const auto &entry) {
+                     return entry.second.class_name == io_ipod_usb_device_class;
+                   });
   if (existing != shared_state.iokit_services.end())
     return existing->first;
 
@@ -607,29 +617,31 @@ ensure_usb_device_mux_service_locked(KernelSharedState &shared_state) {
   static_cast<void>(shared_state.mach_port_objects.create(object));
   shared_state.mach_queues.try_emplace(object);
   shared_state.iokit_services.emplace(
-      object,
-      KernelSharedState::IOKitService{
-          std::string{io_ipod_usb_device_class}, {"IOService"}, {},
-          "IOService:/IOPlatformExpertDevice/IOIpodUSBDevice", parent});
+      object, KernelSharedState::IOKitService{
+                  std::string{io_ipod_usb_device_class},
+                  {"IOService"},
+                  {},
+                  "IOService:/IOPlatformExpertDevice/IOIpodUSBDevice",
+                  parent});
   return object;
 }
 
-std::uint32_t
-ensure_wifi_bus_service_locked(KernelSharedState &shared_state) {
-  const auto existing = std::find_if(
-      shared_state.iokit_services.begin(), shared_state.iokit_services.end(),
-      [](const auto &entry) {
-        return entry.second.class_name == wifi_bus_class;
-      });
+std::uint32_t ensure_wifi_bus_service_locked(KernelSharedState &shared_state) {
+  const auto existing =
+      std::find_if(shared_state.iokit_services.begin(),
+                   shared_state.iokit_services.end(), [](const auto &entry) {
+                     return entry.second.class_name == wifi_bus_class;
+                   });
   if (existing != shared_state.iokit_services.end())
     return existing->first;
 
   const auto object = shared_state.allocate_mach_object();
   static_cast<void>(shared_state.mach_port_objects.create(object));
   shared_state.mach_queues.try_emplace(object);
-  KernelSharedState::IOKitService service{
-      std::string{wifi_bus_class}, {"IOService"}, {},
-      "IOService:/AppleARMIODevice"};
+  KernelSharedState::IOKitService service{std::string{wifi_bus_class},
+                                          {"IOService"},
+                                          {},
+                                          "IOService:/AppleARMIODevice"};
   service.properties.emplace(
       "name", KernelSharedState::IOKitRegistryProperty{
                   KernelSharedState::IOKitRegistryProperty::Kind::String,
@@ -644,8 +656,7 @@ ensure_wifi_bus_service_locked(KernelSharedState &shared_state) {
   return object;
 }
 
-std::uint32_t
-ensure_wifi_service_locked(KernelSharedState &shared_state) {
+std::uint32_t ensure_wifi_service_locked(KernelSharedState &shared_state) {
   if (shared_state.wifi_service != 0)
     return shared_state.wifi_service;
 
@@ -683,11 +694,11 @@ ensure_wifi_service_locked(KernelSharedState &shared_state) {
 
 std::uint32_t
 ensure_network_stack_service_locked(KernelSharedState &shared_state) {
-  const auto existing = std::find_if(
-      shared_state.iokit_services.begin(), shared_state.iokit_services.end(),
-      [](const auto &entry) {
-        return entry.second.class_name == io_network_stack_class;
-      });
+  const auto existing =
+      std::find_if(shared_state.iokit_services.begin(),
+                   shared_state.iokit_services.end(), [](const auto &entry) {
+                     return entry.second.class_name == io_network_stack_class;
+                   });
   if (existing != shared_state.iokit_services.end())
     return existing->first;
 
@@ -695,14 +706,13 @@ ensure_network_stack_service_locked(KernelSharedState &shared_state) {
   static_cast<void>(shared_state.mach_port_objects.create(object));
   shared_state.mach_queues.try_emplace(object);
   shared_state.iokit_services.emplace(
-      object,
-      KernelSharedState::IOKitService{
-          std::string{io_network_stack_class},
-          {"IOService"},
-          {},
-          "IOService:/IONetworkStack",
-          0,
-          KernelSharedState::IOKitUserClientProfile::Generic});
+      object, KernelSharedState::IOKitService{
+                  std::string{io_network_stack_class},
+                  {"IOService"},
+                  {},
+                  "IOService:/IONetworkStack",
+                  0,
+                  KernelSharedState::IOKitUserClientProfile::Generic});
   return object;
 }
 
@@ -720,8 +730,7 @@ ensure_wifi_interface_service_locked(KernelSharedState &shared_state) {
   KernelSharedState::IOKitService service{
       std::string{io80211_interface_class},
       {std::string{io_ethernet_interface_class},
-       std::string{io_network_interface_class},
-       "IOService"},
+       std::string{io_network_interface_class}, "IOService"},
       {},
       "IOService:/AppleARMIODevice/IO80211Controller/IO80211Interface",
       controller_object};
@@ -751,8 +760,7 @@ ensure_wifi_interface_service_locked(KernelSharedState &shared_state) {
           KernelSharedState::IOKitRegistryProperty::Kind::String,
           bytes_from_string("airport")});
   const auto true_property = KernelSharedState::IOKitRegistryProperty{
-      KernelSharedState::IOKitRegistryProperty::Kind::Boolean,
-      {std::byte{1}}};
+      KernelSharedState::IOKitRegistryProperty::Kind::Boolean, {std::byte{1}}};
   service.properties.emplace(std::string{builtin_interface_property},
                              true_property);
   service.properties.emplace(std::string{primary_interface_property},
@@ -822,6 +830,10 @@ void populate_matching_services_locked(KernelSharedState &shared_state,
     services.push_back(
         kernel_iokit::baseband::ensure_service_locked(shared_state));
   }
+  if (kernel_iokit::audio::matches_service(matching)) {
+    services.push_back(
+        kernel_iokit::audio::ensure_service_locked(shared_state));
+  }
   if (contains_text(matching, io_ipod_usb_device_class)) {
     services.push_back(ensure_usb_device_mux_service_locked(shared_state));
   }
@@ -887,7 +899,8 @@ service_user_client_profile_locked(const KernelSharedState &shared_state,
 std::optional<KernelSharedState::IOKitUserClientProfile>
 connection_user_client_profile_locked(const KernelSharedState &shared_state,
                                       std::uint32_t connection_object) {
-  const auto connection = shared_state.iokit_connections.find(connection_object);
+  const auto connection =
+      shared_state.iokit_connections.find(connection_object);
   if (connection == shared_state.iokit_connections.end())
     return std::nullopt;
   return service_user_client_profile_locked(shared_state,
@@ -896,14 +909,12 @@ connection_user_client_profile_locked(const KernelSharedState &shared_state,
 
 } // namespace
 
-std::optional<std::uint32_t>
-handle_iokit_mach_request(AddressSpace &memory, Output &output,
-                          KernelSharedState &shared_state,
-                          ProcessContext &process, std::uint32_t message_id,
-                          std::uint32_t message_address,
-                          std::uint32_t send_size, std::uint32_t receive_size,
-                          std::uint32_t remote_port, std::uint32_t local_port,
-                          IOKitMachCallSite call_site) {
+std::optional<std::uint32_t> handle_iokit_mach_request(
+    AddressSpace &memory, Output &output, KernelSharedState &shared_state,
+    ProcessContext &process, std::uint32_t message_id,
+    std::uint32_t message_address, std::uint32_t send_size,
+    std::uint32_t receive_size, std::uint32_t remote_port,
+    std::uint32_t local_port, IOKitMachCallSite call_site) {
   std::uint32_t remote_object = 0;
   {
     std::lock_guard mach_lock{shared_state.mach_mutex};
@@ -934,6 +945,11 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
               local_port)) {
     return display_result;
   }
+  if (const auto audio_result = kernel_iokit::audio::handle_mach_request(
+          memory, output, shared_state, process, message_id, message_address,
+          send_size, receive_size, remote_object, local_port)) {
+    return audio_result;
+  }
   if (message_id == static_cast<std::uint32_t>(
                         iokit_abi::Message::ConnectSetNotificationPort)) {
     std::optional<KernelSharedState::IOKitUserClientProfile> profile;
@@ -944,11 +960,11 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
     }
     if (profile &&
         *profile != KernelSharedState::IOKitUserClientProfile::Display) {
-      output.write("[iokit] notification-port pid=" +
-                   std::to_string(process.pid) +
-                   " connection-object=" + std::to_string(remote_object) +
-                   " profile=" + std::string{user_client_profile_name(*profile)} +
-                   " result=unsupported\n");
+      output.write(
+          "[iokit] notification-port pid=" + std::to_string(process.pid) +
+          " connection-object=" + std::to_string(remote_object) +
+          " profile=" + std::string{user_client_profile_name(*profile)} +
+          " result=unsupported\n");
       return write_status_reply(memory, message_address, local_port, message_id,
                                 iokit_abi::unsupported);
     }
@@ -963,16 +979,16 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
     }
     if (profile &&
         *profile != KernelSharedState::IOKitUserClientProfile::Display) {
-      output.write("[iokit] map-memory pid=" + std::to_string(process.pid) +
-                   " connection-object=" + std::to_string(remote_object) +
-                   " profile=" + std::string{user_client_profile_name(*profile)} +
-                   " result=unsupported\n");
+      output.write(
+          "[iokit] map-memory pid=" + std::to_string(process.pid) +
+          " connection-object=" + std::to_string(remote_object) +
+          " profile=" + std::string{user_client_profile_name(*profile)} +
+          " result=unsupported\n");
       return write_status_reply(memory, message_address, local_port, message_id,
                                 iokit_abi::unsupported);
     }
   }
-  if (message_id ==
-      device_mig::id(device_mig::Routine::io_make_matching)) {
+  if (message_id == device_mig::id(device_mig::Routine::io_make_matching)) {
     std::array<std::uint32_t, make_matching_arguments.size()> element_counts{};
     element_counts[3] =
         memory
@@ -988,12 +1004,10 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
       return mach_rcv_invalid_data;
     }
     const auto type =
-        memory
-            .read32(message_address + (*request_layout)[1].offset)
+        memory.read32(message_address + (*request_layout)[1].offset)
             .value_or(0);
-    const auto input_bytes =
-        memory.read_bytes(message_address + (*request_layout)[3].offset,
-                          element_counts[3]);
+    const auto input_bytes = memory.read_bytes(
+        message_address + (*request_layout)[3].offset, element_counts[3]);
     if (!input_bytes)
       return mach_rcv_invalid_data;
 
@@ -1001,8 +1015,8 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
     if (const auto terminator =
             std::find(input.begin(), input.end(), std::byte{0});
         terminator != input.end()) {
-      input = input.first(static_cast<std::size_t>(
-          std::distance(input.begin(), terminator)));
+      input = input.first(
+          static_cast<std::size_t>(std::distance(input.begin(), terminator)));
     }
     std::string matching{"<dict ID=\"0\">"};
     if (type == io_service_matching_type) {
@@ -1014,23 +1028,22 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
           "<key>BSD Name</key><string ID=\"2\">" +
           xml_escape(input) + "</string>";
     } else if (type == io_of_path_matching_type) {
-      matching +=
-          "<key>IOPathMatch</key><string ID=\"1\">IODeviceTree:" +
-          xml_escape(input) + "</string>";
+      matching += "<key>IOPathMatch</key><string ID=\"1\">IODeviceTree:" +
+                  xml_escape(input) + "</string>";
     } else {
       constexpr std::uint32_t reply_size = 36U;
       if (receive_size < reply_size)
         return mach_rcv_invalid_data;
-      const std::array<std::uint32_t, reply_size / sizeof(std::uint32_t)>
-          reply{mach_reply_bits,
-                reply_size,
-                local_port,
-                0,
-                0,
-                message_id + mig_reply_id_delta,
-                mach_ndr_native,
-                mach_ndr_little_endian,
-                iokit_abi::unsupported};
+      const std::array<std::uint32_t, reply_size / sizeof(std::uint32_t)> reply{
+          mach_reply_bits,
+          reply_size,
+          local_port,
+          0,
+          0,
+          message_id + mig_reply_id_delta,
+          mach_ndr_native,
+          mach_ndr_little_endian,
+          iokit_abi::unsupported};
       return write_reply(memory, message_address, reply);
     }
     matching += "</dict>";
@@ -1058,18 +1071,17 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
         (static_cast<std::uint32_t>(make_matching_arguments[4].wire_size)
          << 16U) |
         (1U << 28U);
-    const std::array<std::uint32_t, 11> reply{
-        mach_reply_bits,
-        reply_size,
-        local_port,
-        0,
-        0,
-        message_id + mig_reply_id_delta,
-        mach_ndr_native,
-        mach_ndr_little_endian,
-        iokit_abi::success,
-        type_word,
-        matching_count};
+    const std::array<std::uint32_t, 11> reply{mach_reply_bits,
+                                              reply_size,
+                                              local_port,
+                                              0,
+                                              0,
+                                              message_id + mig_reply_id_delta,
+                                              mach_ndr_native,
+                                              mach_ndr_little_endian,
+                                              iokit_abi::success,
+                                              type_word,
+                                              matching_count};
     if (write_reply(memory, message_address, reply) != 0 ||
         !memory.copy_in(
             message_address + (*reply_layout)[4].offset,
@@ -1249,16 +1261,14 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
             copyout_send_locked(shared_state, process.pid, object_port);
       }
     }
-    output.write("[iokit] iterator-next pid=" +
-                 std::to_string(process.pid) + " iterator-object=" +
-                 std::to_string(remote_object) + " service-object=" +
-                 std::to_string(object_port) + "\n");
+    output.write("[iokit] iterator-next pid=" + std::to_string(process.pid) +
+                 " iterator-object=" + std::to_string(remote_object) +
+                 " service-object=" + std::to_string(object_port) + "\n");
     return write_port_reply(memory, message_address, local_port, message_id,
                             object_name);
   }
 
-  if (message_id ==
-          device_mig::id(device_mig::Routine::io_object_get_class) ||
+  if (message_id == device_mig::id(device_mig::Routine::io_object_get_class) ||
       message_id ==
           device_mig::id(device_mig::Routine::io_registry_entry_get_name)) {
     std::string name;
@@ -1278,15 +1288,13 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
             : registry_entry_name;
     const auto name_size = static_cast<std::uint32_t>(name.size());
     const auto reply_size = static_cast<std::uint32_t>(
-        argument.reply_offset +
-        ((name_size + sizeof(std::uint32_t) - 1U) &
-         ~(sizeof(std::uint32_t) - 1U)));
+        argument.reply_offset + ((name_size + sizeof(std::uint32_t) - 1U) &
+                                 ~(sizeof(std::uint32_t) - 1U)));
     if (receive_size < reply_size)
       return mach_rcv_invalid_data;
     const auto type_word =
         8U | (8U << 8U) |
-        (static_cast<std::uint32_t>(argument.wire_size) << 16U) |
-        (1U << 28U);
+        (static_cast<std::uint32_t>(argument.wire_size) << 16U) | (1U << 28U);
     const std::array<std::uint32_t, 11> reply{
         mach_reply_bits,
         reply_size,
@@ -1301,11 +1309,10 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
         name_size,
     };
     if (write_reply(memory, message_address, reply) != 0 ||
-        !memory.copy_in(
-            message_address + argument.reply_offset,
-            std::span<const std::byte>{
-                reinterpret_cast<const std::byte *>(name.data()),
-                name.size()})) {
+        !memory.copy_in(message_address + argument.reply_offset,
+                        std::span<const std::byte>{
+                            reinterpret_cast<const std::byte *>(name.data()),
+                            name.size()})) {
       return mach_rcv_invalid_data;
     }
     return 0;
@@ -1319,14 +1326,13 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
     if (receive_size < reply_size)
       return mach_rcv_invalid_data;
     const auto class_count =
-        memory
-            .read32(message_address + class_argument.request_count_offset)
+        memory.read32(message_address + class_argument.request_count_offset)
             .value_or(0);
     const auto class_bytes =
         class_count != 0 && class_count <= class_argument.wire_size &&
                 class_argument.request_offset + class_count <= send_size
-            ? memory.read_bytes(
-                  message_address + class_argument.request_offset, class_count)
+            ? memory.read_bytes(message_address + class_argument.request_offset,
+                                class_count)
             : std::nullopt;
     if (!class_bytes)
       return mach_rcv_invalid_data;
@@ -1381,9 +1387,9 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
         path_count != 0 && path_count <= registry_entry_from_path.wire_size &&
                 registry_entry_from_path.request_offset + path_count <=
                     send_size
-            ? memory.read_bytes(
-                  message_address + registry_entry_from_path.request_offset,
-                  path_count)
+            ? memory.read_bytes(message_address +
+                                    registry_entry_from_path.request_offset,
+                                path_count)
             : std::nullopt;
     if (!path_bytes)
       return mach_rcv_invalid_data;
@@ -1408,8 +1414,7 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
               ? service->first
               : resolve_task_name_locked(shared_state, process.pid,
                                          process.io_registry_options_port);
-      entry_name =
-          copyout_send_locked(shared_state, process.pid, entry_object);
+      entry_name = copyout_send_locked(shared_state, process.pid, entry_object);
     }
     return write_port_reply(memory, message_address, local_port, message_id,
                             entry_name);
@@ -1429,10 +1434,10 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
       return mach_rcv_invalid_data;
     path.push_back('\0');
     const auto path_size = static_cast<std::uint32_t>(path.size());
-    const auto reply_size = static_cast<std::uint32_t>(
-        registry_entry_path.reply_offset +
-        ((path_size + sizeof(std::uint32_t) - 1U) &
-         ~(sizeof(std::uint32_t) - 1U)));
+    const auto reply_size =
+        static_cast<std::uint32_t>(registry_entry_path.reply_offset +
+                                   ((path_size + sizeof(std::uint32_t) - 1U) &
+                                    ~(sizeof(std::uint32_t) - 1U)));
     if (receive_size < reply_size)
       return mach_rcv_invalid_data;
     const std::array<std::uint32_t, 11> reply{
@@ -1446,17 +1451,15 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
         mach_ndr_little_endian,
         iokit_abi::success,
         8U | (8U << 8U) |
-            (static_cast<std::uint32_t>(registry_entry_path.wire_size)
-             << 16U) |
+            (static_cast<std::uint32_t>(registry_entry_path.wire_size) << 16U) |
             (1U << 28U),
         path_size,
     };
     if (write_reply(memory, message_address, reply) != 0 ||
-        !memory.copy_in(
-            message_address + registry_entry_path.reply_offset,
-            std::span<const std::byte>{
-                reinterpret_cast<const std::byte *>(path.data()),
-                path.size()})) {
+        !memory.copy_in(message_address + registry_entry_path.reply_offset,
+                        std::span<const std::byte>{
+                            reinterpret_cast<const std::byte *>(path.data()),
+                            path.size()})) {
       return mach_rcv_invalid_data;
     }
     output.write("[iokit] path pid=" + std::to_string(process.pid) +
@@ -1504,9 +1507,8 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
                             iterator_name);
   }
 
-  if (message_id == device_mig::id(
-                        device_mig::Routine::
-                            io_registry_entry_get_properties)) {
+  if (message_id ==
+      device_mig::id(device_mig::Routine::io_registry_entry_get_properties)) {
     constexpr std::uint32_t property_reply_size = 52U;
     if (receive_size < property_reply_size)
       return mach_rcv_invalid_data;
@@ -1535,11 +1537,9 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
     if (!serialized)
       return mach_rcv_invalid_data;
 
-    const auto serialized_size =
-        static_cast<std::uint32_t>(serialized->size());
-    const auto mapped_size =
-        (serialized_size + AddressSpace::page_size - 1U) &
-        ~(AddressSpace::page_size - 1U);
+    const auto serialized_size = static_cast<std::uint32_t>(serialized->size());
+    const auto mapped_size = (serialized_size + AddressSpace::page_size - 1U) &
+                             ~(AddressSpace::page_size - 1U);
     const auto region = mach_support::find_free_guest_region(
         memory, mach_support::ool_results_base, mapped_size);
     if (!region ||
@@ -1550,8 +1550,7 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
         static_cast<void>(memory.unmap(*region, mapped_size));
       return mach_rcv_invalid_data;
     }
-    const std::array<std::uint32_t,
-                     property_reply_size / sizeof(std::uint32_t)>
+    const std::array<std::uint32_t, property_reply_size / sizeof(std::uint32_t)>
         reply{darwin::mig_wire::message_bits(
                   darwin::mig_wire::disposition_move_send_once, 0, true),
               property_reply_size,
@@ -1578,9 +1577,9 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
 
   if (message_id == static_cast<std::uint32_t>(
                         iokit_abi::Message::RegistryEntryGetProperty) ||
-      message_id == device_mig::id(
-                        device_mig::Routine::
-                            io_registry_entry_get_property_recursively)) {
+      message_id ==
+          device_mig::id(device_mig::Routine::
+                             io_registry_entry_get_property_recursively)) {
     constexpr std::uint32_t simple_reply_size = 36U;
     constexpr std::uint32_t property_reply_size =
         registry_property_value.reply_count_offset +
@@ -1603,25 +1602,24 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
             name_count);
       }
     } else {
-      std::array<std::uint32_t,
-                 recursive_registry_property.size()> element_counts{};
+      std::array<std::uint32_t, recursive_registry_property.size()>
+          element_counts{};
       element_counts[1] =
           memory
               .read32(message_address +
                       recursive_registry_property[1].request_count_offset)
               .value_or(0);
       const auto plane_layout = xnu792::mig::compute_wire_layout(
-          recursive_registry_property,
-          xnu792::mig::WireLayoutSide::Request, element_counts);
+          recursive_registry_property, xnu792::mig::WireLayoutSide::Request,
+          element_counts);
       if (!plane_layout)
         return mach_rcv_invalid_data;
       element_counts[2] =
-          memory
-              .read32(message_address + (*plane_layout)[2].count_offset)
+          memory.read32(message_address + (*plane_layout)[2].count_offset)
               .value_or(0);
       const auto layout = xnu792::mig::compute_wire_layout(
-          recursive_registry_property,
-          xnu792::mig::WireLayoutSide::Request, element_counts);
+          recursive_registry_property, xnu792::mig::WireLayoutSide::Request,
+          element_counts);
       if (!layout || element_counts[1] == 0 ||
           element_counts[1] > recursive_registry_property[1].wire_size ||
           element_counts[2] == 0 ||
@@ -1630,8 +1628,8 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
               send_size) {
         return mach_rcv_invalid_data;
       }
-      name_bytes = memory.read_bytes(
-          message_address + (*layout)[2].offset, element_counts[2]);
+      name_bytes = memory.read_bytes(message_address + (*layout)[2].offset,
+                                     element_counts[2]);
     }
     if (!name_bytes)
       return mach_rcv_invalid_data;
@@ -1663,8 +1661,7 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
       }
     }
     if (!property) {
-      const std::array<std::uint32_t,
-                       simple_reply_size / sizeof(std::uint32_t)>
+      const std::array<std::uint32_t, simple_reply_size / sizeof(std::uint32_t)>
           reply{darwin::mig_wire::message_bits(
                     darwin::mig_wire::disposition_move_send_once),
                 simple_reply_size,
@@ -1684,11 +1681,9 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
     if (receive_size < property_reply_size)
       return mach_rcv_invalid_data;
     const auto serialized = serialize_property(*property);
-    const auto serialized_size =
-        static_cast<std::uint32_t>(serialized.size());
-    const auto mapped_size =
-        (serialized_size + AddressSpace::page_size - 1U) &
-        ~(AddressSpace::page_size - 1U);
+    const auto serialized_size = static_cast<std::uint32_t>(serialized.size());
+    const auto mapped_size = (serialized_size + AddressSpace::page_size - 1U) &
+                             ~(AddressSpace::page_size - 1U);
     const auto region = mach_support::find_free_guest_region(
         memory, mach_support::ool_results_base, mapped_size);
     if (!region ||
@@ -1700,8 +1695,7 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
       return mach_rcv_invalid_data;
     }
 
-    const std::array<std::uint32_t,
-                     property_reply_size / sizeof(std::uint32_t)>
+    const std::array<std::uint32_t, property_reply_size / sizeof(std::uint32_t)>
         reply{darwin::mig_wire::message_bits(
                   darwin::mig_wire::disposition_move_send_once, 0, true),
               property_reply_size,
@@ -1722,9 +1716,8 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
       static_cast<void>(memory.unmap(*region, mapped_size));
     output.write("[iokit] property pid=" + std::to_string(process.pid) +
                  " service-object=" + std::to_string(remote_object) +
-                 " name=" + property_name +
-                 " bytes=" + std::to_string(property->value.size()) +
-                 " result=success\n");
+                 " name=" + property_name + " bytes=" +
+                 std::to_string(property->value.size()) + " result=success\n");
     return result;
   }
 
@@ -1758,23 +1751,21 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
           shared_state.iokit_connections.find(remote_object);
       if (connection != shared_state.iokit_connections.end()) {
         const auto service =
-            shared_state.iokit_services.find(
-                connection->second.service_port);
+            shared_state.iokit_services.find(connection->second.service_port);
         network_stack_connection =
             service != shared_state.iokit_services.end() &&
             service->second.class_name == io_network_stack_class;
       }
     }
     const auto accepted =
-        data && (message_id !=
-                     device_mig::id(
-                         device_mig::Routine::io_connect_set_properties) ||
-                 network_stack_connection);
-    const auto result =
-        accepted ? iokit_abi::success : iokit_abi::bad_argument;
-    if (data && message_id == static_cast<std::uint32_t>(
-                                  iokit_abi::Message::
-                                      RegistryEntrySetProperties))
+        data &&
+        (message_id !=
+             device_mig::id(device_mig::Routine::io_connect_set_properties) ||
+         network_stack_connection);
+    const auto result = accepted ? iokit_abi::success : iokit_abi::bad_argument;
+    if (data &&
+        message_id == static_cast<std::uint32_t>(
+                          iokit_abi::Message::RegistryEntrySetProperties))
       shared_state.nvram_serialized = *data;
     const std::array<std::uint32_t, 10> reply{
         18,          40,          local_port, 0,      0, message_id + 100,
@@ -1783,8 +1774,8 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
     return write_reply(memory, message_address, reply);
   }
 
-  if (message_id == static_cast<std::uint32_t>(
-                        iokit_abi::Message::ServiceGetBusyState)) {
+  if (message_id ==
+      static_cast<std::uint32_t>(iokit_abi::Message::ServiceGetBusyState)) {
     // IOKitGetBusyState queries the master service plane as well as individual
     // IOService objects. The modeled tree has no asynchronous service-start
     // work, so its XNU getBusyState value is consistently quiet.
@@ -1861,8 +1852,7 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
                  " service-object=" + std::to_string(remote_object) +
                  " connection-name=" + std::to_string(connection_name) +
                  " connection-object=" + std::to_string(connection_object) +
-                 " type=" + std::to_string(connect_type) +
-                 "\n");
+                 " type=" + std::to_string(connect_type) + "\n");
     return write_port_reply(memory, message_address, local_port, message_id,
                             connection_name);
   }
@@ -1899,11 +1889,11 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
             shared_state.mach_port_objects.create(connection_object));
         shared_state.mach_queues.try_emplace(connection_object);
         shared_state.iokit_connections.emplace(
-            connection_object, KernelSharedState::IOKitConnection{
-                                   remote_object, process.pid,
-                                   connection_type_for_profile(
-                                       profile,
-                                       iokit_abi::apple_h1clcd_service_type)});
+            connection_object,
+            KernelSharedState::IOKitConnection{
+                remote_object, process.pid,
+                connection_type_for_profile(
+                    profile, iokit_abi::apple_h1clcd_service_type)});
         connection_name =
             copyout_send_locked(shared_state, process.pid, connection_object);
       }
@@ -1920,8 +1910,7 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
                  " connection-name=" + std::to_string(connection_name) +
                  " connection-object=" + std::to_string(connection_object) +
                  " profile=" + std::string{user_client_profile_name(profile)} +
-                 " result=" +
-                 (supported_service ? "success" : "unsupported") +
+                 " result=" + (supported_service ? "success" : "unsupported") +
                  "\n");
     return write_reply(memory, message_address, reply);
   }
@@ -1937,10 +1926,22 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
         std::span<const std::uint64_t>{request->scalar_input.data(),
                                        request->scalar_input_count},
         request->inband_input, request->scalar_output_capacity);
+    const auto audio_result =
+        display_result
+            ? std::optional<kernel_iokit::audio::MethodResult>{}
+            : kernel_iokit::audio::dispatch_connect_method(
+                  shared_state, process, remote_object, request->selector,
+                  std::span<const std::uint64_t>{request->scalar_input.data(),
+                                                 request->scalar_input_count},
+                  request->inband_input, request->scalar_output_capacity);
     const ConnectMethodResult result =
         display_result
             ? ConnectMethodResult{display_result->return_code,
                                   std::move(display_result->scalar_output),
+                                  {}}
+        : audio_result
+            ? ConnectMethodResult{audio_result->return_code,
+                                  std::move(audio_result->scalar_output),
                                   {}}
             : ConnectMethodResult{};
     std::uint64_t method_call_count = 0;
@@ -1957,28 +1958,27 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
     const auto log_method =
         method_call_count == 0 || trace_repeated_call(method_call_count);
     if (log_method) {
-      output.write("[iokit] method pid=" + std::to_string(process.pid) +
-                 " connection-name=" + std::to_string(remote_port) +
-                 " connection-object=" + std::to_string(remote_object) +
-                 " selector=" + std::to_string(request->selector) +
-                 " scalar-in=" + std::to_string(request->scalar_input_count) +
-                 (request->scalar_input_count >= 1U
-                      ? " scalar0=" + std::to_string(request->scalar_input[0])
-                      : "") +
-                 (request->scalar_input_count >= 2U
-                      ? " scalar1=" + std::to_string(request->scalar_input[1])
-                      : "") +
-                   " scalar-out=" +
-                   std::to_string(result.scalar_output.size()) +
-                   " result=" + std::to_string(result.return_code) +
-                   (method_call_count == 0
-                        ? std::string{}
-                        : " call=" + std::to_string(method_call_count) +
-                              " enabled=" + std::to_string(vsync_enabled)) +
-                   (method_call_count == 0
-                        ? std::string{}
-                        : format_call_site(memory, call_site)) +
-                   "\n");
+      output.write(
+          "[iokit] method pid=" + std::to_string(process.pid) +
+          " connection-name=" + std::to_string(remote_port) +
+          " connection-object=" + std::to_string(remote_object) +
+          " selector=" + std::to_string(request->selector) +
+          " scalar-in=" + std::to_string(request->scalar_input_count) +
+          (request->scalar_input_count >= 1U
+               ? " scalar0=" + std::to_string(request->scalar_input[0])
+               : "") +
+          (request->scalar_input_count >= 2U
+               ? " scalar1=" + std::to_string(request->scalar_input[1])
+               : "") +
+          " scalar-out=" + std::to_string(result.scalar_output.size()) +
+          " result=" + std::to_string(result.return_code) +
+          (method_call_count == 0
+               ? std::string{}
+               : " call=" + std::to_string(method_call_count) +
+                     " enabled=" + std::to_string(vsync_enabled)) +
+          (method_call_count == 0 ? std::string{}
+                                  : format_call_site(memory, call_site)) +
+          "\n");
     }
     return write_connect_method_reply(memory, message_address, local_port,
                                       message_id, receive_size, result);
@@ -1988,6 +1988,7 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
       static_cast<std::uint32_t>(iokit_abi::Message::ServiceClose)) {
     if (receive_size < 24)
       return mach_rcv_invalid_data;
+    kernel_iokit::audio::close_connection(memory, shared_state, remote_object);
     {
       std::lock_guard mach_lock{shared_state.mach_mutex};
       // ServiceClose is an ipc_port teardown, not just an IOKit map erase.
@@ -1995,8 +1996,8 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
       // transfers through the common lifecycle path; the old direct erase
       // left stale connection/notification state and could resurrect a queue
       // when a delayed reply was copied out.
-      static_cast<void>(shared_state.mach_namespaces.mark_object_dead(
-          remote_object));
+      static_cast<void>(
+          shared_state.mach_namespaces.mark_object_dead(remote_object));
       mach_support::remove_port_object_locked(shared_state, remote_object);
       static_cast<void>(
           shared_state.mach_namespaces.deallocate(process.pid, remote_port));
@@ -2009,8 +2010,8 @@ handle_iokit_mach_request(AddressSpace &memory, Output &output,
   }
 
   output.write("[iokit] unhandled pid=" + std::to_string(process.pid) +
-               " id=" + std::to_string(message_id) + " remote-object=" +
-               std::to_string(remote_object) + "\n");
+               " id=" + std::to_string(message_id) +
+               " remote-object=" + std::to_string(remote_object) + "\n");
   return std::nullopt;
 }
 

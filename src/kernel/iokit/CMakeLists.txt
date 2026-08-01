@@ -1,3 +1,4 @@
+add_subdirectory(audio)
 add_subdirectory(baseband)
 add_subdirectory(display)
 

@@ -19,6 +19,7 @@ enum class Message : std::uint32_t {
   ServiceGetBusyState = 2831,
   ServiceAddNotification = 2849,
   ServiceAddInterestNotification = 2850,
+  ConnectUnmapMemory = 2853,
   ServiceOpenExtended = 2862,
   // Private iPhoneOS-era extension retained by the firmware IOKit client.
   // The request ID is loaded by _io_connect_method in the 1.0 IOKit image.
@@ -62,6 +63,7 @@ inline constexpr std::uint32_t service_busy_state_quiet = 0;
 inline constexpr std::uint32_t apple_h1clcd_service_type = 0;
 inline constexpr std::uint32_t power_root_service_type = 0;
 inline constexpr std::uint32_t generic_user_client_type = 0xffffffffU;
+
 // CoreSurface IDs are transport handles, not guest pointers. Keep the display
 // driver's reserved surface outside the IDs normally allocated at process
 // startup; CoreSurfaceHle advances its allocator after a lookup of this ID.
@@ -134,13 +136,13 @@ constexpr std::uint32_t inband_output_count_offset(std::uint32_t scalar_count) {
 constexpr std::uint32_t inband_output_offset(std::uint32_t scalar_count) {
   return inband_output_count_offset(scalar_count) + sizeof(std::uint32_t);
 }
-constexpr std::uint32_t aligned_inband_output_size(
-    std::uint32_t inband_count) {
+constexpr std::uint32_t aligned_inband_output_size(std::uint32_t inband_count) {
   return (inband_count + sizeof(std::uint32_t) - 1U) &
          ~(sizeof(std::uint32_t) - 1U);
 }
-constexpr std::uint32_t out_of_line_output_size_offset(
-    std::uint32_t scalar_count, std::uint32_t inband_count) {
+constexpr std::uint32_t
+out_of_line_output_size_offset(std::uint32_t scalar_count,
+                               std::uint32_t inband_count) {
   return inband_output_offset(scalar_count) +
          aligned_inband_output_size(inband_count);
 }

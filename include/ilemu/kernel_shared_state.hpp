@@ -459,15 +459,25 @@ struct KernelSharedState {
       Data,
       Boolean,
       Number,
+      Array,
+      Dictionary,
     };
 
     Kind kind{Kind::Data};
     std::vector<std::byte> value;
+    std::vector<IOKitRegistryProperty> array_value;
+    std::map<std::string, IOKitRegistryProperty> dictionary_value;
+
+    IOKitRegistryProperty() = default;
+    IOKitRegistryProperty(Kind property_kind,
+                          std::vector<std::byte> property_value)
+        : kind(property_kind), value(std::move(property_value)) {}
   };
   enum class IOKitUserClientProfile {
     None,
     Generic,
     Display,
+    Audio,
   };
   struct IOKitService {
     std::string class_name;
@@ -478,14 +488,13 @@ struct KernelSharedState {
     IOKitUserClientProfile user_client_profile{IOKitUserClientProfile::None};
 
     IOKitService() = default;
-    IOKitService(std::string service_class,
-                 std::vector<std::string> service_conformance,
-                 std::map<std::string, IOKitRegistryProperty>
-                     registry_properties = {},
-                 std::string service_registry_path = {},
-                 std::uint32_t service_parent_object = 0,
-                 IOKitUserClientProfile service_user_client_profile =
-                     IOKitUserClientProfile::None)
+    IOKitService(
+        std::string service_class, std::vector<std::string> service_conformance,
+        std::map<std::string, IOKitRegistryProperty> registry_properties = {},
+        std::string service_registry_path = {},
+        std::uint32_t service_parent_object = 0,
+        IOKitUserClientProfile service_user_client_profile =
+            IOKitUserClientProfile::None)
         : class_name(std::move(service_class)),
           conforms_to(std::move(service_conformance)),
           properties(std::move(registry_properties)),
@@ -517,6 +526,25 @@ struct KernelSharedState {
   };
   struct IOKitDisplayConnectionState {
     std::uint32_t requested_power_state{};
+  };
+  struct IOKitAudioConnectionState {
+    struct MemoryMapping {
+      std::uint32_t address{};
+      std::uint32_t mapped_size{};
+      std::uint32_t exposed_size{};
+    };
+    struct StreamState {
+      std::vector<std::byte> current_format;
+      bool active{};
+    };
+
+    std::uint32_t notification_port{};
+    std::uint32_t notification_type{};
+    std::uint32_t registration_reference{};
+    std::map<std::uint32_t, MemoryMapping> memory_mappings;
+    std::map<std::uint32_t, StreamState> streams;
+    std::vector<std::byte> nominal_sample_rate;
+    bool running{};
   };
   struct PendingGraphicsInput {
     enum class Kind {
@@ -690,13 +718,10 @@ struct KernelSharedState {
        {darwin::network::interface_flag_broadcast |
             darwin::network::interface_flag_simplex |
             darwin::network::interface_flag_multicast,
-        2,
-        darwin::network::interface_family_ethernet,
-        0,
+        2, darwin::network::interface_family_ethernet, 0,
         darwin::network::default_ethernet_mtu,
         darwin::network::interface_type_ethernet,
-        virtual_network::interface_mac_address,
-        6}},
+        virtual_network::interface_mac_address, 6}},
   };
   std::uint32_t next_kernel_event_identifier{1};
   std::deque<KernelEvent> kernel_events;
@@ -945,10 +970,8 @@ struct KernelSharedState {
   // Every attempt is bound to an exact PID and a reliable SpringBoard target
   // event. Scene/lifecycle callbacks may observe an attempt but never create
   // one, so an old callback cannot consume a newer foreground intent.
-  std::map<std::uint32_t, ApplicationLaunchAttempt>
-      application_launch_attempts;
-  std::optional<std::uint32_t>
-      foreground_application_attempt_process_id;
+  std::map<std::uint32_t, ApplicationLaunchAttempt> application_launch_attempts;
+  std::optional<std::uint32_t> foreground_application_attempt_process_id;
   // A Lock holds one exact foreground launch. The token may initially contain
   // only the selecting gesture; a later spawn or service lookup binds its PID.
   // Unlock records completion but activation remains owned by the firmware's
@@ -957,8 +980,7 @@ struct KernelSharedState {
   // Lock can preempt an already-running Home exit after SpringBoard has
   // committed only a partial desktop transform. A deliberate unlock then
   // requests one final Home redraw, even if the outgoing App has exited.
-  std::optional<std::uint64_t>
-      interrupted_home_exit_lock_sequence;
+  std::optional<std::uint64_t> interrupted_home_exit_lock_sequence;
   // CoreSurface publication sequences are immutable even if a transport ID
   // or PID is later reused. Track only full-screen application publications:
   // SpringBoard's home-screen icons also retain application provenance and
@@ -980,8 +1002,7 @@ struct KernelSharedState {
   // Each Lock Down starts one asynchronous SpringBoard panel-off request.
   // Keep all unresolved generations: under load an older request can arrive
   // several seconds after a later wake/lock cycle has already begun.
-  std::deque<std::uint64_t>
-      host_display_pending_lock_power_off_sequences;
+  std::deque<std::uint64_t> host_display_pending_lock_power_off_sequences;
   std::uint64_t host_display_current_lock_down_sequence{};
   std::uint64_t host_display_wake_after_lock_sequence{};
   bool host_display_wake_power_on_acknowledged{};
@@ -1039,6 +1060,7 @@ struct KernelSharedState {
   std::map<std::uint32_t, IOKitDisplayVSync> iokit_display_vsync;
   std::map<std::uint32_t, IOKitDisplayConnectionState>
       iokit_display_connections;
+  std::map<std::uint32_t, IOKitAudioConnectionState> iokit_audio_connections;
   // The physical panel has one power state even though GraphicsServices and
   // LayerKit open separate AppleH1CLCD user clients.
   DisplayGeometry display_geometry{default_display_geometry};
@@ -1047,6 +1069,7 @@ struct KernelSharedState {
   std::uint32_t baseband_service{};
   bsd::baseband_device::State baseband_device_state;
   std::uint32_t mobile_framebuffer_service{};
+  std::uint32_t ioaudio2_service{};
   bool wifi_service_available{};
   std::uint32_t wifi_service{};
   std::uint32_t wifi_interface_service{};

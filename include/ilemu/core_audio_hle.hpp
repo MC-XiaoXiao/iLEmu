@@ -34,8 +34,7 @@ public:
 
   void set_service(std::shared_ptr<AudioService> service);
   void reset();
-  [[nodiscard]] std::optional<std::uint64_t>
-  next_io_proc_deadline() const;
+  [[nodiscard]] std::optional<std::uint64_t> next_io_proc_deadline() const;
   [[nodiscard]] std::optional<ScheduledIoProc>
   take_due_io_proc(std::uint64_t now);
   void io_proc_thread_scheduled(std::uint32_t process_id,
@@ -44,8 +43,6 @@ public:
   [[nodiscard]] std::vector<std::size_t> take_retired_io_proc_threads();
 
 private:
-  void hardware_property_info(UserlandHleCall &call);
-  void hardware_property(UserlandHleCall &call);
   void device_property_info(UserlandHleCall &call);
   void device_property(UserlandHleCall &call);
   void device_set_property(UserlandHleCall &call);
@@ -54,6 +51,7 @@ private:
   void stream_set_property(UserlandHleCall &call);
   void object_property(UserlandHleCall &call);
   void object_set_property(UserlandHleCall &call);
+  void property_listener(UserlandHleCall &call);
   void add_io_proc(UserlandHleCall &call);
   void remove_io_proc(UserlandHleCall &call);
   void start_io(UserlandHleCall &call);
@@ -61,8 +59,7 @@ private:
   void complete_io_proc(UserlandHleCall &call, std::uint32_t process_id);
   [[nodiscard]] float device_output_gain(std::uint32_t device) const;
   [[nodiscard]] double device_sample_rate(std::uint32_t device) const;
-  [[nodiscard]] std::uint32_t
-  device_channel_count(std::uint32_t device) const;
+  [[nodiscard]] std::uint32_t device_channel_count(std::uint32_t device) const;
 
   struct IoProcRegistration {
     std::uint32_t callback{};
