@@ -130,18 +130,28 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   register_bluetooth_manager_hle(userland_hle_);
   register_mbx_connect_hle(userland_hle_);
   graphics_services_input::register_springboard_alert_observers(
-      userland_hle_, [this](std::uint32_t object, bool active) {
-        std::lock_guard lock{shared_state_->mach_mutex};
-        if (active) {
-          shared_state_->active_springboard_alert_items.insert(object);
-        } else {
-          shared_state_->active_springboard_alert_items.erase(object);
-        }
+      userland_hle_,
+      [this](
+          std::uint32_t object,
+          graphics_services_input::SpringBoardAlertObservation observation) {
+        graphics_services_input::record_springboard_alert_state(
+            *shared_state_, object, observation);
+      });
+  graphics_services_input::register_springboard_lock_observer(
+      userland_hle_, [this](bool locked) {
+        graphics_services_input::record_springboard_lock_state(
+            *shared_state_, locked);
+      });
+  graphics_services_input::register_application_suspension_observer(
+      userland_hle_, [this](std::uint32_t process_id, bool suspended) {
+        graphics_services_input::record_application_suspension_state(
+            *shared_state_, process_id, suspended,
+            scene_coordinator_.get());
       });
   graphics_services_input::register_springboard_application_handoff_animation(
       userland_hle_, [this] {
-        return graphics_services_input::has_active_application_route(
-            *shared_state_);
+        return graphics_services_input::
+            take_pending_application_handoff_animation(*shared_state_);
       });
   layerkit_hle_.register_handlers(userland_hle_, shared_state_,
                                   scene_coordinator_, output_);
@@ -233,6 +243,7 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput &input) {
   const auto result =
       graphics_services_input::enqueue_touch(*shared_state_, input,
                                              scene_coordinator_.get(),
+                                             presentation_tracker_.get(),
                                              &home_recovery_requested);
   const auto phase = [phase = input.phase] {
     switch (phase) {

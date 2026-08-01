@@ -13,6 +13,7 @@
 #include "ilemu/touch_input.hpp"
 
 namespace ilemu {
+class PresentationTracker;
 class SceneCoordinator;
 class UserlandHleRegistry;
 }
@@ -20,8 +21,6 @@ class UserlandHleRegistry;
 namespace ilemu::graphics_services_input {
 
 inline constexpr std::string_view system_event_service{"PurpleSystemEventPort"};
-inline constexpr std::uint32_t application_will_resign_active_event_type =
-    2002;
 
 enum class EnqueueResult {
   Queued,
@@ -35,12 +34,39 @@ struct ServiceResolution {
   std::string service_name;
 };
 
-// iPhone OS 1.0 SpringBoard keeps alert items in its own top-level window
-// stack without changing the foreground application lifecycle. Observe the
-// stripped alert-item callbacks so host input follows that system-owned layer.
+enum class SpringBoardAlertObservation {
+  ActivationBegan,
+  ClassifiedLockScreen,
+  ClassifiedApplicationOverlay,
+  Deactivated,
+};
+
+// Early SpringBoard separates alerts owned by its lock scene from ordinary
+// modal overlays without changing the foreground application lifecycle.
+// Observe its own classifier and lifecycle so input follows the visible layer.
 void register_springboard_alert_observers(
     UserlandHleRegistry &registry,
+    std::function<void(std::uint32_t, SpringBoardAlertObservation)> observer);
+
+// Observe SpringBoard's own away-screen lifecycle. Host panel power alone
+// cannot distinguish a dimmed desktop from an active lock screen.
+void register_springboard_lock_observer(
+    UserlandHleRegistry &registry, std::function<void(bool)> observer);
+
+// UIKit owns the ordinary application suspension state independently of its
+// event-only and under-lock modes. Observe that native transition after the
+// firmware method completes instead of interpreting private GSEvent numbers.
+void register_application_suspension_observer(
+    UserlandHleRegistry &registry,
     std::function<void(std::uint32_t, bool)> observer);
+
+// Applies one observed alert-stack transition to the shared foreground-layer
+// ordering. This keeps the firmware observer independent of kernel locking.
+void record_springboard_alert_state(
+    KernelSharedState &state, std::uint32_t object,
+    SpringBoardAlertObservation observation);
+
+void record_springboard_lock_state(KernelSharedState &state, bool active);
 
 // Restores the firmware's own launch animation when an active application
 // asks SpringBoard to hand the foreground to another ordinary application.
@@ -52,7 +78,8 @@ void register_springboard_application_handoff_animation(
 
 // Thread-safe lifecycle query shared by the SpringBoard compatibility hook
 // and the spawn classifier.
-[[nodiscard]] bool has_active_application_route(KernelSharedState &state);
+[[nodiscard]] bool
+take_pending_application_handoff_animation(KernelSharedState &state);
 
 // Extracts the leading GSEventRecord type from a message with id 123. This is
 // shared by input injection and Mach tracing so application lifecycle events
@@ -78,6 +105,8 @@ void record_bootstrap_registration_locked(KernelSharedState &state,
 [[nodiscard]] EnqueueResult enqueue_touch(KernelSharedState &state,
                                           const TouchInput &input,
                                           SceneCoordinator *scenes = nullptr,
+                                          PresentationTracker *presentations =
+                                              nullptr,
                                           bool *home_recovery_requested =
                                               nullptr);
 
@@ -96,9 +125,12 @@ void record_lock_wake_request(KernelSharedState &state);
 [[nodiscard]] EnqueueResult
 enqueue_ringer_switch_change(KernelSharedState &state, bool active);
 
-// A resolved application port becomes foreground only when LayerKit attaches
-// that application's client context; background application services must not
-// steal SpringBoard touches.
+// Re-evaluates the PID-bound foreground readiness rendezvous. Version adapters
+// can contribute a committed client scene, while flattened display stacks can
+// contribute live display timing; neither becomes an input owner without the
+// firmware-delivered application event route and an authorized launch token.
+// The operation is idempotent and safe to call as those signals arrive in any
+// order; background/prewarmed services cannot steal SpringBoard touches.
 void activate_resolved_application(KernelSharedState &state,
                                    std::uint32_t process_id,
                                    SceneCoordinator *scenes = nullptr);
@@ -150,14 +182,21 @@ void complete_home_transition_after_present(
     KernelSharedState &state, std::uint32_t presenter_process_id,
     SceneCoordinator *scenes = nullptr);
 
-// Observes ordinary SpringBoard-to-application GSEvents while the caller holds
-// KernelSharedState::mach_mutex. Foreground lifecycle events resume the saved
-// application route after unlock; resign-active events suspend it.
-void record_application_lifecycle_event_locked(KernelSharedState &state,
-                                               std::uint32_t sender_pid,
-                                               std::uint32_t destination,
-                                               std::uint32_t event_type,
-                                               SceneCoordinator *scenes =
-                                                   nullptr);
+// Records the PID-bound application event port from ordinary GSEvent delivery,
+// retries foreground readiness without assigning lifecycle meaning to private
+// event numbers, and observes the ordered App-to-SpringBoard background
+// completion. The caller holds KernelSharedState::mach_mutex; ordinary
+// suspension meaning remains in UIKit.
+void record_application_event_delivery_locked(
+    KernelSharedState &state, std::uint32_t sender_pid,
+    std::uint32_t destination, std::uint32_t event_type,
+    SceneCoordinator *scenes = nullptr);
+
+// Applies UIKit's completed ordinary `_setSuspended:` transition. This is a
+// thread-safe observer entry point and deliberately ignores its separate
+// event-only and under-lock suspension modes.
+void record_application_suspension_state(
+    KernelSharedState &state, std::uint32_t process_id, bool suspended,
+    SceneCoordinator *scenes = nullptr);
 
 } // namespace ilemu::graphics_services_input

@@ -549,6 +549,7 @@ struct KernelSharedState {
   enum class ApplicationLaunchOrigin {
     Spawn,
     EventServiceLookup,
+    ForegroundLifecycle,
   };
   enum class ApplicationLaunchPhase {
     Launching,
@@ -562,6 +563,11 @@ struct KernelSharedState {
     std::uint64_t origin_touch_sequence{};
     ApplicationLaunchOrigin origin{ApplicationLaunchOrigin::Spawn};
     ApplicationLaunchPhase phase{ApplicationLaunchPhase::Launching};
+    // A foreground App can ask SpringBoard to open another App without an
+    // icon touch. Keep that transaction distinct from an ordinary desktop
+    // launch so the firmware's handoff animation runs exactly once.
+    bool foreground_handoff{};
+    bool handoff_animation_dispatched{};
   };
   struct ApplicationLaunchBarrier {
     ApplicationSuspensionReason reason{ApplicationSuspensionReason::None};
@@ -589,6 +595,30 @@ struct KernelSharedState {
     std::uint32_t process_id{};
     std::uint32_t event_object{};
     std::optional<ApplicationTouchTransform> touch_transform;
+  };
+  struct GraphicsTouchTransform {
+    float xx{1.0F};
+    float xy{};
+    float yx{};
+    float yy{1.0F};
+    float tx{};
+    float ty{};
+  };
+  struct GraphicsTouchRoute {
+    std::uint32_t destination_object{};
+    std::uint32_t process_id{};
+    std::optional<GraphicsTouchTransform> transform;
+    bool application{};
+  };
+  enum class SpringBoardAlertPresentation {
+    Pending,
+    LockScreen,
+    ApplicationOverlay,
+  };
+  struct SpringBoardAlertLayer {
+    SpringBoardAlertPresentation presentation{
+        SpringBoardAlertPresentation::Pending};
+    std::uint64_t sequence{};
   };
   struct MachSemaphore {
     std::int64_t count{};
@@ -864,11 +894,19 @@ struct KernelSharedState {
   // port object so host touch input can follow Purple's foreground routing.
   std::uint32_t pending_application_event_object{};
   std::uint32_t active_application_event_object{};
+  // Lifecycle delivery proves the exact UIKit event receive right even when a
+  // later Home/alert transition clears the semantic foreground pointer. Keep
+  // the PID-bound identity until process retirement so a completed display
+  // transaction can resolve the visible producer without guessing a service.
+  std::map<std::uint32_t, std::uint32_t> application_event_objects_by_process;
   bool application_touch_suspended{};
   ApplicationSuspensionReason application_suspension_reason{
       ApplicationSuspensionReason::None};
   std::optional<std::uint32_t> suspended_application_scene_process_id;
   std::uint64_t next_graphics_input_sequence{1};
+  // A single-touch contact keeps one receiver and coordinate space from Down
+  // through its terminal event, even if presentation changes mid-gesture.
+  std::optional<GraphicsTouchRoute> active_graphics_touch_route;
   std::uint64_t springboard_last_consumed_touch_sequence{};
   // Launch causality belongs to the gesture that selected an icon, not its
   // final Up delivery. Home cancels that gesture; Lock only holds it until a
@@ -892,6 +930,9 @@ struct KernelSharedState {
   // launch attempt.
   bool springboard_unlock_touch_pending{};
   bool springboard_unlock_touch_active{};
+  // LCD power-off is also used for idle dimming. Retain the firmware's own
+  // answer so a wake does not turn the next desktop tap into an unlock drag.
+  std::optional<bool> springboard_lock_screen_active;
   std::uint64_t springboard_unlock_touch_begin_sequence{};
   std::uint64_t springboard_unlock_touch_end_sequence{};
   float springboard_unlock_touch_start_x{};
@@ -960,15 +1001,14 @@ struct KernelSharedState {
   // across the route teardown so the replacement spawn remains a foreground
   // intent without borrowing an unrelated touch sequence.
   std::optional<std::uint32_t> pending_application_handoff_process_id;
-  // First-generation SpringBoard prewarms selected applications with the
-  // userspace `--suspended` argument. Their first activation message binds the
-  // remote event/scene plumbing but does not put that scene on the visual
-  // foreground stack. A later activation is a real foreground transition.
-  std::set<std::uint32_t> consumed_application_prewarm_activations;
-  // SpringBoard alert items are system-owned windows layered above any remote
-  // application scene. Track object identity so nested/repeated activation
-  // callbacks cannot restore application input prematurely.
-  std::set<std::uint32_t> active_springboard_alert_items;
+  // SpringBoard's firmware separates alerts handled by the lock scene from
+  // ordinary modal overlays. Preserve that presentation as well as activation
+  // order: a lock-scene item retained underneath an App cannot intercept the
+  // App, while a newer application overlay can. Object identity keeps nested
+  // and repeated callbacks balanced.
+  std::uint64_t next_foreground_layer_sequence{1};
+  std::uint64_t active_application_layer_sequence{};
+  std::map<std::uint32_t, SpringBoardAlertLayer> active_springboard_alert_items;
   std::deque<PendingGraphicsInput> pending_graphics_inputs;
   std::map<std::uint32_t, MachSemaphore> mach_semaphores;
   std::map<std::uint32_t, MachTimer> mach_timers;

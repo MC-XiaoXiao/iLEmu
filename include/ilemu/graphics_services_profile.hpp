@@ -6,6 +6,7 @@
 #include <optional>
 
 #include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/system_button_input.hpp"
 #include "ilemu/touch_input.hpp"
 
 namespace ilemu {
@@ -17,17 +18,30 @@ class MachOImage;
 // accessors, so it follows the ABI actually loaded by a process rather than a
 // product version or build identifier.
 struct GraphicsServicesInputProfile {
+  struct SystemEvents {
+    std::array<std::uint32_t, 2> home{};
+    std::array<std::uint32_t, 2> lock{};
+    std::array<std::uint32_t, 2> volume_up{};
+    std::array<std::uint32_t, 2> volume_down{};
+    // Indexed by the physical switch state: off, then on.
+    std::array<std::uint32_t, 2> ringer_switch{};
+  };
+
   std::size_t hand_info_size{};
   std::size_t path_info_size{};
   std::size_t hand_path_count_offset{};
   std::size_t path_location_offset{};
-  bool path_carries_phase{};
-  bool terminal_path_is_active{};
   std::array<std::uint8_t, 4> hand_phase_types{};
+  // PathInfo byte 1 is ABI-defined. Early UIKit keeps a stable identity
+  // there, while later keyboard layouts consume per-event touch stages.
   std::array<std::uint8_t, 4> path_phase_types{};
+  SystemEvents system_events{};
 
   [[nodiscard]] std::uint8_t hand_type(TouchPhase phase) const;
   [[nodiscard]] std::uint8_t path_type(TouchPhase phase) const;
+  [[nodiscard]] std::uint32_t
+  system_button_type(const SystemButtonInput &input) const;
+  [[nodiscard]] std::uint32_t ringer_switch_type(bool active) const;
 
   [[nodiscard]] static const GraphicsServicesInputProfile &
   for_abi(KernelSharedState::GraphicsInputAbi abi);

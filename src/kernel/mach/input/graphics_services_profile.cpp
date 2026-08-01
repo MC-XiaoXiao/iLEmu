@@ -14,10 +14,15 @@ constexpr GraphicsServicesInputProfile darwin9_0_profile{
     .path_info_size = 16,
     .hand_path_count_offset = 17,
     .path_location_offset = 8,
-    .path_carries_phase = false,
-    .terminal_path_is_active = false,
-    .hand_phase_types = {1, 2, 5, 3},
+    .hand_phase_types = {1, 2, 6, 3},
     .path_phase_types = {2, 2, 2, 2},
+    .system_events = {
+        .home = {1000, 1001},
+        .lock = {1010, 1011},
+        .volume_up = {1006, 1007},
+        .volume_down = {1008, 1009},
+        .ringer_switch = {1012, 1013},
+    },
 };
 
 constexpr GraphicsServicesInputProfile darwin9_3_profile{
@@ -25,10 +30,15 @@ constexpr GraphicsServicesInputProfile darwin9_3_profile{
     .path_info_size = 24,
     .hand_path_count_offset = 33,
     .path_location_offset = 12,
-    .path_carries_phase = true,
-    .terminal_path_is_active = true,
     .hand_phase_types = {1, 2, 6, 3},
     .path_phase_types = {1, 2, 5, 3},
+    .system_events = {
+        .home = {1000, 1001},
+        .lock = {1010, 1011},
+        .volume_up = {1006, 1007},
+        .volume_down = {1008, 1009},
+        .ringer_switch = {1012, 1013},
+    },
 };
 
 std::uint32_t rotate_right(std::uint32_t value, std::uint32_t amount) {
@@ -70,6 +80,27 @@ GraphicsServicesInputProfile::hand_type(TouchPhase phase) const {
 std::uint8_t
 GraphicsServicesInputProfile::path_type(TouchPhase phase) const {
   return path_phase_types[static_cast<std::size_t>(phase)];
+}
+
+std::uint32_t GraphicsServicesInputProfile::system_button_type(
+    const SystemButtonInput &input) const {
+  const auto index = input.phase == SystemButtonPhase::Down ? 0U : 1U;
+  switch (input.button) {
+  case SystemButton::Home:
+    return system_events.home[index];
+  case SystemButton::Lock:
+    return system_events.lock[index];
+  case SystemButton::VolumeUp:
+    return system_events.volume_up[index];
+  case SystemButton::VolumeDown:
+    return system_events.volume_down[index];
+  }
+  return system_events.home[1];
+}
+
+std::uint32_t
+GraphicsServicesInputProfile::ringer_switch_type(bool active) const {
+  return system_events.ringer_switch[active ? 1U : 0U];
 }
 
 const GraphicsServicesInputProfile &GraphicsServicesInputProfile::for_abi(
