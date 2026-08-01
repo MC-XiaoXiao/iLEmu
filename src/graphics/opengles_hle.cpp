@@ -31,8 +31,8 @@ constexpr std::string_view opengles_image{
 constexpr std::uint32_t egl_false = 0;
 constexpr std::uint32_t egl_true = 1;
 constexpr std::uint32_t egl_default_display = 1;
-constexpr std::uint32_t egl_default_config = 1;
 constexpr std::uint32_t egl_success = 0x3000;
+constexpr std::uint32_t egl_bad_attribute = 0x3004;
 constexpr std::uint32_t egl_bad_display = 0x3008;
 constexpr std::uint32_t egl_bad_parameter = 0x300c;
 constexpr std::uint32_t egl_bad_surface = 0x300d;
@@ -46,7 +46,11 @@ constexpr std::uint32_t egl_red_size = 0x3024;
 constexpr std::uint32_t egl_depth_size = 0x3025;
 constexpr std::uint32_t egl_stencil_size = 0x3026;
 constexpr std::uint32_t egl_config_id = 0x3028;
+constexpr std::uint32_t egl_samples = 0x3031;
+constexpr std::uint32_t egl_sample_buffers = 0x3032;
 constexpr std::uint32_t egl_surface_type = 0x3033;
+constexpr std::uint32_t egl_none = 0x3038;
+constexpr std::uint32_t egl_dont_care = 0xffffffffU;
 constexpr std::uint32_t egl_vendor = 0x3053;
 constexpr std::uint32_t egl_version = 0x3054;
 constexpr std::uint32_t egl_extensions = 0x3055;
@@ -57,7 +61,58 @@ constexpr std::uint32_t egl_context_client_version = 0x3098;
 
 constexpr std::uint32_t egl_window_bit = 0x0004;
 constexpr std::uint32_t egl_pbuffer_bit = 0x0001;
+constexpr std::uint32_t egl_pixmap_bit = 0x0002;
 constexpr std::uint32_t egl_opengl_es_bit = 0x0001;
+
+struct EglConfigDescriptor {
+    std::uint32_t handle;
+    std::uint32_t red;
+    std::uint32_t green;
+    std::uint32_t blue;
+    std::uint32_t alpha;
+    std::uint32_t depth;
+    std::uint32_t stencil;
+};
+
+// The device EGL driver exposes the native CoreAnimation color formats plus
+// a depth/stencil variant used by regular GLES applications.
+constexpr std::array egl_configs{
+    EglConfigDescriptor{1, 8, 8, 8, 8, 24, 8},
+    EglConfigDescriptor{2, 8, 8, 8, 8, 0, 0},
+    EglConfigDescriptor{3, 5, 6, 5, 0, 0, 0},
+    EglConfigDescriptor{4, 4, 4, 4, 4, 0, 0},
+};
+
+const EglConfigDescriptor* egl_config(std::uint32_t handle) {
+    const auto found =
+        std::find_if(egl_configs.begin(), egl_configs.end(),
+                     [handle](const auto& config) {
+                         return config.handle == handle;
+                     });
+    return found == egl_configs.end() ? nullptr : &*found;
+}
+
+std::optional<std::uint32_t>
+egl_config_attribute(const EglConfigDescriptor& config,
+                     std::uint32_t attribute) {
+    switch (attribute) {
+    case egl_buffer_size:
+        return config.red + config.green + config.blue + config.alpha;
+    case egl_alpha_size: return config.alpha;
+    case egl_blue_size: return config.blue;
+    case egl_green_size: return config.green;
+    case egl_red_size: return config.red;
+    case egl_depth_size: return config.depth;
+    case egl_stencil_size: return config.stencil;
+    case egl_config_id: return config.handle;
+    case egl_samples:
+    case egl_sample_buffers: return 0;
+    case egl_surface_type:
+        return egl_window_bit | egl_pbuffer_bit | egl_pixmap_bit;
+    case egl_renderable_type: return egl_opengl_es_bit;
+    default: return std::nullopt;
+    }
+}
 
 constexpr std::uint32_t gl_no_error = gles_abi::no_error;
 constexpr std::uint32_t gl_invalid_value = gles_abi::invalid_value;
@@ -754,18 +809,74 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry) {
             call.set_return(egl_false);
             return;
         }
-        // eglChooseConfig has its count pointer in argument 4; eglGetConfigs
-        // has it in argument 3.
         const auto choose = call.symbol() == "_eglChooseConfig";
         const auto configs = call.argument(choose ? 2U : 1U);
         const auto capacity = call.argument(choose ? 3U : 2U);
         const auto count = call.argument(choose ? 4U : 3U);
-        if (!call.write32(count, 1) ||
-            (configs != 0 && capacity != 0 &&
-             !call.memory().write32(configs, egl_default_config))) {
+        std::vector<const EglConfigDescriptor*> matches;
+        matches.reserve(egl_configs.size());
+        for (const auto& config : egl_configs) {
+            auto matches_config = true;
+            if (choose && call.argument(1) != 0) {
+                auto cursor = call.argument(1);
+                auto terminated = false;
+                for (std::size_t index = 0; index < 64; ++index) {
+                    const auto attribute = call.memory().read32(cursor);
+                    if (!attribute) {
+                        egl_error_ = egl_bad_parameter;
+                        call.set_return(egl_false);
+                        return;
+                    }
+                    if (*attribute == egl_none) {
+                        terminated = true;
+                        break;
+                    }
+                    const auto requested = call.memory().read32(cursor + 4U);
+                    if (!requested) {
+                        egl_error_ = egl_bad_parameter;
+                        call.set_return(egl_false);
+                        return;
+                    }
+                    if (const auto actual =
+                            egl_config_attribute(config, *attribute)) {
+                        if (*requested == egl_dont_care) {
+                            // EGL_DONT_CARE leaves this attribute unfiltered.
+                        } else if (*attribute == egl_config_id) {
+                            matches_config &= *actual == *requested;
+                        } else if (*attribute == egl_surface_type ||
+                                   *attribute == egl_renderable_type) {
+                            matches_config &=
+                                (*actual & *requested) == *requested;
+                        } else {
+                            matches_config &= *actual >= *requested;
+                        }
+                    }
+                    cursor += 8U;
+                }
+                if (!terminated) {
+                    egl_error_ = egl_bad_attribute;
+                    call.set_return(egl_false);
+                    return;
+                }
+            }
+            if (matches_config)
+                matches.push_back(&config);
+        }
+        if (!call.write32(count, static_cast<std::uint32_t>(matches.size()))) {
             egl_error_ = egl_bad_parameter;
             call.set_return(egl_false);
             return;
+        }
+        const auto written =
+            std::min<std::size_t>(capacity, matches.size());
+        for (std::size_t index = 0; configs != 0 && index < written; ++index) {
+            if (!call.memory().write32(
+                    configs + static_cast<std::uint32_t>(index * 4U),
+                    matches[index]->handle)) {
+                egl_error_ = egl_bad_parameter;
+                call.set_return(egl_false);
+                return;
+            }
         }
         egl_error_ = egl_success;
         call.set_return(egl_true);
@@ -778,26 +889,19 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry) {
             call.set_return(egl_false);
             return;
         }
-        if (call.argument(1) != egl_default_config) {
+        const auto* config = egl_config(call.argument(1));
+        if (!config) {
             egl_error_ = egl_bad_parameter;
             call.set_return(egl_false);
             return;
         }
-        std::uint32_t value = 0;
-        switch (call.argument(2)) {
-        case egl_buffer_size: value = 32; break;
-        case egl_alpha_size:
-        case egl_blue_size:
-        case egl_green_size:
-        case egl_red_size: value = 8; break;
-        case egl_depth_size: value = 24; break;
-        case egl_stencil_size: value = 8; break;
-        case egl_config_id: value = egl_default_config; break;
-        case egl_surface_type: value = egl_window_bit | egl_pbuffer_bit; break;
-        case egl_renderable_type: value = egl_opengl_es_bit; break;
-        default: value = 0; break;
+        const auto value = egl_config_attribute(*config, call.argument(2));
+        if (!value) {
+            egl_error_ = egl_bad_attribute;
+            call.set_return(egl_false);
+            return;
         }
-        if (!call.write32(call.argument(3), value)) {
+        if (!call.write32(call.argument(3), *value)) {
             egl_error_ = egl_bad_parameter;
             call.set_return(egl_false);
             return;
@@ -808,6 +912,11 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry) {
     add("_eglCreateContext", [this](UserlandHleCall& call) {
         if (!is_valid_display(call.argument(0))) {
             egl_error_ = egl_bad_display;
+            call.set_return(0);
+            return;
+        }
+        if (!egl_config(call.argument(1))) {
+            egl_error_ = egl_bad_parameter;
             call.set_return(0);
             return;
         }
@@ -845,6 +954,11 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry) {
     const auto create_surface = [this](UserlandHleCall& call) {
         if (!is_valid_display(call.argument(0))) {
             egl_error_ = egl_bad_display;
+            call.set_return(0);
+            return;
+        }
+        if (!egl_config(call.argument(1))) {
+            egl_error_ = egl_bad_parameter;
             call.set_return(0);
             return;
         }
@@ -1109,7 +1223,8 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry) {
         case gl_version: value = "OpenGL ES-CM 1.1 iLEmu"; break;
         case gl_extensions:
             value = "GL_OES_fixed_point GL_OES_single_precision "
-                    "GL_APPLE_texture_rectangle ";
+                    "GL_APPLE_texture_rectangle "
+                    "GL_APPLE_core_surface_texture ";
             break;
         default: call.set_return(0); return;
         }
@@ -1223,6 +1338,14 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry) {
                 static_cast<std::uint32_t>(gles_abi::texture_unit_count);
             break;
         case gles_abi::maximum_texture_size:
+            values[0] = gles_abi::maximum_texture_dimension;
+            break;
+        case gles_abi::maximum_viewport_dimensions:
+            count = 2;
+            values[0] = gles_abi::maximum_texture_dimension;
+            values[1] = gles_abi::maximum_texture_dimension;
+            break;
+        case gles_abi::maximum_rectangle_texture_size_apple:
             values[0] = gles_abi::maximum_texture_dimension;
             break;
         case gles_abi::front_face_query: values[0] = context->front_face; break;
@@ -2109,7 +2232,9 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry) {
             set_gl_error(call, gles_abi::invalid_operation);
             return;
         }
-        if (call.argument(0) != gles_abi::texture_rectangle_apple) {
+        const auto target = call.argument(0);
+        if (target != gles_abi::texture_2d &&
+            target != gles_abi::texture_rectangle_apple) {
             set_gl_error(call, gles_abi::invalid_enum);
             return;
         }
@@ -2118,11 +2243,13 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry) {
             set_gl_error(call, gles_abi::invalid_value);
             return;
         }
+        const auto& unit =
+            context->texture_units[context->active_texture_unit];
+        const auto binding = target == gles_abi::texture_rectangle_apple
+                                 ? unit.bound_texture_rectangle
+                                 : unit.bound_texture_2d;
         const auto error = resources_.import_surface_texture(
-            call.memory(),
-            context->texture_units[context->active_texture_unit]
-                .bound_texture_rectangle,
-            *surface_store_, *identifier);
+            call.memory(), binding, *surface_store_, *identifier);
         if (error != gles_abi::no_error)
             set_gl_error(call, error);
     });

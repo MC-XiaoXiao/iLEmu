@@ -75,6 +75,8 @@ inline constexpr std::uint32_t cull_face_mode = 0x0b45U;
 inline constexpr std::uint32_t depth_write_mask = 0x0b72U;
 inline constexpr std::uint32_t stencil_write_mask = 0x0b98U;
 inline constexpr std::uint32_t maximum_texture_size = 0x0d33U;
+inline constexpr std::uint32_t maximum_viewport_dimensions = 0x0d3aU;
+inline constexpr std::uint32_t maximum_rectangle_texture_size_apple = 0x84f8U;
 
 inline constexpr std::uint32_t modelview = 0x1700U;
 inline constexpr std::uint32_t projection = 0x1701U;
