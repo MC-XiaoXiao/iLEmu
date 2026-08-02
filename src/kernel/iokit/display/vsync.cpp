@@ -282,6 +282,11 @@ std::optional<std::uint32_t> handle_notification_port_request(
       device_mig::id(device_mig::Routine::io_connect_set_notification_port)) {
     return std::nullopt;
   }
+  {
+    std::lock_guard lock{state.mach_mutex};
+    if (!is_display_connection_locked(state, process, connection_object))
+      return std::nullopt;
+  }
   const auto header_size =
       memory.read32(message_address + darwin::mig_wire::header_size_offset)
           .value_or(0);
