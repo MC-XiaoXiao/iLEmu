@@ -1343,7 +1343,9 @@ void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline) {
   if (!callback)
     return;
   if (callback->process_id != process_.pid || !thread_create_handler_) {
-    core_audio_hle_.io_proc_schedule_failed(callback->process_id);
+    core_audio_hle_.io_proc_schedule_failed(callback->process_id,
+                                            callback->native,
+                                            callback->io_proc_id);
     return;
   }
   if (callback->processor) {
@@ -1362,7 +1364,9 @@ void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline) {
       static_cast<void>(
           thread_terminate_handler_(process_.pid, *callback->processor));
     }
-    core_audio_hle_.io_proc_schedule_failed(callback->process_id);
+    core_audio_hle_.io_proc_schedule_failed(callback->process_id,
+                                            callback->native,
+                                            callback->io_proc_id);
     output_.write("[coreaudio-device] io-proc wake failed pid=" +
                   std::to_string(process_.pid) + "\n");
     return;
@@ -1375,12 +1379,16 @@ void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline) {
     if (processor && thread_terminate_handler_) {
       static_cast<void>(thread_terminate_handler_(process_.pid, *processor));
     }
-    core_audio_hle_.io_proc_schedule_failed(callback->process_id);
+    core_audio_hle_.io_proc_schedule_failed(callback->process_id,
+                                            callback->native,
+                                            callback->io_proc_id);
     output_.write("[coreaudio-device] io-proc schedule failed pid=" +
                   std::to_string(process_.pid) + "\n");
     return;
   }
-  core_audio_hle_.io_proc_thread_scheduled(callback->process_id, *processor);
+  core_audio_hle_.io_proc_thread_scheduled(callback->process_id,
+                                           callback->native,
+                                           callback->io_proc_id, *processor);
 }
 
 void CompatibilityKernel::inject_wifi_driver_event(

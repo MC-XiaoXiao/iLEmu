@@ -253,10 +253,16 @@ CoreAudioHle::CoreAudioHle(UserlandHleRegistry &registry,
                     &CoreAudioHle::object_property);
   register_function("_AudioObjectSetPropertyData",
                     &CoreAudioHle::object_set_property);
+  register_function("_AudioDeviceCreateIOProcID",
+                    &CoreAudioHle::create_native_io_proc);
+  register_function("_AudioDeviceDestroyIOProcID",
+                    &CoreAudioHle::destroy_native_io_proc);
   register_function("_AudioDeviceAddIOProc", &CoreAudioHle::add_io_proc);
   register_function("_AudioDeviceRemoveIOProc", &CoreAudioHle::remove_io_proc);
   register_function("_AudioDeviceStart", &CoreAudioHle::start_io);
   register_function("_AudioDeviceStop", &CoreAudioHle::stop_io);
+  register_function("_AudioDeviceStartAtTime",
+                    &CoreAudioHle::start_native_io_at_time);
 
   for (const auto *symbol :
        {"_AudioDeviceAddPropertyListener", "_AudioDeviceRemovePropertyListener",
@@ -278,6 +284,8 @@ void CoreAudioHle::set_service(std::shared_ptr<AudioService> service) {
 
 void CoreAudioHle::reset() {
   io_procs_.clear();
+  native_io_procs_.clear();
+  next_native_io_proc_id_ = 0x70000000U;
   retired_io_proc_threads_.clear();
   stream_formats_.clear();
 }
@@ -323,6 +331,13 @@ std::optional<std::uint64_t> CoreAudioHle::next_io_proc_deadline() const {
     if (!deadline || registration.next_deadline < *deadline)
       deadline = registration.next_deadline;
   }
+  for (const auto &[io_proc_id, registration] : native_io_procs_) {
+    static_cast<void>(io_proc_id);
+    if (!registration.running || registration.in_flight)
+      continue;
+    if (!deadline || registration.next_deadline < *deadline)
+      deadline = registration.next_deadline;
+  }
   return deadline;
 }
 
@@ -334,14 +349,29 @@ CoreAudioHle::take_due_io_proc(std::uint64_t now) {
         return registration.running && !registration.in_flight &&
                registration.next_deadline <= now;
       });
-  if (selected == io_procs_.end())
+  const auto selected_native = std::find_if(
+      native_io_procs_.begin(), native_io_procs_.end(), [now](const auto &entry) {
+        const auto &registration = entry.second;
+        return registration.running && !registration.in_flight &&
+               registration.next_deadline <= now;
+      });
+  const bool use_native =
+      selected == io_procs_.end() ||
+      (selected_native != native_io_procs_.end() &&
+       selected_native->second.next_deadline < selected->second.next_deadline);
+  if (use_native && selected_native == native_io_procs_.end())
+    return std::nullopt;
+  if (!use_native && selected == io_procs_.end())
     return std::nullopt;
 
-  const auto *device = find_device(selected->second.device);
-  auto &registration = selected->second;
-  if (device == nullptr || registration.memory == nullptr ||
-      registration.callback_return == 0 || registration.output_buffers == 0 ||
-      registration.output_samples == 0 || registration.stack == 0) {
+  auto &registration =
+      use_native ? selected_native->second : selected->second;
+  const auto *device = registration.native ? nullptr
+                                            : find_device(registration.device);
+  if ((!registration.native && device == nullptr) ||
+      registration.memory == nullptr || registration.callback_return == 0 ||
+      registration.output_buffers == 0 || registration.output_samples == 0 ||
+      registration.stack == 0) {
     registration.running = false;
     return std::nullopt;
   }
@@ -352,8 +382,10 @@ CoreAudioHle::take_due_io_proc(std::uint64_t now) {
       registration.memory->copy_in(registration.output_samples,
                                    registration.zero_output_samples) &&
       registration.memory->write32(registration.output_buffers, 1U) &&
-      registration.memory->write32(registration.output_buffers + 4U,
-                                   device_channel_count(device->identifier)) &&
+      registration.memory->write32(
+          registration.output_buffers + 4U,
+          registration.native ? registration.channel_count
+                              : device_channel_count(device->identifier)) &&
       registration.memory->write32(registration.output_buffers + 8U,
                                    registration.output_sample_bytes) &&
       registration.memory->write32(registration.output_buffers + 12U,
@@ -372,25 +404,35 @@ CoreAudioHle::take_due_io_proc(std::uint64_t now) {
   }
 
   ScheduledIoProc callback;
-  callback.process_id = selected->first;
+  callback.process_id = registration.process_id;
+  callback.native = registration.native;
+  callback.io_proc_id = registration.io_proc_id;
   callback.processor = registration.processor;
   callback.registers[0] = registration.device;
   callback.registers[1] = registration.timestamp;
   callback.registers[2] = 0; // no emulated input buffers on this output device
   callback.registers[3] = 0;
+  // Darwin's ARM pthread ABI reserves r9 as the current thread's TSD base.
+  // A host-scheduled callback does not pass through libpthread's usual thread
+  // entry trampoline, so preserve the owning firmware thread's initialized
+  // base instead of entering guest framework code with an invalid null r9.
+  callback.registers[9] = registration.pthread_tsd_base;
   callback.registers[13] = stack_pointer;
   callback.registers[14] = registration.callback_return;
   callback.registers[15] = registration.callback & ~1U;
   callback.cpsr =
       arm_user_mode |
       ((registration.callback & 1U) != 0 ? arm_thumb_state_bit : 0U);
-  callback.completion = [this,
-                         process_id = selected->first](UserlandHleCall &call) {
-    complete_io_proc(call, process_id);
+  callback.completion = [this, process_id = registration.process_id,
+                         native = registration.native,
+                         io_proc_id = registration.io_proc_id](
+                            UserlandHleCall &call) {
+    complete_io_proc(call, process_id, native, io_proc_id);
   };
 
-  const auto sample_rate = static_cast<std::uint64_t>(
-      std::llround(device_sample_rate(device->identifier)));
+  const auto sample_rate = static_cast<std::uint64_t>(std::llround(
+      registration.native ? registration.sample_rate
+                           : device_sample_rate(device->identifier)));
   const auto period = std::max<std::uint64_t>(
       1U, static_cast<std::uint64_t>(buffer_frame_size_) *
               virtual_time_units_per_second / sample_rate);
@@ -399,7 +441,8 @@ CoreAudioHle::take_due_io_proc(std::uint64_t now) {
   registration.in_flight = true;
   if (registration.output != nullptr && registration.callback_count < 2U) {
     registration.output->line("[coreaudio-device] io-proc schedule pid=" +
-                              std::to_string(selected->first) + " sequence=" +
+                              std::to_string(registration.process_id) +
+                              " sequence=" +
                               std::to_string(registration.callback_count + 1U) +
                               " now=" + std::to_string(now) + " next=" +
                               std::to_string(registration.next_deadline));
@@ -407,7 +450,18 @@ CoreAudioHle::take_due_io_proc(std::uint64_t now) {
   return callback;
 }
 
-void CoreAudioHle::io_proc_schedule_failed(std::uint32_t process_id) {
+void CoreAudioHle::io_proc_schedule_failed(std::uint32_t process_id,
+                                            bool native,
+                                            std::uint32_t io_proc_id) {
+  if (native) {
+    if (const auto registration = native_io_procs_.find(io_proc_id);
+        registration != native_io_procs_.end() &&
+        registration->second.process_id == process_id) {
+      registration->second.in_flight = false;
+      registration->second.processor.reset();
+    }
+    return;
+  }
   if (const auto registration = io_procs_.find(process_id);
       registration != io_procs_.end()) {
     registration->second.in_flight = false;
@@ -416,7 +470,17 @@ void CoreAudioHle::io_proc_schedule_failed(std::uint32_t process_id) {
 }
 
 void CoreAudioHle::io_proc_thread_scheduled(std::uint32_t process_id,
+                                            bool native,
+                                            std::uint32_t io_proc_id,
                                             std::size_t processor) {
+  if (native) {
+    if (const auto registration = native_io_procs_.find(io_proc_id);
+        registration != native_io_procs_.end() &&
+        registration->second.process_id == process_id) {
+      registration->second.processor = processor;
+    }
+    return;
+  }
   if (const auto registration = io_procs_.find(process_id);
       registration != io_procs_.end()) {
     registration->second.processor = processor;
@@ -430,84 +494,97 @@ std::vector<std::size_t> CoreAudioHle::take_retired_io_proc_threads() {
 }
 
 void CoreAudioHle::complete_io_proc(UserlandHleCall &call,
-                                    std::uint32_t process_id) {
-  const auto found = io_procs_.find(process_id);
-  if (found == io_procs_.end())
+                                    std::uint32_t process_id, bool native,
+                                    std::uint32_t io_proc_id) {
+  IoProcRegistration *registration = nullptr;
+  if (native) {
+    const auto found = native_io_procs_.find(io_proc_id);
+    if (found == native_io_procs_.end() ||
+        found->second.process_id != process_id)
+      return;
+    registration = &found->second;
+  } else {
+    const auto found = io_procs_.find(process_id);
+    if (found == io_procs_.end())
+      return;
+    registration = &found->second;
+  }
+  const auto *device = native ? nullptr : find_device(registration->device);
+  if (!native && device == nullptr)
     return;
-  auto &registration = found->second;
-  const auto *device = find_device(registration.device);
+
   const auto produced =
-      call.memory().read32(registration.output_buffers + 8U).value_or(0);
+      call.memory().read32(registration->output_buffers + 8U).value_or(0);
   const auto byte_count =
-      std::min(produced, registration.output_sample_bytes) & ~1U;
+      std::min(produced, registration->output_sample_bytes) & ~1U;
   AudioPlayResult result;
   std::uint32_t peak = 0;
-  float applied_gain = 1.0F;
-  if (device != nullptr && byte_count != 0) {
+  const auto applied_gain =
+      native ? 1.0F : device_output_gain(registration->device);
+  if (byte_count != 0) {
     auto bytes =
-        std::span{registration.captured_output_samples}.first(byte_count);
-    if (call.memory().copy_out(registration.output_samples, bytes)) {
-      const auto audible =
-          std::any_of(bytes.begin(), bytes.end(),
-                      [](std::byte value) { return value != std::byte{}; });
-      applied_gain = device_output_gain(registration.device);
+        std::span{registration->captured_output_samples}.first(byte_count);
+    if (call.memory().copy_out(registration->output_samples, bytes)) {
+      const auto audible = std::any_of(
+          bytes.begin(), bytes.end(),
+          [](std::byte value) { return value != std::byte{}; });
       const auto service_source_active =
           service_ && service_->service_source_playing();
       if (!audible) {
-        // The hardware IOProc must keep running so a later sound can start,
-        // but an all-zero period has no host payload to convert or enqueue.
-        // Preserve the AudioService completion observation above while
-        // avoiding two allocations and two full sample scans on the common
-        // idle path.
-        if (service_)
-          result.status = AudioPlayStatus::Queued;
+        result.status = AudioPlayStatus::Queued;
       } else {
         AudioBuffer buffer;
-        buffer.sample_rate = static_cast<std::uint32_t>(
-            std::llround(device_sample_rate(device->identifier)));
-        buffer.channel_count = static_cast<std::uint16_t>(
-            device_channel_count(device->identifier));
+        buffer.sample_rate = native
+                                 ? registration->sample_rate
+                                 : static_cast<std::uint32_t>(std::llround(
+                                       device_sample_rate(device->identifier)));
+        buffer.channel_count = native
+                                   ? static_cast<std::uint16_t>(
+                                         registration->channel_count)
+                                   : static_cast<std::uint16_t>(
+                                         device_channel_count(device->identifier));
         buffer.streaming = true;
         buffer.samples.reserve(bytes.size() / sizeof(std::int16_t));
         for (std::size_t offset = 0; offset < bytes.size();
              offset += sizeof(std::int16_t)) {
           const auto encoded = static_cast<std::uint16_t>(
               std::to_integer<std::uint16_t>(bytes[offset]) |
-              static_cast<std::uint16_t>(
-                  std::to_integer<std::uint16_t>(bytes[offset + 1U]) << 8U));
+              static_cast<std::uint16_t>(std::to_integer<std::uint16_t>(
+                                               bytes[offset + 1U])
+                                           << 8U));
           const auto sample = std::bit_cast<std::int16_t>(encoded);
           buffer.samples.push_back(sample);
-          peak =
-              std::max(peak, sample == std::numeric_limits<std::int16_t>::min()
-                                 ? 32768U
-                                 : static_cast<std::uint32_t>(
-                                       std::abs(static_cast<int>(sample))));
+          peak = std::max(
+              peak, sample == std::numeric_limits<std::int16_t>::min()
+                        ? 32768U
+                        : static_cast<std::uint32_t>(
+                              std::abs(static_cast<int>(sample))));
         }
-        if (service_source_active) {
+        if (service_source_active || !service_) {
           result.status = AudioPlayStatus::Queued;
-        } else if (service_) {
+        } else {
           result = service_->queue_pcm(std::move(buffer), applied_gain);
         }
       }
     }
   }
-  ++registration.callback_count;
-  registration.peak_since_report =
-      std::max(registration.peak_since_report, peak);
-  registration.sample_time += buffer_frame_size_;
-  registration.in_flight = false;
-  if (registration.callback_count == 1U ||
-      registration.callback_count % 32U == 0U ||
+  ++registration->callback_count;
+  registration->peak_since_report =
+      std::max(registration->peak_since_report, peak);
+  registration->sample_time += buffer_frame_size_;
+  registration->in_flight = false;
+  if (registration->callback_count == 1U ||
+      registration->callback_count % 32U == 0U ||
       result.status == AudioPlayStatus::SinkError) {
     call.output().line(
         "[coreaudio-device] io-proc pid=" + std::to_string(process_id) +
-        " callbacks=" + std::to_string(registration.callback_count) +
+        " callbacks=" + std::to_string(registration->callback_count) +
         " bytes=" + std::to_string(byte_count) +
-        " peak=" + std::to_string(registration.peak_since_report) +
+        " peak=" + std::to_string(registration->peak_since_report) +
         " gain=" + std::to_string(applied_gain) +
         " status=" + std::to_string(static_cast<unsigned>(result.status)) +
         (result.detail.empty() ? std::string{} : " detail=" + result.detail));
-    registration.peak_since_report = 0;
+    registration->peak_since_report = 0;
   }
 }
 
@@ -861,12 +938,100 @@ void CoreAudioHle::property_listener(UserlandHleCall &call) {
   call.set_return(0);
 }
 
+void CoreAudioHle::create_native_io_proc(UserlandHleCall &call) {
+  const auto device = call.argument(0);
+  const auto callback = call.argument(1);
+  const auto client_data = call.argument(2);
+  const auto output_id = call.argument(3);
+  if (callback == 0 || output_id == 0) {
+    call.set_return(parameter_error);
+    return;
+  }
+  // Native CoreAudio uses an opaque IOProcID returned by the HAL. Keep the
+  // firmware's callback and client data intact, but schedule the callback in
+  // the emulator clock so the guest AudioToolbox renderer remains the source
+  // of PCM instead of duplicating its decoder here.
+  auto io_proc_id = next_native_io_proc_id_++;
+  if (io_proc_id == 0)
+    io_proc_id = next_native_io_proc_id_++;
+  IoProcRegistration registration;
+  registration.native = true;
+  registration.process_id = call.process_id();
+  registration.io_proc_id = io_proc_id;
+  registration.device = device;
+  registration.callback = callback;
+  registration.client_data = client_data;
+  registration.memory = &call.memory();
+  registration.output = &call.output();
+  native_io_procs_.emplace(io_proc_id, std::move(registration));
+  if (!call.write32(output_id, io_proc_id)) {
+    native_io_procs_.erase(io_proc_id);
+    call.set_return(parameter_error);
+    return;
+  }
+  call.output().line("[coreaudio-device] native-io-proc create pid=" +
+                    std::to_string(call.process_id()) + " device=" +
+                    std::to_string(device) + " id=" +
+                    std::to_string(io_proc_id));
+  call.set_return(0);
+}
+
+void CoreAudioHle::destroy_native_io_proc(UserlandHleCall &call) {
+  const auto io_proc_id = call.argument(1);
+  const auto found = native_io_procs_.find(io_proc_id);
+  if (found == native_io_procs_.end() ||
+      found->second.process_id != call.process_id() ||
+      found->second.device != call.argument(0)) {
+    call.set_return(parameter_error);
+    return;
+  }
+  if (found->second.processor)
+    retired_io_proc_threads_.push_back(*found->second.processor);
+  native_io_procs_.erase(found);
+  call.set_return(0);
+}
+
+void CoreAudioHle::start_native_io_at_time(UserlandHleCall &call) {
+  // The first-generation HAL's start-at-time path is equivalent to an
+  // immediate start when no hardware clock is present. Reuse the same
+  // registration and callback buffer setup as AudioDeviceStart.
+  start_io(call);
+}
+
 void CoreAudioHle::add_io_proc(UserlandHleCall &call) {
-  if (find_device(call.argument(0)) == nullptr || call.argument(1) == 0) {
+  const auto device_id = call.argument(0);
+  if (find_device(device_id) == nullptr) {
+    const auto callback = call.argument(1);
+    if (callback == 0) {
+      call.set_return(parameter_error);
+      return;
+    }
+    auto io_proc_id = next_native_io_proc_id_++;
+    if (io_proc_id == 0)
+      io_proc_id = next_native_io_proc_id_++;
+    IoProcRegistration registration;
+    registration.native = true;
+    registration.process_id = call.process_id();
+    registration.io_proc_id = io_proc_id;
+    registration.device = device_id;
+    registration.callback = callback;
+    registration.client_data = call.argument(2);
+    registration.memory = &call.memory();
+    registration.output = &call.output();
+    native_io_procs_.emplace(io_proc_id, std::move(registration));
+    call.output().line("[coreaudio-device] native-io-proc add pid=" +
+                       std::to_string(call.process_id()) + " device=" +
+                       std::to_string(device_id) + " id=" +
+                       std::to_string(io_proc_id));
+    call.set_return(0);
+    return;
+  }
+  if (call.argument(1) == 0) {
     call.set_return(parameter_error);
     return;
   }
   IoProcRegistration registration;
+  registration.process_id = call.process_id();
   registration.callback = call.argument(1);
   registration.client_data = call.argument(2);
   registration.device = call.argument(0);
@@ -881,8 +1046,24 @@ void CoreAudioHle::add_io_proc(UserlandHleCall &call) {
 
 void CoreAudioHle::remove_io_proc(UserlandHleCall &call) {
   const auto registration = io_procs_.find(call.process_id());
-  if (find_device(call.argument(0)) == nullptr ||
-      registration == io_procs_.end() ||
+  if (find_device(call.argument(0)) == nullptr) {
+    const auto found = std::find_if(
+        native_io_procs_.begin(), native_io_procs_.end(), [&](const auto &entry) {
+          return entry.second.process_id == call.process_id() &&
+                 entry.second.device == call.argument(0) &&
+                 entry.second.callback == call.argument(1);
+        });
+    if (found == native_io_procs_.end()) {
+      call.set_return(parameter_error);
+      return;
+    }
+    if (found->second.processor)
+      retired_io_proc_threads_.push_back(*found->second.processor);
+    native_io_procs_.erase(found);
+    call.set_return(0);
+    return;
+  }
+  if (registration == io_procs_.end() ||
       registration->second.callback != call.argument(1)) {
     call.set_return(parameter_error);
     return;
@@ -897,9 +1078,70 @@ void CoreAudioHle::remove_io_proc(UserlandHleCall &call) {
 }
 
 void CoreAudioHle::start_io(UserlandHleCall &call) {
+  const auto device_id = call.argument(0);
+  if (find_device(device_id) == nullptr) {
+    auto registration = native_io_procs_.find(call.argument(1));
+    if (registration == native_io_procs_.end()) {
+      registration = std::find_if(
+          native_io_procs_.begin(), native_io_procs_.end(), [&](const auto &entry) {
+            return entry.second.process_id == call.process_id() &&
+                   entry.second.device == device_id &&
+                   entry.second.callback == call.argument(1);
+          });
+    }
+    if (registration == native_io_procs_.end() ||
+        registration->second.process_id != call.process_id() ||
+        registration->second.device != device_id ||
+        buffer_frame_size_ == 0 ||
+        buffer_frame_size_ > maximum_buffer_frame_size) {
+      call.set_return(parameter_error);
+      return;
+    }
+    auto &state = registration->second;
+    const auto sample_bytes =
+        buffer_frame_size_ * state.channel_count *
+        static_cast<std::uint32_t>(sizeof(std::int16_t));
+    if (state.callback_return == 0)
+      state.callback_return =
+          registry_.prepare_thread_callback_return(call.cpu()).value_or(0);
+    if (state.timestamp == 0)
+      state.timestamp = call.allocate_data(audio_timestamp_size, 8U);
+    if (state.output_buffers == 0)
+      state.output_buffers = call.allocate_data(audio_buffer_list_size, 4U);
+    if (state.output_samples == 0 || state.output_sample_bytes != sample_bytes) {
+      state.output_samples = call.allocate_data(sample_bytes, 16U);
+      state.output_sample_bytes = sample_bytes;
+      state.zero_output_samples.assign(sample_bytes, std::byte{});
+      state.captured_output_samples.resize(sample_bytes);
+    }
+    if (state.stack == 0)
+      state.stack = call.allocate_data(callback_stack_size, 16U);
+    if (state.callback_return == 0 || state.timestamp == 0 ||
+        state.output_buffers == 0 || state.output_samples == 0 ||
+        state.stack == 0) {
+      call.set_return(parameter_error);
+      return;
+    }
+    state.pthread_tsd_base = call.cpu().registers()[9];
+    state.running = true;
+    state.in_flight = false;
+    state.next_deadline = 0;
+    state.sample_time = 0;
+    state.callback_count = 0;
+    state.peak_since_report = 0;
+    call.output().line(
+        "[coreaudio-device] native-io-proc start pid=" +
+        std::to_string(call.process_id()) + " device=" +
+        std::to_string(device_id) + " id=" + std::to_string(call.argument(1)) +
+        " frames=" + std::to_string(buffer_frame_size_) + " bytes=" +
+        std::to_string(state.output_sample_bytes) + " rate=" +
+        std::to_string(state.sample_rate) + " channels=" +
+        std::to_string(state.channel_count));
+    call.set_return(0);
+    return;
+  }
   const auto registration = io_procs_.find(call.process_id());
-  if (find_device(call.argument(0)) == nullptr ||
-      registration == io_procs_.end() ||
+  if (registration == io_procs_.end() ||
       registration->second.callback != call.argument(1) ||
       buffer_frame_size_ == 0 ||
       buffer_frame_size_ > maximum_buffer_frame_size) {
@@ -935,6 +1177,7 @@ void CoreAudioHle::start_io(UserlandHleCall &call) {
     call.set_return(parameter_error);
     return;
   }
+  state.pthread_tsd_base = call.cpu().registers()[9];
   state.running = true;
   state.in_flight = false;
   state.next_deadline = 0;
@@ -954,9 +1197,37 @@ void CoreAudioHle::start_io(UserlandHleCall &call) {
 }
 
 void CoreAudioHle::stop_io(UserlandHleCall &call) {
+  const auto device_id = call.argument(0);
+  if (find_device(device_id) == nullptr) {
+    auto registration = native_io_procs_.find(call.argument(1));
+    if (registration == native_io_procs_.end()) {
+      registration = std::find_if(
+          native_io_procs_.begin(), native_io_procs_.end(), [&](const auto &entry) {
+            return entry.second.process_id == call.process_id() &&
+                   entry.second.device == device_id &&
+                   entry.second.callback == call.argument(1);
+          });
+    }
+    if (registration == native_io_procs_.end() ||
+        registration->second.process_id != call.process_id() ||
+        registration->second.device != device_id) {
+      call.set_return(parameter_error);
+      return;
+    }
+    registration->second.running = false;
+    if (registration->second.processor) {
+      retired_io_proc_threads_.push_back(*registration->second.processor);
+      registration->second.processor.reset();
+    }
+    call.output().line("[coreaudio-device] native-io-proc stop pid=" +
+                       std::to_string(call.process_id()) + " id=" +
+                       std::to_string(call.argument(1)) + " callbacks=" +
+                       std::to_string(registration->second.callback_count));
+    call.set_return(0);
+    return;
+  }
   const auto registration = io_procs_.find(call.process_id());
-  if (find_device(call.argument(0)) == nullptr ||
-      registration == io_procs_.end() ||
+  if (registration == io_procs_.end() ||
       registration->second.callback != call.argument(1)) {
     call.set_return(parameter_error);
     return;
