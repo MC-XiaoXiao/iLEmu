@@ -11,6 +11,11 @@ namespace ilemu {
 // the guest firmware.
 inline constexpr std::string_view ringer_switch_notification_name{
     "com.apple.system.ringerstate"};
+// iPhone OS 2.x CoreMedia uses SpringBoard's historical notify key. Both
+// names describe the same physical switch; keeping the aliases here lets the
+// generic device model serve older and newer firmware contracts alike.
+inline constexpr std::string_view springboard_ringer_switch_notification_name{
+    "com.apple.springboard.ringerstate"};
 
 class RingerSwitchState {
 public:

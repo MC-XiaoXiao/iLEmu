@@ -179,11 +179,13 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
 }
 
 void CompatibilityKernel::configure_darwin_notify_state() {
+  const auto provider = [state = ringer_switch_state_] {
+    return static_cast<std::uint64_t>(state->active());
+  };
   darwin_notify_state_hle_.set_provider(
-      std::string{ringer_switch_notification_name},
-      [state = ringer_switch_state_] {
-        return static_cast<std::uint64_t>(state->active());
-      });
+      std::string{ringer_switch_notification_name}, provider);
+  darwin_notify_state_hle_.set_provider(
+      std::string{springboard_ringer_switch_notification_name}, provider);
   darwin_notify_state_hle_.set_notification_dispatcher(
       [weak_state = std::weak_ptr<KernelSharedState>{shared_state_}](
           std::uint32_t process_id, std::uint32_t port_name,
@@ -379,6 +381,8 @@ void CompatibilityKernel::set_ringer_switch_active(bool active) {
     return;
   performance_counters().discard_pending_vsync_callbacks();
   darwin_notify_state_hle_.publish(ringer_switch_notification_name);
+  darwin_notify_state_hle_.publish(
+      springboard_ringer_switch_notification_name);
   const auto result =
       graphics_services_input::enqueue_ringer_switch_change(*shared_state_,
                                                             active);
@@ -394,6 +398,8 @@ void CompatibilityKernel::toggle_ringer_switch() {
   const auto active = ringer_switch_state_->toggle();
   performance_counters().discard_pending_vsync_callbacks();
   darwin_notify_state_hle_.publish(ringer_switch_notification_name);
+  darwin_notify_state_hle_.publish(
+      springboard_ringer_switch_notification_name);
   const auto result =
       graphics_services_input::enqueue_ringer_switch_change(*shared_state_,
                                                             active);
