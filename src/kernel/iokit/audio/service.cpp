@@ -3,6 +3,7 @@
 #include "ilemu/address_space.hpp"
 #include "ilemu/device_mig_ids.hpp"
 #include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel_iokit_audio_device_profile.hpp"
 #include "ilemu/kernel_iokit_audio_profile.hpp"
 #include "ilemu/kernel_shared_state.hpp"
 #include "ilemu/mig_wire_abi.hpp"
@@ -39,82 +40,6 @@ constexpr std::uint32_t linear_pcm_format = 0x6c70636dU; // 'lpcm'
 constexpr std::uint32_t linear_pcm_flags = 0x0cU;
 constexpr std::uint32_t stream_format_size = 40;
 
-struct StreamFormatDescription {
-  std::uint32_t sample_rate;
-  std::uint32_t format_id;
-  std::uint32_t format_flags;
-  std::uint32_t bytes_per_packet;
-  std::uint32_t frames_per_packet;
-  std::uint32_t bytes_per_frame;
-  std::uint32_t channels_per_frame;
-  std::uint32_t bits_per_channel;
-};
-
-struct StreamDescription {
-  enum class Direction { Input, Output };
-
-  std::uint32_t identifier;
-  Direction direction;
-  std::uint32_t starting_channel;
-  std::uint32_t buffer_mapping_options;
-  std::uint32_t buffer_size;
-  StreamFormatDescription format;
-};
-
-struct DeviceDescription {
-  std::string_view name;
-  std::string_view manufacturer;
-  std::string_view uid;
-  std::uint32_t io_buffer_frame_size;
-  std::array<StreamDescription, 2> streams;
-};
-
-constexpr DeviceDescription built_in_audio{
-    .name = "Built-in Audio",
-    .manufacturer = "iLEmu",
-    .uid = "ilemu.audio.builtin",
-    .io_buffer_frame_size = 1024,
-    .streams =
-        {
-            StreamDescription{
-                .identifier = 1,
-                .direction = StreamDescription::Direction::Output,
-                .starting_channel = 1,
-                .buffer_mapping_options = 1,
-                .buffer_size = 4096,
-                .format =
-                    {
-                        .sample_rate = 44100,
-                        .format_id = linear_pcm_format,
-                        .format_flags = linear_pcm_flags,
-                        .bytes_per_packet = 4,
-                        .frames_per_packet = 1,
-                        .bytes_per_frame = 4,
-                        .channels_per_frame = 2,
-                        .bits_per_channel = 16,
-                    },
-            },
-            StreamDescription{
-                .identifier = 2,
-                .direction = StreamDescription::Direction::Input,
-                .starting_channel = 1,
-                .buffer_mapping_options = 1,
-                .buffer_size = 2048,
-                .format =
-                    {
-                        .sample_rate = 44100,
-                        .format_id = linear_pcm_format,
-                        .format_flags = linear_pcm_flags,
-                        .bytes_per_packet = 2,
-                        .frames_per_packet = 1,
-                        .bytes_per_frame = 2,
-                        .channels_per_frame = 1,
-                        .bits_per_channel = 16,
-                    },
-            },
-        },
-};
-
 std::vector<std::byte> bytes_from_string(std::string_view value) {
   std::vector<std::byte> bytes(value.size());
   std::transform(value.begin(), value.end(), bytes.begin(), [](char character) {
@@ -135,6 +60,19 @@ KernelSharedState::IOKitRegistryProperty number_property(std::uint32_t value) {
     bytes[index] = static_cast<std::byte>(value >> (index * 8U));
   return {KernelSharedState::IOKitRegistryProperty::Kind::Number,
           std::move(bytes)};
+}
+
+KernelSharedState::IOKitRegistryProperty
+number64_property(std::uint64_t value) {
+  std::vector<std::byte> bytes(sizeof(value));
+  for (std::size_t index = 0; index < bytes.size(); ++index)
+    bytes[index] = static_cast<std::byte>(value >> (index * 8U));
+  return {KernelSharedState::IOKitRegistryProperty::Kind::Number,
+          std::move(bytes)};
+}
+
+constexpr std::uint64_t fixed_sample_rate(std::uint32_t sample_rate) {
+  return static_cast<std::uint64_t>(sample_rate) << 32U;
 }
 
 KernelSharedState::IOKitRegistryProperty boolean_property(bool value) {
@@ -158,13 +96,44 @@ KernelSharedState::IOKitRegistryProperty dictionary_property(
   return property;
 }
 
-const StreamDescription *find_stream(std::uint32_t identifier) {
+const IOAudio2StreamDescription *
+find_stream(const IOAudio2DeviceDescription &device, std::uint32_t identifier) {
   const auto stream =
-      std::find_if(built_in_audio.streams.begin(), built_in_audio.streams.end(),
-                   [identifier](const StreamDescription &candidate) {
+      std::find_if(device.streams.begin(), device.streams.end(),
+                   [identifier](const IOAudio2StreamDescription &candidate) {
                      return candidate.identifier == identifier;
                    });
-  return stream == built_in_audio.streams.end() ? nullptr : &*stream;
+  return stream == device.streams.end() ? nullptr : &*stream;
+}
+
+const IOAudio2ControlDescription *
+find_control(const IOAudio2DeviceDescription &device,
+             std::uint32_t identifier) {
+  const auto control =
+      std::find_if(device.controls.begin(), device.controls.end(),
+                   [identifier](const IOAudio2ControlDescription &candidate) {
+                     return candidate.identifier == identifier;
+                   });
+  return control == device.controls.end() ? nullptr : &*control;
+}
+
+bool valid_control_value(const IOAudio2ControlDescription &control,
+                         std::uint32_t value) {
+  if (control.read_only)
+    return false;
+  if (!control.items.empty()) {
+    return std::ranges::any_of(
+        control.items, [value](const IOAudio2SelectorItemDescription &item) {
+          return item.value == value;
+        });
+  }
+  if (control.range) {
+    const auto maximum =
+        static_cast<std::uint64_t>(control.range->start_integer_value) +
+        control.range->integer_steps;
+    return value >= control.range->start_integer_value && value <= maximum;
+  }
+  return value <= 1U;
 }
 
 std::uint32_t read_u32(std::span<const std::byte> bytes, std::size_t offset) {
@@ -207,10 +176,11 @@ bool valid_stream_format(std::span<const std::byte> format) {
 
 KernelSharedState::IOKitRegistryProperty
 stream_format_property(const IOKitAudioAbiProfile &profile,
-                       const StreamFormatDescription &format) {
+                       const IOAudio2StreamFormatDescription &format,
+                       bool ranged = false) {
   std::map<std::string, KernelSharedState::IOKitRegistryProperty> properties;
   properties.emplace(profile.registry.sample_rate,
-                     number_property(format.sample_rate));
+                     number64_property(fixed_sample_rate(format.sample_rate)));
   properties.emplace(profile.registry.format_id,
                      number_property(format.format_id));
   properties.emplace(profile.registry.format_flags,
@@ -225,15 +195,24 @@ stream_format_property(const IOKitAudioAbiProfile &profile,
                      number_property(format.channels_per_frame));
   properties.emplace(profile.registry.bits_per_channel,
                      number_property(format.bits_per_channel));
+  if (ranged) {
+    properties.emplace(
+        profile.registry.minimum_sample_rate,
+        number64_property(fixed_sample_rate(format.sample_rate)));
+    properties.emplace(
+        profile.registry.maximum_sample_rate,
+        number64_property(fixed_sample_rate(format.sample_rate)));
+  }
   return dictionary_property(std::move(properties));
 }
 
 KernelSharedState::IOKitRegistryProperty
 streams_property(const IOKitAudioAbiProfile &profile,
-                 StreamDescription::Direction direction) {
+                 const IOAudio2DeviceDescription &device,
+                 IOAudio2StreamDirection direction) {
   std::vector<KernelSharedState::IOKitRegistryProperty> streams;
-  streams.reserve(built_in_audio.streams.size());
-  for (const auto &stream : built_in_audio.streams) {
+  streams.reserve(device.streams.size());
+  for (const auto &stream : device.streams) {
     if (stream.direction != direction)
       continue;
     std::map<std::string, KernelSharedState::IOKitRegistryProperty> properties;
@@ -245,9 +224,82 @@ streams_property(const IOKitAudioAbiProfile &profile,
                        number_property(stream.buffer_mapping_options));
     properties.emplace(profile.registry.current_format,
                        stream_format_property(profile, stream.format));
+    std::vector<KernelSharedState::IOKitRegistryProperty> available_formats;
+    const auto formats = stream.available_formats.empty()
+                             ? std::span{&stream.format, 1U}
+                             : stream.available_formats;
+    available_formats.reserve(formats.size());
+    for (const auto &format : formats) {
+      available_formats.push_back(
+          stream_format_property(profile, format, true));
+    }
+    properties.emplace(profile.registry.available_formats,
+                       array_property(std::move(available_formats)));
     streams.push_back(dictionary_property(std::move(properties)));
   }
   return array_property(std::move(streams));
+}
+
+KernelSharedState::IOKitRegistryProperty
+controls_property(const IOKitAudioAbiProfile &profile,
+                  const IOAudio2DeviceDescription &device) {
+  std::vector<KernelSharedState::IOKitRegistryProperty> controls;
+  controls.reserve(device.controls.size());
+  for (const auto &control : device.controls) {
+    std::vector<KernelSharedState::IOKitRegistryProperty> selector_items;
+    selector_items.reserve(control.items.size());
+    for (const auto &item : control.items) {
+      std::map<std::string, KernelSharedState::IOKitRegistryProperty>
+          item_properties;
+      item_properties.emplace(profile.registry.control_name,
+                              string_property(item.name));
+      item_properties.emplace(profile.registry.control_value,
+                              number_property(item.value));
+      selector_items.push_back(dictionary_property(std::move(item_properties)));
+    }
+
+    std::map<std::string, KernelSharedState::IOKitRegistryProperty> properties;
+    properties.emplace(profile.registry.control_id,
+                       number_property(control.identifier));
+    properties.emplace(profile.registry.control_base_class,
+                       number_property(control.base_class));
+    properties.emplace(profile.registry.control_class,
+                       number_property(control.control_class));
+    properties.emplace(profile.registry.control_scope,
+                       number_property(control.scope));
+    properties.emplace(profile.registry.control_element,
+                       number_property(control.element));
+    properties.emplace(profile.registry.control_read_only,
+                       boolean_property(control.read_only));
+    properties.emplace(profile.registry.control_variant, number_property(0));
+    properties.emplace(profile.registry.control_value,
+                       number_property(control.value));
+    if (!selector_items.empty()) {
+      properties.emplace(profile.registry.control_selectors,
+                         array_property(std::move(selector_items)));
+    }
+    if (control.range) {
+      std::map<std::string, KernelSharedState::IOKitRegistryProperty>
+          range_properties;
+      range_properties.emplace(
+          profile.registry.control_range_start_integer,
+          number_property(control.range->start_integer_value));
+      range_properties.emplace(
+          profile.registry.control_range_start_db,
+          number64_property(control.range->start_db_value));
+      range_properties.emplace(profile.registry.control_range_integer_steps,
+                               number_property(control.range->integer_steps));
+      range_properties.emplace(profile.registry.control_range_db_per_step,
+                               number64_property(control.range->db_per_step));
+      properties.emplace(profile.registry.control_transfer_function,
+                         number_property(0));
+      properties.emplace(
+          profile.registry.control_range_map,
+          array_property({dictionary_property(std::move(range_properties))}));
+    }
+    controls.push_back(dictionary_property(std::move(properties)));
+  }
+  return array_property(std::move(controls));
 }
 
 bool contains(std::span<const std::byte> matching, std::string_view value) {
@@ -274,6 +326,20 @@ bool is_audio_connection_locked(const KernelSharedState &state,
          service->second.user_client_profile ==
              KernelSharedState::IOKitUserClientProfile::Audio &&
          service->second.class_name == profile.service_class;
+}
+
+const IOAudio2DeviceDescription *
+device_for_connection_locked(const KernelSharedState &state,
+                             const ProcessContext &process,
+                             std::uint32_t connection_object) {
+  if (!is_audio_connection_locked(state, process, connection_object))
+    return nullptr;
+  const auto connection = state.iokit_connections.find(connection_object);
+  for (const auto &[uid, service_object] : state.ioaudio2_services) {
+    if (service_object == connection->second.service_port)
+      return IOAudio2DeviceCatalog::find(uid);
+  }
+  return nullptr;
 }
 
 bool request_targets_current_task_locked(const KernelSharedState &state,
@@ -439,9 +505,16 @@ std::optional<std::uint32_t> handle_map_memory_request(
           .read32(message_address +
                   device_mig::io_connect_map_memory_arguments[5].request_offset)
           .value_or(0);
+  const IOAudio2DeviceDescription *device = nullptr;
+  {
+    std::lock_guard lock{state.mach_mutex};
+    device = device_for_connection_locked(state, process, connection_object);
+  }
+  if (device == nullptr)
+    return std::nullopt;
   const auto &profile = IOKitAudioAbiProfile::io_audio2();
   const auto stream_id = profile.stream_id_for_memory_type(memory_type);
-  const auto *stream = stream_id ? find_stream(*stream_id) : nullptr;
+  const auto *stream = stream_id ? find_stream(*device, *stream_id) : nullptr;
   const auto engine_status = memory_type == profile.memory.engine_status;
   const auto expected_flags = engine_status ? profile.memory.map_options
                               : stream != nullptr
@@ -460,8 +533,10 @@ std::optional<std::uint32_t> handle_map_memory_request(
                            ~(AddressSpace::page_size - 1U);
   {
     std::lock_guard lock{state.mach_mutex};
-    if (!is_audio_connection_locked(state, process, connection_object))
+    if (device_for_connection_locked(state, process, connection_object) !=
+        device) {
       return std::nullopt;
+    }
     if (!request_targets_current_task_locked(state, process, task_name)) {
       return write_map_reply(memory, message_address, local_port, message_id,
                              iokit_abi::bad_argument, 0, 0);
@@ -542,7 +617,9 @@ std::optional<std::uint32_t> handle_unmap_memory_request(
   std::uint32_t mapped_size = 0;
   {
     std::lock_guard lock{state.mach_mutex};
-    if (!is_audio_connection_locked(state, process, connection_object))
+    const auto *device =
+        device_for_connection_locked(state, process, connection_object);
+    if (device == nullptr)
       return std::nullopt;
     const auto connection =
         state.iokit_audio_connections.find(connection_object);
@@ -550,7 +627,7 @@ std::optional<std::uint32_t> handle_unmap_memory_request(
     const auto stream_id = profile.stream_id_for_memory_type(memory_type);
     const auto known_memory_type =
         memory_type == profile.memory.engine_status ||
-        (stream_id && find_stream(*stream_id) != nullptr);
+        (stream_id && find_stream(*device, *stream_id) != nullptr);
     KernelSharedState::IOKitAudioConnectionState::MemoryMapping mapping;
     if (connection != state.iokit_audio_connections.end()) {
       const auto found = connection->second.memory_mappings.find(memory_type);
@@ -586,25 +663,43 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
                         std::span<const std::uint64_t> scalar_input,
                         std::span<const std::byte> inband_input,
                         std::uint32_t scalar_output_capacity) {
+  // The generated IOAudio2 client reserves one scalar result slot for void
+  // methods. It is a capacity, not part of a method's input contract.
+  static_cast<void>(scalar_output_capacity);
   std::lock_guard lock{state.mach_mutex};
-  if (!is_audio_connection_locked(state, process, connection_object))
+  const auto *device =
+      device_for_connection_locked(state, process, connection_object);
+  if (device == nullptr)
     return std::nullopt;
 
   const auto &profile = IOKitAudioAbiProfile::io_audio2();
   auto &connection = state.iokit_audio_connections[connection_object];
   if (selector == profile.selectors.start ||
       selector == profile.selectors.stop) {
-    if (!scalar_input.empty() || !inband_input.empty() ||
-        scalar_output_capacity != 0) {
+    if (!scalar_input.empty() || !inband_input.empty()) {
       return MethodResult{iokit_abi::bad_argument, {}};
     }
     connection.running = selector == profile.selectors.start;
     return MethodResult{iokit_abi::success, {}};
   }
 
+  if (selector == profile.selectors.set_control_value) {
+    if (scalar_input.size() != 2 || !inband_input.empty() ||
+        scalar_input[0] > std::numeric_limits<std::uint32_t>::max() ||
+        scalar_input[1] > std::numeric_limits<std::uint32_t>::max()) {
+      return MethodResult{iokit_abi::bad_argument, {}};
+    }
+    const auto identifier = static_cast<std::uint32_t>(scalar_input[0]);
+    const auto value = static_cast<std::uint32_t>(scalar_input[1]);
+    const auto *control = find_control(*device, identifier);
+    if (control == nullptr || !valid_control_value(*control, value))
+      return MethodResult{iokit_abi::bad_argument, {}};
+    connection.control_values[identifier] = value;
+    return MethodResult{iokit_abi::success, {}};
+  }
+
   if (selector == profile.selectors.set_nominal_sample_rate) {
-    if (!scalar_input.empty() || inband_input.size() != sizeof(double) ||
-        scalar_output_capacity != 0) {
+    if (!scalar_input.empty() || inband_input.size() != sizeof(double)) {
       return MethodResult{iokit_abi::bad_argument, {}};
     }
     const auto sample_rate = read_double(inband_input, 0);
@@ -619,12 +714,11 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
 
   if (selector == profile.selectors.set_stream_current_format) {
     if (scalar_input.size() != 2 || !valid_stream_format(inband_input) ||
-        scalar_output_capacity != 0 ||
         scalar_input.front() > std::numeric_limits<std::uint32_t>::max()) {
       return MethodResult{iokit_abi::bad_argument, {}};
     }
     const auto stream_id = static_cast<std::uint32_t>(scalar_input.front());
-    if (find_stream(stream_id) == nullptr)
+    if (find_stream(*device, stream_id) == nullptr)
       return MethodResult{iokit_abi::bad_argument, {}};
     connection.streams[stream_id].current_format.assign(inband_input.begin(),
                                                         inband_input.end());
@@ -633,13 +727,12 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
 
   if (selector == profile.selectors.set_stream_active) {
     if (scalar_input.size() != 2 || !inband_input.empty() ||
-        scalar_output_capacity != 0 ||
         scalar_input[0] > std::numeric_limits<std::uint32_t>::max() ||
         scalar_input[1] > 1) {
       return MethodResult{iokit_abi::bad_argument, {}};
     }
     const auto stream_id = static_cast<std::uint32_t>(scalar_input[0]);
-    if (find_stream(stream_id) == nullptr)
+    if (find_stream(*device, stream_id) == nullptr)
       return MethodResult{iokit_abi::bad_argument, {}};
     connection.streams[stream_id].active = scalar_input[1] != 0;
     return MethodResult{iokit_abi::success, {}};
@@ -652,51 +745,65 @@ bool matches_service(std::span<const std::byte> matching) {
   return contains(matching, IOKitAudioAbiProfile::io_audio2().service_class);
 }
 
-std::uint32_t ensure_service_locked(KernelSharedState &state) {
-  if (state.ioaudio2_service != 0)
-    return state.ioaudio2_service;
-
-  const auto object = state.allocate_mach_object();
-  state.ioaudio2_service = object;
-  static_cast<void>(state.mach_port_objects.create(object));
-  state.mach_queues.try_emplace(object);
-
+std::vector<std::uint32_t> ensure_services_locked(KernelSharedState &state) {
   const auto &profile = IOKitAudioAbiProfile::io_audio2();
-  std::map<std::string, KernelSharedState::IOKitRegistryProperty> properties;
-  properties.emplace(profile.registry.device_name,
-                     string_property(built_in_audio.name));
-  properties.emplace(profile.registry.device_manufacturer,
-                     string_property(built_in_audio.manufacturer));
-  properties.emplace(profile.registry.device_uid,
-                     string_property(built_in_audio.uid));
-  properties.emplace(profile.registry.exclusive_access_owner,
-                     number_property(~std::uint32_t{0}));
-  properties.emplace(profile.registry.io_buffer_frame_size,
-                     number_property(built_in_audio.io_buffer_frame_size));
-  properties.emplace(profile.registry.input_safety_offset, number_property(0));
-  properties.emplace(profile.registry.output_safety_offset, number_property(0));
-  properties.emplace(profile.registry.input_latency, number_property(0));
-  properties.emplace(profile.registry.output_latency, number_property(0));
-  properties.emplace(
-      profile.registry.sample_rate,
-      number_property(built_in_audio.streams.front().format.sample_rate));
-  properties.emplace(profile.registry.is_running, boolean_property(false));
-  properties.emplace(
-      profile.registry.input_streams,
-      streams_property(profile, StreamDescription::Direction::Input));
-  properties.emplace(
-      profile.registry.output_streams,
-      streams_property(profile, StreamDescription::Direction::Output));
+  std::vector<std::uint32_t> services;
+  services.reserve(IOAudio2DeviceCatalog::devices().size());
+  for (const auto &device : IOAudio2DeviceCatalog::devices()) {
+    const auto cached = state.ioaudio2_services.find(std::string{device.uid});
+    if (cached != state.ioaudio2_services.end() &&
+        state.iokit_services.contains(cached->second)) {
+      services.push_back(cached->second);
+      continue;
+    }
 
-  state.iokit_services.emplace(
-      object, KernelSharedState::IOKitService{
-                  std::string{profile.service_class},
-                  {"IOService"},
-                  std::move(properties),
-                  std::string{profile.registry_path},
-                  0,
-                  KernelSharedState::IOKitUserClientProfile::Audio});
-  return object;
+    const auto object = state.allocate_mach_object();
+    state.ioaudio2_services[std::string{device.uid}] = object;
+    static_cast<void>(state.mach_port_objects.create(object));
+    state.mach_queues.try_emplace(object);
+
+    std::map<std::string, KernelSharedState::IOKitRegistryProperty> properties;
+    properties.emplace(profile.registry.device_name,
+                       string_property(device.name));
+    properties.emplace(profile.registry.device_manufacturer,
+                       string_property(device.manufacturer));
+    properties.emplace(profile.registry.device_uid,
+                       string_property(device.uid));
+    properties.emplace(profile.registry.exclusive_access_owner,
+                       number_property(~std::uint32_t{0}));
+    properties.emplace(profile.registry.io_buffer_frame_size,
+                       number_property(device.io_buffer_frame_size));
+    properties.emplace(profile.registry.input_safety_offset,
+                       number_property(0));
+    properties.emplace(profile.registry.output_safety_offset,
+                       number_property(0));
+    properties.emplace(profile.registry.input_latency, number_property(0));
+    properties.emplace(profile.registry.output_latency, number_property(0));
+    properties.emplace(profile.registry.sample_rate,
+                       number64_property(fixed_sample_rate(
+                           device.streams.front().format.sample_rate)));
+    properties.emplace(profile.registry.is_running, boolean_property(false));
+    properties.emplace(
+        profile.registry.input_streams,
+        streams_property(profile, device, IOAudio2StreamDirection::Input));
+    properties.emplace(
+        profile.registry.output_streams,
+        streams_property(profile, device, IOAudio2StreamDirection::Output));
+    properties.emplace(profile.registry.controls,
+                       controls_property(profile, device));
+
+    state.iokit_services.emplace(
+        object,
+        KernelSharedState::IOKitService{
+            std::string{profile.service_class},
+            {"IOService"},
+            std::move(properties),
+            std::string{profile.registry_path} + "/" + std::string{device.uid},
+            0,
+            KernelSharedState::IOKitUserClientProfile::Audio});
+    services.push_back(object);
+  }
+  return services;
 }
 
 std::optional<std::uint32_t>

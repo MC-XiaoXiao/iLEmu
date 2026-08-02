@@ -39,11 +39,29 @@ struct IOKitAudioAbiProfile {
     std::string_view bits_per_channel;
     std::string_view minimum_sample_rate;
     std::string_view maximum_sample_rate;
+    std::string_view control_id;
+    std::string_view control_base_class;
+    std::string_view control_class;
+    std::string_view control_scope;
+    std::string_view control_element;
+    std::string_view control_read_only;
+    std::string_view control_variant;
+    std::string_view control_name;
+    std::string_view control_value;
+    std::string_view control_selectors;
+    std::string_view control_selector_kind;
+    std::string_view control_transfer_function;
+    std::string_view control_range_map;
+    std::string_view control_range_start_integer;
+    std::string_view control_range_start_db;
+    std::string_view control_range_integer_steps;
+    std::string_view control_range_db_per_step;
   };
 
   struct Selectors {
     std::uint32_t start;
     std::uint32_t stop;
+    std::uint32_t set_control_value;
     std::uint32_t set_nominal_sample_rate;
     std::uint32_t set_stream_current_format;
     std::uint32_t set_stream_active;

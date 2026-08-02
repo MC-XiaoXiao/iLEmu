@@ -421,15 +421,17 @@ serialize_property_xml(const KernelSharedState::IOKitRegistryProperty &property,
                ? "<true/>"
                : "<false/>";
   case Kind::Number: {
-    std::uint32_t value = 0;
+    std::uint64_t value = 0;
     for (std::size_t index = 0;
          index < std::min(property.value.size(), sizeof(value)); ++index) {
-      value |= static_cast<std::uint32_t>(property.value[index])
+      value |= static_cast<std::uint64_t>(property.value[index])
                << (index * 8U);
     }
+    const auto bit_width =
+        property.value.size() > sizeof(std::uint32_t) ? 64 : 32;
     std::ostringstream stream;
-    stream << "<integer size=\"32\" ID=\"" << identifier++ << "\">0x"
-           << std::hex << value << "</integer>";
+    stream << "<integer size=\"" << bit_width << "\" ID=\"" << identifier++
+           << "\">0x" << std::hex << value << "</integer>";
     return stream.str();
   }
   case Kind::Array: {
@@ -831,8 +833,10 @@ void populate_matching_services_locked(KernelSharedState &shared_state,
         kernel_iokit::baseband::ensure_service_locked(shared_state));
   }
   if (kernel_iokit::audio::matches_service(matching)) {
-    services.push_back(
-        kernel_iokit::audio::ensure_service_locked(shared_state));
+    const auto audio_services =
+        kernel_iokit::audio::ensure_services_locked(shared_state);
+    services.insert(services.end(), audio_services.begin(),
+                    audio_services.end());
   }
   if (contains_text(matching, io_ipod_usb_device_class)) {
     services.push_back(ensure_usb_device_mux_service_locked(shared_state));

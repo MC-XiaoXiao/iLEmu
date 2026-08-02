@@ -543,6 +543,7 @@ struct KernelSharedState {
     std::uint32_t registration_reference{};
     std::map<std::uint32_t, MemoryMapping> memory_mappings;
     std::map<std::uint32_t, StreamState> streams;
+    std::map<std::uint32_t, std::uint32_t> control_values;
     std::vector<std::byte> nominal_sample_rate;
     bool running{};
   };
@@ -1069,7 +1070,9 @@ struct KernelSharedState {
   std::uint32_t baseband_service{};
   bsd::baseband_device::State baseband_device_state;
   std::uint32_t mobile_framebuffer_service{};
-  std::uint32_t ioaudio2_service{};
+  // IOAudio2 publishes independent Codec/Baseband-style endpoints. Key by
+  // firmware-facing UID so a released service can be recreated independently.
+  std::map<std::string, std::uint32_t> ioaudio2_services;
   bool wifi_service_available{};
   std::uint32_t wifi_service{};
   std::uint32_t wifi_interface_service{};

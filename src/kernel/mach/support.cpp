@@ -431,9 +431,9 @@ void remove_port_object_locked(KernelSharedState &state, std::uint32_t object) {
   if (state.mobile_framebuffer_service == object) {
     state.mobile_framebuffer_service = 0;
   }
-  if (state.ioaudio2_service == object) {
-    state.ioaudio2_service = 0;
-  }
+  std::erase_if(state.ioaudio2_services, [object](const auto &service) {
+    return service.second == object;
+  });
   if (state.wifi_service == object) {
     state.wifi_service = 0;
   }

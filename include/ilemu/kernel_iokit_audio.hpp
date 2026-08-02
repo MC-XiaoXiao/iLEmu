@@ -29,8 +29,10 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
 
 [[nodiscard]] bool matches_service(std::span<const std::byte> matching);
 
-// The caller holds KernelSharedState::mach_mutex.
-[[nodiscard]] std::uint32_t ensure_service_locked(KernelSharedState &state);
+// The caller holds KernelSharedState::mach_mutex. IOAudio2 publishes one
+// service per physical endpoint, so matching returns the complete catalog.
+[[nodiscard]] std::vector<std::uint32_t>
+ensure_services_locked(KernelSharedState &state);
 
 [[nodiscard]] std::optional<std::uint32_t>
 handle_mach_request(AddressSpace &memory, Output &output,
