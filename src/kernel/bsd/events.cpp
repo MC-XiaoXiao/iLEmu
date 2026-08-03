@@ -1583,11 +1583,12 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
     const auto process_selector =
         *mib0 == darwin::sysctl::control_kernel &&
                 *mib1 == darwin::sysctl::kernel_process &&
-                registers[1] == 4
+                (registers[1] == 3 || registers[1] == 4)
             ? memory_.read32(registers[0] + 8)
             : std::nullopt;
     if (process_selector &&
-        *process_selector == darwin::sysctl::kernel_process_all) {
+        *process_selector == darwin::sysctl::kernel_process_all &&
+        registers[1] == 3) {
       if (registers[3] == 0) {
         bsd_error(cpu, bsd_support::bad_address);
         return;
@@ -1637,7 +1638,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       return;
     }
     if (process_selector &&
-        *process_selector == darwin::sysctl::kernel_process_id) {
+        *process_selector == darwin::sysctl::kernel_process_id &&
+        registers[1] == 4) {
       // CTL_KERN/KERN_PROC/KERN_PROC_PID.
       const auto kinfo_proc_size =
           darwin::sysctl::arm32_kernel_process_info_size;
@@ -1890,8 +1892,10 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       bsd_success(cpu, 0);
       return;
     }
-    if ((*mib0 == 1 && (*mib1 == 6 || *mib1 == 7 || *mib1 == 8 || *mib1 == 35 ||
-                        *mib1 == 40 || *mib1 == 54 || *mib1 == 66)) ||
+    if ((*mib0 == 1 &&
+         (*mib1 == 6 || *mib1 == 7 || *mib1 == 8 ||
+          *mib1 == darwin::sysctl::kernel_maximum_files_per_process ||
+          *mib1 == 35 || *mib1 == 40 || *mib1 == 54 || *mib1 == 66)) ||
         (*mib0 == 6 &&
          (*mib1 == 3 || *mib1 == 4 || *mib1 == 5 || *mib1 == 6 || *mib1 == 7 ||
           *mib1 == 11 || *mib1 == 13 || *mib1 == 25))) {
@@ -1924,6 +1928,10 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
           case 8:
             value = 262'144;
             break; // KERN_ARGMAX
+          case darwin::sysctl::kernel_maximum_files_per_process:
+            value = static_cast<std::uint32_t>(
+                darwin::resource::maximum_open_files);
+            break;
           case 35:
             value = 0x30000000U;
             break; // KERN_USRSTACK32

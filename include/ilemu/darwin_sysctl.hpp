@@ -17,6 +17,7 @@ inline constexpr std::uint32_t control_hardware = 6;
 inline constexpr std::uint32_t operation_name_to_oid = 3;
 inline constexpr std::uint32_t kernel_security_level = 9;
 inline constexpr std::uint32_t kernel_process = 14;
+inline constexpr std::uint32_t kernel_maximum_files_per_process = 29;
 inline constexpr std::uint32_t kernel_process_arguments = 38;
 inline constexpr std::uint32_t kernel_process_arguments2 = 49;
 inline constexpr std::uint32_t kernel_process_all = 0;
