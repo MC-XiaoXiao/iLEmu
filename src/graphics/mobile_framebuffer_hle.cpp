@@ -26,6 +26,7 @@
 #include "ilemu/presentation_tracker.hpp"
 #include "ilemu/scene_coordinator.hpp"
 #include "ilemu/surface_store.hpp"
+#include "ilemu/surface_transport_profile.hpp"
 #include "ilemu/userland_hle.hpp"
 
 namespace ilemu {
@@ -55,8 +56,10 @@ MobileFramebufferHle::MobileFramebufferHle(
     registry.register_function(std::string{framebuffer_image},
                                std::move(symbol), std::move(handler));
   };
-  // IOMobileFramebufferOpen intentionally executes from the firmware: it
-  // allocates a genuine CFRuntime object and opens only our display handle.
+  // IOMobileFramebufferGetTypeID and IOMobileFramebufferOpen intentionally
+  // execute from the firmware: the former registers the real CFRuntime class,
+  // and the latter allocates that genuine object and opens only our display
+  // handle.
   add("_IOMobileFramebufferGetDisplaySize", [this](UserlandHleCall &call) {
     const auto output = call.argument(1);
     const auto geometry = display_ ? display_->geometry()
@@ -136,8 +139,6 @@ MobileFramebufferHle::MobileFramebufferHle(
       [this](UserlandHleCall &call) { set_layer(call); });
   add("_IOMobileFramebufferSwapWait", success);
   add("_IOMobileFramebufferCreateStatistics",
-      [](UserlandHleCall &call) { call.set_return(0); });
-  add("_IOMobileFramebufferGetTypeID",
       [](UserlandHleCall &call) { call.set_return(0); });
 }
 
@@ -584,21 +585,29 @@ void MobileFramebufferHle::set_layer(UserlandHleCall &call) {
     call.set_return(iokit_abi::success);
     return;
   }
+  // CoreSurface-era firmware stores a CoreSurfaceClientBuffer here. When the
+  // IOSurface symbol family is loaded, the genuine CoreSurface CFRuntime
+  // wrapper forwards to an IOSurfaceClient instead. Select by that exported
+  // transport capability, not by firmware build or calling application.
+  const auto &transport =
+      call.image_loaded(surface_transport::io_surface_client.image_suffix)
+          ? surface_transport::io_surface_client
+          : surface_transport::core_surface_client_buffer;
   if (surface > std::numeric_limits<std::uint32_t>::max() -
-                    core_surface_abi::public_client_buffer_offset) {
+                    transport.public_client_pointer_offset) {
     call.set_return(iokit_abi::bad_argument);
     return;
   }
   const auto client = call.memory().read32(
-      surface + core_surface_abi::public_client_buffer_offset);
+      surface + transport.public_client_pointer_offset);
   if (!client || *client == 0 ||
       *client > std::numeric_limits<std::uint32_t>::max() -
-                    core_surface_abi::client_identifier_offset) {
+                    transport.identifier_offset) {
     call.set_return(iokit_abi::bad_argument);
     return;
   }
   const auto identifier = call.memory().read32(
-      *client + core_surface_abi::client_identifier_offset);
+      *client + transport.identifier_offset);
   if (!identifier || *identifier == 0 || !surface_store_->find(*identifier)) {
     call.set_return(iokit_abi::bad_argument);
     return;
