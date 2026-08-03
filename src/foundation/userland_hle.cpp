@@ -51,8 +51,7 @@ std::string_view hle_subsystem(std::string_view image_suffix) {
 // while preserving the normal subsystem aggregation for every other HLE.
 std::string_view hle_performance_bucket(std::string_view image_suffix,
                                         std::string_view symbol) {
-  if (symbol.starts_with("_mbx") ||
-      symbol.starts_with("_CoreSurface") ||
+  if (symbol.starts_with("_mbx") || symbol.starts_with("_CoreSurface") ||
       symbol.starts_with("__coreSurface") ||
       symbol.starts_with("_IOMobileFramebuffer")) {
     return symbol;
@@ -76,8 +75,7 @@ std::array<std::byte, 2> little_endian_halfword(std::uint16_t value) {
   };
 }
 
-std::uint16_t
-halfword_from_little_endian(std::span<const std::byte, 2> bytes) {
+std::uint16_t halfword_from_little_endian(std::span<const std::byte, 2> bytes) {
   return static_cast<std::uint16_t>(
       std::to_integer<std::uint16_t>(bytes[0]) |
       (std::to_integer<std::uint16_t>(bytes[1]) << 8U));
@@ -167,17 +165,16 @@ make_persistent_thumb_trampoline(std::span<const std::byte, 2> original,
   if ((instruction & literal_load_mask) == literal_word_load) {
     const auto target_register = (instruction >> 8U) & 0x7U;
     const auto original_pc = (entry + 4U) & ~3U;
-    const auto literal_address =
-        original_pc + ((instruction & 0xffU) << 2U);
+    const auto literal_address = original_pc + ((instruction & 0xffU) << 2U);
     std::vector<std::byte> code;
     code.reserve(5U * sizeof(std::uint32_t));
     // Load the original absolute literal address into the destination, then
     // perform the load that the relocated Thumb instruction intended.
     append_halfword(code, static_cast<std::uint16_t>(
                               0x4800U | (target_register << 8U) | 3U));
-    append_halfword(code, static_cast<std::uint16_t>(
-                              0x6800U | (target_register << 3U) |
-                              target_register));
+    append_halfword(code, static_cast<std::uint16_t>(0x6800U |
+                                                     (target_register << 3U) |
+                                                     target_register));
     append_arm_return(code, entry + 2U);
     append_word(code, literal_address);
     return code;
@@ -207,9 +204,9 @@ make_persistent_thumb_trampoline(std::span<const std::byte, 2> original,
       displacement -= 0x1000;
     std::vector<std::byte> code;
     code.reserve(3U * sizeof(std::uint32_t));
-    append_arm_return(code, static_cast<std::uint32_t>(
-                                static_cast<std::int64_t>(entry + 4U) +
-                                displacement));
+    append_arm_return(
+        code, static_cast<std::uint32_t>(static_cast<std::int64_t>(entry + 4U) +
+                                         displacement));
     return code;
   }
 
@@ -249,15 +246,12 @@ bool append_utf8(std::string &output, std::uint32_t codepoint) {
     output.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
   } else if (codepoint <= 0xffffU) {
     output.push_back(static_cast<char>(0xe0U | (codepoint >> 12U)));
-    output.push_back(
-        static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3fU)));
+    output.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3fU)));
     output.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
   } else if (codepoint <= 0x10ffffU) {
     output.push_back(static_cast<char>(0xf0U | (codepoint >> 18U)));
-    output.push_back(
-        static_cast<char>(0x80U | ((codepoint >> 12U) & 0x3fU)));
-    output.push_back(
-        static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3fU)));
+    output.push_back(static_cast<char>(0x80U | ((codepoint >> 12U) & 0x3fU)));
+    output.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3fU)));
     output.push_back(static_cast<char>(0x80U | (codepoint & 0x3fU)));
   } else {
     return false;
@@ -288,12 +282,11 @@ read_utf16_string(const AddressSpace &memory, std::uint32_t address,
       if (++index >= limit)
         return std::nullopt;
       const auto second_offset = static_cast<std::uint64_t>(index) * 2U;
-      if (second_offset >
-          std::numeric_limits<std::uint32_t>::max() - address) {
+      if (second_offset > std::numeric_limits<std::uint32_t>::max() - address) {
         return std::nullopt;
       }
-      const auto second = memory.read16(
-          address + static_cast<std::uint32_t>(second_offset));
+      const auto second =
+          memory.read16(address + static_cast<std::uint32_t>(second_offset));
       if (!second || *second < 0xdc00U || *second > 0xdfffU)
         return std::nullopt;
       codepoint = 0x10000U +
@@ -390,8 +383,7 @@ bool UserlandHleCall::image_loaded(std::string_view image_suffix) const {
   return registry_.image_loaded(image_suffix);
 }
 
-bool UserlandHleCall::image_loaded_beneath(
-    std::string_view directory) const {
+bool UserlandHleCall::image_loaded_beneath(std::string_view directory) const {
   return registry_.image_loaded_beneath(directory);
 }
 
@@ -401,16 +393,19 @@ void UserlandHleCall::set_return(std::uint32_t value) {
 
 bool UserlandHleCall::tail_call_registered(std::string_view symbol) {
   const auto address = registry_.symbol_address(symbol);
-  if (!address) return false;
+  if (!address)
+    return false;
   const auto installed = registry_.installed_calls_.find(*address);
-  if (installed == registry_.installed_calls_.end()) return false;
+  if (installed == registry_.installed_calls_.end())
+    return false;
   tail_call_address_ = *address | (installed->second.thumb ? 1U : 0U);
   return true;
 }
 
 bool UserlandHleCall::call_guest_function(std::string_view symbol,
                                           Continuation continuation) {
-  if (!continuation) return false;
+  if (!continuation)
+    return false;
   const auto address = registry_.symbol_address(symbol);
   const auto thumb = registry_.installed_symbol_thumb_.find(symbol);
   if (!address || thumb == registry_.installed_symbol_thumb_.end()) {
@@ -418,26 +413,26 @@ bool UserlandHleCall::call_guest_function(std::string_view symbol,
   }
   const auto return_gate = registry_.install_continuation(
       cpu_, cpu_.registers()[14], std::move(continuation));
-  if (!return_gate) return false;
+  if (!return_gate)
+    return false;
   cpu_.registers()[14] = *return_gate;
   tail_call_address_ = *address | (thumb->second ? 1U : 0U);
   return true;
 }
 
-bool UserlandHleCall::defer_guest_function(
-    std::string_view symbol, Continuation setup,
-    Continuation completion) {
-  return registry_.defer_guest_function(
-      symbol, cpu_.processor_id(), true, std::move(setup),
-      std::move(completion));
+bool UserlandHleCall::defer_guest_function(std::string_view symbol,
+                                           Continuation setup,
+                                           Continuation completion) {
+  return registry_.defer_guest_function(symbol, cpu_.processor_id(), true,
+                                        std::move(setup),
+                                        std::move(completion));
 }
 
 bool UserlandHleCall::continue_deferred_guest_function(
-    std::string_view symbol, Continuation setup,
-    Continuation completion) {
-  return registry_.defer_guest_function(
-      symbol, cpu_.processor_id(), false, std::move(setup),
-      std::move(completion));
+    std::string_view symbol, Continuation setup, Continuation completion) {
+  return registry_.defer_guest_function(symbol, cpu_.processor_id(), false,
+                                        std::move(setup),
+                                        std::move(completion));
 }
 
 void UserlandHleCall::resume_original() { resume_original_ = true; }
@@ -446,8 +441,7 @@ void UserlandHleCall::resume_original_persistently() {
   resume_original_persistently_ = true;
 }
 
-void UserlandHleCall::resume_original_persistently(
-    Continuation continuation) {
+void UserlandHleCall::resume_original_persistently(Continuation continuation) {
   resume_original_persistently_ = true;
   original_continuation_ = std::move(continuation);
 }
@@ -474,7 +468,7 @@ void UserlandHleRegistry::register_function(std::string image_suffix,
   registrations_.push_back(
       Registration{static_cast<std::uint16_t>(registrations_.size() + 1U),
                    std::move(image_suffix), std::move(symbol), false,
-                   std::nullopt, std::nullopt, std::move(handler)});
+                   std::nullopt, std::nullopt, false, std::move(handler)});
 }
 
 void UserlandHleRegistry::register_prefix(std::string image_suffix,
@@ -486,18 +480,17 @@ void UserlandHleRegistry::register_prefix(std::string image_suffix,
   registrations_.push_back(
       Registration{static_cast<std::uint16_t>(registrations_.size() + 1U),
                    std::move(image_suffix), std::move(symbol_prefix), true,
-                   std::nullopt, std::nullopt, std::move(handler)});
+                   std::nullopt, std::nullopt, false, std::move(handler)});
 }
 
-void UserlandHleRegistry::register_guest_function(
-    std::string image_suffix, std::string symbol) {
+void UserlandHleRegistry::register_guest_function(std::string image_suffix,
+                                                  std::string symbol) {
   if (image_suffix.empty() || symbol.empty()) {
     throw std::runtime_error{"invalid guest function registration"};
   }
-  const auto dependency = std::pair{std::move(image_suffix),
-                                    std::move(symbol)};
-  if (std::find(guest_functions_.begin(), guest_functions_.end(),
-                dependency) != guest_functions_.end()) {
+  const auto dependency = std::pair{std::move(image_suffix), std::move(symbol)};
+  if (std::find(guest_functions_.begin(), guest_functions_.end(), dependency) !=
+      guest_functions_.end()) {
     throw std::runtime_error{"duplicate guest function registration: " +
                              dependency.second};
   }
@@ -527,7 +520,35 @@ void UserlandHleRegistry::register_objc_instance_method(
   registrations_.push_back(Registration{
       static_cast<std::uint16_t>(registrations_.size() + 1U),
       std::move(image_suffix), std::move(diagnostic_name), false, std::nullopt,
-      std::pair{std::move(class_name), std::move(selector)},
+      std::pair{std::move(class_name), std::move(selector)}, false,
+      std::move(handler)});
+}
+
+void UserlandHleRegistry::register_objc_class_method(
+    std::string image_suffix, std::string class_name, std::string selector,
+    std::string diagnostic_name, Handler handler) {
+  if (!handler || class_name.empty() || selector.empty() ||
+      diagnostic_name.empty() ||
+      registrations_.size() >= userland_hle_call_mask) {
+    throw std::runtime_error{
+        "invalid or exhausted userspace Objective-C HLE registration"};
+  }
+  const auto duplicate =
+      std::find_if(registrations_.begin(), registrations_.end(),
+                   [&](const Registration &registration) {
+                     return registration.image_suffix == image_suffix &&
+                            registration.objc_class_method &&
+                            registration.objc_instance_method ==
+                                std::optional{std::pair{class_name, selector}};
+                   });
+  if (duplicate != registrations_.end()) {
+    throw std::runtime_error{"duplicate userspace Objective-C method: " +
+                             diagnostic_name};
+  }
+  registrations_.push_back(Registration{
+      static_cast<std::uint16_t>(registrations_.size() + 1U),
+      std::move(image_suffix), std::move(diagnostic_name), false, std::nullopt,
+      std::pair{std::move(class_name), std::move(selector)}, true,
       std::move(handler)});
 }
 
@@ -553,7 +574,7 @@ void UserlandHleRegistry::register_address(std::string image_suffix,
   registrations_.push_back(
       Registration{static_cast<std::uint16_t>(registrations_.size() + 1U),
                    std::move(image_suffix), std::move(diagnostic_name), false,
-                   virtual_address, std::nullopt, std::move(handler)});
+                   virtual_address, std::nullopt, false, std::move(handler)});
 }
 
 UserlandHleRegistry::Registration *
@@ -648,8 +669,8 @@ std::size_t UserlandHleRegistry::install_mapped_image(
                      });
     if (hle_relevant || guest_dependency != guest_functions_.end()) {
       installed_symbols_.insert_or_assign(symbol.name, runtime_address);
-      installed_symbol_thumb_.insert_or_assign(
-          symbol.name, symbol.thumb_definition());
+      installed_symbol_thumb_.insert_or_assign(symbol.name,
+                                               symbol.thumb_definition());
     }
 
     auto *registration = select_registration(path, symbol.name);
@@ -749,21 +770,23 @@ std::size_t UserlandHleRegistry::install_mapped_image(
         !path_has_suffix(path, registration.image_suffix)) {
       continue;
     }
-    const auto &[class_name, selector] =
-        *registration.objc_instance_method;
+    const auto &[class_name, selector] = *registration.objc_instance_method;
     const auto method =
-        image.find_objc_instance_method(class_name, selector);
-    if (!method) continue;
+        registration.objc_class_method
+            ? image.find_objc_class_method(class_name, selector)
+            : image.find_objc_instance_method(class_name, selector);
+    if (!method)
+      continue;
     const bool thumb = (*method & 1U) != 0;
     const auto preferred_address = *method & ~1U;
     const auto segment = std::find_if(
         image.segments().begin(), image.segments().end(),
         [&](const MachSegment &candidate) {
           return preferred_address >= candidate.vm_address &&
-                 preferred_address - candidate.vm_address <
-                     candidate.file_size;
+                 preferred_address - candidate.vm_address < candidate.file_size;
         });
-    if (segment == image.segments().end()) continue;
+    if (segment == image.segments().end())
+      continue;
     const auto address_file_offset =
         static_cast<std::uint64_t>(segment->file_offset) +
         (preferred_address - segment->vm_address);
@@ -779,22 +802,27 @@ std::size_t UserlandHleRegistry::install_mapped_image(
     }
     const auto runtime_address =
         mapping_address + static_cast<std::uint32_t>(mapping_delta);
-    if (installed_calls_.contains(runtime_address)) continue;
+    if (installed_calls_.contains(runtime_address))
+      continue;
     const auto original = memory_.read_bytes(runtime_address, patch_size);
-    if (!original) continue;
+    if (!original)
+      continue;
     bool copied = false;
     if (thumb) {
       const auto instruction = little_endian_halfword(
           static_cast<std::uint16_t>(0xdf00U | userland_hle_thumb_svc));
       copied = memory_.copy_in(runtime_address, instruction);
-      if (copied) cpu.invalidate_cache_range(runtime_address, instruction.size());
+      if (copied)
+        cpu.invalidate_cache_range(runtime_address, instruction.size());
     } else {
       const auto instruction = little_endian_word(
           arm_svc_opcode | userland_hle_svc_namespace | registration.id);
       copied = memory_.copy_in(runtime_address, instruction);
-      if (copied) cpu.invalidate_cache_range(runtime_address, instruction.size());
+      if (copied)
+        cpu.invalidate_cache_range(runtime_address, instruction.size());
     }
-    if (!copied) continue;
+    if (!copied)
+      continue;
     installed_calls_.emplace(
         runtime_address,
         InstalledCall{registration.id, registration.symbol, thumb, *original});
@@ -832,8 +860,8 @@ bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
     const auto pending = pending_thread_callbacks_.find(cpu.processor_id());
     if (pending == pending_thread_callbacks_.end())
       return false;
-    UserlandHleCall call{*this, cpu, memory_, output_, process_id,
-                         thread_callback_symbol};
+    UserlandHleCall call{*this,   cpu,        memory_,
+                         output_, process_id, thread_callback_symbol};
     pending->second(call);
     // A host-backed driver owns one persistent guest callback thread. Park it
     // between device periods; the scheduler restores its registers and wakes
@@ -844,15 +872,16 @@ bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
   if (!thumb &&
       (svc_immediate & userland_hle_call_mask) == continuation_hle_call) {
     const auto pending = pending_continuations_.find(entry);
-    if (pending == pending_continuations_.end()) return false;
+    if (pending == pending_continuations_.end())
+      return false;
     auto continuation = std::move(pending->second);
     pending_continuations_.erase(pending);
     available_continuation_trampolines_.push_back(entry);
 
     auto &registers = cpu.registers();
     registers[14] = continuation.return_address;
-    UserlandHleCall call{*this, cpu, memory_, output_, process_id,
-                         continuation_symbol};
+    UserlandHleCall call{*this,   cpu,        memory_,
+                         output_, process_id, continuation_symbol};
     continuation.handler(call);
     if (call.tail_call_address_) {
       const auto target = *call.tail_call_address_;
@@ -902,9 +931,8 @@ bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
   }
   UserlandHleCall call{*this, cpu, memory_, output_, process_id, symbol};
   const auto measure_hle = performance_counters().enabled();
-  const auto hle_start = measure_hle
-                             ? std::chrono::steady_clock::now()
-                             : std::chrono::steady_clock::time_point{};
+  const auto hle_start = measure_hle ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
   registration->handler(call);
   if (measure_hle) {
     const auto elapsed = std::chrono::steady_clock::now() - hle_start;
@@ -930,9 +958,9 @@ bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
   }
   if (call.resume_original_persistently_) {
     if (installed == installed_calls_.end() ||
-        installed->second.original.size() !=
-            (installed->second.thumb ? sizeof(std::uint16_t)
-                                     : sizeof(std::uint32_t))) {
+        installed->second.original.size() != (installed->second.thumb
+                                                  ? sizeof(std::uint16_t)
+                                                  : sizeof(std::uint32_t))) {
       return false;
     }
     auto trampoline = persistent_trampolines_.find(entry);
@@ -972,7 +1000,8 @@ bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
     if (call.original_continuation_) {
       const auto continuation = install_continuation(
           cpu, registers[14], std::move(call.original_continuation_));
-      if (!continuation) return false;
+      if (!continuation)
+        return false;
       registers[14] = *continuation;
     }
     auto cpsr = cpu.cpsr();
@@ -1018,7 +1047,8 @@ bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
 std::optional<std::uint32_t> UserlandHleRegistry::install_continuation(
     Cpu &cpu, std::uint32_t return_address,
     UserlandHleCall::Continuation continuation) {
-  if (!continuation) return std::nullopt;
+  if (!continuation)
+    return std::nullopt;
   std::uint32_t address{};
   if (!available_continuation_trampolines_.empty()) {
     address = available_continuation_trampolines_.back();
@@ -1036,26 +1066,28 @@ std::optional<std::uint32_t> UserlandHleRegistry::install_continuation(
   }
   const auto instruction = little_endian_word(
       arm_svc_opcode | userland_hle_svc_namespace | continuation_hle_call);
-  if (!memory_.copy_in(address, instruction)) return std::nullopt;
+  if (!memory_.copy_in(address, instruction))
+    return std::nullopt;
   cpu.invalidate_cache_range(address, instruction.size());
   pending_continuations_.emplace(
-      address,
-      PendingContinuation{return_address, std::move(continuation)});
+      address, PendingContinuation{return_address, std::move(continuation)});
   return address;
 }
 
-bool UserlandHleRegistry::defer_guest_function(
-    std::string_view symbol, std::size_t processor_id,
-    bool wait_for_receive_boundary, Handler setup,
-    Handler completion) {
-  if (!setup) return false;
+bool UserlandHleRegistry::defer_guest_function(std::string_view symbol,
+                                               std::size_t processor_id,
+                                               bool wait_for_receive_boundary,
+                                               Handler setup,
+                                               Handler completion) {
+  if (!setup)
+    return false;
   const auto address = symbol_address(symbol);
   const auto thumb = installed_symbol_thumb_.find(symbol);
-  if (!address || thumb == installed_symbol_thumb_.end()) return false;
-  deferred_guest_calls_.push_back(
-      DeferredGuestCall{*address, processor_id,
-                        wait_for_receive_boundary, thumb->second,
-                        std::move(setup), std::move(completion)});
+  if (!address || thumb == installed_symbol_thumb_.end())
+    return false;
+  deferred_guest_calls_.push_back(DeferredGuestCall{
+      *address, processor_id, wait_for_receive_boundary, thumb->second,
+      std::move(setup), std::move(completion)});
   return true;
 }
 
@@ -1072,45 +1104,44 @@ bool UserlandHleRegistry::deliver_deferred_guest_function(
   // callback there, then restore and retry the original receive.
   constexpr std::int32_t mach_message_trap = -31;
   constexpr std::uint32_t mach_receive_message = 0x2U;
-  const auto& boundary_registers = cpu.registers();
+  const auto &boundary_registers = cpu.registers();
   const auto at_receive_boundary =
-      static_cast<std::int32_t>(boundary_registers[12]) ==
-          mach_message_trap &&
+      static_cast<std::int32_t>(boundary_registers[12]) == mach_message_trap &&
       boundary_registers[2] == 0 &&
       (boundary_registers[1] & mach_receive_message) != 0;
 
   const auto pending = std::find_if(
       deferred_guest_calls_.begin(), deferred_guest_calls_.end(),
-      [&](const DeferredGuestCall& candidate) {
+      [&](const DeferredGuestCall &candidate) {
         return candidate.processor_id == cpu.processor_id() &&
-               (!candidate.wait_for_receive_boundary ||
-                at_receive_boundary);
+               (!candidate.wait_for_receive_boundary || at_receive_boundary);
       });
-  if (pending == deferred_guest_calls_.end()) return false;
+  if (pending == deferred_guest_calls_.end())
+    return false;
   auto deferred = std::move(*pending);
   deferred_guest_calls_.erase(pending);
   const auto saved_registers = boundary_registers;
   const auto saved_cpsr = cpu.cpsr();
-  const auto interrupted_thumb =
-      (saved_cpsr & arm_thumb_state_bit) != 0;
+  const auto interrupted_thumb = (saved_cpsr & arm_thumb_state_bit) != 0;
   const auto svc_size = interrupted_thumb ? 2U : 4U;
   const auto svc_entry = saved_registers[15] - svc_size;
-  const auto return_gate = install_continuation(
-      cpu, svc_entry | (interrupted_thumb ? 1U : 0U),
-      [saved_registers, saved_cpsr,
-       completion = std::move(deferred.completion)](
-          UserlandHleCall &completed) mutable {
-        if (completion) completion(completed);
-        completed.cpu().registers() = saved_registers;
-        completed.cpu().set_cpsr(saved_cpsr);
-      });
+  const auto return_gate =
+      install_continuation(cpu, svc_entry | (interrupted_thumb ? 1U : 0U),
+                           [saved_registers, saved_cpsr,
+                            completion = std::move(deferred.completion)](
+                               UserlandHleCall &completed) mutable {
+                             if (completion)
+                               completion(completed);
+                             completed.cpu().registers() = saved_registers;
+                             completed.cpu().set_cpsr(saved_cpsr);
+                           });
   if (!return_gate) {
     deferred_guest_calls_.push_front(std::move(deferred));
     return false;
   }
 
-  UserlandHleCall setup{*this, cpu, memory_, output_, process_id,
-                        "__deferred_guest_setup"};
+  UserlandHleCall setup{*this,   cpu,        memory_,
+                        output_, process_id, "__deferred_guest_setup"};
   deferred.setup(setup);
   auto &registers = cpu.registers();
   registers[14] = *return_gate;
@@ -1138,9 +1169,9 @@ UserlandHleRegistry::prepare_thread_callback_return(Cpu &cpu) {
                        MemoryPermission::Execute)) {
     return std::nullopt;
   }
-  const auto instruction = little_endian_word(
-      arm_svc_opcode | userland_hle_svc_namespace |
-      thread_callback_return_hle_call);
+  const auto instruction =
+      little_endian_word(arm_svc_opcode | userland_hle_svc_namespace |
+                         thread_callback_return_hle_call);
   if (!memory_.copy_in(address, instruction))
     return std::nullopt;
   cpu.invalidate_cache_range(address, instruction.size());
@@ -1148,8 +1179,7 @@ UserlandHleRegistry::prepare_thread_callback_return(Cpu &cpu) {
   return address;
 }
 
-std::optional<std::uint32_t>
-UserlandHleRegistry::prepare_one_shot_return(
+std::optional<std::uint32_t> UserlandHleRegistry::prepare_one_shot_return(
     Cpu &cpu, std::uint32_t return_address, Handler completion) {
   return install_continuation(cpu, return_address, std::move(completion));
 }
@@ -1335,8 +1365,7 @@ void UserlandHleRegistry::inherit_mappings(const UserlandHleRegistry &parent) {
   deferred_guest_calls_.clear();
   available_continuation_trampolines_ =
       parent.available_continuation_trampolines_;
-  continuation_trampoline_cursor_ =
-      parent.continuation_trampoline_cursor_;
+  continuation_trampoline_cursor_ = parent.continuation_trampoline_cursor_;
   thread_callback_return_address_ = parent.thread_callback_return_address_;
   pending_thread_callbacks_.clear();
 }

@@ -483,6 +483,17 @@ std::optional<std::uint16_t> MachOImage::read_vm_u16(std::uint32_t address) cons
 
 std::optional<std::uint32_t> MachOImage::find_objc_instance_method(
     std::string_view class_name, std::string_view selector) const {
+    return find_objc_method(class_name, selector, false);
+}
+
+std::optional<std::uint32_t> MachOImage::find_objc_class_method(
+    std::string_view class_name, std::string_view selector) const {
+    return find_objc_method(class_name, selector, true);
+}
+
+std::optional<std::uint32_t> MachOImage::find_objc_method(
+    std::string_view class_name, std::string_view selector,
+    bool class_method) const {
     constexpr std::uint32_t objc1_class_name_offset = 8U;
     constexpr std::uint32_t objc1_class_method_lists_offset = 28U;
     constexpr std::uint32_t objc2_class_data_offset = 16U;
@@ -552,12 +563,20 @@ std::optional<std::uint32_t> MachOImage::find_objc_instance_method(
                 if (pointer64 > std::numeric_limits<std::uint32_t>::max()) {
                     break;
                 }
-                const auto object = read_vm_u32(
+                auto object = read_vm_u32(
                     static_cast<std::uint32_t>(pointer64));
                 if (!object || *object == 0U ||
                     *object > std::numeric_limits<std::uint32_t>::max() -
                                   objc2_class_data_offset) {
                     continue;
+                }
+                if (class_method) {
+                    object = read_vm_u32(*object);
+                    if (!object || *object == 0U ||
+                        *object > std::numeric_limits<std::uint32_t>::max() -
+                                      objc2_class_data_offset) {
+                        continue;
+                    }
                 }
                 const auto data =
                     read_vm_u32(*object + objc2_class_data_offset);
@@ -612,8 +631,17 @@ std::optional<std::uint32_t> MachOImage::find_objc_instance_method(
                 if (!name) continue;
                 const auto candidate = vm_c_string(bytes_, segments_, *name);
                 if (!candidate || *candidate != class_name) continue;
-                const auto lists =
-                    read_vm_u32(object + objc1_class_method_lists_offset);
+                const auto method_object =
+                    class_method ? read_vm_u32(object)
+                                 : std::optional<std::uint32_t>{object};
+                if (!method_object || *method_object == 0U ||
+                    *method_object >
+                        std::numeric_limits<std::uint32_t>::max() -
+                            objc1_class_method_lists_offset) {
+                    continue;
+                }
+                const auto lists = read_vm_u32(
+                    *method_object + objc1_class_method_lists_offset);
                 if (!lists || *lists == 0U || *lists == 0xffffffffU) {
                     continue;
                 }

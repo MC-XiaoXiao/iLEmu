@@ -127,6 +127,12 @@ public:
                                      std::string selector,
                                      std::string diagnostic_name,
                                      Handler handler);
+  // As above, but resolves the selector on the class's metaclass.
+  void register_objc_class_method(std::string image_suffix,
+                                  std::string class_name,
+                                  std::string selector,
+                                  std::string diagnostic_name,
+                                  Handler handler);
   // Register a stripped firmware entry point by its preferred Mach-O virtual
   // address. Bit 0 selects a Thumb entry, matching Mach symbol convention.
   void register_address(std::string image_suffix, std::uint32_t virtual_address,
@@ -181,6 +187,7 @@ private:
     bool prefix{};
     std::optional<std::uint32_t> virtual_address;
     std::optional<std::pair<std::string, std::string>> objc_instance_method;
+    bool objc_class_method{};
     Handler handler;
   };
   struct InstalledCall {
