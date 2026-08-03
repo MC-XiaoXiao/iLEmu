@@ -17,6 +17,7 @@
 #endif
 #include <dynarmic/frontend/A32/a32_ir_emitter.h>
 #include <dynarmic/ir/basic_block.h>
+#include <dynarmic/interface/A32/coprocessor.h>
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
@@ -228,6 +229,7 @@ public:
     [[nodiscard]] const ArmCpuModel& cpu_model() const {
         return cpu_model_;
     }
+    [[nodiscard]] Cpu* current_cpu() const { return owner_; }
     [[nodiscard]] std::uint8_t** jit_read_page_table() {
         return memory_.jit_read_page_table();
     }
@@ -307,6 +309,111 @@ private:
     std::shared_ptr<JitTranslationProfile> translation_profile_;
 };
 
+// The iPhone ARMv6 user ABI uses CP15 thread-pointer registers in addition to
+// the older cthread_self fast trap.  Dynarmic deliberately leaves CP15 to its
+// client, so model only the architecturally visible user-thread and barrier
+// subset here.  Memory is coherent in AddressSpace; cache/barrier operations
+// therefore need no host-side work, but must remain legal instructions.
+class Armv6SystemControlCoprocessor final
+    : public Dynarmic::A32::Coprocessor {
+public:
+    using CoprocReg = Dynarmic::A32::CoprocReg;
+    using Callback = Dynarmic::A32::Coprocessor::Callback;
+    using CallbackOrAccessOneWord =
+        Dynarmic::A32::Coprocessor::CallbackOrAccessOneWord;
+    using CallbackOrAccessTwoWords =
+        Dynarmic::A32::Coprocessor::CallbackOrAccessTwoWords;
+
+    explicit Armv6SystemControlCoprocessor(JitCallbacks& callbacks)
+        : callbacks_{callbacks} {}
+
+    std::optional<Callback> CompileInternalOperation(
+        bool, unsigned, CoprocReg, CoprocReg, CoprocReg, unsigned) override {
+        return std::nullopt;
+    }
+
+    CallbackOrAccessOneWord CompileSendOneWord(
+        bool two, unsigned opc1, CoprocReg CRn, CoprocReg CRm,
+        unsigned opc2) override {
+        if (two || opc1 != 0) {
+            return std::monostate{};
+        }
+
+        // The guest ARM cache maintenance instructions are no-ops for the
+        // coherent host-backed memory model.  Keeping them as callbacks also
+        // avoids Dynarmic compiling an illegal-instruction assertion.
+        if (CRn == CoprocReg::C7 || CRn == CoprocReg::C8) {
+            return Callback{&noop, nullptr};
+        }
+
+        // TPIDRURW/TPIDRPRW are the writable per-thread pointers used by the
+        // Darwin ARM pthread ABI.  The simulator keeps one logical pointer,
+        // shared with the legacy cthread_self fast trap, so old and new
+        // firmware observe the same thread context.
+        if (CRn == CoprocReg::C13 && CRm == CoprocReg::C0 &&
+            (opc2 == 2 || opc2 == 7)) {
+            return Callback{&write_thread_pointer, &callbacks_};
+        }
+
+        return std::monostate{};
+    }
+
+    CallbackOrAccessTwoWords CompileSendTwoWords(
+        bool, unsigned, CoprocReg) override {
+        return std::monostate{};
+    }
+
+    CallbackOrAccessOneWord CompileGetOneWord(
+        bool two, unsigned opc1, CoprocReg CRn, CoprocReg CRm,
+        unsigned opc2) override {
+        if (!two && opc1 == 0 && CRn == CoprocReg::C13 &&
+            CRm == CoprocReg::C0 && (opc2 == 2 || opc2 == 3 || opc2 == 7)) {
+            return Callback{&read_thread_pointer, &callbacks_};
+        }
+        return std::monostate{};
+    }
+
+    CallbackOrAccessTwoWords CompileGetTwoWords(
+        bool, unsigned, CoprocReg) override {
+        return std::monostate{};
+    }
+
+    std::optional<Callback> CompileLoadWords(
+        bool, bool, CoprocReg, std::optional<std::uint8_t>) override {
+        return std::nullopt;
+    }
+
+    std::optional<Callback> CompileStoreWords(
+        bool, bool, CoprocReg, std::optional<std::uint8_t>) override {
+        return std::nullopt;
+    }
+
+private:
+    static std::uint64_t noop(void*, std::uint32_t, std::uint32_t) {
+        return 0;
+    }
+
+    static std::uint64_t read_thread_pointer(
+        void* user_arg, std::uint32_t, std::uint32_t) {
+        const auto& callbacks =
+            *reinterpret_cast<JitCallbacks*>(user_arg);
+        const auto* cpu = callbacks.current_cpu();
+        return cpu == nullptr ? 0 : cpu->cthread_self().value_or(0);
+    }
+
+    static std::uint64_t write_thread_pointer(
+        void* user_arg, std::uint32_t value, std::uint32_t) {
+        const auto& callbacks =
+            *reinterpret_cast<JitCallbacks*>(user_arg);
+        if (auto* cpu = callbacks.current_cpu(); cpu != nullptr) {
+            cpu->set_cthread_self(value);
+        }
+        return 0;
+    }
+
+    JitCallbacks& callbacks_;
+};
+
 class JitExecutor {
 public:
     JitExecutor(
@@ -319,7 +426,9 @@ public:
           execution_slot_{execution_slot},
           memory_{memory},
           monitor_{monitor},
-          callbacks_{std::make_unique<JitCallbacks>(memory, cpu_model)} {}
+          callbacks_{std::make_unique<JitCallbacks>(memory, cpu_model)},
+          cp15_{std::make_unique<Armv6SystemControlCoprocessor>(
+              *callbacks_)} {}
 
     ~JitExecutor() {
         performance_counters().record_jit_code_cache_usage(
@@ -535,6 +644,7 @@ private:
         config.enable_cycle_counting = true;
         config.check_halt_on_memory_access = true;
         config.code_cache_size = code_cache_size_;
+        config.coprocessors[15] = cp15_;
         using DynarmicPageTable = std::array<
             std::uint8_t*,
             Dynarmic::A32::UserConfig::NUM_PAGE_TABLE_ENTRIES>;
@@ -624,6 +734,7 @@ private:
     AddressSpace& memory_;
     Dynarmic::ExclusiveMonitor& monitor_;
     std::unique_ptr<JitCallbacks> callbacks_;
+    std::shared_ptr<Armv6SystemControlCoprocessor> cp15_;
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
     std::size_t code_cache_size_{64U * 1024U * 1024U};
     std::uint64_t recorded_jit_code_cache_bytes_{};
