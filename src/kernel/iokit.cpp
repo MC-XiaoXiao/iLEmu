@@ -21,6 +21,7 @@
 #include "ilemu/kernel_iokit_audio_profile.hpp"
 #include "ilemu/kernel_iokit_baseband.hpp"
 #include "ilemu/kernel_iokit_display.hpp"
+#include "ilemu/kernel_iokit_mobile_file_integrity.hpp"
 #include "ilemu/kernel_shared_state.hpp"
 #include "ilemu/mig_wire_abi.hpp"
 #include "ilemu/output.hpp"
@@ -484,6 +485,8 @@ user_client_profile_name(KernelSharedState::IOKitUserClientProfile profile) {
     return "display";
   case KernelSharedState::IOKitUserClientProfile::Audio:
     return "audio";
+  case KernelSharedState::IOKitUserClientProfile::MobileFileIntegrity:
+    return "mobile-file-integrity";
   case KernelSharedState::IOKitUserClientProfile::None:
     break;
   }
@@ -866,6 +869,11 @@ void populate_matching_services_locked(KernelSharedState &shared_state,
   if (contains_text(matching, apple_h1clcd_class) ||
       contains_text(matching, mobile_framebuffer_class)) {
     services.push_back(ensure_mobile_framebuffer_service_locked(shared_state));
+  }
+  if (kernel_iokit::mobile_file_integrity::matches_service(matching)) {
+    services.push_back(
+        kernel_iokit::mobile_file_integrity::ensure_service_locked(
+            shared_state));
   }
 }
 
@@ -1938,6 +1946,16 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
                   std::span<const std::uint64_t>{request->scalar_input.data(),
                                                  request->scalar_input_count},
                   request->inband_input, request->scalar_output_capacity);
+    const auto mobile_file_integrity_result =
+        display_result || audio_result
+            ? std::optional<
+                  kernel_iokit::mobile_file_integrity::MethodResult>{}
+            : kernel_iokit::mobile_file_integrity::dispatch_connect_method(
+                  shared_state, process, remote_object, request->selector,
+                  std::span<const std::uint64_t>{request->scalar_input.data(),
+                                                 request->scalar_input_count},
+                  request->inband_input, request->scalar_output_capacity,
+                  request->inband_output_capacity);
     const ConnectMethodResult result =
         display_result
             ? ConnectMethodResult{display_result->return_code,
@@ -1947,6 +1965,11 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
             ? ConnectMethodResult{audio_result->return_code,
                                   std::move(audio_result->scalar_output),
                                   {}}
+        : mobile_file_integrity_result
+            ? ConnectMethodResult{
+                  mobile_file_integrity_result->return_code,
+                  {},
+                  std::move(mobile_file_integrity_result->inband_output)}
             : ConnectMethodResult{};
     std::uint64_t method_call_count = 0;
     bool vsync_enabled = false;

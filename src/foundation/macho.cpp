@@ -29,11 +29,15 @@ constexpr std::uint32_t lc_load_weak_dylib = 0x80000018U;
 constexpr std::uint32_t lc_reexport_dylib = 0x8000001fU;
 constexpr std::uint32_t lc_lazy_load_dylib = 0x20;
 constexpr std::uint32_t lc_load_upward_dylib = 0x80000023U;
+constexpr std::uint32_t lc_code_signature = 0x1d;
 constexpr std::uint32_t arm_thread_state = 1;
 constexpr std::uint32_t section_type_mask = 0xff;
 constexpr std::uint32_t s_symbol_stubs = 0x8;
 constexpr std::uint32_t indirect_symbol_local = 0x80000000U;
 constexpr std::uint32_t indirect_symbol_abs = 0x40000000U;
+constexpr std::uint32_t code_signature_super_blob_magic = 0xfade0cc0U;
+constexpr std::uint32_t code_signature_entitlements_magic = 0xfade7171U;
+constexpr std::uint32_t code_signature_entitlements_slot = 5U;
 
 std::uint32_t read_u32(std::span<const std::byte> bytes, std::size_t offset) {
     if (offset > bytes.size() || bytes.size() - offset < 4) {
@@ -47,6 +51,66 @@ std::uint32_t read_u32(std::span<const std::byte> bytes, std::size_t offset) {
 
 std::int32_t read_i32(std::span<const std::byte> bytes, std::size_t offset) {
     return static_cast<std::int32_t>(read_u32(bytes, offset));
+}
+
+std::optional<std::uint32_t> read_be_u32(
+    std::span<const std::byte> bytes, std::size_t offset) {
+    if (offset > bytes.size() || bytes.size() - offset < 4U)
+        return std::nullopt;
+    return (std::to_integer<std::uint32_t>(bytes[offset]) << 24U) |
+           (std::to_integer<std::uint32_t>(bytes[offset + 1U]) << 16U) |
+           (std::to_integer<std::uint32_t>(bytes[offset + 2U]) << 8U) |
+           std::to_integer<std::uint32_t>(bytes[offset + 3U]);
+}
+
+std::vector<std::byte> extract_code_signature_entitlements(
+    std::span<const std::byte> image, std::uint32_t signature_offset,
+    std::uint32_t signature_size) {
+    constexpr std::size_t super_blob_header_size = 12U;
+    constexpr std::size_t blob_index_size = 8U;
+    constexpr std::size_t generic_blob_header_size = 8U;
+    if (signature_offset > image.size() ||
+        signature_size > image.size() - signature_offset)
+        return {};
+    const auto signature = image.subspan(signature_offset, signature_size);
+    const auto magic = read_be_u32(signature, 0U);
+    const auto encoded_size = read_be_u32(signature, 4U);
+    const auto blob_count = read_be_u32(signature, 8U);
+    if (!magic || !encoded_size || !blob_count ||
+        *magic != code_signature_super_blob_magic ||
+        *encoded_size < super_blob_header_size ||
+        *encoded_size > signature.size() ||
+        *blob_count >
+            (*encoded_size - super_blob_header_size) / blob_index_size) {
+        return {};
+    }
+    const auto super_blob = signature.first(*encoded_size);
+    for (std::uint32_t index = 0; index < *blob_count; ++index) {
+        const auto entry_offset = super_blob_header_size + index * blob_index_size;
+        const auto type = read_be_u32(super_blob, entry_offset);
+        const auto blob_offset = read_be_u32(super_blob, entry_offset + 4U);
+        if (!type || !blob_offset ||
+            *type != code_signature_entitlements_slot) {
+            continue;
+        }
+        const auto blob_header_offset =
+            static_cast<std::size_t>(*blob_offset);
+        const auto blob_magic = read_be_u32(super_blob, blob_header_offset);
+        const auto blob_size =
+            read_be_u32(super_blob, blob_header_offset + 4U);
+        if (!blob_magic || !blob_size ||
+            *blob_magic != code_signature_entitlements_magic ||
+            *blob_size < generic_blob_header_size ||
+            blob_header_offset > super_blob.size() ||
+            *blob_size > super_blob.size() - blob_header_offset) {
+            return {};
+        }
+        const auto payload = super_blob.subspan(
+            blob_header_offset + generic_blob_header_size,
+            *blob_size - generic_blob_header_size);
+        return {payload.begin(), payload.end()};
+    }
+    return {};
 }
 
 std::optional<std::size_t> vm_file_offset(
@@ -198,6 +262,7 @@ MachOImage MachOImage::parse(const std::filesystem::path& path) {
     std::size_t offset = 28;
     const auto commands_end = offset + command_bytes;
     std::optional<std::pair<std::uint32_t, std::uint32_t>> indirect_symbols;
+    std::optional<std::pair<std::uint32_t, std::uint32_t>> code_signature;
     std::set<std::uint32_t> known_generic{
         0x2, 0x3, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0x11, 0x12, 0x13, 0x14,
         0x15, 0x16, 0x17, 0x19, 0x1a, 0x1b, 0x1d, 0x1e, 0x21, 0x80000022U,
@@ -319,6 +384,13 @@ MachOImage MachOImage::parse(const std::filesystem::path& path) {
             }
             image.dynamic_linker_ =
                 command_string(bytes, offset, command_size, read_u32(bytes, offset + 8));
+        } else if (command == lc_code_signature) {
+            if (command_size < 16U) {
+                throw std::runtime_error{"truncated LC_CODE_SIGNATURE"};
+            }
+            code_signature =
+                std::pair{read_u32(bytes, offset + 8U),
+                          read_u32(bytes, offset + 12U)};
         } else if (!known_generic.contains(command)) {
             image.unknown_commands_.push_back(command);
         }
@@ -358,6 +430,11 @@ MachOImage MachOImage::parse(const std::filesystem::path& path) {
                 }
             }
         }
+    }
+    if (code_signature) {
+        image.code_signature_entitlements_ =
+            extract_code_signature_entitlements(
+                bytes, code_signature->first, code_signature->second);
     }
     return image;
 }

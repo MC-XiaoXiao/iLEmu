@@ -1193,6 +1193,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
     output.line("[audio] decoder=pcm-caf-only");
   }
   initial->kernel->set_process_arguments({binary}, initial_environment);
+  initial->kernel->set_process_image(
+      process.executable_path,
+      process.executable.code_signature_entitlements());
   initial->kernel->enqueue_baseband_input(baseband_input);
   if (baseband_input_path) {
     output.line("[baseband] replay input=" + *baseband_input_path +
@@ -1513,7 +1516,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   PerfLatencyKind::SpawnResetRuntime};
               child_runtime.kernel->set_process_arguments(loaded.arguments,
                                                           environment);
-              child_runtime.kernel->set_process_image(path);
+              child_runtime.kernel->set_process_image(
+                  path, loaded.executable.code_signature_entitlements());
               assign_translation_profile(
                   *child_runtime.cpus, loaded.executable_path);
               child_runtime.kernel->prepare_exec(0);
@@ -2267,7 +2271,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
                              pending.environment);
         runtime.kernel->set_process_arguments(loaded.arguments,
                                               pending.environment);
-        runtime.kernel->set_process_image(pending.path);
+        runtime.kernel->set_process_image(
+            pending.path, loaded.executable.code_signature_entitlements());
         assign_translation_profile(*runtime.cpus, loaded.executable_path);
         runtime.kernel->prepare_exec(pending.processor);
         auto &exec_cpu = runtime.cpus->cpu(pending.processor);

@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -76,6 +77,9 @@ public:
     [[nodiscard]] const std::vector<MachStub>& stubs() const { return stubs_; }
     [[nodiscard]] const std::optional<std::string>& dynamic_linker() const { return dynamic_linker_; }
     [[nodiscard]] const std::optional<std::uint32_t>& entry_point() const { return entry_point_; }
+    [[nodiscard]] std::span<const std::byte> code_signature_entitlements() const {
+        return code_signature_entitlements_;
+    }
     [[nodiscard]] const std::vector<std::uint32_t>& unknown_commands() const { return unknown_commands_; }
 
     [[nodiscard]] const MachSymbol* find_symbol(std::string_view name) const;
@@ -104,6 +108,7 @@ private:
     std::vector<MachStub> stubs_;
     std::optional<std::string> dynamic_linker_;
     std::optional<std::uint32_t> entry_point_;
+    std::vector<std::byte> code_signature_entitlements_;
     std::vector<std::uint32_t> unknown_commands_;
 };
 

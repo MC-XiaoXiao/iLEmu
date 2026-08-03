@@ -174,7 +174,10 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
                                        "/sbin/launchd",
                                        {"/sbin/launchd"},
                                        {"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
-                                        "HOME=/var/root", "SHELL=/bin/sh"}};
+                                        "HOME=/var/root", "SHELL=/bin/sh"},
+                                       KernelSharedState::GraphicsInputAbi::
+                                           Darwin9_0,
+                                       {}};
   install_commpage();
 }
 
@@ -611,7 +614,9 @@ void CompatibilityKernel::install_main_image_hle(
   }
 }
 
-void CompatibilityKernel::set_process_image(std::string_view guest_path) {
+void CompatibilityKernel::set_process_image(
+    std::string_view guest_path,
+    std::span<const std::byte> code_signature_entitlements) {
   process_image_ = guest_path;
   auto name = std::filesystem::path{guest_path}.filename().string();
   if (name.empty())
@@ -630,6 +635,8 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path) {
   record.termination_signal = 0;
   record.command = std::move(name);
   record.executable_path = std::string{guest_path};
+  record.code_signature_entitlements.assign(
+      code_signature_entitlements.begin(), code_signature_entitlements.end());
   record.graphics_input_abi =
       KernelSharedState::GraphicsInputAbi::LegacyMouse;
   if (record.arguments.empty())

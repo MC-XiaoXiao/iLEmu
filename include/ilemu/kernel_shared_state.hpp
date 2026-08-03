@@ -441,6 +441,7 @@ struct KernelSharedState {
     std::vector<std::string> arguments;
     std::vector<std::string> environment;
     GraphicsInputAbi graphics_input_abi{GraphicsInputAbi::Darwin9_0};
+    std::vector<std::byte> code_signature_entitlements;
   };
   struct ProcessKeventState {
     std::uint64_t exec_generation{};
@@ -478,6 +479,7 @@ struct KernelSharedState {
     Generic,
     Display,
     Audio,
+    MobileFileIntegrity,
   };
   struct IOKitService {
     std::string class_name;
@@ -1068,6 +1070,7 @@ struct KernelSharedState {
   DisplayGeometry user_interface_geometry{default_display_geometry};
   std::optional<std::uint32_t> requested_display_power_state;
   std::uint32_t baseband_service{};
+  std::uint32_t mobile_file_integrity_service{};
   bsd::baseband_device::State baseband_device_state;
   std::uint32_t mobile_framebuffer_service{};
   // IOAudio2 publishes independent Codec/Baseband-style endpoints. Key by

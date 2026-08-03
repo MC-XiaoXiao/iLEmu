@@ -239,7 +239,9 @@ public:
   void prepare_exec(std::size_t processor_id);
   void install_main_image_hle(Cpu &cpu,
                               std::string_view mapped_guest_path = {});
-  void set_process_image(std::string_view guest_path);
+  void set_process_image(
+      std::string_view guest_path,
+      std::span<const std::byte> code_signature_entitlements = {});
   void set_process_arguments(const std::vector<std::string> &arguments,
                              const std::vector<std::string> &environment);
   [[nodiscard]] const std::map<std::size_t, PendingWait> &
