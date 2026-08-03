@@ -12,6 +12,10 @@
 namespace ilemu {
 namespace {
 
+// XNU's mach_vm subsystem omits vm_region from the leading routine sequence,
+// so mach_vm_copy is 4807 rather than vm_map's 3808. ARM32 keeps the same
+// source/size/destination request and simple-reply contract used by vm_copy.
+constexpr std::uint32_t mach_vm_copy_identifier = 4807U;
 constexpr std::uint32_t vm_copy_request_size =
     xnu792::mig::vm_map::vm_copy_arguments[3].request_offset +
     darwin::mig_wire::word_size;
@@ -24,7 +28,8 @@ bool CompatibilityKernel::dispatch_mach_vm_copy_message(
   using namespace mach_support;
   using namespace mach_vm_support;
 
-  if (request.identifier != mig_message_id(Routine::vm_copy))
+  const auto is_mach_vm = request.identifier == mach_vm_copy_identifier;
+  if (request.identifier != mig_message_id(Routine::vm_copy) && !is_mach_vm)
     return false;
 
   auto &registers = cpu.registers();
@@ -70,6 +75,9 @@ bool CompatibilityKernel::dispatch_mach_vm_copy_message(
     return finish(kern_invalid_address);
 
   output_.write("[vm] copy pid=" + std::to_string(process_.pid) +
+                " interface=" +
+                (is_mach_vm ? std::string{"mach_vm"}
+                            : std::string{"vm_map"}) +
                 " source=" + std::to_string(*source) +
                 " destination=" + std::to_string(*destination) +
                 " size=" + std::to_string(*size) + " result=0\n");
