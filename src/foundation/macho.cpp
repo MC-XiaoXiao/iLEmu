@@ -691,13 +691,17 @@ void MachOImage::map_into(AddressSpace& memory) const {
         const auto base = align_down(segment.vm_address);
         const auto prefix = segment.vm_address - base;
         const auto mapping_size = align_up(static_cast<std::uint64_t>(prefix) + segment.vm_size);
-        if (!memory.map(base, mapping_size, vm_protection(segment.initial_protection))) {
+        const auto permissions = vm_protection(segment.initial_protection);
+        if (!memory.map(base, mapping_size, permissions)) {
             throw std::runtime_error{"failed to map segment " + segment.name};
         }
         if (segment.file_size != 0 &&
             !memory.copy_in(segment.vm_address,
                             bytes.subspan(segment.file_offset, segment.file_size))) {
             throw std::runtime_error{"failed to populate segment " + segment.name};
+        }
+        if (has_permission(permissions, MemoryPermission::Execute)) {
+            memory.mark_translation_profile_stable(base, mapping_size);
         }
     }
 }

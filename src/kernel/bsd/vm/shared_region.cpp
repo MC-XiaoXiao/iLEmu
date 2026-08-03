@@ -287,13 +287,14 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
     const auto address = mapping.address + *slide;
     const auto zero_fill =
         (mapping.initial_protection & vm_protection_zero_fill) != 0;
+    const auto mapping_permissions =
+        permissions(mapping.initial_protection);
     const auto mapped = zero_fill
                             ? memory_.map(
-                                  address, mapping.size,
-                                  permissions(mapping.initial_protection))
+                                  address, mapping.size, mapping_permissions)
                             : memory_.map_file(
                                   address, mapping.size,
-                                  permissions(mapping.initial_protection),
+                                  mapping_permissions,
                                   descriptor->second, mapping.file_offset);
     if (!mapped) {
       rollback(memory_, applied);
@@ -301,6 +302,10 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
       return true;
     }
     applied.push_back({address, mapping.size});
+    if (*slide == 0U &&
+        has_permission(mapping_permissions, MemoryPermission::Execute)) {
+      memory_.mark_translation_profile_stable(address, mapping.size);
+    }
   }
 
   if (slide_address != 0 && !memory_.write64(slide_address, *slide)) {

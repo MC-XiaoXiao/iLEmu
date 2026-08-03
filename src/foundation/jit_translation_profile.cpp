@@ -207,7 +207,8 @@ void JitTranslationProfile::record(
         return;
     try {
         const std::lock_guard lock{mutex_};
-        if (known_locations_.contains(location_descriptor)) {
+        if (known_locations_.contains(location_descriptor) ||
+            discarded_locations_.contains(location_descriptor)) {
             return;
         }
         if (locations_.size() ==
@@ -215,6 +216,7 @@ void JitTranslationProfile::record(
             const auto oldest = locations_.front();
             locations_.pop_front();
             known_locations_.erase(oldest);
+            discarded_locations_.erase(oldest);
         }
         const auto [entry, inserted] =
             known_locations_.insert(location_descriptor);
@@ -232,9 +234,27 @@ void JitTranslationProfile::record(
     }
 }
 
+void JitTranslationProfile::discard(
+    std::uint64_t location_descriptor) noexcept {
+    if (location_descriptor == 0) return;
+    try {
+        const std::lock_guard lock{mutex_};
+        if (!known_locations_.contains(location_descriptor)) return;
+        discarded_locations_.insert(location_descriptor);
+        known_locations_.erase(location_descriptor);
+    } catch (...) {
+        // Invalidating a host optimization hint must not affect the guest.
+    }
+}
+
 std::vector<std::uint64_t> JitTranslationProfile::snapshot() const {
     const std::lock_guard lock{mutex_};
-    return {locations_.begin(), locations_.end()};
+    std::vector<std::uint64_t> result;
+    result.reserve(known_locations_.size());
+    for (const auto location : locations_) {
+        if (known_locations_.contains(location)) result.push_back(location);
+    }
+    return result;
 }
 
 JitTranslationProfileStore::JitTranslationProfileStore(

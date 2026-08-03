@@ -122,6 +122,14 @@ public:
 
   [[nodiscard]] bool accessible(std::uint32_t address, std::size_t size,
                                 MemoryPermission access) const;
+  // Persistent translation hints may only retain code whose guest address is
+  // invariant across process launches. Fixed Mach-O mappings opt into this
+  // range separately from ordinary executable permission; slid bundles,
+  // arbitrary mmap code, and generated trampolines remain session-local.
+  void mark_translation_profile_stable(std::uint32_t address,
+                                       std::uint32_t size);
+  [[nodiscard]] bool translation_profile_stable(std::uint32_t address,
+                                                std::size_t size) const;
   bool compare_exchange8(std::uint32_t address, std::uint8_t expected,
                          std::uint8_t value);
   bool compare_exchange16(std::uint32_t address, std::uint16_t expected,
@@ -285,6 +293,7 @@ private:
   mutable std::shared_mutex mutex_;
   bool parallel_access_{true};
   VmMap vm_map_;
+  VmMap translation_profile_map_;
   std::shared_ptr<PageMap> pages_{std::make_shared<PageMap>()};
   // File-backed vm_map entries remain range metadata until a guest access
   // faults an individual page into pages_. This mirrors XNU's vnode pager and

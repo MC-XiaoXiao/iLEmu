@@ -29,12 +29,17 @@ public:
     // Profiling is an optional bounded working-set optimization and must
     // never interrupt guest translation if host memory is constrained.
     void record(std::uint64_t location_descriptor) noexcept;
+    // A hint can become invalid when a prior run's slid image occupied the same
+    // executable address. Discarding is advisory and takes effect when the
+    // profile is next saved; guest execution never depends on the hint.
+    void discard(std::uint64_t location_descriptor) noexcept;
     [[nodiscard]] std::vector<std::uint64_t> snapshot() const;
 
 private:
     mutable std::mutex mutex_;
     std::deque<std::uint64_t> locations_;
     std::unordered_set<std::uint64_t> known_locations_;
+    std::unordered_set<std::uint64_t> discarded_locations_;
 };
 
 // Profiles are host cache hints stored outside the guest root filesystem.

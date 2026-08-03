@@ -74,8 +74,18 @@ public:
     void CodeTranslationCompleted(
         std::uint64_t location_descriptor,
         std::uint64_t) noexcept override {
-        if (translation_profile_) {
+        const auto pc = static_cast<std::uint32_t>(location_descriptor);
+        if (translation_profile_ &&
+            memory_.translation_profile_stable(
+                pc, sizeof(std::uint32_t))) {
             translation_profile_->record(location_descriptor);
+        }
+    }
+
+    void discard_translation_location(
+        std::uint64_t location_descriptor) noexcept {
+        if (translation_profile_) {
+            translation_profile_->discard(location_descriptor);
         }
     }
 
@@ -438,6 +448,12 @@ public:
                 // until its code page is executable instead.
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
                 pending_precompile_entries_.push_back(*entry);
+            } else if (!memory_.translation_profile_stable(
+                           code_address, sizeof(std::uint32_t))) {
+                // Runtime slides can reuse a previously executable address for
+                // a different image section. Never let such an advisory hint
+                // turn unrelated data into a translated block.
+                callbacks_->discard_translation_location(*entry);
             } else {
                 callbacks_->begin(0);
                 jit_->Precompile(*entry);

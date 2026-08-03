@@ -186,6 +186,7 @@ void AddressSpace::unmap_range_locked(std::uint32_t address,
                                       std::uint64_t end) {
   flush_shared_file_pages_locked(address, end);
   vm_map_.unmap(address, end);
+  translation_profile_map_.unmap(address, end);
   unmap_file_mappings_locked(address, end);
   ensure_unique_page_map_locked();
   auto page = pages_->lower_bound(address);
@@ -223,6 +224,7 @@ void AddressSpace::clear() {
       0, static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) +
              1U);
   vm_map_.clear();
+  translation_profile_map_.clear();
   pages_ = std::make_shared<PageMap>();
   file_mappings_.clear();
   for (auto &chunk : page_lookup_) chunk.reset();
@@ -254,6 +256,26 @@ bool AddressSpace::protect(std::uint32_t address, std::uint32_t size,
   }
   refresh_jit_page_range_locked(first, end);
   return true;
+}
+
+void AddressSpace::mark_translation_profile_stable(std::uint32_t address,
+                                                   std::uint32_t size) {
+  if (size == 0 || range_overflows(address, size)) return;
+  const auto first = page_base(address);
+  const auto end = page_range_end(address, size);
+  auto lock = write_lock();
+  if (!vm_map_.accessible(first, end, MemoryPermission::Execute)) return;
+  translation_profile_map_.map_or(first, end, MemoryPermission::Execute);
+}
+
+bool AddressSpace::translation_profile_stable(std::uint32_t address,
+                                              std::size_t size) const {
+  if (size == 0 || range_overflows(address, size)) return false;
+  const auto end = static_cast<std::uint64_t>(address) + size;
+  auto lock = read_lock();
+  return vm_map_.accessible(address, end, MemoryPermission::Execute) &&
+         translation_profile_map_.accessible(address, end,
+                                             MemoryPermission::Execute);
 }
 
 bool AddressSpace::copy_in(std::uint32_t address,
@@ -1466,6 +1488,7 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const {
   std::unique_lock source_lock{mutex_};
   std::unique_lock destination_lock{result->mutex_};
   result->vm_map_ = vm_map_;
+  result->translation_profile_map_ = translation_profile_map_;
   for (const auto &[address, page] : *pages_) {
     if (page.backing && !page.shared_writable) {
       page.copy_on_write_possible = true;
