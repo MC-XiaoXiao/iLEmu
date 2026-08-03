@@ -47,6 +47,149 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
   const std::optional<std::uint32_t> remote_port{request.remote_port};
   const std::optional<std::uint32_t> local_port{request.local_port};
   const std::optional<std::uint32_t> message_id{request.identifier};
+  if (*message_id ==
+      mig_message_id(
+          xnu792::mig::mach_port::Routine::mach_port_extract_right)) {
+    constexpr std::uint32_t request_size = 40;
+    constexpr std::uint32_t simple_reply_size = 36;
+    constexpr std::uint32_t complex_reply_size = 40;
+    auto write_reply = [&](std::span<const std::uint32_t> reply) {
+      for (std::size_t index = 0; index < reply.size(); ++index) {
+        if (!memory_.write32(
+                message_address +
+                    static_cast<std::uint32_t>(index * sizeof(std::uint32_t)),
+                reply[index])) {
+          registers[0] = 0x10004008U; // MACH_RCV_INVALID_DATA
+          return false;
+        }
+      }
+      registers[0] = darwin::mach::success;
+      return true;
+    };
+
+    if (registers[3] < simple_reply_size) {
+      registers[0] = 0x10004008U; // MACH_RCV_INVALID_DATA
+      return true;
+    }
+
+    const auto &arguments =
+        xnu792::mig::mach_port::mach_port_extract_right_arguments;
+    const auto name =
+        memory_.read32(message_address + arguments[1].request_offset);
+    const auto disposition =
+        memory_.read32(message_address + arguments[2].request_offset);
+    std::uint32_t result = darwin::mach::success;
+    std::uint32_t extracted_name = xnu792::ipc::null_name;
+    std::uint32_t acquired_disposition = 0;
+    {
+      std::lock_guard mach_lock{shared_state_->mach_mutex};
+      const auto task =
+          target_task_for_port(*shared_state_, process_.pid, *remote_port);
+      const auto source_right = disposition
+                                    ? source_right_for_disposition(*disposition)
+                                    : std::nullopt;
+      const auto extracted_right =
+          disposition ? right_for_disposition(*disposition) : std::nullopt;
+      const auto entry =
+          task && name ? shared_state_->mach_namespaces.lookup(*task, *name)
+                       : std::nullopt;
+      if (registers[2] < request_size || !name || !disposition) {
+        result = darwin::mach::invalid_argument;
+      } else if (!task) {
+        result = darwin::mach::invalid_task;
+      } else if (!source_right || !extracted_right) {
+        result = darwin::mach::invalid_value;
+      } else if (*name == xnu792::ipc::null_name ||
+                 *name == xnu792::ipc::dead_name) {
+        result = darwin::mach::invalid_right;
+      } else if (!entry) {
+        result = darwin::mach::invalid_name;
+      } else if ((entry->type & xnu792::ipc::type_mask(*source_right)) == 0) {
+        result = darwin::mach::invalid_right;
+      } else if (registers[3] < complex_reply_size) {
+        result = darwin::mach::resource_shortage;
+      } else {
+        const auto moved =
+            *disposition == darwin::mig_wire::disposition_move_receive ||
+            *disposition == darwin::mig_wire::disposition_move_send ||
+            *disposition == darwin::mig_wire::disposition_move_send_once;
+        auto consumed = true;
+        if (moved) {
+          consumed = consume_moved_right_locked(*shared_state_, *task, *name,
+                                                *source_right, true);
+        }
+        if (!consumed) {
+          result = darwin::mach::invalid_right;
+        } else {
+          const auto copied_out = shared_state_->mach_namespaces.copyout(
+              process_.pid, entry->object,
+              xnu792::ipc::type_mask(*extracted_right));
+          if (!copied_out) {
+            result = darwin::mach::resource_shortage;
+            if (moved) {
+              static_cast<void>(shared_state_->mach_namespaces.install(
+                  *task, *name, entry->object,
+                  xnu792::ipc::type_mask(*source_right)));
+              if (*source_right == xnu792::ipc::Right::Receive) {
+                static_cast<void>(
+                    shared_state_->mach_port_objects.set_receive_owner(
+                        entry->object, *task));
+              }
+            }
+          } else {
+            extracted_name = *copied_out;
+            acquired_disposition =
+                darwin::mig_wire::received_port_disposition(*disposition);
+            if (*extracted_right == xnu792::ipc::Right::Receive) {
+              static_cast<void>(
+                  shared_state_->mach_port_objects.set_receive_owner(
+                      entry->object, process_.pid));
+            }
+            if (*disposition == darwin::mig_wire::disposition_make_send) {
+              static_cast<void>(
+                  shared_state_->mach_port_objects.increment_make_send_count(
+                      entry->object));
+            }
+          }
+        }
+      }
+    }
+
+    if (result != darwin::mach::success) {
+      const std::array<std::uint32_t, simple_reply_size / sizeof(std::uint32_t)>
+          reply{
+              darwin::mig_wire::message_bits(
+                  darwin::mig_wire::disposition_move_send_once),
+              simple_reply_size,
+              *local_port,
+              0,
+              0,
+              *message_id + 100,
+              0,
+              1,
+              result,
+          };
+      static_cast<void>(write_reply(reply));
+      return true;
+    }
+
+    const std::array<std::uint32_t, complex_reply_size / sizeof(std::uint32_t)>
+        reply{
+            darwin::mig_wire::message_bits(
+                darwin::mig_wire::disposition_move_send_once, 0, true),
+            complex_reply_size,
+            *local_port,
+            0,
+            0,
+            *message_id + 100,
+            1,
+            extracted_name,
+            0,
+            darwin::mig_wire::port_descriptor_metadata(acquired_disposition),
+        };
+    static_cast<void>(write_reply(reply));
+    return true;
+  }
   if ((*message_id ==
            mig_message_id(
                xnu792::mig::mach_port::Routine::mach_port_deallocate) ||
