@@ -4,6 +4,7 @@
 #include "ilemu/bluetooth_manager_hle.hpp"
 #include "ilemu/bootstrap_mig_ids.hpp"
 #include "ilemu/core_telephony_hle.hpp"
+#include "ilemu/core_animation_remote_profile.hpp"
 #include "ilemu/darwin_abi.hpp"
 #include "ilemu/dns_configuration_hle.hpp"
 #include "ilemu/darwin_kqueue_abi.hpp"
@@ -177,6 +178,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
                                         "HOME=/var/root", "SHELL=/bin/sh"},
                                        KernelSharedState::GraphicsInputAbi::
                                            Darwin9_0,
+                                       {},
                                        {}};
   install_commpage();
 }
@@ -563,6 +565,8 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
   constexpr std::string_view uikit_image{"/UIKit.framework/UIKit"};
   constexpr std::string_view graphics_services_image{
       "/GraphicsServices.framework/GraphicsServices"};
+  constexpr std::string_view quartz_core_image{
+      "/QuartzCore.framework/QuartzCore"};
   const auto path = image_path.generic_string();
   if (path.ends_with(uikit_image)) {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
@@ -586,6 +590,21 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
             "[input] GraphicsServices touch ABI profile=" +
             std::string{GraphicsServicesInputProfile::for_abi(*profile).name} +
             " pid=" + std::to_string(process_.pid) + "\n");
+      }
+    }
+  } else if (path.ends_with(quartz_core_image)) {
+    const auto profile =
+        CoreAnimationRemoteProfile::detect(MachOImage::parse(image_path));
+    if (profile) {
+      std::lock_guard mach_lock{shared_state_->mach_mutex};
+      if (const auto process = shared_state_->processes.find(process_.pid);
+          process != shared_state_->processes.end() &&
+          process->second.core_animation_remote_profile != profile) {
+        process->second.core_animation_remote_profile = *profile;
+        output_.write(
+            "[scene] CoreAnimation remote profile=" +
+            std::string{profile->name} + " pid=" +
+            std::to_string(process_.pid) + "\n");
       }
     }
   }

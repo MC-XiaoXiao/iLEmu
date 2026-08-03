@@ -1607,12 +1607,17 @@ ServiceResolution record_bootstrap_reply_locked(
     }
   } else if (const auto port =
                  state.mach_port_objects.lookup(service->object)) {
+    const auto exact_springboard_request =
+        lookup.requester_process_id == receiver &&
+        process_is_springboard_locked(state, receiver);
+    const auto exact_pending_gesture =
+        lookup.application_launch_candidate &&
+        state.springboard_pending_launch_touch_sequence != 0U &&
+        state.springboard_pending_launch_touch_sequence ==
+            lookup.origin_touch_sequence;
     const auto process = state.processes.find(port->receive_owner);
     if (process != state.processes.end() && !process->second.exited &&
         process->second.executable_path.starts_with("/Applications/")) {
-      const auto exact_springboard_request =
-          lookup.requester_process_id == receiver &&
-          process_is_springboard_locked(state, receiver);
       if (exact_springboard_request) {
         const auto *existing =
             launch_attempt_locked(state, port->receive_owner);
@@ -1632,12 +1637,10 @@ ServiceResolution record_bootstrap_reply_locked(
                 : exact_existing_intent
                       ? existing->origin_touch_sequence
                       : 0U;
-        const auto exact_pending_gesture =
-            lookup.application_launch_candidate &&
-            state.springboard_pending_launch_touch_sequence != 0U &&
-            state.springboard_pending_launch_touch_sequence ==
-                effective_origin_touch_sequence;
-        if (exact_existing_intent || exact_pending_gesture) {
+        const auto exact_effective_pending_gesture =
+            exact_pending_gesture &&
+            lookup.origin_touch_sequence == effective_origin_touch_sequence;
+        if (exact_existing_intent || exact_effective_pending_gesture) {
           record_resident_lookup_locked(
               state, port->receive_owner,
               effective_origin_touch_sequence);
@@ -1666,6 +1669,11 @@ ServiceResolution record_bootstrap_reply_locked(
           }
         }
       }
+    } else if (exact_springboard_request && exact_pending_gesture) {
+      state.pending_application_event_launches.insert_or_assign(
+          service->object,
+          KernelSharedState::PendingApplicationEventLaunch{
+              receiver, lookup.origin_touch_sequence});
     }
   }
   return ServiceResolution{service->object, flushed, application_event_port,
@@ -2458,12 +2466,38 @@ void record_application_event_delivery_locked(
     return;
   }
   const auto process_id = destination_port->receive_owner;
+  if (const auto pending =
+          state.pending_application_event_launches.find(destination);
+      pending != state.pending_application_event_launches.end() &&
+      pending->second.springboard_process_id == sender_pid) {
+    const auto origin_touch_sequence = pending->second.origin_touch_sequence;
+    state.pending_application_event_launches.erase(pending);
+    record_resident_lookup_locked(state, process_id, origin_touch_sequence);
+  }
   state.application_event_objects_by_process[process_id] = destination;
   // Event delivery proves the PID-owned route, not lifecycle meaning. Retry
   // the readiness rendezvous for every firmware event so an event port that
   // arrives after a LayerKit commit, or after display timing becomes live,
   // cannot strand an otherwise authorized foreground launch.
   activate_resolved_application_locked(state, process_id, scenes);
+}
+
+void record_application_remote_scene_commit_locked(
+    KernelSharedState &state, std::uint32_t sender_pid,
+    std::uint32_t destination, SceneCoordinator *scenes) {
+  const auto application = state.processes.find(sender_pid);
+  const auto destination_port = state.mach_port_objects.lookup(destination);
+  if (application == state.processes.end() || application->second.exited ||
+      !application->second.executable_path.starts_with("/Applications/") ||
+      !destination_port ||
+      !process_is_springboard_locked(state,
+                                     destination_port->receive_owner) ||
+      scenes == nullptr) {
+    return;
+  }
+
+  scenes->commit_client_scene(sender_pid, std::nullopt);
+  activate_resolved_application_locked(state, sender_pid, scenes);
 }
 
 void record_application_suspension_state(

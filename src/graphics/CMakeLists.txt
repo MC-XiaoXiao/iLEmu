@@ -1,4 +1,5 @@
 add_library(ilemu_graphics STATIC
+    core_animation_remote_profile.cpp
     core_surface_hle.cpp
     gles_renderer.cpp
     gles_resources.cpp

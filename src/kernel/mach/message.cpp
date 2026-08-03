@@ -732,10 +732,16 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
             shared_state_->bootstrap_checked_in_services.insert(
                 bootstrap_service_name);
           }
-          if (graphics_event_type) {
-            graphics_services_input::record_application_event_delivery_locked(
-                *shared_state_, process_.pid, remote_object,
-                *graphics_event_type, scene_coordinator_.get());
+          if (const auto process =
+                  shared_state_->processes.find(process_.pid);
+              process != shared_state_->processes.end() &&
+              process->second.core_animation_remote_profile &&
+              process->second.core_animation_remote_profile
+                  ->is_transaction_message(*message_id)) {
+            graphics_services_input::
+                record_application_remote_scene_commit_locked(
+                    *shared_state_, process_.pid, remote_object,
+                    scene_coordinator_.get());
           }
           KernelSharedState::MachMessage queued;
           queued.bytes = *bytes;

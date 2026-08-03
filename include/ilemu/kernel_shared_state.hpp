@@ -18,6 +18,7 @@
 
 #include "ilemu/baseband_device.hpp"
 #include "ilemu/bsd_file_lock.hpp"
+#include "ilemu/core_animation_remote_profile.hpp"
 #include "ilemu/darwin_network_abi.hpp"
 #include "ilemu/darwin_resource_abi.hpp"
 #include "ilemu/darwin_route_socket.hpp"
@@ -443,6 +444,7 @@ struct KernelSharedState {
     std::vector<std::string> environment;
     GraphicsInputAbi graphics_input_abi{GraphicsInputAbi::Darwin9_0};
     std::vector<std::byte> code_signature_entitlements;
+    std::optional<CoreAnimationRemoteProfile> core_animation_remote_profile;
   };
   struct ProcessKeventState {
     std::uint64_t exec_generation{};
@@ -567,6 +569,10 @@ struct KernelSharedState {
     std::uint32_t requester_process_id{};
     std::uint64_t origin_touch_sequence{};
     bool application_launch_candidate{};
+  };
+  struct PendingApplicationEventLaunch {
+    std::uint32_t springboard_process_id{};
+    std::uint64_t origin_touch_sequence{};
   };
   enum class ApplicationSuspensionReason {
     None,
@@ -905,6 +911,12 @@ struct KernelSharedState {
   // a later lookup overwrite the metadata needed to classify an earlier one.
   std::map<std::uint32_t, std::deque<PendingBootstrapServiceLookup>>
       pending_bootstrap_service_lookups;
+  // An on-demand application's event service is still owned by launchd when
+  // SpringBoard receives its lookup reply. Preserve that exact lookup intent
+  // on the global port until the firmware event is consumed by the process
+  // that ultimately checks in the receive right.
+  std::map<std::uint32_t, PendingApplicationEventLaunch>
+      pending_application_event_launches;
   std::map<std::string, std::uint32_t> bootstrap_service_objects;
   // A failed bootstrap lookup is commonly followed by a bounded polling
   // sleep while launchd starts an on-demand provider. Track the precise

@@ -552,6 +552,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
   }
 
   const auto delivered_sender_pid = pending_message.sender_pid;
+  const auto delivered_graphics_event_type =
+      graphics_services_input::event_type(pending_message.bytes);
   const auto delivered_input_sequence =
       pending_message.graphics_input_sequence;
   const auto delivered_input_kind = pending_message.graphics_input_kind;
@@ -576,6 +578,16 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
   const auto copied =
       memory_.copy_in(pending->second.message_address, received->bytes);
   if (copied) {
+    if (delivered_graphics_event_type) {
+      // Bootstrap service ports remain owned by launchd while a cold app is
+      // starting. Observe lifecycle delivery only after the receive right has
+      // reached its real process, so the route is bound to the receiver that
+      // actually consumed the firmware event rather than its temporary
+      // launchd owner.
+      graphics_services_input::record_application_event_delivery_locked(
+          *shared_state_, delivered_sender_pid, queued_port,
+          *delivered_graphics_event_type, scene_coordinator_.get());
+    }
     static_cast<void>(
         shared_state_->mach_port_objects.increment_sequence_number(
             queued_port));

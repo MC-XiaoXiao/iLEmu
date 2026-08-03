@@ -192,6 +192,14 @@ void record_application_event_delivery_locked(
     std::uint32_t destination, std::uint32_t event_type,
     SceneCoordinator *scenes = nullptr);
 
+// Publishes one firmware-owned remote window-server transaction as a logical
+// client scene. The caller has already selected the transaction Profile and
+// holds KernelSharedState::mach_mutex; App identity, destination ownership,
+// launch intent, and event-port readiness remain independently validated.
+void record_application_remote_scene_commit_locked(
+    KernelSharedState &state, std::uint32_t sender_pid,
+    std::uint32_t destination, SceneCoordinator *scenes = nullptr);
+
 // Applies UIKit's completed ordinary `_setSuspended:` transition. This is a
 // thread-safe observer entry point and deliberately ignores its separate
 // event-only and under-lock suspension modes.
