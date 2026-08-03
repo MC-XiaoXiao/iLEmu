@@ -1336,6 +1336,32 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       bsd_error(cpu, bsd_support::bad_address);
       return;
     }
+    const auto write_read_only_string = [&](std::string_view value) {
+      const auto required = static_cast<std::uint32_t>(value.size() + 1);
+      if (registers[4] != 0) {
+        bsd_error(cpu, darwin::error::operation_not_permitted);
+        return;
+      }
+      if (registers[3] == 0 || !memory_.write32(registers[3], required)) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+      if (registers[2] != 0) {
+        if (*old_size < required) {
+          bsd_error(cpu, darwin::error::no_memory);
+          return;
+        }
+        std::vector<std::byte> bytes(required);
+        std::transform(
+            value.begin(), value.end(), bytes.begin(),
+            [](char character) { return static_cast<std::byte>(character); });
+        if (!memory_.copy_in(registers[2], bytes)) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+      }
+      bsd_success(cpu, 0);
+    };
     if (*mib0 == darwin::sysctl::control_unspecified &&
         *mib1 == darwin::sysctl::operation_name_to_oid && registers[1] == 2) {
       // XNU's sysctl.name2oid consumes an un-terminated name through the new
@@ -1684,30 +1710,42 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       bsd_success(cpu, 0);
       return;
     }
-    if (*mib0 == 1 && *mib1 == 65) { // KERN_OSVERSION
-      constexpr std::string_view build_version{"1A543a"};
-      const auto required =
-          static_cast<std::uint32_t>(build_version.size() + 1);
-      if (!memory_.write32(registers[3], required)) {
-        bsd_error(cpu, bsd_support::bad_address);
+    if (*mib0 == darwin::sysctl::control_kernel && registers[1] == 2) {
+      const auto &identity = shared_state_->darwin_kernel_identity;
+      switch (*mib1) {
+      case darwin::sysctl::kernel_operating_system_type:
+        write_read_only_string(identity.operating_system_type);
+        return;
+      case darwin::sysctl::kernel_operating_system_release:
+        write_read_only_string(identity.operating_system_release);
+        return;
+      case darwin::sysctl::kernel_operating_system_revision: {
+        constexpr auto value_size = sizeof(std::uint32_t);
+        if (registers[4] != 0) {
+          bsd_error(cpu, darwin::error::operation_not_permitted);
+        } else if (registers[3] == 0 ||
+                   !memory_.write32(registers[3], value_size)) {
+          bsd_error(cpu, bsd_support::bad_address);
+        } else if (registers[2] != 0 && *old_size < value_size) {
+          bsd_error(cpu, darwin::error::no_memory);
+        } else if (registers[2] != 0 &&
+                   !memory_.write32(registers[2],
+                                    identity.operating_system_revision)) {
+          bsd_error(cpu, bsd_support::bad_address);
+        } else {
+          bsd_success(cpu, 0);
+        }
         return;
       }
-      if (registers[2] != 0) {
-        if (*old_size < required) {
-          bsd_error(cpu, 12); // ENOMEM
-          return;
-        }
-        std::array<std::byte, 7> bytes{};
-        for (std::size_t index = 0; index < build_version.size(); ++index) {
-          bytes[index] = static_cast<std::byte>(build_version[index]);
-        }
-        if (!memory_.copy_in(registers[2], bytes)) {
-          bsd_error(cpu, bsd_support::bad_address);
-          return;
-        }
+      case darwin::sysctl::kernel_version:
+        write_read_only_string(identity.version);
+        return;
+      case darwin::sysctl::kernel_build_version:
+        write_read_only_string(identity.build_version);
+        return;
+      default:
+        break;
       }
-      bsd_success(cpu, 0);
-      return;
     }
     if (*mib0 == 1 && *mib1 == 61 && registers[1] == 3) { // KERN_TFP
       const auto selector = memory_.read32(registers[0] + 8);

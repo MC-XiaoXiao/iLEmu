@@ -1,4 +1,5 @@
 #include "ilemu/kernel.hpp"
+#include "ilemu/darwin_kernel_profile.hpp"
 
 #include "ilemu/app_support_hle.hpp"
 #include "ilemu/bluetooth_manager_hle.hpp"
@@ -107,6 +108,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
         inject_wifi_driver_event(descriptor, event);
       });
   configure_darwin_notify_state();
+  shared_state_->darwin_kernel_identity =
+      make_darwin_kernel_identity_profile(rootfs_);
   shared_state_->device_product_type = device_profile_.product_type;
   shared_state_->device_board_config = device_profile_.board_config;
   shared_state_->device_model_number = device_profile_.model_number;

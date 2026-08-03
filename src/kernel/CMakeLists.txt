@@ -22,6 +22,7 @@ add_subdirectory(iokit)
 add_subdirectory(mach)
 
 target_link_libraries(ilemu_kernel PRIVATE
+    iLEmu::device_state
     iLEmu::kernel_iokit_audio
     iLEmu::kernel_iokit_baseband
     iLEmu::kernel_iokit_power

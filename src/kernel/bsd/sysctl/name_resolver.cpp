@@ -14,13 +14,19 @@ struct NamedObject {
 // These selectors are fixed by xnu-792 bsd/sys/sysctl.h. Keep this table
 // limited to nodes for which the compatibility kernel has a value handler.
 constexpr std::array named_objects{
+    NamedObject{"kern.ostype", control_kernel, kernel_operating_system_type},
+    NamedObject{"kern.osrelease", control_kernel,
+                kernel_operating_system_release},
+    NamedObject{"kern.osrevision", control_kernel,
+                kernel_operating_system_revision},
+    NamedObject{"kern.version", control_kernel, kernel_version},
     NamedObject{"kern.maxvnodes", control_kernel, 5},
     NamedObject{"kern.maxproc", control_kernel, 6},
     NamedObject{"kern.maxfiles", control_kernel, 7},
     NamedObject{"kern.argmax", control_kernel, 8},
     NamedObject{"kern.hostname", control_kernel, 10},
     NamedObject{"kern.netboot", control_kernel, 40},
-    NamedObject{"kern.osversion", control_kernel, 65},
+    NamedObject{"kern.osversion", control_kernel, kernel_build_version},
     NamedObject{"hw.machine", control_hardware, hardware_machine},
     NamedObject{"hw.model", control_hardware, hardware_model},
     NamedObject{"hw.ncpu", control_hardware, 3},

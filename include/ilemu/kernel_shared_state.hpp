@@ -19,6 +19,7 @@
 #include "ilemu/baseband_device.hpp"
 #include "ilemu/bsd_file_lock.hpp"
 #include "ilemu/core_animation_remote_profile.hpp"
+#include "ilemu/darwin_kernel_profile.hpp"
 #include "ilemu/darwin_network_abi.hpp"
 #include "ilemu/darwin_resource_abi.hpp"
 #include "ilemu/darwin_route_socket.hpp"
@@ -292,6 +293,7 @@ make_socket_pair_endpoints(std::uint32_t pair) {
 }
 
 struct KernelSharedState {
+  DarwinKernelIdentityProfile darwin_kernel_identity;
   std::string device_product_type;
   std::string device_board_config;
   std::string device_model_number;
