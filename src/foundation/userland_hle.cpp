@@ -69,6 +69,20 @@ std::array<std::byte, 4> little_endian_word(std::uint32_t value) {
   };
 }
 
+std::array<std::byte, 2> little_endian_halfword(std::uint16_t value) {
+  return {
+      static_cast<std::byte>(value & 0xffU),
+      static_cast<std::byte>((value >> 8U) & 0xffU),
+  };
+}
+
+std::uint16_t
+halfword_from_little_endian(std::span<const std::byte, 2> bytes) {
+  return static_cast<std::uint16_t>(
+      std::to_integer<std::uint16_t>(bytes[0]) |
+      (std::to_integer<std::uint16_t>(bytes[1]) << 8U));
+}
+
 std::uint32_t word_from_little_endian(std::span<const std::byte, 4> bytes) {
   return std::to_integer<std::uint32_t>(bytes[0]) |
          (std::to_integer<std::uint32_t>(bytes[1]) << 8U) |
@@ -123,11 +137,108 @@ make_persistent_arm_trampoline(std::span<const std::byte, 4> original,
   return code;
 }
 
-std::array<std::byte, 2> little_endian_halfword(std::uint16_t value) {
-  return {
-      static_cast<std::byte>(value & 0xffU),
-      static_cast<std::byte>((value >> 8U) & 0xffU),
+std::vector<std::byte>
+make_persistent_thumb_trampoline(std::span<const std::byte, 2> original,
+                                 std::uint32_t entry) {
+  const auto instruction = halfword_from_little_endian(original);
+  const auto append_halfword = [](std::vector<std::byte> &code,
+                                  std::uint16_t value) {
+    const auto encoded = little_endian_halfword(value);
+    code.insert(code.end(), encoded.begin(), encoded.end());
   };
+  const auto append_word = [](std::vector<std::byte> &code,
+                              std::uint32_t value) {
+    const auto encoded = little_endian_word(value);
+    code.insert(code.end(), encoded.begin(), encoded.end());
+  };
+  const auto append_arm_return = [&](std::vector<std::byte> &code,
+                                     std::uint32_t target) {
+    // BX pc enters ARM state at the next aligned word. The ARM literal load
+    // then returns to the requested Thumb address without borrowing a guest
+    // register or changing condition flags.
+    append_halfword(code, 0x4778U); // bx pc
+    append_halfword(code, 0x46c0U); // nop / ARM alignment
+    append_word(code, 0xe51ff004U); // ldr pc, [pc, #-4]
+    append_word(code, target | 1U);
+  };
+
+  constexpr std::uint16_t literal_load_mask = 0xf800U;
+  constexpr std::uint16_t literal_word_load = 0x4800U;
+  if ((instruction & literal_load_mask) == literal_word_load) {
+    const auto target_register = (instruction >> 8U) & 0x7U;
+    const auto original_pc = (entry + 4U) & ~3U;
+    const auto literal_address =
+        original_pc + ((instruction & 0xffU) << 2U);
+    std::vector<std::byte> code;
+    code.reserve(5U * sizeof(std::uint32_t));
+    // Load the original absolute literal address into the destination, then
+    // perform the load that the relocated Thumb instruction intended.
+    append_halfword(code, static_cast<std::uint16_t>(
+                              0x4800U | (target_register << 8U) | 3U));
+    append_halfword(code, static_cast<std::uint16_t>(
+                              0x6800U | (target_register << 3U) |
+                              target_register));
+    append_arm_return(code, entry + 2U);
+    append_word(code, literal_address);
+    return code;
+  }
+
+  constexpr std::uint16_t address_load_mask = 0xf800U;
+  constexpr std::uint16_t address_load = 0xa000U;
+  if ((instruction & address_load_mask) == address_load) {
+    const auto target_register = (instruction >> 8U) & 0x7U;
+    const auto original_pc = (entry + 4U) & ~3U;
+    const auto address = original_pc + ((instruction & 0xffU) << 2U);
+    std::vector<std::byte> code;
+    code.reserve(5U * sizeof(std::uint32_t));
+    append_halfword(code, static_cast<std::uint16_t>(
+                              0x4800U | (target_register << 8U) | 3U));
+    append_halfword(code, 0x46c0U); // nop
+    append_arm_return(code, entry + 2U);
+    append_word(code, address);
+    return code;
+  }
+
+  constexpr std::uint16_t unconditional_branch_mask = 0xf800U;
+  constexpr std::uint16_t unconditional_branch = 0xe000U;
+  if ((instruction & unconditional_branch_mask) == unconditional_branch) {
+    auto displacement = static_cast<std::int32_t>(instruction & 0x7ffU) << 1U;
+    if (displacement >= 0x800)
+      displacement -= 0x1000;
+    std::vector<std::byte> code;
+    code.reserve(3U * sizeof(std::uint32_t));
+    append_arm_return(code, static_cast<std::uint32_t>(
+                                static_cast<std::int64_t>(entry + 4U) +
+                                displacement));
+    return code;
+  }
+
+  constexpr std::uint16_t conditional_branch_mask = 0xf000U;
+  constexpr std::uint16_t conditional_branch = 0xd000U;
+  const auto condition = (instruction >> 8U) & 0xfU;
+  if ((instruction & conditional_branch_mask) == conditional_branch &&
+      condition < 0xeU) {
+    auto displacement = static_cast<std::int32_t>(instruction & 0xffU) << 1U;
+    if (displacement >= 0x100)
+      displacement -= 0x200;
+    const auto taken = static_cast<std::uint32_t>(
+        static_cast<std::int64_t>(entry + 4U) + displacement);
+    std::vector<std::byte> code;
+    code.reserve(7U * sizeof(std::uint32_t));
+    append_halfword(code,
+                    static_cast<std::uint16_t>(0xd006U | (condition << 8U)));
+    append_halfword(code, 0x46c0U); // nop
+    append_arm_return(code, entry + 2U);
+    append_arm_return(code, taken);
+    return code;
+  }
+
+  std::vector<std::byte> code;
+  code.reserve(4U * sizeof(std::uint32_t));
+  code.insert(code.end(), original.begin(), original.end());
+  append_halfword(code, 0x46c0U); // align the state transition
+  append_arm_return(code, entry + 2U);
+  return code;
 }
 
 bool append_utf8(std::string &output, std::uint32_t codepoint) {
@@ -818,16 +929,24 @@ bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
     return true;
   }
   if (call.resume_original_persistently_) {
-    if (installed == installed_calls_.end() || installed->second.thumb ||
-        installed->second.original.size() != sizeof(std::uint32_t)) {
+    if (installed == installed_calls_.end() ||
+        installed->second.original.size() !=
+            (installed->second.thumb ? sizeof(std::uint16_t)
+                                     : sizeof(std::uint32_t))) {
       return false;
     }
     auto trampoline = persistent_trampolines_.find(entry);
     if (trampoline == persistent_trampolines_.end()) {
       const auto address = persistent_trampoline_cursor_;
-      const auto code = make_persistent_arm_trampoline(
-          std::span<const std::byte, 4>{installed->second.original.data(), 4U},
-          entry);
+      const auto code = installed->second.thumb
+                            ? make_persistent_thumb_trampoline(
+                                  std::span<const std::byte, 2>{
+                                      installed->second.original.data(), 2U},
+                                  entry)
+                            : make_persistent_arm_trampoline(
+                                  std::span<const std::byte, 4>{
+                                      installed->second.original.data(), 4U},
+                                  entry);
       const auto first_page = address & ~(AddressSpace::page_size - 1U);
       const auto last_page =
           (address + static_cast<std::uint32_t>(code.size()) - 1U) &
@@ -856,7 +975,13 @@ bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
       if (!continuation) return false;
       registers[14] = *continuation;
     }
-    cpu.set_cpsr(cpu.cpsr() & ~arm_thumb_state_bit);
+    auto cpsr = cpu.cpsr();
+    if (installed->second.thumb) {
+      cpsr |= arm_thumb_state_bit;
+    } else {
+      cpsr &= ~arm_thumb_state_bit;
+    }
+    cpu.set_cpsr(cpsr);
     return true;
   }
   if (call.resume_original_) {
