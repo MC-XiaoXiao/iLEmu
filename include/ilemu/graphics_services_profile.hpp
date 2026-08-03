@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 
 #include "ilemu/kernel_shared_state.hpp"
 #include "ilemu/system_button_input.hpp"
@@ -27,6 +28,10 @@ struct GraphicsServicesInputProfile {
     std::array<std::uint32_t, 2> ringer_switch{};
   };
 
+  std::string_view name;
+  std::size_t event_record_size{};
+  std::size_t record_timestamp_offset{};
+  std::size_t record_info_size_offset{};
   std::size_t hand_info_size{};
   std::size_t path_info_size{};
   std::size_t hand_path_count_offset{};

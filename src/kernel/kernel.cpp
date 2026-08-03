@@ -584,11 +584,7 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
         process->second.graphics_input_abi = *profile;
         output_.write(
             "[input] GraphicsServices touch ABI profile=" +
-            std::string{*profile ==
-                                KernelSharedState::GraphicsInputAbi::
-                                    Darwin9_3
-                            ? "darwin9.3"
-                            : "darwin9.0"} +
+            std::string{GraphicsServicesInputProfile::for_abi(*profile).name} +
             " pid=" + std::to_string(process_.pid) + "\n");
       }
     }

@@ -22,14 +22,9 @@ constexpr std::uint32_t copy_send_bits = 19;
 constexpr std::uint32_t graphics_event_message_id = 123;
 constexpr std::uint32_t application_did_finish_background_event_type = 2003;
 constexpr std::uint32_t hand_event_type = 3001;
-constexpr std::size_t event_record_size = 48;
-constexpr std::size_t simple_event_message_size =
-    darwin::mig_wire::message_header_size + event_record_size;
 
 constexpr std::size_t record_location_offset = 8;
 constexpr std::size_t record_window_location_offset = 16;
-constexpr std::size_t record_timestamp_offset = 24;
-constexpr std::size_t record_info_size_offset = 44;
 constexpr std::uint8_t path_index = 1;
 constexpr std::uint8_t path_proximity_touching = 3;
 
@@ -119,7 +114,7 @@ KernelSharedState::MachMessage make_touch_message(std::uint32_t destination,
                                                   std::uint64_t input_sequence) {
   const auto &profile = GraphicsServicesInputProfile::for_abi(abi);
   const auto hand_offset =
-      darwin::mig_wire::message_header_size + event_record_size;
+      darwin::mig_wire::message_header_size + profile.event_record_size;
   const auto path_offset = hand_offset + profile.hand_info_size;
   const auto hand_message_size =
       path_offset + profile.path_info_size;
@@ -157,11 +152,11 @@ KernelSharedState::MachMessage make_touch_message(std::uint32_t destination,
   write_float(message.bytes, record + record_window_location_offset, input.x);
   write_float(message.bytes, record + record_window_location_offset + 4,
               input.y);
-  write_word(message.bytes, record + record_timestamp_offset,
+  write_word(message.bytes, record + profile.record_timestamp_offset,
              static_cast<std::uint32_t>(timestamp));
-  write_word(message.bytes, record + record_timestamp_offset + 4,
+  write_word(message.bytes, record + profile.record_timestamp_offset + 4,
              static_cast<std::uint32_t>(timestamp >> 32U));
-  write_word(message.bytes, record + record_info_size_offset,
+  write_word(message.bytes, record + profile.record_info_size_offset,
              static_cast<std::uint32_t>(profile.hand_info_size +
                                         profile.path_info_size));
 
@@ -190,7 +185,11 @@ make_simple_event_message(std::uint32_t destination, std::uint64_t timestamp,
                           std::uint32_t event_type,
                           std::uint64_t input_sequence,
                           KernelSharedState::MachMessage::GraphicsInputKind
-                              input_kind) {
+                              input_kind,
+                          KernelSharedState::GraphicsInputAbi abi) {
+  const auto &profile = GraphicsServicesInputProfile::for_abi(abi);
+  const auto simple_event_message_size =
+      darwin::mig_wire::message_header_size + profile.event_record_size;
   KernelSharedState::MachMessage message;
   message.bytes.resize(simple_event_message_size, std::byte{0});
   message.destination = destination;
@@ -208,9 +207,9 @@ make_simple_event_message(std::uint32_t destination, std::uint64_t timestamp,
              graphics_event_message_id);
   const auto record = darwin::mig_wire::message_header_size;
   write_word(message.bytes, record, event_type);
-  write_word(message.bytes, record + record_timestamp_offset,
+  write_word(message.bytes, record + profile.record_timestamp_offset,
              static_cast<std::uint32_t>(timestamp));
-  write_word(message.bytes, record + record_timestamp_offset + 4,
+  write_word(message.bytes, record + profile.record_timestamp_offset + 4,
              static_cast<std::uint32_t>(timestamp >> 32U));
   return message;
 }
@@ -261,7 +260,9 @@ void queue_simple_event_locked(KernelSharedState &state,
   state.enqueue_mach_message_locked(
       destination,
       make_simple_event_message(destination, state.clock.now(), event_type,
-                                input_sequence, input_kind));
+                                input_sequence, input_kind,
+                                graphics_input_abi_for_object_locked(
+                                    state, destination)));
 }
 
 bool object_owned_by_process_locked(const KernelSharedState &state,

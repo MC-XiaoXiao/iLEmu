@@ -425,6 +425,7 @@ struct KernelSharedState {
     LegacyMouse,
     Darwin9_0,
     Darwin9_3,
+    Darwin9_4,
   };
   struct ProcessRecord {
     std::uint32_t parent_pid{};
