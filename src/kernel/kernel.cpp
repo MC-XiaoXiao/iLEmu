@@ -1383,6 +1383,13 @@ void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline) {
                                             callback->io_proc_id);
     return;
   }
+  const auto update_thread_pointer = [&](std::size_t processor) {
+    if (!thread_pointer_update_handler_)
+      return !callback->cthread_self.has_value();
+    return thread_pointer_update_handler_(
+        process_.pid, static_cast<std::uint32_t>(processor),
+        callback->cthread_self);
+  };
   if (callback->processor) {
     darwin::arm_thread::GeneralState state{};
     std::copy(callback->registers.begin(), callback->registers.end(),
@@ -1390,6 +1397,7 @@ void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline) {
     state[darwin::arm_thread::cpsr_index] = callback->cpsr;
     const auto slot = static_cast<std::uint32_t>(*callback->processor);
     if (thread_state_update_handler_ && thread_wake_handler_ &&
+        update_thread_pointer(*callback->processor) &&
         thread_state_update_handler_(process_.pid, slot, state) &&
         thread_wake_handler_(process_.pid, slot)) {
       return;
@@ -1408,7 +1416,7 @@ void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline) {
   }
   const auto processor =
       thread_create_handler_(callback->registers, callback->cpsr);
-  if (!processor ||
+  if (!processor || !update_thread_pointer(*processor) ||
       !userland_hle_.bind_thread_callback(*processor,
                                           std::move(callback->completion))) {
     if (processor && thread_terminate_handler_) {

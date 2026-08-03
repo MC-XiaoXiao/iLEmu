@@ -82,6 +82,8 @@ public:
   using ThreadStateUpdateHandler = std::function<bool(
       std::uint32_t, std::uint32_t,
       const darwin::arm_thread::GeneralState &)>;
+  using ThreadPointerUpdateHandler = std::function<bool(
+      std::uint32_t, std::uint32_t, std::optional<std::uint32_t>)>;
   using ThreadRunnableHandler =
       std::function<bool(std::uint32_t, std::uint32_t, bool)>;
   using ThreadWakeHandler =
@@ -138,6 +140,9 @@ public:
   }
   void set_thread_state_update_handler(ThreadStateUpdateHandler handler) {
     thread_state_update_handler_ = std::move(handler);
+  }
+  void set_thread_pointer_update_handler(ThreadPointerUpdateHandler handler) {
+    thread_pointer_update_handler_ = std::move(handler);
   }
   void set_thread_runnable_handler(ThreadRunnableHandler handler) {
     thread_runnable_handler_ = std::move(handler);
@@ -596,6 +601,7 @@ private:
   ThreadTerminateHandler thread_terminate_handler_;
   ThreadStateQuery thread_state_query_;
   ThreadStateUpdateHandler thread_state_update_handler_;
+  ThreadPointerUpdateHandler thread_pointer_update_handler_;
   ThreadRunnableHandler thread_runnable_handler_;
   ThreadWakeHandler thread_wake_handler_;
   ForkHandler fork_handler_;

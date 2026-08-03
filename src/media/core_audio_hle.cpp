@@ -412,11 +412,12 @@ CoreAudioHle::take_due_io_proc(std::uint64_t now) {
   callback.registers[1] = registration.timestamp;
   callback.registers[2] = 0; // no emulated input buffers on this output device
   callback.registers[3] = 0;
-  // Darwin's ARM pthread ABI reserves r9 as the current thread's TSD base.
   // A host-scheduled callback does not pass through libpthread's usual thread
-  // entry trampoline, so preserve the owning firmware thread's initialized
-  // base instead of entering guest framework code with an invalid null r9.
-  callback.registers[9] = registration.pthread_tsd_base;
+  // entry trampoline. Early firmware reads its pthread base directly from r9;
+  // later libSystem reads the CP15 user thread pointer. Preserve both pieces
+  // of the owning firmware thread context without selecting a build version.
+  callback.registers[9] = registration.thread_r9;
+  callback.cthread_self = registration.cthread_self;
   callback.registers[13] = stack_pointer;
   callback.registers[14] = registration.callback_return;
   callback.registers[15] = registration.callback & ~1U;
@@ -1122,7 +1123,8 @@ void CoreAudioHle::start_io(UserlandHleCall &call) {
       call.set_return(parameter_error);
       return;
     }
-    state.pthread_tsd_base = call.cpu().registers()[9];
+    state.thread_r9 = call.cpu().registers()[9];
+    state.cthread_self = call.cpu().cthread_self();
     state.running = true;
     state.in_flight = false;
     state.next_deadline = 0;
@@ -1177,7 +1179,8 @@ void CoreAudioHle::start_io(UserlandHleCall &call) {
     call.set_return(parameter_error);
     return;
   }
-  state.pthread_tsd_base = call.cpu().registers()[9];
+  state.thread_r9 = call.cpu().registers()[9];
+  state.cthread_self = call.cpu().cthread_self();
   state.running = true;
   state.in_flight = false;
   state.next_deadline = 0;

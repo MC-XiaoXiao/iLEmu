@@ -1374,6 +1374,21 @@ void boot(const std::vector<std::string> &args, Output &output) {
           thread.set_cpsr(state[darwin::arm_thread::cpsr_index] | 0x10U);
           return true;
         });
+    runtime.kernel->set_thread_pointer_update_handler(
+        [&runtimes](std::uint32_t pid, std::uint32_t slot,
+                    std::optional<std::uint32_t> cthread_self) {
+          const auto runtime = std::find_if(
+              runtimes.begin(), runtimes.end(), [pid](const auto &candidate) {
+                return candidate->kernel->process().pid == pid;
+              });
+          if (runtime == runtimes.end() || slot >= (*runtime)->cpus->size() ||
+              slot >= (*runtime)->allocated.size() ||
+              !(*runtime)->allocated[slot]) {
+            return false;
+          }
+          (*runtime)->cpus->cpu(slot).set_cthread_self(cthread_self);
+          return true;
+        });
     runtime.kernel->set_thread_runnable_handler(
         [&scheduler](std::uint32_t pid, std::uint32_t slot, bool runnable) {
           const XnuThreadId thread{pid, slot};

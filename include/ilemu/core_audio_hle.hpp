@@ -28,6 +28,7 @@ public:
     std::optional<std::size_t> processor;
     std::array<std::uint32_t, 16> registers{};
     std::uint32_t cpsr{};
+    std::optional<std::uint32_t> cthread_self;
     std::function<void(UserlandHleCall &)> completion;
   };
 
@@ -88,7 +89,8 @@ private:
     std::vector<std::byte> zero_output_samples;
     std::vector<std::byte> captured_output_samples;
     std::uint32_t stack{};
-    std::uint32_t pthread_tsd_base{};
+    std::uint32_t thread_r9{};
+    std::optional<std::uint32_t> cthread_self;
     std::uint64_t next_deadline{};
     std::uint64_t sample_time{};
     std::uint64_t callback_count{};
