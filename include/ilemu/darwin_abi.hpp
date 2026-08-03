@@ -195,6 +195,7 @@ inline constexpr std::uint32_t right_exists = 21;
 inline constexpr std::uint32_t terminated = 37;
 inline constexpr std::uint32_t operation_timed_out = 49;
 inline constexpr std::uint32_t vm_flags_anywhere = 1;
+inline constexpr std::uint32_t vm_flags_overwrite = 0x4000U;
 } // namespace mach
 
 namespace mach_message {

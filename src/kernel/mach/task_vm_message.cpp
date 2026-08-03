@@ -50,6 +50,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
       dispatch_mach_vm_purgable_message(cpu, request) ||
       dispatch_mach_vm_memory_entry_message(cpu, request) ||
       dispatch_mach_vm_map_message(cpu, request) ||
+      dispatch_mach_vm_remap_message(cpu, request) ||
       dispatch_mach_vm_region_message(cpu, request))
     return true;
 

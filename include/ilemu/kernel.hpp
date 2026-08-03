@@ -104,6 +104,12 @@ public:
       std::function<std::uint32_t(std::uint32_t, std::uint32_t)>;
   using TaskMemoryRegionQuery = std::function<
       std::optional<AddressSpace::MappingRegion>(std::uint32_t, std::uint32_t)>;
+  struct SharedTaskMemoryRange {
+    std::vector<std::shared_ptr<GuestPageBacking>> pages;
+    MemoryPermission permissions{MemoryPermission::None};
+  };
+  using TaskMemoryShareQuery = std::function<std::optional<SharedTaskMemoryRange>(
+      std::uint32_t, std::uint32_t, std::uint32_t)>;
 
   CompatibilityKernel(AddressSpace &memory, Output &output,
                       std::filesystem::path rootfs = {},
@@ -170,6 +176,9 @@ public:
   }
   void set_task_memory_region_query(TaskMemoryRegionQuery query) {
     task_memory_region_query_ = std::move(query);
+  }
+  void set_task_memory_share_query(TaskMemoryShareQuery query) {
+    task_memory_share_query_ = std::move(query);
   }
   [[nodiscard]] std::uint32_t deliver_signal(std::uint32_t signal);
   [[nodiscard]] std::optional<SchedulerYieldRequest>
@@ -375,6 +384,9 @@ private:
                                         const MachMessageRequest &request);
   [[nodiscard]] bool
   dispatch_mach_vm_map_message(Cpu &cpu, const MachMessageRequest &request);
+  [[nodiscard]] bool
+  dispatch_mach_vm_remap_message(Cpu &cpu,
+                                 const MachMessageRequest &request);
   [[nodiscard]] bool
   dispatch_mach_vm_region_message(Cpu &cpu,
                                   const MachMessageRequest &request);
@@ -593,6 +605,7 @@ private:
   SchedulerPreemptionQuery scheduler_preemption_query_;
   SignalDeliveryHandler signal_delivery_handler_;
   TaskMemoryRegionQuery task_memory_region_query_;
+  TaskMemoryShareQuery task_memory_share_query_;
   std::map<std::size_t, SchedulerYieldRequest> scheduler_yields_;
   std::map<std::size_t, PendingWait> pending_waits_;
   std::map<std::size_t, PendingMachReceive> pending_mach_receives_;

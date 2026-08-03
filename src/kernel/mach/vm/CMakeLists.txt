@@ -7,6 +7,7 @@ add_library(ilemu_kernel_mach_vm STATIC
     protect.cpp
     purgable.cpp
     read.cpp
+    remap.cpp
     region.cpp)
 add_library(iLEmu::kernel_mach_vm ALIAS
     ilemu_kernel_mach_vm)

@@ -1581,6 +1581,27 @@ void boot(const std::vector<std::string> &args, Output &output) {
             return std::nullopt;
           return (*runtime)->memory->mapping_region_at_or_after(address);
         });
+    runtime.kernel->set_task_memory_share_query(
+        [&runtimes](std::uint32_t pid, std::uint32_t address,
+                    std::uint32_t size)
+            -> std::optional<CompatibilityKernel::SharedTaskMemoryRange> {
+          const auto runtime = std::find_if(
+              runtimes.begin(), runtimes.end(), [pid](const auto &candidate) {
+                return candidate->kernel->process().pid == pid;
+              });
+          if (runtime == runtimes.end())
+            return std::nullopt;
+          const auto region =
+              (*runtime)->memory->mapping_region_at_or_after(address);
+          const auto end = static_cast<std::uint64_t>(address) + size;
+          if (!region || region->address > address || region->end < end)
+            return std::nullopt;
+          auto pages = (*runtime)->memory->share_pages(address, size);
+          if (!pages)
+            return std::nullopt;
+          return CompatibilityKernel::SharedTaskMemoryRange{
+              std::move(*pages), region->permissions};
+        });
     runtime.kernel->set_scheduler_preemption_query(
         [runtime_ptr, &scheduler](std::size_t processor) {
           const XnuThreadId thread{runtime_ptr->kernel->process().pid,
