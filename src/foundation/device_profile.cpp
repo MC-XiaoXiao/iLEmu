@@ -17,6 +17,7 @@ const DeviceProfile& DeviceProfile::default_profile() {
         400'000'000,
         100'000'000,
         128ULL * 1024ULL * 1024ULL,
+        8ULL * 1024ULL * 1024ULL * 1024ULL,
         1,
         default_display_geometry,
         default_display_geometry,

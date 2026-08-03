@@ -81,6 +81,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
                                              lockdown_profile)
     : memory_{memory}, output_{output}, rootfs_{std::move(rootfs)},
       device_profile_{device},
+      hfs_volumes_{rootfs_, device_profile_.storage_bytes},
       hfs_metadata_{rootfs_},
       display_state_{std::make_shared<DisplayState>(device_profile_.display)},
       audio_service_{std::make_shared<AudioService>(rootfs_)},
@@ -110,6 +111,12 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   shared_state_->device_board_config = device_profile_.board_config;
   shared_state_->device_model_number = device_profile_.model_number;
   shared_state_->device_ram_bytes = device_profile_.ram_bytes;
+  shared_state_->mounts.clear();
+  for (const auto &volume : hfs_volumes_.volumes()) {
+    shared_state_->mounts.push_back({"hfs", volume.mount_point,
+                                     volume.mounted_device,
+                                     volume.mount_flags});
+  }
   device_profile_.display = display_state_->geometry();
   shared_state_->display_geometry = device_profile_.display;
   shared_state_->user_interface_geometry = device_profile_.user_interface;
@@ -1858,7 +1865,8 @@ bool CompatibilityKernel::write_guest_device_stat64(std::uint32_t address,
   return memory_.copy_in(address, bytes);
 }
 
-bool CompatibilityKernel::write_guest_statfs(std::uint32_t address) {
+bool CompatibilityKernel::write_guest_statfs(
+    std::uint32_t address, const hfs::VolumeMetadata &volume) {
   // Darwin 8's 32-bit legacy statfs layout is 272 bytes.
   std::array<std::byte, 272> bytes{};
   const auto put16 = [&](std::size_t offset, std::uint16_t value) {
@@ -1878,10 +1886,7 @@ bool CompatibilityKernel::write_guest_statfs(std::uint32_t address) {
       bytes[offset + index] = static_cast<std::byte>(value[index]);
     }
   };
-  constexpr std::uint32_t mount_flags =
-      0x00000001U | 0x00001000U | 0x00004000U; // RDONLY|LOCAL|ROOTFS
-  put16(2, static_cast<std::uint16_t>(mount_flags));
-  const hfs::VolumeMetadata volume;
+  put16(2, static_cast<std::uint16_t>(volume.mount_flags));
   put32(4, volume.block_size);
   put32(8, volume.io_block_size);
   put32(12, volume.total_blocks);
@@ -1890,14 +1895,15 @@ bool CompatibilityKernel::write_guest_statfs(std::uint32_t address) {
   put32(24, 0xffff'ffffU); // HFS reports no practical inode ceiling
   put32(28, 0xffff'ffffU - volume.next_catalog_id);
   put32(32, 1); // fsid[0]
-  put32(48, mount_flags);
+  put32(48, volume.mount_flags);
   put_string(60, 15, "hfs");
-  put_string(75, 90, "/");
-  put_string(165, 90, "/dev/disk0s1");
+  put_string(75, 90, volume.mount_point);
+  put_string(165, 90, volume.mounted_device);
   return memory_.copy_in(address, bytes);
 }
 
-bool CompatibilityKernel::write_guest_statfs64(std::uint32_t address) {
+bool CompatibilityKernel::write_guest_statfs64(
+    std::uint32_t address, const hfs::VolumeMetadata &volume) {
   // Darwin 9's 32-bit statfs64 ABI.  See xnu-1228 bsd/sys/mount.h:
   // two 32-bit sizes, five 64-bit counters, fsid_t, owner/type/flags/subtype,
   // then fixed-size type and path strings.
@@ -1922,7 +1928,6 @@ bool CompatibilityKernel::write_guest_statfs64(std::uint32_t address) {
     }
   };
 
-  const hfs::VolumeMetadata volume;
   put32(0, volume.block_size);
   put32(4, volume.io_block_size);
   put64(8, volume.total_blocks);

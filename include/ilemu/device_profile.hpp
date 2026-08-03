@@ -23,6 +23,9 @@ struct DeviceProfile {
     std::uint32_t cpu_hz;
     std::uint32_t bus_hz;
     std::uint64_t ram_bytes;
+    // Nominal flash capacity for volume geometry. The guest sees this device
+    // property, never the host filesystem's capacity.
+    std::uint64_t storage_bytes;
     std::size_t physical_cpu_count;
     // Guest-visible panel/framebuffer size.
     DisplayGeometry display;

@@ -106,6 +106,17 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     return;
   }
   auto &registers = cpu.registers();
+  const auto volume_for_descriptor_path = [&](const auto &host_path)
+      -> const hfs::VolumeMetadata & {
+    const auto relative = host_path.lexically_normal().lexically_relative(
+        rootfs_.lexically_normal());
+    if (relative.empty() &&
+        host_path.lexically_normal() != rootfs_.lexically_normal()) {
+      return hfs_volumes_.for_guest_path("/");
+    }
+    return hfs_volumes_.for_guest_path(
+        (std::filesystem::path{"/"} / relative).generic_string());
+  };
   switch (number) {
   case 9: { // link
     const auto source_path = memory_.read_c_string(registers[0]);
@@ -509,7 +520,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     const auto capacity = registers[1] / guest_statfs_size;
     const auto count = std::min(capacity, mount_count);
     for (std::uint32_t index = 0; index < count; ++index) {
-      if (!write_guest_statfs(registers[0] + index * guest_statfs_size)) {
+      const auto &volume = hfs_volumes_.for_guest_path(
+          shared_state_->mounts[index].path);
+      if (!write_guest_statfs(registers[0] + index * guest_statfs_size,
+                              volume)) {
         bsd_error(cpu, bsd_support::bad_address);
         return;
       }
@@ -946,7 +960,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       bsd_error(cpu, 2); // ENOENT
       return;
     }
-    if (!write_guest_statfs(registers[1])) {
+    const auto &volume = hfs_volumes_.for_guest_path(*path);
+    if (!write_guest_statfs(registers[1], volume)) {
       bsd_error(cpu, bsd_support::bad_address);
       return;
     }
@@ -959,7 +974,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       bsd_error(cpu, bsd_support::bad_address);
       return;
     }
-    output_.write("[vfs] statfs64 " + *path + "\n");
+    const auto &volume = hfs_volumes_.for_guest_path(*path);
+    output_.write("[vfs] statfs64 " + *path + " volume=" +
+                  volume.mount_point + " free-blocks=" +
+                  std::to_string(volume.free_blocks) + "\n");
     std::error_code error;
     const auto virtual_path =
         virtual_character_path_minor(*path) || darwin::bpf::device_minor(*path) ||
@@ -970,7 +988,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       bsd_error(cpu, darwin::error::no_entry);
       return;
     }
-    if (!write_guest_statfs64(registers[1])) {
+    if (!write_guest_statfs64(registers[1], volume)) {
       bsd_error(cpu, bsd_support::bad_address);
       return;
     }
@@ -1035,7 +1053,12 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     if (!file_descriptors_.contains(registers[0]) &&
         !virtual_descriptors_.contains(registers[0]) && registers[0] > 2) {
       bsd_error(cpu, bsd_support::bad_file_descriptor);
-    } else if (!write_guest_statfs(registers[1])) {
+    } else if (const auto descriptor = file_descriptors_.find(registers[0]);
+               !write_guest_statfs(
+                   registers[1],
+                   descriptor == file_descriptors_.end()
+                       ? hfs_volumes_.for_guest_path("/")
+                       : volume_for_descriptor_path(descriptor->second))) {
       bsd_error(cpu, bsd_support::bad_address);
     } else {
       bsd_success(cpu, 0);
@@ -1054,7 +1077,12 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       bsd_error(cpu, bsd_support::bad_file_descriptor);
       return;
     }
-    if (!write_guest_statfs64(registers[1])) {
+    const auto file = file_descriptors_.find(descriptor);
+    const auto &volume =
+        file == file_descriptors_.end()
+            ? hfs_volumes_.for_guest_path("/")
+            : volume_for_descriptor_path(file->second);
+    if (!write_guest_statfs64(registers[1], volume)) {
       bsd_error(cpu, bsd_support::bad_address);
       return;
     }
@@ -1072,8 +1100,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     const auto capacity = registers[1] / guest_statfs64_size;
     const auto count = std::min(capacity, mount_count);
     for (std::uint32_t index = 0; index < count; ++index) {
-      if (!write_guest_statfs64(registers[0] +
-                                index * guest_statfs64_size)) {
+      const auto &volume = hfs_volumes_.for_guest_path(
+          shared_state_->mounts[index].path);
+      if (!write_guest_statfs64(registers[0] + index * guest_statfs64_size,
+                                volume)) {
         bsd_error(cpu, bsd_support::bad_address);
         return;
       }
@@ -1377,15 +1407,15 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       bsd_error(cpu, 2);
       return;
     }
-    if (request.volume != 0 &&
-        host_path.lexically_normal() != rootfs_.lexically_normal()) {
+    const auto &volume = hfs_volumes_.for_guest_path(*path);
+    if (request.volume != 0 && !hfs_volumes_.is_mount_root(*path)) {
       bsd_error(cpu, bsd_support::invalid_argument);
       return;
     }
     auto result =
         request.volume != 0
             ? hfs::MetadataProvider::pack_volume_attributes(
-                  *metadata, hfs::VolumeMetadata{}, request)
+                  *metadata, volume, request)
             : hfs::MetadataProvider::pack_attributes(*metadata, request);
     const auto full_size = static_cast<std::uint32_t>(result.size());
     if (result.size() > registers[3]) {

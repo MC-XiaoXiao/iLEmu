@@ -32,6 +32,7 @@
 #include "ilemu/display.hpp"
 #include "ilemu/device_profile.hpp"
 #include "ilemu/hfs_metadata.hpp"
+#include "ilemu/hfs_volume_profile.hpp"
 #include "ilemu/host_network.hpp"
 #include "ilemu/kernel_control.hpp"
 #include "ilemu/kernel_shared_state.hpp"
@@ -427,8 +428,10 @@ private:
                           int host_descriptor = -1);
   bool write_guest_device_stat64(std::uint32_t address, std::uint32_t minor,
                                  bool character_device);
-  bool write_guest_statfs(std::uint32_t address);
-  bool write_guest_statfs64(std::uint32_t address);
+  bool write_guest_statfs(std::uint32_t address,
+                          const hfs::VolumeMetadata &volume);
+  bool write_guest_statfs64(std::uint32_t address,
+                            const hfs::VolumeMetadata &volume);
   std::size_t install_mapped_user_image(
       Cpu &cpu, const std::filesystem::path &image_path,
       std::uint32_t mapping_address, std::uint32_t mapping_size,
@@ -521,6 +524,7 @@ private:
   Output &output_;
   std::filesystem::path rootfs_;
   DeviceProfile device_profile_;
+  hfs::VolumeProfile hfs_volumes_;
   hfs::MetadataProvider hfs_metadata_;
   std::shared_ptr<DisplayState> display_state_;
   std::shared_ptr<WifiState> wifi_state_{std::make_shared<WifiState>()};
