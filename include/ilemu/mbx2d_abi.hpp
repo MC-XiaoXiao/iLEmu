@@ -7,6 +7,16 @@ namespace ilemu::mbx2d_abi {
 inline constexpr std::uint32_t success = 0;
 inline constexpr std::uint32_t failure = 1;
 
+// Both the early monolithic and later private MBX2D frameworks expose an
+// eight-megabyte maximum backing allocation through
+// mbx2DGetMaxSurfaceSize. This is a byte limit, not a width/height pair.
+inline constexpr std::uint32_t maximum_surface_size = 8U * 1024U * 1024U;
+
+// Firmware writes this value to both fields of the caller's width/height
+// result in mbx2DGetMaxSurfaceDimensions. The ABI and limit are shared by the
+// early monolithic and later private MBX2D frameworks.
+inline constexpr std::uint32_t maximum_surface_dimension = 2032;
+
 // Defensive host-side limit for the surface-pointer arrays accepted by the
 // firmware FlushSurfaces entry points. LayerKit submits one or a small batch;
 // bounding the guest-controlled count avoids an unbounded validation walk.

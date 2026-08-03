@@ -13,6 +13,11 @@ inline constexpr std::uint32_t out_of_memory = 0x0505U;
 
 inline constexpr std::uint32_t texture_2d = 0x0de1U;
 inline constexpr std::uint32_t texture_rectangle_apple = 0x84f5U;
+inline constexpr std::uint32_t framebuffer = 0x8d40U;
+inline constexpr std::uint32_t renderbuffer = 0x8d41U;
+inline constexpr std::uint32_t color_attachment0 = 0x8ce0U;
+inline constexpr std::uint32_t framebuffer_complete = 0x8cd5U;
+inline constexpr std::uint32_t framebuffer_incomplete_attachment = 0x8cd6U;
 inline constexpr std::uint32_t texture_binding_2d = 0x8069U;
 inline constexpr std::uint32_t texture_binding_rectangle_apple = 0x84f6U;
 inline constexpr std::uint32_t texture0 = 0x84c0U;

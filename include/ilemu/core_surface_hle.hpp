@@ -8,6 +8,8 @@
 #include <optional>
 #include <vector>
 
+#include "ilemu/surface_transport_profile.hpp"
+
 namespace ilemu {
 
 class AddressSpace;
@@ -19,9 +21,9 @@ class SurfaceStore;
 class UserlandHleCall;
 class UserlandHleRegistry;
 
-// User-space replacement for CoreSurface's IOKit client-buffer transport.
-// The public CoreSurfaceBuffer CFRuntime wrapper remains firmware code; only
-// its _CoreSurfaceClientBuffer* backing operations are intercepted.
+// User-space replacement for the private CoreSurface/IOSurface transports.
+// Public CFRuntime wrappers remain firmware code; both private symbol-family
+// profiles project their backing storage through one shared SurfaceStore.
 class CoreSurfaceHle {
   public:
     CoreSurfaceHle(UserlandHleRegistry& registry,
@@ -54,6 +56,9 @@ class CoreSurfaceHle {
         std::uint32_t bytes_per_row{};
         std::uint32_t pixel_format{};
         std::uint32_t references{1};
+        std::uint32_t seed{1};
+        surface_transport::Kind transport{
+            surface_transport::Kind::CoreSurfaceClientBuffer};
         bool owns_memory{};
         // Lookup imports a shared backing into this process' AddressSpace.
         // Keep the exact page range so the final client release can drop the
@@ -68,11 +73,14 @@ class CoreSurfaceHle {
         std::array<std::uint32_t, 7> properties{};
         std::size_t property_index{};
         std::uint32_t number_output{};
+        surface_transport::Kind transport{
+            surface_transport::Kind::CoreSurfaceClientBuffer};
     };
 
     void dispatch(UserlandHleCall& call);
     void create_from_dictionary(UserlandHleCall& call,
-                                std::uint32_t dictionary);
+                                std::uint32_t dictionary,
+                                surface_transport::Kind transport);
     void
     read_next_create_property(UserlandHleCall& call,
                               const std::shared_ptr<CreateRequest>& request);
@@ -80,19 +88,27 @@ class CoreSurfaceHle {
         UserlandHleCall& call, const std::shared_ptr<CreateRequest>& request);
     [[nodiscard]] std::uint32_t
     create_default_buffer(UserlandHleCall& call,
-                          std::uint32_t requested_id = 0);
+                          std::uint32_t requested_id = 0,
+                          surface_transport::Kind transport =
+                              surface_transport::Kind::CoreSurfaceClientBuffer);
     [[nodiscard]] std::uint32_t wrap_client_memory(UserlandHleCall& call,
                                                    std::uint32_t base,
-                                                   std::uint32_t size);
+                                                   std::uint32_t size,
+                                                   surface_transport::Kind
+                                                       transport);
     [[nodiscard]] std::uint32_t
     create_buffer(UserlandHleCall& call, std::uint32_t base, std::uint32_t size,
                   std::uint32_t width, std::uint32_t height,
                   std::uint32_t bytes_per_row, std::uint32_t pixel_format,
                   bool owns_memory, std::uint32_t requested_id = 0,
-                  bool publish = true);
+                  bool publish = true,
+                  surface_transport::Kind transport =
+                      surface_transport::Kind::CoreSurfaceClientBuffer);
     [[nodiscard]] std::uint32_t
-    acquire_client_buffer(UserlandHleCall& call);
-    void recycle_client_buffer(std::uint32_t client);
+    acquire_client_buffer(UserlandHleCall& call,
+                          const surface_transport::Profile& profile);
+    void recycle_client_buffer(std::uint32_t client,
+                               const surface_transport::Profile& profile);
     [[nodiscard]] std::uint32_t
     acquire_imported_mapping(UserlandHleCall& call, std::uint32_t size);
     void recycle_imported_mapping(std::uint32_t base, std::uint32_t size);
@@ -103,8 +119,9 @@ class CoreSurfaceHle {
     void submit(Buffer& buffer, UserlandHleCall& call);
 
     std::map<std::uint32_t, Buffer> buffers_;
-    std::map<std::uint32_t, std::uint32_t> clients_by_id_;
-    std::vector<std::uint32_t> free_client_buffers_;
+    std::map<std::pair<std::uint32_t, surface_transport::Kind>, std::uint32_t>
+        clients_by_id_;
+    std::map<std::uint32_t, std::vector<std::uint32_t>> free_client_buffers_;
     // Imported page ranges come from the HLE data arena, whose general-purpose
     // allocator is intentionally monotonic. Reuse only ranges that this class
     // allocated, unmapped, and observed through final client release.

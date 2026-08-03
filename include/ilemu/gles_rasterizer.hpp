@@ -62,6 +62,7 @@ struct GlesRasterState {
     std::uint32_t cull_mode{gles_abi::back};
     std::uint32_t front_face{gles_abi::counter_clockwise};
     bool cull_enabled{};
+    bool render_target_inverted_vertical{};
 };
 
 class GlesSoftwareRasterizer {

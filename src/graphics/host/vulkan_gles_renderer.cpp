@@ -2430,7 +2430,10 @@ VulkanGlesRenderer::expand_vertices(std::span<const GlesRasterVertex> vertices,
         }
         for (const auto index : indices) {
             const auto& vertex = vertices[index];
-            result.push_back(GpuVertex{vertex.position, vertex.color,
+            auto position = vertex.position;
+            if (state.render_target_inverted_vertical)
+                position[1] = -position[1];
+            result.push_back(GpuVertex{position, vertex.color,
                                        vertex.texture[0], vertex.texture[1]});
         }
     };
@@ -5044,9 +5047,11 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
             0, 1, &descriptor, 0, nullptr);
         VkViewport viewport{};
         viewport.x = static_cast<float>(state.viewport_x);
-        viewport.y = static_cast<float>(frame.height) -
-                     static_cast<float>(state.viewport_y) -
-                     static_cast<float>(state.viewport_height);
+        viewport.y = state.render_target_inverted_vertical
+                         ? static_cast<float>(state.viewport_y)
+                         : static_cast<float>(frame.height) -
+                               static_cast<float>(state.viewport_y) -
+                               static_cast<float>(state.viewport_height);
         viewport.width = static_cast<float>(state.viewport_width);
         viewport.height = static_cast<float>(state.viewport_height);
         viewport.minDepth = 0.0F;
@@ -5055,7 +5060,9 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         VkRect2D scissor{};
         scissor.offset.x = static_cast<std::int32_t>(scissor_left);
         scissor.offset.y = static_cast<std::int32_t>(
-            static_cast<std::int64_t>(frame.height) - scissor_top);
+            state.render_target_inverted_vertical
+                ? scissor_bottom
+                : static_cast<std::int64_t>(frame.height) - scissor_top);
         scissor.extent.width =
             static_cast<std::uint32_t>(scissor_right - scissor_left);
         scissor.extent.height =
@@ -5070,7 +5077,10 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
             HostRectangle{
                 static_cast<std::int32_t>(scissor_left),
                 static_cast<std::int32_t>(
-                    static_cast<std::int64_t>(frame.height) - scissor_top),
+                    state.render_target_inverted_vertical
+                        ? scissor_bottom
+                        : static_cast<std::int64_t>(frame.height) -
+                              scissor_top),
                 static_cast<std::uint32_t>(scissor_right - scissor_left),
                 static_cast<std::uint32_t>(scissor_top - scissor_bottom)});
         gpu_target.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;

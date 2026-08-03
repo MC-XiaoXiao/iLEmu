@@ -16,6 +16,7 @@
 #include "ilemu/gles_rasterizer.hpp"
 #include "ilemu/gles_renderer.hpp"
 #include "ilemu/gles_resources.hpp"
+#include "ilemu/opengles_guest_profile.hpp"
 
 namespace ilemu {
 
@@ -30,17 +31,17 @@ struct KernelSharedState;
 // kernel command stream used by Apple's original implementation.
 class OpenGlesHle {
   public:
-    OpenGlesHle(UserlandHleRegistry& registry,
+    OpenGlesHle(UserlandHleRegistry &registry,
                 std::shared_ptr<DisplayState> display,
                 std::shared_ptr<SurfaceStore> surfaces = {});
     ~OpenGlesHle();
 
     void reset();
-    void inherit_state(const OpenGlesHle& parent);
+    void inherit_state(const OpenGlesHle &parent);
     void set_display(std::shared_ptr<DisplayState> display);
     void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);
     void set_scene_coordinator(std::shared_ptr<SceneCoordinator> scenes);
-    [[nodiscard]] const GlesResourceStore& resources() const {
+    [[nodiscard]] const GlesResourceStore &resources() const {
         return resources_;
     }
 
@@ -61,6 +62,10 @@ class OpenGlesHle {
         bool dirty{};
     };
     struct ContextState {
+        struct FramebufferState {
+            std::uint32_t color_texture_target{};
+            std::uint32_t color_texture{};
+        };
         struct ArrayPointer {
             std::uint32_t size{};
             std::uint32_t type{};
@@ -83,6 +88,8 @@ class OpenGlesHle {
             texture_units;
         std::uint32_t bound_array_buffer{};
         std::uint32_t bound_element_array_buffer{};
+        std::uint32_t bound_framebuffer{};
+        std::map<std::uint32_t, FramebufferState> framebuffers;
         std::uint32_t unpack_alignment{gles_abi::default_pixel_alignment};
         std::uint32_t pack_alignment{gles_abi::default_pixel_alignment};
         std::array<std::int32_t, 4> viewport{};
@@ -108,52 +115,79 @@ class OpenGlesHle {
         ArrayPointer vertex_array;
         ArrayPointer color_array;
     };
+    enum class RenderTargetKind : std::uint8_t {
+        Display,
+        Pixmap,
+        Framebuffer,
+    };
+    struct RenderTargetBinding {
+        RenderTargetKind kind{RenderTargetKind::Display};
+        GlesRenderTargetKey key;
+        std::optional<std::uint32_t> backing_identifier;
+        SurfaceState *pixmap_surface{};
+        std::uint32_t framebuffer_texture{};
+        std::shared_ptr<HostSurface> host_surface;
+        bool inverted_vertical{};
+    };
 
-    [[nodiscard]] ThreadState& thread(UserlandHleCall& call);
-    [[nodiscard]] ContextState* current_context(UserlandHleCall& call);
-    void set_gl_error(UserlandHleCall& call, std::uint32_t error);
-    void set_array_pointer(UserlandHleCall& call, std::uint32_t array);
-    [[nodiscard]] GlesMatrix* current_matrix(ContextState& context);
-    [[nodiscard]] std::vector<GlesMatrix>*
-    current_matrix_stack(ContextState& context);
-    void multiply_current_matrix(UserlandHleCall& call, GlesMatrix matrix);
-    [[nodiscard]] bool read_array(UserlandHleCall& call,
-                                  const ContextState::ArrayPointer& array,
+    [[nodiscard]] ThreadState &thread(UserlandHleCall &call);
+    [[nodiscard]] ContextState *current_context(UserlandHleCall &call);
+    [[nodiscard]] ContextState default_context_state() const;
+    void set_gl_error(UserlandHleCall &call, std::uint32_t error);
+    void set_array_pointer(UserlandHleCall &call, std::uint32_t array);
+    [[nodiscard]] GlesMatrix *current_matrix(ContextState &context);
+    [[nodiscard]] std::vector<GlesMatrix> *
+    current_matrix_stack(ContextState &context);
+    void multiply_current_matrix(UserlandHleCall &call, GlesMatrix matrix);
+    [[nodiscard]] bool read_array(UserlandHleCall &call,
+                                  const ContextState::ArrayPointer &array,
                                   std::uint32_t index,
                                   std::span<float> destination,
                                   bool normalized) const;
     [[nodiscard]] std::optional<GlesRasterVertex>
-    read_vertex(UserlandHleCall& call, const ContextState& context,
+    read_vertex(UserlandHleCall &call, const ContextState &context,
                 std::uint32_t index) const;
     [[nodiscard]] std::optional<std::uint32_t>
-    core_surface_identifier(UserlandHleCall& call, std::uint32_t surface) const;
-    [[nodiscard]] SurfaceState* current_pixmap_surface(UserlandHleCall& call);
+    core_surface_identifier(UserlandHleCall &call, std::uint32_t surface) const;
+    [[nodiscard]] SurfaceState *current_pixmap_surface(UserlandHleCall &call);
+    [[nodiscard]] const GlesResourceStore::TextureLevel *
+    current_framebuffer_level(const ContextState &context) const;
+    [[nodiscard]] std::optional<RenderTargetBinding>
+    resolve_render_target(UserlandHleCall &call, ContextState &context);
     [[nodiscard]] GlesRenderTargetKey
     render_target_key(std::uint32_t surface) const;
     void release_renderer_resources();
-    [[nodiscard]] bool reload_surface(UserlandHleCall& call,
+    [[nodiscard]] bool reload_surface(UserlandHleCall &call,
                                       std::uint32_t surface);
-    [[nodiscard]] bool flush_surface(UserlandHleCall& call,
+    [[nodiscard]] bool flush_surface(UserlandHleCall &call,
                                      std::uint32_t surface);
     [[nodiscard]] std::optional<DisplayFrame>
-    render_target(UserlandHleCall& call);
-    [[nodiscard]] bool commit_render_target(UserlandHleCall& call,
-                                            DisplayFrame frame);
-    void draw(UserlandHleCall& call, bool indexed);
-    [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
-    void register_egl(UserlandHleRegistry& registry);
-    void register_gles(UserlandHleRegistry& registry);
-    void unsupported(UserlandHleCall& call);
+    render_target(UserlandHleCall &call,
+                  const RenderTargetBinding &binding);
+    [[nodiscard]] bool commit_render_target(
+        UserlandHleCall &call, const RenderTargetBinding &binding,
+        DisplayFrame frame);
+    void draw(UserlandHleCall &call, bool indexed);
+    [[nodiscard]] bool display_write_allowed(UserlandHleCall &call) const;
+    void register_eagl(UserlandHleRegistry &registry);
+    void register_egl(UserlandHleRegistry &registry);
+    void register_gles(UserlandHleRegistry &registry);
+    void unsupported(UserlandHleCall &call);
 
     std::map<std::size_t, ThreadState> threads_;
     std::map<std::uint32_t, ContextState> contexts_;
+    std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t>
+        eagl_contexts_;
     std::map<std::uint32_t, SurfaceState> surfaces_;
     GlesResourceStore resources_;
     std::uint32_t next_context_{0x00010001U};
     std::uint32_t next_surface_{0x00020001U};
+    std::uint32_t next_framebuffer_{1U};
     std::uint32_t egl_error_{0x3000U};
     std::uint64_t frame_count_{};
     std::size_t unsupported_trace_count_{};
+    OpenGlesGuestProfileKind guest_profile_kind_{
+        OpenGlesGuestProfileKind::MbxLiteLegacy};
     std::shared_ptr<DisplayState> display_;
     std::shared_ptr<SurfaceStore> surface_store_;
     std::uint64_t renderer_owner_{};

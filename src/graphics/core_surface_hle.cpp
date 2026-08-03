@@ -30,6 +30,8 @@ namespace {
 
 constexpr std::string_view core_surface_image{
     "/CoreSurface.framework/CoreSurface"};
+constexpr std::string_view io_surface_image{
+    "/IOSurface.framework/IOSurface"};
 constexpr std::string_view core_foundation_image{
     "/CoreFoundation.framework/CoreFoundation"};
 constexpr std::string_view client_buffer_prefix{"_CoreSurfaceClientBuffer"};
@@ -56,13 +58,6 @@ enum CreateProperty : std::size_t {
     data_offset,
 };
 
-constexpr std::array<std::string_view, 7> create_property_symbols{
-    "_kCoreSurfaceBufferClientAddress", "_kCoreSurfaceBufferAllocSize",
-    "_kCoreSurfaceBufferWidth",         "_kCoreSurfaceBufferHeight",
-    "_kCoreSurfaceBufferPitch",         "_kCoreSurfaceBufferPixelFormat",
-    "_kCoreSurfaceBufferOffset",
-};
-
 // Bytes in guest memory are B,G,R,A; when read as a little-endian uint32_t
 // this is the DisplayState 0xAARRGGBB representation without conversion.
 constexpr std::uint32_t success = 0;
@@ -80,6 +75,10 @@ CoreSurfaceHle::CoreSurfaceHle(
     registry.register_prefix(std::string{core_surface_image},
                              std::string{client_buffer_prefix},
                              [this](UserlandHleCall& call) { dispatch(call); });
+    registry.register_prefix(
+        std::string{io_surface_image},
+        std::string{surface_transport::io_surface_client.symbol_prefix},
+        [this](UserlandHleCall& call) { dispatch(call); });
     // These public helpers construct the firmware's client wrapper around a
     // transport identifier. Keep that native object lifecycle and intercept
     // only the private transport transaction that would otherwise require
@@ -182,14 +181,16 @@ CoreSurfaceHle::Buffer* CoreSurfaceHle::find(std::uint32_t client) {
     return found == buffers_.end() ? nullptr : &found->second;
 }
 
-void CoreSurfaceHle::create_from_dictionary(UserlandHleCall& call,
-                                            std::uint32_t dictionary) {
+void CoreSurfaceHle::create_from_dictionary(
+    UserlandHleCall& call, std::uint32_t dictionary,
+    surface_transport::Kind transport) {
     if (dictionary == 0) {
-        call.set_return(create_default_buffer(call));
+        call.set_return(create_default_buffer(call, 0, transport));
         return;
     }
     auto request = std::make_shared<CreateRequest>();
     request->dictionary = dictionary;
+    request->transport = transport;
     request->number_output =
         call.allocate_data(sizeof(std::uint32_t), alignof(std::uint32_t));
     if (request->number_output == 0) {
@@ -201,12 +202,19 @@ void CoreSurfaceHle::create_from_dictionary(UserlandHleCall& call,
 
 void CoreSurfaceHle::read_next_create_property(
     UserlandHleCall& call, const std::shared_ptr<CreateRequest>& request) {
-    if (request->property_index >= create_property_symbols.size()) {
+    const auto& profile = surface_transport::for_kind(request->transport);
+    if (request->property_index >= profile.create_property_symbols.size()) {
         finish_create_from_dictionary(call, request);
         return;
     }
-    const auto variable =
-        call.symbol_address(create_property_symbols[request->property_index]);
+    const auto property_symbol =
+        profile.create_property_symbols[request->property_index];
+    if (property_symbol.empty()) {
+        ++request->property_index;
+        read_next_create_property(call, request);
+        return;
+    }
+    const auto variable = call.symbol_address(property_symbol);
     const auto key = variable ? call.memory().read32(*variable).value_or(0) : 0;
     if (key == 0) {
         ++request->property_index;
@@ -301,12 +309,14 @@ void CoreSurfaceHle::finish_create_from_dictionary(
                         ? 0
                         : create_buffer(call, storage, usable_size,
                                         surface_width, surface_height,
-                                        bytes_per_row, format, owns_memory));
+                                        bytes_per_row, format, owns_memory, 0,
+                                        true, request->transport));
 }
 
 std::uint32_t
 CoreSurfaceHle::create_default_buffer(UserlandHleCall& call,
-                                      std::uint32_t requested_id) {
+                                      std::uint32_t requested_id,
+                                      surface_transport::Kind transport) {
     const auto geometry =
         display_ ? display_->geometry() : default_display_geometry;
     const auto width = geometry.width;
@@ -317,12 +327,15 @@ CoreSurfaceHle::create_default_buffer(UserlandHleCall& call,
     if (base == 0)
         return 0;
     return create_buffer(call, base, size, width, height, pitch,
-                         surface_pixel_format_bgra, true, requested_id);
+                         surface_pixel_format_bgra, true, requested_id, true,
+                         transport);
 }
 
 std::uint32_t CoreSurfaceHle::wrap_client_memory(UserlandHleCall& call,
                                                  std::uint32_t base,
-                                                 std::uint32_t size) {
+                                                 std::uint32_t size,
+                                                 surface_transport::Kind
+                                                     transport) {
     if (base == 0 || size < core_surface_abi::bytes_per_bgra_pixel ||
         !call.memory().mapped(base, size)) {
         return 0;
@@ -338,7 +351,8 @@ std::uint32_t CoreSurfaceHle::wrap_client_memory(UserlandHleCall& call,
     const auto height = size >= full_screen_size ? geometry.height : 1U;
     return create_buffer(call, base, size, width, height,
                          width * core_surface_abi::bytes_per_bgra_pixel,
-                         surface_pixel_format_bgra, false);
+                         surface_pixel_format_bgra, false, 0, true,
+                         transport);
 }
 
 std::uint32_t
@@ -346,27 +360,29 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
                               std::uint32_t size, std::uint32_t width,
                               std::uint32_t height, std::uint32_t bytes_per_row,
                               std::uint32_t pixel_format, bool owns_memory,
-                              std::uint32_t requested_id, bool publish) {
-    const auto client = acquire_client_buffer(call);
+                              std::uint32_t requested_id, bool publish,
+                              surface_transport::Kind transport) {
+    const auto& profile = surface_transport::for_kind(transport);
+    const auto client = acquire_client_buffer(call, profile);
     if (client == 0)
         return 0;
     const auto id =
         requested_id == 0 ? surfaces_->allocate_identifier() : requested_id;
     const std::pair<std::uint32_t, std::uint32_t> fields[]{
-        {core_surface_abi::client_reference_count_offset, 1},
-        {core_surface_abi::client_identifier_offset, id},
-        {core_surface_abi::client_base_address_offset, base},
-        {core_surface_abi::client_allocation_size_offset, size},
-        {core_surface_abi::client_width_offset, width},
-        {core_surface_abi::client_height_offset, height},
-        {core_surface_abi::client_pitch_offset, bytes_per_row},
-        {core_surface_abi::client_data_offset_offset, 0},
-        {core_surface_abi::client_pixel_format_offset, pixel_format},
-        {core_surface_abi::client_plane_count_offset, 0},
+        {profile.reference_count_offset, 1},
+        {profile.identifier_offset, id},
+        {profile.base_address_offset, base},
+        {profile.allocation_size_offset, size},
+        {profile.width_offset, width},
+        {profile.height_offset, height},
+        {profile.bytes_per_row_offset, bytes_per_row},
+        {profile.data_offset_offset, 0},
+        {profile.pixel_format_offset, pixel_format},
+        {profile.plane_count_offset, 0},
     };
     for (const auto& [offset, value] : fields) {
         if (!call.memory().write32(client + offset, value)) {
-            recycle_client_buffer(client);
+            recycle_client_buffer(client, profile);
             return 0;
         }
     }
@@ -375,11 +391,11 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
     backing.provenance.producer_process_id = call.process_id();
     if (pixel_format == surface_pixel_format_bgra &&
         !call.memory().track_write_generation(base, size)) {
-        recycle_client_buffer(client);
+        recycle_client_buffer(client, profile);
         return 0;
     }
     if (publish && !surfaces_->publish(call.memory(), backing)) {
-        recycle_client_buffer(client);
+        recycle_client_buffer(client, profile);
         return 0;
     }
     const auto application_viewport_minimum_height =
@@ -428,12 +444,14 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
                               bytes_per_row,
                               pixel_format,
                               1,
+                              1,
+                              transport,
                               owns_memory,
                               0,
                               0,
                               0,
                               {}};
-    clients_by_id_[id] = client;
+    clients_by_id_[{id, transport}] = client;
     call.output().write(
         "[coresurface-hle] create pid=" + std::to_string(call.process_id()) +
         " id=" + std::to_string(id) + " client=" + std::to_string(client) +
@@ -443,37 +461,36 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
 }
 
 std::uint32_t
-CoreSurfaceHle::acquire_client_buffer(UserlandHleCall& call) {
+CoreSurfaceHle::acquire_client_buffer(
+    UserlandHleCall& call, const surface_transport::Profile& profile) {
     constexpr auto permissions =
         MemoryPermission::Read | MemoryPermission::Write;
-    while (!free_client_buffers_.empty()) {
-        const auto client = free_client_buffers_.back();
-        free_client_buffers_.pop_back();
+    auto& free_clients = free_client_buffers_[profile.client_structure_size];
+    while (!free_clients.empty()) {
+        const auto client = free_clients.back();
+        free_clients.pop_back();
         if (!call.memory().accessible(
-                client, core_surface_abi::client_buffer_structure_size,
-                permissions)) {
+                client, profile.client_structure_size, permissions)) {
             continue;
         }
-        const std::array<std::byte,
-                         core_surface_abi::client_buffer_structure_size>
-            cleared{};
+        std::vector<std::byte> cleared(profile.client_structure_size);
         if (call.memory().copy_in(client, cleared))
             return client;
     }
 
     const auto client =
-        call.allocate_data(core_surface_abi::client_buffer_structure_size,
+        call.allocate_data(profile.client_structure_size,
                            client_buffer_alignment);
     if (client == 0)
         return 0;
-    const std::array<std::byte, core_surface_abi::client_buffer_structure_size>
-        cleared{};
+    std::vector<std::byte> cleared(profile.client_structure_size);
     return call.memory().copy_in(client, cleared) ? client : 0;
 }
 
-void CoreSurfaceHle::recycle_client_buffer(std::uint32_t client) {
+void CoreSurfaceHle::recycle_client_buffer(
+    std::uint32_t client, const surface_transport::Profile& profile) {
     if (client != 0)
-        free_client_buffers_.push_back(client);
+        free_client_buffers_[profile.client_structure_size].push_back(client);
 }
 
 std::uint32_t
@@ -660,22 +677,61 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
         call.set_return(success);
         return;
     }
-    if (symbol == "_CoreSurfaceClientBufferCreate") {
-        create_from_dictionary(call, call.argument(0));
+    const auto transport =
+        symbol.starts_with(surface_transport::io_surface_client.symbol_prefix)
+            ? surface_transport::Kind::IOSurfaceClient
+            : surface_transport::Kind::CoreSurfaceClientBuffer;
+    const auto& profile = surface_transport::for_kind(transport);
+    if (!symbol.starts_with(profile.symbol_prefix)) {
+        call.set_return(0);
         return;
     }
-    if (symbol == "_CoreSurfaceClientBufferWrapClientMemory") {
+    const auto operation = symbol.substr(profile.symbol_prefix.size());
+
+    if (operation == "Create") {
+        create_from_dictionary(call, call.argument(0), transport);
+        return;
+    }
+    if (operation == "WrapClientMemory") {
+        call.set_return(wrap_client_memory(
+            call, call.argument(0), call.argument(1), transport));
+        return;
+    }
+    if (operation == "WrapClientImage") {
+        const auto width = call.argument(0);
+        const auto height = call.argument(1);
+        const auto pixel_format = call.argument(2);
+        const auto bytes_per_row = call.argument(3);
+        const auto allocation_size = call.argument(4);
+        const auto base = call.argument(5);
+        const auto bytes_per_pixel = surface_bytes_per_pixel(pixel_format);
+        const auto row_bytes =
+            static_cast<std::uint64_t>(width) * bytes_per_pixel;
+        const auto required =
+            height == 0
+                ? 0
+                : static_cast<std::uint64_t>(height - 1U) * bytes_per_row +
+                      row_bytes;
         call.set_return(
-            wrap_client_memory(call, call.argument(0), call.argument(1)));
+            base == 0 || width == 0 || height == 0 || bytes_per_pixel == 0 ||
+                    row_bytes > bytes_per_row || required == 0 ||
+                    required > allocation_size ||
+                    allocation_size > maximum_surface_bytes ||
+                    !call.memory().mapped(base, allocation_size)
+                ? 0
+                : create_buffer(call, base, allocation_size, width, height,
+                                bytes_per_row, pixel_format, false, 0, true,
+                                transport));
         return;
     }
-    if (symbol == "_CoreSurfaceClientBufferLookup") {
+    if (operation == "Lookup") {
         const auto requested_id = call.argument(0);
         if (requested_id == 0) {
             call.set_return(0);
             return;
         }
-        auto client = clients_by_id_.find(requested_id);
+        const auto client_key = std::pair{requested_id, transport};
+        auto client = clients_by_id_.find(client_key);
         const auto retain_existing = client != clients_by_id_.end();
         if (client == clients_by_id_.end()) {
             std::uint32_t created = 0;
@@ -683,7 +739,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
                 created = create_buffer(
                     call, local->base, local->allocation_size, local->width,
                     local->height, local->bytes_per_row, local->pixel_format,
-                    false, requested_id, false);
+                    false, requested_id, false, transport);
             } else if (const auto shared =
                            surfaces_->shared_mapping(requested_id)) {
                 const auto mapping_address =
@@ -697,7 +753,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
                             call, imported->base, imported->allocation_size,
                             imported->width, imported->height,
                             imported->bytes_per_row, imported->pixel_format,
-                            false, requested_id, false);
+                            false, requested_id, false, transport);
                         if (auto* buffer = find(created)) {
                             buffer->imported_mapping_base = mapping_address;
                             buffer->imported_mapping_size =
@@ -721,20 +777,19 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
                     }
                 }
             } else {
-                created = create_default_buffer(call, requested_id);
+                created = create_default_buffer(call, requested_id, transport);
             }
             if (created == 0) {
                 call.set_return(0);
                 return;
             }
-            client = clients_by_id_.find(requested_id);
+            client = clients_by_id_.find(client_key);
         }
         auto* buffer = find(client->second);
         if (buffer && retain_existing) {
             ++buffer->references;
             static_cast<void>(call.memory().write32(
-                buffer->client +
-                    core_surface_abi::client_reference_count_offset,
+                buffer->client + profile.reference_count_offset,
                 buffer->references));
         }
         call.set_return(client->second);
@@ -744,17 +799,15 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
     const auto argument = call.argument(0);
     auto* buffer = find(argument);
     if (buffer == nullptr) {
-        // Firmware-created CoreSurfaceClientBuffer objects store the transport
-        // identifier at offset 4. Also accept a direct transport identifier
-        // for callers that cross the private ABI without a public wrapper.
-        auto client = clients_by_id_.find(argument);
+        // Also accept a direct transport identifier or a native client object
+        // carrying that identifier at its profile-defined offset.
+        auto client = clients_by_id_.find({argument, transport});
         if (client == clients_by_id_.end() &&
             argument <= std::numeric_limits<std::uint32_t>::max() -
-                            core_surface_abi::client_identifier_offset) {
+                            profile.identifier_offset) {
             if (const auto identifier = call.memory().read32(
-                    argument +
-                    core_surface_abi::client_identifier_offset)) {
-                client = clients_by_id_.find(*identifier);
+                    argument + profile.identifier_offset)) {
+                client = clients_by_id_.find({*identifier, transport});
             }
         }
         if (client != clients_by_id_.end()) {
@@ -765,17 +818,19 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
         call.set_return(0);
         return;
     }
-    if (symbol == "_CoreSurfaceClientBufferRetain") {
+    const auto& buffer_profile =
+        surface_transport::for_kind(buffer->transport);
+    if (operation == "Retain") {
         ++buffer->references;
         static_cast<void>(call.memory().write32(
-            buffer->client + core_surface_abi::client_reference_count_offset,
+            buffer->client + buffer_profile.reference_count_offset,
             buffer->references));
         call.set_return(argument);
-    } else if (symbol == "_CoreSurfaceClientBufferRelease") {
+    } else if (operation == "Release") {
         if (buffer->references != 0)
             --buffer->references;
         static_cast<void>(call.memory().write32(
-            buffer->client + core_surface_abi::client_reference_count_offset,
+            buffer->client + buffer_profile.reference_count_offset,
             buffer->references));
         if (buffer->references == 0) {
             const auto client = buffer->client;
@@ -786,7 +841,8 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
                 buffer->imported_mapping_size;
             const auto imported_mapping_lease_token =
                 buffer->imported_mapping_lease_token;
-            const auto indexed = clients_by_id_.find(id);
+            const auto indexed =
+                clients_by_id_.find({id, buffer->transport});
             if (indexed != clients_by_id_.end() &&
                 indexed->second == client) {
                 clients_by_id_.erase(indexed);
@@ -796,34 +852,55 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
             release_imported_mapping(call.memory(), imported_mapping_base,
                                      imported_mapping_size,
                                      imported_mapping_lease_token);
-            recycle_client_buffer(client);
+            recycle_client_buffer(client, buffer_profile);
         }
         call.set_return(0);
-    } else if (symbol == "_CoreSurfaceClientBufferGetID") {
+    } else if (operation == "GetID") {
         call.set_return(buffer->id);
-    } else if (symbol == "_CoreSurfaceClientBufferGetAllocSize") {
+    } else if (operation == "GetAllocSize") {
         call.set_return(buffer->allocation_size);
-    } else if (symbol == "_CoreSurfaceClientBufferGetWidth") {
+    } else if (operation == "GetWidth") {
         call.set_return(buffer->width);
-    } else if (symbol == "_CoreSurfaceClientBufferGetWidthOfPlane") {
+    } else if (operation == "GetWidthOfPlane") {
         call.set_return(call.argument(1) == 0 ? buffer->width : 0);
-    } else if (symbol == "_CoreSurfaceClientBufferGetHeight") {
+    } else if (operation == "GetHeight") {
         call.set_return(buffer->height);
-    } else if (symbol == "_CoreSurfaceClientBufferGetHeightOfPlane") {
+    } else if (operation == "GetHeightOfPlane") {
         call.set_return(call.argument(1) == 0 ? buffer->height : 0);
-    } else if (symbol == "_CoreSurfaceClientBufferGetBytesPerRow") {
+    } else if (operation == "GetBytesPerRow") {
         call.set_return(buffer->bytes_per_row);
-    } else if (symbol == "_CoreSurfaceClientBufferGetBytesPerRowOfPlane") {
+    } else if (operation == "GetBytesPerRowOfPlane") {
         call.set_return(call.argument(1) == 0 ? buffer->bytes_per_row : 0);
-    } else if (symbol == "_CoreSurfaceClientBufferGetPixelFormatType") {
+    } else if (operation == "GetPixelFormatType" ||
+               operation == "GetPixelFormat") {
         call.set_return(buffer->pixel_format);
-    } else if (symbol == "_CoreSurfaceClientBufferGetBaseAddress") {
+    } else if (operation == "GetBaseAddress") {
         call.set_return(buffer->base);
-    } else if (symbol == "_CoreSurfaceClientBufferGetBaseAddressOfPlane") {
+    } else if (operation == "GetBaseAddressOfPlane") {
         call.set_return(call.argument(1) == 0 ? buffer->base : 0);
-    } else if (symbol == "_CoreSurfaceClientBufferGetPlaneCount") {
+    } else if (operation == "GetPlaneCount") {
         call.set_return(0);
-    } else if (symbol == "_CoreSurfaceClientBufferLock") {
+    } else if (operation == "GetSeed" || operation == "GetSeedOfPlane") {
+        call.set_return(buffer->seed);
+    } else if (operation == "GetOffset" ||
+               operation == "GetOffsetOfPlane") {
+        call.set_return(0);
+    } else if (operation == "GetBytesPerElement" ||
+               operation == "GetBytesPerElementOfPlane") {
+        call.set_return(core_surface_abi::bytes_per_bgra_pixel);
+    } else if (operation == "GetElementWidth" ||
+               operation == "GetElementHeight" ||
+               operation == "GetElementWidthOfPlane" ||
+               operation == "GetElementHeightOfPlane" ||
+               operation == "GetBlockWidthOfPlane" ||
+               operation == "GetBlockHeightOfPlane") {
+        call.set_return(1);
+    } else if (operation == "GetBitsPerBlock" ||
+               operation == "GetBitsPerBlockOfPlane") {
+        call.set_return(32);
+    } else if (operation == "IsGlobal") {
+        call.set_return(1);
+    } else if (operation == "Lock" || operation == "LockPlane") {
         const auto options = call.argument(1);
         const auto synchronized = surfaces_->synchronize_for_cpu(
             call.memory(), buffer->id,
@@ -835,13 +912,16 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
             });
         if (synchronized)
             buffer->lock_options.push_back(options);
+        if (synchronized && call.argument(2) != 0) {
+            static_cast<void>(
+                call.memory().write32(call.argument(2), buffer->seed));
+        }
         call.set_return(synchronized ? success : 1U);
-    } else if (symbol ==
-               "_CoreSurfaceClientBufferFlushProcessorCaches") {
+    } else if (operation == "FlushProcessorCaches") {
         static_cast<void>(
             surfaces_->synchronize_from_guest(call.memory(), buffer->id));
         call.set_return(success);
-    } else if (symbol == "_CoreSurfaceClientBufferUnlock") {
+    } else if (operation == "Unlock" || operation == "UnlockPlane") {
         // A matching explicit Lock is authoritative. WrapClientImage also
         // owns an implicit lock and later calls Unlock with its options in r1,
         // so preserve that firmware argument when no explicit Lock was seen.
@@ -853,16 +933,26 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
         if ((options & core_surface_abi::lock_read_only) == 0) {
             static_cast<void>(surfaces_->synchronize_from_guest(
                 call.memory(), buffer->id));
+            ++buffer->seed;
             submit(*buffer, call);
         }
+        if (call.argument(2) != 0) {
+            static_cast<void>(
+                call.memory().write32(call.argument(2), buffer->seed));
+        }
         call.set_return(success);
-    } else if (symbol == "_CoreSurfaceClientBufferGetYCbCrMatrix" ||
-               symbol == "_CoreSurfaceClientBufferCopyProperty") {
+    } else if (operation == "GetYCbCrMatrix" ||
+               operation == "CopyProperty" || operation == "CopyValue") {
         call.set_return(0);
-    } else if (symbol == "_CoreSurfaceClientBufferSetYCbCrMatrix" ||
-               symbol == "_CoreSurfaceClientBufferSetProperty" ||
-               symbol == "_CoreSurfaceClientBufferRemoveProperty") {
+    } else if (operation == "SetYCbCrMatrix" ||
+               operation == "SetProperty" || operation == "RemoveProperty" ||
+               operation == "SetValue" || operation == "RemoveValue" ||
+               operation == "IncrementUseCount" ||
+               operation == "DecrementUseCount" ||
+               operation == "BindAccel" || operation == "BindAccelOnPlane") {
         call.set_return(success);
+    } else if (operation == "GetUseCount" || operation == "IsInUse") {
+        call.set_return(0);
     } else {
         if (unsupported_trace_count_ < maximum_unsupported_traces) {
             call.output().write(

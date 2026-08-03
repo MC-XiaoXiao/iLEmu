@@ -322,7 +322,7 @@ std::uint32_t GlesResourceStore::set_texture_parameter(
 
 std::uint32_t GlesResourceStore::import_surface_texture(
     AddressSpace& memory, std::uint32_t name, const SurfaceStore& surfaces,
-    std::uint32_t surface_id) {
+    std::uint32_t surface_id, bool render_target_inverted_vertical) {
     auto texture = textures_.find(name);
     if (name == 0 || texture == textures_.end()) {
         return gles_abi::invalid_operation;
@@ -343,6 +343,8 @@ std::uint32_t GlesResourceStore::import_surface_texture(
         imported.revision = allocate_texture_revision();
         imported.host_generation = host_surface->gpu_generation();
         imported.host_surface = host_surface;
+        imported.render_target_inverted_vertical =
+            render_target_inverted_vertical;
         texture->second.levels.insert_or_assign(0, std::move(imported));
         return gles_abi::no_error;
     }
@@ -352,6 +354,8 @@ std::uint32_t GlesResourceStore::import_surface_texture(
     decoded->host_generation =
         host_surface ? host_surface->cpu_generation() : 0;
     decoded->revision = allocate_texture_revision();
+    decoded->render_target_inverted_vertical =
+        render_target_inverted_vertical;
     texture->second.levels.insert_or_assign(0, std::move(*decoded));
     return gles_abi::no_error;
 }
@@ -369,6 +373,8 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
     }
     const auto backing = surfaces.find(*level->second.surface_id);
     if (!backing) return gles_abi::invalid_operation;
+    const auto render_target_inverted_vertical =
+        level->second.render_target_inverted_vertical;
     const auto host_surface = surfaces.host_surface(*level->second.surface_id);
     if (host_surface &&
         host_surface->gpu_generation() > host_surface->cpu_generation()) {
@@ -387,6 +393,8 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
         refreshed.revision = allocate_texture_revision();
         refreshed.host_surface = host_surface;
         refreshed.host_generation = generation;
+        refreshed.render_target_inverted_vertical =
+            render_target_inverted_vertical;
         level->second = std::move(refreshed);
         return gles_abi::no_error;
     }
@@ -399,18 +407,95 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
     decoded->host_surface = host_surface;
     decoded->host_generation =
         host_surface ? host_surface->cpu_generation() : 0;
+    decoded->render_target_inverted_vertical =
+        render_target_inverted_vertical;
     if (decoded->width == level->second.width &&
         decoded->height == level->second.height &&
         decoded->internal_format == level->second.internal_format &&
         decoded->surface_id == level->second.surface_id &&
         decoded->host_surface == level->second.host_surface &&
         decoded->host_generation == level->second.host_generation &&
+        decoded->render_target_inverted_vertical ==
+            level->second.render_target_inverted_vertical &&
         decoded->argb == level->second.argb) {
         return gles_abi::no_error;
     }
     decoded->revision = allocate_texture_revision();
     level->second = std::move(*decoded);
     return gles_abi::no_error;
+}
+
+std::shared_ptr<HostSurface> GlesResourceStore::ensure_texture_render_target(
+    std::uint32_t name, std::uint32_t level_index,
+    HostGraphicsDevice& graphics, std::uint64_t owner,
+    std::uint64_t surface) {
+    auto texture = textures_.find(name);
+    if (name == 0U || texture == textures_.end())
+        return nullptr;
+    auto level = texture->second.levels.find(level_index);
+    if (level == texture->second.levels.end() || level->second.width == 0U ||
+        level->second.height == 0U || level->second.surface_id ||
+        level->second.argb.size() !=
+            static_cast<std::size_t>(level->second.width) *
+                level->second.height) {
+        return nullptr;
+    }
+    const auto key = HostSurfaceKey{owner, surface};
+    const auto descriptor = HostSurfaceDescriptor{
+        level->second.width, level->second.height,
+        level->second.width * 4U,
+        surface_pixel_format_bgra, PerfSurfaceKind::GlesRenderTarget};
+    if (!level->second.host_surface ||
+        level->second.host_surface->key() != key ||
+        level->second.host_surface->descriptor().width != descriptor.width ||
+        level->second.host_surface->descriptor().height != descriptor.height) {
+        level->second.host_surface =
+            graphics.create_surface(key, descriptor, level->second.argb);
+        if (!level->second.host_surface)
+            return nullptr;
+        level->second.host_generation =
+            level->second.host_surface->cpu_generation();
+    }
+    // A texture's first row is its GL lower edge. Native host targets use a
+    // top-left row origin, so ordinary framebuffer rendering reverses Y.
+    level->second.render_target_inverted_vertical = true;
+    return level->second.host_surface;
+}
+
+bool GlesResourceStore::commit_texture_render_target(
+    std::uint32_t name, std::uint32_t level_index,
+    std::span<const std::uint32_t> pixels) {
+    auto texture = textures_.find(name);
+    if (name == 0U || texture == textures_.end())
+        return false;
+    auto level = texture->second.levels.find(level_index);
+    if (level == texture->second.levels.end() || level->second.surface_id ||
+        !level->second.host_surface ||
+        pixels.size() != static_cast<std::size_t>(level->second.width) *
+                             level->second.height) {
+        return false;
+    }
+    level->second.argb.assign(pixels.begin(), pixels.end());
+    level->second.host_surface->replace_cpu(level->second.argb);
+    level->second.host_generation =
+        level->second.host_surface->cpu_generation();
+    level->second.revision = allocate_texture_revision();
+    return true;
+}
+
+void GlesResourceStore::update_texture_render_target_generation(
+    std::uint32_t name, std::uint32_t level_index) {
+    auto texture = textures_.find(name);
+    if (name == 0U || texture == textures_.end())
+        return;
+    auto level = texture->second.levels.find(level_index);
+    if (level == texture->second.levels.end() ||
+        !level->second.host_surface) {
+        return;
+    }
+    level->second.host_generation = std::max(
+        level->second.host_surface->cpu_generation(),
+        level->second.host_surface->gpu_generation());
 }
 
 bool GlesResourceStore::materialize_surface_textures(

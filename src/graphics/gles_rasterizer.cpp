@@ -272,9 +272,12 @@ void draw_triangle(DisplayFrame& frame,
         edge(triangle[0], triangle[1], triangle[2].x, triangle[2].y);
     if (std::abs(area) < 1.0e-6F)
         return;
+    const auto facing_area = state.render_target_inverted_vertical
+                                 ? -area
+                                 : area;
     const auto front_facing = state.front_face == gles_abi::counter_clockwise
-                                  ? area > 0.0F
-                                  : area < 0.0F;
+                                  ? facing_area > 0.0F
+                                  : facing_area < 0.0F;
     if (state.cull_enabled &&
         (state.cull_mode == gles_abi::front_and_back ||
          (state.cull_mode == gles_abi::front && front_facing) ||
@@ -300,8 +303,10 @@ void draw_triangle(DisplayFrame& frame,
             const auto sample_x = static_cast<float>(x) + 0.5F;
             const auto sample_y = static_cast<float>(y) + 0.5F;
             if (state.scissor_enabled) {
-                const auto guest_y =
-                    static_cast<float>(frame.height) - sample_y;
+                const auto guest_y = state.render_target_inverted_vertical
+                                         ? sample_y
+                                         : static_cast<float>(frame.height) -
+                                               sample_y;
                 const auto scissor_right =
                     static_cast<float>(state.scissor_box[0]) +
                     static_cast<float>(state.scissor_box[2]);
@@ -396,9 +401,11 @@ bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
         const auto window_y =
             static_cast<float>(state.viewport_y) +
             (ndc_y * 0.5F + 0.5F) * static_cast<float>(state.viewport_height);
+        const auto host_y = state.render_target_inverted_vertical
+                                ? window_y
+                                : static_cast<float>(frame.height) - window_y;
         screen.push_back(
-            ScreenVertex{window_x, static_cast<float>(frame.height) - window_y,
-                         vertex.color, vertex.texture});
+            ScreenVertex{window_x, host_y, vertex.color, vertex.texture});
     }
     const auto emit = [&](std::size_t a, std::size_t b, std::size_t c) {
         draw_triangle(frame, {screen[a], screen[b], screen[c]}, state);

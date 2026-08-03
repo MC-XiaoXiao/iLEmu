@@ -15,6 +15,7 @@ add_library(ilemu_graphics STATIC
     mbx_swapchain.cpp
     mbx3d_quad_hle.cpp
     mobile_framebuffer_hle.cpp
+    opengles_guest_profile.cpp
     opengles_hle.cpp
     presentation_tracker.cpp
     sdl_display.cpp

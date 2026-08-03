@@ -63,6 +63,24 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry &registry,
     call.set_return(mbx_success);
   });
   add("_mbx2DTerminate", [this](UserlandHleCall &call) { terminate(call); });
+  add("_mbx2DGetMaxSurfaceDimensions", [](UserlandHleCall &call) {
+    const auto output = call.argument(0);
+    call.set_return(
+        output != 0U &&
+                call.write32(output, mbx2d_abi::maximum_surface_dimension) &&
+                call.write32(output + sizeof(std::uint32_t),
+                             mbx2d_abi::maximum_surface_dimension)
+            ? mbx_success
+            : mbx_failure);
+  });
+  add("_mbx2DGetMaxSurfaceSize", [](UserlandHleCall &call) {
+    const auto output = call.argument(0);
+    call.set_return(
+        output != 0U &&
+                call.write32(output, mbx2d_abi::maximum_surface_size)
+            ? mbx_success
+            : mbx_failure);
+  });
   add("_mbx2DCtxInitialize",
       [this](UserlandHleCall &call) { call.set_return(allocate_context()); });
   add("_mbx2DCtxTerminate", [this](UserlandHleCall &call) {

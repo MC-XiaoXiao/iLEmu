@@ -6,6 +6,7 @@
 #include <memory>
 #include <optional>
 #include <set>
+#include <span>
 #include <vector>
 
 namespace ilemu {
@@ -26,6 +27,7 @@ public:
         std::uint64_t revision{};
         std::shared_ptr<HostSurface> host_surface;
         std::uint64_t host_generation{};
+        bool render_target_inverted_vertical{};
     };
     struct Texture {
         std::uint32_t name{};
@@ -65,10 +67,21 @@ public:
         std::uint32_t value);
     [[nodiscard]] std::uint32_t import_surface_texture(
         AddressSpace& memory, std::uint32_t name,
-        const SurfaceStore& surfaces, std::uint32_t surface_id);
+        const SurfaceStore& surfaces, std::uint32_t surface_id,
+        bool render_target_inverted_vertical);
     [[nodiscard]] std::uint32_t refresh_surface_texture(
         AddressSpace& memory, std::uint32_t name,
         const SurfaceStore& surfaces);
+    [[nodiscard]] std::shared_ptr<HostSurface>
+    ensure_texture_render_target(std::uint32_t name, std::uint32_t level,
+                                 HostGraphicsDevice& graphics,
+                                 std::uint64_t owner,
+                                 std::uint64_t surface);
+    [[nodiscard]] bool commit_texture_render_target(
+        std::uint32_t name, std::uint32_t level,
+        std::span<const std::uint32_t> pixels);
+    void update_texture_render_target_generation(std::uint32_t name,
+                                                 std::uint32_t level);
     // Explicit software-fallback boundary for textures whose newest pixels
     // live only in a HostSurface native image.
     [[nodiscard]] bool
