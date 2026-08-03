@@ -78,6 +78,7 @@ public:
   enum class PageMappingMode {
     CopyOnWrite,
     Shared,
+    SharedFile,
   };
   // Exposes an existing page-aligned range as a Mach named-memory object.
   // Existing fork/file-cache COW backings are detached first; subsequent
@@ -185,6 +186,10 @@ private:
     std::uint64_t write_generation{};
     bool file_cached{};
     bool shared_writable{};
+    bool file_writeback_capable{};
+    // Writable file-backed MAP_SHARED mappings use coarse release-time
+    // writeback so ordinary guest stores retain the direct JIT path.
+    bool file_writeback{};
     // Avoid an atomic shared_ptr use-count read on every guest store. This is
     // set only when fork/file/private-object sharing can require a detach.
     mutable bool copy_on_write_possible{};
@@ -239,6 +244,8 @@ private:
   [[nodiscard]] bool fault_file_pages(std::uint32_t address,
                                       std::size_t size);
   void unmap_file_mappings_locked(std::uint32_t address, std::uint64_t end);
+  void flush_shared_file_pages_locked(std::uint32_t address,
+                                      std::uint64_t end);
   void unmap_range_locked(std::uint32_t address, std::uint64_t end);
   void invalidate_mapping_leases_locked(std::uint32_t address,
                                         std::uint64_t end);

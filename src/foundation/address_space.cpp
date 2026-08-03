@@ -77,7 +77,12 @@ AddressSpace::AddressSpace()
           GuestPageBacking::shared_write_tracking_epoch()},
       file_page_cache_{std::make_shared<FilePageCache>()} {}
 
-AddressSpace::~AddressSpace() = default;
+AddressSpace::~AddressSpace() {
+  auto lock = write_lock();
+  flush_shared_file_pages_locked(
+      0, static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) +
+             1U);
+}
 
 void AddressSpace::set_parallel_access(bool enabled) {
   std::unique_lock lock{mutex_};
@@ -179,6 +184,7 @@ bool AddressSpace::unmap(std::uint32_t address, std::uint32_t size) {
 
 void AddressSpace::unmap_range_locked(std::uint32_t address,
                                       std::uint64_t end) {
+  flush_shared_file_pages_locked(address, end);
   vm_map_.unmap(address, end);
   unmap_file_mappings_locked(address, end);
   ensure_unique_page_map_locked();
@@ -191,6 +197,18 @@ void AddressSpace::unmap_range_locked(std::uint32_t address,
   refresh_jit_page_range_locked(address, end);
 }
 
+void AddressSpace::flush_shared_file_pages_locked(std::uint32_t address,
+                                                  std::uint64_t end) {
+  auto page = pages_->lower_bound(address);
+  while (page != pages_->end() && page->first < end) {
+    if (page->second.file_writeback && page->second.backing &&
+        page->second.backing->file_backed()) {
+      static_cast<void>(page->second.backing->flush_file());
+    }
+    ++page;
+  }
+}
+
 void AddressSpace::invalidate_mapping_leases_locked(
     std::uint32_t address, std::uint64_t end) {
   std::erase_if(mapping_leases_, [address, end](const auto &entry) {
@@ -201,6 +219,9 @@ void AddressSpace::invalidate_mapping_leases_locked(
 
 void AddressSpace::clear() {
   auto lock = write_lock();
+  flush_shared_file_pages_locked(
+      0, static_cast<std::uint64_t>(std::numeric_limits<std::uint32_t>::max()) +
+             1U);
   vm_map_.clear();
   pages_ = std::make_shared<PageMap>();
   file_mappings_.clear();
@@ -221,6 +242,16 @@ bool AddressSpace::protect(std::uint32_t address, std::uint32_t size,
   auto lock = write_lock();
   if (!vm_map_.protect(first, end, permissions)) return false;
   set_page_permissions_locked(first, end, permissions);
+  if (has_permission(permissions, MemoryPermission::Write)) {
+    ensure_unique_page_map_locked();
+    auto page = pages_->lower_bound(first);
+    while (page != pages_->end() && page->first < end) {
+      if (page->second.file_writeback_capable) {
+        page->second.file_writeback = true;
+      }
+      ++page;
+    }
+  }
   refresh_jit_page_range_locked(first, end);
   return true;
 }
@@ -392,7 +423,7 @@ bool AddressSpace::map_page_backings(
   const auto end = page_range_end(address, size);
   if (vm_map_.overlaps(address, end)) return false;
   invalidate_mapping_leases_locked(address, end);
-  const auto shared_writable = mode == PageMappingMode::Shared;
+  const auto shared_writable = mode != PageMappingMode::CopyOnWrite;
   const auto initial_tracking_epoch =
       GuestPageBacking::shared_write_tracking_epoch();
   std::size_t tracking_transitions = 0;
@@ -407,8 +438,14 @@ bool AddressSpace::map_page_backings(
   for (std::size_t index = 0; index < backings.size(); ++index) {
     const auto base =
         address + static_cast<std::uint32_t>(index * page_size);
+    const auto file_writeback_capable =
+        mode == PageMappingMode::SharedFile && backings[index]->file_backed();
+    const auto file_writeback =
+        file_writeback_capable &&
+        has_permission(permissions, MemoryPermission::Write);
     auto [page, inserted] = pages_->emplace(
         base, Page{backings[index], 0, false, shared_writable,
+                   file_writeback_capable, file_writeback,
                    !shared_writable});
     static_cast<void>(inserted);
     if (shared_writable && tracks_write_locked(base, page_size)) {

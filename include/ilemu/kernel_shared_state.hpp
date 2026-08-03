@@ -1097,10 +1097,13 @@ struct KernelSharedState {
   std::set<std::string> unix_socket_nodes;
   std::uint32_t next_shared_memory_object{1};
   std::map<std::string, std::filesystem::path> shared_memory_objects;
+  // POSIX shared-memory objects use host files only as volatile pager storage.
+  // Keep their backing identity after shm_unlink so inherited/open descriptors
+  // never acquire ordinary-file persistence by accident.
+  std::set<std::filesystem::path> volatile_shared_memory_backings;
   // File-backed MAP_SHARED mappings use one physical page cache across tasks.
-  // The host file is only the initial pager source; guest stores remain in the
-  // simulator's shared memory object and become immediately visible through
-  // every mapping of the same file identity.
+  // Guest stores become immediately visible through every mapping of the same
+  // file identity, and dirty pages are persisted when mappings are released.
   std::shared_ptr<FilePageCache> shared_mapping_page_cache{
       std::make_shared<FilePageCache>()};
   // Hard links have distinct catalog IDs but share one HFS file record.

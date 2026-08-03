@@ -1074,6 +1074,18 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
         bsd_error(cpu, bsd_support::bad_file_descriptor);
         return;
       }
+      if ((flags & darwin::map_flag::shared) != 0 &&
+          has_permission(permissions, MemoryPermission::Write)) {
+        const auto descriptor_flags =
+            file_status_flags_.contains(fd)
+                ? file_status_flags_.at(fd)
+                : darwin::open_flag::read_only;
+        if ((descriptor_flags & darwin::open_flag::access_mode) ==
+            darwin::open_flag::read_only) {
+          bsd_error(cpu, darwin::error::permission_denied);
+          return;
+        }
+      }
       if ((flags & darwin::map_flag::shared) != 0) {
         auto pages = shared_state_->shared_mapping_page_cache->load_pages(
             found->second, offset, size);
@@ -1083,9 +1095,18 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
         }
         for (const auto &page : *pages)
           page->materialize();
-        if (!memory_.map_page_backings(
-                address, mapped_size, permissions, *pages,
-                AddressSpace::PageMappingMode::Shared)) {
+        AddressSpace::PageMappingMode mapping_mode =
+            AddressSpace::PageMappingMode::SharedFile;
+        {
+          const std::lock_guard filesystem_lock{
+              shared_state_->filesystem_mutex};
+          if (shared_state_->volatile_shared_memory_backings.contains(
+                  found->second)) {
+            mapping_mode = AddressSpace::PageMappingMode::Shared;
+          }
+        }
+        if (!memory_.map_page_backings(address, mapped_size, permissions,
+                                       *pages, mapping_mode)) {
           bsd_error(cpu, darwin::error::no_memory);
           return;
         }
@@ -1182,6 +1203,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
           return;
         }
         shared_state_->shared_memory_objects.emplace(object_name, backing);
+        shared_state_->volatile_shared_memory_backings.insert(backing);
         created = true;
       }
     }

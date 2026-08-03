@@ -58,12 +58,16 @@ struct GuestPageBacking {
   [[nodiscard]] static std::uint64_t shared_write_tracking_epoch();
   [[nodiscard]] std::uint64_t shared_write_generation() const;
   void mark_shared_write();
+  [[nodiscard]] bool file_backed() const;
+  // Persists a MAP_SHARED page without affecting private file mappings.
+  [[nodiscard]] bool flush_file();
 
 private:
   friend class FilePageCache;
 
   mutable std::mutex mutex_;
   mutable std::shared_ptr<GuestFileBacking> file_backing_;
+  std::shared_ptr<GuestFileBacking> file_writeback_;
   std::uint64_t file_offset_{};
   std::uint32_t file_byte_count_{};
   // Set before this page is published and never changed afterwards. This

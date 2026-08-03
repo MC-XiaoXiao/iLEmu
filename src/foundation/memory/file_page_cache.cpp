@@ -1,9 +1,13 @@
 #include "ilemu/file_page_cache.hpp"
 
 #include <algorithm>
+#include <cerrno>
 #include <fstream>
 #include <limits>
 #include <tuple>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace ilemu {
 namespace {
@@ -121,6 +125,42 @@ void GuestPageBacking::mark_shared_write() {
       shared_write_generation_.fetch_add(1, std::memory_order_release));
 }
 
+bool GuestPageBacking::file_backed() const {
+  return static_cast<bool>(file_writeback_);
+}
+
+bool GuestPageBacking::flush_file() {
+  if (!file_writeback_) return true;
+
+  GuestPageBytes snapshot{};
+  {
+    const std::scoped_lock page_lock{mutex_};
+    snapshot = bytes;
+  }
+
+  const auto file = file_writeback_;
+  const std::scoped_lock file_lock{file->mutex};
+  const auto descriptor = ::open(file->path.c_str(), O_WRONLY | O_CLOEXEC);
+  if (descriptor < 0) return false;
+
+  std::size_t written = 0;
+  while (written < file_byte_count_) {
+    const auto result = ::pwrite(
+        descriptor,
+        reinterpret_cast<const char *>(snapshot.data()) + written,
+        file_byte_count_ - written,
+        static_cast<off_t>(file_offset_ + written));
+    if (result < 0 && errno == EINTR)
+      continue;
+    if (result <= 0)
+      break;
+    written += static_cast<std::size_t>(result);
+  }
+  const auto close_result = ::close(descriptor);
+  const auto complete = written == file_byte_count_ && close_result == 0;
+  return complete;
+}
+
 bool FilePageCache::Key::operator<(const Key &other) const {
   return std::tie(path, file_size, modified, file_offset, byte_count) <
          std::tie(other.path, other.file_size, other.modified,
@@ -191,6 +231,7 @@ std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
 
   auto page = std::make_shared<GuestPageBacking>();
   page->file_backing_ = mapping;
+  page->file_writeback_ = mapping;
   page->file_offset_ = file_offset;
   page->file_byte_count_ = byte_count;
   page->has_file_source_ = true;
