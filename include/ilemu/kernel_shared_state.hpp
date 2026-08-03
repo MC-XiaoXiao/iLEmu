@@ -482,7 +482,10 @@ struct KernelSharedState {
   enum class IOKitUserClientProfile {
     None,
     Generic,
+    SerialMultiplexer,
     Display,
+    CoreSurface,
+    Mbx,
     Audio,
     MobileFileIntegrity,
   };
@@ -513,6 +516,25 @@ struct KernelSharedState {
     std::uint32_t service_port{};
     std::uint32_t owner_pid{};
     std::uint32_t type{};
+  };
+  struct IOKitMbxConnectionState {
+    struct Resource {
+      std::uint32_t address{};
+      std::uint32_t mapped_size{};
+      std::uint32_t exposed_size{};
+      std::uint32_t resource_type{};
+      std::uint32_t alignment{};
+    };
+    struct CommandQueue {
+      std::uint32_t control_address{};
+      std::uint32_t buffer_address{};
+      std::uint32_t mapped_size{};
+      std::uint32_t buffer_size{};
+    };
+
+    std::uint32_t next_resource_handle{1};
+    std::map<std::uint32_t, Resource> resources;
+    std::optional<CommandQueue> command_queue;
   };
   struct IOKitInterestNotification {
     std::uint32_t owner_pid{};
@@ -1079,12 +1101,14 @@ struct KernelSharedState {
   std::map<std::uint32_t, IOKitDisplayConnectionState>
       iokit_display_connections;
   std::map<std::uint32_t, IOKitAudioConnectionState> iokit_audio_connections;
+  std::map<std::uint32_t, IOKitMbxConnectionState> iokit_mbx_connections;
   // The physical panel has one power state even though GraphicsServices and
   // LayerKit open separate AppleH1CLCD user clients.
   DisplayGeometry display_geometry{default_display_geometry};
   DisplayGeometry user_interface_geometry{default_display_geometry};
   std::optional<std::uint32_t> requested_display_power_state;
   std::uint32_t baseband_service{};
+  std::uint32_t serial_multiplexer_service{};
   std::uint32_t mobile_file_integrity_service{};
   bsd::baseband_device::State baseband_device_state;
   std::uint32_t mobile_framebuffer_service{};

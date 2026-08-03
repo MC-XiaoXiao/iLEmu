@@ -33,6 +33,11 @@ enum class AppleH1ClcdSelector : std::uint32_t {
   RequestPowerChangeV2 = 12,
   RequestPowerChangeV1 = 13,
   RequestPowerChange = 14,
+  // Optional panel-mode control exposed by later AppleH1CLCD clients.  The
+  // guest sends one scalar and expects only an IOKit return code; the host
+  // compositor already owns the final pixel transform, so accepting this
+  // capability is intentionally state-neutral.
+  SetWhiteOnBlackMode = 19,
 };
 
 constexpr bool is_apple_h1clcd_vsync_selector(std::uint32_t selector) {
@@ -52,6 +57,7 @@ constexpr bool is_apple_h1clcd_power_selector(std::uint32_t selector) {
 }
 
 inline constexpr std::uint32_t success = 0;
+inline constexpr std::uint32_t no_memory = 0xe00002bdU;
 inline constexpr std::uint32_t not_found = 0xe00002f0U;
 inline constexpr std::uint32_t bad_argument = 0xe00002c2U;
 inline constexpr std::uint32_t unsupported = 0xe00002c7U;
@@ -61,6 +67,7 @@ inline constexpr std::uint32_t unsupported = 0xe00002c7U;
 inline constexpr std::uint32_t service_busy_state_quiet = 0;
 
 inline constexpr std::uint32_t apple_h1clcd_service_type = 0;
+inline constexpr std::uint32_t core_surface_root_service_type = 0;
 inline constexpr std::uint32_t power_root_service_type = 0;
 inline constexpr std::uint32_t generic_user_client_type = 0xffffffffU;
 
@@ -91,6 +98,10 @@ namespace service_open_extended {
 // Firmware-private routine 2862. It is absent from XNU 792 device.defs, so
 // keep its observed request/reply contract separate from generated MIG data.
 inline constexpr std::uint32_t request_descriptor_count = 2;
+// The 7A341 IOKit wrapper emits the connection type after two descriptors and
+// the NDR record. Older observed callers use a shorter request and imply zero.
+inline constexpr std::uint32_t connect_type_offset = 60;
+inline constexpr std::uint32_t connect_type_size = sizeof(std::uint32_t);
 inline constexpr std::uint32_t reply_size = 52;
 inline constexpr std::uint32_t reply_word_count =
     reply_size / sizeof(std::uint32_t);

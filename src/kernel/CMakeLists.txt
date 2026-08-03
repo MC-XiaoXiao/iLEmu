@@ -27,4 +27,5 @@ target_link_libraries(ilemu_kernel PRIVATE
     iLEmu::kernel_iokit_baseband
     iLEmu::kernel_iokit_power
     iLEmu::kernel_iokit_display
+    iLEmu::kernel_iokit_mbx
     iLEmu::kernel_iokit_mobile_file_integrity)

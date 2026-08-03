@@ -21,6 +21,7 @@
 #include "ilemu/kernel_iokit_audio_profile.hpp"
 #include "ilemu/kernel_iokit_baseband.hpp"
 #include "ilemu/kernel_iokit_display.hpp"
+#include "ilemu/kernel_iokit_mbx.hpp"
 #include "ilemu/kernel_iokit_mobile_file_integrity.hpp"
 #include "ilemu/kernel_shared_state.hpp"
 #include "ilemu/mig_wire_abi.hpp"
@@ -40,6 +41,7 @@ constexpr std::uint32_t mach_ndr_little_endian = 0x00000001U;
 constexpr std::uint32_t mig_reply_id_delta = 100;
 constexpr std::string_view apple_h1clcd_class{"AppleH1CLCD"};
 constexpr std::string_view mobile_framebuffer_class{"IOMobileFramebuffer"};
+constexpr std::string_view core_surface_root_class{"IOCoreSurfaceRoot"};
 constexpr std::string_view io80211_controller_class{"IO80211Controller"};
 constexpr std::string_view io80211_interface_class{"IO80211Interface"};
 constexpr std::string_view io_ethernet_interface_class{"IOEthernetInterface"};
@@ -481,8 +483,14 @@ user_client_profile_name(KernelSharedState::IOKitUserClientProfile profile) {
   switch (profile) {
   case KernelSharedState::IOKitUserClientProfile::Generic:
     return "generic";
+  case KernelSharedState::IOKitUserClientProfile::SerialMultiplexer:
+    return "serial-multiplexer";
   case KernelSharedState::IOKitUserClientProfile::Display:
     return "display";
+  case KernelSharedState::IOKitUserClientProfile::CoreSurface:
+    return "core-surface";
+  case KernelSharedState::IOKitUserClientProfile::Mbx:
+    return "mbx";
   case KernelSharedState::IOKitUserClientProfile::Audio:
     return "audio";
   case KernelSharedState::IOKitUserClientProfile::MobileFileIntegrity:
@@ -498,9 +506,12 @@ connection_type_for_profile(KernelSharedState::IOKitUserClientProfile profile,
                             std::uint32_t requested_type) {
   if (profile == KernelSharedState::IOKitUserClientProfile::Display)
     return iokit_abi::apple_h1clcd_service_type;
+  if (profile == KernelSharedState::IOKitUserClientProfile::CoreSurface)
+    return iokit_abi::core_surface_root_service_type;
   if (profile == KernelSharedState::IOKitUserClientProfile::Audio)
     return kernel_iokit::audio::IOKitAudioAbiProfile::io_audio2().service_type;
-  if (profile == KernelSharedState::IOKitUserClientProfile::Generic)
+  if (profile == KernelSharedState::IOKitUserClientProfile::Generic ||
+      profile == KernelSharedState::IOKitUserClientProfile::SerialMultiplexer)
     return iokit_abi::generic_user_client_type;
   return requested_type;
 }
@@ -580,6 +591,30 @@ ensure_mobile_framebuffer_service_locked(KernelSharedState &shared_state) {
                 0,
                 KernelSharedState::IOKitUserClientProfile::Display});
   return port;
+}
+
+std::uint32_t
+ensure_core_surface_root_service_locked(KernelSharedState &shared_state) {
+  const auto existing =
+      std::find_if(shared_state.iokit_services.begin(),
+                   shared_state.iokit_services.end(), [](const auto &entry) {
+                     return entry.second.class_name == core_surface_root_class;
+                   });
+  if (existing != shared_state.iokit_services.end())
+    return existing->first;
+
+  const auto object = shared_state.allocate_mach_object();
+  static_cast<void>(shared_state.mach_port_objects.create(object));
+  shared_state.mach_queues.try_emplace(object);
+  shared_state.iokit_services.emplace(
+      object, KernelSharedState::IOKitService{
+                  std::string{core_surface_root_class},
+                  {"IOService"},
+                  {},
+                  "IOService:/IOCoreSurfaceRoot",
+                  0,
+                  KernelSharedState::IOKitUserClientProfile::CoreSurface});
+  return object;
 }
 
 std::uint32_t
@@ -831,9 +866,16 @@ void populate_matching_services_locked(KernelSharedState &shared_state,
   if (contains_text(matching, platform_expert_class)) {
     services.push_back(ensure_platform_expert_service_locked(shared_state));
   }
-  if (kernel_iokit::baseband::matches_service(matching)) {
-    services.push_back(
-        kernel_iokit::baseband::ensure_service_locked(shared_state));
+  if (kernel_iokit::mbx::matches_service(matching)) {
+    const auto platform_expert =
+        ensure_platform_expert_service_locked(shared_state);
+    services.push_back(kernel_iokit::mbx::ensure_service_locked(
+        shared_state, platform_expert));
+  }
+  if (const auto profile =
+          kernel_iokit::baseband::matching_service(matching)) {
+    services.push_back(kernel_iokit::baseband::ensure_service_locked(
+        shared_state, *profile));
   }
   if (kernel_iokit::audio::matches_service(matching)) {
     const auto audio_services =
@@ -869,6 +911,9 @@ void populate_matching_services_locked(KernelSharedState &shared_state,
   if (contains_text(matching, apple_h1clcd_class) ||
       contains_text(matching, mobile_framebuffer_class)) {
     services.push_back(ensure_mobile_framebuffer_service_locked(shared_state));
+  }
+  if (contains_text(matching, core_surface_root_class)) {
+    services.push_back(ensure_core_surface_root_service_locked(shared_state));
   }
   if (kernel_iokit::mobile_file_integrity::matches_service(matching)) {
     services.push_back(
@@ -1882,6 +1927,10 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
     if (descriptor_count != request_descriptor_count) {
       return mach_rcv_invalid_data;
     }
+    const auto requested_connect_type =
+        send_size >= connect_type_offset + connect_type_size
+            ? memory.read32(message_address + connect_type_offset).value_or(0)
+            : 0U;
     std::uint32_t connection_object = 0;
     std::uint32_t connection_name = 0;
     bool supported_service = false;
@@ -1904,8 +1953,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
             connection_object,
             KernelSharedState::IOKitConnection{
                 remote_object, process.pid,
-                connection_type_for_profile(
-                    profile, iokit_abi::apple_h1clcd_service_type)});
+                connection_type_for_profile(profile, requested_connect_type)});
         connection_name =
             copyout_send_locked(shared_state, process.pid, connection_object);
       }
@@ -1922,6 +1970,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
                  " connection-name=" + std::to_string(connection_name) +
                  " connection-object=" + std::to_string(connection_object) +
                  " profile=" + std::string{user_client_profile_name(profile)} +
+                 " type=" + std::to_string(requested_connect_type) +
                  " result=" + (supported_service ? "success" : "unsupported") +
                  "\n");
     return write_reply(memory, message_address, reply);
@@ -1937,17 +1986,35 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
         shared_state, process, remote_object, request->selector,
         std::span<const std::uint64_t>{request->scalar_input.data(),
                                        request->scalar_input_count},
-        request->inband_input, request->scalar_output_capacity);
-    const auto audio_result =
+                                       request->inband_input, request->scalar_output_capacity);
+    const auto baseband_result =
         display_result
+            ? std::optional<kernel_iokit::baseband::MethodResult>{}
+            : kernel_iokit::baseband::dispatch_connect_method(
+                  shared_state, process, remote_object, request->selector,
+                  std::span<const std::uint64_t>{request->scalar_input.data(),
+                                                 request->scalar_input_count},
+                  request->inband_input, request->scalar_output_capacity);
+    const auto audio_result =
+        display_result || baseband_result
             ? std::optional<kernel_iokit::audio::MethodResult>{}
             : kernel_iokit::audio::dispatch_connect_method(
                   shared_state, process, remote_object, request->selector,
                   std::span<const std::uint64_t>{request->scalar_input.data(),
                                                  request->scalar_input_count},
                   request->inband_input, request->scalar_output_capacity);
+    const auto mbx_result =
+        display_result || baseband_result || audio_result
+            ? std::optional<kernel_iokit::mbx::MethodResult>{}
+            : kernel_iokit::mbx::dispatch_connect_method(
+                  memory, shared_state, process, remote_object,
+                  request->selector,
+                  std::span<const std::uint64_t>{request->scalar_input.data(),
+                                                 request->scalar_input_count},
+                  request->inband_input, request->scalar_output_capacity,
+                  request->inband_output_capacity);
     const auto mobile_file_integrity_result =
-        display_result || audio_result
+        display_result || baseband_result || audio_result || mbx_result
             ? std::optional<
                   kernel_iokit::mobile_file_integrity::MethodResult>{}
             : kernel_iokit::mobile_file_integrity::dispatch_connect_method(
@@ -1965,6 +2032,14 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
             ? ConnectMethodResult{audio_result->return_code,
                                   std::move(audio_result->scalar_output),
                                   {}}
+        : baseband_result
+            ? ConnectMethodResult{baseband_result->return_code,
+                                  std::move(baseband_result->scalar_output),
+                                  {}}
+        : mbx_result
+            ? ConnectMethodResult{mbx_result->return_code,
+                                  std::move(mbx_result->scalar_output),
+                                  std::move(mbx_result->inband_output)}
         : mobile_file_integrity_result
             ? ConnectMethodResult{
                   mobile_file_integrity_result->return_code,
@@ -2016,6 +2091,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
     if (receive_size < 24)
       return mach_rcv_invalid_data;
     kernel_iokit::audio::close_connection(memory, shared_state, remote_object);
+    kernel_iokit::mbx::close_connection(memory, shared_state, remote_object);
     {
       std::lock_guard mach_lock{shared_state.mach_mutex};
       // ServiceClose is an ipc_port teardown, not just an IOKit map erase.
