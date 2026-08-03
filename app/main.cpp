@@ -1804,7 +1804,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 SystemButtonInput{SystemButton::Home, SystemButtonPhase::Down});
             initial_runtime->kernel->enqueue_system_button(
                 SystemButtonInput{SystemButton::Home, SystemButtonPhase::Up});
-            output.line("[control] display wake requested before gesture");
+            output.line("[control] home requested before unlock gesture");
           }
           live_touch_scheduler.schedule(command.gesture);
           // Preserve stdin command order. In particular, "tap" followed by
@@ -1817,12 +1817,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
               "[control] gesture=" + command.message +
               " scheduled events=" + std::to_string(command.gesture.size()));
           break;
-        case LiveControlCommandKind::Wake:
+        case LiveControlCommandKind::Home:
           initial_runtime->kernel->enqueue_system_button(
               SystemButtonInput{SystemButton::Home, SystemButtonPhase::Down});
           initial_runtime->kernel->enqueue_system_button(
               SystemButtonInput{SystemButton::Home, SystemButtonPhase::Up});
-          output.line("[control] display wake requested");
+          output.line("[control] home requested");
           break;
         case LiveControlCommandKind::Lock:
           initial_runtime->kernel->enqueue_system_button(
@@ -1942,7 +1942,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           output.line("[control] commands: touch down|move|up|cancel x y; "
                       "tap x y [hold-ms]; unlock; "
                       "drag x1 y1 x2 y2 [duration-ms] [steps]; "
-                      "wake; lock; volume-up; volume-down; snapshot PATH; "
+                      "home; lock; volume-up; volume-down; snapshot PATH; "
                       "ringer ring|silent; "
                       "snapshot-sequence PATH-PREFIX INTERVAL-MS COUNT; "
                       "perf-begin LABEL; perf-end; "

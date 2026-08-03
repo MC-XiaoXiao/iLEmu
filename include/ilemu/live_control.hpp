@@ -13,7 +13,7 @@ namespace ilemu {
 enum class LiveControlCommandKind {
   Touch,
   Gesture,
-  Wake,
+  Home,
   Lock,
   VolumeUp,
   VolumeDown,

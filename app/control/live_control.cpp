@@ -35,7 +35,7 @@ constexpr std::size_t unlock_steps = 7;
 constexpr auto unlock_release_delay = std::chrono::milliseconds{200};
 // A Home click is processed by SpringBoard before it requests panel power and
 // tears down the dimming window. Do not begin the lock gesture in that window.
-constexpr auto unlock_wake_settle_delay = std::chrono::milliseconds{1'000};
+constexpr auto unlock_home_settle_delay = std::chrono::milliseconds{1'000};
 
 LiveControlCommand error_command(std::string message) {
   LiveControlCommand result;
@@ -191,11 +191,15 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line) {
       return {error_command("perf-end does not accept arguments")};
     return {simple_command(LiveControlCommandKind::PerfEnd)};
   }
-  if (operation == "wake") {
+  // `home` is the public command: it injects the physical Home/Menu button,
+  // whose effect is context-sensitive firmware behavior (wake while asleep,
+  // App exit while awake). Keep the old spelling as an undocumented input
+  // alias so existing control scripts do not break.
+  if (operation == "home" || operation == "wake") {
     std::string trailing;
     if (parser >> trailing)
-      return {error_command("wake does not accept arguments")};
-    return {simple_command(LiveControlCommandKind::Wake)};
+      return {error_command(operation + " does not accept arguments")};
+    return {simple_command(LiveControlCommandKind::Home)};
   }
   if (operation == "lock") {
     std::string trailing;
@@ -273,7 +277,7 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line) {
         width * unlock_start_x_fraction, height * unlock_y_fraction,
         width * unlock_end_x_fraction, height * unlock_y_fraction,
         unlock_duration_ms, unlock_steps, "unlock", unlock_release_delay,
-        unlock_wake_settle_delay);
+        unlock_home_settle_delay);
     command.wake_display = true;
     return {std::move(command)};
   }
