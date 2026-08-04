@@ -125,6 +125,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case darwin::syscall::disable_thread_signal:
   case 333:
   case darwin::syscall::semaphore_wait_signal:
+  case darwin::syscall::semaphore_wait_signal_timespec:
   case 327:
   case 355:
     dispatch_bsd_process(cpu, number);

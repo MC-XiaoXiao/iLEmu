@@ -298,6 +298,10 @@ inline constexpr std::uint32_t aio_write = 319;
 inline constexpr std::uint32_t aio_list = 320;
 inline constexpr std::uint32_t disable_thread_signal = 331;
 inline constexpr std::uint32_t semaphore_wait_signal = 334;
+// iPhone OS 3.0's libSystem uses the pre-inline-timespec semwait ABI at
+// syscall 370: the fifth argument points to an ARM32 {tv_sec,tv_nsec} pair.
+// Keep this separate from syscall 334, whose sixth argument carries tv_nsec.
+inline constexpr std::uint32_t semaphore_wait_signal_timespec = 370;
 inline constexpr std::uint32_t kqueue = 362;
 inline constexpr std::uint32_t kevent = 363;
 inline constexpr std::uint32_t mac_syscall = 381;

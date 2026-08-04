@@ -680,6 +680,31 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
     wait_on_semaphore(cpu, registers[0], registers[1], timeout_interval, true);
     return;
   }
+  case darwin::syscall::semaphore_wait_signal_timespec: {
+    // The iPhone OS 3 user ABI keeps the timespec in guest memory rather than
+    // passing tv_sec/tv_nsec as the final two syscall words.  Decode it at the
+    // syscall boundary and reuse the same scheduler-backed semaphore wait.
+    std::optional<std::uint64_t> timeout_interval;
+    if (registers[2] != 0) {
+      const auto seconds = memory_.read32(registers[4]);
+      const auto nanoseconds = memory_.read32(registers[4] + 4U);
+      if (!seconds || !nanoseconds || *nanoseconds >= 1'000'000'000U) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+        return;
+      }
+      const auto requested =
+          static_cast<std::uint64_t>(*seconds) * 1'000'000'000ULL +
+          *nanoseconds;
+      if (registers[3] != 0) {
+        timeout_interval = requested;
+      } else {
+        const auto now = shared_state_->clock.wall_time();
+        timeout_interval = requested > now ? requested - now : 0;
+      }
+    }
+    wait_on_semaphore(cpu, registers[0], registers[1], timeout_interval, true);
+    return;
+  }
   case 327: // issetugid
     bsd_success(cpu, 0);
     return;
