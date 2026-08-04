@@ -18,6 +18,7 @@
 #include "ilemu/mig_wire_abi.hpp"
 #include "ilemu/task_mig_ids.hpp"
 #include "ilemu/thread_act_mig_ids.hpp"
+#include "ilemu/surface_store.hpp"
 #include "ilemu/vm_map_mig_ids.hpp"
 #include "ilemu/xnu_mig_adapter.hpp"
 
@@ -83,6 +84,54 @@ std::optional<std::uint32_t> find_free_guest_region(const AddressSpace &memory,
     candidate += AddressSpace::page_size;
   }
   return std::nullopt;
+}
+
+std::uint32_t create_surface_transport_send_right_locked(
+    KernelSharedState &state, SurfaceStore &surfaces,
+    std::uint32_t process_id, std::uint32_t surface_id) {
+  auto port = state.surface_transport_surface_ports.find(surface_id);
+  auto object = std::uint32_t{};
+  auto created = false;
+  if (port == state.surface_transport_surface_ports.end()) {
+    auto lease = surfaces.acquire_transport_lease(surface_id);
+    if (!lease)
+      return 0U;
+    object = state.allocate_mach_object();
+    if (!state.mach_port_objects.create(object))
+      return 0U;
+    state.surface_transport_port_surfaces.emplace(object, surface_id);
+    state.surface_transport_surface_ports.emplace(surface_id, object);
+    state.surface_transport_port_leases.emplace(object, std::move(lease));
+    created = true;
+  } else {
+    object = port->second;
+  }
+
+  const auto name =
+      state.mach_namespaces
+          .copyout(process_id, object,
+                   xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
+          .value_or(0U);
+  if (name == 0U && created) {
+    state.surface_transport_port_surfaces.erase(object);
+    state.surface_transport_surface_ports.erase(surface_id);
+    state.surface_transport_port_leases.erase(object);
+    static_cast<void>(state.mach_port_objects.erase(object));
+  }
+  return name;
+}
+
+std::optional<std::uint32_t>
+resolve_surface_transport_locked(const KernelSharedState &state,
+                                 std::uint32_t process_id,
+                                 std::uint32_t port_name) {
+  const auto object = state.mach_namespaces.resolve(process_id, port_name);
+  if (!object)
+    return std::nullopt;
+  const auto surface = state.surface_transport_port_surfaces.find(*object);
+  return surface == state.surface_transport_port_surfaces.end()
+             ? std::nullopt
+             : std::optional<std::uint32_t>{surface->second};
 }
 
 std::uint32_t read_little_word(std::span<const std::byte> bytes,

@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 #include <optional>
@@ -26,6 +27,12 @@ class UserlandHleRegistry;
 // profiles project their backing storage through one shared SurfaceStore.
 class CoreSurfaceHle {
   public:
+    using CreateSurfacePortHandler =
+        std::function<std::uint32_t(std::uint32_t, std::uint32_t)>;
+    using LookupSurfacePortHandler =
+        std::function<std::optional<std::uint32_t>(std::uint32_t,
+                                                    std::uint32_t)>;
+
     CoreSurfaceHle(UserlandHleRegistry& registry,
                    std::shared_ptr<DisplayState> display,
                    std::shared_ptr<SurfaceStore> surfaces = {},
@@ -38,6 +45,8 @@ class CoreSurfaceHle {
         std::shared_ptr<PresentationTracker> presentations);
     void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);
     void set_scene_coordinator(std::shared_ptr<SceneCoordinator> scenes);
+    void set_surface_port_handlers(CreateSurfacePortHandler create,
+                                   LookupSurfacePortHandler lookup);
     // The display user client exposes its front buffer as a reserved
     // CoreSurface ID. Unlike ordinary buffers, firmware draws into it while
     // it remains locked and the display controller scans it out at vsync.
@@ -142,6 +151,8 @@ class CoreSurfaceHle {
     std::shared_ptr<PresentationTracker> presentation_tracker_;
     std::shared_ptr<KernelSharedState> shared_state_;
     std::shared_ptr<SceneCoordinator> scene_coordinator_;
+    CreateSurfacePortHandler create_surface_port_;
+    LookupSurfacePortHandler lookup_surface_port_;
 };
 
 } // namespace ilemu

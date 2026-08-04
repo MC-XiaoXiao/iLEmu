@@ -57,6 +57,8 @@
 
 #include <sys/stat.h>
 
+#include "mach/support.hpp"
+
 namespace ilemu {
 
 std::size_t CompatibilityKernel::bootstrap_checked_in_service_count() const {
@@ -127,11 +129,28 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   shared_state_->user_interface_geometry = device_profile_.user_interface;
   core_surface_hle_.set_shared_state(shared_state_);
   core_surface_hle_.set_scene_coordinator(scene_coordinator_);
+  core_surface_hle_.set_surface_port_handlers(
+      [this](std::uint32_t process_id, std::uint32_t surface_id) {
+        std::lock_guard lock{shared_state_->mach_mutex};
+        return mach_support::create_surface_transport_send_right_locked(
+            *shared_state_, *surface_store_, process_id, surface_id);
+      },
+      [this](std::uint32_t process_id,
+             std::uint32_t port_name) -> std::optional<std::uint32_t> {
+        std::lock_guard lock{shared_state_->mach_mutex};
+        return mach_support::resolve_surface_transport_locked(
+            *shared_state_, process_id, port_name);
+      });
   opengles_hle_.set_shared_state(shared_state_);
   opengles_hle_.set_scene_coordinator(scene_coordinator_);
   mbx2d_hle_.set_shared_state(shared_state_);
   mobile_framebuffer_hle_.set_shared_state(shared_state_);
   mobile_framebuffer_hle_.set_scene_coordinator(scene_coordinator_);
+  mobile_framebuffer_hle_.set_frame_presented_handler(
+      [this](std::uint32_t process_id) {
+        graphics_services_input::complete_home_transition_after_present(
+            *shared_state_, process_id, scene_coordinator_.get());
+      });
   register_core_telephony_hle(
       userland_hle_, [this] { return wifi_state_; },
       [this](const WifiSnapshot &before, const WifiSnapshot &after) {

@@ -142,6 +142,12 @@ void CoreSurfaceHle::set_scene_coordinator(
     scene_coordinator_ = std::move(scenes);
 }
 
+void CoreSurfaceHle::set_surface_port_handlers(
+    CreateSurfacePortHandler create, LookupSurfacePortHandler lookup) {
+    create_surface_port_ = std::move(create);
+    lookup_surface_port_ = std::move(lookup);
+}
+
 bool CoreSurfaceHle::refresh_default_scanout(AddressSpace& memory,
                                              std::uint32_t owner_process_id) {
     if (!display_)
@@ -429,61 +435,19 @@ CoreSurfaceHle::lookup_buffer(UserlandHleCall& call,
 
 std::uint32_t CoreSurfaceHle::create_mach_port(UserlandHleCall& call,
                                                const Buffer& buffer) {
-    if (!shared_state_)
-        return 0;
-    std::lock_guard lock{shared_state_->mach_mutex};
-    auto port = shared_state_->surface_transport_surface_ports.find(buffer.id);
-    auto object = std::uint32_t{};
-    auto created = false;
-    if (port == shared_state_->surface_transport_surface_ports.end()) {
-        auto lease = surfaces_->acquire_transport_lease(buffer.id);
-        if (!lease)
-            return 0;
-        object = shared_state_->allocate_mach_object();
-        if (!shared_state_->mach_port_objects.create(object))
-            return 0;
-        shared_state_->surface_transport_port_surfaces.emplace(object,
-                                                               buffer.id);
-        shared_state_->surface_transport_surface_ports.emplace(buffer.id,
-                                                               object);
-        shared_state_->surface_transport_port_leases.emplace(
-            object, std::move(lease));
-        created = true;
-    } else {
-        object = port->second;
-    }
-    const auto name = shared_state_->mach_namespaces
-        .copyout(call.process_id(), object,
-                 xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
-        .value_or(0U);
-    if (name == 0U && created) {
-        shared_state_->surface_transport_port_surfaces.erase(object);
-        shared_state_->surface_transport_surface_ports.erase(buffer.id);
-        shared_state_->surface_transport_port_leases.erase(object);
-        static_cast<void>(shared_state_->mach_port_objects.erase(object));
-    }
-    return name;
+    return create_surface_port_
+               ? create_surface_port_(call.process_id(), buffer.id)
+               : 0U;
 }
 
 std::uint32_t CoreSurfaceHle::lookup_from_mach_port(
     UserlandHleCall& call, std::uint32_t port_name,
     surface_transport::Kind transport) {
-    if (!shared_state_ || port_name == 0)
+    if (!lookup_surface_port_ || port_name == 0)
         return 0;
-    std::uint32_t surface_id = 0;
-    {
-        std::lock_guard lock{shared_state_->mach_mutex};
-        const auto object = shared_state_->mach_namespaces.resolve(
-            call.process_id(), port_name);
-        if (!object)
-            return 0;
-        const auto surface =
-            shared_state_->surface_transport_port_surfaces.find(*object);
-        if (surface == shared_state_->surface_transport_port_surfaces.end())
-            return 0;
-        surface_id = surface->second;
-    }
-    return lookup_buffer(call, surface_id, transport);
+    const auto surface_id =
+        lookup_surface_port_(call.process_id(), port_name);
+    return surface_id ? lookup_buffer(call, *surface_id, transport) : 0U;
 }
 
 std::uint32_t

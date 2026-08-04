@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <memory>
 
@@ -32,6 +33,8 @@ public:
     void set_presentation_tracker(
         std::shared_ptr<PresentationTracker> presentations);
     void set_scene_coordinator(std::shared_ptr<SceneCoordinator> scenes);
+    void set_frame_presented_handler(
+        std::function<void(std::uint32_t)> handler);
     [[nodiscard]] bool has_active_layers() const;
 
 private:
@@ -73,6 +76,7 @@ private:
     std::shared_ptr<PresentationTracker> presentation_tracker_;
     std::shared_ptr<KernelSharedState> shared_state_;
     std::shared_ptr<SceneCoordinator> scene_coordinator_;
+    std::function<void(std::uint32_t)> frame_presented_handler_;
     std::shared_ptr<GlesRenderer> host_graphics_;
     std::unique_ptr<CommandEncoder> command_encoder_;
     std::shared_ptr<HostSurface> scanout_surface_;

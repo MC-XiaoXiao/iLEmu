@@ -11,6 +11,7 @@
 namespace ilemu {
 
 class AddressSpace;
+class SurfaceStore;
 
 namespace mach_support {
 
@@ -64,6 +65,14 @@ resolve_name_with_right(const KernelSharedState &state, std::uint32_t task,
 [[nodiscard]] std::optional<std::uint32_t>
 resolve_message_object(const KernelSharedState &state, std::uint32_t sender,
                        std::uint32_t name);
+
+[[nodiscard]] std::uint32_t create_surface_transport_send_right_locked(
+    KernelSharedState &state, SurfaceStore &surfaces, std::uint32_t process_id,
+    std::uint32_t surface_id);
+[[nodiscard]] std::optional<std::uint32_t>
+resolve_surface_transport_locked(const KernelSharedState &state,
+                                 std::uint32_t process_id,
+                                 std::uint32_t port_name);
 
 [[nodiscard]] bool
 enqueue_no_senders_notification_locked(KernelSharedState &state,

@@ -17,7 +17,6 @@
 #include "ilemu/core_surface_abi.hpp"
 #include "ilemu/display.hpp"
 #include "ilemu/gles_renderer.hpp"
-#include "ilemu/graphics_services_input.hpp"
 #include "ilemu/iokit_abi.hpp"
 #include "ilemu/kernel_shared_state.hpp"
 #include "ilemu/mobile_framebuffer_abi.hpp"
@@ -109,11 +108,8 @@ MobileFramebufferHle::MobileFramebufferHle(
         display_->present(call.process_id());
         performance_counters().record_vsync_guest_submit(
             call.process_id(), call.argument(0));
-        if (shared_state_) {
-          graphics_services_input::complete_home_transition_after_present(
-              *shared_state_, call.process_id(),
-              scene_coordinator_.get());
-        }
+        if (frame_presented_handler_)
+          frame_presented_handler_(call.process_id());
       }
     }
     call.set_return(iokit_abi::success);
@@ -187,6 +183,11 @@ void MobileFramebufferHle::set_presentation_tracker(
 void MobileFramebufferHle::set_scene_coordinator(
     std::shared_ptr<SceneCoordinator> scenes) {
   scene_coordinator_ = std::move(scenes);
+}
+
+void MobileFramebufferHle::set_frame_presented_handler(
+    std::function<void(std::uint32_t)> handler) {
+  frame_presented_handler_ = std::move(handler);
 }
 
 bool MobileFramebufferHle::display_write_allowed(
