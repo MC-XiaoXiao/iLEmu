@@ -20,7 +20,10 @@ namespace {
 
 constexpr std::uint32_t copy_send_bits = 19;
 constexpr std::uint32_t graphics_event_message_id = 123;
-constexpr std::uint32_t application_did_finish_background_event_type = 2003;
+// The same private value is directional: SpringBoard sends it to bring a
+// resident application forward, while an application sends it back after its
+// Home transition has finished.
+constexpr std::uint32_t application_transition_event_type = 2003;
 constexpr std::uint32_t hand_event_type = 3001;
 
 constexpr std::size_t record_location_offset = 8;
@@ -701,11 +704,13 @@ KernelSharedState::ApplicationLaunchAttempt *launch_attempt_locked(
 bool attempt_is_home_exit_target_locked(
     const KernelSharedState &state, std::uint32_t process_id,
     const KernelSharedState::ApplicationLaunchAttempt &attempt) {
-  static_cast<void>(attempt);
   return state.application_touch_suspended &&
          state.application_suspension_reason ==
              KernelSharedState::ApplicationSuspensionReason::Home &&
-         state.suspended_application_scene_process_id == process_id;
+         state.suspended_application_scene_process_id == process_id &&
+         state.last_home_launch_barrier_sequence != 0U &&
+         attempt.origin_touch_sequence <
+             state.last_home_launch_barrier_sequence;
 }
 
 bool different_foreground_attempt_locked(const KernelSharedState &state,
@@ -2429,7 +2434,7 @@ void record_application_event_delivery_locked(
     KernelSharedState &state, std::uint32_t sender_pid,
     std::uint32_t destination, std::uint32_t event_type,
     SceneCoordinator *scenes) {
-  if (event_type == application_did_finish_background_event_type) {
+  if (event_type == application_transition_event_type) {
     const auto sender = state.processes.find(sender_pid);
     const auto destination_port =
         state.mach_port_objects.lookup(destination);
@@ -2439,15 +2444,15 @@ void record_application_event_delivery_locked(
         destination_port &&
         process_is_springboard_locked(
             state, destination_port->receive_owner);
-    if (!valid_background_completion)
+    if (valid_background_completion) {
+      if (state.application_touch_suspended &&
+          state.application_suspension_reason ==
+              KernelSharedState::ApplicationSuspensionReason::Home &&
+          state.suspended_application_scene_process_id == sender_pid) {
+        complete_home_transition_locked(state, sender_pid, scenes);
+      }
       return;
-    if (state.application_touch_suspended &&
-        state.application_suspension_reason ==
-            KernelSharedState::ApplicationSuspensionReason::Home &&
-        state.suspended_application_scene_process_id == sender_pid) {
-      complete_home_transition_locked(state, sender_pid, scenes);
     }
-    return;
   }
 
   const auto sender = state.processes.find(sender_pid);
@@ -2466,6 +2471,10 @@ void record_application_event_delivery_locked(
     return;
   }
   const auto process_id = destination_port->receive_owner;
+  const auto resume_origin_touch_sequence =
+      event_type == application_transition_event_type
+          ? state.springboard_pending_launch_touch_sequence
+          : 0U;
   if (const auto pending =
           state.pending_application_event_launches.find(destination);
       pending != state.pending_application_event_launches.end() &&
@@ -2473,6 +2482,14 @@ void record_application_event_delivery_locked(
     const auto origin_touch_sequence = pending->second.origin_touch_sequence;
     state.pending_application_event_launches.erase(pending);
     record_resident_lookup_locked(state, process_id, origin_touch_sequence);
+  } else if (resume_origin_touch_sequence != 0U) {
+    // A resident event port remains cached after Home, so SpringBoard can send
+    // the resume lifecycle event without another bootstrap lookup. Bind that
+    // firmware-owned event to the exact icon gesture still pending in the
+    // system input queue; otherwise the committed App snapshot becomes
+    // visible while touch continues to route to SpringBoard.
+    record_resident_lookup_locked(state, process_id,
+                                  resume_origin_touch_sequence);
   }
   state.application_event_objects_by_process[process_id] = destination;
   // Event delivery proves the PID-owned route, not lifecycle meaning. Retry
