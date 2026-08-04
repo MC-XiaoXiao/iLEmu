@@ -133,51 +133,23 @@ std::optional<std::vector<std::uint32_t>> decode_image(
 }
 
 std::optional<GlesResourceStore::TextureLevel> decode_surface(
-    AddressSpace& memory, const SurfaceStore::Backing& backing) {
-    if (backing.pixel_format != surface_pixel_format_bgra ||
-        backing.width > gles_abi::maximum_texture_dimension ||
+    AddressSpace& memory, const SurfaceStore& surfaces,
+    const SurfaceStore::Backing& backing) {
+    if (backing.width > gles_abi::maximum_texture_dimension ||
         backing.height > gles_abi::maximum_texture_dimension) {
         return std::nullopt;
     }
-    constexpr auto pixel_size = sizeof(std::uint32_t);
-    const auto row_bytes = static_cast<std::uint64_t>(backing.width) *
-                           pixel_size;
-    if (row_bytes > backing.bytes_per_row) return std::nullopt;
-    const auto required = backing.height == 0
-                              ? 0
-                              : static_cast<std::uint64_t>(backing.height - 1U) *
-                                        backing.bytes_per_row +
-                                    row_bytes;
-    if (required > backing.allocation_size ||
-        required > gles_abi::maximum_resource_bytes ||
-        required > std::numeric_limits<std::size_t>::max()) {
+    const auto pixel_count = static_cast<std::uint64_t>(backing.width) *
+                             backing.height;
+    if (pixel_count > gles_abi::maximum_resource_bytes /
+                          sizeof(std::uint32_t)) {
         return std::nullopt;
     }
-    const auto source = memory.read_bytes(
-        backing.base, static_cast<std::size_t>(required));
-    if (!source) return std::nullopt;
-    std::vector<std::uint32_t> pixels(
-        static_cast<std::size_t>(backing.width) * backing.height);
-    for (std::uint32_t y = 0; y < backing.height; ++y) {
-        for (std::uint32_t x = 0; x < backing.width; ++x) {
-            const auto offset = static_cast<std::size_t>(
-                static_cast<std::uint64_t>(y) * backing.bytes_per_row +
-                static_cast<std::uint64_t>(x) * pixel_size);
-            const auto blue = std::to_integer<std::uint32_t>((*source)[offset]);
-            const auto green =
-                std::to_integer<std::uint32_t>((*source)[offset + 1U]);
-            const auto red =
-                std::to_integer<std::uint32_t>((*source)[offset + 2U]);
-            const auto alpha_value =
-                std::to_integer<std::uint32_t>((*source)[offset + 3U]);
-            pixels[static_cast<std::size_t>(y) * backing.width + x] =
-                (alpha_value << 24U) | (red << 16U) |
-                (green << 8U) | blue;
-        }
-    }
+    auto pixels = surfaces.read_argb(memory, backing.id);
+    if (!pixels || pixels->size() != pixel_count) return std::nullopt;
     return GlesResourceStore::TextureLevel{
         backing.width, backing.height, gles_abi::bgra_apple,
-        std::move(pixels), backing.id, 0, {}, 0};
+        std::move(*pixels), backing.id, 0, {}, 0};
 }
 
 }  // namespace
@@ -329,7 +301,8 @@ std::uint32_t GlesResourceStore::import_surface_texture(
     }
     const auto backing = surfaces.find(surface_id);
     if (!backing) return gles_abi::invalid_value;
-    if (backing->pixel_format != surface_pixel_format_bgra) {
+    if (backing->pixel_format != surface_pixel_format_bgra &&
+        !surface_is_yuv422(backing->pixel_format)) {
         return gles_abi::invalid_enum;
     }
     const auto host_surface = surfaces.host_surface(surface_id);
@@ -348,7 +321,7 @@ std::uint32_t GlesResourceStore::import_surface_texture(
         texture->second.levels.insert_or_assign(0, std::move(imported));
         return gles_abi::no_error;
     }
-    auto decoded = decode_surface(memory, *backing);
+    auto decoded = decode_surface(memory, surfaces, *backing);
     if (!decoded) return gles_abi::invalid_value;
     decoded->host_surface = host_surface;
     decoded->host_generation =
@@ -398,9 +371,10 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
         level->second = std::move(refreshed);
         return gles_abi::no_error;
     }
-    auto decoded = decode_surface(memory, *backing);
+    auto decoded = decode_surface(memory, surfaces, *backing);
     if (!decoded) {
-        return backing->pixel_format == surface_pixel_format_bgra
+        return (backing->pixel_format == surface_pixel_format_bgra ||
+                surface_is_yuv422(backing->pixel_format))
                    ? gles_abi::invalid_value
                    : gles_abi::invalid_enum;
     }

@@ -7,6 +7,7 @@ namespace ilemu {
 
 class AddressSpace;
 class Output;
+class SurfaceStore;
 struct KernelSharedState;
 struct ProcessContext;
 
@@ -30,6 +31,7 @@ struct IOKitMachCallSite {
     std::uint32_t receive_size,
     std::uint32_t remote_port,
     std::uint32_t local_port,
-    IOKitMachCallSite call_site = {});
+    IOKitMachCallSite call_site = {},
+    SurfaceStore* surfaces = nullptr);
 
 }  // namespace ilemu

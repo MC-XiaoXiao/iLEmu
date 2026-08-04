@@ -17,6 +17,7 @@
 #include "ilemu/iokit_abi.hpp"
 #include "ilemu/kernel_clock.hpp"
 #include "ilemu/kernel_iokit.hpp"
+#include "ilemu/kernel_iokit_camera.hpp"
 #include "ilemu/kernel_iokit_display.hpp"
 #include "ilemu/lockdown_hle.hpp"
 #include "ilemu/kernel_mach_ipc.hpp"
@@ -1342,6 +1343,11 @@ std::optional<std::uint64_t> CompatibilityKernel::next_timer_deadline() const {
         vsync && (!deadline || *vsync < *deadline)) {
       deadline = vsync;
     }
+    if (const auto capture =
+            kernel_iokit::camera::next_capture_deadline_locked(*shared_state_);
+        capture && (!deadline || *capture < *deadline)) {
+      deadline = capture;
+    }
   }
   return deadline;
 }
@@ -1386,6 +1392,8 @@ void CompatibilityKernel::advance_absolute_time(std::uint64_t deadline) {
 
 void CompatibilityKernel::service_time_dependent_devices(
     std::uint64_t deadline) {
+  kernel_iokit::camera::service_due_captures(
+      *shared_state_, process_.pid, memory_, *surface_store_, deadline);
   schedule_due_audio_io(deadline);
 }
 

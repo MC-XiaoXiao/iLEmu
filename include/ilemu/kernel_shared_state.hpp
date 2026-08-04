@@ -38,6 +38,7 @@
 namespace ilemu {
 
 class HostSocket;
+class SurfaceTransportLease;
 
 struct ProcessContext {
   std::uint32_t pid{1};
@@ -486,6 +487,9 @@ struct KernelSharedState {
     Display,
     CoreSurface,
     Mbx,
+    CameraSensor,
+    CameraAccelerator,
+    JpegAccelerator,
     Audio,
     MobileFileIntegrity,
   };
@@ -575,6 +579,22 @@ struct KernelSharedState {
     std::map<std::uint32_t, std::uint32_t> control_values;
     std::vector<std::byte> nominal_sample_rate;
     bool running{};
+  };
+  struct IOKitCameraAcceleratorConnectionState {
+    std::uint32_t notification_port{};
+    std::uint32_t notification_type{};
+    std::uint32_t registration_reference{};
+    std::uint64_t capture_sequence{};
+    std::optional<std::uint64_t> next_capture_deadline;
+  };
+  struct IOKitCameraCaptureRequest {
+    std::uint32_t connection_object{};
+    std::uint32_t callback{};
+    std::uint32_t refcon{};
+    std::uint32_t pixel_buffer{};
+    std::uint32_t surface_id{};
+    std::uint64_t sequence{};
+    std::uint64_t deadline{};
   };
   struct PendingGraphicsInput {
     enum class Kind {
@@ -1023,6 +1043,13 @@ struct KernelSharedState {
   // committed only a partial desktop transform. A deliberate unlock then
   // requests one final Home redraw, even if the outgoing App has exited.
   std::optional<std::uint64_t> interrupted_home_exit_lock_sequence;
+  // IOSurface transports send a kernel-owned Mach port instead of exposing a
+  // process-local client pointer. Keep the object-to-surface association in
+  // shared kernel state so a receiving task can import the same backing.
+  std::map<std::uint32_t, std::uint32_t> surface_transport_port_surfaces;
+  std::map<std::uint32_t, std::uint32_t> surface_transport_surface_ports;
+  std::map<std::uint32_t, std::shared_ptr<SurfaceTransportLease>>
+      surface_transport_port_leases;
   // CoreSurface publication sequences are immutable even if a transport ID
   // or PID is later reused. Track only full-screen application publications:
   // SpringBoard's home-screen icons also retain application provenance and
@@ -1103,6 +1130,9 @@ struct KernelSharedState {
   std::map<std::uint32_t, IOKitDisplayConnectionState>
       iokit_display_connections;
   std::map<std::uint32_t, IOKitAudioConnectionState> iokit_audio_connections;
+  std::map<std::uint32_t, IOKitCameraAcceleratorConnectionState>
+      iokit_camera_accelerator_connections;
+  std::deque<IOKitCameraCaptureRequest> iokit_camera_capture_requests;
   std::map<std::uint32_t, IOKitMbxConnectionState> iokit_mbx_connections;
   // The physical panel has one power state even though GraphicsServices and
   // LayerKit open separate AppleH1CLCD user clients.
@@ -1111,6 +1141,10 @@ struct KernelSharedState {
   std::optional<std::uint32_t> requested_display_power_state;
   std::uint32_t baseband_service{};
   std::uint32_t serial_multiplexer_service{};
+  std::uint32_t camera_sensor_service{};
+  std::map<std::string, std::uint32_t> camera_accelerator_services;
+  std::uint32_t jpeg_accelerator_service{};
+  std::map<std::uint64_t, std::uint64_t> camera_sensor_variables;
   std::uint32_t mobile_file_integrity_service{};
   bsd::baseband_device::State baseband_device_state;
   std::uint32_t mobile_framebuffer_service{};

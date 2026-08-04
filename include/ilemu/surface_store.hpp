@@ -15,6 +15,7 @@ namespace ilemu {
 
 class AddressSpace;
 class HostSurface;
+class SurfaceTransportLease;
 struct HostRectangle;
 
 constexpr std::uint32_t surface_fourcc(char a, char b, char c, char d) {
@@ -37,6 +38,17 @@ inline constexpr std::uint32_t surface_pixel_format_rgb555_le =
 // firmware names it 's551': bit 15 is alpha and bits 14:0 are RGB555.
 inline constexpr std::uint32_t surface_pixel_format_argb1555 =
     surface_fourcc('s', '5', '5', '1');
+// CoreVideo's packed 4:2:2 capture format: Y0 Cb Y1 Cr for each pixel pair.
+inline constexpr std::uint32_t surface_pixel_format_yuvs =
+    surface_fourcc('y', 'u', 'v', 's');
+// CoreVideo/IOSurface's UYVY spelling for the same packed 4:2:2 samples.
+inline constexpr std::uint32_t surface_pixel_format_2vuy =
+    surface_fourcc('2', 'v', 'u', 'y');
+
+constexpr bool surface_is_yuv422(std::uint32_t pixel_format) {
+    return pixel_format == surface_pixel_format_yuvs ||
+           pixel_format == surface_pixel_format_2vuy;
+}
 
 constexpr bool surface_is_rgb555(std::uint32_t pixel_format) {
     return pixel_format == surface_pixel_format_rgb555 ||
@@ -48,7 +60,8 @@ surface_bytes_per_pixel(std::uint32_t pixel_format) {
     if (pixel_format == surface_pixel_format_bgra)
         return 4U;
     if (surface_is_rgb555(pixel_format) ||
-        pixel_format == surface_pixel_format_argb1555) {
+        pixel_format == surface_pixel_format_argb1555 ||
+        surface_is_yuv422(pixel_format)) {
         return 2U;
     }
     return 0U;
@@ -104,6 +117,10 @@ class SurfaceStore {
     [[nodiscard]] bool publish(AddressSpace& memory, Backing backing);
     [[nodiscard]] std::optional<SharedMapping>
     shared_mapping(std::uint32_t id) const;
+    // A kernel transport port retains its shared backing independently of
+    // every process-local client until the port object itself is reclaimed.
+    [[nodiscard]] std::shared_ptr<SurfaceTransportLease>
+    acquire_transport_lease(std::uint32_t id) const;
     [[nodiscard]] std::optional<Backing> import(AddressSpace& memory,
                                                 std::uint32_t id,
                                                 std::uint32_t mapping_address);
@@ -133,8 +150,14 @@ class SurfaceStore {
                                               std::uint32_t id) const;
     [[nodiscard]] bool write_argb(AddressSpace& memory, std::uint32_t id,
                                   std::span<const std::uint32_t> pixels) const;
+    [[nodiscard]] bool write_bytes(AddressSpace& memory, std::uint32_t id,
+                                   std::span<const std::byte> bytes) const;
+    [[nodiscard]] bool transfer_scaled(AddressSpace& memory,
+                                       std::uint32_t source_id,
+                                       std::uint32_t destination_id) const;
 
   private:
+    friend class SurfaceTransportLease;
     struct SyncState {
         std::mutex mutex;
         std::vector<std::uint64_t> shared_page_generations;

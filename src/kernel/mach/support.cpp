@@ -361,6 +361,18 @@ void remove_port_object_locked(KernelSharedState &state, std::uint32_t object) {
     // undeliverable and must not recreate the receive queue.
     state.mach_queues.erase(object);
   }
+  if (const auto surface =
+          state.surface_transport_port_surfaces.find(object);
+      surface != state.surface_transport_port_surfaces.end()) {
+    if (const auto port =
+            state.surface_transport_surface_ports.find(surface->second);
+        port != state.surface_transport_surface_ports.end() &&
+        port->second == object) {
+      state.surface_transport_surface_ports.erase(port);
+    }
+    state.surface_transport_port_surfaces.erase(surface);
+  }
+  state.surface_transport_port_leases.erase(object);
   static_cast<void>(state.mach_port_objects.erase(object));
   // Keep an in-flight count until every queued message carrying this object
   // is delivered or discarded.
@@ -426,6 +438,7 @@ void remove_port_object_locked(KernelSharedState &state, std::uint32_t object) {
   state.iokit_iterators.erase(object);
   state.iokit_connections.erase(object);
   state.iokit_audio_connections.erase(object);
+  state.iokit_mbx_connections.erase(object);
   state.iokit_services.erase(object);
   state.iokit_interest_notifications.erase(object);
   if (state.mobile_framebuffer_service == object) {

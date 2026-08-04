@@ -25,7 +25,9 @@ target_link_libraries(ilemu_kernel PRIVATE
     iLEmu::device_state
     iLEmu::kernel_iokit_audio
     iLEmu::kernel_iokit_baseband
+    iLEmu::kernel_iokit_camera
     iLEmu::kernel_iokit_power
     iLEmu::kernel_iokit_display
+    iLEmu::kernel_iokit_jpeg
     iLEmu::kernel_iokit_mbx
     iLEmu::kernel_iokit_mobile_file_integrity)

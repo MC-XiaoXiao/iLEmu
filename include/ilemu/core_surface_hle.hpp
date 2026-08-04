@@ -97,6 +97,14 @@ class CoreSurfaceHle {
                                                    surface_transport::Kind
                                                        transport);
     [[nodiscard]] std::uint32_t
+    lookup_buffer(UserlandHleCall& call, std::uint32_t requested_id,
+                  surface_transport::Kind transport);
+    [[nodiscard]] std::uint32_t
+    create_mach_port(UserlandHleCall& call, const Buffer& buffer);
+    [[nodiscard]] std::uint32_t
+    lookup_from_mach_port(UserlandHleCall& call, std::uint32_t port_name,
+                          surface_transport::Kind transport);
+    [[nodiscard]] std::uint32_t
     create_buffer(UserlandHleCall& call, std::uint32_t base, std::uint32_t size,
                   std::uint32_t width, std::uint32_t height,
                   std::uint32_t bytes_per_row, std::uint32_t pixel_format,

@@ -20,7 +20,9 @@
 #include "ilemu/kernel_iokit_audio.hpp"
 #include "ilemu/kernel_iokit_audio_profile.hpp"
 #include "ilemu/kernel_iokit_baseband.hpp"
+#include "ilemu/kernel_iokit_camera.hpp"
 #include "ilemu/kernel_iokit_display.hpp"
+#include "ilemu/kernel_iokit_jpeg.hpp"
 #include "ilemu/kernel_iokit_mbx.hpp"
 #include "ilemu/kernel_iokit_mobile_file_integrity.hpp"
 #include "ilemu/kernel_shared_state.hpp"
@@ -491,6 +493,12 @@ user_client_profile_name(KernelSharedState::IOKitUserClientProfile profile) {
     return "core-surface";
   case KernelSharedState::IOKitUserClientProfile::Mbx:
     return "mbx";
+  case KernelSharedState::IOKitUserClientProfile::CameraSensor:
+    return "camera-sensor";
+  case KernelSharedState::IOKitUserClientProfile::CameraAccelerator:
+    return "camera-accelerator";
+  case KernelSharedState::IOKitUserClientProfile::JpegAccelerator:
+    return "jpeg-accelerator";
   case KernelSharedState::IOKitUserClientProfile::Audio:
     return "audio";
   case KernelSharedState::IOKitUserClientProfile::MobileFileIntegrity:
@@ -883,6 +891,26 @@ void populate_matching_services_locked(KernelSharedState &shared_state,
     services.insert(services.end(), audio_services.begin(),
                     audio_services.end());
   }
+  if (kernel_iokit::camera::matches_sensor_service(matching)) {
+    const auto platform_expert =
+        ensure_platform_expert_service_locked(shared_state);
+    services.push_back(kernel_iokit::camera::ensure_sensor_service_locked(
+        shared_state, platform_expert));
+  }
+  if (const auto service_class =
+          kernel_iokit::camera::matching_accelerator_service(matching)) {
+    const auto platform_expert =
+        ensure_platform_expert_service_locked(shared_state);
+    services.push_back(
+        kernel_iokit::camera::ensure_accelerator_service_locked(
+            shared_state, platform_expert, *service_class));
+  }
+  if (kernel_iokit::jpeg::matches_service(matching)) {
+    const auto platform_expert =
+        ensure_platform_expert_service_locked(shared_state);
+    services.push_back(kernel_iokit::jpeg::ensure_service_locked(
+        shared_state, platform_expert));
+  }
   if (contains_text(matching, io_ipod_usb_device_class)) {
     services.push_back(ensure_usb_device_mux_service_locked(shared_state));
   }
@@ -971,7 +999,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
     ProcessContext &process, std::uint32_t message_id,
     std::uint32_t message_address, std::uint32_t send_size,
     std::uint32_t receive_size, std::uint32_t remote_port,
-    std::uint32_t local_port, IOKitMachCallSite call_site) {
+    std::uint32_t local_port, IOKitMachCallSite call_site,
+    SurfaceStore *surfaces) {
   std::uint32_t remote_object = 0;
   {
     std::lock_guard mach_lock{shared_state.mach_mutex};
@@ -1006,6 +1035,13 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
           memory, output, shared_state, process, message_id, message_address,
           send_size, receive_size, remote_object, local_port)) {
     return audio_result;
+  }
+  if (const auto camera_result =
+          kernel_iokit::camera::handle_notification_port_request(
+              memory, output, shared_state, process, message_id,
+              message_address, send_size, receive_size, remote_object,
+              local_port)) {
+    return camera_result;
   }
   if (message_id == static_cast<std::uint32_t>(
                         iokit_abi::Message::ConnectSetNotificationPort)) {
@@ -2003,8 +2039,28 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
                   std::span<const std::uint64_t>{request->scalar_input.data(),
                                                  request->scalar_input_count},
                   request->inband_input, request->scalar_output_capacity);
-    const auto mbx_result =
+    const auto camera_result =
         display_result || baseband_result || audio_result
+            ? std::optional<kernel_iokit::camera::MethodResult>{}
+            : kernel_iokit::camera::dispatch_connect_method(
+                  shared_state, process, memory, surfaces, remote_object,
+                  request->selector,
+                  std::span<const std::uint64_t>{request->scalar_input.data(),
+                                                 request->scalar_input_count},
+                  request->inband_input, request->scalar_output_capacity);
+    const auto jpeg_result =
+        display_result || baseband_result || audio_result || camera_result
+            ? std::optional<kernel_iokit::jpeg::MethodResult>{}
+            : kernel_iokit::jpeg::dispatch_connect_method(
+                  shared_state, process, memory, surfaces, remote_object,
+                  request->selector,
+                  std::span<const std::uint64_t>{request->scalar_input.data(),
+                                                 request->scalar_input_count},
+                  request->inband_input, request->scalar_output_capacity,
+                  request->inband_output_capacity);
+    const auto mbx_result =
+        display_result || baseband_result || audio_result || camera_result ||
+                jpeg_result
             ? std::optional<kernel_iokit::mbx::MethodResult>{}
             : kernel_iokit::mbx::dispatch_connect_method(
                   memory, shared_state, process, remote_object,
@@ -2014,7 +2070,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
                   request->inband_input, request->scalar_output_capacity,
                   request->inband_output_capacity);
     const auto mobile_file_integrity_result =
-        display_result || baseband_result || audio_result || mbx_result
+        display_result || baseband_result || audio_result || camera_result ||
+                jpeg_result || mbx_result
             ? std::optional<
                   kernel_iokit::mobile_file_integrity::MethodResult>{}
             : kernel_iokit::mobile_file_integrity::dispatch_connect_method(
@@ -2036,6 +2093,13 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
             ? ConnectMethodResult{baseband_result->return_code,
                                   std::move(baseband_result->scalar_output),
                                   {}}
+        : camera_result
+            ? ConnectMethodResult{camera_result->return_code,
+                                  std::move(camera_result->scalar_output),
+                                  {}}
+        : jpeg_result
+            ? ConnectMethodResult{jpeg_result->return_code, {},
+                                  std::move(jpeg_result->inband_output)}
         : mbx_result
             ? ConnectMethodResult{mbx_result->return_code,
                                   std::move(mbx_result->scalar_output),
@@ -2094,6 +2158,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
     kernel_iokit::mbx::close_connection(memory, shared_state, remote_object);
     {
       std::lock_guard mach_lock{shared_state.mach_mutex};
+      kernel_iokit::camera::close_connection_locked(shared_state,
+                                                    remote_object);
       // ServiceClose is an ipc_port teardown, not just an IOKit map erase.
       // Convert foreign Send rights to dead names and discard queued
       // transfers through the common lifecycle path; the old direct erase

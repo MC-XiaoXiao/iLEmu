@@ -271,12 +271,18 @@ void CoreSurfaceHle::finish_create_from_dictionary(
     if (format == 0)
         format = surface_pixel_format_bgra;
     const auto bytes_per_pixel = surface_bytes_per_pixel(format);
-    const auto row_bytes =
+    const auto decoded_row_bytes =
         static_cast<std::uint64_t>(surface_width) * bytes_per_pixel;
-    if (bytes_per_row == 0 &&
-        row_bytes <= std::numeric_limits<std::uint32_t>::max()) {
-        bytes_per_row = static_cast<std::uint32_t>(row_bytes);
+    if (bytes_per_row == 0 && bytes_per_pixel != 0U &&
+        decoded_row_bytes <= std::numeric_limits<std::uint32_t>::max()) {
+        bytes_per_row = static_cast<std::uint32_t>(decoded_row_bytes);
     }
+    // CoreSurface also transports encoded and otherwise opaque byte buffers.
+    // Those formats have no host-side bytes-per-pixel interpretation, but the
+    // firmware still supplies an exact pitch, height, and allocation size.
+    const auto row_bytes = bytes_per_pixel == 0U
+                               ? static_cast<std::uint64_t>(bytes_per_row)
+                               : decoded_row_bytes;
     const auto required =
         surface_height == 0
             ? 0
@@ -290,7 +296,7 @@ void CoreSurfaceHle::finish_create_from_dictionary(
     const auto valid_address =
         address <= std::numeric_limits<std::uint32_t>::max() - offset;
     const auto base = valid_address ? address + offset : 0;
-    if (surface_width == 0 || surface_height == 0 || bytes_per_pixel == 0 ||
+    if (surface_width == 0 || surface_height == 0 || bytes_per_row == 0 ||
         row_bytes > bytes_per_row || required == 0 || required > usable_size ||
         usable_size > maximum_surface_bytes) {
         call.output().write("[coresurface-hle] invalid create properties\n");
@@ -356,6 +362,131 @@ std::uint32_t CoreSurfaceHle::wrap_client_memory(UserlandHleCall& call,
 }
 
 std::uint32_t
+CoreSurfaceHle::lookup_buffer(UserlandHleCall& call,
+                              std::uint32_t requested_id,
+                              surface_transport::Kind transport) {
+    if (requested_id == 0)
+        return 0;
+    const auto client_key = std::pair{requested_id, transport};
+    auto client = clients_by_id_.find(client_key);
+    const auto retain_existing = client != clients_by_id_.end();
+    if (client == clients_by_id_.end()) {
+        std::uint32_t created = 0;
+        if (const auto local = surfaces_->find(requested_id)) {
+            created = create_buffer(
+                call, local->base, local->allocation_size, local->width,
+                local->height, local->bytes_per_row, local->pixel_format,
+                false, requested_id, false, transport);
+        } else if (const auto shared = surfaces_->shared_mapping(requested_id)) {
+            const auto mapping_address =
+                acquire_imported_mapping(call, shared->mapping_size);
+            if (mapping_address != 0) {
+                std::uint64_t mapping_lease_token = 0;
+                if (const auto imported = surfaces_->import(
+                        call.memory(), *shared, mapping_address,
+                        &mapping_lease_token)) {
+                    created = create_buffer(
+                        call, imported->base, imported->allocation_size,
+                        imported->width, imported->height,
+                        imported->bytes_per_row, imported->pixel_format,
+                        false, requested_id, false, transport);
+                    if (auto* buffer = find(created)) {
+                        buffer->imported_mapping_base = mapping_address;
+                        buffer->imported_mapping_size = shared->mapping_size;
+                        buffer->imported_mapping_lease_token =
+                            mapping_lease_token;
+                    } else {
+                        surfaces_->release(requested_id);
+                        release_imported_mapping(
+                            call.memory(), mapping_address,
+                            shared->mapping_size, mapping_lease_token);
+                    }
+                } else {
+                    // import() installs the complete page range or nothing.
+                    // Do not unmap on failure: the guest may have occupied
+                    // this candidate after the availability check.
+                    recycle_imported_mapping(mapping_address,
+                                             shared->mapping_size);
+                }
+            }
+        } else {
+            created = create_default_buffer(call, requested_id, transport);
+        }
+        if (created == 0)
+            return 0;
+        client = clients_by_id_.find(client_key);
+    }
+    auto* buffer = find(client->second);
+    if (buffer && retain_existing) {
+        const auto& profile = surface_transport::for_kind(transport);
+        ++buffer->references;
+        static_cast<void>(call.memory().write32(
+            buffer->client + profile.reference_count_offset,
+            buffer->references));
+    }
+    return client->second;
+}
+
+std::uint32_t CoreSurfaceHle::create_mach_port(UserlandHleCall& call,
+                                               const Buffer& buffer) {
+    if (!shared_state_)
+        return 0;
+    std::lock_guard lock{shared_state_->mach_mutex};
+    auto port = shared_state_->surface_transport_surface_ports.find(buffer.id);
+    auto object = std::uint32_t{};
+    auto created = false;
+    if (port == shared_state_->surface_transport_surface_ports.end()) {
+        auto lease = surfaces_->acquire_transport_lease(buffer.id);
+        if (!lease)
+            return 0;
+        object = shared_state_->allocate_mach_object();
+        if (!shared_state_->mach_port_objects.create(object))
+            return 0;
+        shared_state_->surface_transport_port_surfaces.emplace(object,
+                                                               buffer.id);
+        shared_state_->surface_transport_surface_ports.emplace(buffer.id,
+                                                               object);
+        shared_state_->surface_transport_port_leases.emplace(
+            object, std::move(lease));
+        created = true;
+    } else {
+        object = port->second;
+    }
+    const auto name = shared_state_->mach_namespaces
+        .copyout(call.process_id(), object,
+                 xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
+        .value_or(0U);
+    if (name == 0U && created) {
+        shared_state_->surface_transport_port_surfaces.erase(object);
+        shared_state_->surface_transport_surface_ports.erase(buffer.id);
+        shared_state_->surface_transport_port_leases.erase(object);
+        static_cast<void>(shared_state_->mach_port_objects.erase(object));
+    }
+    return name;
+}
+
+std::uint32_t CoreSurfaceHle::lookup_from_mach_port(
+    UserlandHleCall& call, std::uint32_t port_name,
+    surface_transport::Kind transport) {
+    if (!shared_state_ || port_name == 0)
+        return 0;
+    std::uint32_t surface_id = 0;
+    {
+        std::lock_guard lock{shared_state_->mach_mutex};
+        const auto object = shared_state_->mach_namespaces.resolve(
+            call.process_id(), port_name);
+        if (!object)
+            return 0;
+        const auto surface =
+            shared_state_->surface_transport_port_surfaces.find(*object);
+        if (surface == shared_state_->surface_transport_port_surfaces.end())
+            return 0;
+        surface_id = surface->second;
+    }
+    return lookup_buffer(call, surface_id, transport);
+}
+
+std::uint32_t
 CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
                               std::uint32_t size, std::uint32_t width,
                               std::uint32_t height, std::uint32_t bytes_per_row,
@@ -402,7 +533,8 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
         display_ ? display_->height() -
                        std::min(display_->height(), std::uint32_t{64})
                  : 0U;
-    if (publish && shared_state_ && display_ &&
+    if (publish && pixel_format == surface_pixel_format_bgra && shared_state_ &&
+        display_ &&
         width == display_->width() &&
         height >= application_viewport_minimum_height &&
         height <= display_->height() &&
@@ -725,74 +857,12 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
         return;
     }
     if (operation == "Lookup") {
-        const auto requested_id = call.argument(0);
-        if (requested_id == 0) {
-            call.set_return(0);
-            return;
-        }
-        const auto client_key = std::pair{requested_id, transport};
-        auto client = clients_by_id_.find(client_key);
-        const auto retain_existing = client != clients_by_id_.end();
-        if (client == clients_by_id_.end()) {
-            std::uint32_t created = 0;
-            if (const auto local = surfaces_->find(requested_id)) {
-                created = create_buffer(
-                    call, local->base, local->allocation_size, local->width,
-                    local->height, local->bytes_per_row, local->pixel_format,
-                    false, requested_id, false, transport);
-            } else if (const auto shared =
-                           surfaces_->shared_mapping(requested_id)) {
-                const auto mapping_address =
-                    acquire_imported_mapping(call, shared->mapping_size);
-                if (mapping_address != 0) {
-                    std::uint64_t mapping_lease_token = 0;
-                    if (const auto imported = surfaces_->import(
-                            call.memory(), *shared, mapping_address,
-                            &mapping_lease_token)) {
-                        created = create_buffer(
-                            call, imported->base, imported->allocation_size,
-                            imported->width, imported->height,
-                            imported->bytes_per_row, imported->pixel_format,
-                            false, requested_id, false, transport);
-                        if (auto* buffer = find(created)) {
-                            buffer->imported_mapping_base = mapping_address;
-                            buffer->imported_mapping_size =
-                                shared->mapping_size;
-                            buffer->imported_mapping_lease_token =
-                                mapping_lease_token;
-                        } else {
-                            surfaces_->release(requested_id);
-                            release_imported_mapping(
-                                call.memory(), mapping_address,
-                                shared->mapping_size,
-                                mapping_lease_token);
-                        }
-                    } else {
-                        // import() installs the complete page range or nothing.
-                        // Do not unmap on failure: the guest may have occupied
-                        // this candidate after the availability check. The
-                        // next acquisition revalidates every recycled page.
-                        recycle_imported_mapping(mapping_address,
-                                                 shared->mapping_size);
-                    }
-                }
-            } else {
-                created = create_default_buffer(call, requested_id, transport);
-            }
-            if (created == 0) {
-                call.set_return(0);
-                return;
-            }
-            client = clients_by_id_.find(client_key);
-        }
-        auto* buffer = find(client->second);
-        if (buffer && retain_existing) {
-            ++buffer->references;
-            static_cast<void>(call.memory().write32(
-                buffer->client + profile.reference_count_offset,
-                buffer->references));
-        }
-        call.set_return(client->second);
+        call.set_return(lookup_buffer(call, call.argument(0), transport));
+        return;
+    }
+    if (operation == "LookupFromMachPort") {
+        call.set_return(lookup_from_mach_port(
+            call, call.argument(0), transport));
         return;
     }
 
@@ -820,7 +890,9 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
     }
     const auto& buffer_profile =
         surface_transport::for_kind(buffer->transport);
-    if (operation == "Retain") {
+    if (operation == "CreateMachPort") {
+        call.set_return(create_mach_port(call, *buffer));
+    } else if (operation == "Retain") {
         ++buffer->references;
         static_cast<void>(call.memory().write32(
             buffer->client + buffer_profile.reference_count_offset,

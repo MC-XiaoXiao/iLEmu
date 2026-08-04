@@ -61,6 +61,7 @@ inline constexpr std::uint32_t no_memory = 0xe00002bdU;
 inline constexpr std::uint32_t not_found = 0xe00002f0U;
 inline constexpr std::uint32_t bad_argument = 0xe00002c2U;
 inline constexpr std::uint32_t unsupported = 0xe00002c7U;
+inline constexpr std::uint32_t aborted = 0xe00002ebU;
 
 // A zero busy count means the modeled I/O service tree has completed all
 // outstanding start/stop transitions.

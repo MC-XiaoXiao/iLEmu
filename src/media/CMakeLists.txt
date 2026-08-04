@@ -4,10 +4,13 @@ add_library(ilemu_media STATIC
     celestial_volume_protocol.cpp
     core_audio_hle.cpp
     core_media_hle.cpp
+    jpeg_encoder.cpp
     media_library_service.cpp)
 add_library(iLEmu::media ALIAS ilemu_media)
 ilemu_configure_module(ilemu_media)
 target_link_libraries(ilemu_media PUBLIC iLEmu::foundation)
+find_package(JPEG REQUIRED)
+target_link_libraries(ilemu_media PRIVATE JPEG::JPEG)
 if(TARGET PkgConfig::PLIST)
     target_link_libraries(ilemu_media PRIVATE PkgConfig::PLIST)
     target_compile_definitions(ilemu_media PRIVATE
