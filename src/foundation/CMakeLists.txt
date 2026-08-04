@@ -12,6 +12,7 @@ add_library(ilemu_foundation STATIC
     output.cpp
     performance.cpp
     process_loader.cpp
+    rootfs_path_resolver.cpp
     scene_coordinator.cpp
     userland_hle.cpp
     virtual_clock.cpp)

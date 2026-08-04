@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -24,14 +25,19 @@ struct NetworkPreferencesIpv4 {
     std::vector<std::array<std::byte, 4>> dns_servers;
 };
 
+struct NetworkPreferencesAirport {
+    std::string_view interface_name;
+    std::array<std::byte, 6> mac_address{};
+    NetworkPreferencesIpv4 ipv4;
+};
+
 // Ensures that the simulated device's writable SystemConfiguration state has
-// a standard AirPort network service for an already-published BSD interface.
-// This is a one-shot compatibility migration for root filesystems whose /var
-// state predates the virtual interface; normal guest SystemConfiguration code
-// owns the file after boot.
-[[nodiscard]] NetworkPreferencesResult ensure_airport_network_service(
-    const std::filesystem::path& rootfs, std::string_view interface_name,
-    const std::array<std::byte, 6>& mac_address,
-    const NetworkPreferencesIpv4& ipv4);
+// a current network set. When an interface is available, also installs its
+// standard AirPort service. This is a one-shot compatibility migration for
+// root filesystems whose /var state predates the virtual network; normal guest
+// SystemConfiguration code owns the file after boot.
+[[nodiscard]] NetworkPreferencesResult ensure_network_preferences(
+    const std::filesystem::path& rootfs,
+    std::optional<NetworkPreferencesAirport> airport = std::nullopt);
 
 }  // namespace ilemu

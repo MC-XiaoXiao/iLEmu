@@ -1,4 +1,5 @@
 #include "ilemu/network_preferences.hpp"
+#include "ilemu/rootfs_path_resolver.hpp"
 
 #include <algorithm>
 #include <array>
@@ -179,11 +180,9 @@ bool bool_value(plist_t node) {
 }
 
 std::vector<std::string> preferred_wifi_networks(
-    const std::filesystem::path& rootfs) {
-    const auto path =
-        rootfs /
-        "private/var/root/Library/Preferences/SystemConfiguration/"
-        "com.apple.wifi.plist";
+    const RootfsPathResolver& resolver) {
+    const auto path = resolver.resolve(
+        "/Library/Preferences/SystemConfiguration/com.apple.wifi.plist");
     const auto bytes = read_file(path);
     if (bytes.empty() ||
         bytes.size() > std::numeric_limits<std::uint32_t>::max()) {
@@ -398,18 +397,17 @@ void write_plist_atomically(const std::filesystem::path& path, plist_t root,
 
 }  // namespace
 
-NetworkPreferencesResult ensure_airport_network_service(
-    const std::filesystem::path& rootfs, std::string_view interface_name,
-    const std::array<std::byte, 6>& mac_address,
-    const NetworkPreferencesIpv4& ipv4_configuration) {
+NetworkPreferencesResult ensure_network_preferences(
+    const std::filesystem::path& rootfs,
+    std::optional<NetworkPreferencesAirport> airport_configuration) {
     NetworkPreferencesResult result;
-    result.path = rootfs /
-                  "private/var/root/Library/Preferences/SystemConfiguration/"
-                  "preferences.plist";
+    const RootfsPathResolver resolver{rootfs};
+    result.path = resolver.resolve(
+        "/Library/Preferences/SystemConfiguration/preferences.plist");
 
 #if defined(ILEMU_HAS_LIBPLIST)
     result.supported = true;
-    result.preferred_wifi_networks = preferred_wifi_networks(rootfs);
+    result.preferred_wifi_networks = preferred_wifi_networks(resolver);
     auto bytes = read_file(result.path);
     plist_t parsed = nullptr;
     plist_format_t format = PLIST_FORMAT_XML;
@@ -430,59 +428,6 @@ NetworkPreferencesResult ensure_airport_network_service(
     PlistOwner root{parsed};
 
     bool changed = bytes.empty();
-    const auto services =
-        ensure_dictionary(root.get(), "NetworkServices", changed);
-    const auto airport_services =
-        find_airport_services(services, interface_name);
-    auto service_identifier =
-        preferred_airport_service(airport_services);
-    if (service_identifier.empty()) {
-        service_identifier = std::string{default_service_identifier};
-    }
-    for (const auto& candidate : airport_services) {
-        if (!candidate.managed ||
-            candidate.identifier == service_identifier) {
-            continue;
-        }
-        plist_dict_remove_item(services, candidate.identifier.c_str());
-        remove_service_links(root.get(), candidate.identifier, changed);
-        changed = true;
-    }
-    result.service_identifier = service_identifier;
-
-    const auto service =
-        ensure_dictionary(services, service_identifier.c_str(), changed);
-    const auto airport = ensure_dictionary(service, "AirPort", changed);
-    ensure_string(airport, "MACAddress", mac_address_string(mac_address),
-                  changed);
-    const auto ipv4 = ensure_dictionary(service, "IPv4", changed);
-    if (!bool_value(
-            plist_dict_get_item(service, managed_service_key.data()))) {
-        ensure_string(ipv4, "ConfigMethod", "Manual", changed);
-        ensure_string_array(
-            ipv4, "Addresses",
-            {ipv4_address_string(ipv4_configuration.address)}, changed);
-        ensure_string_array(
-            ipv4, "SubnetMasks",
-            {ipv4_address_string(ipv4_configuration.netmask)}, changed);
-        ensure_string(ipv4, "Router",
-                      ipv4_address_string(ipv4_configuration.gateway), changed);
-        std::vector<std::string> dns_servers;
-        dns_servers.reserve(ipv4_configuration.dns_servers.size());
-        for (const auto& address : ipv4_configuration.dns_servers) {
-            dns_servers.push_back(ipv4_address_string(address));
-        }
-        const auto dns = ensure_dictionary(service, "DNS", changed);
-        ensure_string_array(dns, "ServerAddresses", dns_servers, changed);
-        ensure_bool(service, managed_service_key.data(), true, changed);
-    }
-    const auto interface = ensure_dictionary(service, "Interface", changed);
-    ensure_string(interface, "DeviceName", interface_name, changed);
-    ensure_string(interface, "Hardware", "AirPort", changed);
-    ensure_string(interface, "Type", "Ethernet", changed);
-    static_cast<void>(ensure_dictionary(service, "Proxies", changed));
-    ensure_string(service, "UserDefinedName", "AirPort", changed);
-
     const auto set_identifier = current_set_identifier(root.get());
     ensure_string(root.get(), "CurrentSet", "/Sets/" + set_identifier,
                   changed);
@@ -494,33 +439,100 @@ NetworkPreferencesResult ensure_airport_network_service(
     const auto global_ipv4 = ensure_dictionary(global, "IPv4", changed);
     const auto service_order =
         ensure_array(global_ipv4, "ServiceOrder", changed);
-    if (!array_contains_string(service_order, service_identifier)) {
-        plist_array_append_item(
-            service_order, plist_new_string(service_identifier.c_str()));
-        changed = true;
-    }
     const auto service_links =
         ensure_dictionary(network, "Service", changed);
-    const auto service_link =
-        ensure_dictionary(service_links, service_identifier.c_str(), changed);
-    ensure_string(service_link, "__LINK__",
-                  "/NetworkServices/" + service_identifier, changed);
     const auto interfaces =
         ensure_dictionary(network, "Interface", changed);
-    const std::string owned_interface_name{interface_name};
-    const auto interface_preferences =
-        ensure_dictionary(interfaces, owned_interface_name.c_str(), changed);
-    const auto airport_preferences =
-        ensure_dictionary(interface_preferences, "AirPort", changed);
-    ensure_uint(airport_preferences, "AllowEnable", 1, changed);
-    ensure_string(airport_preferences, "JoinMode", "Automatic", changed);
+
+    if (airport_configuration) {
+        const auto& airport_configuration_value = *airport_configuration;
+        const auto services =
+            ensure_dictionary(root.get(), "NetworkServices", changed);
+        const auto airport_services = find_airport_services(
+            services, airport_configuration_value.interface_name);
+        auto service_identifier = preferred_airport_service(airport_services);
+        if (service_identifier.empty())
+            service_identifier = std::string{default_service_identifier};
+        for (const auto& candidate : airport_services) {
+            if (!candidate.managed ||
+                candidate.identifier == service_identifier) {
+                continue;
+            }
+            plist_dict_remove_item(services, candidate.identifier.c_str());
+            remove_service_links(root.get(), candidate.identifier, changed);
+            changed = true;
+        }
+        result.service_identifier = service_identifier;
+
+        const auto service =
+            ensure_dictionary(services, service_identifier.c_str(), changed);
+        const auto airport = ensure_dictionary(service, "AirPort", changed);
+        ensure_string(airport, "MACAddress",
+                      mac_address_string(
+                          airport_configuration_value.mac_address),
+                      changed);
+        const auto ipv4 = ensure_dictionary(service, "IPv4", changed);
+        if (!bool_value(
+                plist_dict_get_item(service, managed_service_key.data()))) {
+            ensure_string(ipv4, "ConfigMethod", "Manual", changed);
+            ensure_string_array(
+                ipv4, "Addresses",
+                {ipv4_address_string(
+                    airport_configuration_value.ipv4.address)},
+                changed);
+            ensure_string_array(
+                ipv4, "SubnetMasks",
+                {ipv4_address_string(
+                    airport_configuration_value.ipv4.netmask)},
+                changed);
+            ensure_string(
+                ipv4, "Router",
+                ipv4_address_string(
+                    airport_configuration_value.ipv4.gateway),
+                changed);
+            std::vector<std::string> dns_servers;
+            dns_servers.reserve(
+                airport_configuration_value.ipv4.dns_servers.size());
+            for (const auto& address :
+                 airport_configuration_value.ipv4.dns_servers) {
+                dns_servers.push_back(ipv4_address_string(address));
+            }
+            const auto dns = ensure_dictionary(service, "DNS", changed);
+            ensure_string_array(dns, "ServerAddresses", dns_servers, changed);
+            ensure_bool(service, managed_service_key.data(), true, changed);
+        }
+        const auto interface =
+            ensure_dictionary(service, "Interface", changed);
+        ensure_string(interface, "DeviceName",
+                      airport_configuration_value.interface_name, changed);
+        ensure_string(interface, "Hardware", "AirPort", changed);
+        ensure_string(interface, "Type", "Ethernet", changed);
+        static_cast<void>(ensure_dictionary(service, "Proxies", changed));
+        ensure_string(service, "UserDefinedName", "AirPort", changed);
+
+        if (!array_contains_string(service_order, service_identifier)) {
+            plist_array_append_item(
+                service_order, plist_new_string(service_identifier.c_str()));
+            changed = true;
+        }
+        const auto service_link = ensure_dictionary(
+            service_links, service_identifier.c_str(), changed);
+        ensure_string(service_link, "__LINK__",
+                      "/NetworkServices/" + service_identifier, changed);
+        const std::string owned_interface_name{
+            airport_configuration_value.interface_name};
+        const auto interface_preferences = ensure_dictionary(
+            interfaces, owned_interface_name.c_str(), changed);
+        const auto airport_preferences =
+            ensure_dictionary(interface_preferences, "AirPort", changed);
+        ensure_uint(airport_preferences, "AllowEnable", 1, changed);
+        ensure_string(airport_preferences, "JoinMode", "Automatic", changed);
+    }
 
     result.changed = changed;
     if (changed) write_plist_atomically(result.path, root.get(), format);
 #else
-    static_cast<void>(interface_name);
-    static_cast<void>(mac_address);
-    static_cast<void>(ipv4_configuration);
+    static_cast<void>(airport_configuration);
 #endif
     return result;
 }

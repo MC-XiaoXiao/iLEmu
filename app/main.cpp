@@ -1038,27 +1038,32 @@ void boot(const std::vector<std::string> &args, Output &output) {
   if (!network_policy) {
     throw std::runtime_error{"--network must be isolated, loopback, or host"};
   }
-  std::vector<std::string> preferred_wifi_networks;
-  if (*network_policy != HostNetworkPolicy::Isolated) {
-    const auto network_preferences = ensure_airport_network_service(
-        *rootfs, "en0", wifi_interface_mac_address,
-        NetworkPreferencesIpv4{
-            .address = virtual_network::client_address,
-            .netmask = virtual_network::netmask,
-            .gateway = virtual_network::gateway_address,
-            .dns_servers = {virtual_network::dns_proxy_address},
-        });
-    preferred_wifi_networks =
-        network_preferences.preferred_wifi_networks;
-    output.line(
-        "[device-state] airport-service=" +
-        (network_preferences.service_identifier.empty()
-             ? std::string{"unavailable"}
-             : network_preferences.service_identifier) +
-        " path=" + network_preferences.path.string() +
-        " supported=" + std::to_string(network_preferences.supported) +
-        " changed=" + std::to_string(network_preferences.changed));
-  }
+  const auto airport_configuration =
+      *network_policy == HostNetworkPolicy::Isolated
+          ? std::optional<NetworkPreferencesAirport>{}
+          : std::optional<NetworkPreferencesAirport>{
+                NetworkPreferencesAirport{
+                    .interface_name = "en0",
+                    .mac_address = wifi_interface_mac_address,
+                    .ipv4 = NetworkPreferencesIpv4{
+                        .address = virtual_network::client_address,
+                        .netmask = virtual_network::netmask,
+                        .gateway = virtual_network::gateway_address,
+                        .dns_servers = {virtual_network::dns_proxy_address},
+                    },
+                }};
+  const auto network_preferences =
+      ensure_network_preferences(*rootfs, airport_configuration);
+  auto preferred_wifi_networks =
+      network_preferences.preferred_wifi_networks;
+  output.line(
+      "[device-state] airport-service=" +
+      (network_preferences.service_identifier.empty()
+           ? std::string{"unavailable"}
+           : network_preferences.service_identifier) +
+      " path=" + network_preferences.path.string() +
+      " supported=" + std::to_string(network_preferences.supported) +
+      " changed=" + std::to_string(network_preferences.changed));
   const auto display_mode = option(args, "--display").value_or("headless");
   if (display_mode != "headless" && display_mode != "sdl") {
     throw std::runtime_error{"--display must be headless or sdl"};
