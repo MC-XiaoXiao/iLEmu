@@ -13,6 +13,10 @@
 namespace ilemu {
 namespace {
 
+// XNU's mach_vm subsystem omits vm_region from the leading routine sequence,
+// so mach_vm_read is 4804 rather than vm_map's 3805. ARM32 keeps the same
+// 32-bit request and OOL reply contract used by vm_read.
+constexpr std::uint32_t mach_vm_read_identifier = 4804U;
 constexpr std::uint32_t vm_read_request_size =
     xnu792::mig::vm_map::vm_read_arguments[2].request_offset +
     darwin::mig_wire::word_size;
@@ -28,7 +32,8 @@ bool CompatibilityKernel::dispatch_mach_vm_read_message(
   using namespace mach_support;
   using namespace mach_vm_support;
 
-  if (request.identifier != mig_message_id(Routine::vm_read))
+  const auto is_mach_vm = request.identifier == mach_vm_read_identifier;
+  if (request.identifier != mig_message_id(Routine::vm_read) && !is_mach_vm)
     return false;
 
   auto &registers = cpu.registers();
@@ -103,7 +108,11 @@ bool CompatibilityKernel::dispatch_mach_vm_read_message(
     return fail_transport();
   }
 
-  output_.write("[vm] read pid=" + std::to_string(process_.pid) + " source=" +
+  output_.write("[vm] read pid=" + std::to_string(process_.pid) +
+                " interface=" +
+                (is_mach_vm ? std::string{"mach_vm"}
+                            : std::string{"vm_map"}) +
+                " source=" +
                 std::to_string(*source) + " size=" + std::to_string(*size) +
                 " copy=" + std::to_string(copied_address) + " result=0\n");
   registers[0] = kern_success;
