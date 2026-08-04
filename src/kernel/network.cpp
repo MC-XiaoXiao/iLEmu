@@ -1231,9 +1231,13 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const {
     const auto queue = kqueues_.find(fd);
     if (queue == kqueues_.end()) return false;
     return std::any_of(queue->second.begin(), queue->second.end(), [&](const auto& event) {
-        return (event.ident != fd && event.filter == -1 &&
+        return (event.ident != fd &&
+                event.filter == darwin::kqueue::filter_read &&
                 descriptor_readable(event.ident)) ||
-               (event.filter == -2 && descriptor_writable(event.ident));
+               (event.filter == darwin::kqueue::filter_write &&
+                descriptor_writable(event.ident)) ||
+               (event.filter == darwin::kqueue::filter_mach_port &&
+                ready_mach_port_name(event.ident).has_value());
     });
 }
 
@@ -1263,6 +1267,39 @@ bool CompatibilityKernel::descriptor_writable(std::uint32_t fd) const {
         return true;
     }
     return false;
+}
+
+std::optional<std::uint32_t>
+CompatibilityKernel::ready_mach_port_name(std::uint32_t name) const {
+    using xnu792::ipc::Right;
+
+    std::lock_guard mach_lock{shared_state_->mach_mutex};
+    const auto entry =
+        shared_state_->mach_namespaces.lookup(process_.pid, name);
+    if (!entry) return std::nullopt;
+
+    const auto queue_has_message = [&](std::uint32_t object) {
+        const auto queue = shared_state_->mach_queues.find(object);
+        return queue != shared_state_->mach_queues.end() &&
+               !queue->second.empty();
+    };
+    if ((entry->type & xnu792::ipc::type_mask(Right::PortSet)) != 0U) {
+        const auto set = shared_state_->mach_port_sets.find(entry->object);
+        if (set == shared_state_->mach_port_sets.end()) return std::nullopt;
+        for (const auto member_object : set->second) {
+            if (!queue_has_message(member_object)) continue;
+            if (const auto member_name = shared_state_->mach_namespaces.name_for(
+                    process_.pid, member_object)) {
+                return member_name;
+            }
+        }
+        return std::nullopt;
+    }
+    if ((entry->type & xnu792::ipc::type_mask(Right::Receive)) != 0U &&
+        queue_has_message(entry->object)) {
+        return name;
+    }
+    return std::nullopt;
 }
 
 std::optional<std::uint32_t> CompatibilityKernel::socket_pending_byte_count(
@@ -1328,6 +1365,7 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         std::uint32_t filter_flags = 0;
         std::uint32_t available = 1;
         auto result_flags = std::uint16_t{};
+        std::optional<std::uint32_t> ready_mach_name;
         if (registration->filter == darwin::kqueue::filter_process) {
             std::lock_guard lock{shared_state_->mach_mutex};
             const auto process =
@@ -1350,6 +1388,10 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                 }
             }
             result_flags |= darwin::kqueue::event_clear;
+        } else if (registration->filter ==
+                   darwin::kqueue::filter_mach_port) {
+            ready_mach_name = ready_mach_port_name(registration->ident);
+            if (ready_mach_name) available = *ready_mach_name;
         }
         const auto ready =
             registration->filter == darwin::kqueue::filter_read
@@ -1358,6 +1400,8 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                 ? descriptor_writable(registration->ident)
             : registration->filter == darwin::kqueue::filter_process
                 ? filter_flags != 0U
+            : registration->filter == darwin::kqueue::filter_mach_port
+                ? ready_mach_name.has_value()
                 : false;
         if (written == event_count || !ready) {
             ++registration;

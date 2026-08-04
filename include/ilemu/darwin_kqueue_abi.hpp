@@ -7,6 +7,7 @@ namespace ilemu::darwin::kqueue {
 inline constexpr std::int16_t filter_read = -1;
 inline constexpr std::int16_t filter_write = -2;
 inline constexpr std::int16_t filter_process = -5;
+inline constexpr std::int16_t filter_mach_port = -8;
 
 inline constexpr std::uint16_t event_add = 0x0001;
 inline constexpr std::uint16_t event_delete = 0x0002;

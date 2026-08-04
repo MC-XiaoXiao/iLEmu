@@ -506,6 +506,10 @@ private:
   import_descriptor(const KernelSharedState::DescriptorTransfer &transfer);
   [[nodiscard]] bool descriptor_readable(std::uint32_t fd) const;
   [[nodiscard]] bool descriptor_writable(std::uint32_t fd) const;
+  // EVFILT_MACHPORT reports the task-local receive name that currently has a
+  // queued message. For a port set this is the ready member, not the set name.
+  [[nodiscard]] std::optional<std::uint32_t>
+  ready_mach_port_name(std::uint32_t name) const;
   [[nodiscard]] std::optional<std::uint32_t>
   socket_pending_byte_count(std::uint32_t fd,
                             std::uint32_t &darwin_error) const;
