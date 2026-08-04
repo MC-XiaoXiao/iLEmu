@@ -67,6 +67,8 @@ ilemu_generate_mig_ids(
 ilemu_generate_mig_ids(
     bootstrap "${ILEMU_LAUNCHD257_DIR}/protocol_jobmgr.defs")
 ilemu_generate_mig_ids(
+    protocol_vproc "${ILEMU_LAUNCHD257_DIR}/protocol_job.defs")
+ilemu_generate_mig_ids(
     system_configuration
     "${ILEMU_CONFIGD137_DIR}/SystemConfiguration.fproj/config.defs")
 

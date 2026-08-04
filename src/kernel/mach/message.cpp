@@ -12,6 +12,7 @@
 #include "ilemu/kernel_mach_ipc.hpp"
 #include "ilemu/kernel_network.hpp"
 #include "ilemu/mach_clock_abi.hpp"
+#include "ilemu/protocol_vproc_profile.hpp"
 #include "ilemu/mach_descriptor_transport.hpp"
 #include "ilemu/mach_host_mig_ids.hpp"
 #include "ilemu/mach_port_mig_ids.hpp"
@@ -145,18 +146,35 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
       dispatch_mach_notification_message(cpu, request)) {
     return;
   }
-  if (*message_id == 418U && registers[2] >= 48U) { // protocol_vproc.log
-    const auto priority = memory_.read32(message_address + 32U).value_or(0);
-    const auto error = memory_.read32(message_address + 36U).value_or(0);
-    const auto count = memory_.read32(message_address + 44U).value_or(0);
-    const auto available =
-        registers[2] > 48U ? std::min<std::uint32_t>(count, registers[2] - 48U)
-                            : 0U;
+  const auto *vproc_log_profile =
+      protocol_vproc::profile_for_log_message(*message_id);
+  if (vproc_log_profile != nullptr && registers[2] >= 48U) {
+    const auto &arguments = xnu792::mig::protocol_vproc::log_arguments;
+    const auto priority =
+        memory_
+            .read32(message_address + arguments[1].request_offset)
+            .value_or(0);
+    const auto error =
+        memory_
+            .read32(message_address + arguments[2].request_offset)
+            .value_or(0);
+    const auto count =
+        memory_
+            .read32(message_address + arguments[3].request_count_offset)
+            .value_or(0);
+    const auto padded_count = (count + 3U) & ~3U;
+    const auto valid_log_shape =
+        count != 0U && count <= arguments[3].wire_size &&
+        padded_count <= std::numeric_limits<std::uint32_t>::max() -
+                            arguments[3].request_offset &&
+        arguments[3].request_offset + padded_count == registers[2];
+    if (!valid_log_shape)
+      vproc_log_profile = nullptr;
+    const auto available = valid_log_shape ? count : 0U;
     std::string message;
     if (available != 0) {
-      if (const auto bytes = memory_.read_bytes(message_address + 48U,
-                                                std::min<std::uint32_t>(
-                                                    available, 2048U))) {
+      if (const auto bytes = memory_.read_bytes(
+              message_address + arguments[3].request_offset, available)) {
         for (const auto byte : *bytes) {
           const auto character = std::to_integer<unsigned char>(byte);
           if (character == 0)
@@ -167,20 +185,23 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
         }
       }
     }
-    output_.write("[launchd-log] pid=" + std::to_string(process_.pid) +
-                  " priority=" + std::to_string(priority) +
-                  " error=" + std::to_string(error) +
-                  (message.empty() ? std::string{}
-                                   : " message=" + message) +
-                  "\n");
-    const std::array<std::uint32_t, 9> reply{
-        18U,         36U,         *local_port, 0U, 0U, *message_id + 100U,
-        0x00000000U, 0x00000001U, 0U,
-    };
-    registers[0] = write_message_words(memory_, message_address, reply)
-                       ? 0U
-                       : 0x10004008U;
-    return;
+    if (vproc_log_profile != nullptr) {
+      output_.write("[launchd-log] pid=" + std::to_string(process_.pid) +
+                    " profile=" + std::string{vproc_log_profile->name} +
+                    " priority=" + std::to_string(priority) +
+                    " error=" + std::to_string(error) +
+                    (message.empty() ? std::string{}
+                                     : " message=" + message) +
+                    "\n");
+      const std::array<std::uint32_t, 9> reply{
+          18U,         36U,         *local_port, 0U, 0U, *message_id + 100U,
+          0x00000000U, 0x00000001U, 0U,
+      };
+      registers[0] = write_message_words(memory_, message_address, reply)
+                         ? 0U
+                         : 0x10004008U;
+      return;
+    }
   }
   if (const auto result = handle_iokit_mach_request(
           memory_, output_, *shared_state_, process_, *message_id,
