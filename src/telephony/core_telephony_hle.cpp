@@ -97,8 +97,9 @@ std::uint32_t exported_object(UserlandHleCall& call,
 }
 
 void return_firmware_object(UserlandHleCall& call,
-                            std::string_view variable) {
-    if (!is_offline_ui_client(call)) {
+                            std::string_view variable,
+                            bool force_offline = false) {
+    if (!force_offline && !is_offline_ui_client(call)) {
         call.resume_original();
         return;
     }
@@ -121,8 +122,9 @@ void return_empty_server_string(UserlandHleCall& call) {
     call.set_return(result);
 }
 
-void return_server_value(UserlandHleCall& call, std::uint32_t value) {
-    if (!is_offline_ui_client(call)) {
+void return_server_value(UserlandHleCall& call, std::uint32_t value,
+                         bool force_offline = false) {
+    if (!force_offline && !is_offline_ui_client(call)) {
         call.resume_original();
         return;
     }
@@ -711,7 +713,11 @@ void register_core_telephony_hle(
     registry.register_function(
         std::string{core_telephony_image}, "_CTSIMSupportGetSIMStatus",
         [](UserlandHleCall& call) {
-            return_firmware_object(call, offline_sim_status_export);
+            // lockdownd itself consumes this status while deciding whether an
+            // activation record is required. The emulated modem is always
+            // physically absent, so keep that daemon on the same stable
+            // no-SIM contract as SpringBoard and third-party UI clients.
+            return_firmware_object(call, offline_sim_status_export, true);
         });
     for (const auto symbol : offline_direct_string_queries) {
         registry.register_function(
@@ -728,7 +734,7 @@ void register_core_telephony_hle(
         "__CTServerConnectionGetSIMStatus",
         [](UserlandHleCall& call) {
             return_server_value(
-                call, exported_object(call, offline_sim_status_export));
+                call, exported_object(call, offline_sim_status_export), true);
         });
 
     // The offline adapter supplies service results directly, so registration

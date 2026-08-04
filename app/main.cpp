@@ -995,6 +995,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
           ? std::optional<bool>{}
           : std::optional<bool>{
                 *activation == LockdownActivation::Activated};
+  if (activation_override && *activation_override) {
+    // The stock daemon has a firmware-supported development-board escape
+    // hatch for a device without a baseband/activation record. Selecting it
+    // only for the explicit activated simulator profile leaves preserve mode
+    // as the authentic retail contract.
+    device.hardware_model = device.activation_hardware_model;
+  }
   const auto ticks_option = option(args, "--ticks");
   const auto bounded_execution = ticks_option.has_value();
   const auto ticks = ticks_option ? std::stoull(*ticks_option)

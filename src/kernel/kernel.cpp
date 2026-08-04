@@ -117,6 +117,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
       make_darwin_kernel_identity_profile(rootfs_);
   shared_state_->device_product_type = device_profile_.product_type;
   shared_state_->device_board_config = device_profile_.board_config;
+  shared_state_->device_hardware_model = device_profile_.hardware_model;
   shared_state_->device_model_number = device_profile_.model_number;
   shared_state_->device_ram_bytes = device_profile_.ram_bytes;
   shared_state_->mounts.clear();

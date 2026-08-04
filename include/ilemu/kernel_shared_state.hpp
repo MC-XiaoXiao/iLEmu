@@ -297,6 +297,7 @@ struct KernelSharedState {
   DarwinKernelIdentityProfile darwin_kernel_identity;
   std::string device_product_type;
   std::string device_board_config;
+  std::string device_hardware_model;
   std::string device_model_number;
   std::uint64_t device_ram_bytes{};
 

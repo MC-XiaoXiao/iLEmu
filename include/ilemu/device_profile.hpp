@@ -12,6 +12,14 @@ namespace ilemu {
 struct DeviceProfile {
     std::string_view product_type;
     std::string_view board_config;
+    // CTL_HW/HW_MODEL identity. Keep this separate from board_config: the
+    // latter is the physical IORegistry compatibility string, while an
+    // activated simulator may use a development-board model so stock
+    // Lockdown can take its firmware-provided no-baseband path.
+    std::string_view hardware_model;
+    // Model used by the explicit activated simulator profile. This is a
+    // capability of the emulated device, not a firmware-version switch.
+    std::string_view activation_hardware_model;
     // Retail configuration identifier exposed by the platform device tree.
     // This is distinct from product_type (for example, iPhone1,1) and the
     // hardware board configuration (for example, M68AP).

@@ -9,6 +9,8 @@ const DeviceProfile& DeviceProfile::default_profile() {
     static constexpr DeviceProfile profile{
         "iPhone1,1",
         "M68AP",
+        "M68AP",
+        "M68DEV",
         "MA712LL",
         "Samsung S5L8900 (APL0098)",
         "ARM1176JZF-S",
