@@ -989,6 +989,8 @@ struct KernelSharedState {
   std::uint64_t springboard_enqueued_active_touch_begin_sequence{};
   std::uint64_t springboard_enqueued_last_touch_begin_sequence{};
   std::uint64_t springboard_enqueued_last_touch_end_sequence{};
+  float springboard_enqueued_last_touch_end_x{};
+  float springboard_enqueued_last_touch_end_y{};
   // The first SpringBoard-directed gesture after Home wakes a locked display
   // is the unlock gesture, not an application-launch intent. Retain its exact
   // sequence range so service lookups caused by unlock cannot revive a held

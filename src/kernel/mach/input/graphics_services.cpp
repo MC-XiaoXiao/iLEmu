@@ -78,6 +78,14 @@ bool active(TouchPhase phase) {
   return phase == TouchPhase::Down || phase == TouchPhase::Move;
 }
 
+bool valid_unlock_trajectory(float start_x, float start_y, float end_x,
+                             float end_y) {
+  const auto horizontal_distance = end_x - start_x;
+  const auto vertical_distance = std::fabs(end_y - start_y);
+  return horizontal_distance >= 96.0F &&
+         vertical_distance <= std::max(64.0F, horizontal_distance * 0.75F);
+}
+
 KernelSharedState::MachMessage::GraphicsInputKind
 system_button_input_kind(SystemButton button) {
   switch (button) {
@@ -106,6 +114,8 @@ void clear_springboard_enqueued_gesture_locked(KernelSharedState &state) {
   state.springboard_enqueued_active_touch_begin_sequence = 0U;
   state.springboard_enqueued_last_touch_begin_sequence = 0U;
   state.springboard_enqueued_last_touch_end_sequence = 0U;
+  state.springboard_enqueued_last_touch_end_x = 0.0F;
+  state.springboard_enqueued_last_touch_end_y = 0.0F;
   state.springboard_pending_launch_touch_sequence = 0U;
 }
 
@@ -1451,9 +1461,55 @@ void record_springboard_lock_state(KernelSharedState &state, bool active) {
   std::lock_guard lock{state.mach_mutex};
   state.springboard_lock_screen_active = active;
   if (active) {
-    if (!state.springboard_unlock_touch_active)
+    const auto in_flight_touch_begin =
+        state.springboard_enqueued_active_touch_begin_sequence != 0U
+            ? state.springboard_enqueued_active_touch_begin_sequence
+            : state.springboard_active_touch_begin_sequence;
+    const auto completed_unlock_begin =
+        state.springboard_enqueued_last_touch_begin_sequence;
+    const auto completed_unlock_end =
+        state.springboard_enqueued_last_touch_end_sequence;
+    const auto completed_before_classification =
+        in_flight_touch_begin == 0U && completed_unlock_begin != 0U &&
+        completed_unlock_end >= completed_unlock_begin &&
+        state.next_graphics_input_sequence != 0U &&
+        completed_unlock_end == state.next_graphics_input_sequence - 1U &&
+        valid_unlock_trajectory(
+            state.springboard_unlock_touch_start_x,
+            state.springboard_unlock_touch_start_y,
+            state.springboard_enqueued_last_touch_end_x,
+            state.springboard_enqueued_last_touch_end_y);
+    if (completed_before_classification) {
+      // A loaded SpringBoard can return from -activate only after the native
+      // slider has already completed. Reconcile that stale activation with
+      // the exact immediately preceding trajectory; it must not turn the
+      // first desktop alert or icon tap into another unlock gesture.
+      state.springboard_lock_screen_active = false;
+      state.springboard_unlock_touch_pending = false;
+      state.springboard_unlock_touch_active = false;
+      state.springboard_unlock_touch_begin_sequence = completed_unlock_begin;
+      state.springboard_unlock_touch_end_sequence = completed_unlock_end;
+      clear_springboard_enqueued_gesture_locked(state);
+      static_cast<void>(complete_unlock_transition_locked(
+          state, completed_unlock_end));
+      return;
+    }
+    if (!state.springboard_unlock_touch_active &&
+        in_flight_touch_begin != 0U) {
+      // SBAwayController can finish activating after the firmware has already
+      // consumed the slider's Down event. Adopt that exact in-flight gesture
+      // instead of making its trailing Up arm another unlock attempt.
+      state.springboard_unlock_touch_pending = false;
+      state.springboard_unlock_touch_active = true;
+      state.springboard_unlock_touch_begin_sequence = in_flight_touch_begin;
+    } else if (!state.springboard_unlock_touch_active) {
       state.springboard_unlock_touch_pending = true;
+    }
     return;
+  }
+  if (state.springboard_pending_launch_touch_sequence ==
+      state.springboard_unlock_touch_begin_sequence) {
+    state.springboard_pending_launch_touch_sequence = 0U;
   }
   state.springboard_unlock_touch_pending = false;
   state.springboard_unlock_touch_active = false;
@@ -1747,6 +1803,13 @@ EnqueueResult enqueue_touch(KernelSharedState &state, const TouchInput &input,
       state.springboard_unlock_touch_pending ||
       state.springboard_unlock_touch_active;
   auto completed_unlock_gesture = false;
+  if (sanitized.phase == TouchPhase::Down) {
+    // Retain the origin even before SpringBoard has classified the visible
+    // layer as its lock scene. The classification callback can race this
+    // already-enqueued Down event on another guest CPU.
+    state.springboard_unlock_touch_start_x = sanitized.x;
+    state.springboard_unlock_touch_start_y = sanitized.y;
+  }
   if (state.springboard_unlock_touch_pending &&
       sanitized.phase == TouchPhase::Down) {
     state.springboard_unlock_touch_pending = false;
@@ -1760,18 +1823,13 @@ EnqueueResult enqueue_touch(KernelSharedState &state, const TouchInput &input,
               sanitized.phase == TouchPhase::Cancel)) {
     state.springboard_unlock_touch_active = false;
     state.springboard_unlock_touch_end_sequence = input_sequence;
-    const auto horizontal_distance =
-        sanitized.x - state.springboard_unlock_touch_start_x;
-    const auto vertical_distance =
-        std::fabs(sanitized.y -
-                  state.springboard_unlock_touch_start_y);
     // The iPhone OS 1.x lock control is a deliberate rightward slider. Do not
     // turn a tap, failed drag, or cancelled gesture into a synthetic Home.
     completed_unlock_gesture =
         sanitized.phase == TouchPhase::Up &&
-        horizontal_distance >= 96.0F &&
-        vertical_distance <=
-            std::max(64.0F, horizontal_distance * 0.75F);
+        valid_unlock_trajectory(state.springboard_unlock_touch_start_x,
+                                state.springboard_unlock_touch_start_y,
+                                sanitized.x, sanitized.y);
     state.springboard_unlock_touch_pending =
         !completed_unlock_gesture;
   }
@@ -1818,12 +1876,15 @@ EnqueueResult enqueue_touch(KernelSharedState &state, const TouchInput &input,
               ? state.springboard_enqueued_active_touch_begin_sequence
               : input_sequence;
       state.springboard_enqueued_last_touch_end_sequence = input_sequence;
+      state.springboard_enqueued_last_touch_end_x = sanitized.x;
+      state.springboard_enqueued_last_touch_end_y = sanitized.y;
       state.springboard_enqueued_active_touch_begin_sequence = 0U;
     }
   }
   auto unlock_completion = UnlockTransitionCompletion{};
   if (completed_unlock_gesture) {
     state.springboard_lock_screen_active = false;
+    clear_springboard_enqueued_gesture_locked(state);
     unlock_completion =
         complete_unlock_transition_locked(state, input_sequence);
   }
