@@ -61,6 +61,11 @@ public:
         std::uint32_t name, std::uint32_t level,
         std::uint32_t internal_format, std::uint32_t width,
         std::uint32_t height);
+    [[nodiscard]] std::uint32_t upload_compressed_texture_2d(
+        AddressSpace& memory, std::uint32_t name, std::uint32_t level,
+        std::uint32_t internal_format, std::uint32_t width,
+        std::uint32_t height, std::uint32_t image_size,
+        std::uint32_t pixels);
     [[nodiscard]] std::uint32_t update_texture_2d(
         AddressSpace& memory, std::uint32_t name, std::uint32_t level,
         std::uint32_t x, std::uint32_t y, std::uint32_t width,

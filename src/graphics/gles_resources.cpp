@@ -132,6 +132,419 @@ std::optional<std::vector<std::uint32_t>> decode_image(
     return result;
 }
 
+// PVRTC stores one 64-bit word per 4x4 (4bpp) or 8x4 (2bpp) texel region.
+// The guest firmware normally lets the PowerVR driver decode these words;
+// keeping the decoder here makes compressed uploads follow the same resource
+// lifetime and host-surface path as ordinary GLES textures.
+constexpr std::uint32_t compressed_rgb_pvrtc_2bpp = 0x8c01;
+constexpr std::uint32_t compressed_rgba_pvrtc_2bpp = 0x8c03;
+constexpr std::uint32_t compressed_rgb_pvrtc_4bpp = 0x8c00;
+constexpr std::uint32_t compressed_rgba_pvrtc_4bpp = 0x8c02;
+
+struct PvrtcColour {
+    int red{};
+    int green{};
+    int blue{};
+    int alpha{};
+};
+
+struct PvrtcWord {
+    std::uint32_t modulation{};
+    std::uint32_t colour{};
+};
+
+int expand_channel(int value, int maximum) {
+    return (value * 255 + maximum / 2) / maximum;
+}
+
+PvrtcColour pvrtc_colour_a(std::uint32_t value) {
+    if ((value & 0x8000U) != 0) {
+        return {
+            expand_channel((value >> 10U) & 0x1fU, 0x1f),
+            expand_channel((value >> 5U) & 0x1fU, 0x1f),
+            expand_channel((value >> 1U) & 0x0fU, 0x0f), 255};
+    }
+    return {
+        expand_channel((value >> 8U) & 0x0fU, 0x0f),
+        expand_channel((value >> 4U) & 0x0fU, 0x0f),
+        expand_channel((value >> 1U) & 0x07U, 0x07),
+        expand_channel((value >> 11U) & 0x07U, 0x07)};
+}
+
+PvrtcColour pvrtc_colour_b(std::uint32_t value) {
+    if ((value & 0x80000000U) != 0) {
+        return {
+            expand_channel((value >> 26U) & 0x1fU, 0x1f),
+            expand_channel((value >> 21U) & 0x1fU, 0x1f),
+            expand_channel((value >> 16U) & 0x1fU, 0x1f), 255};
+    }
+    return {
+        expand_channel((value >> 23U) & 0x0fU, 0x0f),
+        expand_channel((value >> 19U) & 0x0fU, 0x0f),
+        expand_channel((value >> 15U) & 0x0fU, 0x0f),
+        expand_channel((value >> 27U) & 0x07U, 0x07)};
+}
+
+PvrtcColour interpolate_colour(
+    const PvrtcColour &top_left, const PvrtcColour &top_right,
+    const PvrtcColour &bottom_left, const PvrtcColour &bottom_right,
+    std::uint32_t x, std::uint32_t y, std::uint32_t width,
+    std::uint32_t height) {
+    const auto blend = [](int first, int second, std::uint32_t position,
+                          std::uint32_t extent) {
+        return (first * static_cast<int>(extent - position) +
+                second * static_cast<int>(position) +
+                static_cast<int>(extent / 2U)) /
+               static_cast<int>(extent);
+    };
+    const auto top = PvrtcColour{
+        blend(top_left.red, top_right.red, x, width),
+        blend(top_left.green, top_right.green, x, width),
+        blend(top_left.blue, top_right.blue, x, width),
+        blend(top_left.alpha, top_right.alpha, x, width)};
+    const auto bottom = PvrtcColour{
+        blend(bottom_left.red, bottom_right.red, x, width),
+        blend(bottom_left.green, bottom_right.green, x, width),
+        blend(bottom_left.blue, bottom_right.blue, x, width),
+        blend(bottom_left.alpha, bottom_right.alpha, x, width)};
+    return {
+        blend(top.red, bottom.red, y, height),
+        blend(top.green, bottom.green, y, height),
+        blend(top.blue, bottom.blue, y, height),
+        blend(top.alpha, bottom.alpha, y, height)};
+}
+
+std::uint32_t pvrtc_twiddle(
+    std::uint32_t width, std::uint32_t height, std::uint32_t x,
+    std::uint32_t y) {
+    auto minimum = width;
+    auto maximum = y;
+    if (height < width) {
+        minimum = height;
+        maximum = x;
+    }
+    std::uint32_t result = 0;
+    std::uint32_t source_bit = 1;
+    std::uint32_t destination_bit = 1;
+    std::uint32_t shift = 0;
+    while (source_bit < minimum) {
+        if ((y & source_bit) != 0)
+            result |= destination_bit;
+        if ((x & source_bit) != 0)
+            result |= destination_bit << 1U;
+        source_bit <<= 1U;
+        destination_bit <<= 2U;
+        ++shift;
+    }
+    maximum >>= shift;
+    return result | (maximum << (shift * 2U));
+}
+
+bool is_power_of_two(std::uint32_t value) {
+    return value != 0 && (value & (value - 1U)) == 0;
+}
+
+std::optional<std::vector<std::uint32_t>> decode_pvrtc(
+    AddressSpace &memory, std::uint32_t width, std::uint32_t height,
+    std::uint32_t format, std::uint32_t image_size, std::uint32_t pixels) {
+    const auto two_bpp = format == compressed_rgb_pvrtc_2bpp ||
+                         format == compressed_rgba_pvrtc_2bpp;
+    const auto has_alpha = format == compressed_rgba_pvrtc_2bpp ||
+                           format == compressed_rgba_pvrtc_4bpp;
+    const auto block_width = two_bpp ? 8U : 4U;
+    const auto minimum_width = two_bpp ? 16U : 8U;
+    const auto minimum_height = 8U;
+    if (width == 0 || height == 0 ||
+        width > gles_abi::maximum_texture_dimension ||
+        height > gles_abi::maximum_texture_dimension) {
+        return std::nullopt;
+    }
+
+    const auto padded_width = std::max(width, minimum_width);
+    const auto padded_height = std::max(height, minimum_height);
+    const auto word_count_x = std::max(2U, (padded_width + block_width - 1U) /
+                                               block_width);
+    const auto word_count_y = std::max(2U, (padded_height + 3U) / 4U);
+    const auto decoded_width = word_count_x * block_width;
+    const auto decoded_height = word_count_y * 4U;
+    const auto word_count = static_cast<std::uint64_t>(word_count_x) *
+                            word_count_y;
+    const auto compressed_bytes = word_count * 8U;
+    const auto decoded_pixels = static_cast<std::uint64_t>(decoded_width) *
+                                decoded_height;
+    if (compressed_bytes > image_size ||
+        compressed_bytes > gles_abi::maximum_resource_bytes ||
+        decoded_pixels > gles_abi::maximum_resource_bytes /
+                             sizeof(std::uint32_t) ||
+        compressed_bytes > std::numeric_limits<std::uint32_t>::max()) {
+        return std::nullopt;
+    }
+    if (pixels == 0 || compressed_bytes == 0)
+        return std::nullopt;
+    const auto source = memory.read_bytes(
+        pixels, static_cast<std::size_t>(compressed_bytes));
+    if (!source)
+        return std::nullopt;
+
+    const auto read_word = [&](std::uint64_t byte_offset) {
+        const auto read32 = [&](std::uint64_t offset) {
+            return std::to_integer<std::uint32_t>((*source)[offset]) |
+                   (std::to_integer<std::uint32_t>((*source)[offset + 1U])
+                    << 8U) |
+                   (std::to_integer<std::uint32_t>((*source)[offset + 2U])
+                    << 16U) |
+                   (std::to_integer<std::uint32_t>((*source)[offset + 3U])
+                    << 24U);
+        };
+        return PvrtcWord{read32(byte_offset), read32(byte_offset + 4U)};
+    };
+
+    const auto wrap = [](int value, std::uint32_t extent) {
+        const auto signed_extent = static_cast<int>(extent);
+        value %= signed_extent;
+        return value < 0 ? value + signed_extent : value;
+    };
+    const auto twiddled = is_power_of_two(word_count_x) &&
+                          is_power_of_two(word_count_y);
+    const auto word_at = [&](int x, int y) {
+        const auto wrapped_x = static_cast<std::uint32_t>(wrap(x, word_count_x));
+        const auto wrapped_y = static_cast<std::uint32_t>(wrap(y, word_count_y));
+        const auto index = twiddled
+                               ? pvrtc_twiddle(word_count_x, word_count_y,
+                                               wrapped_x, wrapped_y)
+                               : wrapped_y * word_count_x + wrapped_x;
+        return read_word(static_cast<std::uint64_t>(index) * 8U);
+    };
+
+    std::vector<std::uint32_t> decoded(
+        static_cast<std::size_t>(decoded_pixels), 0U);
+    const auto word_height = 4U;
+    const auto half_width = block_width / 2U;
+    const auto half_height = word_height / 2U;
+    const auto modulation_index = [](std::uint32_t x, std::uint32_t y) {
+        return static_cast<std::size_t>(x) * 8U + y;
+    };
+    const int replication[4] = {0, 3, 5, 8};
+
+    for (int word_y = -1; word_y < static_cast<int>(word_count_y) - 1;
+         ++word_y) {
+        for (int word_x = -1; word_x < static_cast<int>(word_count_x) - 1;
+             ++word_x) {
+            const auto p = word_at(word_x, word_y);
+            const auto q = word_at(word_x + 1, word_y);
+            const auto r = word_at(word_x, word_y + 1);
+            const auto s = word_at(word_x + 1, word_y + 1);
+            std::array<int, 16 * 8> modulation_values{};
+            std::array<int, 16 * 8> modulation_modes{};
+
+            const auto unpack = [&](const PvrtcWord &word,
+                                    std::uint32_t offset_x,
+                                    std::uint32_t offset_y) {
+                auto mode = word.colour & 1U;
+                auto bits = word.modulation;
+                if (two_bpp) {
+                    if (mode != 0) {
+                        if ((bits & 1U) != 0)
+                            mode = (bits & (1U << 20U)) != 0 ? 3U : 2U;
+                        if ((bits & (1U << 21U)) != 0)
+                            bits |= 1U << 20U;
+                        else
+                            bits &= ~(1U << 20U);
+                        bits = (bits & 2U) != 0 ? bits | 1U : bits & ~1U;
+                        for (std::uint32_t y = 0; y < 4; ++y) {
+                            for (std::uint32_t x = 0; x < 8; ++x) {
+                                modulation_modes[modulation_index(
+                                    x + offset_x, y + offset_y)] =
+                                    static_cast<int>(mode);
+                                if (((x ^ y) & 1U) == 0) {
+                                    modulation_values[modulation_index(
+                                        x + offset_x, y + offset_y)] =
+                                        static_cast<int>(bits & 3U);
+                                    bits >>= 2U;
+                                }
+                            }
+                        }
+                    } else {
+                        for (std::uint32_t y = 0; y < 4; ++y) {
+                            for (std::uint32_t x = 0; x < 8; ++x) {
+                                modulation_modes[modulation_index(
+                                    x + offset_x, y + offset_y)] = 0;
+                                modulation_values[modulation_index(
+                                    x + offset_x, y + offset_y)] =
+                                    (bits & 1U) != 0 ? 3 : 0;
+                                bits >>= 1U;
+                            }
+                        }
+                    }
+                    return;
+                }
+                for (std::uint32_t y = 0; y < 4; ++y) {
+                    for (std::uint32_t x = 0; x < 4; ++x) {
+                        modulation_modes[modulation_index(
+                            x + offset_x, y + offset_y)] =
+                            static_cast<int>(mode);
+                        auto value = static_cast<int>(bits & 3U);
+                        if (mode != 0) {
+                            static constexpr int values[4] = {0, 4, 14, 8};
+                            value = values[value];
+                        } else {
+                            value *= 3;
+                            if (value > 3)
+                                --value;
+                        }
+                        modulation_values[modulation_index(
+                            x + offset_x, y + offset_y)] = value;
+                        bits >>= 2U;
+                    }
+                }
+            };
+            unpack(p, 0, 0);
+            unpack(q, block_width, 0);
+            unpack(r, 0, word_height);
+            unpack(s, block_width, word_height);
+
+            const auto modulation_at = [&](std::uint32_t x,
+                                           std::uint32_t y) {
+                const auto index = modulation_index(x, y);
+                if (!two_bpp)
+                    return modulation_values[index];
+                const auto mode = modulation_modes[index];
+                if (mode == 0 || ((x ^ y) & 1U) == 0)
+                    return replication[modulation_values[index]];
+                const auto value_at = [&](int nx, int ny) {
+                    return replication[modulation_values[
+                        modulation_index(static_cast<std::uint32_t>(nx),
+                                         static_cast<std::uint32_t>(ny))]];
+                };
+                if (mode == 1)
+                    return (value_at(static_cast<int>(x) - 1,
+                                     static_cast<int>(y)) +
+                            value_at(static_cast<int>(x) + 1,
+                                     static_cast<int>(y)) +
+                            value_at(static_cast<int>(x),
+                                     static_cast<int>(y) - 1) +
+                            value_at(static_cast<int>(x),
+                                     static_cast<int>(y) + 1) +
+                            2) /
+                           4;
+                if (mode == 2)
+                    return (value_at(static_cast<int>(x) - 1,
+                                     static_cast<int>(y)) +
+                            value_at(static_cast<int>(x) + 1,
+                                     static_cast<int>(y)) +
+                            1) /
+                           2;
+                return (value_at(static_cast<int>(x),
+                                 static_cast<int>(y) - 1) +
+                        value_at(static_cast<int>(x),
+                                 static_cast<int>(y) + 1) +
+                        1) /
+                       2;
+            };
+
+            std::array<PvrtcColour, 32> upscaled_a{};
+            std::array<PvrtcColour, 32> upscaled_b{};
+            for (std::uint32_t y = 0; y < word_height; ++y) {
+                for (std::uint32_t x = 0; x < block_width; ++x) {
+                    const auto colour_a = interpolate_colour(
+                        pvrtc_colour_a(p.colour), pvrtc_colour_a(q.colour),
+                        pvrtc_colour_a(r.colour), pvrtc_colour_a(s.colour),
+                        x, y, block_width, word_height);
+                    const auto colour_b = interpolate_colour(
+                        pvrtc_colour_b(p.colour), pvrtc_colour_b(q.colour),
+                        pvrtc_colour_b(r.colour), pvrtc_colour_b(s.colour),
+                        x, y, block_width, word_height);
+                    const auto index = static_cast<std::size_t>(
+                        y * block_width + x);
+                    upscaled_a[index] = colour_a;
+                    upscaled_b[index] = colour_b;
+                }
+            }
+            const auto blend_pixel = [&](const PvrtcColour &a,
+                                         const PvrtcColour &b, int value) {
+                const auto punch_through = value > 10;
+                if (punch_through)
+                    value -= 10;
+                value = std::clamp(value, 0, 8);
+                PvrtcColour result{
+                    (a.red * (8 - value) + b.red * value) / 8,
+                    (a.green * (8 - value) + b.green * value) / 8,
+                    (a.blue * (8 - value) + b.blue * value) / 8,
+                    punch_through
+                        ? 0
+                        : (a.alpha * (8 - value) + b.alpha * value) / 8};
+                if (!has_alpha)
+                    result.alpha = 255;
+                return result;
+            };
+            std::array<PvrtcColour, 32> pixels_in_word{};
+            for (std::uint32_t y = 0; y < word_height; ++y) {
+                for (std::uint32_t x = 0; x < block_width; ++x) {
+                    const auto value = modulation_at(
+                        x + half_width, y + half_height);
+                    const auto index = static_cast<std::size_t>(
+                        y * block_width + x);
+                    const auto result = blend_pixel(
+                        upscaled_a[index], upscaled_b[index], value);
+                    pixels_in_word[two_bpp
+                                       ? index
+                                       : static_cast<std::size_t>(
+                                             x * word_height + y)] = result;
+                }
+            }
+            const auto store = [&](int x, int y, const PvrtcColour &colour) {
+                const auto red = static_cast<std::uint32_t>(
+                    std::clamp(colour.red, 0, 255));
+                const auto green = static_cast<std::uint32_t>(
+                    std::clamp(colour.green, 0, 255));
+                const auto blue = static_cast<std::uint32_t>(
+                    std::clamp(colour.blue, 0, 255));
+                const auto alpha = static_cast<std::uint32_t>(
+                    std::clamp(colour.alpha, 0, 255));
+                decoded[static_cast<std::size_t>(y) * decoded_width + x] =
+                    (alpha << 24U) | (red << 16U) | (green << 8U) | blue;
+            };
+            for (std::uint32_t y = 0; y < half_height; ++y) {
+                for (std::uint32_t x = 0; x < half_width; ++x) {
+                    const auto p_x = static_cast<int>(
+                        wrap(word_x, word_count_x) * block_width +
+                        x + half_width);
+                    const auto p_y = static_cast<int>(
+                        wrap(word_y, word_count_y) * word_height +
+                        y + half_height);
+                    const auto q_x = static_cast<int>(
+                        wrap(word_x + 1, word_count_x) * block_width + x);
+                    const auto q_y = p_y;
+                    const auto r_x = p_x;
+                    const auto r_y = static_cast<int>(
+                        wrap(word_y + 1, word_count_y) * word_height + y);
+                    const auto s_x = q_x;
+                    const auto s_y = r_y;
+                    store(p_x, p_y,
+                          pixels_in_word[y * block_width + x]);
+                    store(q_x, q_y,
+                          pixels_in_word[y * block_width + x + half_width]);
+                    store(r_x, r_y,
+                          pixels_in_word[(y + half_height) * block_width + x]);
+                    store(s_x, s_y,
+                          pixels_in_word[(y + half_height) * block_width +
+                                         x + half_width]);
+                }
+            }
+        }
+    }
+
+    std::vector<std::uint32_t> result(
+        static_cast<std::size_t>(width) * height, 0U);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        std::copy_n(decoded.begin() + static_cast<std::size_t>(y) *
+                        decoded_width,
+                    width,
+                    result.begin() + static_cast<std::size_t>(y) * width);
+    }
+    return result;
+}
+
 std::optional<GlesResourceStore::TextureLevel> decode_surface(
     AddressSpace& memory, const SurfaceStore& surfaces,
     const SurfaceStore::Backing& backing) {
@@ -266,6 +679,28 @@ std::uint32_t GlesResourceStore::allocate_texture_2d(
         level, TextureLevel{width, height, internal_format,
                             std::vector<std::uint32_t>(
                                 static_cast<std::size_t>(width) * height),
+                            std::nullopt, allocate_texture_revision(), {}, 0});
+    return gles_abi::no_error;
+}
+
+std::uint32_t GlesResourceStore::upload_compressed_texture_2d(
+    AddressSpace &memory, std::uint32_t name, std::uint32_t level,
+    std::uint32_t internal_format, std::uint32_t width,
+    std::uint32_t height, std::uint32_t image_size, std::uint32_t pixels) {
+    if (name == 0 || !textures_.contains(name))
+        return gles_abi::invalid_operation;
+    if (internal_format != compressed_rgb_pvrtc_2bpp &&
+        internal_format != compressed_rgba_pvrtc_2bpp &&
+        internal_format != compressed_rgb_pvrtc_4bpp &&
+        internal_format != compressed_rgba_pvrtc_4bpp) {
+        return gles_abi::invalid_enum;
+    }
+    auto decoded = decode_pvrtc(
+        memory, width, height, internal_format, image_size, pixels);
+    if (!decoded)
+        return gles_abi::invalid_value;
+    textures_.at(name).levels.insert_or_assign(
+        level, TextureLevel{width, height, internal_format, std::move(*decoded),
                             std::nullopt, allocate_texture_revision(), {}, 0});
     return gles_abi::no_error;
 }

@@ -2794,22 +2794,14 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
                 previous_render_target = previous->second.host_surface->key();
             }
         }
-        const auto error = resources_.allocate_texture_2d(
-            binding, static_cast<std::uint32_t>(level), format,
-            static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+        const auto error = resources_.upload_compressed_texture_2d(
+            call.memory(), binding, static_cast<std::uint32_t>(level), format,
+            static_cast<std::uint32_t>(width),
+            static_cast<std::uint32_t>(height), call.argument(6),
+            call.argument(7));
         if (error != gles_abi::no_error) {
             set_gl_error(call, error);
             return;
-        }
-        // PVRTC decoding remains a renderer concern. Keep a valid opaque
-        // level until the host decoder consumes the compressed payload; this
-        // preserves texture completeness and the guest's normal render loop.
-        if (auto *texture = resources_.texture(binding)) {
-            auto level_state =
-                texture->levels.find(static_cast<std::uint32_t>(level));
-            if (level_state != texture->levels.end())
-                std::fill(level_state->second.argb.begin(),
-                          level_state->second.argb.end(), 0xff000000U);
         }
         if (previous_render_target)
             renderer_->release(std::span{&*previous_render_target, std::size_t{1}});
