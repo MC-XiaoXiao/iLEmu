@@ -948,7 +948,8 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
             });
         if (synchronized)
             buffer->lock_options.push_back(options);
-        if (synchronized && call.argument(2) != 0) {
+        if (synchronized && buffer_profile.lock_seed_output &&
+            call.argument(2) != 0) {
             static_cast<void>(
                 call.memory().write32(call.argument(2), buffer->seed));
         }
@@ -972,7 +973,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call) {
             ++buffer->seed;
             submit(*buffer, call);
         }
-        if (call.argument(2) != 0) {
+        if (buffer_profile.lock_seed_output && call.argument(2) != 0) {
             static_cast<void>(
                 call.memory().write32(call.argument(2), buffer->seed));
         }

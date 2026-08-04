@@ -32,6 +32,7 @@ struct Profile {
   std::uint32_t data_offset_offset;
   std::uint32_t pixel_format_offset;
   std::uint32_t plane_count_offset;
+  bool lock_seed_output;
   std::array<std::string_view, 7> create_property_symbols;
 };
 
@@ -51,6 +52,7 @@ inline constexpr Profile core_surface_client_buffer{
     .data_offset_offset = 28,
     .pixel_format_offset = 32,
     .plane_count_offset = 40,
+    .lock_seed_output = false,
     .create_property_symbols =
         {"_kCoreSurfaceBufferClientAddress",
          "_kCoreSurfaceBufferAllocSize",
@@ -80,6 +82,7 @@ inline constexpr Profile io_surface_client{
     .data_offset_offset = 32,
     .pixel_format_offset = 36,
     .plane_count_offset = 44,
+    .lock_seed_output = true,
     .create_property_symbols =
         {"",
          "_kIOSurfaceAllocSize",
