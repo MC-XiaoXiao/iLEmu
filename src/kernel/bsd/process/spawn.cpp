@@ -86,8 +86,8 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
     environment = read_string_vector(memory_, registers[4]);
     attributes = read_spawn_attributes(memory_, registers[2]);
   }
-  if (pid_address == 0 || !path || !arguments || !environment ||
-      !attributes) {
+  if (!path || !arguments || !environment || !attributes ||
+      (pid_address == 0 && !attributes->setexec)) {
     bsd_error(cpu, bsd_support::bad_address);
     return true;
   }
