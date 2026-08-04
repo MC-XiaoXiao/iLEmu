@@ -121,6 +121,10 @@ inline constexpr std::string_view event_descriptor_kind = "wifi-events";
 
 inline constexpr std::uint32_t set_request = 0x802069c8U;
 inline constexpr std::uint32_t get_request = 0xc02069c9U;
+inline constexpr std::uint32_t event_scan_completed = 10;
+inline constexpr std::uint32_t event_header_size = 8;
+inline constexpr std::uint32_t event_identifier_offset = 0;
+inline constexpr std::uint32_t event_payload_length_offset = 4;
 inline constexpr std::uint32_t command_offset = 16;
 inline constexpr std::uint32_t data_length_offset = 24;
 inline constexpr std::uint32_t data_address_offset = 28;
@@ -138,6 +142,10 @@ inline constexpr std::uint32_t command_noise = 17;
 inline constexpr std::uint32_t command_power = 19;
 inline constexpr std::uint32_t command_association_result = 21;
 inline constexpr std::uint32_t command_driver_name = 23;
+// Mobile AirPort drivers expose an extended capability record in addition to
+// the public Apple80211 selectors. A zeroed record is a valid declaration
+// that no optional chipset features are present.
+inline constexpr std::uint32_t command_extended_capabilities = 201;
 inline constexpr std::uint32_t inline_scalar_value_offset = 20;
 inline constexpr std::uint32_t association_result_success = 1;
 
@@ -155,8 +163,11 @@ inline constexpr std::uint32_t signal_state_last_offset = 48;
 inline constexpr std::uint32_t power_state_size = 24;
 inline constexpr std::uint32_t power_state_count_offset = 4;
 inline constexpr std::uint32_t power_state_first_value_offset = 8;
+inline constexpr std::uint32_t extended_capabilities_size = 144;
+inline constexpr std::uint32_t extended_capabilities_blob_length_offset = 136;
+inline constexpr std::uint32_t extended_capabilities_blob_pointer_offset = 140;
 
-inline constexpr std::uint32_t scan_result_size = 140;
+inline constexpr std::uint32_t scan_result_size = 144;
 inline constexpr std::uint32_t scan_channel_offset = 8;
 inline constexpr std::uint32_t scan_channel_flags_offset = 12;
 inline constexpr std::uint32_t scan_noise_offset = 16;
@@ -168,8 +179,11 @@ inline constexpr std::uint32_t scan_rate_count_offset = 30;
 inline constexpr std::uint32_t scan_ssid_length_offset = 92;
 inline constexpr std::uint32_t scan_ssid_offset = 93;
 inline constexpr std::uint32_t scan_age_offset = 128;
-inline constexpr std::uint32_t scan_ie_length_offset = 132;
-inline constexpr std::uint32_t scan_ie_pointer_offset = 136;
+inline constexpr std::uint32_t scan_flags_offset = 132;
+inline constexpr std::uint32_t scan_ie_length_offset = 136;
+inline constexpr std::uint32_t scan_ie_pointer_offset = 140;
+inline constexpr std::int32_t scan_signal_floor_dbm = -100;
+inline constexpr std::int32_t scan_signal_ceiling_dbm = 0;
 
 }  // namespace apple80211_driver
 

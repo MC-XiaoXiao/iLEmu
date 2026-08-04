@@ -602,16 +602,17 @@ bool CompatibilityKernel::receive_socket_bytes(
     }
     if (const auto pending = pending_wifi_driver_events_.find(fd);
         pending != pending_wifi_driver_events_.end() &&
-        pending->second != 0) {
-        const std::array bytes{
-            static_cast<std::byte>(pending->second & 0xffU),
-            static_cast<std::byte>((pending->second >> 8U) & 0xffU)};
-        const auto copied = std::min<std::size_t>(size, bytes.size());
+        !pending->second.empty()) {
+        const auto& record = pending->second.front();
+        const auto copied = std::min<std::size_t>(size, record.size());
         if (!memory_.copy_in(
-                address, std::span{bytes}.first(copied))) {
+                address, std::span{record}.first(copied))) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
-            pending_wifi_driver_events_.erase(pending);
+            pending->second.pop_front();
+            if (pending->second.empty()) {
+                pending_wifi_driver_events_.erase(pending);
+            }
             bsd_success(cpu, static_cast<std::uint32_t>(copied));
         }
         return true;
@@ -1190,7 +1191,7 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const {
     }
     if (const auto pending = pending_wifi_driver_events_.find(fd);
         pending != pending_wifi_driver_events_.end() &&
-        pending->second != 0) {
+        !pending->second.empty()) {
         return true;
     }
     if (const auto descriptor = virtual_descriptors_.find(fd);
@@ -1269,8 +1270,8 @@ std::optional<std::uint32_t> CompatibilityKernel::socket_pending_byte_count(
     darwin_error = 0;
     if (const auto pending = pending_wifi_driver_events_.find(fd);
         pending != pending_wifi_driver_events_.end() &&
-        pending->second != 0) {
-        return 2;
+        !pending->second.empty()) {
+        return static_cast<std::uint32_t>(pending->second.front().size());
     }
     if (const auto host = host_sockets_.find(fd); host != host_sockets_.end()) {
         const auto pending = host->second->pending_bytes();

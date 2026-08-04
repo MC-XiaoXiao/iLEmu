@@ -843,6 +843,12 @@ bool CompatibilityKernel::deliver_pending_event(Cpu &cpu) {
 }
 
 bool CompatibilityKernel::deliver_pending_io_locked(Cpu &cpu) {
+  for (auto event = scheduled_wifi_driver_events_.begin();
+       event != scheduled_wifi_driver_events_.end();) {
+    if (shared_state_->clock.now() < event->first) break;
+    inject_wifi_driver_event(0, event->second);
+    event = scheduled_wifi_driver_events_.erase(event);
+  }
   if (const auto pending = pending_record_locks_.find(cpu.processor_id());
       pending != pending_record_locks_.end()) {
     if (!shared_state_->advisory_file_locks->try_set_record_lock(
@@ -1296,6 +1302,13 @@ std::optional<std::uint64_t> CompatibilityKernel::next_timer_deadline() const {
       deadline = wait.deadline;
     }
   }
+  for (const auto &[event_deadline, event] :
+       scheduled_wifi_driver_events_) {
+    static_cast<void>(event);
+    if (!deadline || event_deadline < *deadline) {
+      deadline = event_deadline;
+    }
+  }
   for (const auto &[processor, read] : pending_socket_reads_) {
     static_cast<void>(processor);
     if (read.deadline && (!deadline || *read.deadline < *deadline)) {
@@ -1439,13 +1452,17 @@ void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline) {
 
 void CompatibilityKernel::inject_wifi_driver_event(
     std::uint32_t, std::uint32_t event) {
-  if (event == 0 || event > 16) return;
-  const auto event_bit =
-      static_cast<std::uint16_t>(1U << (event - 1U));
+  if (event == 0) return;
+  namespace wifi_driver = darwin::network::apple80211_driver;
+  std::vector<std::byte> record(wifi_driver::event_header_size,
+                                std::byte{0});
+  for (std::uint32_t byte = 0; byte < sizeof(event); ++byte) {
+    record[wifi_driver::event_identifier_offset + byte] =
+        static_cast<std::byte>((event >> (byte * 8U)) & 0xffU);
+  }
   for (const auto& [descriptor, kind] : virtual_descriptors_) {
-    if (kind ==
-        darwin::network::apple80211_driver::event_descriptor_kind) {
-      pending_wifi_driver_events_[descriptor] |= event_bit;
+    if (kind == wifi_driver::event_descriptor_kind) {
+      pending_wifi_driver_events_[descriptor].push_back(record);
     }
   }
 }

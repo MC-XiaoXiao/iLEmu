@@ -8,6 +8,7 @@
 #include "ilemu/darwin_route_socket.hpp"
 #include "ilemu/darwin_sysctl.hpp"
 #include "ilemu/kernel_network.hpp"
+#include "ilemu/mach_scheduler_abi.hpp"
 #include "ilemu/offline_serial_device.hpp"
 
 #include <algorithm>
@@ -30,6 +31,9 @@
 #include "support.hpp"
 
 namespace {
+
+constexpr auto wifi_scan_completion_delay =
+    10U * ilemu::darwin::mach::scheduler::nanoseconds_per_millisecond;
 
 [[nodiscard]] bool is_printable_ascii(std::byte value) {
   const auto character = std::to_integer<unsigned char>(value);
@@ -538,6 +542,14 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
             *command == wifi_driver::command_scan) {
           apple80211_scan_delivered_.erase(fd);
           static_cast<void>(wifi_state_->scan());
+          const auto now = shared_state_->clock.now();
+          const auto deadline =
+              wifi_scan_completion_delay >
+                      std::numeric_limits<std::uint64_t>::max() - now
+                  ? std::numeric_limits<std::uint64_t>::max()
+                  : now + wifi_scan_completion_delay;
+          scheduled_wifi_driver_events_.emplace(
+              deadline, wifi_driver::event_scan_completed);
           output_.write("[wifi-driver] scan-start pid=" +
                         std::to_string(process_.pid) + " fd=" +
                         std::to_string(fd) + "\n");
@@ -850,9 +862,12 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
           write16(wifi_driver::scan_noise_offset,
                   static_cast<std::uint16_t>(
                       static_cast<std::int16_t>(-90)));
+          const auto signal_strength = std::clamp(
+              access_point.rssi - wifi_driver::scan_signal_floor_dbm,
+              0, wifi_driver::scan_signal_ceiling_dbm -
+                     wifi_driver::scan_signal_floor_dbm);
           write16(wifi_driver::scan_rssi_offset,
-                  static_cast<std::uint16_t>(
-                      static_cast<std::int16_t>(access_point.rssi)));
+                  static_cast<std::uint16_t>(signal_strength));
           write16(wifi_driver::scan_beacon_interval_offset, 100);
           // IEEE 802.11 capability bit 0 is ESS. Privacy (bit 4) is set only
           // for networks whose association requires a key.
@@ -876,6 +891,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
                     static_cast<unsigned char>(value));
               });
           write32(wifi_driver::scan_age_offset, 0);
+          write32(wifi_driver::scan_flags_offset, 0);
           write16(wifi_driver::scan_ie_length_offset, 0);
           if (!memory_.copy_in(*data_address, result)) {
             bsd_error(cpu, bsd_support::bad_address);
@@ -886,6 +902,47 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
                         std::to_string(process_.pid) + " fd=" +
                         std::to_string(fd) + " ssid=" +
                         access_point.ssid + "\n");
+          bsd_success(cpu, 0);
+          return;
+        }
+        if (registers[1] == wifi_driver::get_request &&
+            *command == wifi_driver::command_extended_capabilities) {
+          if (*data_address == 0 ||
+              *data_length < wifi_driver::extended_capabilities_size) {
+            bsd_error(cpu, *data_address == 0
+                               ? bsd_support::bad_address
+                               : bsd_support::invalid_argument);
+            return;
+          }
+          const auto blob_length = memory_.read16(
+              *data_address +
+              wifi_driver::extended_capabilities_blob_length_offset);
+          const auto blob_pointer = memory_.read32(
+              *data_address +
+              wifi_driver::extended_capabilities_blob_pointer_offset);
+          if (!blob_length || !blob_pointer ||
+              (*blob_length != 0 && *blob_pointer == 0)) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+          }
+          const std::array<std::byte,
+                           wifi_driver::extended_capabilities_size>
+              capabilities{};
+          if (!memory_.copy_in(*data_address, capabilities) ||
+              !memory_.write16(
+                  *data_address +
+                      wifi_driver::extended_capabilities_blob_length_offset,
+                  *blob_length) ||
+              !memory_.write32(
+                  *data_address +
+                      wifi_driver::extended_capabilities_blob_pointer_offset,
+                  *blob_pointer)) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+          }
+          output_.write("[wifi-driver] extended-capabilities pid=" +
+                        std::to_string(process_.pid) + " fd=" +
+                        std::to_string(fd) + " optional=none\n");
           bsd_success(cpu, 0);
           return;
         }

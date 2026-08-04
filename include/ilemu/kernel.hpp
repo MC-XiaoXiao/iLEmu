@@ -569,7 +569,10 @@ private:
   std::map<std::uint32_t, std::shared_ptr<darwin::bpf::DescriptorState>>
       bpf_descriptors_;
   std::map<std::uint32_t, std::shared_ptr<HostSocket>> host_sockets_;
-  std::map<std::uint32_t, std::uint16_t> pending_wifi_driver_events_;
+  std::map<std::uint32_t, std::deque<std::vector<std::byte>>>
+      pending_wifi_driver_events_;
+  std::multimap<std::uint64_t, std::uint32_t>
+      scheduled_wifi_driver_events_;
   std::map<std::uint32_t, std::shared_ptr<bsd::VirtualUdpSocket>>
       virtual_udp_sockets_;
   std::map<std::uint32_t, std::shared_ptr<bsd::kernel_control::Endpoint>>
