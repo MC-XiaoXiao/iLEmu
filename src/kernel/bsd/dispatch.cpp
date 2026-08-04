@@ -5,6 +5,7 @@
 #include "ilemu/darwin_network_abi.hpp"
 #include "ilemu/darwin_resource_abi.hpp"
 #include "ilemu/darwin_route_socket.hpp"
+#include "ilemu/kernel_bsd_interval_timer.hpp"
 #include "ilemu/kernel_network.hpp"
 
 #include <algorithm>
@@ -107,6 +108,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case 60:
   case 59:
   case darwin::syscall::get_process_group:
+  case kernel_bsd::interval_timer::set_syscall:
+  case kernel_bsd::interval_timer::get_syscall:
   case 244: // posix_spawn (xnu-1228 / iPhone OS user ABI)
   case 96:
   case 116:

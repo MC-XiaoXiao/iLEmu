@@ -1,5 +1,6 @@
 add_library(ilemu_kernel_bsd_process STATIC
     credentials.cpp
+    interval_timer.cpp
     spawn.cpp)
 add_library(iLEmu::kernel_bsd_process ALIAS
     ilemu_kernel_bsd_process)

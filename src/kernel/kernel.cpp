@@ -15,6 +15,7 @@
 #include "ilemu/graphics_services_input.hpp"
 #include "ilemu/graphics_services_profile.hpp"
 #include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel_bsd_interval_timer.hpp"
 #include "ilemu/kernel_clock.hpp"
 #include "ilemu/kernel_iokit.hpp"
 #include "ilemu/kernel_iokit_camera.hpp"
@@ -1326,6 +1327,11 @@ std::optional<std::uint64_t> CompatibilityKernel::next_timer_deadline() const {
       audio && (!deadline || *audio < *deadline)) {
     deadline = audio;
   }
+  if (const auto interval_timer = kernel_bsd::interval_timer::next_deadline(
+          *shared_state_, process_.pid);
+      interval_timer && (!deadline || *interval_timer < *deadline)) {
+    deadline = interval_timer;
+  }
   {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
     for (const auto &[port, timer] : shared_state_->mach_timers) {
@@ -1394,6 +1400,11 @@ void CompatibilityKernel::service_time_dependent_devices(
     std::uint64_t deadline) {
   kernel_iokit::camera::service_due_captures(
       *shared_state_, process_.pid, memory_, *surface_store_, deadline);
+  if (kernel_bsd::interval_timer::service_due(*shared_state_, process_.pid,
+                                               deadline)) {
+    static_cast<void>(
+        deliver_signal(kernel_bsd::interval_timer::expiration_signal));
+  }
   schedule_due_audio_io(deadline);
 }
 

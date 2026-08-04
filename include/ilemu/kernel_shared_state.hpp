@@ -711,6 +711,10 @@ struct KernelSharedState {
     std::uint32_t owner_pid{};
     std::optional<std::uint64_t> deadline;
   };
+  struct ProcessIntervalTimer {
+    std::optional<std::uint64_t> deadline;
+    std::uint64_t interval{};
+  };
   struct MachMemoryObject {
     std::vector<std::shared_ptr<GuestPageBacking>> pages;
   };
@@ -1102,6 +1106,7 @@ struct KernelSharedState {
   std::deque<PendingGraphicsInput> pending_graphics_inputs;
   std::map<std::uint32_t, MachSemaphore> mach_semaphores;
   std::map<std::uint32_t, MachTimer> mach_timers;
+  std::map<std::uint32_t, ProcessIntervalTimer> process_interval_timers;
   // XNU named-memory entries are kernel ipc_port objects. The per-task Mach
   // namespace carries rights; this table carries the referenced VM object.
   std::map<std::uint32_t, MachMemoryEntry> mach_memory_entries;

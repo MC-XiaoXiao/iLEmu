@@ -6,6 +6,7 @@
 #include "ilemu/darwin_resource_abi.hpp"
 #include "ilemu/darwin_route_socket.hpp"
 #include "ilemu/graphics_services_input.hpp"
+#include "ilemu/kernel_bsd_interval_timer.hpp"
 #include "ilemu/kernel_network.hpp"
 #include "ilemu/performance.hpp"
 
@@ -133,6 +134,7 @@ void CompatibilityKernel::exit_process(std::uint32_t status,
     events.wait_status =
         signal != 0U ? signal & 0x7fU : (status & 0xffU) << 8U;
   }
+  kernel_bsd::interval_timer::retire_process(*shared_state_, process_.pid);
   shared_state_->advisory_file_locks->release_process_record_locks(
       process_.pid);
   apple80211_hle_.reset(process_.pid);
@@ -185,6 +187,10 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
     return;
   if (dispatch_bsd_process_spawn(cpu, number))
     return;
+  if (kernel_bsd::interval_timer::dispatch(
+          cpu, memory_, output_, *shared_state_, process_, number)) {
+    return;
+  }
 
   auto &registers = cpu.registers();
   switch (number) {
