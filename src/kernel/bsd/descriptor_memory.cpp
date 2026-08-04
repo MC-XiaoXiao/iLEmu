@@ -1006,6 +1006,25 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
     bsd_success(cpu, 0);
     return;
   }
+  case darwin::syscall::memory_advise: { // madvise
+    const auto address = registers[0];
+    const auto size = registers[1];
+    const auto advice = registers[2];
+    if (advice > darwin::memory_advice::can_reuse) {
+      bsd_error(cpu, darwin::error::invalid_argument);
+      return;
+    }
+    if (size != 0 && !memory_.mapped(address, size)) {
+      bsd_error(cpu, darwin::error::no_memory);
+      return;
+    }
+    // XNU's madvise contract is advisory. Keeping resident data is a valid
+    // conservative implementation for every supported behavior, including
+    // MADV_FREE: its contents may be discarded under pressure, but need not
+    // be discarded immediately and the mapping must remain intact.
+    bsd_success(cpu, 0);
+    return;
+  }
   case 197: { // mmap
     auto address = registers[0];
     const auto size = registers[1];

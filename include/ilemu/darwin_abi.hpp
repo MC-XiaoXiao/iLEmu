@@ -95,6 +95,19 @@ inline constexpr std::uint32_t disabled_control_character = 9;
 inline constexpr std::uint32_t disabled_control_character_value = 0xff;
 } // namespace path_configuration
 
+namespace memory_advice {
+inline constexpr std::uint32_t normal = 0;
+inline constexpr std::uint32_t random = 1;
+inline constexpr std::uint32_t sequential = 2;
+inline constexpr std::uint32_t will_need = 3;
+inline constexpr std::uint32_t do_not_need = 4;
+inline constexpr std::uint32_t free = 5;
+inline constexpr std::uint32_t zero_wired_pages = 6;
+inline constexpr std::uint32_t free_reusable = 7;
+inline constexpr std::uint32_t free_reuse = 8;
+inline constexpr std::uint32_t can_reuse = 9;
+} // namespace memory_advice
+
 namespace fcntl_command {
 inline constexpr std::uint32_t get_descriptor_flags = 1;
 inline constexpr std::uint32_t set_descriptor_flags = 2;
@@ -255,6 +268,7 @@ inline constexpr std::uint32_t get_peer_name = 31;
 inline constexpr std::uint32_t get_socket_name = 32;
 inline constexpr std::uint32_t ioctl = 54;
 inline constexpr std::uint32_t memory_protect = 74;
+inline constexpr std::uint32_t memory_advise = 75;
 inline constexpr std::uint32_t set_groups = 80;
 inline constexpr std::uint32_t get_descriptor_table_size = 89;
 inline constexpr std::uint32_t duplicate_to = 90;
