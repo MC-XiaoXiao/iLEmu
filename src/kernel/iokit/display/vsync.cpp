@@ -174,6 +174,15 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
                         {iokit_abi::apple_h1clcd_default_surface_id}};
   }
 
+  if (selector == static_cast<std::uint32_t>(
+                      iokit_abi::AppleH1ClcdSelector::SetWhiteOnBlackMode)) {
+    if (scalar_input.size() != 1U || !inband_input.empty() ||
+        scalar_output_capacity != 0U) {
+      return MethodResult{iokit_abi::bad_argument, {}};
+    }
+    return MethodResult{iokit_abi::success, {}};
+  }
+
   if (iokit_abi::is_apple_h1clcd_vsync_selector(selector)) {
     if (scalar_input.size() != 2U || !inband_input.empty()) {
       return MethodResult{iokit_abi::bad_argument, {}};
