@@ -250,6 +250,26 @@ std::uint32_t GlesResourceStore::upload_texture_2d(
     return gles_abi::no_error;
 }
 
+std::uint32_t GlesResourceStore::allocate_texture_2d(
+    std::uint32_t name, std::uint32_t level, std::uint32_t internal_format,
+    std::uint32_t width, std::uint32_t height) {
+    if (name == 0U || !textures_.contains(name))
+        return gles_abi::invalid_operation;
+    if (width == 0U || height == 0U ||
+        width > gles_abi::maximum_texture_dimension ||
+        height > gles_abi::maximum_texture_dimension ||
+        static_cast<std::uint64_t>(width) * height * sizeof(std::uint32_t) >
+            gles_abi::maximum_resource_bytes) {
+        return gles_abi::invalid_value;
+    }
+    textures_.at(name).levels.insert_or_assign(
+        level, TextureLevel{width, height, internal_format,
+                            std::vector<std::uint32_t>(
+                                static_cast<std::size_t>(width) * height),
+                            std::nullopt, allocate_texture_revision(), {}, 0});
+    return gles_abi::no_error;
+}
+
 std::uint32_t GlesResourceStore::update_texture_2d(
     AddressSpace& memory, std::uint32_t name, std::uint32_t level,
     std::uint32_t x, std::uint32_t y, std::uint32_t width,
@@ -550,7 +570,12 @@ std::uint32_t GlesResourceStore::update_buffer(
     return gles_abi::no_error;
 }
 
-const GlesResourceStore::Texture* GlesResourceStore::texture(
+GlesResourceStore::Texture *GlesResourceStore::texture(std::uint32_t name) {
+    const auto found = textures_.find(name);
+    return found == textures_.end() ? nullptr : &found->second;
+}
+
+const GlesResourceStore::Texture *GlesResourceStore::texture(
     std::uint32_t name) const {
     const auto found = textures_.find(name);
     return found == textures_.end() ? nullptr : &found->second;

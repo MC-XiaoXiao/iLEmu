@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "ilemu/address_space.hpp"
+#include "ilemu/application_path.hpp"
 #include "ilemu/cpu.hpp"
 #include "ilemu/display.hpp"
 #include "ilemu/kernel_shared_state.hpp"
@@ -128,6 +129,14 @@ constexpr std::uint32_t gl_vendor = 0x1f00;
 constexpr std::uint32_t gl_renderer = 0x1f01;
 constexpr std::uint32_t gl_version = 0x1f02;
 constexpr std::uint32_t gl_extensions = 0x1f03;
+constexpr std::uint32_t gl_renderbuffer_width = 0x8d42;
+constexpr std::uint32_t gl_renderbuffer_height = 0x8d43;
+constexpr std::uint32_t gl_renderbuffer_internal_format = 0x8d44;
+constexpr std::uint32_t gl_renderbuffer_color_format = 0x8e10;
+constexpr std::uint32_t gl_compressed_rgb_pvrtc_2bpp = 0x8c01;
+constexpr std::uint32_t gl_compressed_rgba_pvrtc_2bpp = 0x8c03;
+constexpr std::uint32_t gl_compressed_rgb_pvrtc_4bpp = 0x8c00;
+constexpr std::uint32_t gl_compressed_rgba_pvrtc_4bpp = 0x8c02;
 constexpr std::size_t maximum_unsupported_traces = 64;
 
 bool is_valid_display(std::uint32_t display) {
@@ -163,6 +172,7 @@ void OpenGlesHle::reset() {
     next_context_ = 0x00010001U;
     next_surface_ = 0x00020001U;
     next_framebuffer_ = 1U;
+    next_renderbuffer_ = 1U;
     egl_error_ = egl_success;
     frame_count_ = 0;
     unsupported_trace_count_ = 0;
@@ -179,6 +189,7 @@ void OpenGlesHle::inherit_state(const OpenGlesHle &parent) {
     next_context_ = parent.next_context_;
     next_surface_ = parent.next_surface_;
     next_framebuffer_ = parent.next_framebuffer_;
+    next_renderbuffer_ = parent.next_renderbuffer_;
     egl_error_ = parent.egl_error_;
     frame_count_ = parent.frame_count_;
 }
@@ -208,7 +219,7 @@ bool OpenGlesHle::display_write_allowed(UserlandHleCall &call) const {
     std::lock_guard lock{shared_state_->mach_mutex};
     const auto process = shared_state_->processes.find(call.process_id());
     if (process == shared_state_->processes.end() ||
-        !process->second.executable_path.starts_with("/Applications/")) {
+        !is_application_executable_path(process->second.executable_path)) {
         return true;
     }
     return active_application_owns_display_locked(
@@ -518,6 +529,31 @@ OpenGlesHle::current_framebuffer_level(const ContextState &context) const {
                    level->second.height == 0U
                ? nullptr
                : &level->second;
+}
+
+std::uint32_t OpenGlesHle::ensure_renderbuffer_storage(
+    ContextState &context, std::uint32_t name, std::uint32_t width,
+    std::uint32_t height, std::uint32_t internal_format) {
+    auto renderbuffer = context.renderbuffers.find(name);
+    if (renderbuffer == context.renderbuffers.end())
+        return gles_abi::invalid_operation;
+    if (renderbuffer->second.color_texture == 0U) {
+        renderbuffer->second.color_texture = resources_.generate_texture();
+        resources_.ensure_texture(renderbuffer->second.color_texture);
+    }
+    const auto error = resources_.allocate_texture_2d(
+        renderbuffer->second.color_texture, 0U, internal_format, width, height);
+    if (error != gles_abi::no_error)
+        return error;
+    renderbuffer->second.width = width;
+    renderbuffer->second.height = height;
+    renderbuffer->second.internal_format = internal_format;
+    for (auto &[framebuffer_name, framebuffer] : context.framebuffers) {
+        static_cast<void>(framebuffer_name);
+        if (framebuffer.color_renderbuffer == name)
+            framebuffer.color_texture = renderbuffer->second.color_texture;
+    }
+    return gles_abi::no_error;
 }
 
 std::optional<OpenGlesHle::RenderTargetBinding>
@@ -941,6 +977,73 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry &registry) {
                 }
                 current.context = context->second;
             });
+        });
+    registry.register_objc_instance_method(
+        std::string{opengles_image}, "EAGLContext",
+        "renderbufferStorage:fromDrawable:",
+        "-[EAGLContext renderbufferStorage:fromDrawable:]",
+        [this](UserlandHleCall &call) {
+            auto *context = current_context(call);
+            if (context == nullptr || call.argument(2) != gles_abi::renderbuffer ||
+                context->bound_renderbuffer == 0U) {
+                call.set_return(0U);
+                return;
+            }
+            const auto geometry =
+                display_ ? display_->geometry() : default_display_geometry;
+            const auto error = ensure_renderbuffer_storage(
+                *context, context->bound_renderbuffer, geometry.width,
+                geometry.height, gles_abi::bgra_apple);
+            call.set_return(error == gles_abi::no_error ? 1U : 0U);
+        });
+    registry.register_objc_instance_method(
+        std::string{opengles_image}, "EAGLContext", "presentRenderbuffer:",
+        "-[EAGLContext presentRenderbuffer:]",
+        [this](UserlandHleCall &call) {
+            auto *context = current_context(call);
+            if (context == nullptr || call.argument(2) != gles_abi::renderbuffer ||
+                context->bound_renderbuffer == 0U) {
+                call.set_return(0U);
+                return;
+            }
+            auto framebuffer = context->framebuffers.end();
+            for (auto candidate = context->framebuffers.begin();
+                 candidate != context->framebuffers.end(); ++candidate) {
+                if (candidate->second.color_renderbuffer ==
+                    context->bound_renderbuffer) {
+                    framebuffer = candidate;
+                    break;
+                }
+            }
+            if (framebuffer == context->framebuffers.end() &&
+                context->bound_framebuffer != 0U)
+                framebuffer =
+                    context->framebuffers.find(context->bound_framebuffer);
+            if (framebuffer == context->framebuffers.end()) {
+                call.set_return(0U);
+                return;
+            }
+            const auto saved_framebuffer = context->bound_framebuffer;
+            context->bound_framebuffer = framebuffer->first;
+            const auto binding = resolve_render_target(call, *context);
+            const auto synchronized =
+                binding && binding->host_surface
+                    ? renderer_->map_cpu(*binding->host_surface, true,
+                                         PerfCpuMapReason::NativePresent)
+                    : true;
+            const auto frame = binding ? render_target(call, *binding)
+                                       : std::optional<DisplayFrame>{};
+            context->bound_framebuffer = saved_framebuffer;
+            const auto allowed = display_write_allowed(call);
+            if (!synchronized || !frame || !display_ ||
+                frame->width != display_->width() ||
+                frame->height != display_->height() || !allowed) {
+                call.set_return(0U);
+                return;
+            }
+            display_->replace_pixels(frame->pixels, call.process_id());
+            display_->present(call.process_id());
+            call.set_return(1U);
         });
     registry.register_objc_instance_method(
         std::string{opengles_image}, "EAGLContext",
@@ -2132,7 +2235,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
     add("_glIsBuffer", [this](UserlandHleCall &call) {
         call.set_return(resources_.has_buffer(call.argument(0)) ? 1U : 0U);
     });
-    add("_glGenFramebuffers", [this](UserlandHleCall &call) {
+    const auto generate_framebuffers = [this](UserlandHleCall &call) {
         auto *context = current_context(call);
         const auto count = static_cast<std::int32_t>(call.argument(0));
         const auto output = call.argument(1);
@@ -2154,15 +2257,19 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
                 return;
             }
         }
-    });
-    add("_glIsFramebuffer", [this](UserlandHleCall &call) {
+    };
+    add("_glGenFramebuffers", generate_framebuffers);
+    add("_glGenFramebuffersOES", generate_framebuffers);
+    const auto is_framebuffer = [this](UserlandHleCall &call) {
         const auto *context = current_context(call);
         call.set_return(context != nullptr &&
                                 context->framebuffers.contains(call.argument(0))
                             ? 1U
                             : 0U);
-    });
-    add("_glBindFramebuffer", [this](UserlandHleCall &call) {
+    };
+    add("_glIsFramebuffer", is_framebuffer);
+    add("_glIsFramebufferOES", is_framebuffer);
+    const auto bind_framebuffer = [this](UserlandHleCall &call) {
         auto *context = current_context(call);
         if (context == nullptr) {
             set_gl_error(call, gles_abi::invalid_operation);
@@ -2176,8 +2283,10 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
         if (name != 0U)
             context->framebuffers.try_emplace(name);
         context->bound_framebuffer = name;
-    });
-    add("_glFramebufferTexture2D", [this](UserlandHleCall &call) {
+    };
+    add("_glBindFramebuffer", bind_framebuffer);
+    add("_glBindFramebufferOES", bind_framebuffer);
+    const auto framebuffer_texture_2d = [this](UserlandHleCall &call) {
         auto *context = current_context(call);
         if (context == nullptr) {
             set_gl_error(call, gles_abi::invalid_operation);
@@ -2204,8 +2313,11 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
         auto &framebuffer = context->framebuffers[context->bound_framebuffer];
         framebuffer.color_texture_target = texture_target;
         framebuffer.color_texture = texture;
-    });
-    add("_glCheckFramebufferStatus", [this](UserlandHleCall &call) {
+        framebuffer.color_renderbuffer = 0U;
+    };
+    add("_glFramebufferTexture2D", framebuffer_texture_2d);
+    add("_glFramebufferTexture2DOES", framebuffer_texture_2d);
+    const auto check_framebuffer_status = [this](UserlandHleCall &call) {
         const auto *context = current_context(call);
         if (context == nullptr) {
             set_gl_error(call, gles_abi::invalid_operation);
@@ -2224,8 +2336,10 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
         const auto complete = current_framebuffer_level(*context) != nullptr;
         call.set_return(complete ? gles_abi::framebuffer_complete
                                  : gles_abi::framebuffer_incomplete_attachment);
-    });
-    add("_glDeleteFramebuffers", [this](UserlandHleCall &call) {
+    };
+    add("_glCheckFramebufferStatus", check_framebuffer_status);
+    add("_glCheckFramebufferStatusOES", check_framebuffer_status);
+    const auto delete_framebuffers = [this](UserlandHleCall &call) {
         auto *context = current_context(call);
         const auto count = static_cast<std::int32_t>(call.argument(0));
         const auto input = call.argument(1);
@@ -2248,7 +2362,222 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
             if (context->bound_framebuffer == *name)
                 context->bound_framebuffer = 0U;
         }
-    });
+    };
+    add("_glDeleteFramebuffers", delete_framebuffers);
+    add("_glDeleteFramebuffersOES", delete_framebuffers);
+    const auto generate_renderbuffers = [this](UserlandHleCall &call) {
+        auto *context = current_context(call);
+        const auto count = static_cast<std::int32_t>(call.argument(0));
+        const auto output = call.argument(1);
+        if (context == nullptr) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        if (count < 0 || (count != 0 && output == 0U)) {
+            set_gl_error(call, gles_abi::invalid_value);
+            return;
+        }
+        for (std::int32_t index = 0; index < count; ++index) {
+            const auto name = next_renderbuffer_++;
+            context->renderbuffers.try_emplace(name);
+            if (!call.memory().write32(
+                    output + static_cast<std::uint32_t>(index) * 4U, name)) {
+                context->renderbuffers.erase(name);
+                set_gl_error(call, gles_abi::invalid_value);
+                return;
+            }
+        }
+    };
+    add("_glGenRenderbuffers", generate_renderbuffers);
+    add("_glGenRenderbuffersOES", generate_renderbuffers);
+    const auto is_renderbuffer = [this](UserlandHleCall &call) {
+        const auto *context = current_context(call);
+        call.set_return(context != nullptr &&
+                                context->renderbuffers.contains(call.argument(0))
+                            ? 1U
+                            : 0U);
+    };
+    add("_glIsRenderbuffer", is_renderbuffer);
+    add("_glIsRenderbufferOES", is_renderbuffer);
+    const auto bind_renderbuffer = [this](UserlandHleCall &call) {
+        auto *context = current_context(call);
+        if (context == nullptr) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        if (call.argument(0) != gles_abi::renderbuffer) {
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        const auto name = call.argument(1);
+        if (name != 0U && !context->renderbuffers.contains(name)) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        context->bound_renderbuffer = name;
+    };
+    add("_glBindRenderbuffer", bind_renderbuffer);
+    add("_glBindRenderbufferOES", bind_renderbuffer);
+    const auto renderbuffer_storage = [this](UserlandHleCall &call) {
+        auto *context = current_context(call);
+        const auto width = call.argument(2);
+        const auto height = call.argument(3);
+        if (context == nullptr) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        if (call.argument(0) != gles_abi::renderbuffer ||
+            context->bound_renderbuffer == 0U) {
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        const auto error = ensure_renderbuffer_storage(
+            *context, context->bound_renderbuffer, width, height,
+            call.argument(1));
+        if (error != gles_abi::no_error)
+            set_gl_error(call, error);
+    };
+    add("_glRenderbufferStorage", renderbuffer_storage);
+    add("_glRenderbufferStorageOES", renderbuffer_storage);
+    const auto framebuffer_renderbuffer = [this](UserlandHleCall &call) {
+            auto *context = current_context(call);
+            if (context == nullptr) {
+                set_gl_error(call, gles_abi::invalid_operation);
+                return;
+            }
+            const auto target = call.argument(0);
+            const auto attachment = call.argument(1);
+            const auto renderbuffer_target = call.argument(2);
+            const auto name = call.argument(3);
+            if (target != gles_abi::framebuffer ||
+                attachment != gles_abi::color_attachment0 ||
+                renderbuffer_target != gles_abi::renderbuffer) {
+                set_gl_error(call, gles_abi::invalid_enum);
+                return;
+            }
+            if (context->bound_framebuffer == 0U) {
+                set_gl_error(call, gles_abi::invalid_operation);
+                return;
+            }
+            auto framebuffer =
+                context->framebuffers.find(context->bound_framebuffer);
+            if (framebuffer == context->framebuffers.end()) {
+                set_gl_error(call, gles_abi::invalid_operation);
+                return;
+            }
+            if (name == 0U) {
+                framebuffer->second.color_renderbuffer = 0U;
+                framebuffer->second.color_texture = 0U;
+                framebuffer->second.color_texture_target = 0U;
+                return;
+            }
+            const auto renderbuffer = context->renderbuffers.find(name);
+            if (renderbuffer == context->renderbuffers.end()) {
+                set_gl_error(call, gles_abi::invalid_operation);
+                return;
+            }
+            auto width = renderbuffer->second.width;
+            auto height = renderbuffer->second.height;
+            if (width == 0U || height == 0U) {
+                const auto geometry =
+                    display_ ? display_->geometry() : default_display_geometry;
+                width = geometry.width;
+                height = geometry.height;
+            }
+            const auto format = renderbuffer->second.internal_format != 0U
+                                    ? renderbuffer->second.internal_format
+                                    : gles_abi::bgra_apple;
+            const auto error =
+                ensure_renderbuffer_storage(*context, name, width, height, format);
+            if (error != gles_abi::no_error) {
+                set_gl_error(call, error);
+                return;
+            }
+            framebuffer->second.color_renderbuffer = name;
+            framebuffer->second.color_texture =
+                context->renderbuffers.at(name).color_texture;
+            framebuffer->second.color_texture_target = gles_abi::renderbuffer;
+        };
+    add("_glFramebufferRenderbuffer", framebuffer_renderbuffer);
+    add("_glFramebufferRenderbufferOES", framebuffer_renderbuffer);
+    const auto get_renderbuffer_parameter = [this](UserlandHleCall &call) {
+        auto *context = current_context(call);
+        if (context == nullptr) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        const auto target = call.argument(0);
+        const auto parameter = call.argument(1);
+        const auto output = call.argument(2);
+        const auto renderbuffer =
+            context->renderbuffers.find(context->bound_renderbuffer);
+        if (target != gles_abi::renderbuffer ||
+            renderbuffer == context->renderbuffers.end() || output == 0U) {
+            set_gl_error(call, target != gles_abi::renderbuffer
+                               ? gles_abi::invalid_enum
+                               : gles_abi::invalid_operation);
+            return;
+        }
+        std::uint32_t value{};
+        switch (parameter) {
+        case gl_renderbuffer_width:
+            value = renderbuffer->second.width;
+            break;
+        case gl_renderbuffer_height:
+            value = renderbuffer->second.height;
+            break;
+        case gl_renderbuffer_internal_format:
+        case gl_renderbuffer_color_format:
+            value = renderbuffer->second.internal_format;
+            break;
+        default:
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        if (!call.memory().write32(output, value))
+            set_gl_error(call, gles_abi::invalid_value);
+    };
+    add("_glGetRenderbufferParameteriv", get_renderbuffer_parameter);
+    add("_glGetRenderbufferParameterivOES", get_renderbuffer_parameter);
+    const auto delete_renderbuffers = [this](UserlandHleCall &call) {
+        auto *context = current_context(call);
+        const auto count = static_cast<std::int32_t>(call.argument(0));
+        const auto input = call.argument(1);
+        if (context == nullptr) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        if (count < 0 || (count != 0 && input == 0U)) {
+            set_gl_error(call, gles_abi::invalid_value);
+            return;
+        }
+        for (std::int32_t index = 0; index < count; ++index) {
+            const auto name = call.memory().read32(
+                input + static_cast<std::uint32_t>(index) * 4U);
+            if (!name) {
+                set_gl_error(call, gles_abi::invalid_value);
+                return;
+            }
+            const auto renderbuffer = context->renderbuffers.find(*name);
+            if (renderbuffer == context->renderbuffers.end())
+                continue;
+            for (auto &[framebuffer_name, framebuffer] : context->framebuffers) {
+                static_cast<void>(framebuffer_name);
+                if (framebuffer.color_renderbuffer == *name) {
+                    framebuffer.color_renderbuffer = 0U;
+                    framebuffer.color_texture = 0U;
+                    framebuffer.color_texture_target = 0U;
+                }
+            }
+            if (context->bound_renderbuffer == *name)
+                context->bound_renderbuffer = 0U;
+            if (renderbuffer->second.color_texture != 0U)
+                resources_.erase_texture(renderbuffer->second.color_texture);
+            context->renderbuffers.erase(renderbuffer);
+        }
+    };
+    add("_glDeleteRenderbuffers", delete_renderbuffers);
+    add("_glDeleteRenderbuffersOES", delete_renderbuffers);
     add("_glBindTexture", [this](UserlandHleCall &call) {
         auto *context = current_context(call);
         if (context == nullptr) {
@@ -2422,6 +2751,68 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
             renderer_->release(
                 std::span{&*previous_render_target, std::size_t{1}});
         }
+    });
+    add("_glCompressedTexImage2D", [this](UserlandHleCall &call) {
+        auto *context = current_context(call);
+        const auto level = static_cast<std::int32_t>(call.argument(1));
+        const auto width = static_cast<std::int32_t>(call.argument(3));
+        const auto height = static_cast<std::int32_t>(call.argument(4));
+        const auto border = static_cast<std::int32_t>(call.argument(5));
+        if (context == nullptr) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        const auto target = call.argument(0);
+        const auto format = call.argument(2);
+        if (target != gles_abi::texture_2d &&
+            target != gles_abi::texture_rectangle_apple) {
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        if (format != gl_compressed_rgb_pvrtc_2bpp &&
+            format != gl_compressed_rgba_pvrtc_2bpp &&
+            format != gl_compressed_rgb_pvrtc_4bpp &&
+            format != gl_compressed_rgba_pvrtc_4bpp) {
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        if (level < 0 || width <= 0 || height <= 0 || border != 0) {
+            set_gl_error(call, gles_abi::invalid_value);
+            return;
+        }
+        const auto &unit = context->texture_units[context->active_texture_unit];
+        const auto binding = target == gles_abi::texture_rectangle_apple
+                                 ? unit.bound_texture_rectangle
+                                 : unit.bound_texture_2d;
+        std::optional<GlesRenderTargetKey> previous_render_target;
+        if (const auto *texture = resources_.texture(binding)) {
+            const auto previous =
+                texture->levels.find(static_cast<std::uint32_t>(level));
+            if (previous != texture->levels.end() &&
+                !previous->second.surface_id && previous->second.host_surface &&
+                previous->second.host_surface->key().owner == renderer_owner_) {
+                previous_render_target = previous->second.host_surface->key();
+            }
+        }
+        const auto error = resources_.allocate_texture_2d(
+            binding, static_cast<std::uint32_t>(level), format,
+            static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+        if (error != gles_abi::no_error) {
+            set_gl_error(call, error);
+            return;
+        }
+        // PVRTC decoding remains a renderer concern. Keep a valid opaque
+        // level until the host decoder consumes the compressed payload; this
+        // preserves texture completeness and the guest's normal render loop.
+        if (auto *texture = resources_.texture(binding)) {
+            auto level_state =
+                texture->levels.find(static_cast<std::uint32_t>(level));
+            if (level_state != texture->levels.end())
+                std::fill(level_state->second.argb.begin(),
+                          level_state->second.argb.end(), 0xff000000U);
+        }
+        if (previous_render_target)
+            renderer_->release(std::span{&*previous_render_target, std::size_t{1}});
     });
     add("_glTexSubImage2D", [this](UserlandHleCall &call) {
         auto *context = current_context(call);

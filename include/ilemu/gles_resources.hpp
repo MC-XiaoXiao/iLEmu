@@ -57,6 +57,10 @@ public:
         std::uint32_t internal_format, std::uint32_t width,
         std::uint32_t height, std::uint32_t format, std::uint32_t type,
         std::uint32_t pixels, std::uint32_t alignment);
+    [[nodiscard]] std::uint32_t allocate_texture_2d(
+        std::uint32_t name, std::uint32_t level,
+        std::uint32_t internal_format, std::uint32_t width,
+        std::uint32_t height);
     [[nodiscard]] std::uint32_t update_texture_2d(
         AddressSpace& memory, std::uint32_t name, std::uint32_t level,
         std::uint32_t x, std::uint32_t y, std::uint32_t width,
@@ -94,6 +98,7 @@ public:
         AddressSpace& memory, std::uint32_t name, std::uint32_t offset,
         std::uint32_t size, std::uint32_t data);
 
+    [[nodiscard]] Texture* texture(std::uint32_t name);
     [[nodiscard]] const Texture* texture(std::uint32_t name) const;
     [[nodiscard]] const Buffer* buffer(std::uint32_t name) const;
 

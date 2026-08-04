@@ -65,6 +65,13 @@ class OpenGlesHle {
         struct FramebufferState {
             std::uint32_t color_texture_target{};
             std::uint32_t color_texture{};
+            std::uint32_t color_renderbuffer{};
+        };
+        struct RenderbufferState {
+            std::uint32_t width{};
+            std::uint32_t height{};
+            std::uint32_t internal_format{};
+            std::uint32_t color_texture{};
         };
         struct ArrayPointer {
             std::uint32_t size{};
@@ -91,7 +98,9 @@ class OpenGlesHle {
         std::uint32_t bound_array_buffer{};
         std::uint32_t bound_element_array_buffer{};
         std::uint32_t bound_framebuffer{};
+        std::uint32_t bound_renderbuffer{};
         std::map<std::uint32_t, FramebufferState> framebuffers;
+        std::map<std::uint32_t, RenderbufferState> renderbuffers;
         std::uint32_t unpack_alignment{gles_abi::default_pixel_alignment};
         std::uint32_t pack_alignment{gles_abi::default_pixel_alignment};
         std::array<std::int32_t, 4> viewport{};
@@ -154,6 +163,9 @@ class OpenGlesHle {
     [[nodiscard]] SurfaceState *current_pixmap_surface(UserlandHleCall &call);
     [[nodiscard]] const GlesResourceStore::TextureLevel *
     current_framebuffer_level(const ContextState &context) const;
+    [[nodiscard]] std::uint32_t ensure_renderbuffer_storage(
+        ContextState &context, std::uint32_t name, std::uint32_t width,
+        std::uint32_t height, std::uint32_t internal_format);
     [[nodiscard]] std::optional<RenderTargetBinding>
     resolve_render_target(UserlandHleCall &call, ContextState &context);
     [[nodiscard]] GlesRenderTargetKey
@@ -185,6 +197,7 @@ class OpenGlesHle {
     std::uint32_t next_context_{0x00010001U};
     std::uint32_t next_surface_{0x00020001U};
     std::uint32_t next_framebuffer_{1U};
+    std::uint32_t next_renderbuffer_{1U};
     std::uint32_t egl_error_{0x3000U};
     std::uint64_t frame_count_{};
     std::size_t unsupported_trace_count_{};
