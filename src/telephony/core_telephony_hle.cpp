@@ -1,5 +1,6 @@
 #include "ilemu/core_telephony_hle.hpp"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -12,6 +13,7 @@
 #include <utility>
 
 #include "ilemu/address_space.hpp"
+#include "ilemu/application_path.hpp"
 #include "ilemu/cpu.hpp"
 #include "ilemu/userland_hle.hpp"
 #include "ilemu/wifi_state.hpp"
@@ -25,7 +27,9 @@ constexpr std::string_view core_foundation_image{
     "/CoreFoundation.framework/CoreFoundation"};
 constexpr std::string_view springboard_image{
     "/System/Library/CoreServices/SpringBoard.app/SpringBoard"};
-constexpr std::string_view application_directory{"Applications/"};
+constexpr std::array<std::string_view, 3> application_image_directories{
+    "Applications/", "var/mobile/Applications/",
+    "private/var/mobile/Applications/"};
 constexpr std::string_view offline_sim_status_export{
     "_kCTSIMSupportSIMStatusNotInserted"};
 constexpr std::string_view create_call_from_info{
@@ -86,8 +90,13 @@ constexpr std::array<std::string_view, 6> offline_server_string_queries{
 };
 
 bool is_offline_ui_client(const UserlandHleCall& call) {
-    return call.image_loaded(springboard_image) ||
-           call.image_loaded_beneath(application_directory);
+    if (call.image_loaded(springboard_image))
+        return true;
+    return std::any_of(
+        application_image_directories.begin(), application_image_directories.end(),
+        [&call](const auto directory) {
+            return call.image_loaded_beneath(directory);
+        });
 }
 
 std::uint32_t exported_object(UserlandHleCall& call,

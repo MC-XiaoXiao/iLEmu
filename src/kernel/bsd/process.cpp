@@ -1,5 +1,6 @@
 #include "ilemu/kernel.hpp"
 
+#include "ilemu/application_path.hpp"
 #include "ilemu/darwin_abi.hpp"
 #include "ilemu/darwin_kqueue_abi.hpp"
 #include "ilemu/darwin_network_abi.hpp"
@@ -260,7 +261,7 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
             shared_state_->processes.find(static_cast<std::uint32_t>(target_pid));
         application_child =
             child != shared_state_->processes.end() && !child->second.exited &&
-            child->second.executable_path.starts_with("/Applications/");
+            is_application_executable_path(child->second.executable_path);
       }
       if (application_child) {
         bsd_error(cpu, darwin::error::interrupted);

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ilemu/address_space.hpp"
+#include "ilemu/application_path.hpp"
 #include "ilemu/core_surface_abi.hpp"
 #include "ilemu/cpu.hpp"
 #include "ilemu/display.hpp"
@@ -510,8 +511,8 @@ CoreSurfaceHle::create_buffer(UserlandHleCall& call, std::uint32_t base,
             const auto process = shared_state_->processes.find(
                 call.process_id());
             if (process != shared_state_->processes.end() &&
-                process->second.executable_path.starts_with(
-                    "/Applications/")) {
+                is_application_executable_path(
+                    process->second.executable_path)) {
                 const auto publication_sequence =
                     published->provenance.publication_sequence;
                 shared_state_
@@ -695,7 +696,7 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call) {
         std::lock_guard lock{shared_state_->mach_mutex};
         const auto process = shared_state_->processes.find(call.process_id());
         if (process != shared_state_->processes.end() &&
-            process->second.executable_path.starts_with("/Applications/") &&
+            is_application_executable_path(process->second.executable_path) &&
             !active_application_owns_display_locked(
                 *shared_state_, call.process_id(),
                 scene_coordinator_

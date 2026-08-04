@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ilemu/address_space.hpp"
+#include "ilemu/application_path.hpp"
 #include "ilemu/core_surface_abi.hpp"
 #include "ilemu/display.hpp"
 #include "ilemu/gles_renderer.hpp"
@@ -197,7 +198,7 @@ bool MobileFramebufferHle::display_write_allowed(
   std::lock_guard lock{shared_state_->mach_mutex};
   const auto process = shared_state_->processes.find(call.process_id());
   if (process == shared_state_->processes.end() ||
-      !process->second.executable_path.starts_with("/Applications/")) {
+      !is_application_executable_path(process->second.executable_path)) {
     return true;
   }
   return active_application_owns_display_locked(

@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "ilemu/application_path.hpp"
 #include "ilemu/cpu.hpp"
 #include "ilemu/graphics_services_profile.hpp"
 #include "ilemu/mig_wire_abi.hpp"
@@ -307,7 +308,7 @@ bool has_active_application_route_locked(const KernelSharedState &state) {
     return false;
   const auto process = state.processes.find(scene.process_id);
   return process != state.processes.end() && !process->second.exited &&
-         process->second.executable_path.starts_with("/Applications/");
+         is_application_executable_path(process->second.executable_path);
 }
 
 std::uint64_t allocate_foreground_layer_sequence_locked(
@@ -342,7 +343,7 @@ application_event_object_for_process_locked(KernelSharedState &state,
                                             std::uint32_t process_id) {
   const auto process = state.processes.find(process_id);
   if (process == state.processes.end() || process->second.exited ||
-      !process->second.executable_path.starts_with("/Applications/")) {
+      !is_application_executable_path(process->second.executable_path)) {
     return std::nullopt;
   }
 
@@ -461,7 +462,7 @@ presentation_touch_route_locked(
     const auto process = state.processes.find(process_id);
     if (process == state.processes.end() || process->second.exited)
       continue;
-    if (!process->second.executable_path.starts_with("/Applications/"))
+    if (!is_application_executable_path(process->second.executable_path))
       return springboard_touch_route();
 
     // SpringBoard's desktop can retain App-produced icon/snapshot assets.
@@ -504,7 +505,7 @@ semantic_touch_route_locked(KernelSharedState &state,
     return std::nullopt;
   const auto process = state.processes.find(port->receive_owner);
   if (process == state.processes.end() || process->second.exited ||
-      !process->second.executable_path.starts_with("/Applications/")) {
+      !is_application_executable_path(process->second.executable_path)) {
     state.active_application_event_object = 0U;
     state.application_touch_suspended = false;
     return std::nullopt;
@@ -964,7 +965,7 @@ KernelSharedState::ApplicationLaunchAttempt &begin_launch_attempt_locked(
         const auto process = state.processes.find(
             *state.pending_application_handoff_process_id);
         return process != state.processes.end() && !process->second.exited &&
-               process->second.executable_path.starts_with("/Applications/");
+               is_application_executable_path(process->second.executable_path);
       }();
   const auto programmatic_foreground_spawn =
       origin == KernelSharedState::ApplicationLaunchOrigin::Spawn &&
@@ -1678,7 +1679,7 @@ ServiceResolution record_bootstrap_reply_locked(
             lookup.origin_touch_sequence;
     const auto process = state.processes.find(port->receive_owner);
     if (process != state.processes.end() && !process->second.exited &&
-        process->second.executable_path.starts_with("/Applications/")) {
+        is_application_executable_path(process->second.executable_path)) {
       if (exact_springboard_request) {
         const auto *existing =
             launch_attempt_locked(state, port->receive_owner);
@@ -2123,7 +2124,7 @@ void record_application_spawn(
   std::lock_guard lock{state.mach_mutex};
   if (!process_is_springboard_locked(state, sender_process_id) ||
       process_id == 0U ||
-      !executable_path.starts_with("/Applications/") ||
+      !is_application_executable_path(executable_path) ||
       std::find(arguments.begin(), arguments.end(), "--suspended") !=
           arguments.end()) {
     return;
@@ -2199,7 +2200,7 @@ void activate_resolved_application_locked(KernelSharedState &state,
   const auto process = state.processes.find(process_id);
   const auto valid_application =
       process != state.processes.end() && !process->second.exited &&
-      process->second.executable_path.starts_with("/Applications/");
+      is_application_executable_path(process->second.executable_path);
   if (!valid_application)
     return;
   const auto requests_userspace_prewarm =
@@ -2391,7 +2392,7 @@ std::optional<std::uint32_t> record_application_scene_transform(
   }
   const auto process = state.processes.find(process_id);
   if (process == state.processes.end() || process->second.exited ||
-      !process->second.executable_path.starts_with("/Applications/")) {
+      !is_application_executable_path(process->second.executable_path)) {
     return std::nullopt;
   }
   if (!attempt ||
@@ -2501,7 +2502,7 @@ void record_application_event_delivery_locked(
         state.mach_port_objects.lookup(destination);
     const auto valid_background_completion =
         sender != state.processes.end() && !sender->second.exited &&
-        sender->second.executable_path.starts_with("/Applications/") &&
+        is_application_executable_path(sender->second.executable_path) &&
         destination_port &&
         process_is_springboard_locked(
             state, destination_port->receive_owner);
@@ -2528,7 +2529,7 @@ void record_application_event_delivery_locked(
                        : state.processes.end();
   if (!destination_port || application == state.processes.end() ||
       application->second.exited ||
-      !application->second.executable_path.starts_with("/Applications/")) {
+      !is_application_executable_path(application->second.executable_path)) {
     return;
   }
   const auto process_id = destination_port->receive_owner;
@@ -2566,7 +2567,7 @@ void record_application_remote_scene_commit_locked(
   const auto application = state.processes.find(sender_pid);
   const auto destination_port = state.mach_port_objects.lookup(destination);
   if (application == state.processes.end() || application->second.exited ||
-      !application->second.executable_path.starts_with("/Applications/") ||
+      !is_application_executable_path(application->second.executable_path) ||
       !destination_port ||
       !process_is_springboard_locked(state,
                                      destination_port->receive_owner) ||
@@ -2591,7 +2592,7 @@ void record_application_suspension_state(
           : event_object->second;
   const auto destination_port = state.mach_port_objects.lookup(destination);
   if (application == state.processes.end() || application->second.exited ||
-      !application->second.executable_path.starts_with("/Applications/") ||
+      !is_application_executable_path(application->second.executable_path) ||
       !destination_port || destination_port->receive_owner != process_id) {
     return;
   }
