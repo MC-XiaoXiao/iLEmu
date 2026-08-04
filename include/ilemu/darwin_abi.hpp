@@ -35,6 +35,7 @@ inline constexpr std::uint32_t not_directory = 20;
 inline constexpr std::uint32_t is_directory = 21;
 inline constexpr std::uint32_t invalid_argument = 22;
 inline constexpr std::uint32_t result_too_large = 34;
+inline constexpr std::uint32_t value_too_large = 84;
 inline constexpr std::uint32_t protocol_not_supported = 43;
 inline constexpr std::uint32_t timed_out = 60;
 inline constexpr std::uint32_t operation_not_supported = 102;

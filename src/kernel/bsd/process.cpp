@@ -185,6 +185,8 @@ CompatibilityKernel::wait_child(std::int32_t target_pid, bool reap) {
 void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
   if (dispatch_bsd_process_credentials(cpu, number))
     return;
+  if (dispatch_bsd_process_information(cpu, number))
+    return;
   if (dispatch_bsd_process_spawn(cpu, number))
     return;
   if (kernel_bsd::interval_timer::dispatch(

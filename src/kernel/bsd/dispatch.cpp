@@ -3,6 +3,7 @@
 #include "ilemu/darwin_abi.hpp"
 #include "ilemu/darwin_kqueue_abi.hpp"
 #include "ilemu/darwin_network_abi.hpp"
+#include "ilemu/darwin_proc_info_abi.hpp"
 #include "ilemu/darwin_resource_abi.hpp"
 #include "ilemu/darwin_route_socket.hpp"
 #include "ilemu/kernel_bsd_interval_timer.hpp"
@@ -126,6 +127,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case 333:
   case darwin::syscall::semaphore_wait_signal:
   case darwin::syscall::semaphore_wait_signal_timespec:
+  case darwin::proc_info::syscall_number:
   case 327:
   case 355:
     dispatch_bsd_process(cpu, number);
