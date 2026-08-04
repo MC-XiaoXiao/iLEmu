@@ -66,14 +66,13 @@ darwin::network::InterfaceSnapshot make_interface_snapshot(
 
 void CompatibilityKernel::set_host_network_policy(HostNetworkPolicy policy) {
     host_network_policy_ = policy;
-    const auto service_available =
-        policy != HostNetworkPolicy::Isolated;
+    constexpr bool service_available = true;
     bool availability_changed = false;
     {
         std::lock_guard mach_lock{shared_state_->mach_mutex};
-        // The isolated policy intentionally exposes no external connectivity
-        // device. Loopback and host policies both have a usable upstream and
-        // therefore publish the guest's virtual 802.11 controller.
+        // The policy gates host socket reachability, not guest hardware.
+        // Isolated devices retain their virtual 802.11 controller and local
+        // network state while BSD internet sockets remain host-inaccessible.
         availability_changed =
             shared_state_->wifi_service_available != service_available;
         shared_state_->wifi_service_available = service_available;

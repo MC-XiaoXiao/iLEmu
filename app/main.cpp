@@ -1038,20 +1038,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
   if (!network_policy) {
     throw std::runtime_error{"--network must be isolated, loopback, or host"};
   }
-  const auto airport_configuration =
-      *network_policy == HostNetworkPolicy::Isolated
-          ? std::optional<NetworkPreferencesAirport>{}
-          : std::optional<NetworkPreferencesAirport>{
-                NetworkPreferencesAirport{
-                    .interface_name = "en0",
-                    .mac_address = wifi_interface_mac_address,
-                    .ipv4 = NetworkPreferencesIpv4{
-                        .address = virtual_network::client_address,
-                        .netmask = virtual_network::netmask,
-                        .gateway = virtual_network::gateway_address,
-                        .dns_servers = {virtual_network::dns_proxy_address},
-                    },
-                }};
+  const auto airport_configuration = NetworkPreferencesAirport{
+      .interface_name = "en0",
+      .mac_address = wifi_interface_mac_address,
+      .ipv4 = NetworkPreferencesIpv4{
+          .address = virtual_network::client_address,
+          .netmask = virtual_network::netmask,
+          .gateway = virtual_network::gateway_address,
+          .dns_servers = {virtual_network::dns_proxy_address},
+      },
+  };
   const auto network_preferences =
       ensure_network_preferences(*rootfs, airport_configuration);
   auto preferred_wifi_networks =
