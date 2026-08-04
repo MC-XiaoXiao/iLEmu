@@ -357,12 +357,24 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
       if ((descriptor_word >> darwin::mig_wire::descriptor_type_shift) != 0) {
         continue;
       }
-      const auto sender_name = read_little_word(pending_message.bytes, offset);
-      if (sender_name == xnu792::ipc::null_name)
-        continue;
       const auto disposition =
-          (descriptor_word >> darwin::mig_wire::descriptor_disposition_shift) &
+          (descriptor_word >>
+           darwin::mig_wire::descriptor_disposition_shift) &
           0xffU;
+      const auto sender_name = read_little_word(pending_message.bytes, offset);
+      if (sender_name == xnu792::ipc::null_name) {
+        // ipc_kmsg_copyout always exposes a port descriptor using its
+        // receive-side type, including descriptors that carry MACH_PORT_NULL.
+        // MIG validates the descriptor type before looking at the name, so
+        // retaining COPY_SEND/MAKE_SEND here incorrectly rejects a valid null
+        // result.
+        write_little_word(
+            received->bytes, offset + 8U,
+            darwin::mig_wire::replace_descriptor_disposition(
+                descriptor_word,
+                darwin::mig_wire::received_port_disposition(disposition)));
+        continue;
+      }
       const auto captured = std::find_if(
           pending_message.port_transfers.begin(),
           pending_message.port_transfers.end(), [&](const auto &transfer) {

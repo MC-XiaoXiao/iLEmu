@@ -558,7 +558,13 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
             reply_object = transfer->object;
             reply_right = transfer->right;
           } else {
-            routable = false;
+            // The destination is valid, but the reply right is not present
+            // in the sender's IPC namespace (or its disposition is invalid).
+            // ipc_kmsg_copyin reports this as a send-right error; treating it
+            // as an unknown trap incorrectly terminates otherwise healthy
+            // servers which intentionally probe optional rights.
+            registers[0] = darwin::mach_message::send_invalid_right;
+            return;
           }
         }
 
@@ -572,8 +578,8 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
                                                 descriptor.offset)) {
                 port_transfers.push_back(*transfer);
               } else {
-                routable = false;
-                break;
+                registers[0] = darwin::mach_message::send_invalid_right;
+                return;
               }
               continue;
             }
@@ -594,8 +600,8 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
                                                 descriptor.offset, element)) {
                 port_transfers.push_back(*transfer);
               } else {
-                routable = false;
-                break;
+                registers[0] = darwin::mach_message::send_invalid_right;
+                return;
               }
             }
             if (!routable)
