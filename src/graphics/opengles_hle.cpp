@@ -166,7 +166,6 @@ void OpenGlesHle::reset() {
     egl_error_ = egl_success;
     frame_count_ = 0;
     unsupported_trace_count_ = 0;
-    guest_profile_kind_ = OpenGlesGuestProfileKind::MbxLiteLegacy;
 }
 
 void OpenGlesHle::inherit_state(const OpenGlesHle &parent) {
@@ -182,7 +181,6 @@ void OpenGlesHle::inherit_state(const OpenGlesHle &parent) {
     next_framebuffer_ = parent.next_framebuffer_;
     egl_error_ = parent.egl_error_;
     frame_count_ = parent.frame_count_;
-    guest_profile_kind_ = parent.guest_profile_kind_;
 }
 
 void OpenGlesHle::release_renderer_resources() {
@@ -949,8 +947,6 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry &registry) {
         "attachImage:toCoreSurface:invertedRender:",
         "-[EAGLContext attachImage:toCoreSurface:invertedRender:]",
         [this](UserlandHleCall &call) {
-            guest_profile_kind_ =
-                OpenGlesGuestProfileKind::MbxLiteFramebufferObjects;
             auto *context = current_context(call);
             const auto target = call.argument(2);
             const auto inverted_render =
@@ -984,6 +980,10 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry &registry) {
             const auto error = resources_.import_surface_texture(
                 call.memory(), texture, *surface_store_, *identifier,
                 requires_vertical_flip);
+            if (error == gles_abi::no_error) {
+                context->guest_profile_kind =
+                    OpenGlesGuestProfileKind::MbxLiteFramebufferObjects;
+            }
             call.set_return(error == gles_abi::no_error ? 1U : 0U);
         });
 }
@@ -1289,6 +1289,11 @@ void OpenGlesHle::register_egl(UserlandHleRegistry &registry) {
         current.draw_surface = draw;
         current.read_surface = read;
         current.context = context;
+        if (context != 0 && draw != 0 &&
+            surfaces_.at(draw).backing_identifier) {
+            contexts_.at(context).guest_profile_kind =
+                OpenGlesGuestProfileKind::MbxLiteFramebufferObjects;
+        }
         egl_error_ = egl_success;
         call.set_return(egl_true);
     });
@@ -1437,7 +1442,10 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
         current.gl_error = gl_no_error;
     });
     add("_glGetString", [this](UserlandHleCall &call) {
-        const auto &profile = open_gles_guest_profile(guest_profile_kind_);
+        const auto *context = current_context(call);
+        const auto &profile = open_gles_guest_profile(
+            context ? context->guest_profile_kind
+                    : OpenGlesGuestProfileKind::MbxLiteLegacy);
         std::string_view value;
         switch (call.argument(0)) {
         case gl_vendor:
@@ -1566,17 +1574,17 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
                 static_cast<std::uint32_t>(gles_abi::texture_unit_count);
             break;
         case gles_abi::maximum_texture_size:
-            values[0] = open_gles_guest_profile(guest_profile_kind_)
+            values[0] = open_gles_guest_profile(context->guest_profile_kind)
                             .maximum_texture_dimension;
             break;
         case gles_abi::maximum_viewport_dimensions:
             count = 2;
-            values[0] = open_gles_guest_profile(guest_profile_kind_)
+            values[0] = open_gles_guest_profile(context->guest_profile_kind)
                             .maximum_viewport_dimension;
             values[1] = values[0];
             break;
         case gles_abi::maximum_rectangle_texture_size_apple:
-            values[0] = open_gles_guest_profile(guest_profile_kind_)
+            values[0] = open_gles_guest_profile(context->guest_profile_kind)
                             .maximum_texture_dimension;
             break;
         case gles_abi::front_face_query:

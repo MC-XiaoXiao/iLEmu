@@ -86,6 +86,8 @@ class OpenGlesHle {
         };
         std::array<TextureUnitState, gles_abi::texture_unit_count>
             texture_units;
+        OpenGlesGuestProfileKind guest_profile_kind{
+            OpenGlesGuestProfileKind::MbxLiteLegacy};
         std::uint32_t bound_array_buffer{};
         std::uint32_t bound_element_array_buffer{};
         std::uint32_t bound_framebuffer{};
@@ -186,8 +188,6 @@ class OpenGlesHle {
     std::uint32_t egl_error_{0x3000U};
     std::uint64_t frame_count_{};
     std::size_t unsupported_trace_count_{};
-    OpenGlesGuestProfileKind guest_profile_kind_{
-        OpenGlesGuestProfileKind::MbxLiteLegacy};
     std::shared_ptr<DisplayState> display_;
     std::shared_ptr<SurfaceStore> surface_store_;
     std::uint64_t renderer_owner_{};
