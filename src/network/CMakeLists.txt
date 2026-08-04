@@ -1,4 +1,5 @@
 add_library(ilemu_network STATIC
+    apple80211_event_stream.cpp
     apple80211_hle.cpp
     darwin_network_abi.cpp
     darwin_route_socket.cpp

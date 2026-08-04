@@ -272,6 +272,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       }
       virtual_descriptors_.emplace(
           *fd, darwin::network::apple80211_driver::event_descriptor_kind);
+      wifi_driver_event_streams_.emplace(
+          *fd,
+          std::make_shared<
+              darwin::network::apple80211_driver::EventStream>());
       file_status_flags_[*fd] = flags;
       descriptor_flags_[*fd] = 0;
       bsd_success(cpu, *fd);
@@ -434,7 +438,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     bpf_descriptors_.erase(fd);
     descriptor_flags_.erase(fd);
     host_sockets_.erase(fd);
-    pending_wifi_driver_events_.erase(fd);
+    wifi_driver_event_streams_.erase(fd);
     virtual_udp_sockets_.erase(fd);
     kernel_control_endpoints_.erase(fd);
     system_event_filters_.erase(fd);

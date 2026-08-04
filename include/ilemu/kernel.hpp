@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "ilemu/address_space.hpp"
+#include "ilemu/apple80211_event_stream.hpp"
 #include "ilemu/audio.hpp"
 #include "ilemu/audio_toolbox_hle.hpp"
 #include "ilemu/core_audio_hle.hpp"
@@ -575,8 +576,9 @@ private:
   std::map<std::uint32_t, std::shared_ptr<darwin::bpf::DescriptorState>>
       bpf_descriptors_;
   std::map<std::uint32_t, std::shared_ptr<HostSocket>> host_sockets_;
-  std::map<std::uint32_t, std::deque<std::vector<std::byte>>>
-      pending_wifi_driver_events_;
+  std::map<std::uint32_t,
+           std::shared_ptr<darwin::network::apple80211_driver::EventStream>>
+      wifi_driver_event_streams_;
   std::multimap<std::uint64_t, std::uint32_t>
       scheduled_wifi_driver_events_;
   std::map<std::uint32_t, std::shared_ptr<bsd::VirtualUdpSocket>>

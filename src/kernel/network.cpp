@@ -600,20 +600,26 @@ bool CompatibilityKernel::receive_socket_bytes(
     if (bpf_descriptors_.contains(fd)) {
         return receive_bpf_bytes(cpu, fd, address, size);
     }
-    if (const auto pending = pending_wifi_driver_events_.find(fd);
-        pending != pending_wifi_driver_events_.end() &&
-        !pending->second.empty()) {
-        const auto& record = pending->second.front();
-        const auto copied = std::min<std::size_t>(size, record.size());
-        if (!memory_.copy_in(
-                address, std::span{record}.first(copied))) {
+    if (const auto event_stream = wifi_driver_event_streams_.find(fd);
+        event_stream != wifi_driver_event_streams_.end() &&
+        event_stream->second && event_stream->second->readable()) {
+        const auto previous_profile = event_stream->second->profile();
+        const auto bytes = event_stream->second->prepare_read(size);
+        if (!memory_.copy_in(address, bytes)) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
-            pending->second.pop_front();
-            if (pending->second.empty()) {
-                pending_wifi_driver_events_.erase(pending);
+            if (previous_profile ==
+                darwin::network::apple80211_driver::EventStreamProfile::
+                    Undetected) {
+                output_.write(
+                    "[wifi-driver] event-stream pid=" +
+                    std::to_string(process_.pid) + " fd=" +
+                    std::to_string(fd) + " profile=" +
+                    std::string{event_stream->second->profile_name()} +
+                    " read-capacity=" + std::to_string(size) + "\n");
             }
-            bsd_success(cpu, static_cast<std::uint32_t>(copied));
+            event_stream->second->consume(bytes.size());
+            bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
         }
         return true;
     }
@@ -1189,9 +1195,9 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const {
         // RAND_poll probes them with select(2) before issuing read(2).
         return true;
     }
-    if (const auto pending = pending_wifi_driver_events_.find(fd);
-        pending != pending_wifi_driver_events_.end() &&
-        !pending->second.empty()) {
+    if (const auto event_stream = wifi_driver_event_streams_.find(fd);
+        event_stream != wifi_driver_event_streams_.end() &&
+        event_stream->second && event_stream->second->readable()) {
         return true;
     }
     if (const auto descriptor = virtual_descriptors_.find(fd);
@@ -1305,10 +1311,10 @@ CompatibilityKernel::ready_mach_port_name(std::uint32_t name) const {
 std::optional<std::uint32_t> CompatibilityKernel::socket_pending_byte_count(
     std::uint32_t fd, std::uint32_t& darwin_error) const {
     darwin_error = 0;
-    if (const auto pending = pending_wifi_driver_events_.find(fd);
-        pending != pending_wifi_driver_events_.end() &&
-        !pending->second.empty()) {
-        return static_cast<std::uint32_t>(pending->second.front().size());
+    if (const auto event_stream = wifi_driver_event_streams_.find(fd);
+        event_stream != wifi_driver_event_streams_.end() &&
+        event_stream->second) {
+        return event_stream->second->pending_byte_count();
     }
     if (const auto host = host_sockets_.find(fd); host != host_sockets_.end()) {
         const auto pending = host->second->pending_bytes();

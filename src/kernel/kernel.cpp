@@ -1493,15 +1493,12 @@ void CompatibilityKernel::inject_wifi_driver_event(
     std::uint32_t, std::uint32_t event) {
   if (event == 0) return;
   namespace wifi_driver = darwin::network::apple80211_driver;
-  std::vector<std::byte> record(wifi_driver::event_header_size,
-                                std::byte{0});
-  for (std::uint32_t byte = 0; byte < sizeof(event); ++byte) {
-    record[wifi_driver::event_identifier_offset + byte] =
-        static_cast<std::byte>((event >> (byte * 8U)) & 0xffU);
-  }
   for (const auto& [descriptor, kind] : virtual_descriptors_) {
     if (kind == wifi_driver::event_descriptor_kind) {
-      pending_wifi_driver_events_[descriptor].push_back(record);
+      auto& stream = wifi_driver_event_streams_[descriptor];
+      if (!stream)
+        stream = std::make_shared<wifi_driver::EventStream>();
+      stream->enqueue(event);
     }
   }
 }
@@ -1601,6 +1598,7 @@ void CompatibilityKernel::inherit_process_state(
   file_status_flags_ = parent.file_status_flags_;
   descriptor_flags_ = parent.descriptor_flags_;
   virtual_descriptors_ = parent.virtual_descriptors_;
+  wifi_driver_event_streams_ = parent.wifi_driver_event_streams_;
   offline_serial_state_.inherit_configuration(parent.offline_serial_state_);
   bpf_descriptors_ = parent.bpf_descriptors_;
   host_sockets_ = parent.host_sockets_;

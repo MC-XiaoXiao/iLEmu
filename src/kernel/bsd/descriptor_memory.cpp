@@ -785,7 +785,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
     bpf_descriptors_.erase(destination);
     virtual_descriptors_.erase(destination);
     host_sockets_.erase(destination);
-    pending_wifi_driver_events_.erase(destination);
+    wifi_driver_event_streams_.erase(destination);
     virtual_udp_sockets_.erase(destination);
     kernel_control_endpoints_.erase(destination);
     duplicated_descriptors_.erase(destination);
@@ -870,6 +870,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
       if (const auto bpf = bpf_descriptors_.find(source);
           bpf != bpf_descriptors_.end()) {
         bpf_descriptors_[destination] = bpf->second;
+      }
+      if (const auto event_stream = wifi_driver_event_streams_.find(source);
+          event_stream != wifi_driver_event_streams_.end()) {
+        wifi_driver_event_streams_[destination] = event_stream->second;
       }
     } else {
       duplicated_descriptors_[destination] =
