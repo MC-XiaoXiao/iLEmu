@@ -40,9 +40,12 @@ struct SdlAudioSink::Impl {
   std::list<QueuedChunk> retired_chunks;
   std::size_t queued_sample_count{};
   std::size_t output_channel_count{1U};
-  // CoreAudio produces one hardware period at a time. Keep one period of
+  // CoreAudio produces one hardware period at a time. Keep a short, bounded
   // device lead at the start of a streaming run so the independently timed
-  // host callback does not race the producer's first adjacent buffers.
+  // host callback does not race the producer's first adjacent buffers. Three
+  // periods cover normal guest/host scheduling jitter without making effects
+  // audibly late or allowing an unbounded audio queue to grow.
+  static constexpr std::size_t streaming_lead_periods = 3U;
   std::size_t lead_silence_sample_count{};
   bool streaming_needs_lead{true};
   std::size_t fade_frames_remaining{};
@@ -315,7 +318,7 @@ bool SdlAudioSink::play(const AudioBuffer &buffer) {
           impl_->lead_silence_sample_count == 0) {
         impl_->lead_silence_sample_count =
             static_cast<std::size_t>(impl_->format.samples) *
-            impl_->output_channel_count;
+            impl_->output_channel_count * Impl::streaming_lead_periods;
       }
       impl_->streaming_needs_lead = false;
     }
