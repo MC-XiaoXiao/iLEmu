@@ -6,11 +6,13 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <png.h>
 
 #include "ilemu/display.hpp"
+#include "ilemu/application_display_profile.hpp"
 
 namespace ilemu {
 namespace {
@@ -126,8 +128,7 @@ FrameFilePresenter::FrameFilePresenter(std::filesystem::path path)
 
 void FrameFilePresenter::present(const DisplayFrame& frame) {
     DisplayFrame materialized = frame;
-    const auto expected =
-        static_cast<std::size_t>(frame.width) * frame.height;
+    auto expected = static_cast<std::size_t>(frame.width) * frame.height;
     if (materialized.pixels.size() != expected &&
         materialized.read_pixels) {
         materialized.pixels = materialized.read_pixels();
@@ -135,6 +136,20 @@ void FrameFilePresenter::present(const DisplayFrame& frame) {
     if (materialized.width == 0 || materialized.height == 0 ||
         materialized.pixels.size() != expected) {
         return;
+    }
+    if (materialized.orientation != DisplayOrientation::Portrait) {
+        const auto oriented = orient_display_pixels(
+            {materialized.width, materialized.height}, materialized.pixels,
+            materialized.orientation);
+        if (oriented.empty())
+            return;
+        if (is_landscape(materialized.orientation))
+            std::swap(materialized.width, materialized.height);
+        materialized.pixels = oriented;
+        materialized.host_surface.reset();
+        materialized.read_pixels = {};
+        expected = static_cast<std::size_t>(materialized.width) *
+                   materialized.height;
     }
     const std::scoped_lock lock{mutex_};
     auto temporary = path_;

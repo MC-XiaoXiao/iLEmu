@@ -14,27 +14,62 @@ namespace {
 
 #if defined(ILEMU_HAS_SDL2)
 TouchInput map_mouse(SDL_Window *window, TouchPhase phase, int x, int y,
-                     DisplayGeometry geometry) {
+                     DisplayGeometry geometry,
+                     DisplayOrientation orientation) {
   int width = 1;
   int height = 1;
   SDL_GetWindowSize(window, &width, &height);
-  const auto scale = [](int value, int extent, std::uint32_t guest_extent) {
-    const auto normalized = std::clamp(
-        static_cast<float>(value) / static_cast<float>(std::max(extent, 1)),
-        0.0F, 1.0F);
-    return normalized * static_cast<float>(guest_extent - 1U);
-  };
-  return TouchInput{phase, scale(x, width, geometry.width),
-                    scale(y, height, geometry.height)};
+  const auto normalized_x = std::clamp(
+      static_cast<float>(x) / static_cast<float>(std::max(width, 1)), 0.0F,
+      1.0F);
+  const auto normalized_y = std::clamp(
+      static_cast<float>(y) / static_cast<float>(std::max(height, 1)), 0.0F,
+      1.0F);
+  float guest_x = normalized_x * static_cast<float>(geometry.width - 1U);
+  float guest_y = normalized_y * static_cast<float>(geometry.height - 1U);
+  switch (orientation) {
+  case DisplayOrientation::Portrait:
+    break;
+  case DisplayOrientation::PortraitUpsideDown:
+    guest_x = (1.0F - normalized_x) * static_cast<float>(geometry.width - 1U);
+    guest_y = (1.0F - normalized_y) * static_cast<float>(geometry.height - 1U);
+    break;
+  case DisplayOrientation::LandscapeLeft:
+    guest_x = normalized_y * static_cast<float>(geometry.width - 1U);
+    guest_y = (1.0F - normalized_x) * static_cast<float>(geometry.height - 1U);
+    break;
+  case DisplayOrientation::LandscapeRight:
+    guest_x = (1.0F - normalized_y) * static_cast<float>(geometry.width - 1U);
+    guest_y = normalized_x * static_cast<float>(geometry.height - 1U);
+    break;
+  }
+  return TouchInput{phase, guest_x, guest_y};
 }
 
 TouchInput map_finger(TouchPhase phase, float x, float y,
-                      DisplayGeometry geometry) {
-  return TouchInput{phase,
-                    std::clamp(x, 0.0F, 1.0F) *
-                        static_cast<float>(geometry.width - 1U),
-                    std::clamp(y, 0.0F, 1.0F) *
-                        static_cast<float>(geometry.height - 1U)};
+                      DisplayGeometry geometry,
+                      DisplayOrientation orientation) {
+  const auto normalized_x = std::clamp(x, 0.0F, 1.0F);
+  const auto normalized_y = std::clamp(y, 0.0F, 1.0F);
+  float guest_x = normalized_x * static_cast<float>(geometry.width - 1U);
+  float guest_y = normalized_y * static_cast<float>(geometry.height - 1U);
+  switch (orientation) {
+  case DisplayOrientation::Portrait:
+    break;
+  case DisplayOrientation::PortraitUpsideDown:
+    guest_x = (1.0F - normalized_x) * static_cast<float>(geometry.width - 1U);
+    guest_y = (1.0F - normalized_y) * static_cast<float>(geometry.height - 1U);
+    break;
+  case DisplayOrientation::LandscapeLeft:
+    guest_x = normalized_y * static_cast<float>(geometry.width - 1U);
+    guest_y = (1.0F - normalized_x) * static_cast<float>(geometry.height - 1U);
+    break;
+  case DisplayOrientation::LandscapeRight:
+    guest_x = (1.0F - normalized_y) * static_cast<float>(geometry.width - 1U);
+    guest_y = normalized_x * static_cast<float>(geometry.height - 1U);
+    break;
+  }
+  return TouchInput{phase, guest_x, guest_y};
 }
 
 std::optional<SystemButton> map_key(SDL_Keycode key) {
@@ -84,14 +119,14 @@ bool SdlInput::poll(SDL_Window *window) {
         mouse_active_ = true;
         touch_events_.push_back(map_mouse(window, TouchPhase::Down,
                                           event.button.x, event.button.y,
-                                          geometry_));
+                                          geometry_, orientation_));
       }
       break;
     case SDL_MOUSEMOTION:
       if (mouse_active_ && event.motion.which != SDL_TOUCH_MOUSEID) {
         touch_events_.push_back(map_mouse(window, TouchPhase::Move,
                                           event.motion.x, event.motion.y,
-                                          geometry_));
+                                          geometry_, orientation_));
       }
       break;
     case SDL_MOUSEBUTTONUP:
@@ -99,24 +134,24 @@ bool SdlInput::poll(SDL_Window *window) {
           event.button.which != SDL_TOUCH_MOUSEID) {
         touch_events_.push_back(
             map_mouse(window, TouchPhase::Up, event.button.x, event.button.y,
-                      geometry_));
+                      geometry_, orientation_));
         mouse_active_ = false;
       }
       break;
     case SDL_FINGERDOWN:
       touch_events_.push_back(
           map_finger(TouchPhase::Down, event.tfinger.x, event.tfinger.y,
-                     geometry_));
+                     geometry_, orientation_));
       break;
     case SDL_FINGERMOTION:
       touch_events_.push_back(
           map_finger(TouchPhase::Move, event.tfinger.x, event.tfinger.y,
-                     geometry_));
+                     geometry_, orientation_));
       break;
     case SDL_FINGERUP:
       touch_events_.push_back(
           map_finger(TouchPhase::Up, event.tfinger.x, event.tfinger.y,
-                     geometry_));
+                     geometry_, orientation_));
       break;
     default:
       break;

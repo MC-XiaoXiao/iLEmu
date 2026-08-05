@@ -6,6 +6,22 @@
 
 namespace ilemu {
 
+// UIKit describes the logical orientation of an application's window
+// independently from the panel's native framebuffer geometry. Keep this
+// capability enum in the simulator boundary so host presentation and touch
+// mapping share one contract without depending on UIKit or SDL types.
+enum class DisplayOrientation : std::uint8_t {
+  Portrait,
+  PortraitUpsideDown,
+  LandscapeLeft,
+  LandscapeRight,
+};
+
+[[nodiscard]] constexpr bool is_landscape(DisplayOrientation orientation) {
+  return orientation == DisplayOrientation::LandscapeLeft ||
+         orientation == DisplayOrientation::LandscapeRight;
+}
+
 // Guest-visible logical display geometry. Device profiles own the selected
 // value; graphics, input, and host presentation consume the same instance.
 struct DisplayGeometry {

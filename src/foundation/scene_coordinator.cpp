@@ -113,6 +113,18 @@ std::optional<ClientScene> SceneCoordinator::active_client_scene() const {
              : std::optional<ClientScene>{found->second};
 }
 
+std::optional<ClientScene> SceneCoordinator::foreground_client_scene() const {
+  std::lock_guard lock{mutex_};
+  const auto found = std::find_if(
+      client_scenes_.begin(), client_scenes_.end(), [](const auto &entry) {
+        return entry.second.state == ClientSceneState::Active ||
+               entry.second.state == ClientSceneState::Exiting;
+      });
+  return found == client_scenes_.end()
+             ? std::nullopt
+             : std::optional<ClientScene>{found->second};
+}
+
 void SceneCoordinator::retire_process(std::uint32_t process_id) {
   if (process_id == 0U)
     return;

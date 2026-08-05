@@ -449,6 +449,7 @@ struct KernelSharedState {
     GraphicsInputAbi graphics_input_abi{GraphicsInputAbi::Darwin9_0};
     std::vector<std::byte> code_signature_entitlements;
     std::optional<CoreAnimationRemoteProfile> core_animation_remote_profile;
+    DisplayOrientation display_orientation{DisplayOrientation::Portrait};
   };
   struct ProcessKeventState {
     std::uint64_t exec_generation{};

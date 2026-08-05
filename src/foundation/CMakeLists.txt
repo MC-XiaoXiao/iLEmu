@@ -2,6 +2,7 @@ add_subdirectory(memory)
 
 add_library(ilemu_foundation STATIC
     address_space.cpp
+    application_display_profile.cpp
     arm_cpu_model.cpp
     cpu.cpp
     darwin_notify_state_hle.cpp
@@ -24,3 +25,8 @@ target_include_directories(ilemu_foundation SYSTEM PRIVATE
 target_link_libraries(ilemu_foundation PUBLIC
     dynarmic Threads::Threads iLEmu::xnu_adapter
     iLEmu::foundation_memory)
+if(TARGET PkgConfig::PLIST)
+    target_link_libraries(ilemu_foundation PRIVATE PkgConfig::PLIST)
+    target_compile_definitions(ilemu_foundation PRIVATE
+        ILEMU_HAS_LIBPLIST=1)
+endif()

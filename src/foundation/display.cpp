@@ -27,12 +27,18 @@ void DisplayState::set_presenter(Presenter presenter) {
   presenter_ = std::move(presenter);
 }
 
+void DisplayState::set_orientation_resolver(OrientationResolver resolver) {
+  std::lock_guard lock{mutex_};
+  orientation_resolver_ = std::move(resolver);
+}
+
 void DisplayState::clear(std::uint32_t argb) {
   std::lock_guard lock{mutex_};
   std::fill(pixels_.begin(), pixels_.end(), argb);
   host_surface_.reset();
   surface_reader_ = {};
   content_owner_process_id_ = 0;
+  content_orientation_ = DisplayOrientation::Portrait;
 }
 
 void DisplayState::replace_pixels(std::vector<std::uint32_t> pixels,
@@ -44,8 +50,11 @@ void DisplayState::replace_pixels(std::vector<std::uint32_t> pixels,
   pixels_ = std::move(pixels);
   host_surface_.reset();
   surface_reader_ = {};
-  if (owner_process_id != 0)
+  if (owner_process_id != 0) {
     content_owner_process_id_ = owner_process_id;
+    if (orientation_resolver_)
+      content_orientation_ = orientation_resolver_(owner_process_id);
+  }
 }
 
 void DisplayState::replace_surface(
@@ -57,8 +66,11 @@ void DisplayState::replace_surface(
   std::lock_guard lock{mutex_};
   host_surface_ = std::move(surface);
   surface_reader_ = std::move(read_pixels);
-  if (owner_process_id != 0)
+  if (owner_process_id != 0) {
     content_owner_process_id_ = owner_process_id;
+    if (orientation_resolver_)
+      content_orientation_ = orientation_resolver_(owner_process_id);
+  }
 }
 
 void DisplayState::set_powered_on(bool powered_on) {
@@ -82,6 +94,7 @@ void DisplayState::set_powered_on(bool powered_on) {
                            visible_pixels(pixels_, powered_on_), {}, {},
                            content_owner_process_id_};
     }
+    frame.orientation = content_orientation_;
   }
   const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
   auto &performance = performance_counters();
@@ -99,8 +112,11 @@ void DisplayState::present(std::uint32_t owner_process_id) {
   {
     std::lock_guard lock{mutex_};
     ++sequence_;
-    if (owner_process_id != 0)
+    if (owner_process_id != 0) {
       content_owner_process_id_ = owner_process_id;
+      if (orientation_resolver_)
+        content_orientation_ = orientation_resolver_(owner_process_id);
+    }
     presenter = presenter_;
     if (!presenter)
       return;
@@ -113,6 +129,7 @@ void DisplayState::present(std::uint32_t owner_process_id) {
                            visible_pixels(pixels_, powered_on_), {}, {},
                            content_owner_process_id_};
     }
+    frame.orientation = content_orientation_;
   }
   const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
   auto &performance = performance_counters();
@@ -137,12 +154,14 @@ bool DisplayState::clear_if_owner(std::uint32_t owner_process_id) {
     host_surface_.reset();
     surface_reader_ = {};
     content_owner_process_id_ = 0;
+    content_orientation_ = DisplayOrientation::Portrait;
     ++sequence_;
     presenter = presenter_;
     if (!presenter)
       return true;
     frame = DisplayFrame{geometry_.width, geometry_.height, sequence_,
                          pixels_};
+    frame.orientation = DisplayOrientation::Portrait;
   }
   const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
   auto &performance = performance_counters();
@@ -162,6 +181,7 @@ DisplayFrame DisplayState::snapshot() const {
   std::uint64_t sequence{};
   bool powered_on{};
   std::uint32_t owner_process_id{};
+  DisplayOrientation orientation{DisplayOrientation::Portrait};
   {
     std::lock_guard lock{mutex_};
     reader = surface_reader_;
@@ -170,6 +190,7 @@ DisplayFrame DisplayState::snapshot() const {
     sequence = sequence_;
     powered_on = powered_on_;
     owner_process_id = content_owner_process_id_;
+    orientation = content_orientation_;
   }
   if (!powered_on) {
     pixels.assign(geometry_.pixel_count(), 0xff000000U);
@@ -178,9 +199,11 @@ DisplayFrame DisplayState::snapshot() const {
     if (materialized.size() == geometry_.pixel_count())
       pixels = std::move(materialized);
   }
-  return DisplayFrame{geometry_.width, geometry_.height, sequence,
-                      std::move(pixels), std::move(surface),
-                      std::move(reader), owner_process_id};
+  auto frame = DisplayFrame{geometry_.width, geometry_.height, sequence,
+                            std::move(pixels), std::move(surface),
+                            std::move(reader), owner_process_id};
+  frame.orientation = orientation;
+  return frame;
 }
 
 std::uint64_t DisplayState::presented_frames() const {

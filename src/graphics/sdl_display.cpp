@@ -10,9 +10,11 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "ilemu/display.hpp"
+#include "ilemu/application_display_profile.hpp"
 #include "ilemu/gles_renderer.hpp"
 #include "ilemu/performance.hpp"
 #include "sdl_input.hpp"
@@ -39,6 +41,7 @@ std::atomic<std::uint64_t> next_sdl_presenter_surface{1};
 struct SdlDisplay::Impl {
   Impl(DisplayGeometry initial_geometry, DisplayGeometry input_geometry)
       : geometry{initial_geometry},
+        guest_geometry{initial_geometry},
         cpu_present_surface_key{
             sdl_presenter_surface_owner,
             next_sdl_presenter_surface.fetch_add(1,
@@ -46,6 +49,8 @@ struct SdlDisplay::Impl {
         input{input_geometry} {}
 
   DisplayGeometry geometry;
+  DisplayGeometry guest_geometry;
+  DisplayOrientation orientation{DisplayOrientation::Portrait};
   HostSurfaceKey cpu_present_surface_key;
 #if defined(ILEMU_HAS_SDL2)
   SDL_Window *window{};
@@ -56,29 +61,31 @@ struct SdlDisplay::Impl {
   std::atomic<bool> surface_created{};
 
   void ensure_cpu_presenter() {
-    if (renderer != nullptr && texture != nullptr)
-      return;
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    if (renderer == nullptr)
-      renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
-    if (renderer == nullptr && vulkan_window && !surface_created) {
-      SDL_DestroyWindow(window);
-      window = SDL_CreateWindow(
-          "iLEmu", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-          static_cast<int>(geometry.width), static_cast<int>(geometry.height),
-          SDL_WINDOW_RESIZABLE);
-      vulkan_window = false;
-      if (window != nullptr)
-        renderer =
-            SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-      if (renderer == nullptr && window != nullptr)
+    if (renderer == nullptr) {
+      SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+      renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+      if (renderer == nullptr)
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+      if (renderer == nullptr && vulkan_window && !surface_created) {
+        SDL_DestroyWindow(window);
+        window = SDL_CreateWindow(
+            "iLEmu", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            static_cast<int>(geometry.width),
+            static_cast<int>(geometry.height), SDL_WINDOW_RESIZABLE);
+        vulkan_window = false;
+        if (window != nullptr)
+          renderer =
+              SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+        if (renderer == nullptr && window != nullptr)
+          renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+      }
     }
     if (renderer == nullptr) {
       throw std::runtime_error{"SDL renderer creation failed: " +
                                std::string{SDL_GetError()}};
     }
+    if (texture != nullptr)
+      return;
     texture = SDL_CreateTexture(
         renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING,
         static_cast<int>(geometry.width),
@@ -103,6 +110,27 @@ struct SdlDisplay::Impl {
   bool presentation_active{};
   SdlInput input;
   bool running{true};
+
+  void update_orientation(DisplayOrientation next_orientation) {
+    if (orientation == next_orientation)
+      return;
+    orientation = next_orientation;
+    geometry = is_landscape(orientation)
+                   ? DisplayGeometry{guest_geometry.height,
+                                     guest_geometry.width}
+                   : guest_geometry;
+    input.set_orientation(orientation);
+#if defined(ILEMU_HAS_SDL2)
+    if (window != nullptr) {
+      SDL_SetWindowSize(window, static_cast<int>(geometry.width),
+                        static_cast<int>(geometry.height));
+    }
+    if (texture != nullptr) {
+      SDL_DestroyTexture(texture);
+      texture = nullptr;
+    }
+#endif
+  }
 
   bool stage_cpu_frame_for_native_present(DisplayFrame &frame) {
     if (frame.host_surface || !host_graphics ||
@@ -364,8 +392,8 @@ void SdlDisplay::set_host_graphics(
 
 void SdlDisplay::present(const DisplayFrame &frame) {
 #if defined(ILEMU_HAS_SDL2)
-  if (frame.width != impl_->geometry.width ||
-      frame.height != impl_->geometry.height ||
+  if (frame.width != impl_->guest_geometry.width ||
+      frame.height != impl_->guest_geometry.height ||
       (frame.pixels.empty() && !frame.read_pixels)) {
     return;
   }
@@ -420,6 +448,29 @@ bool SdlDisplay::poll_events() {
     } else {
       frame.swap(impl_->pending_frame);
     }
+  }
+  if (frame) {
+    const auto requested_orientation = frame->orientation;
+    if (requested_orientation != DisplayOrientation::Portrait) {
+      const auto raw_geometry = DisplayGeometry{frame->width, frame->height};
+      const auto expected = raw_geometry.pixel_count();
+      if (frame->pixels.size() != expected && frame->read_pixels)
+        frame->pixels = frame->read_pixels();
+      const auto oriented = orient_display_pixels(
+          raw_geometry, frame->pixels, requested_orientation);
+      if (oriented.empty()) {
+        frame.reset();
+      } else {
+        frame->pixels = oriented;
+        frame->host_surface.reset();
+        frame->read_pixels = {};
+        if (is_landscape(requested_orientation))
+          std::swap(frame->width, frame->height);
+        frame->orientation = DisplayOrientation::Portrait;
+      }
+    }
+    if (frame && impl_->orientation != requested_orientation)
+      impl_->update_orientation(requested_orientation);
   }
   if (frame) {
     auto &performance = performance_counters();

@@ -47,6 +47,11 @@ public:
   [[nodiscard]] std::optional<ClientScene>
   client_scene(std::uint32_t client_process_id) const;
   [[nodiscard]] std::optional<ClientScene> active_client_scene() const;
+  // The outgoing scene remains visually foreground while its exit transition
+  // is being composed. Display policy consumes this broader lifetime; input
+  // continues to use active_client_scene() so an exiting client cannot receive
+  // new touches.
+  [[nodiscard]] std::optional<ClientScene> foreground_client_scene() const;
   void activate_client_scene(std::uint32_t client_process_id);
   void begin_client_scene_exit(std::uint32_t client_process_id);
   void suspend_client_scene(std::uint32_t client_process_id);

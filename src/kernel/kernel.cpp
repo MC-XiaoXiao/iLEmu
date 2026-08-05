@@ -1,4 +1,5 @@
 #include "ilemu/kernel.hpp"
+#include "ilemu/application_display_profile.hpp"
 #include "ilemu/darwin_kernel_profile.hpp"
 #include "ilemu/rootfs_path_resolver.hpp"
 
@@ -108,6 +109,26 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
                  presentation_tracker_},
       mobile_framebuffer_hle_{userland_hle_, display_state_, surface_store_,
                               presentation_tracker_} {
+  display_state_->set_orientation_resolver(
+      [state = shared_state_, scenes = scene_coordinator_](
+          std::uint32_t owner_process_id) {
+        const auto foreground_scene = scenes->foreground_client_scene();
+        const auto foreground_process_id =
+            foreground_scene ? foreground_scene->client_process_id
+                             : owner_process_id;
+        std::lock_guard lock{state->mach_mutex};
+        if (const auto process = state->processes.find(foreground_process_id);
+            process != state->processes.end()) {
+          return process->second.display_orientation;
+        }
+        if (foreground_process_id != owner_process_id) {
+          if (const auto owner = state->processes.find(owner_process_id);
+              owner != state->processes.end()) {
+            return owner->second.display_orientation;
+          }
+        }
+        return DisplayOrientation::Portrait;
+      });
   apple80211_hle_.set_event_injection_handler(
       [this](std::uint32_t descriptor, std::uint32_t event) {
         inject_wifi_driver_event(descriptor, event);
@@ -695,6 +716,14 @@ void CompatibilityKernel::set_process_image(
   record.executable_path = std::string{guest_path};
   record.code_signature_entitlements.assign(
       code_signature_entitlements.begin(), code_signature_entitlements.end());
+  record.display_orientation = detect_application_display_orientation(
+      rootfs_, guest_path);
+  if (record.display_orientation != DisplayOrientation::Portrait) {
+    output_.write("[display] application orientation=" +
+                  std::string{display_orientation_name(
+                      record.display_orientation)} +
+                  " pid=" + std::to_string(process_.pid) + "\n");
+  }
   record.graphics_input_abi =
       KernelSharedState::GraphicsInputAbi::LegacyMouse;
   if (record.arguments.empty())

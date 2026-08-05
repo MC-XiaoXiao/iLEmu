@@ -14,6 +14,9 @@ namespace ilemu {
 class SdlInput {
 public:
   explicit SdlInput(DisplayGeometry geometry) : geometry_{geometry} {}
+  void set_orientation(DisplayOrientation orientation) {
+    orientation_ = orientation;
+  }
   [[nodiscard]] bool poll(SDL_Window *window);
   [[nodiscard]] std::vector<TouchInput> take_touch_events();
   [[nodiscard]] std::vector<SystemButtonInput> take_button_events();
@@ -22,6 +25,7 @@ public:
 
 private:
   DisplayGeometry geometry_;
+  DisplayOrientation orientation_{DisplayOrientation::Portrait};
   std::vector<TouchInput> touch_events_;
   std::vector<SystemButtonInput> button_events_;
   std::vector<RingerSwitchInput> ringer_switch_events_;

@@ -47,16 +47,23 @@ struct DisplayFrame {
   // lets teardown revoke only stale application content without clearing a
   // newer foreground client's frame.
   std::uint32_t owner_process_id{};
+  // Logical UIKit orientation requested by the owner. The framebuffer
+  // dimensions remain the device panel dimensions; frontends apply the
+  // orientation at the scanout boundary.
+  DisplayOrientation orientation{DisplayOrientation::Portrait};
 };
 
 class DisplayState {
 public:
   using Presenter = std::function<void(const DisplayFrame &)>;
+  using OrientationResolver =
+      std::function<DisplayOrientation(std::uint32_t process_id)>;
 
   DisplayState();
   explicit DisplayState(DisplayGeometry geometry);
 
   void set_presenter(Presenter presenter);
+  void set_orientation_resolver(OrientationResolver resolver);
   void clear(std::uint32_t argb);
   void replace_pixels(std::vector<std::uint32_t> pixels,
                       std::uint32_t owner_process_id = 0);
@@ -87,8 +94,10 @@ private:
   std::function<std::vector<std::uint32_t>()> surface_reader_;
   std::uint32_t content_owner_process_id_{};
   Presenter presenter_;
+  OrientationResolver orientation_resolver_;
   std::uint64_t sequence_{};
   bool powered_on_{true};
+  DisplayOrientation content_orientation_{DisplayOrientation::Portrait};
 };
 
 } // namespace ilemu
