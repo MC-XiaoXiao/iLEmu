@@ -154,6 +154,11 @@ struct PendingHostWrite {
   std::vector<std::byte> destination;
 };
 
+struct PendingBasebandWrite {
+  std::uint32_t fd{};
+  std::vector<std::byte> bytes;
+};
+
 struct PendingUnixAccept {
   std::uint32_t fd{};
   std::uint32_t address{};

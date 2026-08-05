@@ -638,6 +638,7 @@ private:
   std::map<std::size_t, PendingHostConnect> pending_host_connects_;
   std::map<std::size_t, PendingHostAccept> pending_host_accepts_;
   std::map<std::size_t, PendingHostWrite> pending_host_writes_;
+  std::map<std::size_t, PendingBasebandWrite> pending_baseband_writes_;
   std::map<std::size_t, PendingUnixAccept> pending_unix_accepts_;
   std::map<std::size_t, PendingFlock> pending_flocks_;
   std::map<std::size_t, PendingRecordLock> pending_record_locks_;

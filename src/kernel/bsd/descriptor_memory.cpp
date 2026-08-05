@@ -509,7 +509,11 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
         bsd_error(cpu, bsd_support::invalid_argument);
         return;
       }
-      const auto bytes = memory_.read_bytes(address, size);
+      if (size == 0) {
+        bsd_success(cpu, 0);
+        return;
+      }
+      auto bytes = memory_.read_bytes(address, size);
       if (!bytes) {
         bsd_error(cpu, bsd_support::bad_address);
         return;
@@ -520,6 +524,18 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
                       " bytes=" + std::to_string(bytes->size()) + " hex=" +
                       bsd_support::format_payload_prefix(*bytes) + "\n");
         ++baseband_io_trace_count_;
+      }
+      if (!shared_state_->baseband_device_state.transport_writable()) {
+        pending_baseband_writes_.insert_or_assign(
+            cpu.processor_id(), PendingBasebandWrite{fd, std::move(*bytes)});
+        process_.waiting_for_events = true;
+        bsd_success(cpu, 0);
+        output_.write("[baseband] write wait pid=" +
+                      std::to_string(process_.pid) + " fd=" +
+                      std::to_string(fd) + " bytes=" +
+                      std::to_string(size) + "\n");
+        cpu.halt(Dynarmic::HaltReason::UserDefined5);
+        return;
       }
       bsd_success(cpu, static_cast<std::uint32_t>(
                            shared_state_->baseband_device_state.write(*bytes)));

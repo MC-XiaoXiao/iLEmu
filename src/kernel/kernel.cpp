@@ -612,6 +612,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id) {
   pending_host_connects_.clear();
   pending_host_accepts_.clear();
   pending_host_writes_.clear();
+  pending_baseband_writes_.clear();
   pending_unix_accepts_.clear();
   pending_flocks_.clear();
   pending_record_locks_.clear();
@@ -1021,6 +1022,28 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu &cpu) {
     cpu.clear_halt();
     return true;
   }
+  if (const auto pending = pending_baseband_writes_.find(cpu.processor_id());
+      pending != pending_baseband_writes_.end()) {
+    if (!shared_state_->baseband_device_state.transport_writable())
+      return false;
+    const auto descriptor = virtual_descriptors_.find(pending->second.fd);
+    if (descriptor == virtual_descriptors_.end() ||
+        descriptor->second != bsd::baseband_device::descriptor_kind) {
+      bsd_error(cpu, ebadf);
+    } else {
+      const auto written = shared_state_->baseband_device_state.write(
+          pending->second.bytes);
+      bsd_success(cpu, static_cast<std::uint32_t>(written));
+      output_.write("[baseband] write wake pid=" +
+                    std::to_string(process_.pid) + " fd=" +
+                    std::to_string(pending->second.fd) + " bytes=" +
+                    std::to_string(written) + "\n");
+    }
+    pending_baseband_writes_.erase(pending);
+    process_.waiting_for_events = false;
+    cpu.clear_halt();
+    return true;
+  }
   if (const auto pending = pending_unix_accepts_.find(cpu.processor_id());
       pending != pending_unix_accepts_.end()) {
     if (!complete_unix_accept(cpu, pending->second.fd, pending->second.address,
@@ -1273,6 +1296,10 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const {
   if (const auto pending = pending_host_writes_.find(processor);
       pending != pending_host_writes_.end()) {
     return "write(fd=" + std::to_string(pending->second.fd) + ")";
+  }
+  if (const auto pending = pending_baseband_writes_.find(processor);
+      pending != pending_baseband_writes_.end()) {
+    return "write(baseband fd=" + std::to_string(pending->second.fd) + ")";
   }
   if (const auto pending = pending_unix_accepts_.find(processor);
       pending != pending_unix_accepts_.end()) {

@@ -92,6 +92,7 @@ void CompatibilityKernel::release_process_descriptors() {
   bpf_descriptors_.clear();
   host_sockets_.clear();
   pending_host_writes_.clear();
+  pending_baseband_writes_.clear();
   wifi_driver_event_streams_.clear();
   scheduled_wifi_driver_events_.clear();
   virtual_udp_sockets_.clear();
