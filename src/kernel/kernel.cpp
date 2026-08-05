@@ -123,6 +123,10 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   shared_state_->baseband_device_state.set_available(
       device_profile_.baseband_transport !=
       BasebandTransportProfile::Unavailable);
+  shared_state_->baseband_device_state.set_mux_channel_capacity(
+      device_profile_.baseband_transport == BasebandTransportProfile::Offline
+          ? bsd::baseband_device::offline_mux_channel_capacity
+          : 0U);
   shared_state_->mounts.clear();
   for (const auto &volume : hfs_volumes_.volumes()) {
     shared_state_->mounts.push_back({"hfs", volume.mount_point,

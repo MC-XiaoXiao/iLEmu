@@ -23,6 +23,11 @@ inline constexpr std::string_view spi_mux_directory_name{"mux.spi-baseband"};
 inline constexpr std::string_view h5_mux_directory_name{"mux.h5.baseband"};
 inline constexpr std::string_view descriptor_kind{"baseband"};
 inline constexpr unsigned device_minor = 3;
+// The no-modem profile still exposes the serial-mux ABI used by stock
+// CommCenter.  The client keeps a finite channel table; bounding anonymous
+// allocations prevents a silent transport from turning retries into an
+// ever-growing logical channel id stream.
+inline constexpr std::uint32_t offline_mux_channel_capacity = 16;
 
 enum class IoctlResult {
   success,
@@ -42,6 +47,10 @@ public:
   void set_h5_transport_mode(bool enabled);
   [[nodiscard]] std::size_t minimum_receive_bytes() const;
   void set_minimum_receive_bytes(std::size_t bytes);
+  // A zero capacity preserves the virtual/replay transport's dynamic channel
+  // allocation.  Offline transport uses the stock client's finite channel
+  // table and reuses anonymous slots when CommCenter retries setup.
+  void set_mux_channel_capacity(std::uint32_t capacity);
   [[nodiscard]] std::uint32_t register_mux_channel(std::string_view name);
   [[nodiscard]] std::optional<std::uint32_t>
   mux_channel(std::string_view name) const;
@@ -57,6 +66,8 @@ private:
   bool exclusive_{};
   bool h5_transport_mode_{};
   std::size_t minimum_receive_bytes_{};
+  std::uint32_t anonymous_mux_channel_capacity_{};
+  std::uint32_t next_anonymous_mux_channel_{1};
   std::map<std::string, std::uint32_t> mux_channels_;
   std::uint32_t next_mux_channel_{1};
   darwin::tty::Arm32Attributes attributes_{darwin::tty::default_attributes()};

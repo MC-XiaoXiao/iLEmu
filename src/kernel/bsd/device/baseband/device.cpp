@@ -73,6 +73,18 @@ void State::set_minimum_receive_bytes(std::size_t bytes) {
   minimum_receive_bytes_ = bytes;
 }
 
+void State::set_mux_channel_capacity(std::uint32_t capacity) {
+  const std::lock_guard lock{mutex_};
+  anonymous_mux_channel_capacity_ = capacity;
+  next_anonymous_mux_channel_ = 1;
+  // Keep named channels out of the anonymous slot range.  The normal boot
+  // configures this before CommCenter opens the device, so changing a live
+  // transport remains a safe administrative operation as well.
+  if (capacity != 0 && next_mux_channel_ <= capacity) {
+    next_mux_channel_ = capacity + 1U;
+  }
+}
+
 std::uint32_t State::register_mux_channel(std::string_view name) {
   const std::lock_guard lock{mutex_};
   if (!name.empty()) {
@@ -82,6 +94,12 @@ std::uint32_t State::register_mux_channel(std::string_view name) {
     }
     const auto unit = next_mux_channel_++;
     mux_channels_.emplace(key, unit);
+    return unit;
+  }
+  if (anonymous_mux_channel_capacity_ != 0) {
+    const auto unit = next_anonymous_mux_channel_;
+    next_anonymous_mux_channel_ =
+        unit == anonymous_mux_channel_capacity_ ? 1U : unit + 1U;
     return unit;
   }
   return next_mux_channel_++;
