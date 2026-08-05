@@ -157,18 +157,19 @@ void return_server_value(UserlandHleCall& call, std::uint32_t value,
     call.set_return(result);
 }
 
-bool is_radio_dead_notification(UserlandHleCall& call) {
+bool is_radio_dead_notification(UserlandHleCall& call,
+                                std::uint32_t notification_argument) {
     const auto symbol = call.symbol_address(radio_module_dead_notification);
     if (symbol) {
         const auto notification = call.memory().read32(*symbol);
-        if (notification && call.argument(3) == *notification)
+        if (notification && call.argument(notification_argument) == *notification)
             return true;
     }
     // CFNotificationCenter and CTTelephonyCenter use the same constant
     // CFString, but a framework's imported pointer can be relocated per task.
     // Compare the constant's bytes as a fallback so the profile remains
     // independent of a particular shared-region slide.
-    const auto object = call.argument(3);
+    const auto object = call.argument(notification_argument);
     const auto data = call.memory().read32(object + 8U);
     const auto length = call.memory().read32(object + 12U);
     if (!data || !length || *length != radio_module_dead_notification_text.size())
@@ -580,14 +581,22 @@ void register_core_telephony_hle(
         [suppress_radio_dead_notification](UserlandHleCall& call) {
             if (suppress_radio_dead_notification &&
                 is_offline_ui_client(call) &&
-                is_radio_dead_notification(call)) {
+                // This firmware's private CoreTelephony wrapper receives
+                // (center, observer, callback, name, context), so the name is
+                // in r3 (confirmed by its native argument shuffle).
+                is_radio_dead_notification(call, 3U)) {
                 call.output().line(
                     "[telephony] offline radio-dead observer suppressed pid=" +
                     std::to_string(call.process_id()));
                 call.set_return(0);
                 return;
             }
-            call.resume_original();
+            // Keep the boundary installed for later registrations in this
+            // process. SpringBoard registers a group of telephony
+            // notifications during SBTelephonyManager initialization; a
+            // one-shot resume would let the later radio-dead registration
+            // bypass the offline transport policy.
+            call.resume_original_persistently();
         });
     registry.register_function(
         std::string{core_foundation_image},
@@ -595,14 +604,19 @@ void register_core_telephony_hle(
         [suppress_radio_dead_notification](UserlandHleCall& call) {
             if (suppress_radio_dead_notification &&
                 is_offline_ui_client(call) &&
-                is_radio_dead_notification(call)) {
+                // CFNotificationCenterAddObserver(center, observer,
+                // callback, name, object, behavior) places it in r3.
+                is_radio_dead_notification(call, 3U)) {
                 call.output().line(
                     "[telephony] offline radio-dead observer suppressed pid=" +
                     std::to_string(call.process_id()));
                 call.set_return(0);
                 return;
             }
-            call.resume_original();
+            // Keep the boundary installed for later Darwin notification
+            // registrations in this process; only the offline radio-dead
+            // notification is consumed above.
+            call.resume_original_persistently();
         });
 
     // Preserve the firmware's CTCall CFRuntime object and MobilePhone flow.
