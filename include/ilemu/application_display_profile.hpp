@@ -9,10 +9,10 @@
 
 namespace ilemu {
 
-// Reads the bundle's declared UIKit orientation for an executable path. A
-// missing or malformed manifest is deliberately treated as portrait, which
-// preserves the legacy firmware path and keeps orientation a capability
-// discovered from the App rather than an App-name/version rule.
+// Reads the bundle's declared UIKit orientation for an executable path. When
+// the manifest has no orientation key, an unambiguous orientation resource
+// profile may provide the capability; otherwise the legacy portrait default
+// is retained. App names and versions are never used as rules.
 [[nodiscard]] DisplayOrientation detect_application_display_orientation(
     const std::filesystem::path &rootfs, std::string_view executable_path);
 

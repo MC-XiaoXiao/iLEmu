@@ -1,10 +1,12 @@
 #include "ilemu/application_display_profile.hpp"
 
+#include <cctype>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
 #include <optional>
 #include <string>
+#include <system_error>
 
 #if defined(ILEMU_HAS_LIBPLIST)
 #include <plist/plist.h>
@@ -31,6 +33,42 @@ std::filesystem::path info_plist_path(const std::filesystem::path &rootfs,
   if (relative.is_absolute())
     relative = relative.relative_path();
   return rootfs / relative.parent_path() / "Info.plist";
+}
+
+// A number of pre-iOS 3 applications did not put an orientation key in their
+// top-level manifest.  Their UIKit/OpenFeint resource profile is nevertheless
+// explicit in the bundle layout (for example, an iPhone_Landscape resource
+// bundle).  Treat a single, unambiguous resource orientation as a capability;
+// never let a landscape-only helper coexist with a portrait profile and then
+// guess which one the application wanted.
+std::optional<DisplayOrientation> resource_bundle_orientation(
+    const std::filesystem::path &app_bundle) {
+  bool landscape = false;
+  bool portrait = false;
+  std::error_code error;
+  std::filesystem::directory_iterator entries{app_bundle, error};
+  if (error)
+    return std::nullopt;
+  for (const auto &entry : entries) {
+    std::error_code entry_error;
+    if (!entry.is_directory(entry_error) || entry_error)
+      continue;
+    const auto filename = entry.path().filename().string();
+    std::string lowercase;
+    lowercase.reserve(filename.size());
+    for (const auto character : filename) {
+      lowercase.push_back(static_cast<char>(std::tolower(
+          static_cast<unsigned char>(character))));
+    }
+    if (lowercase.size() < 7U ||
+        lowercase.compare(lowercase.size() - 7U, 7U, ".bundle") != 0)
+      continue;
+    landscape = landscape || lowercase.find("landscape") != std::string::npos;
+    portrait = portrait || lowercase.find("portrait") != std::string::npos;
+  }
+  if (landscape && !portrait)
+    return DisplayOrientation::LandscapeLeft;
+  return std::nullopt;
 }
 
 #if defined(ILEMU_HAS_LIBPLIST)
@@ -84,12 +122,17 @@ std::optional<DisplayOrientation> plist_orientation(plist_t root) {
 
 DisplayOrientation detect_application_display_orientation(
     const std::filesystem::path &rootfs, std::string_view executable_path) {
+  const auto portrait_fallback = [&] {
+    return resource_bundle_orientation(
+               info_plist_path(rootfs, executable_path).parent_path())
+        .value_or(DisplayOrientation::Portrait);
+  };
   if (rootfs.empty() || executable_path.empty())
     return DisplayOrientation::Portrait;
   const auto path = info_plist_path(rootfs, executable_path);
   std::ifstream input{path, std::ios::binary};
   if (!input)
-    return DisplayOrientation::Portrait;
+    return portrait_fallback();
 
 #if defined(ILEMU_HAS_LIBPLIST)
   const std::string bytes{std::istreambuf_iterator<char>{input},
@@ -101,14 +144,17 @@ DisplayOrientation detect_application_display_orientation(
       parsed == nullptr || plist_get_node_type(parsed) != PLIST_DICT) {
     if (parsed != nullptr)
       plist_free(parsed);
-    return DisplayOrientation::Portrait;
+    return portrait_fallback();
   }
   PlistOwner root{parsed};
-  return plist_orientation(root.get()).value_or(
-      DisplayOrientation::Portrait);
+  if (const auto orientation = plist_orientation(root.get()))
+    return *orientation;
+  if (const auto orientation = resource_bundle_orientation(path.parent_path()))
+    return *orientation;
+  return DisplayOrientation::Portrait;
 #else
   static_cast<void>(input);
-  return DisplayOrientation::Portrait;
+  return portrait_fallback();
 #endif
 }
 
