@@ -144,6 +144,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   shared_state_->baseband_device_state.set_available(
       device_profile_.baseband_transport !=
       BasebandTransportProfile::Unavailable);
+  shared_state_->baseband_device_state.set_transport_writable(
+      device_profile_.baseband_transport != BasebandTransportProfile::Offline);
   shared_state_->baseband_device_state.set_mux_channel_capacity(
       device_profile_.baseband_transport == BasebandTransportProfile::Offline
           ? bsd::baseband_device::offline_mux_channel_capacity

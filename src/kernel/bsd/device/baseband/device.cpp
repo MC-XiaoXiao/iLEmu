@@ -19,6 +19,16 @@ void State::set_available(bool available) {
   available_ = available;
 }
 
+bool State::transport_writable() const {
+  const std::lock_guard lock{mutex_};
+  return transport_writable_;
+}
+
+void State::set_transport_writable(bool writable) {
+  const std::lock_guard lock{mutex_};
+  transport_writable_ = writable;
+}
+
 bool State::may_open(bool privileged) const {
   const std::lock_guard lock{mutex_};
   return available_ && (privileged || !exclusive_);

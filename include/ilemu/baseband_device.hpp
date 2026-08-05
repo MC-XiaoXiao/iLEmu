@@ -38,6 +38,12 @@ class State {
 public:
   [[nodiscard]] bool available() const;
   void set_available(bool available);
+  // Offline transport exposes the device ABI but has no modem-side writer.
+  // Keep its descriptor non-writable for readiness polling so CommCenter
+  // sleeps instead of spinning after the last host-visible command. Virtual
+  // and replay transports retain the normal always-writable tty contract.
+  [[nodiscard]] bool transport_writable() const;
+  void set_transport_writable(bool writable);
   [[nodiscard]] bool may_open(bool privileged) const;
   [[nodiscard]] IoctlResult ioctl(std::uint32_t command);
   [[nodiscard]] bool exclusive() const;
@@ -63,6 +69,7 @@ public:
 private:
   mutable std::mutex mutex_;
   bool available_{true};
+  bool transport_writable_{true};
   bool exclusive_{};
   bool h5_transport_mode_{};
   std::size_t minimum_receive_bytes_{};

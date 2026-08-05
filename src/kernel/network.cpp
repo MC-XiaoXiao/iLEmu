@@ -1266,7 +1266,8 @@ bool CompatibilityKernel::descriptor_writable(std::uint32_t fd) const {
         descriptor != virtual_descriptors_.end() &&
         (descriptor->second == "route-socket" ||
          descriptor->second == darwin::bpf::descriptor_kind ||
-         descriptor->second == bsd::baseband_device::descriptor_kind ||
+         (descriptor->second == bsd::baseband_device::descriptor_kind &&
+          shared_state_->baseband_device_state.transport_writable()) ||
          descriptor->second ==
              bsd::offline_serial_device::descriptor_kind)) {
         return true;
