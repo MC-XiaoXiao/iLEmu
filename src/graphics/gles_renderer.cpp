@@ -195,6 +195,9 @@ class FallbackGlesRenderer final : public GlesRenderer {
     [[nodiscard]] bool native_presentation_available() const override {
         return primary_->native_presentation_available();
     }
+    [[nodiscard]] bool refresh_presentation_surface() override {
+        return primary_->refresh_presentation_surface();
+    }
     [[nodiscard]] std::unique_ptr<CommandEncoder>
     create_command_encoder() override {
         return primary_->create_command_encoder();
@@ -310,6 +313,10 @@ GlesRenderer::present(const std::shared_ptr<HostSurface>& surface) {
 }
 
 bool GlesRenderer::native_presentation_available() const {
+    return false;
+}
+
+bool GlesRenderer::refresh_presentation_surface() {
     return false;
 }
 

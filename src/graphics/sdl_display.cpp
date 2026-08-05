@@ -10,6 +10,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -61,6 +62,7 @@ struct SdlDisplay::Impl {
   SDL_Window *window{};
   SDL_Renderer *renderer{};
   SDL_Texture *texture{};
+  SDL_Window *retired_window{};
   bool vulkan_library_loaded{};
   bool vulkan_window{};
   std::atomic<bool> surface_created{};
@@ -100,6 +102,73 @@ struct SdlDisplay::Impl {
                                std::string{SDL_GetError()}};
     }
   }
+
+  // Wayland configures a toplevel's size asynchronously and does not
+  // generally honor SDL_SetWindowSize after the initial configure. An
+  // orientation change therefore needs a fresh toplevel so its initial
+  // request carries the new aspect ratio. The native presenter is rebound by
+  // the caller while the previous toplevel is still alive.
+  bool recreate_wayland_window() {
+    if (window == nullptr ||
+        std::string_view{SDL_GetCurrentVideoDriver() != nullptr
+                             ? SDL_GetCurrentVideoDriver()
+                             : ""} != "wayland") {
+      return false;
+    }
+    if (retired_window != nullptr) {
+      SDL_DestroyWindow(retired_window);
+      retired_window = nullptr;
+    }
+    const auto old_flags = SDL_GetWindowFlags(window);
+    const auto new_flags =
+        SDL_WINDOW_RESIZABLE |
+        (vulkan_window ? static_cast<Uint32>(SDL_WINDOW_VULKAN) : 0U) |
+        (old_flags & SDL_WINDOW_ALLOW_HIGHDPI);
+    auto *replacement = SDL_CreateWindow(
+        "iLEmu", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        static_cast<int>(geometry.width), static_cast<int>(geometry.height),
+        new_flags);
+    if (replacement == nullptr)
+      return false;
+
+    SDL_Renderer *replacement_renderer = nullptr;
+    if (!vulkan_window) {
+      SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+      replacement_renderer =
+          SDL_CreateRenderer(replacement, -1, SDL_RENDERER_ACCELERATED);
+      if (replacement_renderer == nullptr)
+        replacement_renderer =
+            SDL_CreateRenderer(replacement, -1, SDL_RENDERER_SOFTWARE);
+      if (replacement_renderer == nullptr) {
+        SDL_DestroyWindow(replacement);
+        return false;
+      }
+    }
+
+    auto *old_window = window;
+    if (texture != nullptr)
+      SDL_DestroyTexture(texture);
+    if (renderer != nullptr)
+      SDL_DestroyRenderer(renderer);
+    window = replacement;
+    renderer = replacement_renderer;
+    texture = nullptr;
+    surface_created = false;
+    // Keep the old toplevel alive until the Vulkan backend has released its
+    // surface. Wayland display queues may still contain protocol work for the
+    // previous surface while the guest orientation transition is handled.
+    retired_window = old_window;
+    if (!vulkan_window)
+      ensure_cpu_presenter();
+    return true;
+  }
+
+  void destroy_retired_window() {
+    if (retired_window != nullptr) {
+      SDL_DestroyWindow(retired_window);
+      retired_window = nullptr;
+    }
+  }
 #endif
   std::mutex frame_mutex;
   std::condition_variable presentation_available;
@@ -107,6 +176,10 @@ struct SdlDisplay::Impl {
   std::optional<DisplayFrame> pending_frame;
   std::optional<DisplayFrame> pending_native_frame;
   std::optional<DisplayFrame> failed_native_frame;
+  // SDL windows can lose their compositor back buffer while hidden or
+  // covered. Retain the last host-ready frame so an expose/restore event can
+  // repaint without waiting for the guest to submit another frame.
+  std::optional<DisplayFrame> last_presented_frame;
   std::shared_ptr<HostGraphicsDevice> host_graphics;
   std::shared_ptr<HostSurface> cpu_present_surface;
   std::shared_ptr<HostSurface> oriented_present_surface;
@@ -129,8 +202,22 @@ struct SdlDisplay::Impl {
     input.set_orientation(orientation);
 #if defined(ILEMU_HAS_SDL2)
     if (window != nullptr) {
-      SDL_SetWindowSize(window, static_cast<int>(geometry.width),
-                        static_cast<int>(geometry.height));
+      const auto native_presentation =
+          host_graphics && host_graphics->native_presentation_available();
+      if (native_presentation)
+        stop_native_presenter();
+      if (recreate_wayland_window()) {
+        if (native_presentation) {
+          static_cast<void>(host_graphics->refresh_presentation_surface());
+          start_native_presenter();
+        }
+        destroy_retired_window();
+      } else {
+        SDL_SetWindowSize(window, static_cast<int>(geometry.width),
+                          static_cast<int>(geometry.height));
+        if (native_presentation)
+          start_native_presenter();
+      }
     }
     if (texture != nullptr) {
       SDL_DestroyTexture(texture);
@@ -425,6 +512,7 @@ SdlDisplay::~SdlDisplay() {
       SDL_DestroyTexture(impl_->texture);
     if (impl_->renderer != nullptr)
       SDL_DestroyRenderer(impl_->renderer);
+    impl_->destroy_retired_window();
     if (impl_->window != nullptr)
       SDL_DestroyWindow(impl_->window);
 #if defined(ILEMU_HAS_VULKAN)
@@ -486,6 +574,14 @@ void SdlDisplay::set_host_graphics(
   impl_->stop_native_presenter();
   {
     std::lock_guard lock{impl_->frame_mutex};
+    // Release frames before dropping the renderer. A deferred readback keeps
+    // a shared host-graphics reference alive; retaining it until Impl is
+    // destroyed would let Vulkan tear down a Wayland surface after SDL has
+    // already destroyed its window.
+    impl_->pending_frame.reset();
+    impl_->pending_native_frame.reset();
+    impl_->failed_native_frame.reset();
+    impl_->last_presented_frame.reset();
     impl_->host_graphics = std::move(graphics);
     impl_->cpu_present_surface.reset();
     impl_->oriented_present_surface.reset();
@@ -547,8 +643,10 @@ bool SdlDisplay::poll_events() {
   // fallback upload. Native presentation is handed to a lossy mailbox worker
   // and never waits on acquire/present from the guest scheduler thread.
   impl_->running = impl_->input.poll(impl_->window);
+  const auto redraw_requested = impl_->input.take_redraw_request();
   std::optional<DisplayFrame> frame;
   bool native_failed{};
+  bool repainting{};
   {
     std::lock_guard lock{impl_->frame_mutex};
     if (impl_->failed_native_frame) {
@@ -561,6 +659,10 @@ bool SdlDisplay::poll_events() {
       }
     } else {
       frame.swap(impl_->pending_frame);
+    }
+    if (!frame && redraw_requested && impl_->last_presented_frame) {
+      frame = *impl_->last_presented_frame;
+      repainting = true;
     }
   }
   if (frame) {
@@ -590,7 +692,7 @@ bool SdlDisplay::poll_events() {
         }
       }
     }
-    if (frame && impl_->orientation != requested_orientation)
+    if (frame && !repainting && impl_->orientation != requested_orientation)
       impl_->update_orientation(requested_orientation);
   }
   if (frame) {
@@ -625,6 +727,7 @@ bool SdlDisplay::poll_events() {
           performance_counters()
               .record_native_present_mailbox_coalesced();
         }
+        impl_->last_presented_frame = *frame;
         if (telemetry_enabled)
           frame->native_queued_at = std::chrono::steady_clock::now();
         native_queued_at = frame->native_queued_at;
@@ -677,6 +780,10 @@ bool SdlDisplay::poll_events() {
       SDL_RenderCopy(
           impl_->renderer, impl_->texture, nullptr, &destination);
       SDL_RenderPresent(impl_->renderer);
+      {
+        std::lock_guard lock{impl_->frame_mutex};
+        impl_->last_presented_frame = *frame;
+      }
       impl_->presented_frames.fetch_add(1, std::memory_order_release);
       performance_counters().record_cpu_present_fallback(
           frame->sequence, frame->submitted_at);

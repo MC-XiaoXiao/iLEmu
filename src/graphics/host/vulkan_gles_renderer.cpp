@@ -487,6 +487,7 @@ class VulkanGlesRenderer final : public GlesRenderer {
     [[nodiscard]] bool native_presentation_available() const override {
         return presentation_swapchain_ != VK_NULL_HANDLE;
     }
+    [[nodiscard]] bool refresh_presentation_surface() override;
 
   private:
     class Encoder;
@@ -4495,6 +4496,20 @@ HostGraphicsDevice::PresentResult VulkanGlesRenderer::present(
         static_cast<void>(vkDeviceWaitIdle(device_));
         discard_commands();
         return PresentResult::Failed;
+    }
+}
+
+bool VulkanGlesRenderer::refresh_presentation_surface() {
+    if (!presenter_.create_surface || instance_ == VK_NULL_HANDLE ||
+        device_ == VK_NULL_HANDLE) {
+        return false;
+    }
+    try {
+        return recreate_presentation_surface();
+    } catch (...) {
+        last_failure_reason_.store(PerfFallbackReason::BackendFailure,
+                                   std::memory_order_relaxed);
+        return false;
     }
 }
 

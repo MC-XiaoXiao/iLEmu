@@ -95,6 +95,20 @@ bool SdlInput::poll(SDL_Window *window) {
   SDL_Event event{};
   while (SDL_PollEvent(&event) != 0) {
     switch (event.type) {
+    case SDL_WINDOWEVENT:
+      switch (event.window.event) {
+      case SDL_WINDOWEVENT_EXPOSED:
+      case SDL_WINDOWEVENT_SHOWN:
+      case SDL_WINDOWEVENT_RESTORED:
+      case SDL_WINDOWEVENT_SIZE_CHANGED:
+      case SDL_WINDOWEVENT_RESIZED:
+      case SDL_WINDOWEVENT_FOCUS_GAINED:
+        redraw_requested_ = true;
+        break;
+      default:
+        break;
+      }
+      break;
     case SDL_QUIT:
       running_ = false;
       break;

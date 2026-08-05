@@ -49,6 +49,7 @@ class GlesRenderer : public HostGraphicsDevice {
     [[nodiscard]] PresentResult
     present(const std::shared_ptr<HostSurface>& surface) override;
     [[nodiscard]] bool native_presentation_available() const override;
+    [[nodiscard]] bool refresh_presentation_surface() override;
 
     [[nodiscard]] virtual bool draw(DisplayFrame& frame,
                                     GlesRenderTargetKey target,

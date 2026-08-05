@@ -22,6 +22,14 @@ public:
   [[nodiscard]] std::vector<SystemButtonInput> take_button_events();
   [[nodiscard]] std::vector<RingerSwitchInput>
   take_ringer_switch_events();
+  // A compositor may discard the window back buffer while it is hidden or
+  // covered. The presenter consumes this edge to repaint the last scanout
+  // without requiring a new guest frame.
+  [[nodiscard]] bool take_redraw_request() {
+    const auto requested = redraw_requested_;
+    redraw_requested_ = false;
+    return requested;
+  }
 
 private:
   DisplayGeometry geometry_;
@@ -29,6 +37,7 @@ private:
   std::vector<TouchInput> touch_events_;
   std::vector<SystemButtonInput> button_events_;
   std::vector<RingerSwitchInput> ringer_switch_events_;
+  bool redraw_requested_{};
   bool mouse_active_{};
   bool running_{true};
 };

@@ -247,6 +247,9 @@ class HostGraphicsDevice {
     [[nodiscard]] virtual PresentResult
     present(const std::shared_ptr<HostSurface>& surface) = 0;
     [[nodiscard]] virtual bool native_presentation_available() const = 0;
+    // Rebind a native presentation surface after a host window is recreated.
+    // Software backends have no surface to refresh and keep the default no-op.
+    [[nodiscard]] virtual bool refresh_presentation_surface() { return false; }
 };
 
 [[nodiscard]] std::shared_ptr<HostSurface>
