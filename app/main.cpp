@@ -1149,13 +1149,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
       baseband_input_path
           ? bsd::baseband_device::load_replay_file(*baseband_input_path)
           : std::vector<std::byte>{};
-  // A normal simulator boot has no modem. Keep the virtual transport only
-  // when an explicit replay/capture fixture asks for that device boundary;
-  // otherwise expose the offline device surface so stock CommCenter can
-  // finish startup without turning an absent modem into a fabricated AT
-  // exchange.
+  // A normal simulator boot has no modem. A replay input is the only fixture
+  // that supplies a device-side transport contract; capture-only mode merely
+  // records writes from the offline ABI and must not make CommCenter believe
+  // that a radio is present. Keep the offline surface in that mode so the
+  // stock daemon cannot turn the missing modem into a radio-dead alert.
   device.baseband_transport =
-      baseband_input_path || baseband_output_path
+      baseband_input_path
           ? BasebandTransportProfile::Virtual
           : BasebandTransportProfile::Offline;
 
