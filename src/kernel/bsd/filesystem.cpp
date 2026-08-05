@@ -435,38 +435,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
   }
   case 6: { // close
     const auto fd = registers[0];
-    release_record_locks_for_descriptor(fd);
-    const auto erased = file_descriptors_.erase(fd) +
-                        virtual_descriptors_.erase(fd) +
-                        duplicated_descriptors_.erase(fd);
-    if (erased != 0)
-      detach_kevents_for_descriptor(fd);
-    file_offsets_.erase(fd);
-    regular_file_open_descriptions_.erase(fd);
-    file_status_flags_.erase(fd);
-    virtual_block_descriptors_.erase(fd);
-    bpf_descriptors_.erase(fd);
-    descriptor_flags_.erase(fd);
-    host_sockets_.erase(fd);
-    wifi_driver_event_streams_.erase(fd);
-    virtual_udp_sockets_.erase(fd);
-    kernel_control_endpoints_.erase(fd);
-    system_event_filters_.erase(fd);
-    apple80211_scan_delivered_.erase(fd);
-    system_event_next_identifiers_.erase(fd);
-    route_socket_states_.erase(fd);
-    // This may destroy the final listening open description. Its queued
-    // endpoints then close and clients observe the resulting stream state.
-    unix_listener_states_.erase(fd);
-    if (const auto endpoint = socket_pair_endpoints_.find(fd);
-        endpoint != socket_pair_endpoints_.end()) {
-      socket_pair_endpoints_.erase(endpoint);
-    }
-    kqueues_.erase(fd);
-    bound_socket_names_.erase(fd);
-    listening_sockets_.erase(fd);
-    socket_options_.erase(fd);
-    if (erased == 0) {
+    if (!release_file_descriptor(fd)) {
       bsd_error(cpu, bsd_support::bad_file_descriptor);
     } else {
       bsd_success(cpu, 0);

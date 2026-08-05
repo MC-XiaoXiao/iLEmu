@@ -550,6 +550,7 @@ void CompatibilityKernel::install_commpage() {
 }
 
 void CompatibilityKernel::prepare_exec(std::size_t processor_id) {
+  release_close_on_exec_descriptors();
   install_commpage();
   userland_hle_.reset_mappings();
   darwin_notify_state_hle_.reset();

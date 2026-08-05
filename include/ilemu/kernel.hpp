@@ -307,6 +307,8 @@ private:
   void dispatch_bsd_process(Cpu &cpu, std::uint32_t number);
   void release_process_mach_rights();
   void release_process_descriptors();
+  [[nodiscard]] bool release_file_descriptor(std::uint32_t descriptor);
+  void release_close_on_exec_descriptors();
   [[nodiscard]] bool dispatch_bsd_process_credentials(Cpu &cpu,
                                                       std::uint32_t number);
   [[nodiscard]] bool dispatch_bsd_process_information(Cpu &cpu,

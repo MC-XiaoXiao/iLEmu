@@ -775,31 +775,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
     }
     // XNU attaches descriptor filters to an fd-table entry. Replacing the
     // destination closes that entry and detaches every associated knote.
-    detach_kevents_for_descriptor(destination);
-    release_record_locks_for_descriptor(destination);
-    file_descriptors_.erase(destination);
-    file_offsets_.erase(destination);
-    regular_file_open_descriptions_.erase(destination);
-    file_status_flags_.erase(destination);
-    virtual_block_descriptors_.erase(destination);
-    bpf_descriptors_.erase(destination);
-    virtual_descriptors_.erase(destination);
-    host_sockets_.erase(destination);
-    wifi_driver_event_streams_.erase(destination);
-    virtual_udp_sockets_.erase(destination);
-    kernel_control_endpoints_.erase(destination);
-    duplicated_descriptors_.erase(destination);
-    socket_pair_endpoints_.erase(destination);
-    unix_listener_states_.erase(destination);
-    bound_socket_names_.erase(destination);
-    listening_sockets_.erase(destination);
-    descriptor_flags_.erase(destination);
-    socket_options_.erase(destination);
-    system_event_filters_.erase(destination);
-    apple80211_scan_delivered_.erase(destination);
-    system_event_next_identifiers_.erase(destination);
-    route_socket_states_.erase(destination);
-    kqueues_.erase(destination);
+    static_cast<void>(release_file_descriptor(destination));
     if (const auto file = file_descriptors_.find(source);
         file != file_descriptors_.end()) {
       file_descriptors_[destination] = file->second;

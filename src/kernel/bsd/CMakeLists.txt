@@ -13,6 +13,7 @@ target_sources(ilemu_kernel PRIVATE
     aio.cpp
     process.cpp
     filesystem.cpp
+    descriptor_lifecycle.cpp
     descriptor_memory.cpp
     bpf.cpp
     socket.cpp
