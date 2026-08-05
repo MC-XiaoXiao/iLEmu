@@ -17,6 +17,6 @@ void register_core_telephony_hle(UserlandHleRegistry& registry);
 void register_core_telephony_hle(
     UserlandHleRegistry& registry, WifiStateProvider wifi_state,
     std::function<void(const WifiSnapshot&, const WifiSnapshot&)>
-        wifi_state_changed = {});
+        wifi_state_changed = {}, bool suppress_radio_dead_notification = true);
 
 }  // namespace ilemu

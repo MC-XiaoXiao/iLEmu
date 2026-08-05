@@ -31,6 +31,8 @@ enum class IoctlResult {
 
 class State {
 public:
+  [[nodiscard]] bool available() const;
+  void set_available(bool available);
   [[nodiscard]] bool may_open(bool privileged) const;
   [[nodiscard]] IoctlResult ioctl(std::uint32_t command);
   [[nodiscard]] bool exclusive() const;
@@ -51,6 +53,7 @@ public:
 
 private:
   mutable std::mutex mutex_;
+  bool available_{true};
   bool exclusive_{};
   bool h5_transport_mode_{};
   std::size_t minimum_receive_bytes_{};

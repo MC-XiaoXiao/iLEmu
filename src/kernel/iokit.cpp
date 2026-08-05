@@ -881,7 +881,12 @@ void populate_matching_services_locked(KernelSharedState &shared_state,
         shared_state, platform_expert));
   }
   if (const auto profile =
-          kernel_iokit::baseband::matching_service(matching)) {
+          kernel_iokit::baseband::matching_service(matching);
+      profile && shared_state.baseband_device_state.available()) {
+    // A profile marked unavailable has no baseband capability at all. Keep
+    // the registry boundary in lockstep with the device node so clients do
+    // not open a service that cannot exist; the normal Offline profile still
+    // publishes the virtual ABI needed for stock CommCenter startup.
     services.push_back(kernel_iokit::baseband::ensure_service_locked(
         shared_state, *profile));
   }

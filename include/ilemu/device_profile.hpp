@@ -9,6 +9,21 @@
 
 namespace ilemu {
 
+// The simulator can expose the character-device ABI while declaring whether a
+// physical baseband transport is actually present. This is a capability
+// profile, not a firmware-version or application rule. The virtual mode is
+// retained for explicit transport fixtures/replay; normal boots select the
+// offline mode because no modem is attached to the host. Unavailable is
+// reserved for a true no-device boot policy.
+enum class BasebandTransportProfile : std::uint8_t {
+    Virtual,
+    // The device-node/IOKit ABI is present so stock CommCenter can complete
+    // startup, but no radio notifications are authoritative. This is the
+    // normal simulator profile and does not synthesize AT replies.
+    Offline,
+    Unavailable,
+};
+
 struct DeviceProfile {
     std::string_view product_type;
     std::string_view board_config;
@@ -40,6 +55,8 @@ struct DeviceProfile {
     // Native firmware layout and touch coordinate space. Older UIKit builds
     // may keep this fixed even when a different panel geometry is reported.
     DisplayGeometry user_interface;
+    BasebandTransportProfile baseband_transport{
+        BasebandTransportProfile::Virtual};
 
     static const DeviceProfile& default_profile();
 };

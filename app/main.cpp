@@ -1149,6 +1149,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
       baseband_input_path
           ? bsd::baseband_device::load_replay_file(*baseband_input_path)
           : std::vector<std::byte>{};
+  // A normal simulator boot has no modem. Keep the virtual transport only
+  // when an explicit replay/capture fixture asks for that device boundary;
+  // otherwise expose the offline device surface so stock CommCenter can
+  // finish startup without turning an absent modem into a fabricated AT
+  // exchange.
+  device.baseband_transport =
+      baseband_input_path || baseband_output_path
+          ? BasebandTransportProfile::Virtual
+          : BasebandTransportProfile::Offline;
 
   auto initial_memory = std::make_unique<AddressSpace>();
   initial_memory->set_parallel_access(guest_processor_count > 1);

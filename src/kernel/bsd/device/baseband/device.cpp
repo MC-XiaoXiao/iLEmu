@@ -9,9 +9,19 @@
 
 namespace ilemu::bsd::baseband_device {
 
+bool State::available() const {
+  const std::lock_guard lock{mutex_};
+  return available_;
+}
+
+void State::set_available(bool available) {
+  const std::lock_guard lock{mutex_};
+  available_ = available;
+}
+
 bool State::may_open(bool privileged) const {
   const std::lock_guard lock{mutex_};
-  return privileged || !exclusive_;
+  return available_ && (privileged || !exclusive_);
 }
 
 IoctlResult State::ioctl(std::uint32_t command) {

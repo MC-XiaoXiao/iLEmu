@@ -243,11 +243,20 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       bsd_success(cpu, *fd);
       return;
     }
-    if (bsd::baseband_device::is_path(*path) &&
-        !shared_state_->baseband_device_state.may_open(process_.effective_uid ==
-                                                       0)) {
-      bsd_error(cpu, darwin::error::device_busy);
-      return;
+    if (bsd::baseband_device::is_path(*path)) {
+      if (!shared_state_->baseband_device_state.available()) {
+        // There is no modem attached to the simulator. Report the same
+        // device-level failure a real kernel returns before a client can send
+        // an AT command; do not turn a silent successful write into a fake
+        // radio state.
+        bsd_error(cpu, darwin::error::no_such_device_or_address);
+        return;
+      }
+      if (!shared_state_->baseband_device_state.may_open(
+              process_.effective_uid == 0)) {
+        bsd_error(cpu, darwin::error::device_busy);
+        return;
+      }
     }
     if (const auto minor = darwin::bpf::device_minor(*path)) {
       const auto fd = allocate_file_descriptor();
@@ -284,7 +293,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     if (*path == "/dev/random" || *path == "/dev/urandom" ||
         *path == "/dev/srandom" || *path == "/dev/console" ||
         bsd::null_device::is_path(*path) ||
-        bsd::baseband_device::is_path(*path) ||
+        (bsd::baseband_device::is_path(*path) &&
+         shared_state_->baseband_device_state.available()) ||
         bsd::offline_serial_device::is_path(*path)) {
       const auto fd = allocate_file_descriptor();
       if (!fd) {
@@ -542,6 +552,11 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       return;
     }
     output_.write("[vfs] access " + *path + "\n");
+    if (bsd::baseband_device::is_path(*path) &&
+        !shared_state_->baseband_device_state.available()) {
+      bsd_error(cpu, darwin::error::no_such_device_or_address);
+      return;
+    }
     if (*path == "/dev/console" || *path == "/dev/random" ||
         *path == "/dev/urandom" || *path == "/dev/srandom" ||
         bsd::null_device::is_path(*path) ||
@@ -549,7 +564,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
         *path == "/dev/disk0s2" || *path == "/dev/rdisk0s1" ||
         *path == "/dev/rdisk0s2" ||
         *path == darwin::network::apple80211_driver::event_device_path ||
-        bsd::baseband_device::is_path(*path) ||
+        (bsd::baseband_device::is_path(*path) &&
+         shared_state_->baseband_device_state.available()) ||
         bsd::offline_serial_device::is_path(*path)) {
       bsd_success(cpu, 0);
       return;

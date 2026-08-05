@@ -120,6 +120,9 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   shared_state_->device_hardware_model = device_profile_.hardware_model;
   shared_state_->device_model_number = device_profile_.model_number;
   shared_state_->device_ram_bytes = device_profile_.ram_bytes;
+  shared_state_->baseband_device_state.set_available(
+      device_profile_.baseband_transport !=
+      BasebandTransportProfile::Unavailable);
   shared_state_->mounts.clear();
   for (const auto &volume : hfs_volumes_.volumes()) {
     shared_state_->mounts.push_back({"hfs", volume.mount_point,
@@ -158,7 +161,9 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
       [this](const WifiSnapshot &before, const WifiSnapshot &after) {
         apply_wifi_transition(before, after);
         apple80211_hle_.publish_state_change(before, after);
-      });
+      },
+      device_profile_.baseband_transport !=
+          BasebandTransportProfile::Virtual);
   register_dns_configuration_hle(userland_hle_);
   register_app_support_hle(userland_hle_);
   register_lockdown_hle(userland_hle_, activated, lockdown_profile);

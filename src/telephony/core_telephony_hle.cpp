@@ -15,6 +15,7 @@
 #include "ilemu/address_space.hpp"
 #include "ilemu/application_path.hpp"
 #include "ilemu/cpu.hpp"
+#include "ilemu/output.hpp"
 #include "ilemu/userland_hle.hpp"
 #include "ilemu/wifi_state.hpp"
 
@@ -39,6 +40,14 @@ constexpr std::string_view copy_next_call{
 constexpr std::string_view copy_cf_string{"_CFStringGetCString"};
 constexpr std::string_view call_status_change_notification{
     "_kCTCallStatusChangeNotification"};
+constexpr std::string_view telephony_center_add_observer{
+    "_CTTelephonyCenterAddObserver"};
+constexpr std::string_view notification_center_add_observer{
+    "_CFNotificationCenterAddObserver"};
+constexpr std::string_view radio_module_dead_notification{
+    "_kCTPowerRadioModuleDeadNotification"};
+constexpr std::string_view radio_module_dead_notification_text{
+    "kCTPowerRadioModuleDeadNotification"};
 constexpr std::string_view call_dictionary_key{"_kCTCall"};
 constexpr std::string_view server_connection_callback{
     "__ServerConnectionCallback"};
@@ -146,6 +155,34 @@ void return_server_value(UserlandHleCall& call, std::uint32_t value,
         return;
     }
     call.set_return(result);
+}
+
+bool is_radio_dead_notification(UserlandHleCall& call) {
+    const auto symbol = call.symbol_address(radio_module_dead_notification);
+    if (symbol) {
+        const auto notification = call.memory().read32(*symbol);
+        if (notification && call.argument(3) == *notification)
+            return true;
+    }
+    // CFNotificationCenter and CTTelephonyCenter use the same constant
+    // CFString, but a framework's imported pointer can be relocated per task.
+    // Compare the constant's bytes as a fallback so the profile remains
+    // independent of a particular shared-region slide.
+    const auto object = call.argument(3);
+    const auto data = call.memory().read32(object + 8U);
+    const auto length = call.memory().read32(object + 12U);
+    if (!data || !length || *length != radio_module_dead_notification_text.size())
+        return false;
+    const auto bytes = call.memory().read_bytes(*data, *length);
+    if (!bytes)
+        return false;
+    return std::equal(
+        bytes->begin(), bytes->end(), radio_module_dead_notification_text.begin(),
+        radio_module_dead_notification_text.end(),
+        [](std::byte byte, char character) {
+            return std::to_integer<unsigned char>(byte) ==
+                   static_cast<unsigned char>(character);
+        });
 }
 
 void return_server_boolean(UserlandHleCall& call, bool value) {
@@ -506,7 +543,7 @@ void register_core_telephony_hle(UserlandHleRegistry& registry) {
 void register_core_telephony_hle(
     UserlandHleRegistry& registry, WifiStateProvider wifi_state,
     std::function<void(const WifiSnapshot&, const WifiSnapshot&)>
-        wifi_state_changed) {
+        wifi_state_changed, bool suppress_radio_dead_notification) {
     for (const auto symbol : {
              copy_cf_string,
              cf_dictionary_create_mutable,
@@ -531,6 +568,42 @@ void register_core_telephony_hle(
         "telephonyControllerCheckedIn",
         "-[SBStatusBarController telephonyControllerCheckedIn]",
         [](UserlandHleCall& call) { call.set_return(1); });
+
+    // SBTelephonyManager registers this observer before it has any SIM or
+    // service state. A silent transport is not evidence that a physical radio
+    // died, so suppress only that firmware-owned observer in the offline
+    // device profile. Other telephony notifications and every explicit
+    // virtual/replay transport keep their native registration path.
+    registry.register_function(
+        std::string{core_telephony_image},
+        std::string{telephony_center_add_observer},
+        [suppress_radio_dead_notification](UserlandHleCall& call) {
+            if (suppress_radio_dead_notification &&
+                is_offline_ui_client(call) &&
+                is_radio_dead_notification(call)) {
+                call.output().line(
+                    "[telephony] offline radio-dead observer suppressed pid=" +
+                    std::to_string(call.process_id()));
+                call.set_return(0);
+                return;
+            }
+            call.resume_original();
+        });
+    registry.register_function(
+        std::string{core_foundation_image},
+        std::string{notification_center_add_observer},
+        [suppress_radio_dead_notification](UserlandHleCall& call) {
+            if (suppress_radio_dead_notification &&
+                is_offline_ui_client(call) &&
+                is_radio_dead_notification(call)) {
+                call.output().line(
+                    "[telephony] offline radio-dead observer suppressed pid=" +
+                    std::to_string(call.process_id()));
+                call.set_return(0);
+                return;
+            }
+            call.resume_original();
+        });
 
     // Preserve the firmware's CTCall CFRuntime object and MobilePhone flow.
     // Only adapt the missing baseband service reply into the same call-info
