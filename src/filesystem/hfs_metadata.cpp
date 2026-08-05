@@ -81,6 +81,28 @@ std::uint32_t inode_catalog_id(const struct stat& status) {
     return fnv_catalog_id(std::as_bytes(std::span{identity}));
 }
 
+bool is_within_root(const std::filesystem::path& root,
+                   const std::filesystem::path& path) {
+    const auto normalized_root = root.lexically_normal();
+    const auto normalized_path = path.lexically_normal();
+    if (normalized_path == normalized_root) return true;
+    const auto relative = normalized_path.lexically_relative(normalized_root);
+    return !relative.empty() && relative != "." &&
+           relative.begin()->string() != "..";
+}
+
+std::optional<std::uint32_t> inherited_identity(
+    const std::filesystem::path& root, const std::filesystem::path& path,
+    std::string_view name) {
+    auto current = path.lexically_normal();
+    while (is_within_root(root, current) && current != root) {
+        current = current.parent_path();
+        if (const auto value = numeric_xattr(current, name, true))
+            return value;
+    }
+    return std::nullopt;
+}
+
 constexpr std::int64_t days_from_civil(
     int year, unsigned month, unsigned day) {
     year -= month <= 2U;
@@ -246,10 +268,16 @@ std::optional<Metadata> MetadataProvider::query(
                       .value_or(static_cast<std::uint32_t>(status.st_mode));
     result.owner = numeric_xattr(
                        path, "user.hfsfuse.record.owner_id", follow_symlink)
-                       .value_or(0);
+                       .value_or(inherited_identity(
+                                     root_, path,
+                                     "user.hfsfuse.record.owner_id")
+                                     .value_or(0));
     result.group = numeric_xattr(
                        path, "user.hfsfuse.record.group_id", follow_symlink)
-                       .value_or(0);
+                       .value_or(inherited_identity(
+                                     root_, path,
+                                     "user.hfsfuse.record.group_id")
+                                     .value_or(0));
     result.flags = numeric_xattr(
                        path, "user.hfsfuse.record.bsd_flags", follow_symlink)
                        .value_or(0);
