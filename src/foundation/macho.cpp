@@ -14,7 +14,9 @@ namespace ilemu {
 namespace {
 
 constexpr std::uint32_t mh_magic = 0xfeedfaceU;
+constexpr std::uint32_t fat_magic = 0xcafebabeU;
 constexpr std::uint32_t cpu_type_arm = 12;
+constexpr std::uint32_t cpu_subtype_arm_v6 = 6U;
 constexpr std::uint32_t lc_segment = 0x1;
 constexpr std::uint32_t lc_symtab = 0x2;
 constexpr std::uint32_t lc_dysymtab = 0xb;
@@ -240,6 +242,53 @@ MachOImage MachOImage::parse(const std::filesystem::path& path) {
     }
     if (!input && !image.bytes_.empty()) {
         throw std::runtime_error{"failed to read Mach-O: " + path.string()};
+    }
+
+    // App bundles may carry a classic FAT container. Select the ARMv6 slice
+    // for this emulator instead of making each caller know how to unpack it;
+    // the same loader path then handles thin and FAT images identically.
+    const std::span<const std::byte> container{image.bytes_};
+    if (read_be_u32(container, 0U) == fat_magic) {
+        const auto architecture_count = read_be_u32(container, 4U);
+        constexpr std::size_t fat_arch_size = 20U;
+        if (container.size() < 8U || !architecture_count ||
+            *architecture_count >
+                (container.size() - 8U) / fat_arch_size) {
+            throw std::runtime_error{"truncated FAT Mach-O header"};
+        }
+        std::optional<std::pair<std::uint32_t, std::uint32_t>> selected;
+        std::optional<std::pair<std::uint32_t, std::uint32_t>> fallback;
+        for (std::uint32_t index = 0; index < *architecture_count; ++index) {
+            const auto offset = 8U + static_cast<std::size_t>(index) *
+                                          fat_arch_size;
+            const auto architecture = read_be_u32(container, offset);
+            const auto subtype = read_be_u32(container, offset + 4U);
+            const auto slice_offset = read_be_u32(container, offset + 8U);
+            const auto slice_size = read_be_u32(container, offset + 12U);
+            if (!architecture || !subtype || !slice_offset || !slice_size ||
+                *architecture != cpu_type_arm ||
+                *slice_offset > container.size() ||
+                *slice_size > container.size() - *slice_offset) {
+                continue;
+            }
+            if ((*subtype & 0xffU) == cpu_subtype_arm_v6) {
+                selected = std::pair{*slice_offset, *slice_size};
+                break;
+            }
+            if ((*subtype & 0xffU) == 0U && !fallback)
+                fallback = std::pair{*slice_offset, *slice_size};
+        }
+        if (!selected)
+            selected = fallback;
+        if (!selected) {
+            throw std::runtime_error{
+                "FAT Mach-O has no compatible 32-bit ARM slice"};
+        }
+        const auto [slice_offset, slice_size] = *selected;
+        image.bytes_ = std::vector<std::byte>{
+            image.bytes_.begin() + static_cast<std::ptrdiff_t>(slice_offset),
+            image.bytes_.begin() +
+                static_cast<std::ptrdiff_t>(slice_offset + slice_size)};
     }
 
     const std::span<const std::byte> bytes{image.bytes_};
