@@ -1,6 +1,7 @@
 #include "ilemu/sdl_display.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
@@ -52,6 +53,10 @@ struct SdlDisplay::Impl {
   DisplayGeometry guest_geometry;
   DisplayOrientation orientation{DisplayOrientation::Portrait};
   HostSurfaceKey cpu_present_surface_key;
+  HostSurfaceKey oriented_present_surface_key{
+      sdl_presenter_surface_owner,
+      next_sdl_presenter_surface.fetch_add(1,
+                                           std::memory_order_relaxed)};
 #if defined(ILEMU_HAS_SDL2)
   SDL_Window *window{};
   SDL_Renderer *renderer{};
@@ -104,6 +109,8 @@ struct SdlDisplay::Impl {
   std::optional<DisplayFrame> failed_native_frame;
   std::shared_ptr<HostGraphicsDevice> host_graphics;
   std::shared_ptr<HostSurface> cpu_present_surface;
+  std::shared_ptr<HostSurface> oriented_present_surface;
+  std::unique_ptr<CommandEncoder> orientation_encoder;
   std::thread presentation_thread;
   std::atomic<std::uint64_t> presented_frames{};
   bool presentation_stopping{};
@@ -169,6 +176,108 @@ struct SdlDisplay::Impl {
     }
     frame.host_surface = cpu_present_surface;
     return frame.host_surface != nullptr;
+  }
+
+  bool stage_oriented_frame_for_native_present(
+      DisplayFrame &frame, DisplayOrientation requested_orientation) {
+    if (!frame.host_surface || !host_graphics || !orientation_encoder ||
+        !host_graphics->native_presentation_available() ||
+        requested_orientation == DisplayOrientation::Portrait) {
+      return false;
+    }
+    const auto source = frame.host_surface;
+    const auto source_descriptor = source->descriptor();
+    if (source_descriptor.width != frame.width ||
+        source_descriptor.height != frame.height) {
+      return false;
+    }
+    const auto output_geometry =
+        is_landscape(requested_orientation)
+            ? DisplayGeometry{frame.height, frame.width}
+            : DisplayGeometry{frame.width, frame.height};
+    if (!oriented_present_surface ||
+        oriented_present_surface->descriptor().width !=
+            output_geometry.width ||
+        oriented_present_surface->descriptor().height !=
+            output_geometry.height) {
+      oriented_present_surface = host_graphics->create_surface(
+          oriented_present_surface_key,
+          HostSurfaceDescriptor{
+              output_geometry.width, output_geometry.height,
+              output_geometry.width *
+                  static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+              source_descriptor.pixel_format,
+              PerfSurfaceKind::Scanout});
+    }
+    if (!oriented_present_surface)
+      return false;
+
+    const auto source_width = static_cast<float>(frame.width);
+    const auto source_height = static_cast<float>(frame.height);
+    const auto output_width = static_cast<float>(output_geometry.width);
+    const auto output_height = static_cast<float>(output_geometry.height);
+    std::array<HostPoint, 4> texture_coordinates{};
+    switch (requested_orientation) {
+    case DisplayOrientation::Portrait:
+      return false;
+    case DisplayOrientation::PortraitUpsideDown:
+      texture_coordinates = {{{source_width, source_height},
+                              {0.0F, source_height},
+                              {0.0F, 0.0F},
+                              {source_width, 0.0F}}};
+      break;
+    case DisplayOrientation::LandscapeLeft:
+      texture_coordinates = {{{0.0F, 0.0F},
+                              {0.0F, source_height},
+                              {source_width, source_height},
+                              {source_width, 0.0F}}};
+      break;
+    case DisplayOrientation::LandscapeRight:
+      texture_coordinates = {{{source_width, source_height},
+                              {source_width, 0.0F},
+                              {0.0F, 0.0F},
+                              {0.0F, source_height}}};
+      break;
+    }
+    const std::array<HostPoint, 4> positions{{
+        {0.0F, 0.0F},
+        {output_width, 0.0F},
+        {output_width, output_height},
+        {0.0F, output_height},
+    }};
+    std::array<HostTexturedVertex, 4> quad{};
+    for (std::size_t index = 0; index < quad.size(); ++index)
+      quad[index] = {positions[index], texture_coordinates[index]};
+    const auto source_rectangle = HostRectangle{
+        0, 0, frame.width, frame.height};
+    const auto destination_rectangle = HostRectangle{
+        0, 0, output_geometry.width, output_geometry.height};
+    if (!orientation_encoder->copy_quad(
+            source, oriented_present_surface, quad, source_rectangle,
+            destination_rectangle, HostCompositeMode::Copy, 0xffU,
+            HostFilter::Nearest) ||
+        !orientation_encoder->submit(PerfSubmitReason::Presentation)) {
+      return false;
+    }
+
+    auto graphics = host_graphics;
+    auto oriented = oriented_present_surface;
+    frame.width = output_geometry.width;
+    frame.height = output_geometry.height;
+    frame.pixels.clear();
+    frame.host_surface = oriented;
+    frame.read_pixels = [graphics = std::move(graphics),
+                         oriented = std::move(oriented)] {
+      if (!graphics->map_cpu(*oriented, true,
+                             PerfCpuMapReason::DeferredDisplayRead)) {
+        return std::vector<std::uint32_t>{};
+      }
+      auto mapping = oriented->map_cpu(
+          false, PerfCpuMapReason::DeferredDisplayRead);
+      return mapping.frame().pixels;
+    };
+    frame.orientation = DisplayOrientation::Portrait;
+    return true;
   }
 
   void start_native_presenter() {
@@ -379,6 +488,11 @@ void SdlDisplay::set_host_graphics(
     std::lock_guard lock{impl_->frame_mutex};
     impl_->host_graphics = std::move(graphics);
     impl_->cpu_present_surface.reset();
+    impl_->oriented_present_surface.reset();
+    impl_->orientation_encoder =
+        impl_->host_graphics
+            ? impl_->host_graphics->create_command_encoder()
+            : nullptr;
   }
 #if defined(ILEMU_HAS_SDL2)
   if (impl_->host_graphics &&
@@ -452,21 +566,28 @@ bool SdlDisplay::poll_events() {
   if (frame) {
     const auto requested_orientation = frame->orientation;
     if (requested_orientation != DisplayOrientation::Portrait) {
-      const auto raw_geometry = DisplayGeometry{frame->width, frame->height};
-      const auto expected = raw_geometry.pixel_count();
-      if (frame->pixels.size() != expected && frame->read_pixels)
-        frame->pixels = frame->read_pixels();
-      const auto oriented = orient_display_pixels(
-          raw_geometry, frame->pixels, requested_orientation);
-      if (oriented.empty()) {
-        frame.reset();
-      } else {
-        frame->pixels = oriented;
-        frame->host_surface.reset();
-        frame->read_pixels = {};
-        if (is_landscape(requested_orientation))
-          std::swap(frame->width, frame->height);
-        frame->orientation = DisplayOrientation::Portrait;
+      const auto native_oriented =
+          !native_failed &&
+          impl_->stage_oriented_frame_for_native_present(
+              *frame, requested_orientation);
+      if (!native_oriented) {
+        const auto raw_geometry =
+            DisplayGeometry{frame->width, frame->height};
+        const auto expected = raw_geometry.pixel_count();
+        if (frame->pixels.size() != expected && frame->read_pixels)
+          frame->pixels = frame->read_pixels();
+        const auto oriented = orient_display_pixels(
+            raw_geometry, frame->pixels, requested_orientation);
+        if (oriented.empty()) {
+          frame.reset();
+        } else {
+          frame->pixels = oriented;
+          frame->host_surface.reset();
+          frame->read_pixels = {};
+          if (is_landscape(requested_orientation))
+            std::swap(frame->width, frame->height);
+          frame->orientation = DisplayOrientation::Portrait;
+        }
       }
     }
     if (frame && impl_->orientation != requested_orientation)

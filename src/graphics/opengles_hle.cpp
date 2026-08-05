@@ -754,6 +754,33 @@ bool OpenGlesHle::commit_render_target(
     return true;
 }
 
+bool OpenGlesHle::publish_display_surface(
+    UserlandHleCall &call,
+    const std::shared_ptr<HostSurface> &surface) {
+    if (!surface || !display_ || !display_write_allowed(call))
+        return false;
+    const auto descriptor = surface->descriptor();
+    if (descriptor.width != display_->width() ||
+        descriptor.height != display_->height()) {
+        return false;
+    }
+    auto renderer = renderer_;
+    display_->replace_surface(
+        surface,
+        [renderer = std::move(renderer), surface] {
+            if (!renderer->map_cpu(
+                    *surface, true,
+                    PerfCpuMapReason::DeferredDisplayRead)) {
+                return std::vector<std::uint32_t>{};
+            }
+            auto mapping = surface->map_cpu(
+                false, PerfCpuMapReason::DeferredDisplayRead);
+            return mapping.frame().pixels;
+        },
+        call.process_id());
+    return true;
+}
+
 void OpenGlesHle::draw(UserlandHleCall &call, bool indexed) {
     auto *context = current_context(call);
     if (context == nullptr) {
@@ -1026,22 +1053,12 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry &registry) {
             const auto saved_framebuffer = context->bound_framebuffer;
             context->bound_framebuffer = framebuffer->first;
             const auto binding = resolve_render_target(call, *context);
-            const auto synchronized =
-                binding && binding->host_surface
-                    ? renderer_->map_cpu(*binding->host_surface, true,
-                                         PerfCpuMapReason::NativePresent)
-                    : true;
-            const auto frame = binding ? render_target(call, *binding)
-                                       : std::optional<DisplayFrame>{};
             context->bound_framebuffer = saved_framebuffer;
-            const auto allowed = display_write_allowed(call);
-            if (!synchronized || !frame || !display_ ||
-                frame->width != display_->width() ||
-                frame->height != display_->height() || !allowed) {
+            if (!binding ||
+                !publish_display_surface(call, binding->host_surface)) {
                 call.set_return(0U);
                 return;
             }
-            display_->replace_pixels(frame->pixels, call.process_id());
             display_->present(call.process_id());
             call.set_return(1U);
         });

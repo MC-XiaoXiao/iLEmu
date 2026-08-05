@@ -59,6 +59,15 @@ inline constexpr std::uint32_t layerkit_source_over_source_word = 0x00000000U;
 inline constexpr std::uint32_t layerkit_source_over_destination_word =
     0x09000000U;
 
+// Source-over with an additional global-alpha multiplier. LayerKit uses the
+// same source factor as its crossfade equation, but keeps the ordinary
+// one-minus-source-alpha destination factor. This is still premultiplied
+// source-over; the global alpha scales both the source colour and alpha.
+inline constexpr std::uint32_t
+    layerkit_global_alpha_source_over_source_word = 0x00500000U;
+inline constexpr std::uint32_t
+    layerkit_global_alpha_source_over_destination_word = 0x09000000U;
+
 // LayerKit uses this pair while animating between complete scene snapshots.
 // Unlike source-over, both factors are derived from the equation's global
 // alpha: source * alpha + destination * (1 - alpha).  In particular, the

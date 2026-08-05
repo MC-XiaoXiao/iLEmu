@@ -181,6 +181,9 @@ class OpenGlesHle {
     [[nodiscard]] bool commit_render_target(
         UserlandHleCall &call, const RenderTargetBinding &binding,
         DisplayFrame frame);
+    [[nodiscard]] bool publish_display_surface(
+        UserlandHleCall &call,
+        const std::shared_ptr<HostSurface> &surface);
     void draw(UserlandHleCall &call, bool indexed);
     [[nodiscard]] bool display_write_allowed(UserlandHleCall &call) const;
     void register_eagl(UserlandHleRegistry &registry);

@@ -984,6 +984,13 @@ Mbx2dHle::host_composite_mode(const RenderState &state) const {
   }
   if (!state.blend.complex &&
       state.blend.source_factor ==
+          mbx2d_abi::layerkit_global_alpha_source_over_source_word &&
+      state.blend.destination_factor ==
+          mbx2d_abi::layerkit_global_alpha_source_over_destination_word) {
+    return HostCompositeMode::PremultipliedSourceOver;
+  }
+  if (!state.blend.complex &&
+      state.blend.source_factor ==
           mbx2d_abi::layerkit_crossfade_source_word &&
       state.blend.destination_factor ==
           mbx2d_abi::layerkit_crossfade_destination_word) {
