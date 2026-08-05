@@ -32,7 +32,7 @@ constexpr std::array<std::string_view, 3> application_image_directories{
     "Applications/", "var/mobile/Applications/",
     "private/var/mobile/Applications/"};
 constexpr std::string_view offline_sim_status_export{
-    "_kCTSIMSupportSIMStatusNotInserted"};
+    "_kCTSIMSupportSIMStatusReady"};
 constexpr std::string_view create_call_from_info{
     "__CTCallCreateFromCallInfo"};
 constexpr std::string_view copy_next_call{
@@ -544,7 +544,7 @@ void register_core_telephony_hle(UserlandHleRegistry& registry) {
 void register_core_telephony_hle(
     UserlandHleRegistry& registry, WifiStateProvider wifi_state,
     std::function<void(const WifiSnapshot&, const WifiSnapshot&)>
-        wifi_state_changed, bool suppress_radio_dead_notification) {
+        wifi_state_changed, bool offline_transport) {
     for (const auto symbol : {
              copy_cf_string,
              cf_dictionary_create_mutable,
@@ -578,8 +578,8 @@ void register_core_telephony_hle(
     registry.register_function(
         std::string{core_telephony_image},
         std::string{telephony_center_add_observer},
-        [suppress_radio_dead_notification](UserlandHleCall& call) {
-            if (suppress_radio_dead_notification &&
+        [offline_transport](UserlandHleCall& call) {
+            if (offline_transport &&
                 is_offline_ui_client(call) &&
                 // This firmware's private CoreTelephony wrapper receives
                 // (center, observer, callback, name, context), so the name is
@@ -601,8 +601,8 @@ void register_core_telephony_hle(
     registry.register_function(
         std::string{core_foundation_image},
         std::string{notification_center_add_observer},
-        [suppress_radio_dead_notification](UserlandHleCall& call) {
-            if (suppress_radio_dead_notification &&
+        [offline_transport](UserlandHleCall& call) {
+            if (offline_transport &&
                 is_offline_ui_client(call) &&
                 // CFNotificationCenterAddObserver(center, observer,
                 // callback, name, object, behavior) places it in r3.
@@ -808,12 +808,15 @@ void register_core_telephony_hle(
         });
     registry.register_function(
         std::string{core_telephony_image}, "_CTSIMSupportGetSIMStatus",
-        [](UserlandHleCall& call) {
-            // lockdownd itself consumes this status while deciding whether an
-            // activation record is required. The emulated modem is always
-            // physically absent, so keep that daemon on the same stable
-            // no-SIM contract as SpringBoard and third-party UI clients.
-            return_firmware_object(call, offline_sim_status_export, true);
+        [offline_transport](UserlandHleCall& call) {
+            // The offline transport intentionally has no modem, but stock
+            // SpringBoard turns NotInserted into a blocking modal. Expose the
+            // simulator's logical SIM-ready capability instead; explicit
+            // replay/virtual transports continue through their native path.
+            if (offline_transport) {
+                return_firmware_object(call, offline_sim_status_export, true);
+            }
+            call.resume_original();
         });
     for (const auto symbol : offline_direct_string_queries) {
         registry.register_function(
@@ -828,9 +831,14 @@ void register_core_telephony_hle(
     registry.register_function(
         std::string{core_telephony_image},
         "__CTServerConnectionGetSIMStatus",
-        [](UserlandHleCall& call) {
-            return_server_value(
-                call, exported_object(call, offline_sim_status_export), true);
+        [offline_transport](UserlandHleCall& call) {
+            if (offline_transport) {
+                return_server_value(
+                    call, exported_object(call, offline_sim_status_export),
+                    true);
+                return;
+            }
+            call.resume_original();
         });
 
     // The offline adapter supplies service results directly, so registration
