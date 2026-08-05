@@ -61,6 +61,7 @@ struct GlesRasterState {
     std::array<float, 4> blend_constant{};
     std::uint32_t cull_mode{gles_abi::back};
     std::uint32_t front_face{gles_abi::counter_clockwise};
+    float line_width{1.0F};
     bool cull_enabled{};
     bool render_target_inverted_vertical{};
 };

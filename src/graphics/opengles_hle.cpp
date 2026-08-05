@@ -16,6 +16,7 @@
 #include "ilemu/application_path.hpp"
 #include "ilemu/cpu.hpp"
 #include "ilemu/display.hpp"
+#include "ilemu/gles_primitive_assembler.hpp"
 #include "ilemu/kernel_shared_state.hpp"
 #include "ilemu/output.hpp"
 #include "ilemu/scene_coordinator.hpp"
@@ -788,8 +789,7 @@ void OpenGlesHle::draw(UserlandHleCall &call, bool indexed) {
         return;
     }
     const auto mode = call.argument(0);
-    if (mode != gles_abi::triangles && mode != gles_abi::triangle_strip &&
-        mode != gles_abi::triangle_fan) {
+    if (!GlesPrimitiveAssembler::supports(mode)) {
         set_gl_error(call, gles_abi::invalid_enum);
         return;
     }
@@ -873,7 +873,8 @@ void OpenGlesHle::draw(UserlandHleCall &call, bool indexed) {
         }
         vertices.push_back(*vertex);
     }
-    if (vertices.size() < 3)
+    if (vertices.size() <
+        GlesPrimitiveAssembler::minimum_vertex_count(mode))
         return;
     const auto binding = resolve_render_target(call, *context);
     if (!binding) {
@@ -912,6 +913,7 @@ void OpenGlesHle::draw(UserlandHleCall &call, bool indexed) {
     state.blend_destination = context->blend_destination;
     state.cull_mode = context->cull_mode;
     state.front_face = context->front_face;
+    state.line_width = context->line_width;
     state.render_target_inverted_vertical = binding->inverted_vertical;
     auto *pixmap_surface = binding->pixmap_surface;
     for (std::size_t unit_index = 0; unit_index < context->texture_units.size();
@@ -1638,6 +1640,19 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
                 static_cast<float>(call.argument(component) & 0xffU) / 255.0F;
         }
     });
+    add("_glLineWidth", [this](UserlandHleCall &call) {
+        auto *context = current_context(call);
+        if (context == nullptr) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        const auto width = std::bit_cast<float>(call.argument(0));
+        if (!std::isfinite(width) || width <= 0.0F) {
+            set_gl_error(call, gles_abi::invalid_value);
+            return;
+        }
+        context->line_width = width;
+    });
     add("_glGetIntegerv", [this](UserlandHleCall &call) {
         auto *context = current_context(call);
         const auto output = call.argument(1);
@@ -1748,6 +1763,10 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
                       context->current_color.end(), current.begin());
             values = &current;
             count = context->current_color.size();
+        } else if (call.argument(0) == gles_abi::line_width_query) {
+            current[0] = context->line_width;
+            values = &current;
+            count = 1U;
         } else if (call.argument(0) == gles_abi::modelview_matrix_query) {
             values = &context->modelview_matrix.values();
             count = values->size();

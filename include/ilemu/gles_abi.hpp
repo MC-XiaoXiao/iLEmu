@@ -53,6 +53,10 @@ inline constexpr std::uint32_t unsigned_short_5_6_5 = 0x8363U;
 inline constexpr std::uint32_t static_draw = 0x88e4U;
 inline constexpr std::uint32_t dynamic_draw = 0x88e8U;
 
+inline constexpr std::uint32_t points = 0x0000U;
+inline constexpr std::uint32_t lines = 0x0001U;
+inline constexpr std::uint32_t line_loop = 0x0002U;
+inline constexpr std::uint32_t line_strip = 0x0003U;
 inline constexpr std::uint32_t triangles = 0x0004U;
 inline constexpr std::uint32_t triangle_strip = 0x0005U;
 inline constexpr std::uint32_t triangle_fan = 0x0006U;
@@ -68,6 +72,7 @@ inline constexpr std::uint32_t cull_face = 0x0b44U;
 inline constexpr std::uint32_t scissor_test = 0x0c11U;
 
 inline constexpr std::uint32_t current_color = 0x0b00U;
+inline constexpr std::uint32_t line_width_query = 0x0b21U;
 inline constexpr std::uint32_t matrix_mode_query = 0x0ba0U;
 inline constexpr std::uint32_t viewport_query = 0x0ba2U;
 inline constexpr std::uint32_t modelview_matrix_query = 0x0ba6U;

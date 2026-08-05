@@ -10,6 +10,7 @@
 
 #include "ilemu/display.hpp"
 #include "ilemu/gles_abi.hpp"
+#include "ilemu/gles_primitive_assembler.hpp"
 #include "ilemu/gles_resources.hpp"
 
 namespace ilemu {
@@ -376,10 +377,7 @@ bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
                                   std::span<const GlesRasterVertex> vertices,
                                   std::uint32_t mode,
                                   const GlesRasterState& state) {
-    if (state.viewport_width == 0 || state.viewport_height == 0 ||
-        vertices.size() < 3 ||
-        (mode != gles_abi::triangles && mode != gles_abi::triangle_strip &&
-         mode != gles_abi::triangle_fan)) {
+    if (state.viewport_width == 0 || state.viewport_height == 0) {
         return false;
     }
     if (frame.width == 0 || frame.height == 0 ||
@@ -387,9 +385,19 @@ bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
             static_cast<std::size_t>(frame.width) * frame.height) {
         return false;
     }
+    const auto primitive =
+        GlesPrimitiveAssembler::assemble(vertices, mode, state);
+    if (!primitive)
+        return false;
+    const auto primitive_vertices = primitive->vertices();
+    if (primitive_vertices.empty())
+        return true;
+    auto raster_state = state;
+    if (primitive->ignores_culling())
+        raster_state.cull_enabled = false;
     std::vector<ScreenVertex> screen;
-    screen.reserve(vertices.size());
-    for (const auto& vertex : vertices) {
+    screen.reserve(primitive_vertices.size());
+    for (const auto& vertex : primitive_vertices) {
         if (vertex.position[3] == 0.0F)
             return false;
         const auto inverse_w = 1.0F / vertex.position[3];
@@ -408,13 +416,13 @@ bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
             ScreenVertex{window_x, host_y, vertex.color, vertex.texture});
     }
     const auto emit = [&](std::size_t a, std::size_t b, std::size_t c) {
-        draw_triangle(frame, {screen[a], screen[b], screen[c]}, state);
+        draw_triangle(frame, {screen[a], screen[b], screen[c]}, raster_state);
     };
-    if (mode == gles_abi::triangles) {
+    if (primitive->mode() == gles_abi::triangles) {
         for (std::size_t index = 0; index + 2 < screen.size(); index += 3) {
             emit(index, index + 1U, index + 2U);
         }
-    } else if (mode == gles_abi::triangle_strip) {
+    } else if (primitive->mode() == gles_abi::triangle_strip) {
         for (std::size_t index = 0; index + 2 < screen.size(); ++index) {
             if ((index & 1U) == 0)
                 emit(index, index + 1U, index + 2U);

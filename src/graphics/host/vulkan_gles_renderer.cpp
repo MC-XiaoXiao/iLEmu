@@ -30,6 +30,7 @@
 
 #include "ilemu/display.hpp"
 #include "ilemu/gles_abi.hpp"
+#include "ilemu/gles_primitive_assembler.hpp"
 #include "ilemu/gles_resources.hpp"
 
 namespace ilemu {
@@ -4528,14 +4529,12 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
     if (frame.width == 0 || frame.height == 0 ||
         frame.pixels.size() !=
             static_cast<std::size_t>(frame.width) * frame.height ||
-        state.viewport_width == 0 || state.viewport_height == 0 ||
-        vertices.size() < 3) {
+        state.viewport_width == 0 || state.viewport_height == 0) {
         last_failure_reason_.store(PerfFallbackReason::InvalidTarget,
                                    std::memory_order_relaxed);
         return false;
     }
-    if (mode != gles_abi::triangles && mode != gles_abi::triangle_strip &&
-        mode != gles_abi::triangle_fan) {
+    if (!GlesPrimitiveAssembler::supports(mode)) {
         last_failure_reason_.store(PerfFallbackReason::UnsupportedPrimitive,
                                    std::memory_order_relaxed);
         return false;
@@ -4548,6 +4547,19 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
                                    std::memory_order_relaxed);
         return false;
     }
+    const auto primitive =
+        GlesPrimitiveAssembler::assemble(vertices, mode, state);
+    if (!primitive) {
+        last_failure_reason_.store(PerfFallbackReason::InvalidVertex,
+                                   std::memory_order_relaxed);
+        return false;
+    }
+    const auto primitive_vertices = primitive->vertices();
+    if (primitive_vertices.empty())
+        return true;
+    auto primitive_state = state;
+    if (primitive->ignores_culling())
+        primitive_state.cull_enabled = false;
     if (state.blend_enabled &&
         (!blend_factor(state.blend_source) ||
          !blend_factor(state.blend_destination))) {
@@ -4580,7 +4592,8 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
         }
     }
 
-    auto expanded = expand_vertices(vertices, mode, state);
+    auto expanded = expand_vertices(primitive_vertices, primitive->mode(),
+                                    primitive_state);
     if (expanded.empty())
         return true;
     PipelineKey pipeline_key;

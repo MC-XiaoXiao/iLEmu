@@ -106,6 +106,7 @@ class OpenGlesHle {
         std::array<std::int32_t, 4> viewport{};
         std::array<std::int32_t, 4> scissor_box{};
         std::array<float, 4> current_color{1.0F, 1.0F, 1.0F, 1.0F};
+        float line_width{1.0F};
         std::array<bool, 4> color_mask{true, true, true, true};
         std::array<std::uint32_t, 4> clear_color{};
         std::uint32_t clear_argb{0xff000000U};
