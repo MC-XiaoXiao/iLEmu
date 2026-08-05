@@ -112,19 +112,22 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   display_state_->set_orientation_resolver(
       [state = shared_state_, scenes = scene_coordinator_](
           std::uint32_t owner_process_id) {
+        // The owner is the process that submitted the pixels being tagged.
+        // During Home, the old App scene remains foreground while SpringBoard
+        // composes its portrait exit frame; using that scene here rotates the
+        // new desktop with the outgoing App. Only use the scene as a fallback
+        // when the publisher has not been registered yet.
         const auto foreground_scene = scenes->foreground_client_scene();
-        const auto foreground_process_id =
-            foreground_scene ? foreground_scene->client_process_id
-                             : owner_process_id;
         std::lock_guard lock{state->mach_mutex};
-        if (const auto process = state->processes.find(foreground_process_id);
-            process != state->processes.end()) {
-          return process->second.display_orientation;
+        if (const auto owner = state->processes.find(owner_process_id);
+            owner != state->processes.end()) {
+          return owner->second.display_orientation;
         }
-        if (foreground_process_id != owner_process_id) {
-          if (const auto owner = state->processes.find(owner_process_id);
-              owner != state->processes.end()) {
-            return owner->second.display_orientation;
+        if (foreground_scene) {
+          if (const auto process = state->processes.find(
+                  foreground_scene->client_process_id);
+              process != state->processes.end()) {
+            return process->second.display_orientation;
           }
         }
         return DisplayOrientation::Portrait;
