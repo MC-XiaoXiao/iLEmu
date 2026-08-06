@@ -144,6 +144,7 @@ void MobileFramebufferHle::reset() {
   next_swap_id_ = 1;
   background_argb_ = 0xff000000U;
   submitted_background_argb_ = background_argb_;
+  composition_surface_index_ = 0;
   scanout_contents_valid_ = false;
 }
 
@@ -154,6 +155,11 @@ void MobileFramebufferHle::inherit_state(const MobileFramebufferHle &parent) {
   background_argb_ = parent.background_argb_;
   submitted_background_argb_ = parent.submitted_background_argb_;
   scanout_surface_ = parent.scanout_surface_;
+  // The published scanout is read-only from the child's point of view. Do
+  // not inherit the writable composition targets: forked kernels can submit
+  // concurrently, so each instance must own the targets it may modify.
+  composition_surfaces_.clear();
+  composition_surface_index_ = 0;
   scanout_contents_valid_ = parent.scanout_contents_valid_;
 }
 
@@ -164,6 +170,8 @@ void MobileFramebufferHle::set_display(std::shared_ptr<DisplayState> display) {
     if (descriptor.width != display_->width() ||
         descriptor.height != display_->height()) {
       scanout_surface_.reset();
+      composition_surfaces_.clear();
+      composition_surface_index_ = 0;
       submitted_layers_.clear();
       scanout_contents_valid_ = false;
     }
@@ -255,6 +263,32 @@ void MobileFramebufferHle::ensure_scanout_surface() {
   submitted_layers_.clear();
   submitted_background_argb_ = background_argb_;
   scanout_contents_valid_ = false;
+}
+
+std::shared_ptr<HostSurface>
+MobileFramebufferHle::acquire_composition_surface() {
+  constexpr std::size_t composition_ring_size = 8;
+  const auto descriptor = HostSurfaceDescriptor{
+      display_->width(), display_->height(),
+      display_->width() * core_surface_abi::bytes_per_bgra_pixel,
+      surface_pixel_format_bgra, PerfSurfaceKind::Scanout};
+  while (composition_surfaces_.size() < composition_ring_size) {
+    auto surface = host_graphics_->create_surface(
+        {0x434f4d50U,
+         next_scanout_surface.fetch_add(1, std::memory_order_relaxed)},
+        descriptor);
+    composition_surfaces_.push_back(std::move(surface));
+  }
+  for (std::size_t attempt = 0; attempt < composition_surfaces_.size();
+       ++attempt) {
+    const auto index = composition_surface_index_ %
+                       composition_surfaces_.size();
+    composition_surface_index_ = (index + 1U) % composition_surfaces_.size();
+    const auto &candidate = composition_surfaces_[index];
+    if (candidate && candidate != scanout_surface_)
+      return candidate;
+  }
+  return {};
 }
 
 bool MobileFramebufferHle::submit_host_layers(UserlandHleCall &call) {
@@ -519,9 +553,23 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall &call) {
     }
   }
 
+  auto composition_surface = scanout_surface_;
   if (!damage.empty()) {
+    composition_surface = acquire_composition_surface();
+    if (!composition_surface)
+      return false;
+    const auto full_display_rectangle =
+        HostRectangle{0, 0, display_->width(), display_->height()};
+    if (scanout_contents_valid_ &&
+        !command_encoder_->copy(
+            scanout_surface_, composition_surface, full_display_rectangle,
+            full_display_rectangle, HostCompositeMode::Copy, 0xffU,
+            HostFilter::Nearest, HostRotation::Identity)) {
+      scanout_contents_valid_ = false;
+      return false;
+    }
     for (const auto rectangle : damage) {
-      if (!command_encoder_->fill(scanout_surface_, rectangle,
+      if (!command_encoder_->fill(composition_surface, rectangle,
                                   background_argb_)) {
         scanout_contents_valid_ = false;
         return false;
@@ -534,7 +582,7 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall &call) {
         if (!clip)
           continue;
         if (!command_encoder_->copy(
-                layer.source, scanout_surface_,
+                layer.source, composition_surface,
                 layer.source_rectangle, layer.destination_rectangle,
                 HostCompositeMode::PremultipliedSourceOver, 0xffU,
                 HostFilter::Nearest, HostRotation::Identity, *clip)) {
@@ -547,6 +595,7 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall &call) {
       scanout_contents_valid_ = false;
       return false;
     }
+    scanout_surface_ = composition_surface;
   }
 
   submitted_layers_.clear();

@@ -9,7 +9,6 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
-#include <string_view>
 #include <vector>
 
 #include "ilemu/address_space.hpp"
@@ -59,34 +58,6 @@ bool covers_scene_extent(std::int64_t width, std::int64_t height,
          static_cast<std::uint64_t>(height) * scene_extent_denominator >=
              static_cast<std::uint64_t>(destination_height) *
                  scene_extent_numerator;
-}
-
-// Temporary frame-hitch diagnostic. Zero-duration HLE buckets count which
-// native quad/composite paths were accepted without changing rendering.
-std::string_view native_quad_bucket(bool copy, HostCompositeMode mode) {
-  if (copy) {
-    switch (mode) {
-    case HostCompositeMode::Copy:
-      return "NativeCopyQuad.Copy";
-    case HostCompositeMode::SourceOver:
-      return "NativeCopyQuad.SourceOver";
-    case HostCompositeMode::PremultipliedSourceOver:
-      return "NativeCopyQuad.PremultipliedSourceOver";
-    case HostCompositeMode::ConstantAlphaCrossfade:
-      return "NativeCopyQuad.ConstantAlphaCrossfade";
-    }
-  }
-  switch (mode) {
-  case HostCompositeMode::Copy:
-    return "NativeFillQuad.Copy";
-  case HostCompositeMode::SourceOver:
-    return "NativeFillQuad.SourceOver";
-  case HostCompositeMode::PremultipliedSourceOver:
-    return "NativeFillQuad.PremultipliedSourceOver";
-  case HostCompositeMode::ConstantAlphaCrossfade:
-    return "NativeFillQuad.ConstantAlphaCrossfade";
-  }
-  return "NativeQuad.Unknown";
 }
 
 std::optional<std::array<Point, 4>> read_quad(AddressSpace &memory,
@@ -268,8 +239,6 @@ void Mbx2dHle::quad_color(UserlandHleCall &call) {
              static_cast<std::uint32_t>(height)},
             call.argument(1), *composite_mode,
             state_.blend.global_alpha)) {
-      performance_counters().record_hle(
-          native_quad_bucket(false, *composite_mode), 0);
       call.set_return(mbx2d_abi::success);
       return;
     }
@@ -525,11 +494,6 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
     call.set_return(mbx2d_abi::success);
     return;
   }
-  const auto full_texture_extent =
-      nearly_equal(minimum_u, 0.0F) &&
-      nearly_equal(maximum_u, static_cast<float>(source->width)) &&
-      nearly_equal(minimum_v, 0.0F) &&
-      nearly_equal(maximum_v, static_cast<float>(source->height));
   const auto ordered_geometry =
       triangles_share_only_diagonal(*positions);
   const auto host_ready =
@@ -539,32 +503,6 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
       destination->backing &&
       source->backing->pixel_format == surface_pixel_format_bgra &&
       destination->backing->pixel_format == surface_pixel_format_bgra;
-  // Temporary frame-hitch diagnostic. These zero-duration buckets expose why
-  // firmware quads miss the native encoder; delete after localization.
-  performance_counters().record_hle(
-      axis_aligned_affine ? "QuadCopy.Candidate.AxisAffine"
-                          : "QuadCopy.Candidate.General",
-      0);
-  performance_counters().record_hle(
-      destination_integral ? "QuadCopy.Candidate.Integral"
-                           : "QuadCopy.Candidate.Fractional",
-      0);
-  performance_counters().record_hle(
-      ordered_geometry ? "QuadCopy.Candidate.Ordered"
-                       : "QuadCopy.Candidate.Unordered",
-      0);
-  performance_counters().record_hle(
-      full_texture_extent ? "QuadCopy.Candidate.FullTexture"
-                          : "QuadCopy.Candidate.PartialTexture",
-      0);
-  performance_counters().record_hle(
-      host_ready ? "QuadCopy.Candidate.HostReady"
-                 : "QuadCopy.Candidate.HostUnavailable",
-      0);
-  performance_counters().record_hle(
-      composite_mode ? "QuadCopy.Candidate.CompositeSupported"
-                     : "QuadCopy.Candidate.CompositeUnsupported",
-      0);
   bool native_quad_attempted = false;
   if (ordered_geometry && host_ready && composite_mode &&
       left <= std::numeric_limits<std::int32_t>::max() &&
@@ -601,8 +539,6 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
                 std::chrono::steady_clock::now() - started)
                 .count()));
     if (encoded) {
-      performance_counters().record_hle(
-          native_quad_bucket(true, *composite_mode), 0);
       call.set_return(mbx2d_abi::success);
       return;
     }

@@ -5,6 +5,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <vector>
 
 #include "ilemu/host_graphics.hpp"
 
@@ -48,6 +49,7 @@ private:
                                 std::uint64_t publication_sequence) const;
     [[nodiscard]] bool submit_host_layers(UserlandHleCall &call);
     void ensure_scanout_surface();
+    [[nodiscard]] std::shared_ptr<HostSurface> acquire_composition_surface();
 
     struct Rectangle {
         float x{};
@@ -80,6 +82,11 @@ private:
     std::shared_ptr<GlesRenderer> host_graphics_;
     std::unique_ptr<CommandEncoder> command_encoder_;
     std::shared_ptr<HostSurface> scanout_surface_;
+    // Keep the last published target immutable while the host presenter can
+    // still consume it. The ring is independent of guest model/firmware; the
+    // software path below continues to compose into DisplayState pixels.
+    std::vector<std::shared_ptr<HostSurface>> composition_surfaces_;
+    std::size_t composition_surface_index_{};
     std::map<std::uint32_t, LayerState> layers_;
     std::map<std::uint32_t, SubmittedLayer> submitted_layers_;
     std::uint32_t next_swap_id_{1};
