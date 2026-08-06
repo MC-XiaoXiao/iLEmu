@@ -74,13 +74,15 @@ MappedTouch map_finger(TouchPhase phase, float x, float y,
 
 std::optional<SystemButton> map_key(SDL_Keycode key) {
   switch (key) {
-  case SDLK_HOME:
+  case SDLK_h:
     return SystemButton::Home;
-  case SDLK_END:
+  case SDLK_l:
     return SystemButton::Lock;
-  case SDLK_PAGEUP:
+  case SDLK_PLUS:
+  case SDLK_KP_PLUS:
     return SystemButton::VolumeUp;
-  case SDLK_PAGEDOWN:
+  case SDLK_MINUS:
+  case SDLK_KP_MINUS:
     return SystemButton::VolumeDown;
   default:
     return std::nullopt;
@@ -123,7 +125,7 @@ bool SdlInput::poll(SDL_Window *window) {
     case SDL_KEYUP:
       if (event.key.repeat == 0) {
         if (event.type == SDL_KEYDOWN &&
-            event.key.keysym.sym == SDLK_DELETE) {
+            event.key.keysym.sym == SDLK_r) {
           ringer_switch_events_.push_back(RingerSwitchInput{});
           break;
         }

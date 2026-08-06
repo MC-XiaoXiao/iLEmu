@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "ilemu/address_space.hpp"
+#include "ilemu/arm_cpu_model.hpp"
 
 namespace ilemu {
 
@@ -63,7 +64,9 @@ struct MachSymbol {
 
 class MachOImage {
 public:
-    static MachOImage parse(const std::filesystem::path& path);
+    static MachOImage parse(
+        const std::filesystem::path& path,
+        ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
 
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
     [[nodiscard]] std::uint32_t cpu_type() const { return cpu_type_; }

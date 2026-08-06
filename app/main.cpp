@@ -530,12 +530,13 @@ private:
 
 std::string usage() {
   return "Usage:\n"
-         "  ilemu profile [--output FILE]\n"
+         "  ilemu profile [--device iPhone1,1|iPhone1,2|iPhone2,1] [--output FILE]\n"
          "  ilemu inspect --rootfs DIR [--binary /sbin/launchd] "
-         "[--symbols SUBSTRING] [--output FILE]\n"
+         "[--device PROFILE] [--symbols SUBSTRING] [--output FILE]\n"
          "  ilemu disasm --rootfs DIR --binary PATH "
-         "(--symbol NAME | --address ADDR) [--count N] [--thumb]\n"
-         "  ilemu boot --rootfs DIR [--binary /sbin/launchd] [--ticks N] "
+         "(--symbol NAME | --address ADDR) [--device PROFILE] [--count N] [--thumb]\n"
+         "  ilemu boot --rootfs DIR [--device iPhone1,1|iPhone1,2|iPhone2,1] "
+         "[--binary /sbin/launchd] [--ticks N] "
          "[--cores N] [--jit-cache-mib 8..128] "
          "[--watch-address ADDR] [--gdb PORT] "
          "[--display headless|sdl] [--network isolated|loopback|host] "
@@ -653,8 +654,24 @@ std::unique_ptr<Output> make_output(const std::vector<std::string> &args) {
   return std::make_unique<Output>(std::cout);
 }
 
-void profile(Output &output) {
-  const auto &device = DeviceProfile::default_profile();
+const DeviceProfile& select_device_profile(
+    const std::vector<std::string>& args) {
+  const auto requested =
+      option(args, "--device").value_or(
+          std::string{DeviceProfile::default_profile().product_type});
+  if (const auto* profile = DeviceProfile::find(requested)) {
+    return *profile;
+  }
+  std::ostringstream message;
+  message << "unknown device profile: " << requested << "; available:";
+  for (const auto& profile : DeviceProfile::available_profiles()) {
+    message << ' ' << profile.product_type;
+  }
+  throw std::runtime_error{message.str()};
+}
+
+void profile(const std::vector<std::string>& args, Output &output) {
+  const auto &device = select_device_profile(args);
   std::ostringstream text;
   text << "product: " << device.product_type << '\n'
        << "board: " << device.board_config << '\n'
@@ -682,7 +699,9 @@ void inspect(const std::vector<std::string> &args, Output &output) {
     relative = relative.relative_path();
   }
   const auto host_path = std::filesystem::path{*rootfs} / relative;
-  const auto image = MachOImage::parse(host_path);
+  const auto image = MachOImage::parse(
+      host_path,
+      arm_architecture_for_model(select_device_profile(args).cpu_model));
 
   std::ostringstream text;
   text << "path: " << host_path.string() << '\n'
@@ -765,8 +784,9 @@ void disasm(const std::vector<std::string> &args, Output &output) {
   std::filesystem::path relative = *binary;
   if (relative.is_absolute())
     relative = relative.relative_path();
-  const auto image =
-      MachOImage::parse(std::filesystem::path{*rootfs} / relative);
+  const auto image = MachOImage::parse(
+      std::filesystem::path{*rootfs} / relative,
+      arm_architecture_for_model(select_device_profile(args).cpu_model));
   const MachSymbol *symbol = nullptr;
   std::uint32_t start_address = 0;
   if (symbol_name) {
@@ -965,7 +985,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       host_cache / "vulkan-pipeline-cache.bin");
   configure_gles_backend(gles_backend);
   const auto binary = option(args, "--binary").value_or("/sbin/launchd");
-  auto device = DeviceProfile::default_profile();
+  auto device = select_device_profile(args);
   if (const auto display_size = option(args, "--display-size")) {
     device.display = parse_display_geometry(*display_size);
   }
@@ -981,7 +1001,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
     throw std::runtime_error{
         "--activation must be activated, unactivated, or preserve"};
   }
-  const auto lockdown_profile = detect_lockdown_firmware_profile(*rootfs);
+  const auto lockdown_profile = detect_lockdown_firmware_profile(
+      *rootfs, arm_architecture_for_model(device.cpu_model));
   const auto activation_result =
       apply_lockdown_profile(*rootfs, *activation, lockdown_profile);
   output.line("[device-state] activation=" + activation_value +
@@ -1011,6 +1032,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       device.physical_cpu_count;
   const auto cpu_model =
       make_arm_cpu_model(device.cpu_model, device.cpu_hz);
+  const auto guest_architecture = cpu_model->architecture_version();
   const auto guest_ticks_per_second =
       cpu_model->ticks_per_second();
   GuestTickClock guest_tick_clock{guest_ticks_per_second};
@@ -1163,7 +1185,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
 
   auto initial_memory = std::make_unique<AddressSpace>();
   initial_memory->set_parallel_access(guest_processor_count > 1);
-  ProcessLoader loader{*rootfs, *initial_memory};
+  ProcessLoader loader{*rootfs, *initial_memory, guest_architecture};
   std::vector<std::string> initial_environment{
       "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
       "SHELL=/bin/sh"};
@@ -1504,7 +1526,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         [&, runtime_ptr](Cpu &source, std::string path,
                          std::vector<std::string> arguments,
                          std::vector<std::string> environment) {
-          ProcessLoader validator{*rootfs, *runtime_ptr->memory};
+          ProcessLoader validator{*rootfs, *runtime_ptr->memory,
+                                  guest_architecture};
           if (!validator.validate(path)) {
             output.line("[process] exec rejected pid=" +
                         std::to_string(runtime_ptr->kernel->process().pid) +
@@ -1542,7 +1565,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
             LoadedProcess loaded;
             {
               PerformanceLatencyScope latency{PerfLatencyKind::SpawnImageLoad};
-              ProcessLoader loader{*rootfs, *child_runtime.memory};
+              ProcessLoader loader{*rootfs, *child_runtime.memory,
+                                   guest_architecture};
               loaded = loader.load(path, std::move(arguments), environment);
             }
             {
@@ -2340,7 +2364,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         runtime.pending_exec.reset();
         debug_target.notify_exec(runtime.kernel->process().pid);
         runtime.memory->clear();
-        ProcessLoader exec_loader{*rootfs, *runtime.memory};
+        ProcessLoader exec_loader{*rootfs, *runtime.memory,
+                                  guest_architecture};
         auto loaded =
             exec_loader.load(pending.path, std::move(pending.arguments),
                              pending.environment);
@@ -2840,7 +2865,7 @@ int main(int argc, char **argv) {
     const std::string_view command{argv[1]};
     try {
       if (command == "profile") {
-        profile(*output);
+        profile(args, *output);
       } else if (command == "inspect") {
         inspect(args, *output);
       } else if (command == "disasm") {

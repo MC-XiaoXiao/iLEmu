@@ -93,8 +93,9 @@ read_interpreter_directive(const std::filesystem::path& path) {
 
 } // namespace
 
-ProcessLoader::ProcessLoader(std::filesystem::path rootfs, AddressSpace& memory)
-    : rootfs_{std::move(rootfs)}, memory_{memory} {}
+ProcessLoader::ProcessLoader(std::filesystem::path rootfs, AddressSpace& memory,
+                             ArmArchitectureVersion architecture)
+    : rootfs_{std::move(rootfs)}, memory_{memory}, architecture_{architecture} {}
 
 std::filesystem::path
 ProcessLoader::host_path(const std::string& guest_path) const {
@@ -121,13 +122,14 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
     auto mapped_executable = std::move(invocation.executable_path);
     arguments = std::move(invocation.arguments);
 
-    auto executable = MachOImage::parse(host_path(mapped_executable));
+    auto executable =
+        MachOImage::parse(host_path(mapped_executable), architecture_);
     if (!executable.dynamic_linker() || !executable.entry_point()) {
         throw std::runtime_error{
             "executable lacks LC_LOAD_DYLINKER or LC_UNIXTHREAD"};
     }
     auto dynamic_linker =
-        MachOImage::parse(host_path(*executable.dynamic_linker()));
+        MachOImage::parse(host_path(*executable.dynamic_linker()), architecture_);
     if (!dynamic_linker.entry_point()) {
         throw std::runtime_error{"dynamic linker lacks LC_UNIXTHREAD"};
     }
@@ -290,12 +292,14 @@ bool ProcessLoader::validate(std::string guest_executable) const {
         const auto invocation =
             resolve_invocation(std::move(guest_executable), {});
         const auto executable =
-            MachOImage::parse(host_path(invocation.executable_path));
+            MachOImage::parse(host_path(invocation.executable_path),
+                              architecture_);
         if (!executable.dynamic_linker() || !executable.entry_point()) {
             return false;
         }
         const auto dynamic_linker =
-            MachOImage::parse(host_path(*executable.dynamic_linker()));
+            MachOImage::parse(host_path(*executable.dynamic_linker()),
+                              architecture_);
         return dynamic_linker.entry_point().has_value();
     } catch (const std::exception&) {
         return false;

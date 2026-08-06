@@ -13,6 +13,8 @@
 #include <utility>
 #include <vector>
 
+#include "ilemu/arm_cpu_model.hpp"
+
 namespace ilemu {
 
 class AddressSpace;
@@ -144,7 +146,9 @@ public:
   install_mapped_image(Cpu &cpu, std::uint32_t process_id,
                        const std::filesystem::path &image_path,
                        std::uint32_t mapping_address,
-                       std::uint32_t mapping_size, std::uint64_t file_offset);
+                       std::uint32_t mapping_size, std::uint64_t file_offset,
+                       ArmArchitectureVersion architecture =
+                           ArmArchitectureVersion::Armv6K);
 
   // Returns true only for a registered HLE SVC. The guest return path is
   // completed with ARM BX lr semantics after the handler returns.

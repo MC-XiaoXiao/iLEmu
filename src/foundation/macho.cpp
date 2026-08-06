@@ -17,6 +17,7 @@ constexpr std::uint32_t mh_magic = 0xfeedfaceU;
 constexpr std::uint32_t fat_magic = 0xcafebabeU;
 constexpr std::uint32_t cpu_type_arm = 12;
 constexpr std::uint32_t cpu_subtype_arm_v6 = 6U;
+constexpr std::uint32_t cpu_subtype_arm_v7 = 9U;
 constexpr std::uint32_t lc_segment = 0x1;
 constexpr std::uint32_t lc_symtab = 0x2;
 constexpr std::uint32_t lc_dysymtab = 0xb;
@@ -223,7 +224,8 @@ std::uint32_t align_up(std::uint64_t value) {
 
 }  // namespace
 
-MachOImage MachOImage::parse(const std::filesystem::path& path) {
+MachOImage MachOImage::parse(const std::filesystem::path& path,
+                             ArmArchitectureVersion architecture) {
     std::ifstream input{path, std::ios::binary | std::ios::ate};
     if (!input) {
         throw std::runtime_error{"cannot open Mach-O: " + path.string()};
@@ -244,9 +246,9 @@ MachOImage MachOImage::parse(const std::filesystem::path& path) {
         throw std::runtime_error{"failed to read Mach-O: " + path.string()};
     }
 
-    // App bundles may carry a classic FAT container. Select the ARMv6 slice
-    // for this emulator instead of making each caller know how to unpack it;
-    // the same loader path then handles thin and FAT images identically.
+    // App bundles may carry a classic FAT container. Select the best slice for
+    // the guest architecture instead of making each caller know how to unpack
+    // it; ARMv7 remains compatible with an ARMv6 slice when no v7 slice exists.
     const std::span<const std::byte> container{image.bytes_};
     if (read_be_u32(container, 0U) == fat_magic) {
         const auto architecture_count = read_be_u32(container, 4U);
@@ -256,30 +258,39 @@ MachOImage MachOImage::parse(const std::filesystem::path& path) {
                 (container.size() - 8U) / fat_arch_size) {
             throw std::runtime_error{"truncated FAT Mach-O header"};
         }
+        const auto requested_subtype =
+            architecture == ArmArchitectureVersion::Armv7
+                ? cpu_subtype_arm_v7
+                : cpu_subtype_arm_v6;
         std::optional<std::pair<std::uint32_t, std::uint32_t>> selected;
+        std::optional<std::pair<std::uint32_t, std::uint32_t>> compatible;
         std::optional<std::pair<std::uint32_t, std::uint32_t>> fallback;
         for (std::uint32_t index = 0; index < *architecture_count; ++index) {
             const auto offset = 8U + static_cast<std::size_t>(index) *
                                           fat_arch_size;
-            const auto architecture = read_be_u32(container, offset);
+            const auto fat_architecture = read_be_u32(container, offset);
             const auto subtype = read_be_u32(container, offset + 4U);
             const auto slice_offset = read_be_u32(container, offset + 8U);
             const auto slice_size = read_be_u32(container, offset + 12U);
-            if (!architecture || !subtype || !slice_offset || !slice_size ||
-                *architecture != cpu_type_arm ||
+            if (!fat_architecture || !subtype || !slice_offset || !slice_size ||
+                *fat_architecture != cpu_type_arm ||
                 *slice_offset > container.size() ||
                 *slice_size > container.size() - *slice_offset) {
                 continue;
             }
-            if ((*subtype & 0xffU) == cpu_subtype_arm_v6) {
+            if ((*subtype & 0xffU) == requested_subtype) {
                 selected = std::pair{*slice_offset, *slice_size};
                 break;
+            }
+            if (architecture == ArmArchitectureVersion::Armv7 &&
+                (*subtype & 0xffU) == cpu_subtype_arm_v6 && !compatible) {
+                compatible = std::pair{*slice_offset, *slice_size};
             }
             if ((*subtype & 0xffU) == 0U && !fallback)
                 fallback = std::pair{*slice_offset, *slice_size};
         }
         if (!selected)
-            selected = fallback;
+            selected = compatible ? compatible : fallback;
         if (!selected) {
             throw std::runtime_error{
                 "FAT Mach-O has no compatible 32-bit ARM slice"};

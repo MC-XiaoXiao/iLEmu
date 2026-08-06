@@ -159,6 +159,9 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   shared_state_->device_hardware_model = device_profile_.hardware_model;
   shared_state_->device_model_number = device_profile_.model_number;
   shared_state_->device_ram_bytes = device_profile_.ram_bytes;
+  shared_state_->device_cpu_type = arm_mach_cpu_type;
+  shared_state_->device_cpu_subtype = mach_cpu_subtype_for_architecture(
+      arm_architecture_for_model(device_profile_.cpu_model));
   shared_state_->baseband_device_state.set_available(
       device_profile_.baseband_transport !=
       BasebandTransportProfile::Unavailable);
@@ -640,7 +643,7 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
     std::uint64_t file_offset) {
   const auto installed = userland_hle_.install_mapped_image(
       cpu, process_.pid, image_path, mapping_address, mapping_size,
-      file_offset);
+      file_offset, arm_architecture_for_model(device_profile_.cpu_model));
   constexpr std::string_view uikit_image{"/UIKit.framework/UIKit"};
   constexpr std::string_view graphics_services_image{
       "/GraphicsServices.framework/GraphicsServices"};
@@ -658,7 +661,8 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
     }
   } else if (path.ends_with(graphics_services_image)) {
     const auto profile =
-        GraphicsServicesInputProfile::detect(MachOImage::parse(image_path));
+        GraphicsServicesInputProfile::detect(MachOImage::parse(
+            image_path, arm_architecture_for_model(device_profile_.cpu_model)));
     if (profile) {
       std::lock_guard mach_lock{shared_state_->mach_mutex};
       if (const auto process = shared_state_->processes.find(process_.pid);
@@ -673,7 +677,8 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
     }
   } else if (path.ends_with(quartz_core_image)) {
     const auto profile =
-        CoreAnimationRemoteProfile::detect(MachOImage::parse(image_path));
+        CoreAnimationRemoteProfile::detect(MachOImage::parse(
+            image_path, arm_architecture_for_model(device_profile_.cpu_model)));
     if (profile) {
       std::lock_guard mach_lock{shared_state_->mach_mutex};
       if (const auto process = shared_state_->processes.find(process_.pid);
@@ -698,7 +703,8 @@ void CompatibilityKernel::install_main_image_hle(
   if (relative.is_absolute())
     relative = relative.relative_path();
   const auto host_path = rootfs_ / relative;
-  const auto image = MachOImage::parse(host_path);
+  const auto image = MachOImage::parse(
+      host_path, arm_architecture_for_model(device_profile_.cpu_model));
   for (const auto &segment : image.segments()) {
     if (segment.file_size == 0)
       continue;

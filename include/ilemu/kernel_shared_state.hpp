@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "ilemu/baseband_device.hpp"
+#include "ilemu/arm_cpu_model.hpp"
 #include "ilemu/bsd_file_lock.hpp"
 #include "ilemu/core_animation_remote_profile.hpp"
 #include "ilemu/darwin_kernel_profile.hpp"
@@ -305,6 +306,9 @@ struct KernelSharedState {
   std::string device_hardware_model;
   std::string device_model_number;
   std::uint64_t device_ram_bytes{};
+  std::uint32_t device_cpu_type{arm_mach_cpu_type};
+  std::uint32_t device_cpu_subtype{
+      mach_cpu_subtype_for_architecture(ArmArchitectureVersion::Armv6K)};
 
   struct NetworkInterface {
     std::uint16_t flags{};

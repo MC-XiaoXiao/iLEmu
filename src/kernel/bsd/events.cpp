@@ -2044,10 +2044,16 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
             value = 1234;
             break; // HW_BYTEORDER
           case 5:
-            value = 0x08000000U;
+            value = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                shared_state_->device_ram_bytes,
+                std::numeric_limits<std::uint32_t>::max()));
             break; // HW_PHYSMEM
           case 6:
-            value = 0x07000000U;
+            value = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                shared_state_->device_ram_bytes > 0x01000000U
+                    ? shared_state_->device_ram_bytes - 0x01000000U
+                    : shared_state_->device_ram_bytes,
+                std::numeric_limits<std::uint32_t>::max()));
             break; // HW_USERMEM
           case 7:
             value = 4096;

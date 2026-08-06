@@ -309,12 +309,12 @@ private:
     std::shared_ptr<JitTranslationProfile> translation_profile_;
 };
 
-// The iPhone ARMv6 user ABI uses CP15 thread-pointer registers in addition to
-// the older cthread_self fast trap.  Dynarmic deliberately leaves CP15 to its
+// The iPhone ARM user ABI uses CP15 thread-pointer registers in addition to
+// the older cthread_self fast trap. Dynarmic deliberately leaves CP15 to its
 // client, so model only the architecturally visible user-thread and barrier
-// subset here.  Memory is coherent in AddressSpace; cache/barrier operations
+// subset here. Memory is coherent in AddressSpace; cache/barrier operations
 // therefore need no host-side work, but must remain legal instructions.
-class Armv6SystemControlCoprocessor final
+class ArmSystemControlCoprocessor final
     : public Dynarmic::A32::Coprocessor {
 public:
     using CoprocReg = Dynarmic::A32::CoprocReg;
@@ -324,7 +324,7 @@ public:
     using CallbackOrAccessTwoWords =
         Dynarmic::A32::Coprocessor::CallbackOrAccessTwoWords;
 
-    explicit Armv6SystemControlCoprocessor(JitCallbacks& callbacks)
+    explicit ArmSystemControlCoprocessor(JitCallbacks& callbacks)
         : callbacks_{callbacks} {}
 
     std::optional<Callback> CompileInternalOperation(
@@ -427,7 +427,7 @@ public:
           memory_{memory},
           monitor_{monitor},
           callbacks_{std::make_unique<JitCallbacks>(memory, cpu_model)},
-          cp15_{std::make_unique<Armv6SystemControlCoprocessor>(
+          cp15_{std::make_unique<ArmSystemControlCoprocessor>(
               *callbacks_)} {}
 
     ~JitExecutor() {
@@ -734,7 +734,7 @@ private:
     AddressSpace& memory_;
     Dynarmic::ExclusiveMonitor& monitor_;
     std::unique_ptr<JitCallbacks> callbacks_;
-    std::shared_ptr<Armv6SystemControlCoprocessor> cp15_;
+    std::shared_ptr<ArmSystemControlCoprocessor> cp15_;
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
     std::size_t code_cache_size_{64U * 1024U * 1024U};
     std::uint64_t recorded_jit_code_cache_bytes_{};

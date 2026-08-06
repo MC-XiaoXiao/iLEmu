@@ -179,9 +179,10 @@ std::optional<LockdownActivation> parse_lockdown_activation(
 }
 
 LockdownFirmwareProfile detect_lockdown_firmware_profile(
-    const std::filesystem::path& rootfs) {
-    LockdownFirmwareProfile profile;
-    const auto image = MachOImage::parse(rootfs / springboard_path);
+    const std::filesystem::path& rootfs,
+    ArmArchitectureVersion architecture) {
+  LockdownFirmwareProfile profile;
+  const auto image = MachOImage::parse(rootfs / springboard_path, architecture);
     profile.brick_state = image.find_symbol(brick_state_symbol) != nullptr;
     return profile;
 }

@@ -611,7 +611,7 @@ UserlandHleRegistry::find_registration(std::uint16_t id) const {
 std::size_t UserlandHleRegistry::install_mapped_image(
     Cpu &cpu, std::uint32_t process_id, const std::filesystem::path &image_path,
     std::uint32_t mapping_address, std::uint32_t mapping_size,
-    std::uint64_t file_offset) {
+    std::uint64_t file_offset, ArmArchitectureVersion architecture) {
   const auto path = image_path.generic_string();
   loaded_images_.insert(path);
   if (mapping_size == 0 ||
@@ -631,7 +631,7 @@ std::size_t UserlandHleRegistry::install_mapped_image(
   if (!hle_relevant && !guest_relevant)
     return 0;
 
-  const auto image = MachOImage::parse(image_path);
+  const auto image = MachOImage::parse(image_path, architecture);
   const auto mapping_offset = static_cast<std::uint32_t>(file_offset);
   const auto mapping_file_end =
       static_cast<std::uint64_t>(mapping_offset) + mapping_size;

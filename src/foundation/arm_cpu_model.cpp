@@ -91,6 +91,42 @@ private:
   std::uint32_t clock_hz_;
 };
 
+class CortexA8CpuModel final : public ArmCpuModel {
+public:
+  explicit CortexA8CpuModel(std::uint32_t clock_hz) : clock_hz_{clock_hz} {
+    if (clock_hz_ == 0) {
+      throw std::invalid_argument{"instruction timing clock must be non-zero"};
+    }
+  }
+
+  [[nodiscard]] ArmArchitectureVersion
+  architecture_version() const noexcept override {
+    return ArmArchitectureVersion::Armv7;
+  }
+
+  [[nodiscard]] std::uint32_t ticks_per_second() const noexcept override {
+    return clock_hz_;
+  }
+
+  [[nodiscard]] std::uint64_t
+  ticks_for_instruction(bool thumb, std::uint32_t,
+                        std::uint32_t instruction) const noexcept override {
+    // Keep the common static issue baseline for the ARM/Thumb instructions
+    // shared with ARM1176. Dynarmic supplies the ARMv7 decoder; this model is
+    // intentionally not a microarchitectural Cortex-A8 simulator.
+    if (!thumb) {
+      return lookup_ticks(instruction, arm1176_arm_rules);
+    }
+    if ((instruction & 0xFFFF0000U) != 0) {
+      return 1;
+    }
+    return lookup_ticks(instruction, arm1176_thumb16_rules);
+  }
+
+private:
+  std::uint32_t clock_hz_;
+};
+
 } // namespace
 
 std::unique_ptr<ArmCpuModel> make_arm_cpu_model(ArmCpuModelKind kind,
@@ -98,6 +134,8 @@ std::unique_ptr<ArmCpuModel> make_arm_cpu_model(ArmCpuModelKind kind,
   switch (kind) {
   case ArmCpuModelKind::Arm1176JzfS:
     return std::make_unique<Arm1176CpuModel>(clock_hz);
+  case ArmCpuModelKind::CortexA8:
+    return std::make_unique<CortexA8CpuModel>(clock_hz);
   }
   throw std::invalid_argument{"unsupported ARM CPU model"};
 }

@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <span>
 #include <string_view>
 
 #include "ilemu/display_geometry.hpp"
@@ -59,6 +60,8 @@ struct DeviceProfile {
         BasebandTransportProfile::Virtual};
 
     static const DeviceProfile& default_profile();
+    [[nodiscard]] static std::span<const DeviceProfile> available_profiles();
+    [[nodiscard]] static const DeviceProfile* find(std::string_view product_type);
 };
 
 }  // namespace ilemu

@@ -23,7 +23,9 @@ struct LoadedProcess {
 
 class ProcessLoader {
 public:
-    ProcessLoader(std::filesystem::path rootfs, AddressSpace& memory);
+    ProcessLoader(
+        std::filesystem::path rootfs, AddressSpace& memory,
+        ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
 
     LoadedProcess load(
         std::string guest_executable,
@@ -44,6 +46,7 @@ private:
 
     std::filesystem::path rootfs_;
     AddressSpace& memory_;
+    ArmArchitectureVersion architecture_;
 };
 
 }  // namespace ilemu

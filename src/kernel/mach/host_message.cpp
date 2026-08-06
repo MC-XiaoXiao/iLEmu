@@ -64,9 +64,12 @@ bool CompatibilityKernel::dispatch_mach_host_message(
                         .request_count_offset)
             .value_or(0);
     if (flavor == 1 && requested_count >= 12) { // HOST_BASIC_INFO
-      // Darwin 8's host_basic_info is 12 natural_t words. The
-      // default remains the physical single-core S5L8900; explicit
-      // emulator extension mode reports its configured topology.
+      // Darwin 8's host_basic_info is 12 natural_t words. The device CPU and
+      // memory identity come from the selected profile; the virtual topology
+      // remains an explicit emulator extension for scheduler testing.
+      const auto memory_size = static_cast<std::uint32_t>(std::min<std::uint64_t>(
+          shared_state_->device_ram_bytes,
+          std::numeric_limits<std::uint32_t>::max()));
       const std::array<std::uint32_t, 22> reply{
           18,
           88,
@@ -80,15 +83,15 @@ bool CompatibilityKernel::dispatch_mach_host_message(
           12,                       // host_info_outCnt
           virtual_processor_count_, // max_cpus
           virtual_processor_count_, // avail_cpus
-          0x08000000U,              // memory_size: 128 MiB
-          12,                       // CPU_TYPE_ARM
-          6,                        // CPU_SUBTYPE_ARM_V6
+          memory_size,
+          shared_state_->device_cpu_type,
+          shared_state_->device_cpu_subtype,
           0,                        // cpu_threadtype
           virtual_processor_count_, // physical_cpu
           virtual_processor_count_, // physical_cpu_max
           virtual_processor_count_, // logical_cpu
           virtual_processor_count_, // logical_cpu_max
-          0x08000000U,              // max_mem, low 32 bits
+          memory_size,              // max_mem, low 32 bits
           0,                        // max_mem, high 32 bits
       };
       for (std::size_t index = 0; index < reply.size(); ++index) {

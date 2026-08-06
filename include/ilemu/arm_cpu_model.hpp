@@ -5,6 +5,8 @@
 
 namespace ilemu {
 
+inline constexpr std::uint32_t arm_mach_cpu_type = 12U;
+
 enum class ArmArchitectureVersion : std::uint8_t {
   Armv6K,
   Armv7,
@@ -12,7 +14,30 @@ enum class ArmArchitectureVersion : std::uint8_t {
 
 enum class ArmCpuModelKind : std::uint8_t {
   Arm1176JzfS,
+  CortexA8,
 };
+
+[[nodiscard]] constexpr ArmArchitectureVersion
+arm_architecture_for_model(ArmCpuModelKind kind) noexcept {
+  switch (kind) {
+  case ArmCpuModelKind::Arm1176JzfS:
+    return ArmArchitectureVersion::Armv6K;
+  case ArmCpuModelKind::CortexA8:
+    return ArmArchitectureVersion::Armv7;
+  }
+  return ArmArchitectureVersion::Armv6K;
+}
+
+[[nodiscard]] constexpr std::uint32_t
+mach_cpu_subtype_for_architecture(ArmArchitectureVersion version) noexcept {
+  switch (version) {
+  case ArmArchitectureVersion::Armv6K:
+    return 6U; // CPU_SUBTYPE_ARM_V6
+  case ArmArchitectureVersion::Armv7:
+    return 9U; // CPU_SUBTYPE_ARM_V7
+  }
+  return 6U;
+}
 
 // A device-specific ARM core model. It selects both the decoder architecture
 // and a static instruction-issue baseline. Dynarmic queries timing while

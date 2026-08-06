@@ -1,12 +1,13 @@
 #include "ilemu/device_profile.hpp"
 
+#include <array>
+
 namespace ilemu {
 
-const DeviceProfile& DeviceProfile::default_profile() {
-    // iPhone OS 1.0 used the pre-1.1.2 clock setting generally reported as
-    // 400 MHz. The S5L8900/ARM1176 core is physically single-core; the emulator
-    // may expose extra virtual execution cores for stress and scheduler testing.
-    static constexpr DeviceProfile profile{
+namespace {
+
+constexpr std::array<DeviceProfile, 3> profiles{
+    DeviceProfile{
         "iPhone1,1",
         "M68AP",
         "M68AP",
@@ -23,8 +24,62 @@ const DeviceProfile& DeviceProfile::default_profile() {
         1,
         default_display_geometry,
         default_display_geometry,
-    };
-    return profile;
+    },
+    DeviceProfile{
+        "iPhone1,2",
+        "N82AP",
+        "N82AP",
+        "N82DEV",
+        "MB046",
+        "Samsung S5L8900 (APL0098)",
+        "ARM1176JZF-S",
+        "ARMv6KZ + Thumb",
+        ArmCpuModelKind::Arm1176JzfS,
+        412'000'000,
+        100'000'000,
+        128ULL * 1024ULL * 1024ULL,
+        8ULL * 1024ULL * 1024ULL * 1024ULL,
+        1,
+        default_display_geometry,
+        default_display_geometry,
+    },
+    DeviceProfile{
+        "iPhone2,1",
+        "N88AP",
+        "N88AP",
+        "N88DEV",
+        "MB715",
+        "Samsung S5L8920",
+        "Cortex-A8",
+        "ARMv7 + Thumb-2",
+        ArmCpuModelKind::CortexA8,
+        600'000'000,
+        100'000'000,
+        256ULL * 1024ULL * 1024ULL,
+        16ULL * 1024ULL * 1024ULL * 1024ULL,
+        1,
+        default_display_geometry,
+        default_display_geometry,
+    },
+};
+
+} // namespace
+
+const DeviceProfile& DeviceProfile::default_profile() {
+    return profiles.front();
+}
+
+std::span<const DeviceProfile> DeviceProfile::available_profiles() {
+    return profiles;
+}
+
+const DeviceProfile* DeviceProfile::find(std::string_view product_type) {
+    for (const auto& profile : profiles) {
+        if (profile.product_type == product_type) {
+            return &profile;
+        }
+    }
+    return nullptr;
 }
 
 }  // namespace ilemu
