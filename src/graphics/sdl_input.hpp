@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+#include <unordered_set>
 #include <vector>
 
 #include "ilemu/display_geometry.hpp"
@@ -13,9 +15,14 @@ namespace ilemu {
 
 class SdlInput {
 public:
-  explicit SdlInput(DisplayGeometry geometry) : geometry_{geometry} {}
+  explicit SdlInput(DisplayGeometry geometry)
+      : geometry_{geometry}, display_geometry_{geometry} {}
   void set_orientation(DisplayOrientation orientation) {
     orientation_ = orientation;
+  }
+  void set_display_geometry(DisplayGeometry geometry) {
+    if (geometry.valid())
+      display_geometry_ = geometry;
   }
   [[nodiscard]] bool poll(SDL_Window *window);
   [[nodiscard]] std::vector<TouchInput> take_touch_events();
@@ -33,12 +40,14 @@ public:
 
 private:
   DisplayGeometry geometry_;
+  DisplayGeometry display_geometry_;
   DisplayOrientation orientation_{DisplayOrientation::Portrait};
   std::vector<TouchInput> touch_events_;
   std::vector<SystemButtonInput> button_events_;
   std::vector<RingerSwitchInput> ringer_switch_events_;
   bool redraw_requested_{};
   bool mouse_active_{};
+  std::unordered_set<std::int64_t> active_fingers_;
   bool running_{true};
 };
 

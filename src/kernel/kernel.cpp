@@ -398,13 +398,12 @@ void CompatibilityKernel::enqueue_system_button_impl(
       shared_state_->requested_display_power_state = 1U;
     } else if (input.button == SystemButton::Lock &&
                !force_home_transition) {
-      // Publish the host Lock intent before the GSEvent becomes visible.
-      // SpringBoard can consume the event on another guest CPU immediately
-      // after enqueue; publishing this later loses that receive-side
-      // acknowledgement and can strand the next wake indefinitely.
+      // Publish a pending Lock transaction before the GSEvent becomes
+      // visible. Do not force the panel off here: SpringBoard owns the
+      // long-press timer and its native SBPowerDownController must remain
+      // visible until the guest asks IOKit to power down.
       shared_state_->host_display_intent =
-          KernelSharedState::HostDisplayIntent::LockedOff;
-      shared_state_->requested_display_power_state = 0U;
+          KernelSharedState::HostDisplayIntent::LockPending;
       shared_state_->host_display_wake_power_on_acknowledged = false;
       shared_state_->host_display_hardware_wake_pending = false;
       begins_display_lock_transaction = true;
@@ -438,11 +437,6 @@ void CompatibilityKernel::enqueue_system_button_impl(
             ? KernelSharedState::ApplicationSuspensionReason::Lock
             : KernelSharedState::ApplicationSuspensionReason::Home,
         scene_coordinator_.get(), system_input_sequence);
-  }
-  if (input.button == SystemButton::Lock &&
-      input.phase == SystemButtonPhase::Down &&
-      !wake_button_pressed_while_display_asleep) {
-    display_state_->set_powered_on(false);
   }
   const auto button = [value = input.button] {
     switch (value) {

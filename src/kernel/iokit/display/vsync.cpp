@@ -233,7 +233,18 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
                  state.host_display_pending_lock_power_off_sequences.end();
     };
     if (state.host_display_intent ==
-        KernelSharedState::HostDisplayIntent::LockedOff) {
+        KernelSharedState::HostDisplayIntent::LockPending) {
+      if (requested_power_state == 0U) {
+        if (!state.host_display_pending_lock_power_off_sequences.empty()) {
+          state.host_display_pending_lock_power_off_sequences.pop_front();
+        }
+        state.host_display_intent =
+            state.host_display_pending_lock_power_off_sequences.empty()
+                ? KernelSharedState::HostDisplayIntent::GuestControlled
+                : KernelSharedState::HostDisplayIntent::LockPending;
+      }
+    } else if (state.host_display_intent ==
+               KernelSharedState::HostDisplayIntent::LockedOff) {
       if (requested_power_state == 0U &&
           !state.host_display_pending_lock_power_off_sequences.empty()) {
         state.host_display_pending_lock_power_off_sequences.pop_front();

@@ -48,7 +48,9 @@ struct SdlDisplay::Impl {
             sdl_presenter_surface_owner,
             next_sdl_presenter_surface.fetch_add(1,
                                                  std::memory_order_relaxed)},
-        input{input_geometry} {}
+        input{input_geometry} {
+    input.set_display_geometry(geometry);
+  }
 
   DisplayGeometry geometry;
   DisplayGeometry guest_geometry;
@@ -199,6 +201,7 @@ struct SdlDisplay::Impl {
                    ? DisplayGeometry{guest_geometry.height,
                                      guest_geometry.width}
                    : guest_geometry;
+    input.set_display_geometry(geometry);
     input.set_orientation(orientation);
 #if defined(ILEMU_HAS_SDL2)
     if (window != nullptr) {

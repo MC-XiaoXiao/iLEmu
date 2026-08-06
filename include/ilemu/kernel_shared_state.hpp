@@ -632,6 +632,10 @@ struct KernelSharedState {
   };
   enum class HostDisplayIntent {
     GuestControlled,
+    // A physical Lock is held, but the guest has not yet asked the panel to
+    // turn off. Keep the panel visible so SpringBoard can present its native
+    // power-down controller for a long press.
+    LockPending,
     LockedOff,
     WakePending,
   };
@@ -1074,10 +1078,11 @@ struct KernelSharedState {
   std::set<std::pair<std::uint32_t, std::uint64_t>>
       suppressed_application_fullscreen_surface_publications;
   std::atomic_bool application_fullscreen_surface_suppression_active{false};
-  // Host Lock must win over a late userspace power-on. Conversely, once a
-  // wake begins, the trailing panel-off request from the preceding Lock must
-  // not turn the newly woken display black. Keep the power transaction
-  // separate from the guest-visible Home and Lock events.
+  // A physical Lock is only a pending host transaction until the firmware's
+  // IOKit power request arrives. Once a wake begins, the trailing panel-off
+  // request from the preceding Lock must not turn the newly woken display
+  // black. Keep the power transaction separate from the guest-visible Home
+  // and Lock events.
   HostDisplayIntent host_display_intent{HostDisplayIntent::GuestControlled};
   // Each Lock Down starts one asynchronous SpringBoard panel-off request.
   // Keep all unresolved generations: under load an older request can arrive

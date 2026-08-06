@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "ilemu/display_geometry.hpp"
+#include "ilemu/system_button_input.hpp"
 #include "ilemu/touch_input.hpp"
 
 namespace ilemu {
@@ -13,6 +14,8 @@ namespace ilemu {
 enum class LiveControlCommandKind {
   Touch,
   Gesture,
+  Button,
+  ButtonHold,
   Home,
   Lock,
   VolumeUp,
@@ -38,6 +41,8 @@ struct LiveControlCommand {
   LiveControlCommandKind kind{LiveControlCommandKind::Error};
   TouchInput touch;
   std::vector<LiveTouchEvent> gesture;
+  SystemButtonInput system_button;
+  std::chrono::milliseconds button_hold{};
   bool wake_display{};
   std::filesystem::path path;
   std::chrono::milliseconds snapshot_interval{};

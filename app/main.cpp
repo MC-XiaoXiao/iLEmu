@@ -39,6 +39,7 @@
 #include "ilemu/jit_translation_profile.hpp"
 #include "ilemu/kernel.hpp"
 #include "ilemu/live_control.hpp"
+#include "ilemu/live_button_scheduler.hpp"
 #include "ilemu/live_touch_scheduler.hpp"
 #include "ilemu/lockdown_profile.hpp"
 #include "ilemu/mach_thread_policy_abi.hpp"
@@ -1079,6 +1080,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::unique_ptr<FrameFilePresenter> frame_file_presenter;
   std::unique_ptr<TouchReplay> touch_replay;
   std::unique_ptr<LiveControl> live_control;
+  LiveButtonScheduler live_button_scheduler;
   LiveTouchScheduler live_touch_scheduler;
   if (display_mode == "sdl") {
     if (!SdlDisplay::available()) {
@@ -1771,6 +1773,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
     };
     if (touch_replay)
       consider(touch_replay->next_deadline());
+    consider(live_button_scheduler.next_deadline());
     consider(live_touch_scheduler.next_deadline());
     if (!scheduled_snapshots.empty()) {
       consider(std::optional<std::chrono::steady_clock::time_point>{
@@ -1823,6 +1826,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
     for (const auto &input : live_touch_scheduler.poll()) {
       initial_runtime->kernel->enqueue_touch_input(input);
     }
+    for (const auto &input : live_button_scheduler.poll()) {
+      initial_runtime->kernel->enqueue_system_button(input);
+      output.line("[control] button=up scheduled event queued");
+    }
     if (live_control) {
       for (const auto &command : live_control->poll()) {
         switch (command.kind) {
@@ -1848,6 +1855,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
           output.line(
               "[control] gesture=" + command.message +
               " scheduled events=" + std::to_string(command.gesture.size()));
+          break;
+        case LiveControlCommandKind::Button:
+          initial_runtime->kernel->enqueue_system_button(command.system_button);
+          output.line("[control] button event queued");
+          break;
+        case LiveControlCommandKind::ButtonHold:
+          initial_runtime->kernel->enqueue_system_button(
+              SystemButtonInput{command.system_button.button,
+                                SystemButtonPhase::Down});
+          live_button_scheduler.schedule(command.system_button,
+                                         command.button_hold);
+          output.line("[control] button hold scheduled duration-ms=" +
+                      std::to_string(command.button_hold.count()));
           break;
         case LiveControlCommandKind::Home:
           initial_runtime->kernel->enqueue_system_button(
@@ -1974,7 +1994,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
           output.line("[control] commands: touch down|move|up|cancel x y; "
                       "tap x y [hold-ms]; unlock; "
                       "drag x1 y1 x2 y2 [duration-ms] [steps]; "
-                      "home; lock; volume-up; volume-down; snapshot PATH; "
+                      "button home|lock|volume-up|volume-down down|up; "
+                      "hold BUTTON DURATION-MS; home; lock [hold-ms]; "
+                      "volume-up; volume-down; snapshot PATH; "
                       "ringer ring|silent; "
                       "snapshot-sequence PATH-PREFIX INTERVAL-MS COUNT; "
                       "perf-begin LABEL; perf-end; "

@@ -23,6 +23,7 @@ constexpr std::size_t default_drag_steps = 6;
 constexpr std::int64_t maximum_drag_duration_ms = 5'000;
 constexpr std::size_t maximum_drag_steps = 64;
 constexpr std::int64_t default_tap_duration_ms = 80;
+constexpr std::int64_t maximum_button_hold_ms = 60'000;
 constexpr auto drag_release_delay = std::chrono::milliseconds{16};
 // Reproduce the smallest trajectory that has been verified against the stock
 // iPhone OS 1.0 lock slider: Down at the knob center, seven 30-pixel moves at
@@ -99,6 +100,30 @@ std::optional<TouchPhase> parse_phase(std::string_view value) {
   if (value == "cancel")
     return TouchPhase::Cancel;
   return std::nullopt;
+}
+
+std::optional<SystemButton> parse_system_button(std::string_view value) {
+  if (value == "home")
+    return SystemButton::Home;
+  if (value == "lock")
+    return SystemButton::Lock;
+  if (value == "volume-up")
+    return SystemButton::VolumeUp;
+  if (value == "volume-down")
+    return SystemButton::VolumeDown;
+  return std::nullopt;
+}
+
+std::optional<std::chrono::milliseconds>
+parse_button_hold(std::string_view value) {
+  std::istringstream parser{std::string{value}};
+  std::int64_t duration_ms = 0;
+  std::string trailing;
+  if (!(parser >> duration_ms) || (parser >> trailing) || duration_ms <= 0 ||
+      duration_ms > maximum_button_hold_ms) {
+    return std::nullopt;
+  }
+  return std::chrono::milliseconds{duration_ms};
 }
 
 } // namespace
@@ -191,6 +216,52 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line) {
       return {error_command("perf-end does not accept arguments")};
     return {simple_command(LiveControlCommandKind::PerfEnd)};
   }
+  if (operation == "button") {
+    std::string button_name;
+    std::string phase_name;
+    std::string trailing;
+    if (!(parser >> button_name >> phase_name) || (parser >> trailing)) {
+      return {error_command(
+          "button requires BUTTON down|up; BUTTON is home, lock, "
+          "volume-up, or volume-down")};
+    }
+    const auto button = parse_system_button(button_name);
+    const auto phase = phase_name == "down"
+                           ? std::optional<SystemButtonPhase>{
+                                 SystemButtonPhase::Down}
+                       : phase_name == "up"
+                           ? std::optional<SystemButtonPhase>{
+                                 SystemButtonPhase::Up}
+                           : std::nullopt;
+    if (!button || !phase) {
+      return {error_command(
+          "button requires BUTTON down|up; BUTTON is home, lock, "
+          "volume-up, or volume-down")};
+    }
+    LiveControlCommand command;
+    command.kind = LiveControlCommandKind::Button;
+    command.system_button = SystemButtonInput{*button, *phase};
+    return {std::move(command)};
+  }
+  if (operation == "hold") {
+    std::string button_name;
+    std::string duration_token;
+    std::string trailing;
+    if (!(parser >> button_name >> duration_token) || (parser >> trailing)) {
+      return {error_command("hold requires BUTTON DURATION-MS")};
+    }
+    const auto button = parse_system_button(button_name);
+    const auto duration = parse_button_hold(duration_token);
+    if (!button || !duration) {
+      return {error_command(
+          "hold requires a supported BUTTON and duration 1..60000 ms")};
+    }
+    LiveControlCommand command;
+    command.kind = LiveControlCommandKind::ButtonHold;
+    command.system_button = SystemButtonInput{*button, SystemButtonPhase::Down};
+    command.button_hold = *duration;
+    return {std::move(command)};
+  }
   // `home` is the public command: it injects the physical Home/Menu button,
   // whose effect is context-sensitive firmware behavior (wake while asleep,
   // App exit while awake). Keep the old spelling as an undocumented input
@@ -202,10 +273,23 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line) {
     return {simple_command(LiveControlCommandKind::Home)};
   }
   if (operation == "lock") {
+    std::string duration_token;
+    if (!(parser >> duration_token))
+      return {simple_command(LiveControlCommandKind::Lock)};
     std::string trailing;
     if (parser >> trailing)
-      return {error_command("lock does not accept arguments")};
-    return {simple_command(LiveControlCommandKind::Lock)};
+      return {error_command("lock accepts at most one hold duration")};
+    const auto duration = parse_button_hold(duration_token);
+    if (!duration) {
+      return {error_command(
+          "lock hold duration must be between 1 and 60000 ms")};
+    }
+    LiveControlCommand command;
+    command.kind = LiveControlCommandKind::ButtonHold;
+    command.system_button =
+        SystemButtonInput{SystemButton::Lock, SystemButtonPhase::Down};
+    command.button_hold = *duration;
+    return {std::move(command)};
   }
   if (operation == "volume-up" || operation == "volume-down") {
     std::string trailing;
