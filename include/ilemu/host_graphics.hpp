@@ -65,7 +65,6 @@ enum class HostRotation : std::uint8_t {
     Clockwise90,
     Rotate180,
     Clockwise270,
-    MirrorHorizontal,
 };
 
 // Cross-frontend surface identity. The CPU and GPU generations describe which

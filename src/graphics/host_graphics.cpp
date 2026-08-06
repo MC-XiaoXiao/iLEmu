@@ -330,16 +330,6 @@ class CpuCommandEncoder final : public CommandEncoder {
                         static_cast<std::uint64_t>(rectangle_x) *
                         source_rectangle.height /
                         destination_rectangle.width);
-                } else if (rotation == HostRotation::MirrorHorizontal) {
-                    local_x = source_rectangle.width - 1U -
-                              static_cast<std::uint32_t>(
-                                  static_cast<std::uint64_t>(rectangle_x) *
-                                  source_rectangle.width /
-                                  destination_rectangle.width);
-                    local_y = static_cast<std::uint32_t>(
-                        static_cast<std::uint64_t>(rectangle_y) *
-                        source_rectangle.height /
-                        destination_rectangle.height);
                 } else {
                     local_x = static_cast<std::uint32_t>(
                         static_cast<std::uint64_t>(rectangle_x) *

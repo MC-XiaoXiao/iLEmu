@@ -145,14 +145,6 @@ void MobileFramebufferHle::reset() {
   background_argb_ = 0xff000000U;
   submitted_background_argb_ = background_argb_;
   scanout_contents_valid_ = false;
-  composition_surfaces_.clear();
-  composition_surface_index_ = 0;
-  overlay_base_surface_.reset();
-  retained_system_base_surface_.reset();
-  overlay_base_owner_ = 0;
-  overlay_base_orientation_ = DisplayOrientation::Portrait;
-  overlay_base_from_system_ = false;
-  last_client_underlay_ = false;
 }
 
 void MobileFramebufferHle::inherit_state(const MobileFramebufferHle &parent) {
@@ -162,15 +154,7 @@ void MobileFramebufferHle::inherit_state(const MobileFramebufferHle &parent) {
   background_argb_ = parent.background_argb_;
   submitted_background_argb_ = parent.submitted_background_argb_;
   scanout_surface_ = parent.scanout_surface_;
-  composition_surfaces_ = parent.composition_surfaces_;
-  composition_surface_index_ = parent.composition_surface_index_;
   scanout_contents_valid_ = parent.scanout_contents_valid_;
-  overlay_base_surface_ = parent.overlay_base_surface_;
-  retained_system_base_surface_ = parent.retained_system_base_surface_;
-  overlay_base_owner_ = parent.overlay_base_owner_;
-  overlay_base_orientation_ = parent.overlay_base_orientation_;
-  overlay_base_from_system_ = parent.overlay_base_from_system_;
-  last_client_underlay_ = parent.last_client_underlay_;
 }
 
 void MobileFramebufferHle::set_display(std::shared_ptr<DisplayState> display) {
@@ -180,16 +164,8 @@ void MobileFramebufferHle::set_display(std::shared_ptr<DisplayState> display) {
     if (descriptor.width != display_->width() ||
         descriptor.height != display_->height()) {
       scanout_surface_.reset();
-      composition_surfaces_.clear();
-      composition_surface_index_ = 0;
       submitted_layers_.clear();
       scanout_contents_valid_ = false;
-      overlay_base_surface_.reset();
-      retained_system_base_surface_.reset();
-      overlay_base_owner_ = 0;
-      overlay_base_orientation_ = DisplayOrientation::Portrait;
-      overlay_base_from_system_ = false;
-      last_client_underlay_ = false;
     }
   }
 }
@@ -281,28 +257,6 @@ void MobileFramebufferHle::ensure_scanout_surface() {
   scanout_contents_valid_ = false;
 }
 
-std::shared_ptr<HostSurface>
-MobileFramebufferHle::acquire_composition_surface() {
-  constexpr std::size_t composition_ring_size = 8;
-  const auto descriptor = HostSurfaceDescriptor{
-      display_->width(), display_->height(),
-      display_->width() * core_surface_abi::bytes_per_bgra_pixel,
-      surface_pixel_format_bgra, PerfSurfaceKind::Scanout};
-  if (composition_surfaces_.size() < composition_ring_size) {
-    auto surface = host_graphics_->create_surface(
-        {0x434f4d50U,
-         next_scanout_surface.fetch_add(1, std::memory_order_relaxed)},
-        descriptor);
-    composition_surfaces_.push_back(surface);
-    composition_surface_index_ = composition_surfaces_.size() %
-                                  composition_ring_size;
-    return surface;
-  }
-  const auto index = composition_surface_index_ % composition_ring_size;
-  composition_surface_index_ = (index + 1U) % composition_ring_size;
-  return composition_surfaces_[index];
-}
-
 bool MobileFramebufferHle::submit_host_layers(UserlandHleCall &call) {
   if (!display_ || !host_graphics_->accelerated() || !command_encoder_)
     return false;
@@ -388,297 +342,6 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall &call) {
     prepared_layers.push_back(
         {layer, state, source, *source_rectangle, *destination_rectangle,
          std::max(source->cpu_generation(), source->gpu_generation())});
-  }
-  const auto system_process = [&] {
-    if (!shared_state_)
-      return false;
-    std::lock_guard lock{shared_state_->mach_mutex};
-    const auto process = shared_state_->processes.find(call.process_id());
-    return process != shared_state_->processes.end() &&
-           !is_application_executable_path(process->second.executable_path);
-  }();
-  const auto foreground_scene =
-      scene_coordinator_ ? scene_coordinator_->foreground_client_scene()
-                         : std::nullopt;
-  const auto client_underlay =
-      system_process && foreground_scene &&
-      (foreground_scene->state == ClientSceneState::Active ||
-       foreground_scene->state == ClientSceneState::Exiting);
-  if (system_process && client_underlay != last_client_underlay_) {
-    if (!client_underlay) {
-      // The system layer below a client is a different composition context
-      // from the layer published after that client exits. Do not carry the
-      // old context's retained base into the new transaction.
-      retained_system_base_surface_.reset();
-      scanout_contents_valid_ = false;
-    }
-    last_client_underlay_ = client_underlay;
-  }
-  // Capture the current application surface only when a system process is
-  // about to publish an overlay. DisplayState is still the owner of the
-  // current frame; this one-time snapshot avoids reading it back on every
-  // keyboard/HUD frame while retaining the GPU surface for fast copies.
-  if (client_underlay &&
-      (!overlay_base_surface_ ||
-       overlay_base_owner_ != foreground_scene->client_process_id ||
-       overlay_base_from_system_)) {
-    const auto current = display_->surface_snapshot();
-    if (current.host_surface &&
-        current.host_surface != scanout_surface_ &&
-        current.owner_process_id != call.process_id()) {
-      overlay_base_surface_ = current.host_surface;
-      overlay_base_owner_ = current.owner_process_id;
-      overlay_base_orientation_ = current.orientation;
-      overlay_base_from_system_ = false;
-    } else if (current.host_surface == scanout_surface_ &&
-               current.owner_process_id != call.process_id() &&
-               scanout_contents_valid_) {
-      overlay_base_surface_ = scanout_surface_;
-      overlay_base_owner_ = current.owner_process_id;
-      overlay_base_orientation_ = current.orientation;
-      overlay_base_from_system_ = false;
-    } else if (!current.host_surface) {
-      // The surface-only snapshot intentionally avoids a GPU readback.  If
-      // the current publication is CPU-backed, materialize it here once so
-      // the retained overlay base still works on the software path.
-      const auto materialized = display_->snapshot();
-      if (materialized.pixels.size() == display_->geometry().pixel_count()) {
-        overlay_base_surface_ = host_graphics_->create_surface(
-            {0x4f424153U,
-             next_scanout_surface.fetch_add(1, std::memory_order_relaxed)},
-            HostSurfaceDescriptor{
-                display_->width(), display_->height(),
-                display_->width() * core_surface_abi::bytes_per_bgra_pixel,
-                surface_pixel_format_bgra, PerfSurfaceKind::Scanout},
-            materialized.pixels);
-        overlay_base_owner_ = materialized.owner_process_id;
-        overlay_base_orientation_ = materialized.orientation;
-        overlay_base_from_system_ = false;
-      }
-    }
-  } else if (system_process && !client_underlay &&
-             !overlay_base_from_system_) {
-    overlay_base_surface_.reset();
-    overlay_base_owner_ = 0;
-    overlay_base_orientation_ = DisplayOrientation::Portrait;
-  }
-
-  const auto full_display_layer = [&](const PreparedLayer &layer) {
-    return layer.source_rectangle.x == 0 &&
-           layer.source_rectangle.y == 0 &&
-           layer.source_rectangle.width == layer.source->descriptor().width &&
-           layer.source_rectangle.height == layer.source->descriptor().height &&
-           layer.destination_rectangle.x == 0 &&
-           layer.destination_rectangle.y == 0 &&
-           layer.destination_rectangle.width == display_->width() &&
-           layer.destination_rectangle.height == display_->height() &&
-           layer.source->descriptor().width == display_->width() &&
-           layer.source->descriptor().height == display_->height();
-  };
-  const auto opaque_layer = [&]() -> const PreparedLayer * {
-    if (!system_process || client_underlay)
-      return nullptr;
-    for (const auto &layer : prepared_layers) {
-      if (!full_display_layer(layer))
-        continue;
-      if (layer.state.opaque_hint) {
-        if (!*layer.state.opaque_hint)
-          continue;
-        return &layer;
-      }
-      // Once a retained base exists it is deliberately kept until a new
-      // system base is observed at the layer boundary.  Unknown GPU-owned
-      // animation buffers must never replace it: they may contain only a
-      // highlight or dimming alpha channel.
-      if (layer.source->gpu_generation() > layer.source->cpu_generation()) {
-        continue;
-      }
-      // A GPU-authoritative surface is not read back while it is in the
-      // compositor's submission path. CPU-owned layers can still be checked
-      // directly without stalling the renderer.
-      if (layer.source->gpu_generation() <= layer.source->cpu_generation()) {
-        const auto mapping = layer.source->map_cpu(
-            false, PerfCpuMapReason::DeferredDisplayRead);
-        if (mapping.frame().pixels.empty() ||
-            !std::all_of(mapping.frame().pixels.begin(),
-                         mapping.frame().pixels.end(), [](std::uint32_t pixel) {
-                           return (pixel >> 24U) == 0xffU;
-                         })) {
-          continue;
-        }
-      }
-      return &layer;
-    }
-    return nullptr;
-  }();
-  // A full opaque system frame establishes a new retained base. Later
-  // transparent system transactions are composed over this copy rather than
-  // over an uninitialized scanout.
-  if (system_process && opaque_layer) {
-    if (!retained_system_base_surface_ ||
-        retained_system_base_surface_->descriptor().width != display_->width() ||
-        retained_system_base_surface_->descriptor().height != display_->height()) {
-      retained_system_base_surface_ = host_graphics_->create_surface(
-          {0x53594253U,
-           next_scanout_surface.fetch_add(1, std::memory_order_relaxed)},
-          HostSurfaceDescriptor{
-              display_->width(), display_->height(),
-              display_->width() * core_surface_abi::bytes_per_bgra_pixel,
-              surface_pixel_format_bgra, PerfSurfaceKind::Scanout});
-    }
-    const HostRectangle full_display_rectangle{
-        0, 0, display_->width(), display_->height()};
-    if (!command_encoder_->copy(
-            opaque_layer->source, retained_system_base_surface_,
-            full_display_rectangle, full_display_rectangle,
-            HostCompositeMode::Copy, 0xffU, HostFilter::Nearest,
-            HostRotation::Identity)) {
-      return false;
-    }
-  }
-  // The opaque layer has just been copied into the retained base.  Do not
-  // sample it a second time below: the guest may reuse the same buffer for
-  // the first highlight/animation update before the queued commands execute,
-  // which otherwise mixes two generations in one displayed frame.
-  const auto retained_base_updated = system_process && opaque_layer != nullptr;
-
-  if (system_process && !client_underlay && prepared_layers.empty()) {
-    // An empty system transaction ends the previous layer context. Keep the
-    // last pixels visible until a new base is published, but do not let a
-    // future transparent transaction inherit that old base.
-    retained_system_base_surface_.reset();
-    scanout_contents_valid_ = false;
-  }
-
-  const auto system_base = [&]() -> std::shared_ptr<HostSurface> {
-    if (client_underlay)
-      return overlay_base_surface_;
-    if (retained_system_base_surface_)
-      return retained_system_base_surface_;
-    // If the system has already submitted an opaque frame through another
-    // display path, use that surface as the base for the first transparent
-    // MFB animation instead of exposing a black scanout.
-    const auto current = display_->surface_snapshot();
-    if (current.host_surface && current.host_surface != scanout_surface_ &&
-        current.owner_process_id != call.process_id()) {
-      overlay_base_surface_ = current.host_surface;
-      overlay_base_owner_ = current.owner_process_id;
-      overlay_base_orientation_ = current.orientation;
-      overlay_base_from_system_ = true;
-      return overlay_base_surface_;
-    }
-    if (scanout_surface_) {
-      overlay_base_surface_ = scanout_surface_;
-      overlay_base_owner_ = call.process_id();
-      overlay_base_orientation_ = DisplayOrientation::Portrait;
-      overlay_base_from_system_ = true;
-      return overlay_base_surface_;
-    }
-    return {};
-  }();
-  const auto compose_system_overlay = system_process && system_base;
-  if (compose_system_overlay) {
-    // Do not turn an uninitialized scanout into a highlight-only frame.  A
-    // transparent first publication is held until the producer supplies a
-    // full opaque base (identified at set-layer time), while an already valid
-    // scanout remains available for ordinary transition overlays.
-    const auto defer_until_base =
-        !client_underlay && !retained_system_base_surface_ &&
-        opaque_layer == nullptr && system_base == scanout_surface_ &&
-        !scanout_contents_valid_;
-    if (defer_until_base) {
-      submitted_layers_.clear();
-      submitted_background_argb_ = background_argb_;
-      scanout_contents_valid_ = false;
-      auto graphics = host_graphics_;
-      auto scanout = scanout_surface_;
-      display_->replace_surface(
-          scanout,
-          [graphics, scanout] {
-            if (!graphics->map_cpu(
-                    *scanout, true,
-                    PerfCpuMapReason::DeferredDisplayRead))
-              return std::vector<std::uint32_t>{};
-            auto mapping = scanout->map_cpu(
-                false, PerfCpuMapReason::DeferredDisplayRead);
-            return mapping.frame().pixels;
-          },
-          call.process_id());
-      return true;
-    }
-    const HostRectangle full_display_rectangle{
-        0, 0, display_->width(), display_->height()};
-    auto composition_surface = acquire_composition_surface();
-    if (!composition_surface || composition_surface == system_base ||
-        composition_surface == scanout_surface_) {
-      // The ring normally guarantees a distinct target. If a producer keeps
-      // a surface alive across a scene transition, allocate one more target
-      // rather than ever encoding a self-copy.
-      composition_surface = host_graphics_->create_surface(
-          {0x434f4d50U,
-           next_scanout_surface.fetch_add(1, std::memory_order_relaxed)},
-          HostSurfaceDescriptor{
-              display_->width(), display_->height(),
-              display_->width() * core_surface_abi::bytes_per_bgra_pixel,
-              surface_pixel_format_bgra, PerfSurfaceKind::Scanout});
-      composition_surfaces_.push_back(composition_surface);
-    }
-    // The retained base and the new layer are rendered into an independent
-    // target. This keeps the previous displayed image immutable while the
-    // Vulkan queue is still presenting it, without identifying any particular
-    // page or firmware build.
-    if (system_base != composition_surface &&
-        !command_encoder_->copy(
-            system_base, composition_surface, full_display_rectangle,
-            full_display_rectangle, HostCompositeMode::Copy, 0xffU,
-            HostFilter::Nearest, HostRotation::Identity)) {
-      return false;
-    }
-    const auto mirror_overlay =
-        client_underlay &&
-        (overlay_base_orientation_ == DisplayOrientation::LandscapeLeft ||
-         overlay_base_orientation_ == DisplayOrientation::LandscapeRight);
-    const auto overlay_rotation = mirror_overlay
-                                      ? HostRotation::MirrorHorizontal
-                                      : HostRotation::Identity;
-    for (const auto &layer : prepared_layers) {
-      if (retained_base_updated && !client_underlay &&
-          &layer == opaque_layer) {
-        continue;
-      }
-      if (!command_encoder_->copy(
-              layer.source, composition_surface, layer.source_rectangle,
-              layer.destination_rectangle,
-              HostCompositeMode::PremultipliedSourceOver, 0xffU,
-              HostFilter::Nearest, overlay_rotation)) {
-        return false;
-      }
-    }
-    if (!command_encoder_->submit(PerfSubmitReason::Compositor))
-      return false;
-    submitted_layers_.clear();
-    for (const auto &layer : prepared_layers) {
-      submitted_layers_.emplace(
-          layer.order,
-          SubmittedLayer{layer.state, layer.source->key(), layer.generation});
-    }
-    submitted_background_argb_ = background_argb_;
-    scanout_contents_valid_ = true;
-    scanout_surface_ = composition_surface;
-    auto graphics = host_graphics_;
-    auto scanout = scanout_surface_;
-    display_->replace_surface(
-        scanout,
-        [graphics, scanout] {
-          if (!graphics->map_cpu(
-                  *scanout, true, PerfCpuMapReason::DeferredDisplayRead))
-            return std::vector<std::uint32_t>{};
-          auto mapping = scanout->map_cpu(
-              false, PerfCpuMapReason::DeferredDisplayRead);
-          return mapping.frame().pixels;
-        },
-        call.process_id());
-    return true;
   }
 
   const auto right = [](const HostRectangle &rectangle) {
@@ -972,58 +635,9 @@ void MobileFramebufferHle::set_layer(UserlandHleCall &call) {
     call.set_return(iokit_abi::bad_argument);
     return;
   }
-
-  std::optional<bool> opaque_hint;
-  const auto full_display_layer = [&] {
-    const auto backing = surface_store_->find(*identifier);
-    return display_ && backing && source.x == 0.0F && source.y == 0.0F &&
-           source.width == static_cast<float>(backing->width) &&
-           source.height == static_cast<float>(backing->height) &&
-           destination.x == 0.0F && destination.y == 0.0F &&
-           destination.width == static_cast<float>(display_->width()) &&
-           destination.height == static_cast<float>(display_->height()) &&
-           backing->width == display_->width() &&
-           backing->height == display_->height();
-  }();
-  const auto system_process = [&] {
-    if (!shared_state_)
-      return false;
-    std::lock_guard lock{shared_state_->mach_mutex};
-    const auto process = shared_state_->processes.find(call.process_id());
-    return process != shared_state_->processes.end() &&
-           !is_application_executable_path(process->second.executable_path);
-  }();
-  const auto foreground_scene =
-      scene_coordinator_ ? scene_coordinator_->foreground_client_scene()
-                         : std::nullopt;
-  const auto client_underlay =
-      system_process && foreground_scene &&
-      (foreground_scene->state == ClientSceneState::Active ||
-       foreground_scene->state == ClientSceneState::Exiting);
-  if (system_process && client_underlay != last_client_underlay_) {
-    if (!client_underlay) {
-      retained_system_base_surface_.reset();
-      scanout_contents_valid_ = false;
-    }
-    last_client_underlay_ = client_underlay;
-  }
-  // Establishing the first system base is the one place where a GPU-owned
-  // layer's alpha must be observed.  Do this at the firmware boundary after
-  // the producer has rendered it, and retain only the boolean result; the
-  // compositor itself never performs a synchronous readback on every frame.
-  if (full_display_layer && system_process && !client_underlay &&
-      !retained_system_base_surface_) {
-    const auto pixels = surface_store_->read_argb(call.memory(), *identifier);
-    opaque_hint = pixels &&
-                  std::all_of(pixels->begin(), pixels->end(),
-                              [](std::uint32_t pixel) {
-                                return (pixel >> 24U) == 0xffU;
-                              });
-  }
   layers_.insert_or_assign(
       layer, LayerState{*identifier, source, destination,
-                        call.argument(mobile_framebuffer_abi::flags_argument),
-                        opaque_hint});
+                        call.argument(mobile_framebuffer_abi::flags_argument)});
   call.set_return(iokit_abi::success);
 }
 
