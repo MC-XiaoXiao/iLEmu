@@ -526,15 +526,12 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
         ++baseband_io_trace_count_;
       }
       if (!shared_state_->baseband_device_state.transport_writable()) {
-        pending_baseband_writes_.insert_or_assign(
-            cpu.processor_id(), PendingBasebandWrite{fd, std::move(*bytes)});
-        process_.waiting_for_events = true;
-        bsd_success(cpu, 0);
-        output_.write("[baseband] write wait pid=" +
-                      std::to_string(process_.pid) + " fd=" +
-                      std::to_string(fd) + " bytes=" +
-                      std::to_string(size) + "\n");
-        cpu.halt(Dynarmic::HaltReason::UserDefined5);
+        // Offline capability profiles have no event that can make this
+        // descriptor writable.  Blocking here would leave a guest thread
+        // asleep forever while keeping the rest of the kernel's pending-I/O
+        // machinery alive.  Report the unavailable transport immediately;
+        // no modem response or synthetic radio state is produced.
+        bsd_error(cpu, darwin::error::no_such_device_or_address);
         return;
       }
       bsd_success(cpu, static_cast<std::uint32_t>(

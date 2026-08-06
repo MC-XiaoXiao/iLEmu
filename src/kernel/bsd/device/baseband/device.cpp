@@ -9,6 +9,22 @@
 
 namespace ilemu::bsd::baseband_device {
 
+namespace {
+
+bool has_numeric_suffix(std::string_view candidate,
+                        std::string_view prefix) {
+  if (!candidate.starts_with(prefix)) {
+    return false;
+  }
+  const auto suffix = candidate.substr(prefix.size());
+  return !suffix.empty() && std::all_of(
+      suffix.begin(), suffix.end(), [](const char value) {
+        return value >= '0' && value <= '9';
+      });
+}
+
+} // namespace
+
 bool State::available() const {
   const std::lock_guard lock{mutex_};
   return available_;
@@ -170,9 +186,14 @@ std::vector<std::byte> State::take_transmitted() {
   return bytes;
 }
 
+bool is_mux_channel_path(std::string_view candidate) {
+  return has_numeric_suffix(candidate, "/dev/dlci.spi-baseband.") ||
+         has_numeric_suffix(candidate, "/dev/dlci.h5.baseband.");
+}
+
 bool is_path(std::string_view candidate) {
   return candidate == path || candidate == spi_mux_path ||
-         candidate == h5_mux_path;
+         candidate == h5_mux_path || is_mux_channel_path(candidate);
 }
 
 } // namespace ilemu::bsd::baseband_device

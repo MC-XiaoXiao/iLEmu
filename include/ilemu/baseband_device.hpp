@@ -83,5 +83,6 @@ private:
 };
 
 [[nodiscard]] bool is_path(std::string_view candidate);
+[[nodiscard]] bool is_mux_channel_path(std::string_view candidate);
 
 } // namespace ilemu::bsd::baseband_device

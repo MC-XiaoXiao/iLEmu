@@ -228,6 +228,16 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     const auto host = resolve_guest_path(*path);
     const auto flags = registers[1];
     output_.write("[vfs] open " + *path + "\n");
+    if (bsd::baseband_device::is_mux_channel_path(*path) &&
+        !shared_state_->baseband_device_state.transport_writable()) {
+      // An offline profile exposes the mux ABI, but a dynamically allocated
+      // DLCI has no modem endpoint to back it. Return the device-level failure
+      // used by the fixed baseband node instead of creating a descriptor.
+      // There is no guest-visible modem endpoint or synthetic response.
+      constexpr auto error = darwin::error::no_such_device_or_address;
+      bsd_error(cpu, error);
+      return;
+    }
     if (host_network_policy_ == HostNetworkPolicy::Host &&
         (*path == "/etc/resolv.conf" ||
          *path == "/var/run/resolv.conf")) {
