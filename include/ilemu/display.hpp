@@ -79,6 +79,11 @@ public:
   // boundary. Returns false when a newer process already owns the scanout.
   bool clear_if_owner(std::uint32_t owner_process_id);
 
+  // Return the current host surface metadata without forcing a GPU readback.
+  // Compositors use this when they need to retain a base surface before
+  // adding a transient overlay; snapshot() remains the explicit software
+  // readback boundary.
+  [[nodiscard]] DisplayFrame surface_snapshot() const;
   [[nodiscard]] DisplayFrame snapshot() const;
   [[nodiscard]] std::uint64_t presented_frames() const;
   [[nodiscard]] bool powered_on() const;

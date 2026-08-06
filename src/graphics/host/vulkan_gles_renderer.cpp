@@ -3988,6 +3988,13 @@ bool VulkanGlesRenderer::encode_copy(
                         {u0, v0},
                         {u0, v1},
                     }};
+                } else if (rotation == HostRotation::MirrorHorizontal) {
+                    texture = {{
+                        {u1, v0},
+                        {u0, v0},
+                        {u1, v1},
+                        {u0, v1},
+                    }};
                 }
                 const std::array<GpuVertex, vertex_count> vertices{
                     GpuVertex{{-1.0F, 1.0F, 0.0F, 1.0F}, color,

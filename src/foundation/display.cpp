@@ -206,6 +206,15 @@ DisplayFrame DisplayState::snapshot() const {
   return frame;
 }
 
+DisplayFrame DisplayState::surface_snapshot() const {
+  std::lock_guard lock{mutex_};
+  auto frame = DisplayFrame{geometry_.width, geometry_.height, sequence_, {},
+                            host_surface_, surface_reader_,
+                            content_owner_process_id_};
+  frame.orientation = content_orientation_;
+  return frame;
+}
+
 std::uint64_t DisplayState::presented_frames() const {
   std::lock_guard lock{mutex_};
   return sequence_;

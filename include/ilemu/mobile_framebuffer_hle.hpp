@@ -5,6 +5,8 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
+#include <vector>
 
 #include "ilemu/host_graphics.hpp"
 
@@ -48,6 +50,7 @@ private:
                                 std::uint64_t publication_sequence) const;
     [[nodiscard]] bool submit_host_layers(UserlandHleCall &call);
     void ensure_scanout_surface();
+    [[nodiscard]] std::shared_ptr<HostSurface> acquire_composition_surface();
 
     struct Rectangle {
         float x{};
@@ -62,6 +65,11 @@ private:
         Rectangle source;
         Rectangle destination;
         std::uint32_t flags{};
+        // Filled only for a full-screen system layer while establishing a
+        // retained base.  GPU ownership makes the guest bytes stale, so the
+        // hint is obtained at the firmware layer boundary once and then
+        // consumed by the compositor without a per-frame readback.
+        std::optional<bool> opaque_hint;
 
         bool operator==(const LayerState&) const = default;
     };
@@ -80,6 +88,21 @@ private:
     std::shared_ptr<GlesRenderer> host_graphics_;
     std::unique_ptr<CommandEncoder> command_encoder_;
     std::shared_ptr<HostSurface> scanout_surface_;
+    // System-owned layer transactions are rendered into a small ring of
+    // independent targets.  A target remains alive until the Vulkan command
+    // ring has advanced past it, so a new frame never samples the image that
+    // is currently being presented.
+    std::vector<std::shared_ptr<HostSurface>> composition_surfaces_;
+    std::size_t composition_surface_index_{};
+    // A system-owned framebuffer publish can be a transparent animation or
+    // HUD. Keep the surface below it alive so a transient layer never turns
+    // the panel into a black replacement frame.
+    std::shared_ptr<HostSurface> overlay_base_surface_;
+    std::shared_ptr<HostSurface> retained_system_base_surface_;
+    std::uint32_t overlay_base_owner_{};
+    DisplayOrientation overlay_base_orientation_{DisplayOrientation::Portrait};
+    bool overlay_base_from_system_{};
+    bool last_client_underlay_{};
     std::map<std::uint32_t, LayerState> layers_;
     std::map<std::uint32_t, SubmittedLayer> submitted_layers_;
     std::uint32_t next_swap_id_{1};
