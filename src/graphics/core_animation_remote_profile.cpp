@@ -1,5 +1,6 @@
 #include "ilemu/core_animation_remote_profile.hpp"
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cstdint>
@@ -15,6 +16,11 @@ namespace {
 constexpr std::array<std::string_view, 2> encoder_send_symbols{
     "__ZN2CA6Render7Encoder8send_msgEj",
     "_CARenderEncoderSend",
+};
+
+constexpr std::array<std::string_view, 2> render_server_symbols{
+    "_CARenderServerGetRPCRange",
+    "_CARenderServerStart",
 };
 
 std::uint32_t arm_immediate(std::uint32_t instruction) {
@@ -99,13 +105,28 @@ CoreAnimationRemoteProfile::detect(const MachOImage &image) {
 
   const auto inline_message =
       detect_inline_transaction_message(image, encoder->value);
-  if (!inline_message ||
-      *inline_message == std::numeric_limits<std::uint32_t>::max()) {
-    return std::nullopt;
+  if (inline_message &&
+      *inline_message != std::numeric_limits<std::uint32_t>::max()) {
+    return CoreAnimationRemoteProfile{
+        "core-animation-remote-transaction-v1", *inline_message,
+        *inline_message + 1U, false};
   }
-  return CoreAnimationRemoteProfile{
-      "core-animation-remote-transaction-v1", *inline_message,
-      *inline_message + 1U};
+
+  // The Thumb-2 encoder used by early ARMv7 UIKit builds does not expose the
+  // transaction selector as the ARM add/add pair above. The same image
+  // exports both render-server entry points, so bind its remote scene
+  // rendezvous to the service object resolved from bootstrap rather than
+  // guessing an opcode from one application or OS build.
+  const auto has_render_server_protocol = std::all_of(
+      render_server_symbols.begin(), render_server_symbols.end(),
+      [&image](const auto symbol_name) {
+        return image.find_symbol(symbol_name) != nullptr;
+      });
+  if (has_render_server_protocol) {
+    return CoreAnimationRemoteProfile{
+        "core-animation-remote-render-server-v1", 0U, 0U, true};
+  }
+  return std::nullopt;
 }
 
 } // namespace ilemu

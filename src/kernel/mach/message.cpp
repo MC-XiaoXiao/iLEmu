@@ -763,13 +763,24 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
           if (const auto process =
                   shared_state_->processes.find(process_.pid);
               process != shared_state_->processes.end() &&
-              process->second.core_animation_remote_profile &&
-              process->second.core_animation_remote_profile
-                  ->is_transaction_message(*message_id)) {
-            graphics_services_input::
-                record_application_remote_scene_commit_locked(
-                    *shared_state_, process_.pid, remote_object,
-                    scene_coordinator_.get());
+              process->second.core_animation_remote_profile) {
+            const auto &profile =
+                *process->second.core_animation_remote_profile;
+            const auto exact_transaction =
+                profile.is_transaction_message(*message_id);
+            const auto render_server =
+                shared_state_->bootstrap_service_objects.find(
+                    std::string{graphics_services_input::render_server_service});
+            const auto render_server_request =
+                profile.render_server_port_rendezvous &&
+                render_server != shared_state_->bootstrap_service_objects.end() &&
+                render_server->second == remote_object;
+            if (exact_transaction || render_server_request) {
+              graphics_services_input::
+                  record_application_remote_scene_commit_locked(
+                      *shared_state_, process_.pid, remote_object,
+                      scene_coordinator_.get());
+            }
           }
           KernelSharedState::MachMessage queued;
           queued.bytes = *bytes;

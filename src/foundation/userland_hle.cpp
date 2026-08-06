@@ -9,6 +9,7 @@
 #include <span>
 #include <stdexcept>
 #include <utility>
+#include <vector>
 
 #include "ilemu/address_space.hpp"
 #include "ilemu/cpu.hpp"
@@ -88,6 +89,33 @@ std::uint32_t word_from_little_endian(std::span<const std::byte, 4> bytes) {
          (std::to_integer<std::uint32_t>(bytes[3]) << 24U);
 }
 
+bool thumb_instruction_is_32_bit(std::uint16_t instruction) noexcept {
+  // Thumb-2 instructions have one of the 11101, 11110, or 11111 first
+  // halfword prefixes. Thumb-1's unconditional branch occupies 11100.
+  return (instruction & 0xf800U) >= 0xe800U;
+}
+
+std::size_t thumb_patch_size(const MachOImage &image, std::uint32_t address,
+                             ArmArchitectureVersion architecture) {
+  if (architecture != ArmArchitectureVersion::Armv7)
+    return sizeof(std::uint16_t);
+  const auto instruction = image.read_vm_u16(address & ~1U);
+  return instruction && thumb_instruction_is_32_bit(*instruction)
+             ? 2U * sizeof(std::uint16_t)
+             : sizeof(std::uint16_t);
+}
+
+std::vector<std::byte> make_thumb_hle_patch(std::size_t patch_size) {
+  const auto svc = little_endian_halfword(
+      static_cast<std::uint16_t>(0xdf00U | userland_hle_thumb_svc));
+  std::vector<std::byte> patch{svc.begin(), svc.end()};
+  if (patch_size == 4U) {
+    const auto nop = little_endian_halfword(0xbf00U);
+    patch.insert(patch.end(), nop.begin(), nop.end());
+  }
+  return patch;
+}
+
 std::vector<std::byte>
 make_persistent_arm_trampoline(std::span<const std::byte, 4> original,
                                std::uint32_t entry) {
@@ -136,9 +164,8 @@ make_persistent_arm_trampoline(std::span<const std::byte, 4> original,
 }
 
 std::vector<std::byte>
-make_persistent_thumb_trampoline(std::span<const std::byte, 2> original,
+make_persistent_thumb_trampoline(std::span<const std::byte> original,
                                  std::uint32_t entry) {
-  const auto instruction = halfword_from_little_endian(original);
   const auto append_halfword = [](std::vector<std::byte> &code,
                                   std::uint16_t value) {
     const auto encoded = little_endian_halfword(value);
@@ -159,6 +186,22 @@ make_persistent_thumb_trampoline(std::span<const std::byte, 2> original,
     append_word(code, 0xe51ff004U); // ldr pc, [pc, #-4]
     append_word(code, target | 1U);
   };
+
+  if (original.size() == 4U) {
+    // ARMv7 may start a Thumb entry with a Thumb-2 instruction. Keep both
+    // halfwords together; resuming at entry + 2 would execute the second
+    // halfword as an unrelated instruction and can corrupt the guest stack.
+    std::vector<std::byte> code;
+    code.reserve(original.size() + 3U * sizeof(std::uint32_t));
+    code.insert(code.end(), original.begin(), original.end());
+    append_arm_return(code, entry + 4U);
+    return code;
+  }
+
+  if (original.size() != sizeof(std::uint16_t))
+    return {};
+  const auto instruction = halfword_from_little_endian(
+      std::span<const std::byte, 2>{original.data(), 2U});
 
   constexpr std::uint16_t literal_load_mask = 0xf800U;
   constexpr std::uint16_t literal_word_load = 0x4800U;
@@ -676,7 +719,10 @@ std::size_t UserlandHleRegistry::install_mapped_image(
     auto *registration = select_registration(path, symbol.name);
     if (registration == nullptr)
       continue;
-    const auto patch_size = symbol.thumb_definition() ? 2U : 4U;
+    const auto patch_size = symbol.thumb_definition()
+                                ? thumb_patch_size(image, symbol.value,
+                                                   architecture)
+                                : sizeof(std::uint32_t);
     if (symbol_file_offset + patch_size > mapping_file_end)
       continue;
     if (installed_calls_.contains(runtime_address))
@@ -688,8 +734,7 @@ std::size_t UserlandHleRegistry::install_mapped_image(
     if (symbol.thumb_definition()) {
       // Thumb SVC has only an eight-bit immediate. The concrete handler
       // is recovered from installed_calls_ using PC-2 during dispatch.
-      const auto instruction = little_endian_halfword(
-          static_cast<std::uint16_t>(0xdf00U | userland_hle_thumb_svc));
+      const auto instruction = make_thumb_hle_patch(patch_size);
       copied = memory_.copy_in(runtime_address, instruction);
       if (copied)
         cpu.invalidate_cache_range(runtime_address, instruction.size());
@@ -725,7 +770,10 @@ std::size_t UserlandHleRegistry::install_mapped_image(
     const auto address_file_offset =
         static_cast<std::uint64_t>(segment->file_offset) +
         (preferred_address - segment->vm_address);
-    const auto patch_size = thumb ? 2U : 4U;
+    const auto patch_size = thumb
+                                ? thumb_patch_size(image, preferred_address,
+                                                   architecture)
+                                : sizeof(std::uint32_t);
     if (address_file_offset < mapping_offset ||
         address_file_offset + patch_size > mapping_file_end) {
       continue;
@@ -744,8 +792,7 @@ std::size_t UserlandHleRegistry::install_mapped_image(
       continue;
     bool copied = false;
     if (thumb) {
-      const auto instruction = little_endian_halfword(
-          static_cast<std::uint16_t>(0xdf00U | userland_hle_thumb_svc));
+      const auto instruction = make_thumb_hle_patch(patch_size);
       copied = memory_.copy_in(runtime_address, instruction);
       if (copied) {
         cpu.invalidate_cache_range(runtime_address, instruction.size());
@@ -790,7 +837,10 @@ std::size_t UserlandHleRegistry::install_mapped_image(
     const auto address_file_offset =
         static_cast<std::uint64_t>(segment->file_offset) +
         (preferred_address - segment->vm_address);
-    const auto patch_size = thumb ? 2U : 4U;
+    const auto patch_size = thumb
+                                ? thumb_patch_size(image, preferred_address,
+                                                   architecture)
+                                : sizeof(std::uint32_t);
     if (address_file_offset < mapping_offset ||
         address_file_offset + patch_size > mapping_file_end) {
       continue;
@@ -809,8 +859,7 @@ std::size_t UserlandHleRegistry::install_mapped_image(
       continue;
     bool copied = false;
     if (thumb) {
-      const auto instruction = little_endian_halfword(
-          static_cast<std::uint16_t>(0xdf00U | userland_hle_thumb_svc));
+      const auto instruction = make_thumb_hle_patch(patch_size);
       copied = memory_.copy_in(runtime_address, instruction);
       if (copied)
         cpu.invalidate_cache_range(runtime_address, instruction.size());
@@ -957,20 +1006,25 @@ bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
     return true;
   }
   if (call.resume_original_persistently_) {
-    if (installed == installed_calls_.end() ||
-        installed->second.original.size() != (installed->second.thumb
-                                                  ? sizeof(std::uint16_t)
-                                                  : sizeof(std::uint32_t))) {
+    const auto original_size = installed == installed_calls_.end()
+                                   ? 0U
+                                   : installed->second.original.size();
+    const auto valid_original_size =
+        installed != installed_calls_.end() &&
+        (installed->second.thumb
+             ? (original_size == sizeof(std::uint16_t) || original_size == 4U)
+             : original_size == sizeof(std::uint32_t));
+    if (!valid_original_size) {
       return false;
     }
     auto trampoline = persistent_trampolines_.find(entry);
     if (trampoline == persistent_trampolines_.end()) {
       const auto address = persistent_trampoline_cursor_;
       const auto code = installed->second.thumb
-                            ? make_persistent_thumb_trampoline(
-                                  std::span<const std::byte, 2>{
-                                      installed->second.original.data(), 2U},
-                                  entry)
+                            ? make_persistent_thumb_trampoline(std::span<const std::byte>{
+                                                                  installed->second.original.data(),
+                                                                  installed->second.original.size()},
+                                                              entry)
                             : make_persistent_arm_trampoline(
                                   std::span<const std::byte, 4>{
                                       installed->second.original.data(), 4U},

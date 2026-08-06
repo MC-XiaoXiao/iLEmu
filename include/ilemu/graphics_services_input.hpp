@@ -21,6 +21,8 @@ class UserlandHleRegistry;
 namespace ilemu::graphics_services_input {
 
 inline constexpr std::string_view system_event_service{"PurpleSystemEventPort"};
+inline constexpr std::string_view render_server_service{
+    "com.apple.CARenderServer"};
 
 enum class EnqueueResult {
   Queued,

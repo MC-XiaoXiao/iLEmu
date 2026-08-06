@@ -1650,10 +1650,14 @@ ServiceResolution record_bootstrap_reply_locked(
     }
   }
 
+  // Keep the firmware-resolved service object available to protocol Profiles.
+  // The object is refreshed on every successful bootstrap reply so a service
+  // generation cannot leave a stale remote-renderer rendezvous behind.
+  state.bootstrap_service_objects[service_name] = service->object;
+
   std::size_t flushed = 0;
   bool application_event_port = false;
   if (service_name == system_event_service) {
-    state.bootstrap_service_objects[service_name] = service->object;
     while (!state.pending_graphics_inputs.empty()) {
       const auto &input = state.pending_graphics_inputs.front();
       if (input.kind == KernelSharedState::PendingGraphicsInput::Kind::Touch) {
