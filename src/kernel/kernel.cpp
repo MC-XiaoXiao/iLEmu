@@ -1,4 +1,5 @@
 #include "ilemu/kernel.hpp"
+#include "ilemu/application_path.hpp"
 #include "ilemu/application_display_profile.hpp"
 #include "ilemu/darwin_kernel_profile.hpp"
 #include "ilemu/rootfs_path_resolver.hpp"
@@ -112,15 +113,29 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   display_state_->set_orientation_resolver(
       [state = shared_state_, scenes = scene_coordinator_](
           std::uint32_t owner_process_id) {
-        // The owner is the process that submitted the pixels being tagged.
-        // During Home, the old App scene remains foreground while SpringBoard
-        // composes its portrait exit frame; using that scene here rotates the
-        // new desktop with the outgoing App. Only use the scene as a fallback
-        // when the publisher has not been registered yet.
+        // A system compositor can publish a frame while an active client is
+        // still visible (for example, a keyboard or volume HUD over a
+        // landscape App). In that state the compositor's portrait process is
+        // not the orientation owner of the pixels. During Home the client is
+        // Exiting instead, so SpringBoard's portrait frame must win. Keep the
+        // process owner as the default and use the active client only for
+        // system-owned overlay publishes.
         const auto foreground_scene = scenes->foreground_client_scene();
+        const auto active_scene = scenes->active_client_scene();
         std::lock_guard lock{state->mach_mutex};
-        if (const auto owner = state->processes.find(owner_process_id);
-            owner != state->processes.end()) {
+        const auto owner = state->processes.find(owner_process_id);
+        const auto owner_is_application =
+            owner != state->processes.end() &&
+            is_application_executable_path(owner->second.executable_path);
+        if (!owner_is_application && active_scene &&
+            active_scene->state == ClientSceneState::Active) {
+          if (const auto client = state->processes.find(
+                  active_scene->client_process_id);
+              client != state->processes.end()) {
+            return client->second.display_orientation;
+          }
+        }
+        if (owner != state->processes.end()) {
           return owner->second.display_orientation;
         }
         if (foreground_scene) {
