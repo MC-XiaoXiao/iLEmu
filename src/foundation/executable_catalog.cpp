@@ -477,8 +477,13 @@ bool ExecutableCatalog::save(const std::filesystem::path &path) const noexcept {
     const auto parent = path.parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent);
     temporary = path.string() + ".tmp";
+    const auto fail = [&]() noexcept {
+      std::error_code error;
+      std::filesystem::remove(temporary, error);
+      return false;
+    };
     std::ofstream stream{temporary, std::ios::binary | std::ios::trunc};
-    if (!stream) return false;
+    if (!stream) return fail();
     stream.write(catalog_magic.data(),
                  static_cast<std::streamsize>(catalog_magic.size()));
     write_u32(stream, catalog_schema_version);
@@ -488,13 +493,13 @@ bool ExecutableCatalog::save(const std::filesystem::path &path) const noexcept {
           entry.kinds.size() > maximum_manifest_items ||
           entry.dependencies.size() > maximum_manifest_items ||
           entry.mappings.size() > maximum_manifest_items) {
-        return false;
+        return fail();
       }
       write_identity(stream, entry.content_identity);
       write_u32(stream, static_cast<std::uint32_t>(entry.aliases.size()));
       for (const auto &alias : entry.aliases) {
         const auto text = alias.generic_string();
-        if (text.size() > maximum_manifest_string) return false;
+        if (text.size() > maximum_manifest_string) return fail();
         write_string(stream, text);
       }
       write_u32(stream, static_cast<std::uint32_t>(entry.kinds.size()));
@@ -513,7 +518,7 @@ bool ExecutableCatalog::save(const std::filesystem::path &path) const noexcept {
       write_u32(stream,
                 static_cast<std::uint32_t>(entry.dependencies.size()));
       for (const auto &dependency : entry.dependencies) {
-        if (dependency.size() > maximum_manifest_string) return false;
+        if (dependency.size() > maximum_manifest_string) return fail();
         write_string(stream, dependency);
       }
       write_u32(stream, static_cast<std::uint32_t>(entry.mappings.size()));
@@ -523,15 +528,12 @@ bool ExecutableCatalog::save(const std::filesystem::path &path) const noexcept {
       }
     }
     stream.flush();
-    if (!stream) return false;
+    if (!stream) return fail();
     stream.close();
 
     std::error_code error;
     std::filesystem::rename(temporary, path, error);
-    if (error) {
-      std::filesystem::remove(temporary, error);
-      return false;
-    }
+    if (error) return fail();
     return true;
   } catch (...) {
     if (!temporary.empty()) {
