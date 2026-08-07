@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <unordered_map>
 #include <variant>
 #include <vector>
 
@@ -156,6 +157,36 @@ struct Runtime {
     cpus.reset();
     memory.reset();
   }
+};
+
+class RuntimeIndex {
+public:
+  RuntimeIndex() = default;
+  RuntimeIndex(const RuntimeIndex &) = delete;
+  RuntimeIndex &operator=(const RuntimeIndex &) = delete;
+
+  void insert(Runtime &runtime) {
+    const auto pid = runtime.kernel->process().pid;
+    const auto [entry, inserted] = runtimes_.emplace(pid, &runtime);
+    if (!inserted && entry->second != &runtime) {
+      throw std::logic_error{"duplicate Runtime process id"};
+    }
+  }
+
+  void erase(const Runtime &runtime) {
+    const auto pid = runtime.kernel->process().pid;
+    const auto entry = runtimes_.find(pid);
+    if (entry != runtimes_.end() && entry->second == &runtime)
+      runtimes_.erase(entry);
+  }
+
+  [[nodiscard]] Runtime *find(std::uint32_t pid) const {
+    const auto entry = runtimes_.find(pid);
+    return entry == runtimes_.end() ? nullptr : entry->second;
+  }
+
+private:
+  std::unordered_map<std::uint32_t, Runtime *> runtimes_;
 };
 
 class RuntimeReaper {
@@ -1211,6 +1242,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   auto process = loader.load(binary, {}, initial_environment);
   RuntimeReaper runtime_reaper;
   std::vector<std::unique_ptr<Runtime>> runtimes;
+  RuntimeIndex runtime_index;
   HostResourceBudget host_resource_budget;
   host_resource_budget.worker_count = 1U;
   HostResourceController host_resources{host_resource_budget};
@@ -1285,6 +1317,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   initial->allocated.assign(initial_guest_thread_slots, false);
   Runtime *initial_runtime = initial.get();
   runtimes.push_back(std::move(initial));
+  runtime_index.insert(*initial_runtime);
   initial_runtime->kernel->set_preferred_wifi_networks(
       preferred_wifi_networks);
   BootGdbTarget debug_target{runtimes};
@@ -1395,21 +1428,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
           return true;
         });
     runtime.kernel->set_thread_state_query(
-        [&runtimes](std::uint32_t pid, std::uint32_t slot, std::uint32_t flavor)
+        [&runtime_index](std::uint32_t pid, std::uint32_t slot,
+                         std::uint32_t flavor)
             -> std::optional<darwin::arm_thread::GeneralState> {
           if (flavor != darwin::arm_thread::general_state_flavor) {
             return std::nullopt;
           }
-          const auto runtime = std::find_if(
-              runtimes.begin(), runtimes.end(), [pid](const auto &candidate) {
-                return candidate->kernel->process().pid == pid;
-              });
-          if (runtime == runtimes.end() || slot >= (*runtime)->cpus->size() ||
-              slot >= (*runtime)->allocated.size() ||
-              !(*runtime)->allocated[slot]) {
+          const auto *runtime = runtime_index.find(pid);
+          if (runtime == nullptr || slot >= runtime->cpus->size() ||
+              slot >= runtime->allocated.size() || !runtime->allocated[slot]) {
             return std::nullopt;
           }
-          const auto &thread = (*runtime)->cpus->cpu(slot);
+          const auto &thread = runtime->cpus->cpu(slot);
           darwin::arm_thread::GeneralState state{};
           std::copy(thread.registers().begin(), thread.registers().end(),
                     state.begin());
@@ -1417,36 +1447,28 @@ void boot(const std::vector<std::string> &args, Output &output) {
           return state;
         });
     runtime.kernel->set_thread_state_update_handler(
-        [&runtimes](std::uint32_t pid, std::uint32_t slot,
-                    const darwin::arm_thread::GeneralState &state) {
-          const auto runtime = std::find_if(
-              runtimes.begin(), runtimes.end(), [pid](const auto &candidate) {
-                return candidate->kernel->process().pid == pid;
-              });
-          if (runtime == runtimes.end() || slot >= (*runtime)->cpus->size() ||
-              slot >= (*runtime)->allocated.size() ||
-              !(*runtime)->allocated[slot]) {
+        [&runtime_index](std::uint32_t pid, std::uint32_t slot,
+                         const darwin::arm_thread::GeneralState &state) {
+          const auto *runtime = runtime_index.find(pid);
+          if (runtime == nullptr || slot >= runtime->cpus->size() ||
+              slot >= runtime->allocated.size() || !runtime->allocated[slot]) {
             return false;
           }
-          auto &thread = (*runtime)->cpus->cpu(slot);
+          auto &thread = runtime->cpus->cpu(slot);
           std::copy_n(state.begin(), thread.registers().size(),
                       thread.registers().begin());
           thread.set_cpsr(state[darwin::arm_thread::cpsr_index] | 0x10U);
           return true;
         });
     runtime.kernel->set_thread_pointer_update_handler(
-        [&runtimes](std::uint32_t pid, std::uint32_t slot,
-                    std::optional<std::uint32_t> cthread_self) {
-          const auto runtime = std::find_if(
-              runtimes.begin(), runtimes.end(), [pid](const auto &candidate) {
-                return candidate->kernel->process().pid == pid;
-              });
-          if (runtime == runtimes.end() || slot >= (*runtime)->cpus->size() ||
-              slot >= (*runtime)->allocated.size() ||
-              !(*runtime)->allocated[slot]) {
+        [&runtime_index](std::uint32_t pid, std::uint32_t slot,
+                         std::optional<std::uint32_t> cthread_self) {
+          const auto *runtime = runtime_index.find(pid);
+          if (runtime == nullptr || slot >= runtime->cpus->size() ||
+              slot >= runtime->allocated.size() || !runtime->allocated[slot]) {
             return false;
           }
-          (*runtime)->cpus->cpu(slot).set_cthread_self(cthread_self);
+          runtime->cpus->cpu(slot).set_cthread_self(cthread_self);
           return true;
         });
     runtime.kernel->set_thread_runnable_handler(
@@ -1527,6 +1549,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           static_cast<void>(scheduler.register_thread(
               XnuThreadId{child_pid, 0},
               child->kernel->process().thread_base_priority));
+          runtime_index.insert(*child);
           runtimes.push_back(std::move(child));
           return child_pid;
         };
@@ -1565,50 +1588,45 @@ void boot(const std::vector<std::string> &args, Output &output) {
         [&](std::uint32_t child_pid, std::string path,
             std::vector<std::string> arguments,
             std::vector<std::string> environment, bool start_suspended) {
-          const auto child = std::find_if(
-              runtimes.begin(), runtimes.end(),
-              [child_pid](const auto &candidate) {
-                return candidate->kernel->process().pid == child_pid;
-              });
-          if (child == runtimes.end())
+          auto *child_runtime = runtime_index.find(child_pid);
+          if (child_runtime == nullptr)
             return false;
 
-          auto &child_runtime = **child;
           try {
             debug_target.notify_exec(child_pid);
-            if (!child_runtime.fresh_spawn_address_space) {
+            if (!child_runtime->fresh_spawn_address_space) {
               PerformanceLatencyScope latency{
                   PerfLatencyKind::SpawnMemoryClear};
-              child_runtime.memory->clear();
+              child_runtime->memory->clear();
             }
             LoadedProcess loaded;
             {
               PerformanceLatencyScope latency{PerfLatencyKind::SpawnImageLoad};
-              ProcessLoader loader{*rootfs, *child_runtime.memory,
+              ProcessLoader loader{*rootfs, *child_runtime->memory,
                                    guest_architecture};
               loaded = loader.load(path, std::move(arguments), environment);
             }
             {
               PerformanceLatencyScope latency{
                   PerfLatencyKind::SpawnResetRuntime};
-              child_runtime.kernel->set_process_arguments(loaded.arguments,
-                                                          environment);
-              child_runtime.kernel->set_process_image(
+              child_runtime->kernel->set_process_arguments(loaded.arguments,
+                                                           environment);
+              child_runtime->kernel->set_process_image(
                   path, loaded.executable.code_signature_entitlements());
               assign_translation_profile(
-                  *child_runtime.cpus, loaded.executable.content_identity());
-              child_runtime.kernel->prepare_exec(0);
-              auto &child_cpu = child_runtime.cpus->cpu(0);
+                  *child_runtime->cpus, loaded.executable.content_identity());
+              child_runtime->kernel->prepare_exec(0);
+              auto &child_cpu = child_runtime->cpus->cpu(0);
               child_cpu.reset();
               child_cpu.clear_cache();
               child_cpu.registers().fill(0);
               child_cpu.registers()[13] = loaded.stack_pointer;
               child_cpu.registers()[15] = loaded.entry_point;
               child_cpu.set_cpsr(0x10);
-              child_runtime.kernel->install_main_image_hle(
+              child_runtime->kernel->install_main_image_hle(
                   child_cpu, loaded.executable_path);
             }
-            child_runtime.fresh_spawn_address_space = false;
+            child_runtime->fresh_spawn_address_space = false;
             if (start_suspended) {
               static_cast<void>(scheduler.block(XnuThreadId{child_pid, 0}));
             }
@@ -1616,11 +1634,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
             output.line("[process] spawn exec failed pid=" +
                         std::to_string(child_pid) + " path=" + path +
                         " error=" + error.what());
-            child_runtime.kernel->exit_process(127);
+            child_runtime->kernel->exit_process(127);
             scheduler.remove_process(child_pid);
             guest_parallelism_policy.forget_process(child_pid);
-            std::fill(child_runtime.allocated.begin(),
-                      child_runtime.allocated.end(), false);
+            std::fill(child_runtime->allocated.begin(),
+                      child_runtime->allocated.end(), false);
             return false;
           }
           return true;
@@ -1632,48 +1650,40 @@ void boot(const std::vector<std::string> &args, Output &output) {
               static_cast<std::uint32_t>(thread_slot)});
         });
     runtime.kernel->set_signal_delivery_handler(
-        [&runtimes, &scheduler,
+        [&runtime_index, &scheduler,
          &guest_parallelism_policy](std::uint32_t target_pid,
                                     std::uint32_t signal) {
-          for (auto &target : runtimes) {
-            if (target->kernel->process().pid != target_pid)
-              continue;
-            const auto error = target->kernel->deliver_signal(signal);
-            if (error == 0 && target->kernel->process().exited) {
-              scheduler.remove_process(target_pid);
-              guest_parallelism_policy.forget_process(target_pid);
-            }
-            return error;
+          auto *target = runtime_index.find(target_pid);
+          if (target == nullptr)
+            return darwin::error::no_such_process;
+          const auto error = target->kernel->deliver_signal(signal);
+          if (error == 0 && target->kernel->process().exited) {
+            scheduler.remove_process(target_pid);
+            guest_parallelism_policy.forget_process(target_pid);
           }
-          return darwin::error::no_such_process;
+          return error;
         });
     runtime.kernel->set_task_memory_region_query(
-        [&runtimes](std::uint32_t pid, std::uint32_t address)
+        [&runtime_index](std::uint32_t pid, std::uint32_t address)
             -> std::optional<AddressSpace::MappingRegion> {
-          const auto runtime = std::find_if(
-              runtimes.begin(), runtimes.end(), [pid](const auto &candidate) {
-                return candidate->kernel->process().pid == pid;
-              });
-          if (runtime == runtimes.end())
+          const auto *runtime = runtime_index.find(pid);
+          if (runtime == nullptr)
             return std::nullopt;
-          return (*runtime)->memory->mapping_region_at_or_after(address);
+          return runtime->memory->mapping_region_at_or_after(address);
         });
     runtime.kernel->set_task_memory_share_query(
-        [&runtimes](std::uint32_t pid, std::uint32_t address,
-                    std::uint32_t size)
+        [&runtime_index](std::uint32_t pid, std::uint32_t address,
+                         std::uint32_t size)
             -> std::optional<CompatibilityKernel::SharedTaskMemoryRange> {
-          const auto runtime = std::find_if(
-              runtimes.begin(), runtimes.end(), [pid](const auto &candidate) {
-                return candidate->kernel->process().pid == pid;
-              });
-          if (runtime == runtimes.end())
+          const auto *runtime = runtime_index.find(pid);
+          if (runtime == nullptr)
             return std::nullopt;
           const auto region =
-              (*runtime)->memory->mapping_region_at_or_after(address);
+              runtime->memory->mapping_region_at_or_after(address);
           const auto end = static_cast<std::uint64_t>(address) + size;
           if (!region || region->address > address || region->end < end)
             return std::nullopt;
-          auto pages = (*runtime)->memory->share_pages(address, size);
+          auto pages = runtime->memory->share_pages(address, size);
           if (!pages)
             return std::nullopt;
           return CompatibilityKernel::SharedTaskMemoryRange{
@@ -2184,6 +2194,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         if (runtime->get() == display_scanout_owner)
           display_scanout_owner = nullptr;
         host_resources.wait_idle();
+        runtime_index.erase(**runtime);
         runtime_reaper.retire(std::move(*runtime));
         runtime = runtimes.erase(runtime);
       } else {
@@ -2592,13 +2603,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       Runtime *active_runtime = nullptr;
       if (const auto active_process =
               initial_runtime->kernel->active_client_process_id()) {
-        const auto active = std::find_if(
-            runtimes.begin(), runtimes.end(),
-            [active_process](const auto &candidate) {
-              return candidate->kernel->process().pid == *active_process;
-            });
-        if (active != runtimes.end())
-          active_runtime = active->get();
+        active_runtime = runtime_index.find(*active_process);
       }
       constexpr std::size_t idle_precompile_block_budget = 32;
       constexpr std::uint64_t idle_precompile_time_budget_ns = 500000;
@@ -2872,8 +2877,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                  ? performance_counters().snapshot()
                                  : PerformanceSnapshot{};
   host_resources.wait_idle();
-  for (auto &runtime : runtimes)
+  for (auto &runtime : runtimes) {
+    runtime_index.erase(*runtime);
     runtime_reaper.retire(std::move(runtime));
+  }
   runtimes.clear();
   runtime_reaper.finish();
   if (report_performance) {
