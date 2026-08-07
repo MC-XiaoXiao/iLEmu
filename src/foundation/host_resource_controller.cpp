@@ -63,8 +63,9 @@ std::shared_ptr<HostWorkToken> HostResourceController::submit(
     ++rejected_;
     return nullptr;
   }
-  tasks_.emplace(next_sequence_,
-                 Task{kind, deadline, next_sequence_++, token, std::move(work)});
+  const auto sequence = next_sequence_++;
+  tasks_.emplace(sequence,
+                 Task{kind, deadline, sequence, token, std::move(work)});
   work_available_.notify_one();
   return token;
 }
