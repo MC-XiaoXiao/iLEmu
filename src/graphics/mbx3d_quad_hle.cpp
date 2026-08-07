@@ -82,6 +82,25 @@ std::optional<std::array<Point, 4>> read_quad(AddressSpace &memory,
   return result;
 }
 
+std::optional<std::array<float, 4>>
+read_perspective(AddressSpace &memory, std::uint32_t address) {
+  if (address == 0 || address > std::numeric_limits<std::uint32_t>::max() -
+                                    3U * sizeof(std::uint32_t)) {
+    return std::nullopt;
+  }
+  std::array<float, 4> result{};
+  for (std::size_t index = 0; index < result.size(); ++index) {
+    const auto value = memory.read32(
+        address + static_cast<std::uint32_t>(index * sizeof(std::uint32_t)));
+    if (!value)
+      return std::nullopt;
+    result[index] = std::bit_cast<float>(*value);
+    if (!std::isfinite(result[index]) || std::abs(result[index]) <= 1.0e-6F)
+      return std::nullopt;
+  }
+  return result;
+}
+
 struct TriangleSample {
   std::array<std::size_t, 3> vertices{};
   std::array<float, 3> weights{};
@@ -117,14 +136,26 @@ std::optional<TriangleSample> sample_quad(const std::array<Point, 4> &quad,
   return sample_triangle(quad, {0, 2, 3}, point);
 }
 
-float interpolate_triangle(const std::array<Point, 4> &values,
-                           const TriangleSample &sample, bool x_axis) {
-  float result = 0.0F;
+std::optional<Point>
+interpolate_perspective(const std::array<Point, 4> &values,
+                       const std::array<float, 4> &perspective,
+                       const TriangleSample &sample) {
+  Point numerator{};
+  float denominator = 0.0F;
   for (std::size_t index = 0; index < sample.vertices.size(); ++index) {
-    const auto &value = values[sample.vertices[index]];
-    result += sample.weights[index] * (x_axis ? value.x : value.y);
+    const auto vertex = sample.vertices[index];
+    const auto weight = perspective[vertex];
+    if (!std::isfinite(weight) || std::abs(weight) <= 1.0e-6F)
+      return std::nullopt;
+    const auto reciprocal = 1.0F / weight;
+    const auto coefficient = sample.weights[index] * reciprocal;
+    numerator.x += coefficient * values[vertex].x;
+    numerator.y += coefficient * values[vertex].y;
+    denominator += coefficient;
   }
-  return result;
+  if (!std::isfinite(denominator) || std::abs(denominator) <= 1.0e-6F)
+    return std::nullopt;
+  return Point{numerator.x / denominator, numerator.y / denominator};
 }
 
 } // namespace
@@ -284,11 +315,31 @@ void Mbx2dHle::quad_color(UserlandHleCall &call) {
           : mbx2d_abi::failure);
 }
 
-void Mbx2dHle::quad_copy(UserlandHleCall &call) {
-  const auto source = resolve_source(call, state_.source);
-  const auto destination = resolve(state_.destination);
-  const auto positions = read_quad(call.memory(), call.argument(0));
-  const auto texture = read_quad(call.memory(), call.argument(1));
+void Mbx2dHle::quad_copy(UserlandHleCall &call, bool context_api,
+                         bool perspective_api) {
+  auto *selected_state = select_state(call, context_api);
+  if (!selected_state) {
+    call.set_return(mbx2d_abi::failure);
+    return;
+  }
+  auto &state = *selected_state;
+  const auto first_argument = context_api ? 1U : 0U;
+  const auto source = resolve_source(call, state.source);
+  const auto destination = resolve(state.destination);
+  const auto positions =
+      read_quad(call.memory(), call.argument(first_argument));
+  const auto texture =
+      read_quad(call.memory(), call.argument(first_argument + 1U));
+  std::array<float, 4> perspective{1.0F, 1.0F, 1.0F, 1.0F};
+  if (perspective_api) {
+    const auto values = read_perspective(
+        call.memory(), call.argument(first_argument + 2U));
+    if (!values) {
+      call.set_return(mbx2d_abi::failure);
+      return;
+    }
+    perspective = *values;
+  }
   if (!source || !destination || !positions || !texture) {
     call.set_return(mbx2d_abi::failure);
     return;
@@ -330,11 +381,11 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
   top = std::max<std::int64_t>(top, 0);
   right = std::min<std::int64_t>(right, destination->width);
   bottom = std::min<std::int64_t>(bottom, destination->height);
-  if (state_.scissor.enabled) {
-    left = std::max<std::int64_t>(left, state_.scissor.left);
-    top = std::max<std::int64_t>(top, state_.scissor.top);
-    right = std::min<std::int64_t>(right, state_.scissor.right);
-    bottom = std::min<std::int64_t>(bottom, state_.scissor.bottom);
+  if (state.scissor.enabled) {
+    left = std::max<std::int64_t>(left, state.scissor.left);
+    top = std::max<std::int64_t>(top, state.scissor.top);
+    right = std::min<std::int64_t>(right, state.scissor.right);
+    bottom = std::min<std::int64_t>(bottom, state.scissor.bottom);
   }
   if (right <= left || bottom <= top) {
     call.set_return(mbx2d_abi::success);
@@ -378,7 +429,11 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
     return;
   }
 
+  const auto perspective_affine = std::all_of(
+      perspective.begin(), perspective.end(),
+      [](float value) { return nearly_equal(value, 1.0F); });
   const auto axis_aligned_affine =
+      perspective_affine &&
       nearly_equal((*positions)[0].x, left_value) &&
       nearly_equal((*positions)[0].y, top_value) &&
       nearly_equal((*positions)[1].x, right_value) &&
@@ -394,8 +449,8 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
   if (covers_scene_extent(width, height, destination->width,
                           destination->height)) {
     prepare_destination_for_frame(
-        call, state_, DamageRegion{left, top, right, bottom},
-        state_.source ? state_.source->surface : 0U);
+        call, state, DamageRegion{left, top, right, bottom},
+        state.source ? state.source->surface : 0U);
   }
   const auto matches_texture =
       [&](std::array<Point, 4> expected) {
@@ -444,7 +499,7 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
       nearly_equal(right_value, static_cast<float>(unclipped_right)) &&
       nearly_equal(top_value, static_cast<float>(unclipped_top)) &&
       nearly_equal(bottom_value, static_cast<float>(unclipped_bottom));
-  const auto composite_mode = host_composite_mode(state_);
+  const auto composite_mode = host_composite_mode(state);
   const auto host_source_current =
       synchronize_host_source(call, *source);
   const auto encode_host_rectangle = [&] {
@@ -459,7 +514,7 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
          static_cast<std::int32_t>(top),
          static_cast<std::uint32_t>(width),
          static_cast<std::uint32_t>(height)},
-        *composite_mode, state_.blend.global_alpha, HostFilter::Nearest,
+        *composite_mode, state.blend.global_alpha, HostFilter::Nearest,
         *host_rotation);
     performance_counters().record_diagnostic_graphics_hle(
         PerfDiagnosticGraphicsHleKind::HostCopyEncode,
@@ -516,7 +571,7 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
     for (std::size_t index = 0; index < quad.size(); ++index) {
       quad[index] = {
           {(*positions)[index].x, (*positions)[index].y},
-          {(*texture)[index].x, (*texture)[index].y}};
+          {(*texture)[index].x, (*texture)[index].y}, perspective[index]};
     }
     const auto started = std::chrono::steady_clock::now();
     const auto encoded = command_encoder_->copy_quad(
@@ -530,7 +585,7 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
          static_cast<std::int32_t>(top),
          static_cast<std::uint32_t>(width),
          static_cast<std::uint32_t>(height)},
-        *composite_mode, state_.blend.global_alpha,
+        *composite_mode, state.blend.global_alpha,
         HostFilter::Nearest);
     performance_counters().record_diagnostic_graphics_hle(
         PerfDiagnosticGraphicsHleKind::HostQuadEncode,
@@ -600,8 +655,12 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
         const auto triangle = sample_quad(*positions, point);
         if (!triangle)
           continue;
-        const auto u = interpolate_triangle(*texture, *triangle, true);
-        const auto v = interpolate_triangle(*texture, *triangle, false);
+        const auto texture_point =
+            interpolate_perspective(*texture, perspective, *triangle);
+        if (!texture_point)
+          continue;
+        const auto u = texture_point->x;
+        const auto v = texture_point->y;
         const auto source_x = std::clamp<std::int64_t>(
             static_cast<std::int64_t>(std::floor(u)), source_left,
             source_right - 1);
@@ -618,7 +677,7 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call) {
   }
 
   auto pixels =
-      composite(state_, *destination, left, top, width, height, sampled, call);
+      composite(state, *destination, left, top, width, height, sampled, call);
   if (!pixels) {
     call.set_return(mbx2d_abi::failure);
     return;

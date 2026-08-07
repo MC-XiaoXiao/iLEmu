@@ -24,6 +24,8 @@ constexpr std::array<DeviceProfile, 3> profiles{
         1,
         default_display_geometry,
         default_display_geometry,
+        GraphicsAcceleratorProfileKind::MbxLite,
+        "",
     },
     DeviceProfile{
         "iPhone1,2",
@@ -42,6 +44,8 @@ constexpr std::array<DeviceProfile, 3> profiles{
         1,
         default_display_geometry,
         default_display_geometry,
+        GraphicsAcceleratorProfileKind::MbxLite,
+        "",
     },
     DeviceProfile{
         "iPhone2,1",
@@ -60,6 +64,8 @@ constexpr std::array<DeviceProfile, 3> profiles{
         1,
         default_display_geometry,
         default_display_geometry,
+        GraphicsAcceleratorProfileKind::Sgx535,
+        "IMGSGX535GLDriver",
     },
 };
 

@@ -187,6 +187,7 @@ void OpenGlesHle::inherit_state(const OpenGlesHle &parent) {
     surfaces_ = parent.surfaces_;
     resources_.inherit_state(parent.resources_);
     renderer_owner_ = allocate_gles_renderer_owner();
+    default_guest_profile_kind_ = parent.default_guest_profile_kind_;
     next_context_ = parent.next_context_;
     next_surface_ = parent.next_surface_;
     next_framebuffer_ = parent.next_framebuffer_;
@@ -202,6 +203,10 @@ void OpenGlesHle::release_renderer_resources() {
 
 void OpenGlesHle::set_display(std::shared_ptr<DisplayState> display) {
     display_ = std::move(display);
+}
+
+void OpenGlesHle::set_guest_profile(OpenGlesGuestProfileKind profile) {
+    default_guest_profile_kind_ = profile;
 }
 
 void OpenGlesHle::set_shared_state(
@@ -242,6 +247,7 @@ OpenGlesHle::ContextState *OpenGlesHle::current_context(UserlandHleCall &call) {
 
 OpenGlesHle::ContextState OpenGlesHle::default_context_state() const {
     auto state = ContextState{};
+    state.guest_profile_kind = default_guest_profile_kind_;
     const auto geometry =
         display_ ? display_->geometry() : default_display_geometry;
     state.viewport = {0, 0, static_cast<std::int32_t>(geometry.width),
@@ -1103,8 +1109,8 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry &registry) {
                 call.memory(), texture, *surface_store_, *identifier,
                 requires_vertical_flip);
             if (error == gles_abi::no_error) {
-                context->guest_profile_kind =
-                    OpenGlesGuestProfileKind::MbxLiteFramebufferObjects;
+                context->guest_profile_kind = open_gles_framebuffer_profile(
+                    context->guest_profile_kind);
             }
             call.set_return(error == gles_abi::no_error ? 1U : 0U);
         });
@@ -1413,8 +1419,8 @@ void OpenGlesHle::register_egl(UserlandHleRegistry &registry) {
         current.context = context;
         if (context != 0 && draw != 0 &&
             surfaces_.at(draw).backing_identifier) {
-            contexts_.at(context).guest_profile_kind =
-                OpenGlesGuestProfileKind::MbxLiteFramebufferObjects;
+            auto &profile = contexts_.at(context).guest_profile_kind;
+            profile = open_gles_framebuffer_profile(profile);
         }
         egl_error_ = egl_success;
         call.set_return(egl_true);

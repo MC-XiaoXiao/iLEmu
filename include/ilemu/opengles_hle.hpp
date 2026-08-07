@@ -39,6 +39,7 @@ class OpenGlesHle {
     void reset();
     void inherit_state(const OpenGlesHle &parent);
     void set_display(std::shared_ptr<DisplayState> display);
+    void set_guest_profile(OpenGlesGuestProfileKind profile);
     void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);
     void set_scene_coordinator(std::shared_ptr<SceneCoordinator> scenes);
     [[nodiscard]] const GlesResourceStore &resources() const {
@@ -210,6 +211,8 @@ class OpenGlesHle {
     std::uint64_t renderer_owner_{};
     std::shared_ptr<GlesRenderer> renderer_;
     std::unique_ptr<CommandEncoder> command_encoder_;
+    OpenGlesGuestProfileKind default_guest_profile_kind_{
+        OpenGlesGuestProfileKind::MbxLiteLegacy};
     std::shared_ptr<KernelSharedState> shared_state_;
     std::shared_ptr<SceneCoordinator> scene_coordinator_;
 };

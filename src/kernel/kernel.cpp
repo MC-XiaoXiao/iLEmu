@@ -79,6 +79,17 @@ constexpr std::uint32_t root_disk_minor = 1;
 constexpr std::uint32_t root_disk_device =
     (virtual_disk_major << 24U) | root_disk_minor;
 
+OpenGlesGuestProfileKind open_gles_profile_for_device(
+    GraphicsAcceleratorProfileKind accelerator) {
+  switch (accelerator) {
+  case GraphicsAcceleratorProfileKind::MbxLite:
+    return OpenGlesGuestProfileKind::MbxLiteLegacy;
+  case GraphicsAcceleratorProfileKind::Sgx535:
+    return OpenGlesGuestProfileKind::Sgx535;
+  }
+  return OpenGlesGuestProfileKind::MbxLiteLegacy;
+}
+
 } // namespace
 
 CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
@@ -110,6 +121,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
                  presentation_tracker_},
       mobile_framebuffer_hle_{userland_hle_, display_state_, surface_store_,
                               presentation_tracker_} {
+  opengles_hle_.set_guest_profile(
+      open_gles_profile_for_device(device_profile_.graphics_accelerator));
   display_state_->set_orientation_resolver(
       [state = shared_state_, scenes = scene_coordinator_](
           std::uint32_t owner_process_id) {
@@ -160,6 +173,9 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   shared_state_->device_model_number = device_profile_.model_number;
   shared_state_->device_ram_bytes = device_profile_.ram_bytes;
   shared_state_->device_cpu_type = arm_mach_cpu_type;
+  shared_state_->graphics_accelerator = device_profile_.graphics_accelerator;
+  shared_state_->graphics_driver_bundle =
+      std::string{device_profile_.graphics_driver_bundle};
   shared_state_->device_cpu_subtype = mach_cpu_subtype_for_architecture(
       arm_architecture_for_model(device_profile_.cpu_model));
   shared_state_->baseband_device_state.set_available(

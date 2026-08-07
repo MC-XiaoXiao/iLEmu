@@ -8,6 +8,8 @@ namespace ilemu {
 enum class OpenGlesGuestProfileKind {
   MbxLiteLegacy,
   MbxLiteFramebufferObjects,
+  Sgx535,
+  Sgx535FramebufferObjects,
 };
 
 // Guest-visible capabilities of the firmware GPU driver. Host renderer names
@@ -25,5 +27,8 @@ struct OpenGlesGuestProfile {
 
 [[nodiscard]] const OpenGlesGuestProfile &
 open_gles_guest_profile(OpenGlesGuestProfileKind kind);
+
+[[nodiscard]] OpenGlesGuestProfileKind
+open_gles_framebuffer_profile(OpenGlesGuestProfileKind kind);
 
 } // namespace ilemu

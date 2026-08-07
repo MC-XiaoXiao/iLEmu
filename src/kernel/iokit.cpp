@@ -22,6 +22,7 @@
 #include "ilemu/kernel_iokit_baseband.hpp"
 #include "ilemu/kernel_iokit_camera.hpp"
 #include "ilemu/kernel_iokit_display.hpp"
+#include "ilemu/kernel_iokit_graphics.hpp"
 #include "ilemu/kernel_iokit_jpeg.hpp"
 #include "ilemu/kernel_iokit_mbx.hpp"
 #include "ilemu/kernel_iokit_mobile_file_integrity.hpp"
@@ -493,6 +494,8 @@ user_client_profile_name(KernelSharedState::IOKitUserClientProfile profile) {
     return "core-surface";
   case KernelSharedState::IOKitUserClientProfile::Mbx:
     return "mbx";
+  case KernelSharedState::IOKitUserClientProfile::GraphicsAccelerator:
+    return "graphics-accelerator";
   case KernelSharedState::IOKitUserClientProfile::CameraSensor:
     return "camera-sensor";
   case KernelSharedState::IOKitUserClientProfile::CameraAccelerator:
@@ -874,7 +877,18 @@ void populate_matching_services_locked(KernelSharedState &shared_state,
   if (contains_text(matching, platform_expert_class)) {
     services.push_back(ensure_platform_expert_service_locked(shared_state));
   }
-  if (kernel_iokit::mbx::matches_service(matching)) {
+  if (kernel_iokit::graphics::matches_service(matching) &&
+      shared_state.graphics_accelerator ==
+          GraphicsAcceleratorProfileKind::Sgx535 &&
+      !shared_state.graphics_driver_bundle.empty()) {
+    const auto platform_expert =
+        ensure_platform_expert_service_locked(shared_state);
+    services.push_back(kernel_iokit::graphics::ensure_service_locked(
+        shared_state, platform_expert));
+  }
+  if (kernel_iokit::mbx::matches_service(matching) &&
+      shared_state.graphics_accelerator ==
+          GraphicsAcceleratorProfileKind::MbxLite) {
     const auto platform_expert =
         ensure_platform_expert_service_locked(shared_state);
     services.push_back(kernel_iokit::mbx::ensure_service_locked(
@@ -1066,6 +1080,11 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
       return write_status_reply(memory, message_address, local_port, message_id,
                                 iokit_abi::unsupported);
     }
+  }
+  if (const auto graphics_result = kernel_iokit::graphics::handle_mach_request(
+          memory, shared_state, process, message_id, message_address,
+          send_size, receive_size, remote_object, local_port)) {
+    return *graphics_result;
   }
   if (message_id ==
       static_cast<std::uint32_t>(iokit_abi::Message::ConnectMapMemory)) {
@@ -2074,9 +2093,20 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
                                                  request->scalar_input_count},
                   request->inband_input, request->scalar_output_capacity,
                   request->inband_output_capacity);
-    const auto mobile_file_integrity_result =
+    const auto graphics_result =
         display_result || baseband_result || audio_result || camera_result ||
                 jpeg_result || mbx_result
+            ? std::optional<kernel_iokit::graphics::MethodResult>{}
+            : kernel_iokit::graphics::dispatch_connect_method(
+                  memory, shared_state, process, remote_object,
+                  request->selector,
+                  std::span<const std::uint64_t>{request->scalar_input.data(),
+                                                 request->scalar_input_count},
+                  request->inband_input, request->scalar_output_capacity,
+                  request->inband_output_capacity);
+    const auto mobile_file_integrity_result =
+        display_result || baseband_result || audio_result || camera_result ||
+                jpeg_result || mbx_result || graphics_result
             ? std::optional<
                   kernel_iokit::mobile_file_integrity::MethodResult>{}
             : kernel_iokit::mobile_file_integrity::dispatch_connect_method(
@@ -2109,6 +2139,10 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
             ? ConnectMethodResult{mbx_result->return_code,
                                   std::move(mbx_result->scalar_output),
                                   std::move(mbx_result->inband_output)}
+        : graphics_result
+            ? ConnectMethodResult{graphics_result->return_code,
+                                  std::move(graphics_result->scalar_output),
+                                  std::move(graphics_result->inband_output)}
         : mobile_file_integrity_result
             ? ConnectMethodResult{
                   mobile_file_integrity_result->return_code,
@@ -2160,6 +2194,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
     if (receive_size < 24)
       return mach_rcv_invalid_data;
     kernel_iokit::audio::close_connection(memory, shared_state, remote_object);
+    kernel_iokit::graphics::close_connection(memory, shared_state,
+                                              remote_object);
     kernel_iokit::mbx::close_connection(memory, shared_state, remote_object);
     {
       std::lock_guard mach_lock{shared_state.mach_mutex};

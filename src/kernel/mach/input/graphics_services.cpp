@@ -1467,9 +1467,9 @@ void record_springboard_lock_state(KernelSharedState &state, bool active) {
             ? state.springboard_enqueued_active_touch_begin_sequence
             : state.springboard_active_touch_begin_sequence;
     const auto completed_unlock_begin =
-        state.springboard_enqueued_last_touch_begin_sequence;
+        state.springboard_unlock_touch_begin_sequence;
     const auto completed_unlock_end =
-        state.springboard_enqueued_last_touch_end_sequence;
+        state.springboard_unlock_touch_end_sequence;
     const auto completed_before_classification =
         in_flight_touch_begin == 0U && completed_unlock_begin != 0U &&
         completed_unlock_end >= completed_unlock_begin &&
@@ -1478,8 +1478,8 @@ void record_springboard_lock_state(KernelSharedState &state, bool active) {
         valid_unlock_trajectory(
             state.springboard_unlock_touch_start_x,
             state.springboard_unlock_touch_start_y,
-            state.springboard_enqueued_last_touch_end_x,
-            state.springboard_enqueued_last_touch_end_y);
+            state.springboard_unlock_touch_end_x,
+            state.springboard_unlock_touch_end_y);
     if (completed_before_classification) {
       // A loaded SpringBoard can return from -activate only after the native
       // slider has already completed. Reconcile that stale activation with
@@ -1828,6 +1828,8 @@ EnqueueResult enqueue_touch(KernelSharedState &state, const TouchInput &input,
               sanitized.phase == TouchPhase::Cancel)) {
     state.springboard_unlock_touch_active = false;
     state.springboard_unlock_touch_end_sequence = input_sequence;
+    state.springboard_unlock_touch_end_x = sanitized.x;
+    state.springboard_unlock_touch_end_y = sanitized.y;
     // The iPhone OS 1.x lock control is a deliberate rightward slider. Do not
     // turn a tap, failed drag, or cancelled gesture into a synthetic Home.
     completed_unlock_gesture =
@@ -1889,7 +1891,11 @@ EnqueueResult enqueue_touch(KernelSharedState &state, const TouchInput &input,
   auto unlock_completion = UnlockTransitionCompletion{};
   if (completed_unlock_gesture) {
     state.springboard_lock_screen_active = false;
-    clear_springboard_enqueued_gesture_locked(state);
+    // Keep the completed trajectory until the asynchronous SpringBoard lock
+    // classification observes it. SBAwayController can report the old
+    // active state after the slider's Up event; record_springboard_lock_state
+    // uses these exact sequence fields to reconcile that stale callback
+    // instead of arming the next desktop tap as another unlock gesture.
     unlock_completion =
         complete_unlock_transition_locked(state, input_sequence);
   }

@@ -24,6 +24,7 @@
 #include "ilemu/darwin_network_abi.hpp"
 #include "ilemu/darwin_resource_abi.hpp"
 #include "ilemu/darwin_route_socket.hpp"
+#include "ilemu/device_profile.hpp"
 #include "ilemu/display_geometry.hpp"
 #include "ilemu/file_page_cache.hpp"
 #include "ilemu/hfs_metadata.hpp"
@@ -309,6 +310,9 @@ struct KernelSharedState {
   std::uint32_t device_cpu_type{arm_mach_cpu_type};
   std::uint32_t device_cpu_subtype{
       mach_cpu_subtype_for_architecture(ArmArchitectureVersion::Armv6K)};
+  GraphicsAcceleratorProfileKind graphics_accelerator{
+      GraphicsAcceleratorProfileKind::MbxLite};
+  std::string graphics_driver_bundle;
 
   struct NetworkInterface {
     std::uint16_t flags{};
@@ -498,6 +502,7 @@ struct KernelSharedState {
     Display,
     CoreSurface,
     Mbx,
+    GraphicsAccelerator,
     CameraSensor,
     CameraAccelerator,
     JpegAccelerator,
@@ -550,6 +555,26 @@ struct KernelSharedState {
     std::uint32_t next_resource_handle{1};
     std::map<std::uint32_t, Resource> resources;
     std::optional<CommandQueue> command_queue;
+  };
+  struct IOKitGraphicsConnectionState {
+    struct MemoryMapping {
+      std::uint32_t address{};
+      std::uint32_t mapped_size{};
+      std::uint32_t exposed_size{};
+    };
+
+    std::map<std::uint32_t, MemoryMapping> memory_mappings;
+    bool shared_created{};
+    bool context_created{};
+    // Connection object named by IOConnectAddClient.  The SGX shared
+    // connection and its context connection use separate user-client ports,
+    // while selector 4 resolves the context's shared mapping through this
+    // task-local relationship.
+    std::uint32_t shared_connection_object{};
+    // Opaque four-byte result returned by the firmware's shared-resource
+    // method. It identifies the connection-local namespace; it is not a
+    // host pointer and is never dereferenced by the emulator.
+    std::uint32_t shared_resource_token{};
   };
   struct IOKitInterestNotification {
     std::uint32_t owner_pid{};
@@ -1043,6 +1068,8 @@ struct KernelSharedState {
   std::uint64_t springboard_unlock_touch_end_sequence{};
   float springboard_unlock_touch_start_x{};
   float springboard_unlock_touch_start_y{};
+  float springboard_unlock_touch_end_x{};
+  float springboard_unlock_touch_end_y{};
   std::uint64_t next_application_launch_token{1};
   std::optional<ApplicationLaunchBarrier> application_launch_barrier;
   // Home is a cancellation watermark independent of the latest Lock barrier.
@@ -1155,6 +1182,8 @@ struct KernelSharedState {
       iokit_camera_accelerator_connections;
   std::deque<IOKitCameraCaptureRequest> iokit_camera_capture_requests;
   std::map<std::uint32_t, IOKitMbxConnectionState> iokit_mbx_connections;
+  std::map<std::uint32_t, IOKitGraphicsConnectionState>
+      iokit_graphics_connections;
   // The physical panel has one power state even though GraphicsServices and
   // LayerKit open separate AppleH1CLCD user clients.
   DisplayGeometry display_geometry{default_display_geometry};

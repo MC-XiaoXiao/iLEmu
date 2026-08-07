@@ -149,6 +149,30 @@ sample_quad(std::span<const HostPoint> quad, HostPoint point) {
     return sample_quad_triangle(quad, {0, 2, 3}, point);
 }
 
+std::optional<HostPoint> interpolate_texture(
+    std::span<const HostTexturedVertex> vertices, const QuadSample& sample) {
+    const auto affine = std::ranges::all_of(
+        vertices, [](const HostTexturedVertex& vertex) {
+            return std::abs(vertex.perspective - 1.0F) <=
+                   quad_edge_tolerance;
+        });
+    HostPoint numerator{};
+    float denominator = 0.0F;
+    for (std::size_t index = 0; index < sample.vertices.size(); ++index) {
+        const auto vertex = sample.vertices[index];
+        const auto reciprocal = affine
+                                    ? 1.0F
+                                    : 1.0F / vertices[vertex].perspective;
+        const auto coefficient = sample.weights[index] * reciprocal;
+        numerator.x += coefficient * vertices[vertex].texture.x;
+        numerator.y += coefficient * vertices[vertex].texture.y;
+        denominator += affine ? sample.weights[index] : coefficient;
+    }
+    if (!std::isfinite(denominator) || std::abs(denominator) <= 1.0e-6F)
+        return std::nullopt;
+    return HostPoint{numerator.x / denominator, numerator.y / denominator};
+}
+
 std::uint32_t composite_pixel(
     std::uint32_t source, std::uint32_t destination,
     HostCompositeMode mode, std::uint8_t global_alpha) {
@@ -440,7 +464,9 @@ class CpuCommandEncoder final : public CommandEncoder {
                     return !std::isfinite(vertex.position.x) ||
                            !std::isfinite(vertex.position.y) ||
                            !std::isfinite(vertex.texture.x) ||
-                           !std::isfinite(vertex.texture.y);
+                           !std::isfinite(vertex.texture.y) ||
+                           !std::isfinite(vertex.perspective) ||
+                           std::abs(vertex.perspective) <= 1.0e-6F;
                 })) {
             return false;
         }
@@ -478,17 +504,11 @@ class CpuCommandEncoder final : public CommandEncoder {
                      static_cast<float>(destination_y) + 0.5F});
                 if (!sample)
                     continue;
-                float u{};
-                float v{};
-                for (std::size_t index = 0;
-                     index < sample->vertices.size(); ++index) {
-                    const auto vertex =
-                        sample->vertices[index];
-                    u += sample->weights[index] *
-                         vertices[vertex].texture.x;
-                    v += sample->weights[index] *
-                         vertices[vertex].texture.y;
-                }
+                const auto texture = interpolate_texture(vertices, *sample);
+                if (!texture)
+                    continue;
+                const auto u = texture->x;
+                const auto v = texture->y;
                 const auto source_x = std::clamp<std::int64_t>(
                     static_cast<std::int64_t>(std::floor(u)),
                     source_rectangle.x, source_right);

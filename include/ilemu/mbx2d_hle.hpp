@@ -135,7 +135,8 @@ private:
   void blit_color(UserlandHleCall &call, bool context_api);
   void blit_copy(UserlandHleCall &call, bool context_api);
   void quad_color(UserlandHleCall &call);
-  void quad_copy(UserlandHleCall &call);
+  void quad_copy(UserlandHleCall &call, bool context_api = false,
+                 bool perspective_api = false);
   void flush_surfaces(UserlandHleCall &call);
   void terminate(UserlandHleCall &call);
   [[nodiscard]] std::optional<ResolvedSurface>

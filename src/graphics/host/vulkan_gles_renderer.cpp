@@ -3501,7 +3501,9 @@ bool VulkanGlesRenderer::encode_copy_quad(
                 return !std::isfinite(vertex.position.x) ||
                        !std::isfinite(vertex.position.y) ||
                        !std::isfinite(vertex.texture.x) ||
-                       !std::isfinite(vertex.texture.y);
+                       !std::isfinite(vertex.texture.y) ||
+                       !std::isfinite(vertex.perspective) ||
+                       std::abs(vertex.perspective) <= 1.0e-6F;
             })) {
         return false;
     }
@@ -3530,6 +3532,16 @@ bool VulkanGlesRenderer::encode_copy_quad(
             const auto coordinate =
                 expand_quad_triangle_vertex(
                     texture, triangle, vertex);
+            const auto perspective =
+                host_vertices[triangle[vertex]].perspective;
+            const auto normalized_x =
+                2.0F * position.x /
+                    static_cast<float>(destination_descriptor.width) -
+                1.0F;
+            const auto normalized_y =
+                1.0F -
+                2.0F * position.y /
+                    static_cast<float>(destination_descriptor.height);
             const std::array<float, 2> gpu_coordinate =
                 full_source
                     ? std::array{
@@ -3541,15 +3553,8 @@ bool VulkanGlesRenderer::encode_copy_quad(
                                   source_descriptor.height)}
                     : std::array{coordinate.x, coordinate.y};
             vertices[output++] = {
-                {2.0F * position.x /
-                         static_cast<float>(
-                             destination_descriptor.width) -
-                     1.0F,
-                 1.0F -
-                     2.0F * position.y /
-                         static_cast<float>(
-                             destination_descriptor.height),
-                 0.0F, 1.0F},
+                {normalized_x * perspective, normalized_y * perspective,
+                 0.0F, perspective},
                 color, gpu_coordinate, {}};
         }
     }

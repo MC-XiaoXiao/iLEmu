@@ -181,6 +181,12 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry &registry,
       [this](UserlandHleCall &call) { blit_copy(call, true); });
   add("_mbx3DQuadColor", [this](UserlandHleCall &call) { quad_color(call); });
   add("_mbx3DQuadCopy", [this](UserlandHleCall &call) { quad_copy(call); });
+  add("_mbx3DQuadCopyPerspective", [this](UserlandHleCall &call) {
+    quad_copy(call, false, true);
+  });
+  add("_mbx3DCtxQuadCopyPerspective", [this](UserlandHleCall &call) {
+    quad_copy(call, true, true);
+  });
 
   add("_mbx2DFinish", [this](UserlandHleCall &call) {
     static_cast<void>(

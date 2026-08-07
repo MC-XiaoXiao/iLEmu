@@ -46,6 +46,9 @@ struct HostPoint {
 struct HostTexturedVertex {
     HostPoint position{};
     HostPoint texture{};
+    // Homogeneous W used for projective texture interpolation.  A value of
+    // one preserves the affine behavior of the original MBX2D path.
+    float perspective{1.0F};
 };
 
 enum class HostCompositeMode : std::uint8_t {

@@ -25,6 +25,13 @@ enum class BasebandTransportProfile : std::uint8_t {
     Unavailable,
 };
 
+// Guest-visible graphics accelerator family. This describes the firmware
+// capability boundary; it does not select the host renderer implementation.
+enum class GraphicsAcceleratorProfileKind : std::uint8_t {
+    MbxLite,
+    Sgx535,
+};
+
 struct DeviceProfile {
     std::string_view product_type;
     std::string_view board_config;
@@ -56,6 +63,12 @@ struct DeviceProfile {
     // Native firmware layout and touch coordinate space. Older UIKit builds
     // may keep this fixed even when a different panel geometry is reported.
     DisplayGeometry user_interface;
+    GraphicsAcceleratorProfileKind graphics_accelerator{
+        GraphicsAcceleratorProfileKind::MbxLite};
+    // Bundle selected by the firmware's graphics service. Empty means the
+    // accelerator exposes only the legacy MBX service and has no private
+    // driver bundle to publish through IOAcceleratorES.
+    std::string_view graphics_driver_bundle;
     BasebandTransportProfile baseband_transport{
         BasebandTransportProfile::Virtual};
 
