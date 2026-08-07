@@ -32,6 +32,7 @@
 #include "ilemu/darwin_tty_abi.hpp"
 #include "ilemu/display.hpp"
 #include "ilemu/device_profile.hpp"
+#include "ilemu/dyld_shared_cache.hpp"
 #include "ilemu/hfs_metadata.hpp"
 #include "ilemu/hfs_volume_profile.hpp"
 #include "ilemu/host_network.hpp"
@@ -328,6 +329,8 @@ private:
                                                         std::uint32_t number);
   void dispatch_bsd_descriptor_memory(Cpu &cpu, std::uint32_t number);
   [[nodiscard]] bool dispatch_bsd_shared_region(Cpu &cpu, std::uint32_t number);
+  [[nodiscard]] const DyldSharedCache *dyld_shared_cache_for(
+      const std::filesystem::path &path);
   [[nodiscard]] bool dispatch_bsd_debug(Cpu &cpu, std::uint32_t number);
   [[nodiscard]] bool dispatch_bsd_security(Cpu &cpu, std::uint32_t number);
   void dispatch_bsd_socket(Cpu &cpu, std::uint32_t number);
@@ -445,7 +448,7 @@ private:
   std::size_t install_mapped_user_image(
       Cpu &cpu, const std::filesystem::path &image_path,
       std::uint32_t mapping_address, std::uint32_t mapping_size,
-      std::uint64_t file_offset);
+      std::uint64_t file_offset, bool shared_cache_mapping = false);
   void install_commpage();
   void configure_darwin_notify_state();
   bool deliver_pending_mach_if_ready_locked(Cpu &cpu);
@@ -537,6 +540,9 @@ private:
   AddressSpace &memory_;
   Output &output_;
   std::filesystem::path rootfs_;
+  std::optional<DyldSharedCache> dyld_shared_cache_;
+  std::filesystem::path dyld_shared_cache_path_;
+  bool dyld_shared_cache_attempted_{};
   DeviceProfile device_profile_;
   hfs::VolumeProfile hfs_volumes_;
   hfs::MetadataProvider hfs_metadata_;

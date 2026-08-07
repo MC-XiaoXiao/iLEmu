@@ -43,6 +43,11 @@ struct AppliedMapping {
   std::uint32_t size{};
 };
 
+struct MappingSource {
+  std::filesystem::path path;
+  std::uint64_t file_offset{};
+};
+
 enum class MappingLayout {
   Arm32Words,
   MachVm64,
@@ -128,6 +133,12 @@ read_mapping(const AddressSpace &memory, std::uint32_t base,
            mapping.size <= file_size - mapping.file_offset));
 }
 
+[[nodiscard]] bool looks_like_dyld_shared_cache(
+    const std::filesystem::path &path) {
+  return path.filename().string().find("dyld_shared_cache") !=
+         std::string::npos;
+}
+
 [[nodiscard]] std::optional<std::vector<Mapping>>
 read_mappings(const AddressSpace &memory, std::uint32_t address,
               std::uint32_t count, std::uintmax_t file_size,
@@ -205,6 +216,27 @@ void rollback(AddressSpace &memory,
 
 } // namespace
 
+const DyldSharedCache *CompatibilityKernel::dyld_shared_cache_for(
+    const std::filesystem::path &path) {
+  if (dyld_shared_cache_attempted_ && dyld_shared_cache_path_ == path)
+    return dyld_shared_cache_ ? &*dyld_shared_cache_ : nullptr;
+
+  dyld_shared_cache_attempted_ = true;
+  dyld_shared_cache_path_ = path;
+  dyld_shared_cache_.reset();
+  DyldSharedCacheOptions options;
+  options.architecture = "armv6k";
+  if (const auto parsed = DyldSharedCache::parse(path, options)) {
+    dyld_shared_cache_ = *parsed;
+    output_.write("[shared-region] parsed dyld cache generation files=" +
+                  std::to_string(dyld_shared_cache_->files().size()) +
+                  " images=" +
+                  std::to_string(dyld_shared_cache_->images().size()) +
+                  "\n");
+  }
+  return dyld_shared_cache_ ? &*dyld_shared_cache_ : nullptr;
+}
+
 bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
                                                       std::uint32_t number) {
   auto &registers = cpu.registers();
@@ -262,13 +294,24 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
     return true;
   }
 
+  const auto *shared_cache =
+      looks_like_dyld_shared_cache(descriptor->second)
+          ? dyld_shared_cache_for(descriptor->second)
+          : nullptr;
+  // A split cache can place an executable mapping in a subcache. The parser
+  // validates each file independently; use an intentionally permissive bound
+  // here and perform the source-file bounds check after correlating the range.
+  const auto mapping_validation_size =
+      shared_cache ? std::numeric_limits<std::uintmax_t>::max() : file_size;
+
   auto layout = MappingLayout::Arm32Words;
   auto mappings =
-      read_mappings(memory_, mappings_address, mapping_count, file_size, layout);
+      read_mappings(memory_, mappings_address, mapping_count,
+                    mapping_validation_size, layout);
   if (!mappings) {
     layout = MappingLayout::MachVm64;
     mappings = read_mappings(memory_, mappings_address, mapping_count,
-                             file_size, layout);
+                             mapping_validation_size, layout);
   }
   if (!mappings) {
     bsd_error(cpu, bsd_support::invalid_argument);
@@ -281,6 +324,36 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
     return true;
   }
 
+  const auto mapping_source = [&](const Mapping &mapping)
+      -> std::optional<MappingSource> {
+    if (shared_cache == nullptr) {
+      return MappingSource{descriptor->second, mapping.file_offset};
+    }
+    for (const auto &file : shared_cache->files()) {
+      for (const auto &range : file.mappings) {
+        if (mapping.address < range.address ||
+            mapping.address - range.address > range.size ||
+            mapping.size > range.size - (mapping.address - range.address) ||
+            mapping.file_offset < range.file_offset ||
+            mapping.file_offset - range.file_offset > range.size ||
+            mapping.size >
+                range.size - (mapping.file_offset - range.file_offset)) {
+          continue;
+        }
+        const auto source_offset = mapping.file_offset;
+        std::error_code source_error;
+        const auto source_size = std::filesystem::file_size(
+            file.path, source_error);
+        if (source_error || source_offset > source_size ||
+            mapping.size > source_size - source_offset) {
+          return std::nullopt;
+        }
+        return MappingSource{file.path, source_offset};
+      }
+    }
+    return std::nullopt;
+  };
+
   std::vector<AppliedMapping> applied;
   applied.reserve(mappings->size());
   for (const auto &mapping : *mappings) {
@@ -289,13 +362,20 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
         (mapping.initial_protection & vm_protection_zero_fill) != 0;
     const auto mapping_permissions =
         permissions(mapping.initial_protection);
+    const auto source = zero_fill ? std::optional<MappingSource>{}
+                                  : mapping_source(mapping);
+    if (!zero_fill && !source) {
+      rollback(memory_, applied);
+      bsd_error(cpu, bsd_support::invalid_argument);
+      return true;
+    }
     const auto mapped = zero_fill
                             ? memory_.map(
                                   address, mapping.size, mapping_permissions)
                             : memory_.map_file(
                                   address, mapping.size,
                                   mapping_permissions,
-                                  descriptor->second, mapping.file_offset);
+                                  source->path, source->file_offset);
     if (!mapped) {
       rollback(memory_, applied);
       bsd_error(cpu, zero_fill ? 12 : bsd_support::invalid_argument);
@@ -315,9 +395,11 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
   }
   for (const auto &mapping : *mappings) {
     if ((mapping.initial_protection & vm_protection_zero_fill) != 0) continue;
+    const auto source = mapping_source(mapping);
+    if (!source) continue;
     static_cast<void>(install_mapped_user_image(
-        cpu, descriptor->second, mapping.address + *slide, mapping.size,
-        mapping.file_offset));
+        cpu, source->path, mapping.address + *slide, mapping.size,
+        source->file_offset, shared_cache != nullptr));
   }
   output_.write("[shared-region] map pid=" + std::to_string(process_.pid) +
                 " file=" + descriptor->second.string() +

@@ -656,16 +656,26 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id) {
 std::size_t CompatibilityKernel::install_mapped_user_image(
     Cpu &cpu, const std::filesystem::path &image_path,
     std::uint32_t mapping_address, std::uint32_t mapping_size,
-    std::uint64_t file_offset) {
-  const auto installed = userland_hle_.install_mapped_image(
-      cpu, process_.pid, image_path, mapping_address, mapping_size,
-      file_offset, arm_architecture_for_model(device_profile_.cpu_model));
+    std::uint64_t file_offset, bool shared_cache_mapping) {
+  // A dyld shared-cache mapping is backed by a container/subcache rather than
+  // by a standalone Mach-O file. Its image header and linkedit data are
+  // distributed across cache mappings, so MachOImage::parse(path) cannot be
+  // used here. HLE patching also must not write into shared cache __TEXT;
+  // cache targets are resolved by the translator/dispatch path instead.
+  const auto installed = shared_cache_mapping
+                             ? 0U
+                             : userland_hle_.install_mapped_image(
+                                   cpu, process_.pid, image_path,
+                                   mapping_address, mapping_size, file_offset,
+                                   arm_architecture_for_model(
+                                       device_profile_.cpu_model));
   constexpr std::string_view uikit_image{"/UIKit.framework/UIKit"};
   constexpr std::string_view graphics_services_image{
       "/GraphicsServices.framework/GraphicsServices"};
   constexpr std::string_view quartz_core_image{
       "/QuartzCore.framework/QuartzCore"};
   const auto path = image_path.generic_string();
+  if (shared_cache_mapping) return installed;
   if (path.ends_with(uikit_image)) {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
     if (const auto process = shared_state_->processes.find(process_.pid);
