@@ -39,6 +39,7 @@
 #include "ilemu/guest_parallelism_policy.hpp"
 #include "ilemu/host_resource_controller.hpp"
 #include "ilemu/iokit_abi.hpp"
+#include "ilemu/jit_artifact.hpp"
 #include "ilemu/jit_translation_profile.hpp"
 #include "ilemu/kernel.hpp"
 #include "ilemu/live_control.hpp"
@@ -1304,6 +1305,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   JitTranslationProfileStore translation_profiles{
       host_cache /
       "jit-translation-profiles"};
+  auto jit_artifacts = std::make_shared<JitArtifactStore>(
+      host_cache / "jit-artifacts.bin");
   const auto assign_translation_profile =
       [&translation_profiles](CpuCluster &cpus,
                               const ContentIdentity &executable_identity) {
@@ -1315,7 +1318,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   initial->cpus = std::make_unique<CpuCluster>(
       initial_guest_thread_slots, maximum_guest_threads, *initial->memory,
       guest_processor_count, *cpu_model, shared_exclusive_monitor,
-      allocate_shared_monitor_slots());
+      allocate_shared_monitor_slots(), jit_artifacts);
   initial->cpus->set_jit_code_cache_size(
       configured_jit_code_cache_size);
   assign_translation_profile(*initial->cpus,
@@ -1562,7 +1565,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
             child->cpus = std::make_unique<CpuCluster>(
                 initial_guest_thread_slots, maximum_guest_threads,
                 *child->memory, guest_processor_count, *cpu_model,
-                shared_exclusive_monitor, allocate_shared_monitor_slots());
+                shared_exclusive_monitor, allocate_shared_monitor_slots(),
+                jit_artifacts);
             child->cpus->set_jit_code_cache_size(
                 configured_jit_code_cache_size);
           }

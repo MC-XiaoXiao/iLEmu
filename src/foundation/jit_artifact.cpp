@@ -9,8 +9,10 @@
 namespace ilemu {
 namespace {
 
-constexpr std::array<char, 8> artifact_magic{
+constexpr std::array<char, 8> legacy_artifact_magic{
     'i', 'L', 'J', 'A', 'R', 'T', 'F', '1'};
+constexpr std::array<char, 8> artifact_magic{
+    'i', 'L', 'J', 'A', 'R', 'T', 'F', '2'};
 constexpr std::uint32_t maximum_artifacts = 1'000'000;
 constexpr std::uint32_t maximum_ir_bytes = 16U * 1024U * 1024U;
 constexpr std::uint32_t maximum_metadata_entries = 1'000'000;
@@ -229,7 +231,11 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
     if (!stream) return false;
     std::array<char, artifact_magic.size()> magic{};
     stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
-    if (!stream || magic != artifact_magic) return false;
+    if (!stream ||
+        (magic != legacy_artifact_magic && magic != artifact_magic)) {
+      return false;
+    }
+    const bool legacy_format = magic == legacy_artifact_magic;
     const auto count = read_u32(stream);
     if (!count || *count > maximum_artifacts) return false;
 
@@ -241,8 +247,12 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
       const auto relocation_count = read_u32(stream);
       const auto exit_count = read_u32(stream);
       const auto instruction_count = read_u32(stream);
+      const auto translation_nanoseconds =
+          legacy_format ? std::optional<std::uint64_t>{0}
+                        : read_u64(stream);
       if (!key || !ir_size || !relocation_count || !exit_count ||
-          !instruction_count || *relocation_count > maximum_metadata_entries ||
+          !instruction_count || !translation_nanoseconds ||
+          *relocation_count > maximum_metadata_entries ||
           *exit_count > maximum_metadata_entries) {
         return false;
       }
@@ -251,6 +261,7 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
       JitArtifactData data;
       data.normalized_ir = *ir;
       data.instruction_count = *instruction_count;
+      data.translation_nanoseconds = *translation_nanoseconds;
       data.relocation_targets.reserve(*relocation_count);
       for (std::uint32_t relocation = 0; relocation < *relocation_count;
            ++relocation) {
@@ -320,6 +331,7 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
         write_u32(stream, static_cast<std::uint32_t>(
                               artifact->data.exit_locations.size()));
         write_u32(stream, artifact->data.instruction_count);
+        write_u64(stream, artifact->data.translation_nanoseconds);
         stream.write(
             reinterpret_cast<const char *>(artifact->data.normalized_ir.data()),
             static_cast<std::streamsize>(artifact->data.normalized_ir.size()));

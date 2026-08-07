@@ -18,6 +18,7 @@
 namespace ilemu {
 
 class JitTranslationProfile;
+class JitArtifactStore;
 
 struct CpuRunResult {
     Dynarmic::HaltReason reason{};
@@ -146,7 +147,8 @@ public:
         std::size_t execution_slot_count,
         const ArmCpuModel& cpu_model,
         Dynarmic::ExclusiveMonitor& monitor,
-        std::size_t monitor_processor_base);
+        std::size_t monitor_processor_base,
+        std::shared_ptr<JitArtifactStore> artifact_store = {});
 
     [[nodiscard]] std::size_t size() const { return cpus_.size(); }
     [[nodiscard]] std::size_t capacity() const {

@@ -57,6 +57,11 @@ struct JitArtifactData {
   std::vector<std::uint64_t> relocation_targets;
   std::vector<std::uint64_t> exit_locations;
   std::uint32_t instruction_count{};
+  // Translation timing is advisory metadata until a portable IR exporter is
+  // available at the Dynarmic boundary. It is still useful for deciding
+  // whether an entry was produced by a real translation rather than a
+  // speculative profile hint.
+  std::uint64_t translation_nanoseconds{};
 };
 
 struct BlockArtifact {

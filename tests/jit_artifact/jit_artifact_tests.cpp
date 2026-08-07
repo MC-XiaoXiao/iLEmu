@@ -1,11 +1,15 @@
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
 #include "ilemu/jit_artifact.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -35,6 +39,23 @@ ilemu::JitArtifactKey make_key() {
   return key;
 }
 
+void write_le32(std::vector<std::byte> &bytes, std::size_t offset,
+                std::uint32_t value) {
+  for (std::size_t index = 0; index < sizeof(value); ++index) {
+    bytes.at(offset + index) = static_cast<std::byte>(value >> (index * 8U));
+  }
+}
+
+ilemu::JitHostIsa host_isa() {
+#if defined(__aarch64__) || defined(_M_ARM64)
+  return ilemu::JitHostIsa::Arm64;
+#elif defined(__x86_64__) || defined(_M_X64)
+  return ilemu::JitHostIsa::X86_64;
+#else
+  return ilemu::JitHostIsa::Unknown;
+#endif
+}
+
 } // namespace
 
 int main() {
@@ -47,9 +68,11 @@ int main() {
   const auto key = make_key();
   {
     ilemu::JitArtifactStore store{persistence};
+    ilemu::JitArtifactData first_data{
+        {std::byte{0xa1}, std::byte{0xb2}}, {0x2000U}, {0x3000U}, 2U,
+        17U};
     auto first = store.publish(
-        key, ilemu::JitArtifactData{{std::byte{0xa1}, std::byte{0xb2}},
-                                    {0x2000U}, {0x3000U}, 2U});
+        key, std::move(first_data));
     auto duplicate = store.publish(
         key, ilemu::JitArtifactData{{std::byte{0xff}}, {}, {}, 1U});
     if (first != duplicate || first->data.normalized_ir.size() != 2U ||
@@ -93,6 +116,78 @@ int main() {
       std::cerr << "portable artifact metadata did not reload\n";
       return 1;
     }
+    if (artifact->data.translation_nanoseconds != 17U) {
+      std::cerr << "translation metadata did not reload\n";
+      return 1;
+    }
+  }
+
+  const auto code_path = root / "immutable-code.bin";
+  std::vector<std::byte> code(ilemu::AddressSpace::page_size);
+  write_le32(code, 0, 0xe3a00001U); // mov r0, #1
+  write_le32(code, 4, 0xef000080U); // svc #0x80
+  {
+    std::ofstream stream{code_path, std::ios::binary | std::ios::trunc};
+    stream.write(reinterpret_cast<const char *>(code.data()),
+                 static_cast<std::streamsize>(code.size()));
+    if (!stream) {
+      std::cerr << "could not create immutable code fixture\n";
+      return 1;
+    }
+  }
+
+  auto runtime_artifacts = std::make_shared<ilemu::JitArtifactStore>();
+  ilemu::AddressSpace memory;
+  constexpr std::uint32_t code_address = 0x4000U;
+  if (!memory.map_file(code_address, ilemu::AddressSpace::page_size,
+                       ilemu::MemoryPermission::Read |
+                           ilemu::MemoryPermission::Execute,
+                       code_path, 0)) {
+    std::cerr << "could not map immutable code fixture\n";
+    return 1;
+  }
+  const auto backing = memory.executable_backing_identity(code_address, 4);
+  if (!backing) {
+    std::cerr << "immutable code fixture has no backing identity\n";
+    return 1;
+  }
+
+  Dynarmic::ExclusiveMonitor monitor{1};
+  {
+    ilemu::CpuCluster cluster{1, 1, memory, 1,
+                              ilemu::default_arm_cpu_model(), monitor, 0,
+                              runtime_artifacts};
+    auto &cpu = cluster.cpu(0);
+    cpu.registers()[15] = code_address;
+    cpu.set_cpsr(0x10U);
+    const auto result = cpu.run(16);
+    if (!result.svc || *result.svc != 0x80U ||
+        runtime_artifacts->size() == 0) {
+      std::cerr << "CPU translation did not publish an executable artifact\n";
+      return 1;
+    }
+  }
+
+  ilemu::JitArtifactKey expected;
+  expected.content_identity = backing->content;
+  expected.layout_identity = backing->layout;
+  expected.guest_pc = code_address;
+  expected.thumb = false;
+  expected.architecture = ilemu::ArmArchitectureVersion::Armv6K;
+  expected.cpu_model = ilemu::ArmCpuModelKind::Arm1176JzfS;
+  expected.timing_model_version = 1U;
+  expected.guest_ticks_per_second = 400'000'000U;
+  expected.image_slide = 0U;
+  expected.hle_abi_version = 1U;
+  expected.backend_abi_version = 1U;
+  expected.codegen_options = 1U;
+  expected.host_isa = host_isa();
+  expected.host_feature_mask = 0U;
+  expected.artifact_format_version = 2U;
+  const auto published = runtime_artifacts->find(expected);
+  if (!published || published->data.normalized_ir.empty()) {
+    std::cerr << "published artifact key did not match executable backing\n";
+    return 1;
   }
 
   std::filesystem::remove_all(root, error);

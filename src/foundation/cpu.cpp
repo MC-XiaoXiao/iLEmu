@@ -1,7 +1,9 @@
 #include "ilemu/cpu.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cctype>
 #include <deque>
 #include <mutex>
 #include <optional>
@@ -10,6 +12,7 @@
 #include <thread>
 #include <unordered_set>
 #include <utility>
+#include <string_view>
 
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic push
@@ -23,6 +26,7 @@
 #endif
 
 #include "ilemu/jit_translation_profile.hpp"
+#include "ilemu/jit_artifact.hpp"
 #include "ilemu/performance.hpp"
 
 namespace ilemu {
@@ -47,14 +51,39 @@ std::uint64_t jit_code_cache_used(const Jit& jit) {
     return 0;
 }
 
+constexpr std::uint32_t jit_artifact_hle_abi_version = 1U;
+constexpr std::uint32_t jit_artifact_backend_abi_version = 1U;
+constexpr std::uint64_t jit_artifact_codegen_options = 1U;
+constexpr std::uint32_t jit_artifact_format_version = 2U;
+
+[[nodiscard]] ArmCpuModelKind jit_artifact_cpu_model(
+    const ArmCpuModel& cpu_model) noexcept {
+    return cpu_model.architecture_version() == ArmArchitectureVersion::Armv7
+               ? ArmCpuModelKind::CortexA8
+               : ArmCpuModelKind::Arm1176JzfS;
+}
+
+[[nodiscard]] JitHostIsa jit_artifact_host_isa() noexcept {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    return JitHostIsa::Arm64;
+#elif defined(__x86_64__) || defined(_M_X64)
+    return JitHostIsa::X86_64;
+#else
+    return JitHostIsa::Unknown;
+#endif
+}
+
 }  // namespace
 
 class JitCallbacks final : public Dynarmic::A32::UserCallbacks {
 public:
     JitCallbacks(
         AddressSpace& memory,
-        const ArmCpuModel& cpu_model)
-        : memory_{memory}, cpu_model_{cpu_model} {}
+        const ArmCpuModel& cpu_model,
+        std::shared_ptr<JitArtifactStore> artifact_store)
+        : memory_{memory},
+          cpu_model_{cpu_model},
+          artifact_store_{std::move(artifact_store)} {}
 
     void attach(Cpu* owner, Dynarmic::A32::Jit* jit) {
         owner_ = owner;
@@ -65,6 +94,7 @@ public:
         bool, Dynarmic::A32::VAddr, Dynarmic::A32::IREmitter& ir) override {
         if (ir.block.CycleCount() == 0) {
             performance_counters().record_translation_block();
+            translation_block_ = &ir.block;
         }
         // This fork's translator continues normal decoding when the hook returns
         // true. Returning false is reserved for a hook that already emitted an IR
@@ -74,13 +104,14 @@ public:
 
     void CodeTranslationCompleted(
         std::uint64_t location_descriptor,
-        std::uint64_t) noexcept override {
+        std::uint64_t translation_nanoseconds) noexcept override {
         const auto pc = static_cast<std::uint32_t>(location_descriptor);
         if (translation_profile_ &&
             memory_.translation_profile_stable(
                 pc, sizeof(std::uint32_t))) {
             translation_profile_->record(location_descriptor);
         }
+        publish_artifact(location_descriptor, translation_nanoseconds);
     }
 
     void discard_translation_location(
@@ -243,6 +274,83 @@ public:
         translation_profile_ = std::move(profile);
     }
 private:
+    void publish_artifact(
+        std::uint64_t location_descriptor,
+        std::uint64_t translation_nanoseconds) noexcept {
+        if (!artifact_store_) return;
+        try {
+            const auto *translation_block = translation_block_;
+            translation_block_ = nullptr;
+            const auto pc = static_cast<std::uint32_t>(location_descriptor);
+            const auto backing = memory_.executable_backing_identity(
+                pc & ~std::uint32_t{3}, sizeof(std::uint32_t));
+            if (!backing) return;
+
+            JitArtifactKey key;
+            key.content_identity = backing->content;
+            key.layout_identity = backing->layout;
+            key.guest_pc = pc;
+            key.thumb = ((location_descriptor >> 32U) & 1U) != 0;
+            key.architecture = cpu_model_.architecture_version();
+            key.cpu_model = jit_artifact_cpu_model(cpu_model_);
+            key.timing_model_version = 1U;
+            key.guest_ticks_per_second = cpu_model_.ticks_per_second();
+            // The effective Guest mapping is already part of layout_identity;
+            // no Mach-O slide is available at this generic CPU boundary.
+            key.image_slide = 0U;
+            key.hle_abi_version = jit_artifact_hle_abi_version;
+            key.backend_abi_version = jit_artifact_backend_abi_version;
+            key.codegen_options = jit_artifact_codegen_options;
+            key.host_isa = jit_artifact_host_isa();
+            key.host_feature_mask = 0U;
+            key.artifact_format_version = jit_artifact_format_version;
+
+            JitArtifactData data;
+            if (translation_block != nullptr) {
+                data.normalized_ir = normalized_ir(*translation_block);
+            }
+            data.translation_nanoseconds = translation_nanoseconds;
+            // The public Dynarmic interface reports completion but does not
+            // export portable IR. Publish only timing metadata here; lookup
+            // remains advisory until a versioned IR importer is available.
+            static_cast<void>(artifact_store_->publish(std::move(key),
+                                                       std::move(data)));
+        } catch (...) {
+            // Artifact persistence must never make guest execution fail.
+        }
+    }
+
+    [[nodiscard]] static std::vector<std::byte> normalized_ir(
+        const Dynarmic::IR::Block &block) {
+        auto dump = Dynarmic::IR::DumpBlock(block);
+        std::string canonical;
+        canonical.reserve(dump.size());
+        for (std::size_t index = 0; index < dump.size();) {
+            if (dump[index] == '[' && index + 17U < dump.size() &&
+                dump[index + 17U] == ']' &&
+                std::all_of(dump.begin() + static_cast<std::ptrdiff_t>(index + 1U),
+                            dump.begin() + static_cast<std::ptrdiff_t>(index + 17U),
+                            [](unsigned char value) {
+                                return std::isxdigit(value) != 0;
+                            })) {
+                canonical += "[inst]";
+                index += 18U;
+                continue;
+            }
+            constexpr std::string_view unnamed = "<unnamed inst ";
+            if (dump.compare(index, unnamed.size(), unnamed) == 0) {
+                canonical += "<unnamed inst>";
+                const auto end = dump.find('>', index + unnamed.size());
+                index = end == std::string::npos ? dump.size() : end + 1U;
+                continue;
+            }
+            canonical.push_back(dump[index++]);
+        }
+        const auto *begin =
+            reinterpret_cast<const std::byte *>(canonical.data());
+        return std::vector<std::byte>(begin, begin + canonical.size());
+    }
+
     template<typename T, typename Member>
     T read(std::uint32_t address, Member member) {
         const auto value = (memory_.*member)(address, MemoryPermission::Read);
@@ -309,6 +417,8 @@ private:
     std::optional<std::uint32_t> breakpoint_;
     std::string exception_;
     std::shared_ptr<JitTranslationProfile> translation_profile_;
+    std::shared_ptr<JitArtifactStore> artifact_store_;
+    Dynarmic::IR::Block *translation_block_{};
 };
 
 // The iPhone ARM user ABI uses CP15 thread-pointer registers in addition to
@@ -423,12 +533,14 @@ public:
         std::size_t execution_slot,
         AddressSpace& memory,
         Dynarmic::ExclusiveMonitor& monitor,
-        const ArmCpuModel& cpu_model)
+        const ArmCpuModel& cpu_model,
+        std::shared_ptr<JitArtifactStore> artifact_store)
         : processor_id_{processor_id},
           execution_slot_{execution_slot},
           memory_{memory},
           monitor_{monitor},
-          callbacks_{std::make_unique<JitCallbacks>(memory, cpu_model)},
+          callbacks_{std::make_unique<JitCallbacks>(
+              memory, cpu_model, std::move(artifact_store))},
           cp15_{std::make_unique<ArmSystemControlCoprocessor>(
               *callbacks_)} {}
 
@@ -754,7 +866,8 @@ public:
         Dynarmic::ExclusiveMonitor& monitor,
         std::size_t execution_slot_count,
         std::size_t first_processor_id,
-        const ArmCpuModel& cpu_model)
+        const ArmCpuModel& cpu_model,
+        std::shared_ptr<JitArtifactStore> artifact_store)
         : memory_{memory} {
         if (execution_slot_count == 0) {
             throw std::invalid_argument{
@@ -769,7 +882,8 @@ public:
         executors_.reserve(execution_slot_count);
         for (std::size_t slot = 0; slot < execution_slot_count; ++slot) {
             executors_.push_back(std::make_unique<JitExecutor>(
-                first_processor_id + slot, slot, memory, monitor, cpu_model));
+                first_processor_id + slot, slot, memory, monitor, cpu_model,
+                artifact_store));
         }
     }
 
@@ -840,7 +954,8 @@ Cpu::Cpu(
     std::size_t processor_id, AddressSpace& memory, Dynarmic::ExclusiveMonitor& monitor)
     : Cpu{processor_id,
           std::make_shared<CpuExecutionPool>(
-              memory, monitor, 1, processor_id, default_arm_cpu_model())} {}
+              memory, monitor, 1, processor_id, default_arm_cpu_model(),
+              nullptr)} {}
 
 Cpu::Cpu(
     std::size_t processor_id,
@@ -1018,7 +1133,7 @@ CpuCluster::CpuCluster(
       monitor_processor_base_{},
       execution_pool_{std::make_shared<CpuExecutionPool>(
           memory, *execution_monitor_, execution_slot_count,
-          monitor_processor_base_, cpu_model)} {
+          monitor_processor_base_, cpu_model, nullptr)} {
     if (initial_processor_count == 0) {
         throw std::invalid_argument{
             "initial_processor_count must be at least one"};
@@ -1040,7 +1155,8 @@ CpuCluster::CpuCluster(
     std::size_t execution_slot_count,
     const ArmCpuModel& cpu_model,
     Dynarmic::ExclusiveMonitor& monitor,
-    std::size_t monitor_processor_base)
+    std::size_t monitor_processor_base,
+    std::shared_ptr<JitArtifactStore> artifact_store)
     : memory_{&memory},
       maximum_processor_count_{maximum_processor_count},
       serialized_execution_{execution_slot_count == 1},
@@ -1050,7 +1166,7 @@ CpuCluster::CpuCluster(
       monitor_processor_base_{monitor_processor_base},
       execution_pool_{std::make_shared<CpuExecutionPool>(
           memory, *execution_monitor_, execution_slot_count,
-          monitor_processor_base_, cpu_model)} {
+          monitor_processor_base_, cpu_model, std::move(artifact_store))} {
     if (initial_processor_count == 0) {
         throw std::invalid_argument{
             "initial_processor_count must be at least one"};
