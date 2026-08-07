@@ -875,6 +875,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address) {
     return;
   }
   if (page == nullptr || !page->backing || page->file_cached ||
+      page->shared_writable ||
       (page->copy_on_write_possible && !page->shared_writable)) {
     return;
   }

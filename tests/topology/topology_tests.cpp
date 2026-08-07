@@ -54,6 +54,43 @@ int main() {
     return 1;
   }
 
+  ilemu::AddressSpace shared_source;
+  ilemu::AddressSpace shared_alias;
+  if (!shared_source.map(0x2000U, ilemu::AddressSpace::page_size,
+                         ilemu::MemoryPermission::Read |
+                             ilemu::MemoryPermission::Write) ||
+      !shared_source.write32(0x2000U, 3U)) {
+    std::cerr << "shared backing source setup failed\n";
+    return 1;
+  }
+  const auto shared_backings =
+      shared_source.share_pages(0x2000U, ilemu::AddressSpace::page_size);
+  if (!shared_backings ||
+      !shared_alias.map_page_backings(
+          0x3000U, ilemu::AddressSpace::page_size,
+          ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Write,
+          *shared_backings, ilemu::AddressSpace::PageMappingMode::Shared)) {
+    std::cerr << "shared backing alias setup failed\n";
+    return 1;
+  }
+  shared_alias.set_parallel_access(false);
+  auto **shared_write_table = shared_alias.jit_write_page_table();
+  if (shared_write_table == nullptr ||
+      shared_write_table[0x3000U / ilemu::AddressSpace::page_size] != nullptr) {
+    std::cerr << "shared backing retained a direct JIT write pointer\n";
+    return 1;
+  }
+  shared_source.set_exclusive_write_observer([&monitor] { monitor.Clear(); });
+  shared_alias.set_exclusive_write_observer([&monitor] { monitor.Clear(); });
+  static_cast<void>(monitor.ReadAndMark<std::uint32_t>(
+      0, 0x2000U, [&] { return shared_source.read32(0x2000U).value_or(0U); }));
+  if (!shared_alias.write32(0x3000U, 4U) ||
+      monitor.DoExclusiveOperation<std::uint32_t>(
+          0, 0x2000U, [](std::uint32_t) { return true; })) {
+    std::cerr << "shared alias write bypassed reservation invalidation\n";
+    return 1;
+  }
+
   ilemu::AddressSpace cluster_memory;
   Dynarmic::ExclusiveMonitor cluster_monitor{2};
   ilemu::CpuCluster cluster{1, 1, cluster_memory, 1,
