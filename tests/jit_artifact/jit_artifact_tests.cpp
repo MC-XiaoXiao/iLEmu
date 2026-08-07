@@ -122,6 +122,41 @@ int main() {
     }
   }
 
+  {
+    ilemu::JitArtifactLimits resident_limits;
+    resident_limits.resident_bytes = 1U;
+    ilemu::JitArtifactStore resident_limited{
+        std::filesystem::path{}, resident_limits};
+    if (resident_limited.publish(
+            key, ilemu::JitArtifactData{{std::byte{0x01}}, {}, {}, 1U}) ||
+        resident_limited.size() != 0U) {
+      std::cerr << "resident artifact budget was not enforced\n";
+      return 1;
+    }
+
+    ilemu::JitArtifactStore reloaded_limited{persistence, resident_limits};
+    if (reloaded_limited.size() != 0U) {
+      std::cerr << "resident artifact budget was ignored during load\n";
+      return 1;
+    }
+
+    ilemu::JitArtifactLimits persistence_limits;
+    persistence_limits.persistence_bytes = 1U;
+    ilemu::JitArtifactStore persistence_limited{
+        std::filesystem::path{}, persistence_limits};
+    if (!persistence_limited.publish(
+            key, ilemu::JitArtifactData{{std::byte{0x02}}, {}, {}, 1U})) {
+      std::cerr << "persistence budget rejected an in-memory artifact\n";
+      return 1;
+    }
+    const auto limited_path = root / "limited.bin";
+    if (persistence_limited.save(limited_path) ||
+        std::filesystem::exists(limited_path)) {
+      std::cerr << "persistence artifact budget was not enforced\n";
+      return 1;
+    }
+  }
+
   const auto code_path = root / "immutable-code.bin";
   std::vector<std::byte> code(ilemu::AddressSpace::page_size);
   write_le32(code, 0, 0xe3a00001U); // mov r0, #1
