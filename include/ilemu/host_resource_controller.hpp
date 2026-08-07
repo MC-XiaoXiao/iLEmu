@@ -84,6 +84,8 @@ private:
     Work work;
   };
 
+  [[nodiscard]] static bool task_precedes(const Task &left,
+                                          const Task &right);
   void worker_loop();
   void stop();
 

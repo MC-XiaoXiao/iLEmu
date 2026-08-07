@@ -5,6 +5,34 @@
 #include <utility>
 
 namespace ilemu {
+namespace {
+
+[[nodiscard]] unsigned work_priority(HostWorkKind kind) {
+  switch (kind) {
+  case HostWorkKind::Maintenance:
+    return 0;
+  case HostWorkKind::BackgroundCompile:
+    return 1;
+  case HostWorkKind::OfflineCompile:
+    return 2;
+  }
+  return 2;
+}
+
+} // namespace
+
+bool HostResourceController::task_precedes(const Task &left,
+                                           const Task &right) {
+  if (left.deadline && right.deadline && *left.deadline != *right.deadline)
+    return *left.deadline < *right.deadline;
+  if (left.deadline != right.deadline)
+    return left.deadline.has_value();
+  const auto left_priority = work_priority(left.kind);
+  const auto right_priority = work_priority(right.kind);
+  if (left_priority != right_priority)
+    return left_priority < right_priority;
+  return left.sequence < right.sequence;
+}
 
 HostResourceController::HostResourceController(HostResourceBudget budget)
     : budget_{std::move(budget)}, duty_window_start_{Clock::now()} {
@@ -94,11 +122,21 @@ void HostResourceController::worker_loop() {
           duty_window_start_ = now;
           interactive_work_ = std::chrono::nanoseconds::zero();
         }
-        const auto iterator = tasks_.begin();
-        const auto interactive =
-            iterator->second.kind == HostWorkKind::BackgroundCompile;
-        if (!stopping_ && interactive &&
-            interactive_work_ >= budget_.interactive_compile_budget) {
+        const auto interactive_budget_exhausted =
+            interactive_work_ >= budget_.interactive_compile_budget;
+        auto iterator = tasks_.end();
+        for (auto candidate = tasks_.begin(); candidate != tasks_.end();
+             ++candidate) {
+          if (interactive_budget_exhausted &&
+              candidate->second.kind == HostWorkKind::BackgroundCompile) {
+            continue;
+          }
+          if (iterator == tasks_.end() ||
+              task_precedes(candidate->second, iterator->second)) {
+            iterator = candidate;
+          }
+        }
+        if (iterator == tasks_.end()) {
           const auto wake_at = duty_window_start_ + budget_.duty_period;
           work_available_.wait_until(lock, wake_at);
           continue;

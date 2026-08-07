@@ -2,8 +2,11 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <iostream>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 int main() {
   using namespace std::chrono_literals;
@@ -57,5 +60,60 @@ int main() {
   }
   retry->cancel();
   controller.wait_idle();
+
+  std::mutex ordering_mutex;
+  std::condition_variable ordering_condition;
+  bool blocker_started = false;
+  bool release_blocker = false;
+  std::vector<int> ordering;
+  const auto blocker = controller.submit(
+      ilemu::HostWorkKind::Maintenance, std::nullopt, [&] {
+        std::unique_lock lock{ordering_mutex};
+        blocker_started = true;
+        ordering_condition.notify_all();
+        ordering_condition.wait(lock, [&] { return release_blocker; });
+        ordering.push_back(0);
+      });
+  if (!blocker) {
+    std::cerr << "ordering blocker was not accepted\n";
+    return 1;
+  }
+  {
+    std::unique_lock lock{ordering_mutex};
+    ordering_condition.wait(lock, [&] { return blocker_started; });
+  }
+  const auto now = ilemu::HostResourceController::Clock::now();
+  const auto early = controller.submit(
+      ilemu::HostWorkKind::BackgroundCompile, now + 2ms,
+      [&] {
+        std::lock_guard lock{ordering_mutex};
+        ordering.push_back(1);
+      });
+  const auto late = controller.submit(
+      ilemu::HostWorkKind::OfflineCompile, now + 20ms,
+      [&] {
+        std::lock_guard lock{ordering_mutex};
+        ordering.push_back(2);
+      });
+  const auto unbound = controller.submit(
+      ilemu::HostWorkKind::Maintenance, std::nullopt,
+      [&] {
+        std::lock_guard lock{ordering_mutex};
+        ordering.push_back(3);
+      });
+  if (!early || !late || !unbound) {
+    std::cerr << "ordering tasks were not accepted\n";
+    return 1;
+  }
+  {
+    std::lock_guard lock{ordering_mutex};
+    release_blocker = true;
+  }
+  ordering_condition.notify_all();
+  controller.wait_idle();
+  if (ordering != std::vector<int>{0, 1, 2, 3}) {
+    std::cerr << "host work did not honor deadline ordering\n";
+    return 1;
+  }
   return 0;
 }
