@@ -121,6 +121,25 @@ int main() {
     return 1;
   }
 
+  ilemu::AddressSpace mutated_memory;
+  if (!mutated_memory.map_file(0xc000U, guest_memory_page_size,
+                               ilemu::MemoryPermission::Read |
+                                   ilemu::MemoryPermission::Execute,
+                               path, 0) ||
+      !mutated_memory.read32(0xc000U, ilemu::MemoryPermission::Execute) ||
+      !mutated_memory.protect(0xc000U, guest_memory_page_size,
+                              ilemu::MemoryPermission::Read |
+                                  ilemu::MemoryPermission::Write) ||
+      !mutated_memory.write32(0xc000U, 0xe1a00000U) ||
+      !mutated_memory.protect(0xc000U, guest_memory_page_size,
+                              ilemu::MemoryPermission::Read |
+                                  ilemu::MemoryPermission::Execute) ||
+      mutated_memory.executable_backing_identity(0xc000U,
+                                                 sizeof(std::uint32_t))) {
+    std::cerr << "mutated executable backing was reused as immutable\n";
+    return 1;
+  }
+
   std::filesystem::remove_all(root, error);
   return 0;
 }

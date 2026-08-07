@@ -1308,6 +1308,17 @@ AddressSpace::executable_backing_identity(std::uint32_t address,
       return std::nullopt;
     }
 
+    // The file mapping remains as range metadata after a private write.  A
+    // later mprotect(PROT_EXEC) must not make that detached page look like
+    // the original immutable file cache again.  Shared aliases are likewise
+    // mutable even when this particular virtual mapping is currently RX.
+    const auto *page = find_page_locked(page_address);
+    if (page != nullptr &&
+        (!page->backing || !page->file_cached || page->shared_writable ||
+         page->backing->shared_write_tracking_enabled())) {
+      return std::nullopt;
+    }
+
     const auto file_offset =
         mapping.file_offset +
         (static_cast<std::uint64_t>(page_address) - mapping_iterator->first);
