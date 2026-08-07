@@ -8,8 +8,28 @@
 #include <thread>
 #include <vector>
 
+#include "ilemu/deadline_queue.hpp"
+
 int main() {
   using namespace std::chrono_literals;
+  ilemu::DeadlineQueue<int, std::uint64_t> deadlines;
+  deadlines.upsert(1, 30U);
+  deadlines.upsert(2, 10U);
+  deadlines.upsert(1, 5U);
+  if (deadlines.size() != 2U || deadlines.next_deadline() !=
+                                   std::optional<std::uint64_t>{5U} ||
+      !deadlines.erase(1) ||
+      deadlines.next_deadline() != std::optional<std::uint64_t>{10U} ||
+      deadlines.erase(1)) {
+    std::cerr << "deadline queue did not maintain indexed earliest event\n";
+    return 1;
+  }
+  deadlines.clear();
+  if (deadlines.next_deadline()) {
+    std::cerr << "deadline queue clear left a stale event\n";
+    return 1;
+  }
+
   ilemu::HostResourceBudget budget;
   budget.worker_count = 1U;
   budget.interactive_compile_budget = 100ms;

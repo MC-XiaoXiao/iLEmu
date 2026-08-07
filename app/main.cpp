@@ -30,6 +30,7 @@
 #include "ilemu/baseband_replay.hpp"
 #include "ilemu/cpu.hpp"
 #include "ilemu/darwin_abi.hpp"
+#include "ilemu/deadline_queue.hpp"
 #include "ilemu/device_profile.hpp"
 #include "ilemu/display.hpp"
 #include "ilemu/executable_catalog.hpp"
@@ -1893,21 +1894,40 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::vector<std::pair<std::chrono::steady_clock::time_point,
                         std::filesystem::path>>
       scheduled_snapshots;
-  const auto next_host_control_deadline = [&]() {
-    std::optional<std::chrono::steady_clock::time_point> deadline;
-    const auto consider = [&deadline](const auto candidate) {
-      if (candidate && (!deadline || *candidate < *deadline))
-        deadline = candidate;
-    };
-    if (touch_replay)
-      consider(touch_replay->next_deadline());
-    consider(live_button_scheduler.next_deadline());
-    consider(live_touch_scheduler.next_deadline());
-    if (!scheduled_snapshots.empty()) {
-      consider(std::optional<std::chrono::steady_clock::time_point>{
-          scheduled_snapshots.front().first});
+  enum class HostDeadlineSource : std::uint8_t {
+    TouchReplay,
+    LiveButton,
+    LiveTouch,
+    Snapshot,
+  };
+  DeadlineQueue<HostDeadlineSource, std::chrono::steady_clock::time_point>
+      host_deadlines;
+  const auto refresh_host_deadlines = [&]() {
+    if (touch_replay) {
+      if (const auto deadline = touch_replay->next_deadline())
+        host_deadlines.upsert(HostDeadlineSource::TouchReplay, *deadline);
+      else
+        host_deadlines.erase(HostDeadlineSource::TouchReplay);
+    } else {
+      host_deadlines.erase(HostDeadlineSource::TouchReplay);
     }
-    return deadline;
+    if (const auto deadline = live_button_scheduler.next_deadline())
+      host_deadlines.upsert(HostDeadlineSource::LiveButton, *deadline);
+    else
+      host_deadlines.erase(HostDeadlineSource::LiveButton);
+    if (const auto deadline = live_touch_scheduler.next_deadline())
+      host_deadlines.upsert(HostDeadlineSource::LiveTouch, *deadline);
+    else
+      host_deadlines.erase(HostDeadlineSource::LiveTouch);
+    if (!scheduled_snapshots.empty())
+      host_deadlines.upsert(HostDeadlineSource::Snapshot,
+                            scheduled_snapshots.front().first);
+    else
+      host_deadlines.erase(HostDeadlineSource::Snapshot);
+  };
+  const auto next_host_control_deadline = [&]() {
+    refresh_host_deadlines();
+    return host_deadlines.next_deadline();
   };
   const auto wait_for_host_activity = [&](std::chrono::nanoseconds delay) {
     if (delay <= std::chrono::nanoseconds::zero()) return;
@@ -1929,6 +1949,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       initial_runtime->kernel->display_submitted_frames();
   auto last_display_submission = std::chrono::steady_clock::now();
   std::optional<std::chrono::steady_clock::time_point> guest_idle_since;
+  DeadlineQueue<std::uint32_t, std::uint64_t> guest_deadlines;
   if (!bounded_execution) {
     realtime_pacer.emplace(initial_runtime->kernel->current_absolute_time());
     const auto host_wall_time =
@@ -2681,11 +2702,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
       }
       std::optional<std::uint64_t> next_deadline;
       for (const auto &runtime : runtimes) {
+        const auto process_id = runtime->kernel->process().pid;
         const auto deadline = runtime->kernel->next_timer_deadline();
-        if (deadline && (!next_deadline || *deadline < *next_deadline)) {
-          next_deadline = deadline;
-        }
+        if (deadline)
+          guest_deadlines.upsert(process_id, *deadline);
+        else
+          guest_deadlines.erase(process_id);
       }
+      next_deadline = guest_deadlines.next_deadline();
       Runtime *active_runtime = nullptr;
       if (const auto active_process =
               initial_runtime->kernel->active_client_process_id()) {
