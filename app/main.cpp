@@ -69,6 +69,9 @@ constexpr std::size_t maximum_watchpoint_traces = 64;
 constexpr std::size_t initial_guest_thread_slots = 16;
 constexpr std::size_t maximum_guest_threads = 32;
 constexpr std::size_t maximum_virtual_processors = 64;
+constexpr std::size_t maximum_shared_monitor_processes = 1024;
+constexpr std::size_t maximum_shared_monitor_slots =
+    maximum_virtual_processors * maximum_shared_monitor_processes;
 constexpr std::size_t arm_thumb_breakpoint_size = 2;
 constexpr std::size_t arm_breakpoint_size = 4;
 // Host input, network completion, and display polling do not need a 1 kHz
@@ -1261,6 +1264,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
       "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
       "SHELL=/bin/sh"};
   auto process = loader.load(binary, {}, initial_environment);
+  // Dynarmic's global monitor indexes reservations by processor id. Reserve
+  // disjoint ranges for boot-created Guest processes so same-address shared
+  // mappings can invalidate reservations across process boundaries.
+  Dynarmic::ExclusiveMonitor shared_exclusive_monitor{
+      maximum_shared_monitor_slots};
+  std::size_t next_shared_monitor_slot{};
+  const auto allocate_shared_monitor_slots = [&]() {
+    if (guest_processor_count >
+        maximum_shared_monitor_slots - next_shared_monitor_slot) {
+      throw std::runtime_error{
+          "shared exclusive monitor processor capacity exhausted"};
+    }
+    const auto base = next_shared_monitor_slot;
+    next_shared_monitor_slot += guest_processor_count;
+    return base;
+  };
   RuntimeReaper runtime_reaper;
   std::vector<std::unique_ptr<Runtime>> runtimes;
   RuntimeIndex runtime_index;
@@ -1280,7 +1299,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   initial->memory = std::move(initial_memory);
   initial->cpus = std::make_unique<CpuCluster>(
       initial_guest_thread_slots, maximum_guest_threads, *initial->memory,
-      guest_processor_count, *cpu_model);
+      guest_processor_count, *cpu_model, shared_exclusive_monitor,
+      allocate_shared_monitor_slots());
   initial->cpus->set_jit_code_cache_size(
       configured_jit_code_cache_size);
   assign_translation_profile(*initial->cpus,
@@ -1526,7 +1546,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
             PerformanceLatencyScope latency{PerfLatencyKind::ProcessCreateCpu};
             child->cpus = std::make_unique<CpuCluster>(
                 initial_guest_thread_slots, maximum_guest_threads,
-                *child->memory, guest_processor_count, *cpu_model);
+                *child->memory, guest_processor_count, *cpu_model,
+                shared_exclusive_monitor, allocate_shared_monitor_slots());
             child->cpus->set_jit_code_cache_size(
                 configured_jit_code_cache_size);
           }

@@ -136,6 +136,17 @@ public:
         AddressSpace& memory,
         std::size_t execution_slot_count,
         const ArmCpuModel& cpu_model);
+    // Boot-created processes can share a Dynarmic monitor so LDREX/STREX
+    // reservations at the same Guest address observe cross-process writes.
+    // Each cluster receives a disjoint processor-id range in that monitor.
+    CpuCluster(
+        std::size_t initial_processor_count,
+        std::size_t maximum_processor_count,
+        AddressSpace& memory,
+        std::size_t execution_slot_count,
+        const ArmCpuModel& cpu_model,
+        Dynarmic::ExclusiveMonitor& monitor,
+        std::size_t monitor_processor_base);
 
     [[nodiscard]] std::size_t size() const { return cpus_.size(); }
     [[nodiscard]] std::size_t capacity() const {
@@ -171,6 +182,8 @@ private:
     bool serialized_execution_{};
     const ArmCpuModel* cpu_model_{};
     Dynarmic::ExclusiveMonitor monitor_;
+    Dynarmic::ExclusiveMonitor* execution_monitor_{};
+    std::size_t monitor_processor_base_{};
     std::shared_ptr<CpuExecutionPool> execution_pool_;
     std::vector<std::unique_ptr<Cpu>> cpus_;
 };

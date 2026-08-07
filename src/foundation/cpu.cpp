@@ -490,6 +490,7 @@ public:
     void clear_exclusive_state() {
         ensure_jit();
         jit_->ClearExclusiveState();
+        monitor_.ClearProcessor(processor_id_);
     }
 
     void set_translation_profile(
@@ -759,6 +760,12 @@ public:
             throw std::invalid_argument{
                 "execution_slot_count must be at least one"};
         }
+        if (first_processor_id > monitor.GetProcessorCount() ||
+            execution_slot_count >
+                monitor.GetProcessorCount() - first_processor_id) {
+            throw std::invalid_argument{
+                "exclusive monitor processor range is out of bounds"};
+        }
         executors_.reserve(execution_slot_count);
         for (std::size_t slot = 0; slot < execution_slot_count; ++slot) {
             executors_.push_back(std::make_unique<JitExecutor>(
@@ -1007,8 +1014,43 @@ CpuCluster::CpuCluster(
       serialized_execution_{execution_slot_count == 1},
       cpu_model_{&cpu_model},
       monitor_{execution_slot_count == 0 ? 1U : execution_slot_count},
+      execution_monitor_{&monitor_},
+      monitor_processor_base_{},
       execution_pool_{std::make_shared<CpuExecutionPool>(
-          memory, monitor_, execution_slot_count, 0, cpu_model)} {
+          memory, *execution_monitor_, execution_slot_count,
+          monitor_processor_base_, cpu_model)} {
+    if (initial_processor_count == 0) {
+        throw std::invalid_argument{
+            "initial_processor_count must be at least one"};
+    }
+    if (maximum_processor_count < initial_processor_count) {
+        throw std::invalid_argument{
+            "maximum_processor_count must cover the initial processors"};
+    }
+    cpus_.reserve(maximum_processor_count);
+    while (cpus_.size() < initial_processor_count) {
+        static_cast<void>(add_cpu());
+    }
+}
+
+CpuCluster::CpuCluster(
+    std::size_t initial_processor_count,
+    std::size_t maximum_processor_count,
+    AddressSpace& memory,
+    std::size_t execution_slot_count,
+    const ArmCpuModel& cpu_model,
+    Dynarmic::ExclusiveMonitor& monitor,
+    std::size_t monitor_processor_base)
+    : memory_{&memory},
+      maximum_processor_count_{maximum_processor_count},
+      serialized_execution_{execution_slot_count == 1},
+      cpu_model_{&cpu_model},
+      monitor_{1U},
+      execution_monitor_{&monitor},
+      monitor_processor_base_{monitor_processor_base},
+      execution_pool_{std::make_shared<CpuExecutionPool>(
+          memory, *execution_monitor_, execution_slot_count,
+          monitor_processor_base_, cpu_model)} {
     if (initial_processor_count == 0) {
         throw std::invalid_argument{
             "initial_processor_count must be at least one"};
