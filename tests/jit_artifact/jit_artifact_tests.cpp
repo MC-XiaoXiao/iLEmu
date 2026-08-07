@@ -152,7 +152,7 @@ int main() {
     return 1;
   }
 
-  Dynarmic::ExclusiveMonitor monitor{1};
+  Dynarmic::ExclusiveMonitor monitor{3};
   {
     ilemu::CpuCluster cluster{1, 1, memory, 1,
                               ilemu::default_arm_cpu_model(), monitor, 0,
@@ -164,6 +164,51 @@ int main() {
     if (!result.svc || *result.svc != 0x80U ||
         runtime_artifacts->size() == 0) {
       std::cerr << "CPU translation did not publish an executable artifact\n";
+      return 1;
+    }
+  }
+
+  {
+    ilemu::AddressSpace second_memory;
+    if (!second_memory.map_file(code_address, ilemu::AddressSpace::page_size,
+                                ilemu::MemoryPermission::Read |
+                                    ilemu::MemoryPermission::Execute,
+                                code_path, 0)) {
+      std::cerr << "could not map second immutable code fixture\n";
+      return 1;
+    }
+    ilemu::CpuCluster second_cluster{
+        1, 1, second_memory, 1, ilemu::default_arm_cpu_model(), monitor, 1,
+        runtime_artifacts};
+    auto &cpu = second_cluster.cpu(0);
+    cpu.registers()[15] = code_address;
+    cpu.set_cpsr(0x10U);
+    const auto result = cpu.run(16);
+    if (!result.svc || runtime_artifacts->size() != 1U) {
+      std::cerr << "same executable content was not reused across processes\n";
+      return 1;
+    }
+  }
+
+  {
+    ilemu::AddressSpace slid_memory;
+    constexpr std::uint32_t slid_address = 0x8000U;
+    if (!slid_memory.map_file(slid_address, ilemu::AddressSpace::page_size,
+                              ilemu::MemoryPermission::Read |
+                                  ilemu::MemoryPermission::Execute,
+                              code_path, 0)) {
+      std::cerr << "could not map slid immutable code fixture\n";
+      return 1;
+    }
+    ilemu::CpuCluster slid_cluster{
+        1, 1, slid_memory, 1, ilemu::default_arm_cpu_model(), monitor, 2,
+        runtime_artifacts};
+    auto &cpu = slid_cluster.cpu(0);
+    cpu.registers()[15] = slid_address;
+    cpu.set_cpsr(0x10U);
+    const auto result = cpu.run(16);
+    if (!result.svc || runtime_artifacts->size() != 2U) {
+      std::cerr << "different executable layout reused an artifact\n";
       return 1;
     }
   }
