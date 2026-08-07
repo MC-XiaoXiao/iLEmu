@@ -72,6 +72,12 @@ public:
       const std::filesystem::path &root,
       ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
 
+  // The manifest is versioned and written through a temporary file followed
+  // by rename. Malformed input is rejected without changing the live index so
+  // callers can safely rebuild it from the firmware tree.
+  [[nodiscard]] bool load(const std::filesystem::path &path) noexcept;
+  [[nodiscard]] bool save(const std::filesystem::path &path) const noexcept;
+
   [[nodiscard]] const ExecutableCatalogEntry *find(
       const ContentIdentity &identity) const;
   [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }

@@ -152,6 +152,28 @@ int main() {
     std::cerr << "firmware catalog tree scan failed\n";
     return 1;
   }
+  const auto manifest_path = root / "catalog.bin";
+  if (!scanned_catalog.save(manifest_path) ||
+      !scanned_catalog.save(manifest_path)) {
+    std::cerr << "catalog manifest save failed\n";
+    return 1;
+  }
+  ilemu::ExecutableCatalog reloaded_catalog;
+  if (!reloaded_catalog.load(manifest_path) ||
+      reloaded_catalog.size() != scanned_catalog.size() ||
+      reloaded_catalog.find(image.content_identity()) == nullptr) {
+    std::cerr << "catalog manifest round-trip failed\n";
+    return 1;
+  }
+  const auto corrupt_manifest = root / "catalog-corrupt.bin";
+  const std::vector<std::byte> corrupt_bytes(8U, std::byte{0});
+  write_file(corrupt_manifest, corrupt_bytes);
+  const auto retained_entries = reloaded_catalog.size();
+  if (reloaded_catalog.load(corrupt_manifest) ||
+      reloaded_catalog.size() != retained_entries) {
+    std::cerr << "corrupt catalog manifest was not rejected safely\n";
+    return 1;
+  }
   std::filesystem::remove_all(root, error);
   return 0;
 }

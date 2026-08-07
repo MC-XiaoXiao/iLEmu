@@ -8,12 +8,21 @@
 #include <stdexcept>
 #include <system_error>
 #include <string_view>
+#include <utility>
 
 namespace {
 
 using ilemu::ContentIdentity;
 using ilemu::DyldCacheImage;
 using ilemu::DyldSharedCache;
+
+constexpr std::array<char, 8> catalog_magic{
+    'i', 'L', 'E', 'M', 'C', 'A', 'T', '1'};
+constexpr std::uint32_t catalog_schema_version = 1U;
+constexpr std::uint32_t maximum_manifest_entries = 100'000U;
+constexpr std::uint32_t maximum_manifest_items = 65'536U;
+constexpr std::uint32_t maximum_manifest_string = 1U << 20U;
+constexpr std::uintmax_t maximum_manifest_file_size = 256U * 1024U * 1024U;
 
 void append_u32(std::vector<std::byte> &bytes, std::uint32_t value) {
   for (std::size_t index = 0; index < sizeof(value); ++index) {
@@ -37,6 +46,155 @@ void append_string(std::vector<std::byte> &bytes, std::string_view value) {
 void append_identity(std::vector<std::byte> &bytes,
                      const ContentIdentity &identity) {
   bytes.insert(bytes.end(), identity.digest.begin(), identity.digest.end());
+}
+
+void write_u32(std::ostream &stream, std::uint32_t value) {
+  for (unsigned shift = 0; shift < 32U; shift += 8U) {
+    stream.put(static_cast<char>(value >> shift));
+  }
+}
+
+void write_u64(std::ostream &stream, std::uint64_t value) {
+  for (unsigned shift = 0; shift < 64U; shift += 8U) {
+    stream.put(static_cast<char>(value >> shift));
+  }
+}
+
+void write_u8(std::ostream &stream, std::uint8_t value) {
+  stream.put(static_cast<char>(value));
+}
+
+void write_string(std::ostream &stream, std::string_view value) {
+  write_u32(stream, static_cast<std::uint32_t>(value.size()));
+  stream.write(value.data(), static_cast<std::streamsize>(value.size()));
+}
+
+[[nodiscard]] std::optional<std::uint8_t> read_u8(std::istream &stream) {
+  const auto value = stream.get();
+  if (value == std::char_traits<char>::eof()) return std::nullopt;
+  return static_cast<std::uint8_t>(static_cast<unsigned char>(value));
+}
+
+[[nodiscard]] std::optional<std::uint32_t> read_u32(std::istream &stream) {
+  std::uint32_t value = 0;
+  for (unsigned shift = 0; shift < 32U; shift += 8U) {
+    const auto byte = stream.get();
+    if (byte == std::char_traits<char>::eof()) return std::nullopt;
+    value |= static_cast<std::uint32_t>(static_cast<unsigned char>(byte))
+             << shift;
+  }
+  return value;
+}
+
+[[nodiscard]] std::optional<std::uint64_t> read_u64(std::istream &stream) {
+  std::uint64_t value = 0;
+  for (unsigned shift = 0; shift < 64U; shift += 8U) {
+    const auto byte = stream.get();
+    if (byte == std::char_traits<char>::eof()) return std::nullopt;
+    value |= static_cast<std::uint64_t>(static_cast<unsigned char>(byte))
+             << shift;
+  }
+  return value;
+}
+
+void write_identity(std::ostream &stream, const ContentIdentity &identity) {
+  stream.write(reinterpret_cast<const char *>(identity.digest.data()),
+               static_cast<std::streamsize>(identity.digest.size()));
+}
+
+[[nodiscard]] bool read_identity(std::istream &stream,
+                                 ContentIdentity &identity) {
+  stream.read(reinterpret_cast<char *>(identity.digest.data()),
+              static_cast<std::streamsize>(identity.digest.size()));
+  return static_cast<bool>(stream);
+}
+
+[[nodiscard]] std::optional<std::string>
+read_string(std::istream &stream) {
+  const auto size = read_u32(stream);
+  if (!size || *size > maximum_manifest_string) return std::nullopt;
+  std::string value(*size, '\0');
+  stream.read(value.data(), static_cast<std::streamsize>(value.size()));
+  if (!stream) return std::nullopt;
+  return value;
+}
+
+[[nodiscard]] std::optional<ilemu::ExecutableCatalogEntry>
+read_manifest_entry(std::istream &stream) {
+  ilemu::ExecutableCatalogEntry entry;
+  if (!read_identity(stream, entry.content_identity)) return std::nullopt;
+
+  const auto alias_count = read_u32(stream);
+  if (!alias_count || *alias_count > maximum_manifest_items) {
+    return std::nullopt;
+  }
+  entry.aliases.reserve(*alias_count);
+  for (std::uint32_t index = 0; index < *alias_count; ++index) {
+    const auto alias = read_string(stream);
+    if (!alias) return std::nullopt;
+    entry.aliases.emplace_back(*alias);
+  }
+
+  const auto kind_count = read_u32(stream);
+  if (!kind_count || *kind_count > maximum_manifest_items) {
+    return std::nullopt;
+  }
+  for (std::uint32_t index = 0; index < *kind_count; ++index) {
+    const auto kind = read_u8(stream);
+    if (!kind || *kind > static_cast<std::uint8_t>(
+                              ilemu::ExecutableCatalogKind::DynamicMapping)) {
+      return std::nullopt;
+    }
+    entry.kinds.insert(static_cast<ilemu::ExecutableCatalogKind>(*kind));
+  }
+
+  const auto has_uuid = read_u8(stream);
+  if (!has_uuid || *has_uuid > 1U) return std::nullopt;
+  if (*has_uuid != 0U) {
+    std::array<std::byte, 16> uuid{};
+    stream.read(reinterpret_cast<char *>(uuid.data()),
+                static_cast<std::streamsize>(uuid.size()));
+    if (!stream) return std::nullopt;
+    entry.uuid = uuid;
+  }
+
+  const auto cpu_type = read_u32(stream);
+  const auto cpu_subtype = read_u32(stream);
+  const auto file_type = read_u32(stream);
+  if (!cpu_type || !cpu_subtype || !file_type) return std::nullopt;
+  entry.cpu_type = *cpu_type;
+  entry.cpu_subtype = *cpu_subtype;
+  entry.file_type = *file_type;
+
+  const auto fat_container = read_u8(stream);
+  if (!fat_container || *fat_container > 1U) return std::nullopt;
+  entry.fat_container = *fat_container != 0U;
+
+  const auto dependency_count = read_u32(stream);
+  if (!dependency_count || *dependency_count > maximum_manifest_items) {
+    return std::nullopt;
+  }
+  entry.dependencies.reserve(*dependency_count);
+  for (std::uint32_t index = 0; index < *dependency_count; ++index) {
+    const auto dependency = read_string(stream);
+    if (!dependency) return std::nullopt;
+    entry.dependencies.push_back(*dependency);
+  }
+
+  const auto mapping_count = read_u32(stream);
+  if (!mapping_count || *mapping_count > maximum_manifest_items) {
+    return std::nullopt;
+  }
+  entry.mappings.reserve(*mapping_count);
+  for (std::uint32_t index = 0; index < *mapping_count; ++index) {
+    const auto file_offset = read_u64(stream);
+    const auto byte_count = read_u64(stream);
+    if (!file_offset || !byte_count) return std::nullopt;
+    entry.mappings.push_back(
+        ilemu::ExecutableMappingIdentity{*file_offset, *byte_count});
+  }
+  if (entry.aliases.empty() || entry.kinds.empty()) return std::nullopt;
+  return entry;
 }
 
 struct FilePrefix {
@@ -266,6 +424,122 @@ ExecutableCatalogScanSummary ExecutableCatalog::register_tree(
     }
   }
   return summary;
+}
+
+bool ExecutableCatalog::load(const std::filesystem::path &path) noexcept {
+  try {
+    std::error_code size_error;
+    const auto file_size = std::filesystem::file_size(path, size_error);
+    if (size_error || file_size > maximum_manifest_file_size) return false;
+    std::ifstream stream{path, std::ios::binary};
+    if (!stream) return false;
+
+    std::array<char, catalog_magic.size()> magic{};
+    stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+    if (!stream || magic != catalog_magic) return false;
+    const auto schema = read_u32(stream);
+    const auto count = read_u32(stream);
+    if (!schema || *schema != catalog_schema_version || !count ||
+        *count > maximum_manifest_entries) {
+      return false;
+    }
+
+    std::vector<ExecutableCatalogEntry> entries;
+    entries.reserve(*count);
+    std::unordered_map<ContentIdentity, std::size_t, ContentIdentityHash>
+        identity_index;
+    identity_index.reserve(*count);
+    for (std::uint32_t index = 0; index < *count; ++index) {
+      const auto entry = read_manifest_entry(stream);
+      if (!entry ||
+          !identity_index.emplace(entry->content_identity, entries.size())
+               .second) {
+        return false;
+      }
+      entries.push_back(*entry);
+    }
+    if (stream.peek() != std::char_traits<char>::eof()) return false;
+
+    entries_ = std::move(entries);
+    identity_index_ = std::move(identity_index);
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool ExecutableCatalog::save(const std::filesystem::path &path) const noexcept {
+  std::filesystem::path temporary;
+  try {
+    if (path.empty() || entries_.size() > maximum_manifest_entries) {
+      return false;
+    }
+    const auto parent = path.parent_path();
+    if (!parent.empty()) std::filesystem::create_directories(parent);
+    temporary = path.string() + ".tmp";
+    std::ofstream stream{temporary, std::ios::binary | std::ios::trunc};
+    if (!stream) return false;
+    stream.write(catalog_magic.data(),
+                 static_cast<std::streamsize>(catalog_magic.size()));
+    write_u32(stream, catalog_schema_version);
+    write_u32(stream, static_cast<std::uint32_t>(entries_.size()));
+    for (const auto &entry : entries_) {
+      if (entry.aliases.size() > maximum_manifest_items ||
+          entry.kinds.size() > maximum_manifest_items ||
+          entry.dependencies.size() > maximum_manifest_items ||
+          entry.mappings.size() > maximum_manifest_items) {
+        return false;
+      }
+      write_identity(stream, entry.content_identity);
+      write_u32(stream, static_cast<std::uint32_t>(entry.aliases.size()));
+      for (const auto &alias : entry.aliases) {
+        const auto text = alias.generic_string();
+        if (text.size() > maximum_manifest_string) return false;
+        write_string(stream, text);
+      }
+      write_u32(stream, static_cast<std::uint32_t>(entry.kinds.size()));
+      for (const auto kind : entry.kinds) {
+        write_u8(stream, static_cast<std::uint8_t>(kind));
+      }
+      write_u8(stream, static_cast<std::uint8_t>(entry.uuid.has_value()));
+      if (entry.uuid) {
+        stream.write(reinterpret_cast<const char *>(entry.uuid->data()),
+                     static_cast<std::streamsize>(entry.uuid->size()));
+      }
+      write_u32(stream, entry.cpu_type);
+      write_u32(stream, entry.cpu_subtype);
+      write_u32(stream, entry.file_type);
+      write_u8(stream, static_cast<std::uint8_t>(entry.fat_container));
+      write_u32(stream,
+                static_cast<std::uint32_t>(entry.dependencies.size()));
+      for (const auto &dependency : entry.dependencies) {
+        if (dependency.size() > maximum_manifest_string) return false;
+        write_string(stream, dependency);
+      }
+      write_u32(stream, static_cast<std::uint32_t>(entry.mappings.size()));
+      for (const auto &mapping : entry.mappings) {
+        write_u64(stream, mapping.file_offset);
+        write_u64(stream, mapping.byte_count);
+      }
+    }
+    stream.flush();
+    if (!stream) return false;
+    stream.close();
+
+    std::error_code error;
+    std::filesystem::rename(temporary, path, error);
+    if (error) {
+      std::filesystem::remove(temporary, error);
+      return false;
+    }
+    return true;
+  } catch (...) {
+    if (!temporary.empty()) {
+      std::error_code error;
+      std::filesystem::remove(temporary, error);
+    }
+    return false;
+  }
 }
 
 const ExecutableCatalogEntry *ExecutableCatalog::find(
