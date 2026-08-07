@@ -11,6 +11,7 @@ add_library(ilemu_foundation STATIC
     display.cpp
     executable_catalog.cpp
     guest_cpu_topology.cpp
+    jit_artifact.cpp
     jit_translation_profile.cpp
     macho.cpp
     output.cpp
