@@ -127,7 +127,7 @@ void HostResourceController::worker_loop() {
         auto iterator = tasks_.end();
         for (auto candidate = tasks_.begin(); candidate != tasks_.end();
              ++candidate) {
-          if (interactive_budget_exhausted &&
+          if (!stopping_ && interactive_budget_exhausted &&
               candidate->second.kind == HostWorkKind::BackgroundCompile) {
             continue;
           }
