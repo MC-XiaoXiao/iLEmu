@@ -4,9 +4,12 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
-#include <map>
+#include <functional>
+#include <list>
 #include <optional>
+#include <set>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace ilemu {
@@ -53,6 +56,14 @@ struct XnuThreadId {
     std::uint32_t thread{};
 
     auto operator<=>(const XnuThreadId&) const = default;
+};
+
+struct XnuThreadIdHash {
+    [[nodiscard]] std::size_t operator()(XnuThreadId thread) const noexcept {
+        const auto value = (static_cast<std::uint64_t>(thread.process) << 32U) |
+                           static_cast<std::uint64_t>(thread.thread);
+        return std::hash<std::uint64_t>{}(value);
+    }
 };
 
 enum class XnuThreadState : std::uint8_t {
@@ -176,9 +187,15 @@ public:
     [[nodiscard]] std::uint64_t scheduler_tick() const { return scheduler_tick_; }
 
 private:
+    using ReadyQueue = std::list<XnuThreadId>;
+    using RealtimeQueueKey = std::pair<std::uint64_t, XnuThreadId>;
+
     struct RunQueue {
-        std::array<std::deque<XnuThreadId>, xnu792::scheduler::run_queue_count>
-            queues;
+        std::array<ReadyQueue, xnu792::scheduler::run_queue_count> queues;
+        // Realtime queues are ordered by deadline. The list remains the
+        // removal index for all priorities; this side index avoids a linear
+        // deadline insertion/search on the scheduler hot path.
+        std::set<RealtimeQueueKey> realtime_order;
         std::array<std::uint32_t,
                    xnu792::scheduler::run_queue_count / 32>
             bitmap{};
@@ -189,6 +206,9 @@ private:
     struct ThreadRecord {
         XnuThreadSchedulingInfo info;
         bool queued{};
+        std::int32_t queued_priority{};
+        std::optional<ReadyQueue::iterator> queue_position;
+        std::optional<RealtimeQueueKey> realtime_queue_key;
         std::optional<std::uint32_t> priority_usage_shift;
         std::optional<std::size_t> queued_processor;
         std::optional<std::uint64_t> depression_deadline;
@@ -207,8 +227,9 @@ private:
         std::uint64_t scheduler_tick_ticks);
     void enqueue(XnuThreadId thread, QueuePosition position);
     void remove_from_queue(XnuThreadId thread, ThreadRecord& record);
+    void unindex_thread(XnuThreadId thread);
     static void refresh_high_queue(RunQueue& run_queue);
-    [[nodiscard]] static XnuThreadId pop_highest(RunQueue& run_queue);
+    [[nodiscard]] XnuThreadId pop_highest(RunQueue& run_queue);
     void advance_scheduler_time(std::uint64_t consumed_ticks);
     void age_priorities(std::uint64_t elapsed_ticks);
     void expire_depressions();
@@ -223,8 +244,12 @@ private:
 
     RunQueue processor_set_run_queue_;
     std::vector<RunQueue> processor_run_queues_;
-    std::map<XnuThreadId, ThreadRecord> threads_;
+    std::unordered_map<XnuThreadId, ThreadRecord, XnuThreadIdHash> threads_;
+    std::unordered_map<
+        std::uint32_t,
+        std::unordered_set<XnuThreadId, XnuThreadIdHash>> process_threads_;
     std::size_t runnable_count_{};
+    std::size_t waiting_count_{};
     std::uint64_t quantum_ticks_{};
     std::uint64_t scheduler_tick_ticks_{};
     std::uint32_t priority_usage_shift_{};

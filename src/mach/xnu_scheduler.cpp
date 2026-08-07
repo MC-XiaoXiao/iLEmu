@@ -36,40 +36,43 @@ XnuScheduler::XnuScheduler(
 
 bool XnuScheduler::register_thread(
     XnuThreadId thread, std::int32_t base_priority, bool runnable) {
-    if (threads_.contains(thread)) return false;
+    const auto [iterator, inserted] = threads_.try_emplace(thread);
+    if (!inserted) return false;
 
-    ThreadRecord record;
+    auto &record = iterator->second;
     record.info.base_priority = clamp_priority(base_priority);
     record.info.scheduled_priority = record.info.base_priority;
     record.info.remaining_quantum = quantum_ticks_;
     record.info.scheduler_stamp = scheduler_tick_;
     record.info.state = runnable ? XnuThreadState::Runnable
                                  : XnuThreadState::Waiting;
-    threads_.emplace(thread, record);
+    process_threads_[thread.process].insert(thread);
     if (runnable) enqueue(thread, QueuePosition::Back);
+    else ++waiting_count_;
     return true;
 }
 
 bool XnuScheduler::remove_thread(XnuThreadId thread) {
     const auto iterator = threads_.find(thread);
     if (iterator == threads_.end()) return false;
+    if (iterator->second.info.state == XnuThreadState::Waiting) {
+        --waiting_count_;
+    }
     remove_from_queue(thread, iterator->second);
+    unindex_thread(thread);
     threads_.erase(iterator);
     return true;
 }
 
 std::size_t XnuScheduler::remove_process(std::uint32_t process) {
-    std::size_t removed = 0;
-    for (auto iterator = threads_.begin(); iterator != threads_.end();) {
-        if (iterator->first.process != process) {
-            ++iterator;
-            continue;
-        }
-        remove_from_queue(iterator->first, iterator->second);
-        iterator = threads_.erase(iterator);
-        ++removed;
+    const auto process_iterator = process_threads_.find(process);
+    if (process_iterator == process_threads_.end()) return 0;
+    const std::vector<XnuThreadId> process_threads{
+        process_iterator->second.begin(), process_iterator->second.end()};
+    for (const auto thread : process_threads) {
+        static_cast<void>(remove_thread(thread));
     }
-    return removed;
+    return process_threads.size();
 }
 
 bool XnuScheduler::make_runnable(XnuThreadId thread) {
@@ -81,6 +84,9 @@ bool XnuScheduler::make_runnable(XnuThreadId thread) {
         return true;
     }
     if (record.info.state == XnuThreadState::Running || record.queued) return true;
+    if (record.info.state == XnuThreadState::Waiting) {
+        --waiting_count_;
+    }
     record.info.state = XnuThreadState::Runnable;
     record.info.remaining_quantum = quantum_for(record);
     record.info.computation_metered = 0;
@@ -106,8 +112,10 @@ bool XnuScheduler::block(XnuThreadId thread) {
     const auto iterator = threads_.find(thread);
     if (iterator == threads_.end()) return false;
     auto& record = iterator->second;
+    const auto was_waiting = record.info.state == XnuThreadState::Waiting;
     remove_from_queue(thread, record);
     record.info.state = XnuThreadState::Waiting;
+    if (!was_waiting) ++waiting_count_;
     record.info.remaining_quantum = quantum_for(record);
     record.info.computation_metered = 0;
     if (record.suspend_count != 0) record.resume_runnable = false;
@@ -130,6 +138,7 @@ bool XnuScheduler::suspend_thread(XnuThreadId thread) {
     if (record.info.state != XnuThreadState::Waiting) {
         remove_from_queue(thread, record);
         record.info.state = XnuThreadState::Waiting;
+        ++waiting_count_;
     }
     return true;
 }
@@ -143,6 +152,7 @@ bool XnuScheduler::resume_thread(XnuThreadId thread) {
     --record.suspend_count;
     if (record.suspend_count != 0 || !record.resume_runnable) return true;
     record.resume_runnable = false;
+    --waiting_count_;
     record.info.state = XnuThreadState::Runnable;
     record.info.remaining_quantum = quantum_for(record);
     record.info.computation_metered = 0;
@@ -376,6 +386,7 @@ bool XnuScheduler::complete_slice(
     }
 
     if (completion == XnuSliceCompletion::Terminate) {
+        unindex_thread(thread);
         threads_.erase(iterator);
         return true;
     }
@@ -390,6 +401,7 @@ bool XnuScheduler::complete_slice(
             return true;
         }
         record.info.state = XnuThreadState::Waiting;
+        ++waiting_count_;
         record.info.remaining_quantum = quantum_for(record);
         record.info.remaining_timeslices = 0;
         record.info.timeslice_processor.reset();
@@ -438,10 +450,7 @@ std::optional<XnuThreadSchedulingInfo> XnuScheduler::info(
 }
 
 std::size_t XnuScheduler::waiting_count() const {
-    return static_cast<std::size_t>(std::count_if(
-        threads_.begin(), threads_.end(), [](const auto& entry) {
-            return entry.second.info.state == XnuThreadState::Waiting;
-        }));
+    return waiting_count_;
 }
 
 std::int32_t XnuScheduler::highest_runnable_priority() const {
@@ -481,20 +490,20 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position) {
         ? processor_run_queues_.at(*record.info.bound_processor)
         : processor_set_run_queue_;
     auto& queue = run_queue.queues[static_cast<std::size_t>(priority)];
-    if (record.info.realtime && !record.info.bound_processor &&
+    if (record.info.realtime &&
         priority >= xnu792::scheduler::realtime_queue_priority) {
-        const auto insertion = std::find_if(
-            queue.begin(), queue.end(), [&](XnuThreadId queued_thread) {
-                return threads_.at(queued_thread).info.realtime_deadline >
-                       record.info.realtime_deadline;
-            });
-        queue.insert(insertion, thread);
+        const auto realtime_key =
+            RealtimeQueueKey{record.info.realtime_deadline, thread};
+        run_queue.realtime_order.insert(realtime_key);
+        record.realtime_queue_key = realtime_key;
+        record.queue_position = queue.insert(queue.end(), thread);
     } else if (position == QueuePosition::Front) {
-        queue.push_front(thread);
+        record.queue_position = queue.insert(queue.begin(), thread);
     } else {
-        queue.push_back(thread);
+        record.queue_position = queue.insert(queue.end(), thread);
     }
     record.queued = true;
+    record.queued_priority = priority;
     record.queued_processor = record.info.bound_processor;
     ++runnable_count_;
     ++run_queue.count;
@@ -503,18 +512,22 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position) {
     run_queue.high_queue = std::max(run_queue.high_queue, priority);
 }
 
-void XnuScheduler::remove_from_queue(XnuThreadId thread, ThreadRecord& record) {
+void XnuScheduler::remove_from_queue(XnuThreadId, ThreadRecord& record) {
     if (!record.queued) return;
-    const auto priority = record.info.scheduled_priority;
+    const auto priority = record.queued_priority;
     auto& run_queue = record.queued_processor
         ? processor_run_queues_.at(*record.queued_processor)
         : processor_set_run_queue_;
     auto& queue = run_queue.queues[static_cast<std::size_t>(priority)];
-    const auto iterator = std::find(queue.begin(), queue.end(), thread);
-    if (iterator == queue.end()) {
+    if (!record.queue_position) {
         throw std::logic_error{"XNU scheduler queue membership is inconsistent"};
     }
-    queue.erase(iterator);
+    queue.erase(*record.queue_position);
+    record.queue_position.reset();
+    if (record.realtime_queue_key) {
+        run_queue.realtime_order.erase(*record.realtime_queue_key);
+        record.realtime_queue_key.reset();
+    }
     record.queued = false;
     record.queued_processor.reset();
     --runnable_count_;
@@ -548,8 +561,26 @@ XnuThreadId XnuScheduler::pop_highest(RunQueue& run_queue) {
     }
     const auto priority = run_queue.high_queue;
     auto& queue = run_queue.queues[static_cast<std::size_t>(priority)];
-    const auto thread = queue.front();
-    queue.pop_front();
+    XnuThreadId thread;
+    if (priority >= xnu792::scheduler::realtime_queue_priority &&
+        !run_queue.realtime_order.empty()) {
+        const auto realtime_iterator = run_queue.realtime_order.begin();
+        thread = realtime_iterator->second;
+        auto &record = threads_.at(thread);
+        if (!record.queue_position) {
+            throw std::logic_error{
+                "XNU realtime queue index is inconsistent"};
+        }
+        queue.erase(*record.queue_position);
+        record.queue_position.reset();
+        record.realtime_queue_key.reset();
+        run_queue.realtime_order.erase(realtime_iterator);
+    } else {
+        thread = queue.front();
+        auto &record = threads_.at(thread);
+        record.queue_position.reset();
+        queue.pop_front();
+    }
     --run_queue.count;
     if (queue.empty()) {
         run_queue.bitmap[static_cast<std::size_t>(priority) / 32U] &=
@@ -557,6 +588,15 @@ XnuThreadId XnuScheduler::pop_highest(RunQueue& run_queue) {
         refresh_high_queue(run_queue);
     }
     return thread;
+}
+
+void XnuScheduler::unindex_thread(XnuThreadId thread) {
+    const auto process_iterator = process_threads_.find(thread.process);
+    if (process_iterator == process_threads_.end()) return;
+    process_iterator->second.erase(thread);
+    if (process_iterator->second.empty()) {
+        process_threads_.erase(process_iterator);
+    }
 }
 
 void XnuScheduler::advance_scheduler_time(std::uint64_t consumed_ticks) {
