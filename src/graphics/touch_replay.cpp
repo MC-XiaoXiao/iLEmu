@@ -91,4 +91,12 @@ TouchReplay::next_deadline() const {
   return start_time_ + events_[next_event_].delay;
 }
 
+std::optional<std::chrono::steady_clock::time_point>
+TouchReplay::settled_deadline(std::chrono::milliseconds quiet_period) const {
+  if (!started_) return std::nullopt;
+  const auto final_delay =
+      events_.empty() ? std::chrono::milliseconds{0} : events_.back().delay;
+  return start_time_ + final_delay + quiet_period;
+}
+
 } // namespace ilemu

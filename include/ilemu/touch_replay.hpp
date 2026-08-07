@@ -21,6 +21,8 @@ public:
   [[nodiscard]] bool settled(std::chrono::milliseconds quiet_period) const;
   [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
   next_deadline() const;
+  [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
+  settled_deadline(std::chrono::milliseconds quiet_period) const;
 
 private:
   struct Event {

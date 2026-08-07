@@ -58,6 +58,9 @@ public:
                        DisplayGeometry geometry = default_display_geometry);
 
   [[nodiscard]] std::vector<LiveControlCommand> poll();
+  // Blocks until the descriptor is readable/hung up or the timeout expires.
+  // The next poll() still owns buffering and command parsing.
+  void wait_for(std::chrono::nanoseconds timeout);
   [[nodiscard]] bool closed() const { return closed_; }
 
 private:

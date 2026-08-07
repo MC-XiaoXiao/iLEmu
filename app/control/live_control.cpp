@@ -1,6 +1,7 @@
 #include "ilemu/live_control.hpp"
 
 #include <cerrno>
+#include <climits>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -183,6 +184,20 @@ std::vector<LiveControlCommand> LiveControl::poll() {
                     std::make_move_iterator(parsed.end()));
   }
   return commands;
+}
+
+void LiveControl::wait_for(std::chrono::nanoseconds timeout) {
+  if (closed_ || timeout <= std::chrono::nanoseconds::zero()) return;
+  const auto nanoseconds = timeout.count();
+  const auto whole_milliseconds = nanoseconds / 1'000'000;
+  const auto milliseconds = whole_milliseconds +
+                            (nanoseconds % 1'000'000 != 0 ? 1 : 0);
+  const auto poll_timeout = milliseconds >= INT_MAX
+                                ? INT_MAX
+                                : static_cast<int>(milliseconds);
+  pollfd descriptor{descriptor_, POLLIN | POLLHUP, 0};
+  while (::poll(&descriptor, 1, poll_timeout) < 0 && errno == EINTR) {
+  }
 }
 
 std::vector<LiveControlCommand> LiveControl::parse_line(std::string line) {

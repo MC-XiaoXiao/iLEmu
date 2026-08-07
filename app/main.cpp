@@ -74,10 +74,10 @@ constexpr std::size_t maximum_shared_monitor_slots =
     maximum_virtual_processors * maximum_shared_monitor_processes;
 constexpr std::size_t arm_thumb_breakpoint_size = 2;
 constexpr std::size_t arm_breakpoint_size = 4;
-// Host input, network completion, and display polling do not need a 1 kHz
-// wakeup rate. Four milliseconds stays well below one 60 Hz frame while
-// avoiding repeated full runtime scans between the same Guest deadline.
-constexpr auto interactive_maximum_sleep = std::chrono::milliseconds{4};
+// SDL's event wrapper currently exposes only a polling API. This bounded
+// fallback is used for SDL/GDB sessions; headless control-stdin sessions wait
+// on their descriptor or on the next Guest/automation deadline directly.
+constexpr auto sdl_event_poll_fallback = std::chrono::milliseconds{4};
 
 class GuestTickClock {
 public:
@@ -1876,6 +1876,20 @@ void boot(const std::vector<std::string> &args, Output &output) {
     }
     return deadline;
   };
+  const auto wait_for_host_activity = [&](std::chrono::nanoseconds delay) {
+    if (delay <= std::chrono::nanoseconds::zero()) return;
+    if (sdl_display) {
+      delay = std::min(
+          delay,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              sdl_event_poll_fallback));
+    }
+    if (live_control && !live_control->closed()) {
+      live_control->wait_for(delay);
+    } else {
+      std::this_thread::sleep_for(delay);
+    }
+  };
   std::optional<std::string> display_performance_window;
   Runtime *display_scanout_owner = nullptr;
   auto observed_display_submissions =
@@ -2154,10 +2168,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         const auto sleep_delay = realtime_pacer->limit_delay(
             guest_ahead_delay, next_host_control_deadline());
         if (sleep_delay > std::chrono::nanoseconds::zero()) {
-          std::this_thread::sleep_for(std::min(
-              sleep_delay,
-              std::chrono::duration_cast<std::chrono::nanoseconds>(
-                  interactive_maximum_sleep)));
+          wait_for_host_activity(sleep_delay);
         }
         // A due host control should wake the polling loop, not make a guest
         // that is still ahead appear eligible to execute.
@@ -2725,10 +2736,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
             const auto sleep_delay = realtime_pacer->limit_delay(
                 guest_ahead_delay, next_host_control_deadline());
             if (sleep_delay > std::chrono::nanoseconds::zero()) {
-              std::this_thread::sleep_for(std::min(
-                  sleep_delay,
-                  std::chrono::duration_cast<std::chrono::nanoseconds>(
-                      interactive_maximum_sleep)));
+              wait_for_host_activity(sleep_delay);
             }
             // Keep guest-time advancement gated by the raw pacing result.
             // A clipped host sleep only makes input polling responsive.
@@ -2751,25 +2759,45 @@ void boot(const std::vector<std::string> &args, Output &output) {
         // while host-time UI automation still has events scheduled or the
         // guest is draining the final event. Keep the same low-overhead idle
         // behavior as the unbounded interactive loop.
-        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        auto replay_deadline = touch_replay->next_deadline();
+        if (!replay_deadline) {
+          replay_deadline =
+              touch_replay->settled_deadline(touch_replay_quiet_period);
+        }
+        if (replay_deadline) {
+          const auto now = std::chrono::steady_clock::now();
+          wait_for_host_activity(
+              *replay_deadline > now
+                  ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        *replay_deadline - now)
+                  : std::chrono::nanoseconds::zero());
+        }
         continue;
       }
       if (bounded_execution)
         break;
       // An interactive emulator remains alive while every guest thread
-      // is blocked: SDL input, GDB interrupt, and future host-network
-      // completions may still produce a wakeup. Avoid a busy-spin while
-      // retaining a responsive event loop.
-      const auto maximum_delay =
-          std::chrono::duration_cast<std::chrono::nanoseconds>(
-              interactive_maximum_sleep);
-      const auto delay = realtime_pacer
-                             ? realtime_pacer->limit_delay(
-                                   maximum_delay,
-                                   next_host_control_deadline())
-                             : maximum_delay;
-      if (delay > std::chrono::nanoseconds::zero())
-        std::this_thread::sleep_for(delay);
+      // is blocked: wait for the next automation deadline or control input.
+      // GDB and SDL still use the bounded fallback because their current
+      // wrappers do not expose a waitable host descriptor.
+      auto delay = std::chrono::nanoseconds::max();
+      if (const auto deadline = next_host_control_deadline()) {
+        const auto now = std::chrono::steady_clock::now();
+        if (*deadline > now) {
+          delay = std::chrono::duration_cast<std::chrono::nanoseconds>(
+              *deadline - now);
+        } else {
+          delay = std::chrono::nanoseconds::zero();
+        }
+      } else if (!live_control || live_control->closed() || sdl_display ||
+                 gdb_server) {
+        delay = std::chrono::duration_cast<std::chrono::nanoseconds>(
+            sdl_event_poll_fallback);
+      }
+      if (realtime_pacer)
+        delay = realtime_pacer->limit_delay(delay,
+                                            next_host_control_deadline());
+      wait_for_host_activity(delay);
     }
   }
   const auto checked_in_services =
