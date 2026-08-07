@@ -1,8 +1,10 @@
 #include "ilemu/executable_catalog.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <stdexcept>
 #include <system_error>
 #include <string_view>
@@ -35,6 +37,47 @@ void append_string(std::vector<std::byte> &bytes, std::string_view value) {
 void append_identity(std::vector<std::byte> &bytes,
                      const ContentIdentity &identity) {
   bytes.insert(bytes.end(), identity.digest.begin(), identity.digest.end());
+}
+
+struct FilePrefix {
+  std::array<std::byte, 16> bytes{};
+  std::size_t size{};
+};
+
+std::optional<FilePrefix> read_file_prefix(
+    const std::filesystem::path &path) {
+  std::ifstream input{path, std::ios::binary};
+  if (!input) return std::nullopt;
+  FilePrefix prefix;
+  input.read(reinterpret_cast<char *>(prefix.bytes.data()),
+             static_cast<std::streamsize>(prefix.bytes.size()));
+  if (input.bad()) return std::nullopt;
+  prefix.size = static_cast<std::size_t>(input.gcount());
+  return prefix;
+}
+
+bool has_dyld_cache_magic(const FilePrefix &prefix) {
+  constexpr std::string_view magic_prefix = "dyld_v1";
+  if (prefix.size < magic_prefix.size()) return false;
+  return std::equal(magic_prefix.begin(), magic_prefix.end(),
+                    reinterpret_cast<const char *>(prefix.bytes.data()));
+}
+
+bool has_macho_magic(const FilePrefix &prefix) {
+  if (prefix.size < sizeof(std::uint32_t)) return false;
+  const auto little_endian_word =
+      std::to_integer<std::uint32_t>(prefix.bytes[0]) |
+      (std::to_integer<std::uint32_t>(prefix.bytes[1]) << 8U) |
+      (std::to_integer<std::uint32_t>(prefix.bytes[2]) << 16U) |
+      (std::to_integer<std::uint32_t>(prefix.bytes[3]) << 24U);
+  const auto big_endian_word =
+      (std::to_integer<std::uint32_t>(prefix.bytes[0]) << 24U) |
+      (std::to_integer<std::uint32_t>(prefix.bytes[1]) << 16U) |
+      (std::to_integer<std::uint32_t>(prefix.bytes[2]) << 8U) |
+      std::to_integer<std::uint32_t>(prefix.bytes[3]);
+  constexpr auto mh_magic = std::uint32_t{0xfeedfaceU};
+  constexpr auto fat_magic = std::uint32_t{0xcafebabeU};
+  return little_endian_word == mh_magic || big_endian_word == fat_magic;
 }
 
 ContentIdentity shared_cache_image_identity(const DyldSharedCache &cache,
@@ -151,6 +194,69 @@ std::size_t ExecutableCatalog::register_shared_cache(
     ++registered;
   }
   return registered;
+}
+
+ExecutableCatalogScanSummary ExecutableCatalog::register_tree(
+    const std::filesystem::path &root,
+    ArmArchitectureVersion architecture) {
+  std::error_code error;
+  if (!std::filesystem::is_directory(root, error) || error) {
+    throw std::runtime_error{"catalog root is not a directory: " +
+                             root.string()};
+  }
+
+  ExecutableCatalogScanSummary summary;
+  std::set<std::filesystem::path> cache_files;
+  std::filesystem::recursive_directory_iterator iterator{
+      root, std::filesystem::directory_options::skip_permission_denied, error};
+  const std::filesystem::recursive_directory_iterator end;
+  while (iterator != end) {
+    if (error) {
+      ++summary.failed_files;
+      error.clear();
+      iterator.increment(error);
+      continue;
+    }
+
+    const auto path = normalize_path(iterator->path());
+    std::error_code status_error;
+    const auto status = iterator->symlink_status(status_error);
+    if (status_error) {
+      ++summary.failed_files;
+    } else if (std::filesystem::is_regular_file(status)) {
+      ++summary.regular_files;
+      if (!cache_files.contains(path)) {
+        const auto prefix = read_file_prefix(path);
+        if (!prefix) {
+          ++summary.failed_files;
+        } else if (has_dyld_cache_magic(*prefix)) {
+          DyldSharedCacheOptions options;
+          options.architecture = architecture == ArmArchitectureVersion::Armv7
+                                     ? "armv7"
+                                     : "armv6k";
+          const auto cache = DyldSharedCache::parse(path, options);
+          if (!cache) {
+            ++summary.failed_files;
+          } else {
+            for (const auto &file : cache->files())
+              cache_files.insert(normalize_path(file.path));
+            ++summary.dyld_shared_cache_generations;
+            summary.dyld_shared_cache_images += register_shared_cache(*cache);
+          }
+        } else if (has_macho_magic(*prefix)) {
+          try {
+            static_cast<void>(register_path(path, architecture));
+            ++summary.mach_o_images;
+          } catch (const std::exception &) {
+            ++summary.failed_files;
+          }
+        }
+      }
+    }
+    iterator.increment(error);
+  }
+  if (error) ++summary.failed_files;
+  return summary;
 }
 
 const ExecutableCatalogEntry *ExecutableCatalog::find(

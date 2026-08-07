@@ -118,6 +118,14 @@ int main() {
     std::cerr << "dynamic mapping catalog failed\n";
     return 1;
   }
+  ilemu::ExecutableCatalog scanned_catalog;
+  const auto scan = scanned_catalog.register_tree(root);
+  if (scan.regular_files != 2U || scan.mach_o_images != 2U ||
+      scan.dyld_shared_cache_generations != 0U ||
+      scan.failed_files != 0U || scanned_catalog.size() != 2U) {
+    std::cerr << "firmware catalog tree scan failed\n";
+    return 1;
+  }
   std::filesystem::remove_all(root, error);
   return 0;
 }

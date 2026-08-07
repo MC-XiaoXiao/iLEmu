@@ -45,6 +45,14 @@ struct ExecutableCatalogEntry {
   std::vector<ExecutableMappingIdentity> mappings;
 };
 
+struct ExecutableCatalogScanSummary {
+  std::size_t regular_files{};
+  std::size_t mach_o_images{};
+  std::size_t dyld_shared_cache_generations{};
+  std::size_t dyld_shared_cache_images{};
+  std::size_t failed_files{};
+};
+
 class ExecutableCatalog {
 public:
   [[nodiscard]] const ExecutableCatalogEntry &register_image(
@@ -57,6 +65,12 @@ public:
       std::uint64_t byte_count);
   [[nodiscard]] std::size_t register_shared_cache(
       const DyldSharedCache &cache);
+  // Scans a firmware or overlay tree without treating unrelated data files as
+  // executable input. Malformed candidates are counted and skipped so an
+  // incomplete optional bundle cannot prevent a catalog rebuild.
+  [[nodiscard]] ExecutableCatalogScanSummary register_tree(
+      const std::filesystem::path &root,
+      ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
 
   [[nodiscard]] const ExecutableCatalogEntry *find(
       const ContentIdentity &identity) const;
