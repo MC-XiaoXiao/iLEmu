@@ -12,6 +12,8 @@
 #include <unordered_set>
 #include <vector>
 
+#include "ilemu/content_identity.hpp"
+
 namespace ilemu {
 
 inline constexpr std::size_t
@@ -43,9 +45,10 @@ private:
 };
 
 // Profiles are host cache hints stored outside the guest root filesystem.
-// Files contain descriptors, never generated host machine code. Invalid,
-// stale, or truncated files are ignored and replaced after a clean simulator
-// shutdown.
+// Files contain descriptors, never generated host machine code. The exact
+// executable content identity, rather than a path or mtime, selects a file.
+// Invalid, stale, or truncated files are ignored and replaced after a clean
+// simulator shutdown.
 class JitTranslationProfileStore {
 public:
     explicit JitTranslationProfileStore(
@@ -57,12 +60,12 @@ public:
         const JitTranslationProfileStore&) = delete;
 
     [[nodiscard]] std::shared_ptr<JitTranslationProfile> profile_for(
-        std::string_view executable_path);
+        const ContentIdentity& executable_identity);
     void save() noexcept;
 
 private:
     std::filesystem::path data_directory_;
-    std::map<std::string, std::shared_ptr<JitTranslationProfile>> profiles_;
+    std::map<ContentIdentity, std::shared_ptr<JitTranslationProfile>> profiles_;
 };
 
 } // namespace ilemu

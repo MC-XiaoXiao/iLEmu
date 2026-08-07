@@ -15,8 +15,7 @@ namespace ilemu {
 namespace {
 
 constexpr std::array<char, 8> profile_magic{
-    'i', 'L', 'J', 'T', 'P', 'R', 'F', '1'};
-constexpr std::size_t maximum_profile_path_bytes = 4096;
+    'i', 'L', 'J', 'T', 'P', 'R', 'F', '2'};
 constexpr std::uint64_t fnv_offset_basis = 14695981039346656037ULL;
 constexpr std::uint64_t fnv_prime = 1099511628211ULL;
 
@@ -30,10 +29,10 @@ void hash_bytes(
 }
 
 std::uint64_t profile_checksum(
-    std::string_view executable_path,
+    const ContentIdentity &identity,
     std::span<const std::uint64_t> locations) noexcept {
     auto hash = fnv_offset_basis;
-    hash_bytes(hash, executable_path.data(), executable_path.size());
+    hash_bytes(hash, identity.digest.data(), identity.digest.size());
     for (const auto location : locations) {
         for (unsigned shift = 0; shift < 64; shift += 8) {
             const auto byte = static_cast<unsigned char>(location >> shift);
@@ -43,12 +42,8 @@ std::uint64_t profile_checksum(
     return hash;
 }
 
-std::string profile_file_stem(std::string_view executable_path) {
-    auto hash = fnv_offset_basis;
-    hash_bytes(hash, executable_path.data(), executable_path.size());
-    std::ostringstream stream;
-    stream << std::hex << std::setfill('0') << std::setw(16) << hash;
-    return stream.str();
+std::string profile_file_stem(const ContentIdentity &identity) {
+    return identity.hex();
 }
 
 void write_u32(std::ostream& stream, std::uint32_t value) {
@@ -93,7 +88,7 @@ std::optional<std::uint64_t> read_u64(std::istream& stream) {
 
 std::vector<std::uint64_t> load_profile(
     const std::filesystem::path& path,
-    std::string_view expected_executable_path) {
+    const ContentIdentity &expected_identity) {
     std::ifstream stream{path, std::ios::binary};
     if (!stream) {
         return {};
@@ -103,19 +98,14 @@ std::vector<std::uint64_t> load_profile(
     if (!stream || magic != profile_magic) {
         return {};
     }
-    const auto path_size = read_u32(stream);
     const auto location_count = read_u32(stream);
     const auto expected_checksum = read_u64(stream);
-    if (!path_size || !location_count || !expected_checksum ||
-        *path_size > maximum_profile_path_bytes ||
+    ContentIdentity identity;
+    stream.read(reinterpret_cast<char *>(identity.digest.data()),
+                static_cast<std::streamsize>(identity.digest.size()));
+    if (!stream || !location_count || !expected_checksum ||
+        identity != expected_identity ||
         *location_count > jit_translation_profile_maximum_locations) {
-        return {};
-    }
-    std::string executable_path(*path_size, '\0');
-    stream.read(
-        executable_path.data(),
-        static_cast<std::streamsize>(executable_path.size()));
-    if (!stream || executable_path != expected_executable_path) {
         return {};
     }
     std::vector<std::uint64_t> locations;
@@ -128,7 +118,7 @@ std::vector<std::uint64_t> load_profile(
         locations.push_back(*location);
     }
     if (stream.peek() != std::char_traits<char>::eof() ||
-        profile_checksum(executable_path, locations) != *expected_checksum) {
+        profile_checksum(identity, locations) != *expected_checksum) {
         return {};
     }
     return locations;
@@ -136,16 +126,14 @@ std::vector<std::uint64_t> load_profile(
 
 void save_profile(
     const std::filesystem::path& directory,
-    std::string_view executable_path,
+    const ContentIdentity &identity,
     std::span<const std::uint64_t> locations) {
-    if (executable_path.empty() ||
-        executable_path.size() > maximum_profile_path_bytes ||
-        locations.empty() ||
+    if (identity.empty() || locations.empty() ||
         locations.size() > jit_translation_profile_maximum_locations) {
         return;
     }
     std::filesystem::create_directories(directory);
-    const auto stem = profile_file_stem(executable_path);
+    const auto stem = profile_file_stem(identity);
     const auto target = directory / (stem + ".profile");
     const auto temporary = directory / (stem + ".profile.tmp");
     {
@@ -157,14 +145,10 @@ void save_profile(
         stream.write(
             profile_magic.data(),
             static_cast<std::streamsize>(profile_magic.size()));
-        write_u32(
-            stream, static_cast<std::uint32_t>(executable_path.size()));
         write_u32(stream, static_cast<std::uint32_t>(locations.size()));
-        write_u64(
-            stream, profile_checksum(executable_path, locations));
-        stream.write(
-            executable_path.data(),
-            static_cast<std::streamsize>(executable_path.size()));
+        write_u64(stream, profile_checksum(identity, locations));
+        stream.write(reinterpret_cast<const char *>(identity.digest.data()),
+                     static_cast<std::streamsize>(identity.digest.size()));
         for (const auto location : locations) {
             write_u64(stream, location);
         }
@@ -267,27 +251,27 @@ JitTranslationProfileStore::~JitTranslationProfileStore() {
 
 std::shared_ptr<JitTranslationProfile>
 JitTranslationProfileStore::profile_for(
-    std::string_view executable_path) {
+    const ContentIdentity &executable_identity) {
     auto [entry, inserted] = profiles_.try_emplace(
-        std::string{executable_path});
+        executable_identity);
     if (inserted) {
         const auto path =
             data_directory_ /
-            (profile_file_stem(executable_path) + ".profile");
+            (profile_file_stem(executable_identity) + ".profile");
         entry->second = std::make_shared<JitTranslationProfile>(
-            load_profile(path, executable_path));
+            load_profile(path, executable_identity));
     }
     return entry->second;
 }
 
 void JitTranslationProfileStore::save() noexcept {
     try {
-        for (const auto& [executable_path, profile] : profiles_) {
+        for (const auto& [executable_identity, profile] : profiles_) {
             if (!profile) {
                 continue;
             }
             save_profile(
-                data_directory_, executable_path, profile->snapshot());
+                data_directory_, executable_identity, profile->snapshot());
         }
     } catch (...) {
         // A cache write must not change simulator shutdown semantics.

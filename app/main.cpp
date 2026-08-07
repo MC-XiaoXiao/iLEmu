@@ -1212,15 +1212,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
   JitTranslationProfileStore translation_profiles{
       host_cache /
       "jit-translation-profiles"};
-  const auto translation_profile_for =
-      [&translation_profiles](std::string_view executable_path) {
-        return translation_profiles.profile_for(executable_path);
-      };
   const auto assign_translation_profile =
-      [&translation_profile_for](
-          CpuCluster &cpus, std::string_view executable_path) {
+      [&translation_profiles](CpuCluster &cpus,
+                              const ContentIdentity &executable_identity) {
         cpus.set_translation_profile(
-            translation_profile_for(executable_path));
+            translation_profiles.profile_for(executable_identity));
       };
   auto initial = std::make_unique<Runtime>();
   initial->memory = std::move(initial_memory);
@@ -1229,7 +1225,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
       guest_processor_count, *cpu_model);
   initial->cpus->set_jit_code_cache_size(
       configured_jit_code_cache_size);
-  assign_translation_profile(*initial->cpus, process.executable_path);
+  assign_translation_profile(*initial->cpus,
+                             process.executable.content_identity());
   initial->kernel =
       std::make_unique<CompatibilityKernel>(*initial->memory, output, *rootfs,
                                             device, activation_override,
@@ -1594,7 +1591,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
               child_runtime.kernel->set_process_image(
                   path, loaded.executable.code_signature_entitlements());
               assign_translation_profile(
-                  *child_runtime.cpus, loaded.executable_path);
+                  *child_runtime.cpus, loaded.executable.content_identity());
               child_runtime.kernel->prepare_exec(0);
               auto &child_cpu = child_runtime.cpus->cpu(0);
               child_cpu.reset();
@@ -2390,7 +2387,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                               pending.environment);
         runtime.kernel->set_process_image(
             pending.path, loaded.executable.code_signature_entitlements());
-        assign_translation_profile(*runtime.cpus, loaded.executable_path);
+        assign_translation_profile(*runtime.cpus,
+                                   loaded.executable.content_identity());
         runtime.kernel->prepare_exec(pending.processor);
         auto &exec_cpu = runtime.cpus->cpu(pending.processor);
         exec_cpu.reset();
