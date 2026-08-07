@@ -35,6 +35,7 @@
 #include "ilemu/gdb_rsp.hpp"
 #include "ilemu/gles_renderer.hpp"
 #include "ilemu/guest_parallelism_policy.hpp"
+#include "ilemu/host_resource_controller.hpp"
 #include "ilemu/iokit_abi.hpp"
 #include "ilemu/jit_translation_profile.hpp"
 #include "ilemu/kernel.hpp"
@@ -142,6 +143,7 @@ struct Runtime {
   std::unique_ptr<CompatibilityKernel> kernel;
   std::vector<bool> allocated;
   std::optional<PendingExec> pending_exec;
+  std::shared_ptr<HostWorkToken> precompile_task;
   std::optional<std::chrono::steady_clock::time_point>
       execution_reclaim_after;
   bool fresh_spawn_address_space{};
@@ -1209,6 +1211,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
   auto process = loader.load(binary, {}, initial_environment);
   RuntimeReaper runtime_reaper;
   std::vector<std::unique_ptr<Runtime>> runtimes;
+  HostResourceBudget host_resource_budget;
+  host_resource_budget.worker_count = 1U;
+  HostResourceController host_resources{host_resource_budget};
   JitTranslationProfileStore translation_profiles{
       host_cache /
       "jit-translation-profiles"};
@@ -2143,6 +2148,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
             scheduler.runnable_count() != 0) {
           continue;
         }
+        host_resources.wait_idle();
         runtime_reaper.retire_execution_resources(
             runtime->cpus->release_execution_resources());
         runtime->execution_reclaim_after.reset();
@@ -2177,6 +2183,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           !(*runtime)->cpus->has_execution_resources()) {
         if (runtime->get() == display_scanout_owner)
           display_scanout_owner = nullptr;
+        host_resources.wait_idle();
         runtime_reaper.retire(std::move(*runtime));
         runtime = runtimes.erase(runtime);
       } else {
@@ -2630,22 +2637,39 @@ void boot(const std::vector<std::string> &args, Output &output) {
             idle_precompile_time_budget_ns,
             static_cast<std::uint64_t>(budget.count()));
       };
-      const auto precompile_idle_runtime = [&](Runtime *runtime) {
+      std::optional<HostResourceController::Clock::time_point>
+          host_compile_deadline;
+      if (realtime_pacer && next_deadline) {
+        const auto delay = realtime_pacer->delay_until(*next_deadline);
+        if (delay > std::chrono::nanoseconds::zero()) {
+          host_compile_deadline = HostResourceController::Clock::now() + delay;
+        }
+      }
+      host_resources.set_next_deadline(host_compile_deadline);
+      const auto schedule_precompile_runtime = [&](Runtime *runtime) {
         if (runtime == nullptr || runtime->kernel->process().exited)
           return;
+        if (runtime->precompile_task) {
+          if (!runtime->precompile_task->finished()) return;
+          runtime->precompile_task.reset();
+        }
         const auto budget = available_precompile_budget();
         if (budget == 0)
           return;
-        static_cast<void>(runtime->cpus->precompile_pending(
-            idle_precompile_block_budget, budget));
+        runtime->precompile_task = host_resources.submit(
+            HostWorkKind::BackgroundCompile, host_compile_deadline,
+            [runtime, budget, idle_precompile_block_budget] {
+              static_cast<void>(runtime->cpus->precompile_pending(
+                  idle_precompile_block_budget, budget));
+            });
       };
-      precompile_idle_runtime(active_runtime);
+      schedule_precompile_runtime(active_runtime);
       // The scanout publisher may be a background compositor while an App is
       // active. Its cached exit/unlock paths are just as latency-sensitive as
       // the foreground process, so consume their host-only profile hints while
       // every guest thread is idle.
       if (display_scanout_owner != active_runtime)
-        precompile_idle_runtime(display_scanout_owner);
+        schedule_precompile_runtime(display_scanout_owner);
       if (next_deadline) {
         if (realtime_pacer) {
           const auto guest_ahead_delay =
@@ -2847,6 +2871,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const auto stopped_guest = report_performance
                                  ? performance_counters().snapshot()
                                  : PerformanceSnapshot{};
+  host_resources.wait_idle();
   for (auto &runtime : runtimes)
     runtime_reaper.retire(std::move(runtime));
   runtimes.clear();
