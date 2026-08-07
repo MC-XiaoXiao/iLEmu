@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <list>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -99,12 +100,22 @@ public:
   [[nodiscard]] bool save(const std::filesystem::path &path) const noexcept;
 
 private:
-  using ArtifactMap = std::unordered_map<
-      JitArtifactKey, std::shared_ptr<const BlockArtifact>,
-      JitArtifactKeyHash>;
+  struct ArtifactRecord {
+    std::shared_ptr<const BlockArtifact> artifact;
+    std::size_t serialized_bytes{};
+    std::list<JitArtifactKey>::iterator lru_position;
+  };
+  using ArtifactMap =
+      std::unordered_map<JitArtifactKey, ArtifactRecord, JitArtifactKeyHash>;
+
+  void touch_locked(ArtifactMap::iterator iterator) const;
+  void evict_until_fit_locked(std::size_t required_bytes);
+  void insert_locked(std::shared_ptr<const BlockArtifact> artifact,
+                     std::size_t serialized_bytes);
 
   mutable std::mutex mutex_;
-  ArtifactMap artifacts_;
+  mutable ArtifactMap artifacts_;
+  mutable std::list<JitArtifactKey> lru_;
   JitArtifactLimits limits_;
   std::size_t resident_bytes_{};
   std::filesystem::path persistence_path_;

@@ -1,7 +1,9 @@
 #include "ilemu/jit_artifact.hpp"
 
+#include <algorithm>
 #include <array>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <system_error>
 #include <utility>
@@ -16,6 +18,8 @@ constexpr std::array<char, 8> artifact_magic{
 constexpr std::uint32_t maximum_artifacts = 1'000'000;
 constexpr std::uint32_t maximum_ir_bytes = 16U * 1024U * 1024U;
 constexpr std::uint32_t maximum_metadata_entries = 1'000'000;
+constexpr std::uintmax_t maximum_persistence_bytes =
+    std::uintmax_t{4U} * 1024U * 1024U * 1024U;
 std::atomic<std::uint64_t> next_context_id{1};
 
 void hash_bytes(std::size_t &hash, const void *data, std::size_t size) noexcept {
@@ -230,7 +234,64 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
     const JitArtifactKey &key) const {
   const std::lock_guard lock{mutex_};
   const auto artifact = artifacts_.find(key);
-  return artifact == artifacts_.end() ? nullptr : artifact->second;
+  if (artifact == artifacts_.end()) return nullptr;
+  touch_locked(artifact);
+  return artifact->second.artifact;
+}
+
+void JitArtifactStore::touch_locked(ArtifactMap::iterator iterator) const {
+  lru_.splice(lru_.end(), lru_, iterator->second.lru_position);
+  iterator->second.lru_position = std::prev(lru_.end());
+}
+
+void JitArtifactStore::evict_until_fit_locked(
+    std::size_t required_bytes) {
+  if (limits_.resident_bytes == 0U) return;
+  while (resident_bytes_ > limits_.resident_bytes -
+                              std::min(limits_.resident_bytes,
+                                       required_bytes) &&
+         !lru_.empty()) {
+    const auto key = lru_.front();
+    lru_.pop_front();
+    const auto iterator = artifacts_.find(key);
+    if (iterator == artifacts_.end()) continue;
+    resident_bytes_ -= iterator->second.serialized_bytes;
+    artifacts_.erase(iterator);
+  }
+}
+
+void JitArtifactStore::insert_locked(
+    std::shared_ptr<const BlockArtifact> artifact,
+    std::size_t serialized_bytes) {
+  const auto key = artifact->key;
+  if (const auto existing = artifacts_.find(key); existing != artifacts_.end()) {
+    touch_locked(existing);
+    return;
+  }
+  if (limits_.resident_bytes != 0U &&
+      serialized_bytes > limits_.resident_bytes) {
+    return;
+  }
+  evict_until_fit_locked(serialized_bytes);
+  if (limits_.resident_bytes != 0U &&
+      resident_bytes_ > limits_.resident_bytes - serialized_bytes) {
+    return;
+  }
+  if (serialized_bytes >
+      std::numeric_limits<std::size_t>::max() - resident_bytes_) {
+    return;
+  }
+  lru_.push_back(key);
+  const auto lru_position = std::prev(lru_.end());
+  const auto [iterator, inserted] = artifacts_.try_emplace(
+      key, ArtifactRecord{std::move(artifact), serialized_bytes,
+                          lru_position});
+  if (!inserted) {
+    lru_.erase(lru_position);
+    touch_locked(iterator);
+    return;
+  }
+  resident_bytes_ += serialized_bytes;
 }
 
 std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
@@ -239,22 +300,15 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
   if (!artifact_bytes) return nullptr;
   const std::lock_guard lock{mutex_};
   if (const auto existing = artifacts_.find(key); existing != artifacts_.end()) {
-    return existing->second;
-  }
-  if (limits_.resident_bytes != 0U &&
-      *artifact_bytes > limits_.resident_bytes -
-                            std::min(limits_.resident_bytes, resident_bytes_)) {
-    return nullptr;
-  }
-  if (*artifact_bytes >
-      std::numeric_limits<std::size_t>::max() - resident_bytes_) {
-    return nullptr;
+    touch_locked(existing);
+    return existing->second.artifact;
   }
   auto artifact = std::make_shared<const BlockArtifact>(
       BlockArtifact{std::move(key), std::move(data)});
-  artifacts_.emplace(artifact->key, artifact);
-  resident_bytes_ += *artifact_bytes;
-  return artifact;
+  const auto lookup_key = artifact->key;
+  insert_locked(std::move(artifact), *artifact_bytes);
+  const auto inserted = artifacts_.find(lookup_key);
+  return inserted == artifacts_.end() ? nullptr : inserted->second.artifact;
 }
 
 std::size_t JitArtifactStore::size() const {
@@ -264,6 +318,16 @@ std::size_t JitArtifactStore::size() const {
 
 bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
   try {
+    std::error_code size_error;
+    const auto file_size = std::filesystem::file_size(path, size_error);
+    if (!size_error) {
+      const auto configured_limit = limits_.persistence_bytes == 0U
+                                        ? maximum_persistence_bytes
+                                        : std::min<std::uintmax_t>(
+                                              limits_.persistence_bytes,
+                                              maximum_persistence_bytes);
+      if (file_size > configured_limit) return false;
+    }
     std::ifstream stream{path, std::ios::binary};
     if (!stream) return false;
     std::array<char, artifact_magic.size()> magic{};
@@ -276,8 +340,12 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
     const auto count = read_u32(stream);
     if (!count || *count > maximum_artifacts) return false;
 
-    std::vector<std::shared_ptr<const BlockArtifact>> loaded;
-    loaded.reserve(*count);
+    using LoadedList = std::list<std::shared_ptr<const BlockArtifact>>;
+    LoadedList loaded;
+    std::unordered_map<JitArtifactKey, LoadedList::iterator,
+                       JitArtifactKeyHash>
+        loaded_index;
+    loaded_index.reserve(*count);
     std::size_t loaded_bytes = 0;
     for (std::uint32_t index = 0; index < *count; ++index) {
       const auto key = read_key(stream);
@@ -315,33 +383,45 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
       }
       const auto artifact_bytes = serialized_artifact_bytes(data);
       if (!artifact_bytes) return false;
-      if (limits_.resident_bytes == 0U ||
-          (*artifact_bytes <= limits_.resident_bytes &&
-           loaded_bytes <= limits_.resident_bytes - *artifact_bytes)) {
-        loaded.push_back(std::make_shared<const BlockArtifact>(
-            BlockArtifact{*key, std::move(data)}));
-        loaded_bytes += *artifact_bytes;
+      if (limits_.resident_bytes != 0U &&
+          *artifact_bytes > limits_.resident_bytes) {
+        continue;
       }
+      const auto artifact = std::make_shared<const BlockArtifact>(
+          BlockArtifact{*key, std::move(data)});
+      if (const auto existing = loaded_index.find(artifact->key);
+          existing != loaded_index.end()) {
+        loaded_bytes -= serialized_artifact_bytes(
+                            (*existing->second)->data)
+                            .value();
+        loaded.erase(existing->second);
+        loaded_index.erase(existing);
+      }
+      if (limits_.resident_bytes != 0U) {
+        while (loaded_bytes >
+                   limits_.resident_bytes - *artifact_bytes &&
+               !loaded.empty()) {
+          const auto oldest = loaded.begin();
+          loaded_bytes -=
+              serialized_artifact_bytes((*oldest)->data).value();
+          loaded_index.erase((*oldest)->key);
+          loaded.erase(oldest);
+        }
+      }
+      if (*artifact_bytes >
+          std::numeric_limits<std::size_t>::max() - loaded_bytes) {
+        return false;
+      }
+      loaded_bytes += *artifact_bytes;
+      loaded.push_back(artifact);
+      loaded_index.emplace(artifact->key, std::prev(loaded.end()));
     }
     if (stream.peek() != std::char_traits<char>::eof()) return false;
 
     const std::lock_guard lock{mutex_};
     for (auto &artifact : loaded) {
       const auto artifact_bytes = serialized_artifact_bytes(artifact->data);
-      if (!artifact_bytes ||
-          (limits_.resident_bytes != 0U &&
-           (*artifact_bytes > limits_.resident_bytes ||
-            resident_bytes_ > limits_.resident_bytes - *artifact_bytes))) {
-        continue;
-      }
-      if (*artifact_bytes >
-          std::numeric_limits<std::size_t>::max() - resident_bytes_) {
-        continue;
-      }
-      const auto [iterator, inserted] =
-          artifacts_.try_emplace(artifact->key, std::move(artifact));
-      if (inserted) resident_bytes_ += *artifact_bytes;
-      static_cast<void>(iterator);
+      if (artifact_bytes) insert_locked(std::move(artifact), *artifact_bytes);
     }
     return true;
   } catch (...) {
@@ -359,11 +439,13 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
     std::vector<std::shared_ptr<const BlockArtifact>> snapshot;
     {
       const std::lock_guard lock{mutex_};
-      snapshot.reserve(artifacts_.size());
-      for (const auto &[key, artifact] : artifacts_) {
-        static_cast<void>(key);
-        snapshot.push_back(artifact);
+      snapshot.reserve(lru_.size());
+      for (const auto &key : lru_) {
+        const auto artifact = artifacts_.find(key);
+        if (artifact != artifacts_.end())
+          snapshot.push_back(artifact->second.artifact);
       }
+      if (snapshot.size() != artifacts_.size()) return false;
     }
     if (snapshot.size() > maximum_artifacts) return false;
     std::size_t serialized_size = 8U + sizeof(std::uint32_t);
@@ -380,6 +462,7 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
         serialized_size > limits_.persistence_bytes) {
       return false;
     }
+    if (serialized_size > maximum_persistence_bytes) return false;
     const auto parent = path.parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent);
     const auto temporary = path.string() + ".tmp";

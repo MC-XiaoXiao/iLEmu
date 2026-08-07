@@ -124,18 +124,50 @@ int main() {
 
   {
     ilemu::JitArtifactLimits resident_limits;
-    resident_limits.resident_bytes = 1U;
+    resident_limits.resident_bytes = 282U;
     ilemu::JitArtifactStore resident_limited{
         std::filesystem::path{}, resident_limits};
-    if (resident_limited.publish(
-            key, ilemu::JitArtifactData{{std::byte{0x01}}, {}, {}, 1U}) ||
-        resident_limited.size() != 0U) {
-      std::cerr << "resident artifact budget was not enforced\n";
+    auto first_limited_key = key;
+    first_limited_key.guest_pc = 0x2000U;
+    auto second_limited_key = key;
+    second_limited_key.guest_pc = 0x3000U;
+    auto third_limited_key = key;
+    third_limited_key.guest_pc = 0x4000U;
+    const auto first_published = resident_limited.publish(
+        first_limited_key,
+        ilemu::JitArtifactData{{std::byte{0x01}}, {}, {}, 1U});
+    const auto second_published = resident_limited.publish(
+        second_limited_key,
+        ilemu::JitArtifactData{{std::byte{0x02}}, {}, {}, 1U});
+    const auto initial_size = resident_limited.size();
+    const auto second_initial_hit = resident_limited.find(second_limited_key);
+    const auto first_initial_hit = resident_limited.find(first_limited_key);
+    const auto third_published = resident_limited.publish(
+        third_limited_key,
+        ilemu::JitArtifactData{{std::byte{0x03}}, {}, {}, 1U});
+    const auto final_size = resident_limited.size();
+    const auto first_final_hit = resident_limited.find(first_limited_key);
+    const auto second_final_hit = resident_limited.find(second_limited_key);
+    const auto third_final_hit = resident_limited.find(third_limited_key);
+    if (!first_published || !second_published || initial_size != 2U ||
+        !first_initial_hit || !second_initial_hit || !third_published ||
+        final_size != 2U || !first_final_hit || second_final_hit ||
+        !third_final_hit) {
+      std::cerr << "resident artifact LRU budget was not enforced: sizes "
+                << initial_size << ", " << final_size << " hits "
+                << static_cast<bool>(first_published) << " "
+                << static_cast<bool>(second_published) << " "
+                << static_cast<bool>(first_initial_hit) << " "
+                << static_cast<bool>(second_initial_hit) << " "
+                << static_cast<bool>(third_published) << " "
+                << static_cast<bool>(first_final_hit) << " "
+                << static_cast<bool>(second_final_hit) << " "
+                << static_cast<bool>(third_final_hit) << "\n";
       return 1;
     }
-
+    resident_limits.resident_bytes = 141U;
     ilemu::JitArtifactStore reloaded_limited{persistence, resident_limits};
-    if (reloaded_limited.size() != 0U) {
+    if (reloaded_limited.size() != 1U) {
       std::cerr << "resident artifact budget was ignored during load\n";
       return 1;
     }
