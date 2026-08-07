@@ -1059,6 +1059,8 @@ CpuCluster::CpuCluster(
         throw std::invalid_argument{
             "maximum_processor_count must cover the initial processors"};
     }
+    memory.set_exclusive_write_observer(
+        [&monitor] { monitor.Clear(); });
     cpus_.reserve(maximum_processor_count);
     while (cpus_.size() < initial_processor_count) {
         static_cast<void>(add_cpu());

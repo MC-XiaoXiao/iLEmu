@@ -99,6 +99,12 @@ void AddressSpace::set_parallel_access(bool enabled) {
   }
 }
 
+void AddressSpace::set_exclusive_write_observer(
+    std::function<void()> observer) {
+  auto lock = write_lock();
+  exclusive_write_observer_ = std::move(observer);
+}
+
 std::uint8_t **AddressSpace::jit_page_table() {
   return jit_write_page_table();
 }
@@ -940,6 +946,8 @@ AddressSpace::writable_backing_locked(Page &page) {
 void AddressSpace::mark_shared_backing_written_locked(Page &page) {
   if (page.backing)
     page.backing->mark_shared_write();
+  if (exclusive_write_observer_)
+    exclusive_write_observer_();
 }
 
 bool AddressSpace::tracks_write_locked(std::uint32_t address,

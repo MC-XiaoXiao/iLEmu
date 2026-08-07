@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -42,6 +43,11 @@ public:
   // physical single-core device runs all memory access on the scheduler
   // thread; optional multi-core sessions retain shared/exclusive locking.
   void set_parallel_access(bool enabled);
+  // A shared Dynarmic monitor can conservatively invalidate all reservations
+  // whenever this address space performs a checked Guest write. Direct JIT
+  // writes are only installed for private pages, so shared/COW writes pass
+  // through this boundary before another execution slice begins.
+  void set_exclusive_write_observer(std::function<void()> observer);
   // Legacy alias for the direct-write table.
   [[nodiscard]] std::uint8_t **jit_page_table();
   // Read and write tables are separate: immutable/file/COW pages may be read
@@ -278,7 +284,7 @@ private:
   [[nodiscard]] static std::byte read_byte_locked(const Page *page,
                                                   std::uint32_t offset);
   [[nodiscard]] static GuestPageBacking &writable_backing_locked(Page &page);
-  static void mark_shared_backing_written_locked(Page &page);
+  void mark_shared_backing_written_locked(Page &page);
   [[nodiscard]] bool tracks_write_locked(std::uint32_t address,
                                          std::size_t size) const;
   void mark_written_locked(std::uint32_t address, std::size_t size);
@@ -328,6 +334,7 @@ private:
   std::map<std::uint64_t, MappingLease> mapping_leases_;
   std::uint64_t next_mapping_lease_token_{1};
   std::shared_ptr<FilePageCache> file_page_cache_;
+  std::function<void()> exclusive_write_observer_;
 };
 
 } // namespace ilemu
