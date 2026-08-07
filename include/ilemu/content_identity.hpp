@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -16,6 +17,8 @@ struct ContentIdentity {
 
   friend constexpr bool operator==(const ContentIdentity &,
                                    const ContentIdentity &) = default;
+  friend constexpr auto operator<=>(const ContentIdentity &,
+                                    const ContentIdentity &) = default;
 
   [[nodiscard]] bool empty() const noexcept;
   [[nodiscard]] std::string hex() const;

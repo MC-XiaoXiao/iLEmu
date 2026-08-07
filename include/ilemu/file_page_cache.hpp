@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include "ilemu/content_identity.hpp"
+
 namespace ilemu {
 
 inline constexpr std::uint32_t guest_memory_page_size = 4096;
@@ -31,6 +33,7 @@ struct GuestFileBacking {
   std::string cache_path;
   std::uintmax_t file_size{};
   std::filesystem::file_time_type modified;
+  ContentIdentity content_identity;
   std::uint64_t first_offset{};
   std::uint64_t end_offset{};
   mutable std::mutex mutex;
@@ -104,12 +107,12 @@ private:
   struct Identity {
     std::uintmax_t file_size{};
     std::filesystem::file_time_type modified;
+    ContentIdentity content_identity;
   };
 
   struct Key {
     std::string path;
-    std::uintmax_t file_size{};
-    std::filesystem::file_time_type modified;
+    ContentIdentity content_identity;
     std::uint64_t file_offset{};
     std::uint32_t byte_count{};
 

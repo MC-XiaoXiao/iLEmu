@@ -162,9 +162,9 @@ bool GuestPageBacking::flush_file() {
 }
 
 bool FilePageCache::Key::operator<(const Key &other) const {
-  return std::tie(path, file_size, modified, file_offset, byte_count) <
-         std::tie(other.path, other.file_size, other.modified,
-                  other.file_offset, other.byte_count);
+  return std::tie(path, content_identity, file_offset, byte_count) <
+         std::tie(other.path, other.content_identity, other.file_offset,
+                  other.byte_count);
 }
 
 std::optional<std::shared_ptr<GuestFileBacking>>
@@ -188,19 +188,25 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     return std::nullopt;
   const auto modified = std::filesystem::last_write_time(path, error);
   if (error) return std::nullopt;
+  const auto content_identity = sha256_file(path);
+  if (!content_identity) return std::nullopt;
   const auto normalized_path = stable_path(path);
 
   {
     const std::scoped_lock lock{mutex_};
     const auto identity = identities_.find(normalized_path);
     if (identity == identities_.end()) {
-      identities_.emplace(normalized_path, Identity{file_size, modified});
-    } else if (identity->second.file_size != file_size ||
-               identity->second.modified != modified) {
+      identities_.emplace(normalized_path,
+                          Identity{file_size, modified, *content_identity});
+    } else if (identity->second.content_identity != *content_identity) {
       std::erase_if(pages_, [&](const auto &entry) {
         return entry.first.path == normalized_path;
       });
-      identity->second = Identity{file_size, modified};
+      identity->second =
+          Identity{file_size, modified, *content_identity};
+    } else {
+      identity->second.file_size = file_size;
+      identity->second.modified = modified;
     }
   }
 
@@ -214,14 +220,15 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   mapping->cache_path = normalized_path;
   mapping->file_size = file_size;
   mapping->modified = modified;
+  mapping->content_identity = *content_identity;
   return mapping;
 }
 
 std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
     const std::shared_ptr<GuestFileBacking> &mapping,
     std::uint64_t file_offset, std::uint32_t byte_count) {
-  const Key key{mapping->cache_path, mapping->file_size, mapping->modified,
-                file_offset, byte_count};
+  const Key key{mapping->cache_path, mapping->content_identity, file_offset,
+                byte_count};
   {
     const std::scoped_lock lock{mutex_};
     if (const auto cached = pages_.find(key); cached != pages_.end()) {
