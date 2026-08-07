@@ -181,6 +181,9 @@ bool XnuScheduler::depress(XnuThreadId thread, std::uint64_t duration_ticks) {
     record.info.scheduled_priority = xnu792::scheduler::minimum_priority;
     if (duration_ticks != 0) {
         record.depression_deadline = saturating_add(elapsed_ticks_, duration_ticks);
+        index_depression(thread, record);
+    } else {
+        record.depression_deadline.reset();
     }
     if (was_queued) enqueue(thread, QueuePosition::Back);
     return true;
@@ -512,6 +515,34 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position) {
     run_queue.high_queue = std::max(run_queue.high_queue, priority);
 }
 
+void XnuScheduler::index_depression(
+    XnuThreadId thread, const ThreadRecord& record) {
+    if (record.depression_deadline) {
+        depression_order_.emplace(*record.depression_deadline, thread);
+    }
+}
+
+void XnuScheduler::unindex_depression(
+    XnuThreadId thread, const ThreadRecord& record) {
+    if (record.depression_deadline) {
+        depression_order_.erase({*record.depression_deadline, thread});
+    }
+}
+
+void XnuScheduler::index_failsafe(
+    XnuThreadId thread, const ThreadRecord& record) {
+    if (record.info.failsafe) {
+        failsafe_order_.emplace(record.info.failsafe_release_tick, thread);
+    }
+}
+
+void XnuScheduler::unindex_failsafe(
+    XnuThreadId thread, const ThreadRecord& record) {
+    if (record.info.failsafe) {
+        failsafe_order_.erase({record.info.failsafe_release_tick, thread});
+    }
+}
+
 void XnuScheduler::remove_from_queue(XnuThreadId, ThreadRecord& record) {
     if (!record.queued) return;
     const auto priority = record.queued_priority;
@@ -591,6 +622,11 @@ XnuThreadId XnuScheduler::pop_highest(RunQueue& run_queue) {
 }
 
 void XnuScheduler::unindex_thread(XnuThreadId thread) {
+    const auto thread_iterator = threads_.find(thread);
+    if (thread_iterator != threads_.end()) {
+        unindex_depression(thread, thread_iterator->second);
+        unindex_failsafe(thread, thread_iterator->second);
+    }
     const auto process_iterator = process_threads_.find(thread.process);
     if (process_iterator == process_threads_.end()) return;
     process_iterator->second.erase(thread);
@@ -612,17 +648,25 @@ void XnuScheduler::advance_scheduler_time(std::uint64_t consumed_ticks) {
 }
 
 void XnuScheduler::expire_depressions() {
-    for (auto& [thread, record] : threads_) {
-        if (record.info.depressed && record.depression_deadline &&
-            *record.depression_deadline <= elapsed_ticks_) {
-            restore_depression(thread, record);
+    while (!depression_order_.empty() &&
+           depression_order_.begin()->first <= elapsed_ticks_) {
+        const auto [deadline, thread] = *depression_order_.begin();
+        const auto iterator = threads_.find(thread);
+        if (iterator == threads_.end() ||
+            !iterator->second.info.depressed ||
+            !iterator->second.depression_deadline ||
+            *iterator->second.depression_deadline != deadline) {
+            depression_order_.erase(depression_order_.begin());
+            continue;
         }
+        restore_depression(thread, iterator->second);
     }
 }
 
 void XnuScheduler::restore_depression(
     XnuThreadId thread, ThreadRecord& record) {
     if (!record.info.depressed) return;
+    unindex_depression(thread, record);
     record.info.depressed = false;
     record.depression_deadline.reset();
     recompute_priority(thread, record);
@@ -630,11 +674,18 @@ void XnuScheduler::restore_depression(
 
 void XnuScheduler::age_priorities(std::uint64_t elapsed_ticks) {
     const auto processor_set_shift = processor_set_priority_shift();
-    for (auto& [thread, record] : threads_) {
-        if (record.info.failsafe &&
-            scheduler_tick_ >= record.info.failsafe_release_tick) {
-            release_failsafe(thread, record);
+    while (!failsafe_order_.empty() &&
+           failsafe_order_.begin()->first <= scheduler_tick_) {
+        const auto [release_tick, thread] = *failsafe_order_.begin();
+        const auto iterator = threads_.find(thread);
+        if (iterator == threads_.end() || !iterator->second.info.failsafe ||
+            iterator->second.info.failsafe_release_tick != release_tick) {
+            failsafe_order_.erase(failsafe_order_.begin());
+            continue;
         }
+        release_failsafe(thread, iterator->second);
+    }
+    for (auto& [thread, record] : threads_) {
         record.priority_usage_shift = processor_set_shift;
         if (elapsed_ticks >= xnu792::scheduler::scheduling_usage_decay_ticks) {
             record.info.scheduling_usage = 0;
@@ -716,12 +767,14 @@ void XnuScheduler::apply_failsafe(
     record.info.failsafe = true;
     record.info.failsafe_release_tick = saturating_add(
         scheduler_tick_, xnu792::scheduler::failsafe_release_scheduler_ticks);
+    index_failsafe(thread, record);
     recompute_priority(thread, record);
 }
 
 void XnuScheduler::release_failsafe(
     XnuThreadId thread, ThreadRecord& record) {
     if (!record.info.failsafe) return;
+    unindex_failsafe(thread, record);
     record.info.base_priority = record.failsafe_saved_base_priority;
     record.info.timeshare = record.failsafe_saved_timeshare;
     record.info.realtime = record.failsafe_saved_realtime;

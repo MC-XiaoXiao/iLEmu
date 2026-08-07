@@ -227,6 +227,10 @@ private:
         std::uint64_t scheduler_tick_ticks);
     void enqueue(XnuThreadId thread, QueuePosition position);
     void remove_from_queue(XnuThreadId thread, ThreadRecord& record);
+    void index_depression(XnuThreadId thread, const ThreadRecord& record);
+    void unindex_depression(XnuThreadId thread, const ThreadRecord& record);
+    void index_failsafe(XnuThreadId thread, const ThreadRecord& record);
+    void unindex_failsafe(XnuThreadId thread, const ThreadRecord& record);
     void unindex_thread(XnuThreadId thread);
     static void refresh_high_queue(RunQueue& run_queue);
     [[nodiscard]] XnuThreadId pop_highest(RunQueue& run_queue);
@@ -248,6 +252,8 @@ private:
     std::unordered_map<
         std::uint32_t,
         std::unordered_set<XnuThreadId, XnuThreadIdHash>> process_threads_;
+    std::set<std::pair<std::uint64_t, XnuThreadId>> depression_order_;
+    std::set<std::pair<std::uint64_t, XnuThreadId>> failsafe_order_;
     std::size_t runnable_count_{};
     std::size_t waiting_count_{};
     std::uint64_t quantum_ticks_{};
