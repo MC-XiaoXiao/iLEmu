@@ -256,6 +256,7 @@ private:
     std::set<std::pair<std::uint64_t, XnuThreadId>> failsafe_order_;
     std::size_t runnable_count_{};
     std::size_t waiting_count_{};
+    std::size_t active_timeshare_count_{};
     std::uint64_t quantum_ticks_{};
     std::uint64_t scheduler_tick_ticks_{};
     std::uint32_t priority_usage_shift_{};

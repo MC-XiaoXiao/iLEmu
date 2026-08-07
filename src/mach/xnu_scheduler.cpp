@@ -47,8 +47,12 @@ bool XnuScheduler::register_thread(
     record.info.state = runnable ? XnuThreadState::Runnable
                                  : XnuThreadState::Waiting;
     process_threads_[thread.process].insert(thread);
-    if (runnable) enqueue(thread, QueuePosition::Back);
-    else ++waiting_count_;
+    if (runnable) {
+        ++active_timeshare_count_;
+        enqueue(thread, QueuePosition::Back);
+    } else {
+        ++waiting_count_;
+    }
     return true;
 }
 
@@ -57,6 +61,8 @@ bool XnuScheduler::remove_thread(XnuThreadId thread) {
     if (iterator == threads_.end()) return false;
     if (iterator->second.info.state == XnuThreadState::Waiting) {
         --waiting_count_;
+    } else if (iterator->second.info.timeshare) {
+        --active_timeshare_count_;
     }
     remove_from_queue(thread, iterator->second);
     unindex_thread(thread);
@@ -86,6 +92,9 @@ bool XnuScheduler::make_runnable(XnuThreadId thread) {
     if (record.info.state == XnuThreadState::Running || record.queued) return true;
     if (record.info.state == XnuThreadState::Waiting) {
         --waiting_count_;
+        if (record.info.timeshare) {
+            ++active_timeshare_count_;
+        }
     }
     record.info.state = XnuThreadState::Runnable;
     record.info.remaining_quantum = quantum_for(record);
@@ -115,7 +124,12 @@ bool XnuScheduler::block(XnuThreadId thread) {
     const auto was_waiting = record.info.state == XnuThreadState::Waiting;
     remove_from_queue(thread, record);
     record.info.state = XnuThreadState::Waiting;
-    if (!was_waiting) ++waiting_count_;
+    if (!was_waiting) {
+        ++waiting_count_;
+        if (record.info.timeshare) {
+            --active_timeshare_count_;
+        }
+    }
     record.info.remaining_quantum = quantum_for(record);
     record.info.computation_metered = 0;
     if (record.suspend_count != 0) record.resume_runnable = false;
@@ -139,6 +153,9 @@ bool XnuScheduler::suspend_thread(XnuThreadId thread) {
         remove_from_queue(thread, record);
         record.info.state = XnuThreadState::Waiting;
         ++waiting_count_;
+        if (record.info.timeshare) {
+            --active_timeshare_count_;
+        }
     }
     return true;
 }
@@ -154,6 +171,9 @@ bool XnuScheduler::resume_thread(XnuThreadId thread) {
     record.resume_runnable = false;
     --waiting_count_;
     record.info.state = XnuThreadState::Runnable;
+    if (record.info.timeshare) {
+        ++active_timeshare_count_;
+    }
     record.info.remaining_quantum = quantum_for(record);
     record.info.computation_metered = 0;
     enqueue(thread, QueuePosition::Back);
@@ -208,8 +228,17 @@ bool XnuScheduler::set_timeshare(XnuThreadId thread, bool timeshare) {
     if (iterator == threads_.end()) return false;
     auto& record = iterator->second;
     if (!record.info.realtime && record.info.timeshare == timeshare) return true;
+    const auto was_timeshare = record.info.timeshare;
     record.info.realtime = false;
     record.info.timeshare = timeshare;
+    if (record.info.state != XnuThreadState::Waiting &&
+        was_timeshare != timeshare) {
+        if (timeshare) {
+            ++active_timeshare_count_;
+        } else {
+            --active_timeshare_count_;
+        }
+    }
     record.info.remaining_quantum = quantum_ticks_;
     recompute_priority(thread, record);
     return true;
@@ -229,8 +258,12 @@ bool XnuScheduler::set_realtime(
     const auto iterator = threads_.find(thread);
     if (iterator == threads_.end()) return false;
     auto& record = iterator->second;
+    const auto was_timeshare = record.info.timeshare;
     record.info.timeshare = false;
     record.info.realtime = true;
+    if (record.info.state != XnuThreadState::Waiting && was_timeshare) {
+        --active_timeshare_count_;
+    }
     record.info.realtime_preemptible = preemptible;
     record.info.realtime_period = period_ticks;
     record.info.realtime_computation = computation_ticks;
@@ -389,6 +422,9 @@ bool XnuScheduler::complete_slice(
     }
 
     if (completion == XnuSliceCompletion::Terminate) {
+        if (record.info.timeshare) {
+            --active_timeshare_count_;
+        }
         unindex_thread(thread);
         threads_.erase(iterator);
         return true;
@@ -405,6 +441,9 @@ bool XnuScheduler::complete_slice(
         }
         record.info.state = XnuThreadState::Waiting;
         ++waiting_count_;
+        if (record.info.timeshare) {
+            --active_timeshare_count_;
+        }
         record.info.remaining_quantum = quantum_for(record);
         record.info.remaining_timeslices = 0;
         record.info.timeslice_processor.reset();
@@ -733,11 +772,7 @@ std::uint64_t XnuScheduler::quantum_for(const ThreadRecord& record) const {
 
 std::optional<std::uint32_t>
 XnuScheduler::processor_set_priority_shift() const {
-    const auto shared_threads = static_cast<std::size_t>(std::count_if(
-        threads_.begin(), threads_.end(), [](const auto& entry) {
-            return entry.second.info.state != XnuThreadState::Waiting &&
-                   entry.second.info.timeshare;
-        }));
+    const auto shared_threads = active_timeshare_count_;
     const auto processors = processor_run_queues_.size();
     if (shared_threads <= processors) return std::nullopt;
 
@@ -767,6 +802,10 @@ void XnuScheduler::apply_failsafe(
     record.info.failsafe = true;
     record.info.failsafe_release_tick = saturating_add(
         scheduler_tick_, xnu792::scheduler::failsafe_release_scheduler_ticks);
+    if (record.info.state != XnuThreadState::Waiting &&
+        !record.failsafe_saved_timeshare) {
+        ++active_timeshare_count_;
+    }
     index_failsafe(thread, record);
     recompute_priority(thread, record);
 }
@@ -775,6 +814,14 @@ void XnuScheduler::release_failsafe(
     XnuThreadId thread, ThreadRecord& record) {
     if (!record.info.failsafe) return;
     unindex_failsafe(thread, record);
+    if (record.info.state != XnuThreadState::Waiting &&
+        record.info.timeshare != record.failsafe_saved_timeshare) {
+        if (record.failsafe_saved_timeshare) {
+            ++active_timeshare_count_;
+        } else {
+            --active_timeshare_count_;
+        }
+    }
     record.info.base_priority = record.failsafe_saved_base_priority;
     record.info.timeshare = record.failsafe_saved_timeshare;
     record.info.realtime = record.failsafe_saved_realtime;
