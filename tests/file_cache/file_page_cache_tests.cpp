@@ -79,6 +79,44 @@ int main() {
     return 1;
   }
 
+  const auto rename_path = root / "rename-target.bin";
+  const auto replacement_path = root / "rename-target.new";
+  if (!write_page(rename_path, std::byte{0x33})) return 1;
+  ilemu::AddressSpace renamed_mapping;
+  if (!renamed_mapping.map_file(
+          0x2000U, guest_memory_page_size,
+          ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Execute,
+          rename_path, 0)) {
+    std::cerr << "atomic-rename mapping failed\n";
+    return 1;
+  }
+  if (!write_page(replacement_path, std::byte{0x44})) return 1;
+  std::filesystem::rename(replacement_path, rename_path, error);
+  if (error) {
+    std::cerr << "atomic-rename replacement failed\n";
+    return 1;
+  }
+  const auto old_mapping_byte = renamed_mapping.read8(
+      0x2000U, ilemu::MemoryPermission::Execute);
+  if (!old_mapping_byte || *old_mapping_byte != 0x33U) {
+    std::cerr << "lazy old mapping followed an atomic rename\n";
+    return 1;
+  }
+  ilemu::AddressSpace new_mapping;
+  if (!new_mapping.map_file(
+          0x2000U, guest_memory_page_size,
+          ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Execute,
+          rename_path, 0)) {
+    std::cerr << "new atomic-rename mapping failed\n";
+    return 1;
+  }
+  const auto new_mapping_byte =
+      new_mapping.read8(0x2000U, ilemu::MemoryPermission::Execute);
+  if (!new_mapping_byte || *new_mapping_byte != 0x44U) {
+    std::cerr << "new mapping did not observe atomic replacement\n";
+    return 1;
+  }
+
   ilemu::AddressSpace memory;
   if (!memory.map_file(0x4000U, guest_memory_page_size,
                        ilemu::MemoryPermission::Read |

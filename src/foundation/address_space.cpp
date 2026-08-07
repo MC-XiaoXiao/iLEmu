@@ -760,6 +760,7 @@ void AddressSpace::unmap_file_mappings_locked(std::uint32_t address,
     backing->file_size = source.file_size;
     backing->modified = source.modified;
     backing->content_identity = source.content_identity;
+    backing->io_state = source.io_state;
     return backing;
   };
 

@@ -22,25 +22,30 @@ inline constexpr std::uint32_t guest_memory_page_size = 4096;
 inline constexpr std::size_t guest_file_prefetch_pages = 32;
 using GuestPageBytes = std::array<std::byte, guest_memory_page_size>;
 
+struct GuestFileIoState {
+  mutable std::mutex mutex;
+  mutable std::shared_ptr<std::ifstream> stream;
+  mutable std::map<std::uint64_t, GuestPageBytes> prefetched_pages;
+};
+
 struct GuestFileBacking {
   GuestFileBacking(std::filesystem::path file_path,
                    std::uint64_t mapping_start,
                    std::uint64_t mapping_end)
-      : path(std::move(file_path)), first_offset(mapping_start),
-        end_offset(mapping_end) {}
+      : path(std::move(file_path)),
+        io_state{std::make_shared<GuestFileIoState>()},
+        first_offset(mapping_start), end_offset(mapping_end) {}
 
   std::filesystem::path path;
   std::string cache_path;
   std::uintmax_t file_size{};
   std::filesystem::file_time_type modified;
   ContentIdentity content_identity;
+  // The stream is opened when the mapping is created and shared by range
+  // splits. This preserves the old vnode/file object across atomic rename.
+  std::shared_ptr<GuestFileIoState> io_state;
   std::uint64_t first_offset{};
   std::uint64_t end_offset{};
-  mutable std::mutex mutex;
-  mutable std::shared_ptr<std::ifstream> stream;
-  // Keep a small read-ahead window for sequential faults. This mirrors the
-  // vnode pager's cluster read-ahead without making mmap itself eager.
-  mutable std::map<std::uint64_t, GuestPageBytes> prefetched_pages;
 };
 
 struct GuestPageBacking {

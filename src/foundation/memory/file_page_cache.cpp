@@ -37,15 +37,17 @@ void GuestPageBacking::materialize() const {
   if (!file_backing_) return;
 
   const auto file = file_backing_;
-  const std::scoped_lock file_lock{file->mutex};
+  const auto io_state = file->io_state;
+  const std::scoped_lock file_lock{io_state->mutex};
   std::fill(bytes.begin(), bytes.end(), std::byte{});
-  if (const auto prefetched_page = file->prefetched_pages.find(file_offset_);
-      prefetched_page != file->prefetched_pages.end()) {
+  if (const auto prefetched_page =
+          io_state->prefetched_pages.find(file_offset_);
+      prefetched_page != io_state->prefetched_pages.end()) {
     bytes = prefetched_page->second;
-    file->prefetched_pages.erase(prefetched_page);
+    io_state->prefetched_pages.erase(prefetched_page);
   } else {
-    if (!file->stream) {
-      file->stream = std::make_shared<std::ifstream>(
+    if (!io_state->stream) {
+      io_state->stream = std::make_shared<std::ifstream>(
           file->path, std::ios::binary);
     }
 
@@ -56,11 +58,12 @@ void GuestPageBacking::materialize() const {
     const auto read_pages = static_cast<std::size_t>(
         (read_size + guest_memory_page_size - 1U) /
         guest_memory_page_size);
-    if (file->stream && file->stream->is_open()) file->stream->clear();
-    if (file->stream && file->stream->is_open() &&
+    if (io_state->stream && io_state->stream->is_open())
+      io_state->stream->clear();
+    if (io_state->stream && io_state->stream->is_open() &&
         read_start <= static_cast<std::uint64_t>(
                           std::numeric_limits<std::streamoff>::max())) {
-      auto &stream = *file->stream;
+      auto &stream = *io_state->stream;
       stream.seekg(static_cast<std::streamoff>(read_start));
       std::vector<std::byte> batch(static_cast<std::size_t>(read_size));
       stream.read(reinterpret_cast<char *>(batch.data()),
@@ -85,8 +88,8 @@ void GuestPageBacking::materialize() const {
         if (page_offset == file_offset_) {
           bytes = page_bytes;
         } else if (received > offset) {
-          file->prefetched_pages.emplace(page_offset,
-                                         std::move(page_bytes));
+          io_state->prefetched_pages.emplace(page_offset,
+                                             std::move(page_bytes));
         }
       }
     }
@@ -139,7 +142,8 @@ bool GuestPageBacking::flush_file() {
   }
 
   const auto file = file_writeback_;
-  const std::scoped_lock file_lock{file->mutex};
+  const auto io_state = file->io_state;
+  const std::scoped_lock file_lock{io_state->mutex};
   const auto descriptor = ::open(file->path.c_str(), O_WRONLY | O_CLOEXEC);
   if (descriptor < 0) return false;
 
@@ -221,6 +225,9 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   mapping->file_size = file_size;
   mapping->modified = modified;
   mapping->content_identity = *content_identity;
+  mapping->io_state->stream =
+      std::make_shared<std::ifstream>(path, std::ios::binary);
+  if (!mapping->io_state->stream->is_open()) return std::nullopt;
   return mapping;
 }
 
