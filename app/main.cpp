@@ -72,6 +72,7 @@ constexpr std::size_t maximum_virtual_processors = 64;
 constexpr std::size_t maximum_shared_monitor_processes = 1024;
 constexpr std::size_t maximum_shared_monitor_slots =
     maximum_virtual_processors * maximum_shared_monitor_processes;
+constexpr std::size_t maximum_background_workers = 8;
 constexpr std::size_t arm_thumb_breakpoint_size = 2;
 constexpr std::size_t arm_breakpoint_size = 4;
 // SDL's event wrapper currently exposes only a polling API. This bounded
@@ -1284,7 +1285,21 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::vector<std::unique_ptr<Runtime>> runtimes;
   RuntimeIndex runtime_index;
   HostResourceBudget host_resource_budget;
-  host_resource_budget.worker_count = 1U;
+  const auto host_concurrency = std::max<unsigned>(
+      1U, std::thread::hardware_concurrency());
+  const auto reserved_guest_workers = std::max<std::size_t>(
+      1U, guest_processor_count);
+  const auto spare_host_workers =
+      host_concurrency > reserved_guest_workers
+          ? static_cast<std::size_t>(host_concurrency) - reserved_guest_workers
+          : 1U;
+  host_resource_budget.worker_count = std::clamp(
+      spare_host_workers, std::size_t{1}, maximum_background_workers);
+  output.line("[host] background-workers=" +
+              std::to_string(host_resource_budget.worker_count) +
+              " host-concurrency=" + std::to_string(host_concurrency) +
+              " guest-workers-reserved=" +
+              std::to_string(reserved_guest_workers));
   HostResourceController host_resources{host_resource_budget};
   JitTranslationProfileStore translation_profiles{
       host_cache /
