@@ -171,6 +171,30 @@ read_bytes(std::istream &stream, std::uint32_t count) {
   return bytes;
 }
 
+[[nodiscard]] std::optional<std::size_t> serialized_artifact_bytes(
+    const JitArtifactData &data) {
+  if (data.normalized_ir.size() > maximum_ir_bytes ||
+      data.relocation_targets.size() > maximum_metadata_entries ||
+      data.exit_locations.size() > maximum_metadata_entries) {
+    return std::nullopt;
+  }
+  constexpr std::size_t serialized_key_bytes = 116U;
+  constexpr std::size_t serialized_data_header_bytes = 24U;
+  std::size_t size = serialized_key_bytes + serialized_data_header_bytes;
+  const auto add = [&size](std::size_t value) {
+    if (value > std::numeric_limits<std::size_t>::max() - size) {
+      return false;
+    }
+    size += value;
+    return true;
+  };
+  return add(data.normalized_ir.size()) &&
+                 add(data.relocation_targets.size() * sizeof(std::uint64_t)) &&
+                 add(data.exit_locations.size() * sizeof(std::uint64_t))
+             ? std::optional<std::size_t>{size}
+             : std::nullopt;
+}
+
 } // namespace
 
 std::size_t JitArtifactKeyHash::operator()(
@@ -194,8 +218,9 @@ std::size_t JitArtifactKeyHash::operator()(
   return hash;
 }
 
-JitArtifactStore::JitArtifactStore(std::filesystem::path persistence_path)
-    : persistence_path_{std::move(persistence_path)} {
+JitArtifactStore::JitArtifactStore(
+    std::filesystem::path persistence_path, JitArtifactLimits limits)
+    : limits_{std::move(limits)}, persistence_path_{std::move(persistence_path)} {
   if (!persistence_path_.empty()) static_cast<void>(load(persistence_path_));
 }
 
@@ -210,13 +235,25 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
 
 std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
     JitArtifactKey key, JitArtifactData data) {
+  const auto artifact_bytes = serialized_artifact_bytes(data);
+  if (!artifact_bytes) return nullptr;
   const std::lock_guard lock{mutex_};
   if (const auto existing = artifacts_.find(key); existing != artifacts_.end()) {
     return existing->second;
   }
+  if (limits_.resident_bytes != 0U &&
+      *artifact_bytes > limits_.resident_bytes -
+                            std::min(limits_.resident_bytes, resident_bytes_)) {
+    return nullptr;
+  }
+  if (*artifact_bytes >
+      std::numeric_limits<std::size_t>::max() - resident_bytes_) {
+    return nullptr;
+  }
   auto artifact = std::make_shared<const BlockArtifact>(
       BlockArtifact{std::move(key), std::move(data)});
   artifacts_.emplace(artifact->key, artifact);
+  resident_bytes_ += *artifact_bytes;
   return artifact;
 }
 
@@ -241,6 +278,7 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
 
     std::vector<std::shared_ptr<const BlockArtifact>> loaded;
     loaded.reserve(*count);
+    std::size_t loaded_bytes = 0;
     for (std::uint32_t index = 0; index < *count; ++index) {
       const auto key = read_key(stream);
       const auto ir_size = read_u32(stream);
@@ -275,14 +313,35 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
         if (!location) return false;
         data.exit_locations.push_back(*location);
       }
-      loaded.push_back(std::make_shared<const BlockArtifact>(
-          BlockArtifact{*key, std::move(data)}));
+      const auto artifact_bytes = serialized_artifact_bytes(data);
+      if (!artifact_bytes) return false;
+      if (limits_.resident_bytes == 0U ||
+          (*artifact_bytes <= limits_.resident_bytes &&
+           loaded_bytes <= limits_.resident_bytes - *artifact_bytes)) {
+        loaded.push_back(std::make_shared<const BlockArtifact>(
+            BlockArtifact{*key, std::move(data)}));
+        loaded_bytes += *artifact_bytes;
+      }
     }
     if (stream.peek() != std::char_traits<char>::eof()) return false;
 
     const std::lock_guard lock{mutex_};
     for (auto &artifact : loaded) {
-      artifacts_.try_emplace(artifact->key, std::move(artifact));
+      const auto artifact_bytes = serialized_artifact_bytes(artifact->data);
+      if (!artifact_bytes ||
+          (limits_.resident_bytes != 0U &&
+           (*artifact_bytes > limits_.resident_bytes ||
+            resident_bytes_ > limits_.resident_bytes - *artifact_bytes))) {
+        continue;
+      }
+      if (*artifact_bytes >
+          std::numeric_limits<std::size_t>::max() - resident_bytes_) {
+        continue;
+      }
+      const auto [iterator, inserted] =
+          artifacts_.try_emplace(artifact->key, std::move(artifact));
+      if (inserted) resident_bytes_ += *artifact_bytes;
+      static_cast<void>(iterator);
     }
     return true;
   } catch (...) {
@@ -307,6 +366,20 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
       }
     }
     if (snapshot.size() > maximum_artifacts) return false;
+    std::size_t serialized_size = 8U + sizeof(std::uint32_t);
+    for (const auto &artifact : snapshot) {
+      const auto artifact_bytes = serialized_artifact_bytes(artifact->data);
+      if (!artifact_bytes ||
+          *artifact_bytes >
+              std::numeric_limits<std::size_t>::max() - serialized_size) {
+        return false;
+      }
+      serialized_size += *artifact_bytes;
+    }
+    if (limits_.persistence_bytes != 0U &&
+        serialized_size > limits_.persistence_bytes) {
+      return false;
+    }
     const auto parent = path.parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent);
     const auto temporary = path.string() + ".tmp";
@@ -317,10 +390,7 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
                    static_cast<std::streamsize>(artifact_magic.size()));
       write_u32(stream, static_cast<std::uint32_t>(snapshot.size()));
       for (const auto &artifact : snapshot) {
-        if (artifact->data.normalized_ir.size() > maximum_ir_bytes ||
-            artifact->data.relocation_targets.size() >
-                maximum_metadata_entries ||
-            artifact->data.exit_locations.size() > maximum_metadata_entries) {
+        if (!serialized_artifact_bytes(artifact->data)) {
           return false;
         }
         write_key(stream, artifact->key);

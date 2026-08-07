@@ -64,6 +64,13 @@ struct JitArtifactData {
   std::uint64_t translation_nanoseconds{};
 };
 
+struct JitArtifactLimits {
+  // Zero means unbounded. The default resident target matches the initial
+  // metadata budget; native code is still owned by Dynarmic's live cache.
+  std::size_t resident_bytes{64U * 1024U * 1024U};
+  std::size_t persistence_bytes{};
+};
+
 struct BlockArtifact {
   JitArtifactKey key;
   JitArtifactData data;
@@ -71,7 +78,9 @@ struct BlockArtifact {
 
 class JitArtifactStore {
 public:
-  explicit JitArtifactStore(std::filesystem::path persistence_path = {});
+  explicit JitArtifactStore(
+      std::filesystem::path persistence_path = {},
+      JitArtifactLimits limits = {});
   ~JitArtifactStore();
 
   JitArtifactStore(const JitArtifactStore &) = delete;
@@ -96,6 +105,8 @@ private:
 
   mutable std::mutex mutex_;
   ArtifactMap artifacts_;
+  JitArtifactLimits limits_;
+  std::size_t resident_bytes_{};
   std::filesystem::path persistence_path_;
 };
 

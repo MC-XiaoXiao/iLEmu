@@ -1305,8 +1305,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
   JitTranslationProfileStore translation_profiles{
       host_cache /
       "jit-translation-profiles"};
+  JitArtifactLimits jit_artifact_limits;
+  std::error_code disk_space_error;
+  const auto disk_space = std::filesystem::space(
+      std::filesystem::path{*rootfs}, disk_space_error);
+  if (!disk_space_error) {
+    constexpr auto minimum_artifact_disk_bytes =
+        std::uintmax_t{512U} * 1024U * 1024U;
+    constexpr auto maximum_artifact_disk_bytes =
+        std::uintmax_t{4U} * 1024U * 1024U * 1024U;
+    jit_artifact_limits.persistence_bytes = static_cast<std::size_t>(
+        std::clamp(disk_space.available / 10U,
+                   minimum_artifact_disk_bytes,
+                   maximum_artifact_disk_bytes));
+  }
   auto jit_artifacts = std::make_shared<JitArtifactStore>(
-      host_cache / "jit-artifacts.bin");
+      host_cache / "jit-artifacts.bin", jit_artifact_limits);
   const auto assign_translation_profile =
       [&translation_profiles](CpuCluster &cpus,
                               const ContentIdentity &executable_identity) {
