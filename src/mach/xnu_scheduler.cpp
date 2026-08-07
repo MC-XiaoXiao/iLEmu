@@ -1,6 +1,7 @@
 #include "ilemu/xnu_scheduler.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <limits>
 #include <stdexcept>
 
@@ -611,14 +612,14 @@ void XnuScheduler::remove_from_queue(XnuThreadId, ThreadRecord& record) {
 
 void XnuScheduler::refresh_high_queue(RunQueue& run_queue) {
     run_queue.high_queue = -1;
-    for (std::int32_t priority = xnu792::scheduler::maximum_priority;
-         priority >= xnu792::scheduler::minimum_priority; --priority) {
-        const auto word =
-            run_queue.bitmap[static_cast<std::size_t>(priority) / 32U];
-        const auto bit = std::uint32_t{1} <<
-                         (static_cast<std::uint32_t>(priority) % 32U);
-        if ((word & bit) != 0) {
-            run_queue.high_queue = priority;
+    for (std::size_t word_index = run_queue.bitmap.size(); word_index-- > 0;) {
+        const auto word = run_queue.bitmap[word_index];
+        if (word != 0) {
+            const auto highest_bit =
+                static_cast<std::size_t>(
+                    31U - static_cast<unsigned>(std::countl_zero(word)));
+            run_queue.high_queue = static_cast<std::int32_t>(
+                word_index * 32U + highest_bit);
             return;
         }
     }
