@@ -38,6 +38,17 @@ std::uint64_t page_range_end(std::uint32_t address, std::size_t size) {
          AddressSpace::page_size;
 }
 
+void append_u64(std::vector<std::byte> &bytes, std::uint64_t value) {
+  for (std::size_t index = 0; index < sizeof(value); ++index) {
+    bytes.push_back(static_cast<std::byte>(value >> (index * 8U)));
+  }
+}
+
+void append_identity(std::vector<std::byte> &bytes,
+                     const ContentIdentity &identity) {
+  bytes.insert(bytes.end(), identity.digest.begin(), identity.digest.end());
+}
+
 } // namespace
 
 struct AddressSpace::JitPageTableStorage {
@@ -1271,6 +1282,55 @@ bool AddressSpace::is_read_only_executable(std::uint32_t address,
     }
   }
   return true;
+}
+
+std::optional<ExecutableBackingIdentity>
+AddressSpace::executable_backing_identity(std::uint32_t address,
+                                          std::size_t size) const {
+  if (size == 0 || range_overflows(address, size)) return std::nullopt;
+  const auto end = page_range_end(address, size);
+  auto lock = read_lock();
+  if (!range_accessible_locked(address, size, MemoryPermission::Execute) ||
+      range_accessible_locked(address, size, MemoryPermission::Write)) {
+    return std::nullopt;
+  }
+
+  std::vector<ContentIdentity> source_identities;
+  std::vector<std::byte> layout_material;
+  for (std::uint64_t base = page_base(address); base < end;
+       base += page_size) {
+    const auto page_address = static_cast<std::uint32_t>(base);
+    const auto mapping_after = file_mappings_.upper_bound(page_address);
+    if (mapping_after == file_mappings_.begin()) return std::nullopt;
+    const auto mapping_iterator = std::prev(mapping_after);
+    const auto &mapping = mapping_iterator->second;
+    if (page_address >= mapping.end || !mapping.backing) {
+      return std::nullopt;
+    }
+
+    const auto file_offset =
+        mapping.file_offset +
+        (static_cast<std::uint64_t>(page_address) - mapping_iterator->first);
+    const auto identity = mapping.backing->content_identity;
+    if (std::find(source_identities.begin(), source_identities.end(),
+                  identity) == source_identities.end()) {
+      source_identities.push_back(identity);
+    }
+    append_u64(layout_material, base);
+    append_u64(layout_material, mapping.end);
+    append_u64(layout_material, file_offset);
+    append_identity(layout_material, identity);
+  }
+
+  if (source_identities.empty()) return std::nullopt;
+  std::vector<std::byte> content_material;
+  content_material.reserve(source_identities.size() *
+                           ContentIdentity{}.digest.size());
+  for (const auto &identity : source_identities) {
+    append_identity(content_material, identity);
+  }
+  return ExecutableBackingIdentity{
+      sha256(content_material), sha256(layout_material)};
 }
 
 bool AddressSpace::compare_exchange8(std::uint32_t address,

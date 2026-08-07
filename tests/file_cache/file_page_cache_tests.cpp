@@ -90,6 +90,28 @@ int main() {
     std::cerr << "immutable executable file mapping was not recognized\n";
     return 1;
   }
+  const auto first_executable_identity =
+      memory.executable_backing_identity(0x4000U, sizeof(std::uint32_t));
+  if (!first_executable_identity) {
+    std::cerr << "immutable executable identity was not available\n";
+    return 1;
+  }
+  if (!memory.map_file(0x8000U, guest_memory_page_size,
+                       ilemu::MemoryPermission::Read |
+                           ilemu::MemoryPermission::Execute,
+                       path, 0)) {
+    std::cerr << "second executable mapping failed\n";
+    return 1;
+  }
+  const auto second_executable_identity =
+      memory.executable_backing_identity(0x8000U, sizeof(std::uint32_t));
+  if (!second_executable_identity ||
+      first_executable_identity->content !=
+          second_executable_identity->content ||
+      first_executable_identity->layout == second_executable_identity->layout) {
+    std::cerr << "content/layout executable identities were not separated\n";
+    return 1;
+  }
   if (!memory.protect(0x4000U, guest_memory_page_size,
                       ilemu::MemoryPermission::Read |
                           ilemu::MemoryPermission::Write |

@@ -29,6 +29,15 @@ struct MemoryFault {
   std::string message;
 };
 
+struct ExecutableBackingIdentity {
+  ContentIdentity content;
+  ContentIdentity layout;
+
+  friend constexpr bool operator==(const ExecutableBackingIdentity &,
+                                   const ExecutableBackingIdentity &) =
+      default;
+};
+
 class AddressSpace {
 public:
   using MappingRegion = VmMap::MappingRegion;
@@ -133,6 +142,13 @@ public:
   // Anonymous and dynamically shared code remains conservative and mutable.
   [[nodiscard]] bool is_read_only_executable(std::uint32_t address,
                                               std::size_t size) const;
+  // Returns content and mapping-layout identities for an immutable
+  // file-backed executable range. The layout identity includes Guest/file
+  // offsets, so the same bytes mapped at a different slide cannot reuse a
+  // layout-sensitive artifact accidentally.
+  [[nodiscard]] std::optional<ExecutableBackingIdentity>
+  executable_backing_identity(std::uint32_t address,
+                              std::size_t size) const;
   // Persistent translation hints may only retain code whose guest address is
   // invariant across process launches. Fixed Mach-O mappings opt into this
   // range separately from ordinary executable permission; slid bundles,
