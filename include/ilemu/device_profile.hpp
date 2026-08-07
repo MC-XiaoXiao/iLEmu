@@ -7,6 +7,7 @@
 
 #include "ilemu/display_geometry.hpp"
 #include "ilemu/arm_cpu_model.hpp"
+#include "ilemu/guest_cpu_topology.hpp"
 
 namespace ilemu {
 
@@ -57,7 +58,9 @@ struct DeviceProfile {
     // Nominal flash capacity for volume geometry. The guest sees this device
     // property, never the host filesystem's capacity.
     std::uint64_t storage_bytes;
-    std::size_t physical_cpu_count;
+    // Guest-visible topology. Host execution resources are intentionally not
+    // stored here: adding host threads must never change the device contract.
+    GuestCpuTopology guest_cpu_topology;
     // Guest-visible panel/framebuffer size.
     DisplayGeometry display;
     // Native firmware layout and touch coordinate space. Older UIKit builds

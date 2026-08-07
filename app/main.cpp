@@ -680,7 +680,12 @@ void profile(const std::vector<std::string>& args, Output &output) {
        << "cpu: " << device.cpu_core << " (" << device.instruction_set << ")\n"
        << "cpu_hz: " << device.cpu_hz << '\n'
        << "ram_bytes: " << device.ram_bytes << '\n'
-       << "physical_cpu_count: " << device.physical_cpu_count << '\n'
+       << "guest_physical_core_count: "
+       << device.guest_cpu_topology.physical_core_count << '\n'
+       << "guest_logical_cpu_count: "
+       << device.guest_cpu_topology.logical_cpu_count << '\n'
+       << "guest_cpu_clusters: " << device.guest_cpu_topology.cluster_count
+       << '\n'
        << "display: " << device.display.width << 'x' << device.display.height
        << '\n'
        << "ui: " << device.user_interface.width << 'x'
@@ -1029,28 +1034,40 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const auto ticks = ticks_option ? std::stoull(*ticks_option)
                                   : std::numeric_limits<std::uint64_t>::max();
   const auto default_processor_count =
-      device.physical_cpu_count;
+      static_cast<std::size_t>(device.guest_cpu_topology.logical_cpu_count);
+  if (!device.guest_cpu_topology.valid()) {
+    throw std::runtime_error{"device profile has invalid guest CPU topology"};
+  }
   const auto cpu_model =
       make_arm_cpu_model(device.cpu_model, device.cpu_hz);
   const auto guest_architecture = cpu_model->architecture_version();
   const auto guest_ticks_per_second =
       cpu_model->ticks_per_second();
   GuestTickClock guest_tick_clock{guest_ticks_per_second};
-  const auto guest_processor_count = static_cast<std::size_t>(
-      std::stoul(option(args, "--cores")
-                     .value_or(std::to_string(default_processor_count))));
+  const auto explicit_processor_count = option(args, "--cores");
+  const auto guest_processor_count = static_cast<std::size_t>(std::stoul(
+      explicit_processor_count.value_or(std::to_string(default_processor_count))));
   if (guest_processor_count == 0 ||
       guest_processor_count > maximum_virtual_processors) {
     throw std::runtime_error{"--cores must be in the range 1.." +
                              std::to_string(maximum_virtual_processors)};
   }
-  if (guest_processor_count > 1) {
+  if (explicit_processor_count) {
     output.line(
         "[cpu] mode=stress/dev cores=" +
         std::to_string(guest_processor_count) +
-        " warning=\"execution-slot LDREX state follows the host slot; "
-        "process-local ExclusiveMonitor does not model cross-process "
-        "shared-page atomics\"");
+        " profile-cores=" + std::to_string(default_processor_count) +
+        " warning=\"--cores overrides the device topology; execution-slot "
+        "LDREX state follows the host slot and process-local "
+        "ExclusiveMonitor does not model cross-process shared-page "
+        "atomics\"");
+  } else {
+    output.line("[cpu] mode=faithful guest-cores=" +
+                std::to_string(guest_processor_count) +
+                " physical-cores=" +
+                std::to_string(device.guest_cpu_topology.physical_core_count) +
+                " topology-cache-id=" +
+                std::to_string(device.guest_cpu_topology.cache_topology_id));
   }
   const auto configured_jit_code_cache_size =
       jit_code_cache_size(args);

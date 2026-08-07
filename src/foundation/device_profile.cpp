@@ -21,7 +21,9 @@ constexpr std::array<DeviceProfile, 3> profiles{
         100'000'000,
         128ULL * 1024ULL * 1024ULL,
         8ULL * 1024ULL * 1024ULL * 1024ULL,
-        1,
+        GuestCpuTopology::single_core(
+            400'000'000U, GuestCpuPerformanceClass::Legacy,
+            guest_cpu_isa::armv6k | guest_cpu_isa::thumb, 1U),
         default_display_geometry,
         default_display_geometry,
         GraphicsAcceleratorProfileKind::MbxLite,
@@ -41,7 +43,9 @@ constexpr std::array<DeviceProfile, 3> profiles{
         100'000'000,
         128ULL * 1024ULL * 1024ULL,
         8ULL * 1024ULL * 1024ULL * 1024ULL,
-        1,
+        GuestCpuTopology::single_core(
+            412'000'000U, GuestCpuPerformanceClass::Legacy,
+            guest_cpu_isa::armv6k | guest_cpu_isa::thumb, 2U),
         default_display_geometry,
         default_display_geometry,
         GraphicsAcceleratorProfileKind::MbxLite,
@@ -61,7 +65,11 @@ constexpr std::array<DeviceProfile, 3> profiles{
         100'000'000,
         256ULL * 1024ULL * 1024ULL,
         16ULL * 1024ULL * 1024ULL * 1024ULL,
-        1,
+        GuestCpuTopology::single_core(
+            600'000'000U, GuestCpuPerformanceClass::Performance,
+            guest_cpu_isa::armv7 | guest_cpu_isa::thumb |
+                guest_cpu_isa::thumb2,
+            3U),
         default_display_geometry,
         default_display_geometry,
         GraphicsAcceleratorProfileKind::Sgx535,
