@@ -19,6 +19,13 @@ void write_le32(std::vector<std::byte> &bytes, std::size_t offset,
   }
 }
 
+void write_le64(std::vector<std::byte> &bytes, std::size_t offset,
+                std::uint64_t value) {
+  for (std::size_t index = 0; index < sizeof(value); ++index) {
+    bytes[offset + index] = static_cast<std::byte>(value >> (index * 8U));
+  }
+}
+
 void write_be32(std::vector<std::byte> &bytes, std::size_t offset,
                 std::uint32_t value) {
   for (std::size_t index = 0; index < sizeof(value); ++index) {
@@ -42,6 +49,21 @@ std::vector<std::byte> minimal_macho(std::uint32_t file_type,
   for (std::size_t index = 0; index < 16U; ++index) {
     bytes[36U + index] = static_cast<std::byte>(uuid_seed + index);
   }
+  return bytes;
+}
+
+std::vector<std::byte> minimal_shared_cache() {
+  std::vector<std::byte> bytes(0x2000U);
+  const std::string magic{"dyld_v1  armv7"};
+  std::copy(magic.begin(), magic.end(),
+            reinterpret_cast<char *>(bytes.data()));
+  write_le32(bytes, 16U, 0x100U);
+  write_le32(bytes, 20U, 1U);
+  write_le64(bytes, 0x100U, 0x30000000U);
+  write_le64(bytes, 0x108U, 0x1000U);
+  write_le64(bytes, 0x110U, 0x1000U);
+  write_le32(bytes, 0x118U, 5U);
+  write_le32(bytes, 0x11cU, 5U);
   return bytes;
 }
 
@@ -118,10 +140,14 @@ int main() {
     std::cerr << "dynamic mapping catalog failed\n";
     return 1;
   }
+  const auto cache_path = root / "dyld_shared_cache_armv7";
+  const auto cache_bytes = minimal_shared_cache();
+  write_file(cache_path, cache_bytes);
   ilemu::ExecutableCatalog scanned_catalog;
   const auto scan = scanned_catalog.register_tree(root);
-  if (scan.regular_files != 2U || scan.mach_o_images != 2U ||
-      scan.dyld_shared_cache_generations != 0U ||
+  if (scan.regular_files != 3U || scan.mach_o_images != 2U ||
+      scan.dyld_shared_cache_generations != 1U ||
+      scan.dyld_shared_cache_images != 0U ||
       scan.failed_files != 0U || scanned_catalog.size() != 2U) {
     std::cerr << "firmware catalog tree scan failed\n";
     return 1;
