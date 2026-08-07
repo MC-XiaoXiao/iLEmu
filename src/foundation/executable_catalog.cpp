@@ -207,6 +207,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::register_tree(
 
   ExecutableCatalogScanSummary summary;
   std::set<std::filesystem::path> cache_files;
+  std::vector<std::filesystem::path> regular_files;
   std::filesystem::recursive_directory_iterator iterator{
       root, std::filesystem::directory_options::skip_permission_denied, error};
   const std::filesystem::recursive_directory_iterator end;
@@ -225,37 +226,45 @@ ExecutableCatalogScanSummary ExecutableCatalog::register_tree(
       ++summary.failed_files;
     } else if (std::filesystem::is_regular_file(status)) {
       ++summary.regular_files;
-      if (!cache_files.contains(path)) {
-        const auto prefix = read_file_prefix(path);
-        if (!prefix) {
-          ++summary.failed_files;
-        } else if (has_dyld_cache_magic(*prefix)) {
-          DyldSharedCacheOptions options;
-          options.architecture = architecture == ArmArchitectureVersion::Armv7
-                                     ? "armv7"
-                                     : "armv6k";
-          const auto cache = DyldSharedCache::parse(path, options);
-          if (!cache) {
-            ++summary.failed_files;
-          } else {
-            for (const auto &file : cache->files())
-              cache_files.insert(normalize_path(file.path));
-            ++summary.dyld_shared_cache_generations;
-            summary.dyld_shared_cache_images += register_shared_cache(*cache);
-          }
-        } else if (has_macho_magic(*prefix)) {
-          try {
-            static_cast<void>(register_path(path, architecture));
-            ++summary.mach_o_images;
-          } catch (const std::exception &) {
-            ++summary.failed_files;
-          }
-        }
-      }
+      regular_files.push_back(path);
     }
     iterator.increment(error);
   }
   if (error) ++summary.failed_files;
+
+  // Filesystem enumeration order is not part of the recursive-directory
+  // iterator contract. Sort the candidates so a main shared cache (whose
+  // subcache suffix is lexically appended to the main name) is discovered
+  // before its subcaches and can claim the complete generation atomically.
+  std::sort(regular_files.begin(), regular_files.end());
+  for (const auto &path : regular_files) {
+    if (cache_files.contains(path)) continue;
+    const auto prefix = read_file_prefix(path);
+    if (!prefix) {
+      ++summary.failed_files;
+    } else if (has_dyld_cache_magic(*prefix)) {
+      DyldSharedCacheOptions options;
+      options.architecture = architecture == ArmArchitectureVersion::Armv7
+                                 ? "armv7"
+                                 : "armv6k";
+      const auto cache = DyldSharedCache::parse(path, options);
+      if (!cache) {
+        ++summary.failed_files;
+      } else {
+        for (const auto &file : cache->files())
+          cache_files.insert(normalize_path(file.path));
+        ++summary.dyld_shared_cache_generations;
+        summary.dyld_shared_cache_images += register_shared_cache(*cache);
+      }
+    } else if (has_macho_magic(*prefix)) {
+      try {
+        static_cast<void>(register_path(path, architecture));
+        ++summary.mach_o_images;
+      } catch (const std::exception &) {
+        ++summary.failed_files;
+      }
+    }
+  }
   return summary;
 }
 
