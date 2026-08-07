@@ -122,6 +122,11 @@ public:
 
   [[nodiscard]] bool accessible(std::uint32_t address, std::size_t size,
                                 MemoryPermission access) const;
+  // Returns true only for executable, non-writable file-backed pages whose
+  // resident backing has not entered shared-write or copy-on-write state.
+  // Anonymous and dynamically shared code remains conservative and mutable.
+  [[nodiscard]] bool is_read_only_executable(std::uint32_t address,
+                                              std::size_t size) const;
   // Persistent translation hints may only retain code whose guest address is
   // invariant across process launches. Fixed Mach-O mappings opt into this
   // range separately from ordinary executable permission; slid bundles,

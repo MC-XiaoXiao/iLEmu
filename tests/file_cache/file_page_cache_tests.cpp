@@ -1,3 +1,4 @@
+#include "ilemu/address_space.hpp"
 #include "ilemu/file_page_cache.hpp"
 
 #include <array>
@@ -75,6 +76,26 @@ int main() {
   }
   if (cache.page_count() != 1U) {
     std::cerr << "obsolete file pages were not invalidated\n";
+    return 1;
+  }
+
+  ilemu::AddressSpace memory;
+  if (!memory.map_file(0x4000U, guest_memory_page_size,
+                       ilemu::MemoryPermission::Read |
+                           ilemu::MemoryPermission::Execute,
+                       path, 0) ||
+      !memory.is_read_only_executable(0x4000U, sizeof(std::uint32_t)) ||
+      !memory.read32(0x4000U, ilemu::MemoryPermission::Execute) ||
+      !memory.is_read_only_executable(0x4000U, sizeof(std::uint32_t))) {
+    std::cerr << "immutable executable file mapping was not recognized\n";
+    return 1;
+  }
+  if (!memory.protect(0x4000U, guest_memory_page_size,
+                      ilemu::MemoryPermission::Read |
+                          ilemu::MemoryPermission::Write |
+                          ilemu::MemoryPermission::Execute) ||
+      memory.is_read_only_executable(0x4000U, sizeof(std::uint32_t))) {
+    std::cerr << "writable executable mapping was marked immutable\n";
     return 1;
   }
 

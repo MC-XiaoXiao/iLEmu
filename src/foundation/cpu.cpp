@@ -158,7 +158,9 @@ public:
         return written;
     }
 
-    bool IsReadOnlyMemory(std::uint32_t) override { return false; }
+    bool IsReadOnlyMemory(std::uint32_t address) override {
+        return memory_.is_read_only_executable(address, sizeof(std::uint32_t));
+    }
 
     void InterpreterFallback(std::uint32_t pc, std::size_t count) override {
         std::ostringstream message;

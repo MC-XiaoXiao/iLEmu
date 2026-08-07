@@ -1239,6 +1239,32 @@ bool AddressSpace::accessible(std::uint32_t address, std::size_t size,
   return range_accessible_locked(address, size, access);
 }
 
+bool AddressSpace::is_read_only_executable(std::uint32_t address,
+                                           std::size_t size) const {
+  if (size == 0 || range_overflows(address, size)) return false;
+  const auto end = page_range_end(address, size);
+  auto lock = read_lock();
+  if (!range_accessible_locked(address, size, MemoryPermission::Execute) ||
+      range_accessible_locked(address, size, MemoryPermission::Write)) {
+    return false;
+  }
+  for (std::uint64_t base = page_base(address); base < end;
+       base += page_size) {
+    const auto page_address = static_cast<std::uint32_t>(base);
+    const auto *page = find_page_locked(page_address);
+    if (page == nullptr || !page->backing) {
+      if (find_file_mapping_locked(page_address) == nullptr) return false;
+      continue;
+    }
+    if ((!page->file_cached && !page->backing->file_backed()) ||
+        page->shared_writable ||
+        page->backing->shared_write_tracking_enabled()) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool AddressSpace::compare_exchange8(std::uint32_t address,
                                      std::uint8_t expected,
                                      std::uint8_t value) {
