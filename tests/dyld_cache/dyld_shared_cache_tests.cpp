@@ -1,4 +1,5 @@
 #include "ilemu/dyld_shared_cache.hpp"
+#include "ilemu/executable_catalog.hpp"
 
 #include <algorithm>
 #include <array>
@@ -153,6 +154,12 @@ int main() {
                    image->executable_ranges.size() == 1U &&
                    image->text_identity.has_value(),
                "image text metadata was not correlated")) {
+    return 1;
+  }
+  ilemu::ExecutableCatalog catalog;
+  if (!require(catalog.register_shared_cache(*first) == 1U &&
+                   catalog.size() == 1U,
+               "shared-cache image was not registered in the catalog")) {
     return 1;
   }
   const auto first_generation = first->generation_identity();

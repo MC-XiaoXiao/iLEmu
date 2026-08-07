@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "ilemu/content_identity.hpp"
+#include "ilemu/dyld_shared_cache.hpp"
 #include "ilemu/macho.hpp"
 
 namespace ilemu {
@@ -54,6 +55,8 @@ public:
   [[nodiscard]] const ExecutableCatalogEntry &register_mapping(
       const std::filesystem::path &path, std::uint64_t file_offset,
       std::uint64_t byte_count);
+  [[nodiscard]] std::size_t register_shared_cache(
+      const DyldSharedCache &cache);
 
   [[nodiscard]] const ExecutableCatalogEntry *find(
       const ContentIdentity &identity) const;
