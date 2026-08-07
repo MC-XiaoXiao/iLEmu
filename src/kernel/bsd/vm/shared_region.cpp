@@ -2,9 +2,11 @@
 
 #include "../support.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <limits>
 #include <optional>
 #include <string>
@@ -135,8 +137,12 @@ read_mapping(const AddressSpace &memory, std::uint32_t base,
 
 [[nodiscard]] bool looks_like_dyld_shared_cache(
     const std::filesystem::path &path) {
-  return path.filename().string().find("dyld_shared_cache") !=
-         std::string::npos;
+  std::ifstream input{path, std::ios::binary};
+  if (!input) return false;
+  std::array<char, 7> magic{};
+  input.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+  return input.gcount() == static_cast<std::streamsize>(magic.size()) &&
+         std::string_view{magic.data(), magic.size()} == "dyld_v1";
 }
 
 [[nodiscard]] std::optional<std::vector<Mapping>>
@@ -225,7 +231,11 @@ const DyldSharedCache *CompatibilityKernel::dyld_shared_cache_for(
   dyld_shared_cache_path_ = path;
   dyld_shared_cache_.reset();
   DyldSharedCacheOptions options;
-  options.architecture = "armv6k";
+  options.architecture =
+      arm_architecture_for_model(device_profile_.cpu_model) ==
+              ArmArchitectureVersion::Armv7
+          ? "armv7"
+          : "armv6k";
   if (const auto parsed = DyldSharedCache::parse(path, options)) {
     dyld_shared_cache_ = *parsed;
     output_.write("[shared-region] parsed dyld cache generation files=" +
