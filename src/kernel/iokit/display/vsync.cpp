@@ -191,6 +191,7 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
     if (registration == state.iokit_display_vsync.end())
       return MethodResult{iokit_abi::bad_argument, {}};
 
+    remove_vsync_deadline_index_locked(state, connection_object);
     auto &vsync = registration->second;
     ++vsync.method_call_count;
     const auto callout = static_cast<std::uint32_t>(scalar_input[0]);
@@ -213,6 +214,7 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
       if (!vsync.next_deadline || *vsync.next_deadline <= now) {
         vsync.next_deadline = now - now % period + period;
       }
+      index_vsync_deadline_locked(state, connection_object);
     }
     return MethodResult{iokit_abi::success, {}};
   }
@@ -383,6 +385,7 @@ std::optional<std::uint32_t> handle_notification_port_request(
     registration.notification_port = notification_object;
     registration.notification_type = notification_type;
     registration.registration_reference = reference;
+    remove_vsync_deadline_index_locked(state, connection_object);
     state.iokit_display_vsync[connection_object] = registration;
   }
 
@@ -396,32 +399,58 @@ std::optional<std::uint32_t> handle_notification_port_request(
 
 std::optional<std::uint64_t>
 next_vsync_deadline_locked(const KernelSharedState &state) {
-  std::optional<std::uint64_t> deadline;
-  for (const auto &[connection, registration] : state.iokit_display_vsync) {
-    static_cast<void>(connection);
-    if (registration.enabled && registration.next_deadline &&
-        (!deadline || *registration.next_deadline < *deadline)) {
-      deadline = registration.next_deadline;
-    }
+  if (state.iokit_display_vsync_deadlines.empty())
+    return std::nullopt;
+  return state.iokit_display_vsync_deadlines.begin()->first;
+}
+
+void remove_vsync_deadline_index_locked(KernelSharedState &state,
+                                        std::uint32_t connection_object) {
+  const auto registration = state.iokit_display_vsync.find(connection_object);
+  if (registration == state.iokit_display_vsync.end() ||
+      !registration->second.next_deadline) {
+    return;
   }
-  return deadline;
+  state.iokit_display_vsync_deadlines.erase(
+      {*registration->second.next_deadline, connection_object});
+}
+
+void index_vsync_deadline_locked(KernelSharedState &state,
+                                 std::uint32_t connection_object) {
+  const auto registration = state.iokit_display_vsync.find(connection_object);
+  if (registration == state.iokit_display_vsync.end() ||
+      !registration->second.enabled || !registration->second.next_deadline) {
+    return;
+  }
+  state.iokit_display_vsync_deadlines.emplace(
+      *registration->second.next_deadline, connection_object);
 }
 
 void deliver_due_vsync_locked(KernelSharedState &state,
                               std::uint64_t deadline) {
-  for (auto registration_it = state.iokit_display_vsync.begin();
-       registration_it != state.iokit_display_vsync.end();) {
+  while (!state.iokit_display_vsync_deadlines.empty() &&
+         state.iokit_display_vsync_deadlines.begin()->first <= deadline) {
+    const auto indexed_deadline =
+        state.iokit_display_vsync_deadlines.begin()->first;
+    const auto connection_object =
+        state.iokit_display_vsync_deadlines.begin()->second;
+    state.iokit_display_vsync_deadlines.erase(
+        state.iokit_display_vsync_deadlines.begin());
+
+    const auto registration_it =
+        state.iokit_display_vsync.find(connection_object);
+    if (registration_it == state.iokit_display_vsync.end())
+      continue;
     auto &registration = registration_it->second;
     // Vsync is driven by a kernel-owned timer, so it can fire after the
     // client has torn down its ipc_space.  Do not recreate a queue for a dead
     // notification port via operator[]; retire the registration instead.
     if (!state.mach_port_objects.contains(registration.notification_port)) {
-      registration_it = state.iokit_display_vsync.erase(registration_it);
+      state.iokit_display_vsync.erase(registration_it);
       continue;
     }
     if (!registration.enabled || !registration.next_deadline ||
-        *registration.next_deadline > deadline) {
-      ++registration_it;
+        *registration.next_deadline != indexed_deadline) {
       continue;
     }
     auto &queue = state.mach_queues[registration.notification_port];
@@ -440,12 +469,13 @@ void deliver_due_vsync_locked(KernelSharedState &state,
     const auto elapsed = deadline - *registration.next_deadline;
     registration.next_deadline =
         *registration.next_deadline + (elapsed / period + 1U) * period;
-    ++registration_it;
+    index_vsync_deadline_locked(state, connection_object);
   }
 }
 
 void close_connection_locked(KernelSharedState &state,
                              std::uint32_t connection_object) {
+  remove_vsync_deadline_index_locked(state, connection_object);
   state.iokit_display_vsync.erase(connection_object);
   state.iokit_display_connections.erase(connection_object);
 }

@@ -679,9 +679,15 @@ void cleanup_exited_process_metadata_locked(KernelSharedState &state,
   std::erase_if(state.iokit_notifications, [pid](const auto &notification) {
     return notification.owner_pid == pid;
   });
-  std::erase_if(state.iokit_display_vsync, [pid](const auto &entry) {
-    return entry.second.owner_pid == pid;
-  });
+  for (auto it = state.iokit_display_vsync.begin();
+       it != state.iokit_display_vsync.end();) {
+    if (it->second.owner_pid != pid) {
+      ++it;
+      continue;
+    }
+    kernel_iokit::display::remove_vsync_deadline_index_locked(state, it->first);
+    it = state.iokit_display_vsync.erase(it);
+  }
 }
 
 void release_unreferenced_iokit_object_locked(KernelSharedState &state,

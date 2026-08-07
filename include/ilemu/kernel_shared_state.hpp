@@ -1175,6 +1175,10 @@ struct KernelSharedState {
   // Keyed by the global IOUserClient connection object. The notification
   // port is also a global ipc_port object, never a task-local Mach name.
   std::map<std::uint32_t, IOKitDisplayVSync> iokit_display_vsync;
+  // Enabled registrations are indexed by their next timer deadline so the
+  // kernel deadline path does not scan every display connection.
+  std::set<std::pair<std::uint64_t, std::uint32_t>>
+      iokit_display_vsync_deadlines;
   std::map<std::uint32_t, IOKitDisplayConnectionState>
       iokit_display_connections;
   std::map<std::uint32_t, IOKitAudioConnectionState> iokit_audio_connections;

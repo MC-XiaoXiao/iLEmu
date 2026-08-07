@@ -37,6 +37,10 @@ struct MethodResult {
 // Callers hold KernelSharedState::mach_mutex for the three scheduler helpers.
 [[nodiscard]] std::optional<std::uint64_t>
 next_vsync_deadline_locked(const KernelSharedState &state);
+void remove_vsync_deadline_index_locked(KernelSharedState &state,
+                                        std::uint32_t connection_object);
+void index_vsync_deadline_locked(KernelSharedState &state,
+                                 std::uint32_t connection_object);
 void deliver_due_vsync_locked(KernelSharedState &state,
                               std::uint64_t deadline);
 void close_connection_locked(KernelSharedState &state,
