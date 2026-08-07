@@ -33,6 +33,7 @@ constexpr std::uint32_t lc_reexport_dylib = 0x8000001fU;
 constexpr std::uint32_t lc_lazy_load_dylib = 0x20;
 constexpr std::uint32_t lc_load_upward_dylib = 0x80000023U;
 constexpr std::uint32_t lc_code_signature = 0x1d;
+constexpr std::uint32_t lc_uuid = 0x1b;
 constexpr std::uint32_t arm_thread_state = 1;
 constexpr std::uint32_t section_type_mask = 0xff;
 constexpr std::uint32_t s_symbol_stubs = 0x8;
@@ -251,6 +252,7 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     // it; ARMv7 remains compatible with an ARMv6 slice when no v7 slice exists.
     const std::span<const std::byte> container{image.bytes_};
     if (read_be_u32(container, 0U) == fat_magic) {
+        image.fat_container_ = true;
         const auto architecture_count = read_be_u32(container, 4U);
         constexpr std::size_t fat_arch_size = 20U;
         if (container.size() < 8U || !architecture_count ||
@@ -303,6 +305,7 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     }
 
     const std::span<const std::byte> bytes{image.bytes_};
+    image.content_identity_ = sha256(bytes);
     if (bytes.size() < 28 || read_u32(bytes, 0) != mh_magic) {
         throw std::runtime_error{"expected a little-endian 32-bit Mach-O: " + path.string()};
     }
@@ -451,6 +454,14 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
             code_signature =
                 std::pair{read_u32(bytes, offset + 8U),
                           read_u32(bytes, offset + 12U)};
+        } else if (command == lc_uuid) {
+            if (command_size < 24U) {
+                throw std::runtime_error{"truncated LC_UUID"};
+            }
+            std::array<std::byte, 16> uuid{};
+            std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(offset + 8U),
+                        uuid.size(), uuid.begin());
+            image.uuid_ = uuid;
         } else if (!known_generic.contains(command)) {
             image.unknown_commands_.push_back(command);
         }

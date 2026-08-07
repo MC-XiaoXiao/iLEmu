@@ -4,10 +4,12 @@ add_library(ilemu_foundation STATIC
     address_space.cpp
     application_display_profile.cpp
     arm_cpu_model.cpp
+    content_identity.cpp
     cpu.cpp
     darwin_notify_state_hle.cpp
     device_profile.cpp
     display.cpp
+    executable_catalog.cpp
     guest_cpu_topology.cpp
     jit_translation_profile.cpp
     macho.cpp

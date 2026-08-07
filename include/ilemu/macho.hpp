@@ -11,6 +11,7 @@
 
 #include "ilemu/address_space.hpp"
 #include "ilemu/arm_cpu_model.hpp"
+#include "ilemu/content_identity.hpp"
 
 namespace ilemu {
 
@@ -74,6 +75,13 @@ public:
     [[nodiscard]] std::uint32_t file_type() const { return file_type_; }
     [[nodiscard]] std::uint32_t flags() const { return flags_; }
     [[nodiscard]] std::uint32_t command_count() const { return command_count_; }
+    [[nodiscard]] const ContentIdentity& content_identity() const {
+        return content_identity_;
+    }
+    [[nodiscard]] const std::optional<std::array<std::byte, 16>>& uuid() const {
+        return uuid_;
+    }
+    [[nodiscard]] bool fat_container() const { return fat_container_; }
     [[nodiscard]] const std::vector<MachSegment>& segments() const { return segments_; }
     [[nodiscard]] const std::vector<MachDylib>& dylibs() const { return dylibs_; }
     [[nodiscard]] const std::vector<MachSymbol>& symbols() const { return symbols_; }
@@ -111,6 +119,9 @@ private:
     std::uint32_t file_type_{};
     std::uint32_t flags_{};
     std::uint32_t command_count_{};
+    ContentIdentity content_identity_;
+    std::optional<std::array<std::byte, 16>> uuid_;
+    bool fat_container_{};
     std::vector<MachSegment> segments_;
     std::vector<MachDylib> dylibs_;
     std::vector<MachSymbol> symbols_;

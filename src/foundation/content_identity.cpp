@@ -1,0 +1,229 @@
+#include "ilemu/content_identity.hpp"
+
+#include <algorithm>
+#include <array>
+#include <fstream>
+#include <limits>
+
+namespace ilemu {
+namespace {
+
+constexpr std::array<std::uint32_t, 64> round_constants{
+    0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U,
+    0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
+    0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U,
+    0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
+    0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU,
+    0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
+    0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U,
+    0xc6e00bf3U, 0xd5a79147U, 0x06ca6351U, 0x14292967U,
+    0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U,
+    0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U,
+    0xa2bfe8a1U, 0xa81a664bU, 0xc24b8b70U, 0xc76c51a3U,
+    0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
+    0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U,
+    0x391c0cb3U, 0x4ed8aa4aU, 0x5b9cca4fU, 0x682e6ff3U,
+    0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U,
+    0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U,
+};
+
+constexpr std::uint32_t rotate_right(std::uint32_t value,
+                                     std::uint32_t amount) noexcept {
+  return (value >> amount) | (value << (32U - amount));
+}
+
+constexpr std::uint32_t big_endian_word(const std::byte *bytes) noexcept {
+  return (std::to_integer<std::uint32_t>(bytes[0]) << 24U) |
+         (std::to_integer<std::uint32_t>(bytes[1]) << 16U) |
+         (std::to_integer<std::uint32_t>(bytes[2]) << 8U) |
+         std::to_integer<std::uint32_t>(bytes[3]);
+}
+
+class Sha256State {
+public:
+  Sha256State()
+      : state_{0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
+               0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U} {}
+
+  void update(std::span<const std::byte> bytes) {
+    bit_count_ += static_cast<std::uint64_t>(bytes.size()) * 8U;
+    while (!bytes.empty()) {
+      const auto copied = std::min(bytes.size(), block_.size() - used_);
+      std::copy_n(bytes.begin(), copied,
+                  block_.begin() + static_cast<std::ptrdiff_t>(used_));
+      used_ += copied;
+      bytes = bytes.subspan(copied);
+      if (used_ == block_.size()) {
+        transform(block_);
+        used_ = 0;
+      }
+    }
+  }
+
+  [[nodiscard]] ContentIdentity finish() {
+    const auto original_bit_count = bit_count_;
+    block_[used_++] = std::byte{0x80};
+    if (used_ > 56U) {
+      std::fill(block_.begin() + static_cast<std::ptrdiff_t>(used_),
+                block_.end(), std::byte{0});
+      transform(block_);
+      used_ = 0;
+    }
+    std::fill(block_.begin() + static_cast<std::ptrdiff_t>(used_),
+              block_.begin() + 56, std::byte{0});
+    for (std::size_t index = 0; index < sizeof(original_bit_count); ++index) {
+      block_[63U - index] = static_cast<std::byte>(
+          original_bit_count >> static_cast<unsigned>(index * 8U));
+    }
+    transform(block_);
+
+    ContentIdentity identity;
+    for (std::size_t word = 0; word < state_.size(); ++word) {
+      for (std::size_t byte = 0; byte < sizeof(std::uint32_t); ++byte) {
+        identity.digest[word * sizeof(std::uint32_t) + byte] =
+            static_cast<std::byte>(
+                state_[word] >> static_cast<unsigned>(24U - byte * 8U));
+      }
+    }
+    return identity;
+  }
+
+private:
+  void transform(const std::array<std::byte, 64> &input_block) {
+    std::array<std::uint32_t, 64> schedule{};
+    for (std::size_t index = 0; index < 16U; ++index) {
+      schedule[index] = big_endian_word(
+          input_block.data() + static_cast<std::ptrdiff_t>(index * 4U));
+    }
+    for (std::size_t index = 16U; index < schedule.size(); ++index) {
+      const auto first = schedule[index - 15U];
+      const auto second = schedule[index - 2U];
+      const auto sigma0 = rotate_right(first, 7U) ^ rotate_right(first, 18U) ^
+                          (first >> 3U);
+      const auto sigma1 = rotate_right(second, 17U) ^
+                          rotate_right(second, 19U) ^ (second >> 10U);
+      schedule[index] = schedule[index - 16U] + sigma0 +
+                        schedule[index - 7U] + sigma1;
+    }
+
+    auto working = state_;
+    for (std::size_t index = 0; index < schedule.size(); ++index) {
+      const auto &a = working[0];
+      const auto &b = working[1];
+      const auto &c = working[2];
+      const auto &d = working[3];
+      const auto &e = working[4];
+      const auto &f = working[5];
+      const auto &g = working[6];
+      const auto &h = working[7];
+      const auto sigma1 = rotate_right(e, 6U) ^ rotate_right(e, 11U) ^
+                          rotate_right(e, 25U);
+      const auto choose = (e & f) ^ ((~e) & g);
+      const auto temporary1 = h + sigma1 + choose + round_constants[index] +
+                              schedule[index];
+      const auto sigma0 = rotate_right(a, 2U) ^ rotate_right(a, 13U) ^
+                          rotate_right(a, 22U);
+      const auto majority = (a & b) ^ (a & c) ^ (b & c);
+      const auto temporary2 = sigma0 + majority;
+      working[7] = g;
+      working[6] = f;
+      working[5] = e;
+      working[4] = d + temporary1;
+      working[3] = c;
+      working[2] = b;
+      working[1] = a;
+      working[0] = temporary1 + temporary2;
+    }
+    for (std::size_t index = 0; index < state_.size(); ++index) {
+      state_[index] += working[index];
+    }
+  }
+
+  std::array<std::uint32_t, 8> state_{};
+  std::array<std::byte, 64> block_{};
+  std::size_t used_{};
+  std::uint64_t bit_count_{};
+};
+
+} // namespace
+
+bool ContentIdentity::empty() const noexcept {
+  return std::all_of(digest.begin(), digest.end(),
+                     [](std::byte byte) { return byte == std::byte{0}; });
+}
+
+std::string ContentIdentity::hex() const {
+  constexpr std::array<char, 16> digits{
+      '0', '1', '2', '3', '4', '5', '6', '7',
+      '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+  std::string result;
+  result.reserve(digest.size() * 2U);
+  for (const auto byte : digest) {
+    const auto value = std::to_integer<std::uint8_t>(byte);
+    result.push_back(digits[value >> 4U]);
+    result.push_back(digits[value & 0x0fU]);
+  }
+  return result;
+}
+
+std::size_t ContentIdentityHash::operator()(
+    const ContentIdentity &identity) const noexcept {
+  std::uint64_t value = 0;
+  for (std::size_t index = 0; index < sizeof(value); ++index) {
+    value |= static_cast<std::uint64_t>(
+                 std::to_integer<std::uint8_t>(identity.digest[index]))
+             << static_cast<unsigned>(index * 8U);
+  }
+  return std::hash<std::uint64_t>{}(value);
+}
+
+ContentIdentity sha256(std::span<const std::byte> bytes) {
+  Sha256State state;
+  state.update(bytes);
+  return state.finish();
+}
+
+std::optional<ContentIdentity> sha256_file(
+    const std::filesystem::path &path, std::uint64_t file_offset,
+    std::optional<std::uint64_t> byte_count) {
+  std::ifstream input{path, std::ios::binary};
+  if (!input) return std::nullopt;
+  if (file_offset >
+      static_cast<std::uint64_t>(std::numeric_limits<std::streamoff>::max())) {
+    return std::nullopt;
+  }
+  input.seekg(static_cast<std::streamoff>(file_offset));
+  if (!input) return std::nullopt;
+
+  Sha256State state;
+  std::array<char, 64U * 1024U> buffer{};
+  auto remaining = byte_count;
+  while (!remaining || *remaining != 0U) {
+    const auto requested = remaining
+                               ? std::min<std::uint64_t>(
+                                     *remaining, buffer.size())
+                               : buffer.size();
+    input.read(buffer.data(), static_cast<std::streamsize>(requested));
+    const auto count = input.gcount();
+    if (count <= 0) {
+      if (input.eof() && (!remaining || *remaining == 0U)) break;
+      return std::nullopt;
+    }
+    const auto bytes = std::span<const std::byte>{
+        reinterpret_cast<const std::byte *>(buffer.data()),
+        static_cast<std::size_t>(count)};
+    state.update(bytes);
+    if (remaining) {
+      *remaining -= static_cast<std::uint64_t>(count);
+    }
+    if (input.bad()) return std::nullopt;
+    if (input.eof()) {
+      if (remaining && *remaining != 0U) return std::nullopt;
+      break;
+    }
+    if (!input) return std::nullopt;
+  }
+  return state.finish();
+}
+
+} // namespace ilemu
