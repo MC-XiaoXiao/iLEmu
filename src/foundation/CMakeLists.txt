@@ -7,6 +7,7 @@ add_library(ilemu_foundation STATIC
     cpu.cpp
     darwin_notify_state_hle.cpp
     device_profile.cpp
+    dyld_shared_cache.cpp
     display.cpp
     executable_catalog.cpp
     guest_cpu_topology.cpp
