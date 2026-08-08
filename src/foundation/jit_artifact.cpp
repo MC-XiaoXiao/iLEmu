@@ -781,6 +781,50 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
   return result;
 }
 
+bool JitArtifactStore::compaction_needed() const noexcept {
+  try {
+    const std::lock_guard lock{mutex_};
+    if (!limits_.persistence_enabled || limits_.compaction_bytes == 0U) {
+      return false;
+    }
+    const auto &disk_path = !persistence_path_.empty()
+                                ? persistence_path_
+                                : disk_source_path_;
+    if (disk_path.empty()) return false;
+    std::error_code error;
+    const auto append_bytes = std::filesystem::file_size(
+        append_path_for(disk_path), error);
+    return !error && append_bytes >= limits_.compaction_bytes;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool JitArtifactStore::compact() const noexcept {
+  try {
+    std::filesystem::path disk_path;
+    {
+      const std::lock_guard lock{mutex_};
+      if (!limits_.persistence_enabled || limits_.compaction_bytes == 0U) {
+        return true;
+      }
+      disk_path = !persistence_path_.empty() ? persistence_path_
+                                             : disk_source_path_;
+      if (disk_path.empty()) return true;
+      std::error_code error;
+      const auto append_bytes = std::filesystem::file_size(
+          append_path_for(disk_path), error);
+      if (error || append_bytes < limits_.compaction_bytes) return true;
+    }
+    if (!save_full(disk_path)) return false;
+    const std::lock_guard lock{mutex_};
+    ++stats_.compactions;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
 bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
   try {
     if (!limits_.persistence_enabled) return false;

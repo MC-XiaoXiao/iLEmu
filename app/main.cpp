@@ -1463,6 +1463,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                     : artifact_filesystem.string()));
   auto jit_artifacts = std::make_shared<JitArtifactStore>(
       host_cache / "jit-artifacts.bin", jit_artifact_limits);
+  std::shared_ptr<HostWorkToken> artifact_compaction_task;
   const auto assign_translation_profile =
       [&translation_profiles](CpuCluster &cpus,
                               const ContentIdentity &executable_identity) {
@@ -2949,6 +2950,27 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 static_cast<std::chrono::nanoseconds::rep>(budget)});
       };
       schedule_precompile_runtime(active_runtime);
+      const auto schedule_artifact_compaction = [&]() {
+        if (artifact_compaction_task) {
+          if (!artifact_compaction_task->finished()) {
+            if (scheduler.runnable_count() != 0) {
+              artifact_compaction_task->cancel();
+              host_resources.wake();
+            }
+            return;
+          }
+          artifact_compaction_task.reset();
+        }
+        if (scheduler.runnable_count() != 0 ||
+            !jit_artifacts->compaction_needed()) {
+          return;
+        }
+        artifact_compaction_task = host_resources.submit(
+            HostWorkKind::Maintenance, host_compile_deadline,
+            [jit_artifacts] { static_cast<void>(jit_artifacts->compact()); },
+            std::chrono::milliseconds{100});
+      };
+      schedule_artifact_compaction();
       // The scanout publisher may be a background compositor while an App is
       // active. Its cached exit/unlock paths are just as latency-sensitive as
       // the foreground process, so consume their host-only profile hints while
@@ -3202,6 +3224,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         " disk-load=" +
         std::to_string(artifact_stats.disk_loaded_entries) +
         " evict=" + std::to_string(artifact_stats.evictions) +
+        " compactions=" + std::to_string(artifact_stats.compactions) +
         " resident-bytes=" +
         std::to_string(artifact_stats.resident_bytes) +
         " disk-bytes=" + std::to_string(artifact_stats.disk_bytes));

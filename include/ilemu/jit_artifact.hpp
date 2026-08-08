@@ -101,6 +101,9 @@ struct JitArtifactLimits {
   bool persistence_enabled{true};
   // Zero disables the filesystem free-space safety check.
   std::uintmax_t minimum_free_bytes{};
+  // A journal at or above this size is eligible for low-priority compaction.
+  // Zero disables automatic compaction.
+  std::size_t compaction_bytes{64U * 1024U * 1024U};
 };
 
 struct JitArtifactStoreStats {
@@ -112,6 +115,7 @@ struct JitArtifactStoreStats {
   std::uint64_t deduplicated_publishes{};
   std::uint64_t disk_loaded_entries{};
   std::uint64_t evictions{};
+  std::uint64_t compactions{};
   std::size_t resident_bytes{};
   std::uintmax_t disk_bytes{};
 };
@@ -137,6 +141,8 @@ public:
       JitArtifactKey key, JitArtifactData data);
   [[nodiscard]] std::size_t size() const;
   [[nodiscard]] JitArtifactStoreStats stats() const;
+  [[nodiscard]] bool compaction_needed() const noexcept;
+  [[nodiscard]] bool compact() const noexcept;
 
   // Persistence is metadata-only. Initial snapshots are atomic; incremental
   // publications use a checksummed append journal. Loading malformed data

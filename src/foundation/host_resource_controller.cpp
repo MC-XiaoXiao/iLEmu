@@ -10,13 +10,23 @@ namespace {
 [[nodiscard]] unsigned work_priority(HostWorkKind kind) {
   switch (kind) {
   case HostWorkKind::Maintenance:
-    return 0;
+    return 3;
   case HostWorkKind::BackgroundCompile:
     return 1;
   case HostWorkKind::OfflineCompile:
     return 2;
   }
   return 2;
+}
+
+[[nodiscard]] bool is_deferred_work(HostWorkKind kind) {
+  return kind == HostWorkKind::BackgroundCompile ||
+         kind == HostWorkKind::OfflineCompile ||
+         kind == HostWorkKind::Maintenance;
+}
+
+[[nodiscard]] bool is_interactive_work(HostWorkKind kind) {
+  return kind == HostWorkKind::BackgroundCompile;
 }
 
 } // namespace
@@ -60,15 +70,13 @@ std::shared_ptr<HostWorkToken> HostResourceController::submit(
   const auto now = Clock::now();
   const std::lock_guard lock{mutex_};
   if (stopping_ || workers_.empty() ||
-      ((kind == HostWorkKind::BackgroundCompile ||
-        kind == HostWorkKind::OfflineCompile) && next_deadline_ &&
+      (is_deferred_work(kind) && next_deadline_ &&
        *next_deadline_ <= now + budget_.deadline_reserve)) {
     ++rejected_;
     return nullptr;
   }
-  if (kind == HostWorkKind::BackgroundCompile ||
-      kind == HostWorkKind::OfflineCompile) {
-    const auto limit = kind == HostWorkKind::BackgroundCompile
+  if (is_deferred_work(kind)) {
+    const auto limit = is_interactive_work(kind)
                            ? budget_.interactive_compile_budget
                            : budget_.offline_compile_budget;
     if (estimated_cost < std::chrono::nanoseconds::zero()) {
@@ -159,14 +167,12 @@ void HostResourceController::worker_loop() {
             iterator = candidate;
             break;
           }
-          const auto budgeted =
-              candidate->second.kind == HostWorkKind::BackgroundCompile ||
-              candidate->second.kind == HostWorkKind::OfflineCompile;
+          const auto budgeted = is_deferred_work(candidate->second.kind);
           if (!stopping_ && budgeted) {
             if (background_deadline_too_close)
               continue;
             const auto interactive =
-                candidate->second.kind == HostWorkKind::BackgroundCompile;
+                is_interactive_work(candidate->second.kind);
             const auto limit = interactive
                                    ? budget_.interactive_compile_budget
                                    : budget_.offline_compile_budget;
@@ -194,9 +200,9 @@ void HostResourceController::worker_loop() {
         }
         task = std::move(iterator->second);
         tasks_.erase(iterator);
-        if (task.kind == HostWorkKind::BackgroundCompile)
+        if (is_interactive_work(task.kind))
           interactive_reserved_ += task.estimated_cost;
-        else if (task.kind == HostWorkKind::OfflineCompile)
+        else if (is_deferred_work(task.kind))
           offline_reserved_ += task.estimated_cost;
         ++active_tasks_;
         break;
@@ -217,10 +223,10 @@ void HostResourceController::worker_loop() {
     {
       const std::lock_guard lock{mutex_};
       task.token->mark_finished();
-      if (task.kind == HostWorkKind::BackgroundCompile) {
+      if (is_interactive_work(task.kind)) {
         interactive_reserved_ -= task.estimated_cost;
         interactive_work_ += elapsed;
-      } else if (task.kind == HostWorkKind::OfflineCompile) {
+      } else if (is_deferred_work(task.kind)) {
         offline_reserved_ -= task.estimated_cost;
         offline_work_ += elapsed;
       }
