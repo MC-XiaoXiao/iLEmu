@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cerrno>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <tuple>
 
@@ -171,6 +172,33 @@ bool FilePageCache::Key::operator<(const Key &other) const {
                   other.byte_count);
 }
 
+void FilePageCache::touch_locked(
+    std::map<Key, PageRecord>::iterator iterator) {
+  lru_.splice(lru_.end(), lru_, iterator->second.lru_position);
+  iterator->second.lru_position = std::prev(lru_.end());
+}
+
+void FilePageCache::erase_path_locked(const std::string &path) {
+  for (auto page = pages_.begin(); page != pages_.end();) {
+    if (page->first.path != path) {
+      ++page;
+      continue;
+    }
+    lru_.erase(page->second.lru_position);
+    page = pages_.erase(page);
+  }
+}
+
+void FilePageCache::evict_locked() {
+  if (limits_.maximum_pages == 0U) return;
+  while (pages_.size() > limits_.maximum_pages && !lru_.empty()) {
+    const auto key = lru_.front();
+    lru_.pop_front();
+    const auto page = pages_.find(key);
+    if (page != pages_.end()) pages_.erase(page);
+  }
+}
+
 std::optional<std::shared_ptr<GuestFileBacking>>
 FilePageCache::open_mapping(const std::filesystem::path &path,
                             std::uint64_t file_offset,
@@ -203,9 +231,7 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
       identities_.emplace(normalized_path,
                           Identity{file_size, modified, *content_identity});
     } else if (identity->second.content_identity != *content_identity) {
-      std::erase_if(pages_, [&](const auto &entry) {
-        return entry.first.path == normalized_path;
-      });
+      erase_path_locked(normalized_path);
       identity->second =
           Identity{file_size, modified, *content_identity};
     } else {
@@ -239,7 +265,8 @@ std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
   {
     const std::scoped_lock lock{mutex_};
     if (const auto cached = pages_.find(key); cached != pages_.end()) {
-      return cached->second;
+      touch_locked(cached);
+      return cached->second.page;
     }
   }
 
@@ -251,8 +278,16 @@ std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
   page->has_file_source_ = true;
   {
     const std::scoped_lock lock{mutex_};
-    const auto [entry, inserted] = pages_.try_emplace(key, page);
-    return inserted ? std::move(page) : entry->second;
+    const auto [entry, inserted] = pages_.try_emplace(key, PageRecord{});
+    if (!inserted) {
+      touch_locked(entry);
+      return entry->second.page;
+    }
+    entry->second.page = page;
+    lru_.push_back(key);
+    entry->second.lru_position = std::prev(lru_.end());
+    evict_locked();
+    return page;
   }
 }
 

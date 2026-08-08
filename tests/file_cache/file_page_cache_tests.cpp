@@ -79,6 +79,30 @@ int main() {
     return 1;
   }
 
+  const auto limited_path = root / "limited.bin";
+  if (!write_page(limited_path, std::byte{0x2a})) return 1;
+  ilemu::FilePageCache limited_cache{{1U}};
+  const auto limited_first_mapping =
+      limited_cache.open_mapping(path, 0, guest_memory_page_size);
+  const auto limited_second_mapping =
+      limited_cache.open_mapping(limited_path, 0, guest_memory_page_size);
+  if (!limited_first_mapping || !limited_second_mapping) {
+    std::cerr << "limited file cache mappings failed\n";
+    return 1;
+  }
+  const auto limited_first_page = limited_cache.load_page(
+      *limited_first_mapping, 0, guest_memory_page_size);
+  limited_first_page->materialize();
+  const auto limited_second_page = limited_cache.load_page(
+      *limited_second_mapping, 0, guest_memory_page_size);
+  limited_second_page->materialize();
+  if (limited_first_page == limited_second_page ||
+      limited_cache.page_count() != 1U ||
+      limited_second_page->bytes[0] != std::byte{0x2a}) {
+    std::cerr << "file page cache LRU limit was not enforced\n";
+    return 1;
+  }
+
   const auto rename_path = root / "rename-target.bin";
   const auto replacement_path = root / "rename-target.new";
   if (!write_page(rename_path, std::byte{0x33})) return 1;

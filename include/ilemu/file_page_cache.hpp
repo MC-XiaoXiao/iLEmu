@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -88,8 +89,17 @@ private:
 // Process-family cache for immutable firmware file pages. AddressSpace keeps a
 // strong reference to the cache across fork, while a private write detaches the
 // corresponding GuestPageBacking through its normal copy-on-write path.
+struct FilePageCacheLimits {
+  // Zero means unbounded. Eviction only drops the cache's reference; an
+  // AddressSpace that still maps a page keeps the backing alive.
+  std::size_t maximum_pages{32U * 1024U};
+};
+
 class FilePageCache {
 public:
+  explicit FilePageCache(FilePageCacheLimits limits = {})
+      : limits_{limits} {}
+
   // Validates a file-backed range and records the immutable identity used by
   // later page faults. No per-page objects or file contents are created here.
   [[nodiscard]] std::optional<std::shared_ptr<GuestFileBacking>>
@@ -124,9 +134,20 @@ private:
     [[nodiscard]] bool operator<(const Key &other) const;
   };
 
+  struct PageRecord {
+    std::shared_ptr<GuestPageBacking> page;
+    std::list<Key>::iterator lru_position;
+  };
+
+  void touch_locked(std::map<Key, PageRecord>::iterator iterator);
+  void erase_path_locked(const std::string &path);
+  void evict_locked();
+
   mutable std::mutex mutex_;
+  FilePageCacheLimits limits_;
   std::map<std::string, Identity> identities_;
-  std::map<Key, std::shared_ptr<GuestPageBacking>> pages_;
+  std::map<Key, PageRecord> pages_;
+  std::list<Key> lru_;
 };
 
 } // namespace ilemu
