@@ -344,6 +344,7 @@ namespace ilemu {
 const ExecutableCatalogEntry &ExecutableCatalog::register_image(
     const MachOImage &image) {
   const auto normalized = normalize_path(image.path());
+  remove_path(normalized);
   auto &entry = upsert(image.content_identity(), normalized,
                        classify(image, normalized));
   entry.uuid = image.uuid();
@@ -399,6 +400,7 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_mapping(
                              path.string()};
   }
   const auto normalized_path = normalize_path(path);
+  remove_path(normalized_path);
   auto &entry = upsert(*identity, normalized_path,
                        ExecutableCatalogKind::DynamicMapping);
   if (entry.file_size == 0) {
@@ -849,6 +851,31 @@ ExecutableCatalogEntry &ExecutableCatalog::upsert(
   }
   entry.kinds.insert(kind);
   return entry;
+}
+
+void ExecutableCatalog::remove_path(const std::filesystem::path &path) {
+  for (auto entry = entries_.begin(); entry != entries_.end();) {
+    entry->aliases.erase(
+        std::remove(entry->aliases.begin(), entry->aliases.end(), path),
+        entry->aliases.end());
+    entry->file_generations.erase(
+        std::remove_if(
+            entry->file_generations.begin(), entry->file_generations.end(),
+            [&path](const ExecutableCatalogPathGeneration &record) {
+              return record.path == path;
+            }),
+        entry->file_generations.end());
+    if (entry->aliases.empty()) {
+      entry = entries_.erase(entry);
+    } else {
+      ++entry;
+    }
+  }
+  identity_index_.clear();
+  identity_index_.reserve(entries_.size());
+  for (std::size_t index = 0; index < entries_.size(); ++index) {
+    identity_index_.emplace(entries_[index].content_identity, index);
+  }
 }
 
 } // namespace ilemu

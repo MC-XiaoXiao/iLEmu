@@ -213,6 +213,17 @@ int main() {
     std::cerr << "catalog changed generation refresh failed\n";
     return 1;
   }
+  ilemu::ExecutableCatalog replacement_catalog;
+  const auto changed_image = ilemu::MachOImage::parse(framework_path);
+  static_cast<void>(replacement_catalog.register_image(image));
+  static_cast<void>(replacement_catalog.register_image(changed_image));
+  const auto *replacement = replacement_catalog.find_path(framework_path);
+  if (replacement == nullptr ||
+      replacement->content_identity != changed_image.content_identity() ||
+      replacement->file_size != changed_image.file_size()) {
+    std::cerr << "catalog path replacement left a stale alias\n";
+    return 1;
+  }
   const auto corrupt_manifest = root / "catalog-corrupt.bin";
   const std::vector<std::byte> corrupt_bytes(8U, std::byte{0});
   write_file(corrupt_manifest, corrupt_bytes);

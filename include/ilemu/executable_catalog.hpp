@@ -122,6 +122,7 @@ private:
   [[nodiscard]] ExecutableCatalogEntry &upsert(
       ContentIdentity identity, const std::filesystem::path &path,
       ExecutableCatalogKind kind);
+  void remove_path(const std::filesystem::path &path);
   [[nodiscard]] ExecutableCatalogScanSummary scan_tree(
       const std::filesystem::path &root, ArmArchitectureVersion architecture,
       const ExecutableCatalog *previous);
