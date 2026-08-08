@@ -132,8 +132,9 @@ public:
   [[nodiscard]] std::size_t size() const;
   [[nodiscard]] JitArtifactStoreStats stats() const;
 
-  // Persistence is metadata-only and atomic. Loading malformed data leaves
-  // the existing store unchanged and lets execution fall back to JIT.
+  // Persistence is metadata-only. Initial snapshots are atomic; incremental
+  // publications use a checksummed append journal. Loading malformed data
+  // leaves the existing store unchanged and lets execution fall back to JIT.
   [[nodiscard]] bool load(const std::filesystem::path &path) noexcept;
   [[nodiscard]] bool save() const noexcept;
   [[nodiscard]] bool save(const std::filesystem::path &path) const noexcept;
@@ -142,6 +143,7 @@ private:
   struct DiskArtifactRecord {
     std::uint64_t offset{};
     std::uint64_t serialized_bytes{};
+    bool append_log{};
   };
   struct ArtifactRecord {
     std::shared_ptr<const BlockArtifact> artifact;
@@ -154,12 +156,21 @@ private:
   using DiskArtifactMap = std::unordered_map<JitArtifactKey,
                                              DiskArtifactRecord,
                                              JitArtifactKeyHash>;
+  enum class AppendResult : std::uint8_t {
+    NotApplicable,
+    Saved,
+    Failed,
+  };
 
   void touch_locked(ArtifactMap::iterator iterator) const;
   void evict_until_fit_locked(std::size_t required_bytes) const;
   void insert_locked(std::shared_ptr<const BlockArtifact> artifact,
                      std::size_t serialized_bytes,
                      bool loaded_from_disk = false) const;
+  [[nodiscard]] AppendResult append_new_artifacts(
+      const std::filesystem::path &path) const noexcept;
+  [[nodiscard]] bool save_full(
+      const std::filesystem::path &path) const noexcept;
 
   mutable std::mutex mutex_;
   mutable ArtifactMap artifacts_;
@@ -170,6 +181,7 @@ private:
   mutable std::size_t resident_bytes_{};
   std::filesystem::path persistence_path_;
   mutable std::filesystem::path disk_source_path_;
+  mutable std::filesystem::path disk_append_path_;
   mutable JitArtifactStoreStats stats_;
 };
 
