@@ -3,7 +3,10 @@
 #include "ilemu/device_profile.hpp"
 #include "ilemu/guest_cpu_topology.hpp"
 
+#include <array>
 #include <iostream>
+#include <optional>
+#include <span>
 
 #include <dynarmic/interface/exclusive_monitor.h>
 
@@ -169,6 +172,63 @@ int main() {
                             1};
   if (!cluster.has_execution_resources()) {
     std::cerr << "shared monitor CpuCluster did not initialize\n";
+    return 1;
+  }
+
+  ilemu::AddressSpace direct_memory;
+  constexpr std::uint32_t direct_code = 0x6000U;
+  constexpr std::uint32_t direct_data = 0x7000U;
+  if (!direct_memory.map(
+          direct_code, ilemu::AddressSpace::page_size,
+          ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Write |
+              ilemu::MemoryPermission::Execute) ||
+      !direct_memory.map(
+          direct_data, ilemu::AddressSpace::page_size,
+          ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Write) ||
+      !direct_memory.write32(direct_data, 1U)) {
+    std::cerr << "single-core direct-write mapping setup failed\n";
+    return 1;
+  }
+  direct_memory.set_parallel_access(false);
+  const std::array<std::uint32_t, 6> direct_code_words{
+      0xe1921f9fU, // ldrex r1, [r2]
+      0xe3a03002U, // mov r3, #2
+      0xe5823000U, // str r3, [r2]
+      0xe1820f93U, // strex r0, r3, [r2]
+      0xef000080U, // svc #0x80
+      0xe1a00000U, // nop
+  };
+  if (!direct_memory.copy_in(
+          direct_code,
+          std::as_bytes(std::span{direct_code_words}))) {
+    std::cerr << "single-core direct-write code setup failed\n";
+    return 1;
+  }
+  Dynarmic::ExclusiveMonitor direct_monitor{1};
+  auto direct_resolver =
+      std::make_shared<ilemu::GuestExclusiveAddressResolver>();
+  ilemu::CpuCluster direct_cluster{
+      1, 1, direct_memory, 1, ilemu::default_arm_cpu_model(), direct_monitor,
+      0, {}, direct_resolver};
+  auto **direct_write_table = direct_memory.jit_write_page_table();
+  if (direct_write_table == nullptr ||
+      direct_write_table[direct_data / ilemu::AddressSpace::page_size] ==
+          nullptr) {
+    std::cerr << "single-core direct-write page table was disabled\n";
+    return 1;
+  }
+  auto &direct_cpu = direct_cluster.cpu(0);
+  direct_cpu.registers()[2] = direct_data;
+  direct_cpu.registers()[15] = direct_code;
+  direct_cpu.set_cpsr(0x10U);
+  const auto direct_result = direct_cpu.run(64);
+  if (direct_result.svc != std::optional<std::uint32_t>{0x80U} ||
+      direct_cpu.registers()[0] != 1U ||
+      direct_memory.read32(direct_data) !=
+          std::optional<std::uint32_t>{2U} ||
+      direct_write_table[direct_data / ilemu::AddressSpace::page_size] !=
+          nullptr) {
+    std::cerr << "single-core direct-write reservation tracking failed\n";
     return 1;
   }
 

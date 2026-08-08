@@ -73,6 +73,11 @@ public:
   // can advance its backing identity; immutable/read-only direct accesses may
   // continue using the read table.
   void disable_jit_write_page_table();
+  // Dynarmic calls this immediately before establishing an LDREX reservation.
+  // Keep the touched pages on the checked-write path from that point onward;
+  // otherwise a later ordinary store could bypass reservation invalidation
+  // through an already compiled direct-write block.
+  void track_exclusive_access(std::uint32_t address, std::size_t size);
   // A physical page can become write-tracked after another AddressSpace has
   // already cached a direct JIT write pointer to it. The execution boundary
   // calls this safe point before re-entering Dynarmic so those old aliases are
@@ -355,6 +360,9 @@ private:
   std::unordered_set<std::uint32_t> direct_jit_write_pages_;
   bool jit_page_table_enabled_{};
   bool jit_write_page_table_enabled_{true};
+  // Tracking is monotonic for a resident mapping generation. Unmapping the
+  // range drops the marker so a new backing can start on the fast path again.
+  std::unordered_set<std::uint32_t> exclusive_write_tracked_pages_;
   std::atomic<std::uint64_t> observed_shared_write_tracking_epoch_{};
   std::vector<TrackedWriteRange> tracked_write_ranges_;
   std::uint64_t write_generation_{};

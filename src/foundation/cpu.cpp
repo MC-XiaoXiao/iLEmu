@@ -332,6 +332,11 @@ public:
         write(address, value, &AddressSpace::write64);
     }
 
+    void MemoryReadExclusive(std::uint32_t address,
+                             std::size_t size) override {
+        memory_.track_exclusive_access(address, size);
+    }
+
     std::uint8_t MemorySwap8(
         std::uint32_t address, std::uint8_t value) override {
         return swap(address, value, &AddressSpace::exchange8);
@@ -1433,12 +1438,13 @@ CpuCluster::CpuCluster(
         monitor.SetAddressResolver(
             &GuestExclusiveAddressResolver::resolve_callback,
             address_resolver_.get());
-        // Dynarmic's direct write page table has no callback at which the
-        // backing reservation generation can be advanced. Keep exact
-        // reservation identity on the checked write path until that backend
-        // hook exists; immutable read paths remain available to ordinary
-        // non-resolver clusters.
-        memory.disable_jit_write_page_table();
+        // A serialized physical CPU can revoke a page's direct-write entry
+        // immediately before LDREX through the MemoryReadExclusive hook.
+        // Multi-slot clusters keep all writes checked because another slot
+        // may already be executing a direct store while that hook runs.
+        if (monitor_processor_count_ > 1) {
+            memory.disable_jit_write_page_table();
+        }
     }
     if (!address_resolver_) {
         memory.set_exclusive_write_observer(

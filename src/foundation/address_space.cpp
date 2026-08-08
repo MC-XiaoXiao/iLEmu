@@ -181,6 +181,19 @@ void AddressSpace::disable_jit_write_page_table() {
   direct_jit_write_pages_.clear();
 }
 
+void AddressSpace::track_exclusive_access(std::uint32_t address,
+                                          std::size_t size) {
+  if (size == 0 || range_overflows(address, size)) return;
+  const auto first = page_base(address);
+  const auto end = page_range_end(address, size);
+  auto lock = write_lock();
+  for (std::uint64_t base = first; base < end; base += page_size) {
+    const auto page_address = static_cast<std::uint32_t>(base);
+    exclusive_write_tracked_pages_.insert(page_address);
+    refresh_jit_page_locked(page_address);
+  }
+}
+
 void AddressSpace::synchronize_shared_write_tracking() {
   auto target = GuestPageBacking::shared_write_tracking_epoch();
   if (target ==
@@ -252,6 +265,9 @@ void AddressSpace::unmap_range_locked(std::uint32_t address,
     uncache_page_locked(page->first);
     page = pages_->erase(page);
   }
+  for (std::uint64_t base = address; base < end; base += page_size) {
+    exclusive_write_tracked_pages_.erase(static_cast<std::uint32_t>(base));
+  }
   clear_page_permissions_locked(address, end);
   refresh_jit_page_range_locked(address, end);
 }
@@ -288,6 +304,7 @@ void AddressSpace::clear() {
   for (auto &chunk : page_lookup_) chunk.reset();
   for (auto &chunk : page_permissions_) chunk.reset();
   clear_jit_page_table_locked();
+  exclusive_write_tracked_pages_.clear();
   tracked_write_ranges_.clear();
   mapping_leases_.clear();
 }
@@ -923,6 +940,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address) {
       (page->copy_on_write_possible && !page->shared_writable)) {
     return;
   }
+  if (exclusive_write_tracked_pages_.contains(base)) return;
   *write_entry =
       reinterpret_cast<std::uint8_t *>(page->backing->bytes.data());
   direct_jit_write_pages_.insert(base);
@@ -1657,6 +1675,7 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const {
   result->mapping_leases_ = mapping_leases_;
   result->next_mapping_lease_token_ = next_mapping_lease_token_;
   result->file_page_cache_ = file_page_cache_;
+  result->exclusive_write_tracked_pages_ = exclusive_write_tracked_pages_;
   result->parallel_access_ = parallel_access_;
   result->jit_page_table_enabled_ =
       jit_page_table_enabled_ && !parallel_access_;

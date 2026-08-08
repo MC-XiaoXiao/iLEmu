@@ -272,3 +272,62 @@ index 4813675..660dcf2 100644
      std::vector<VAddr> exclusive_addresses;
      std::vector<Vector> exclusive_values;
  };
+
+diff --git a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+--- a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
++++ b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+@@ -237,6 +237,13 @@ void AxxEmitX64::EmitExclusiveReadMemory(AxxEmitContext& ctx, IR::Inst* inst) {
+ 
+         code.mov(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(1));
+         code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(&conf));
++        code.CallLambda(
++            [](AxxUserConfig& conf, Axx::VAddr vaddr) -> Axx::VAddr {
++                conf.callbacks->MemoryReadExclusive(vaddr, bitsize / 8U);
++                return vaddr;
++            });
++        code.mov(code.ABI_PARAM2, code.ABI_RETURN);
++        code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(&conf));
+         if (ordered) {
+             code.mfence();
+         }
+@@ -257,6 +264,13 @@ void AxxEmitX64::EmitExclusiveReadMemory(AxxEmitContext& ctx, IR::Inst* inst) {
+         code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(&conf));
+         ctx.reg_alloc.AllocStackSpace(16 + ABI_SHADOW_SPACE);
+         code.lea(code.ABI_PARAM3, ptr[rsp + ABI_SHADOW_SPACE]);
++        code.CallLambda(
++            [](AxxUserConfig& conf, Axx::VAddr vaddr) -> Axx::VAddr {
++                conf.callbacks->MemoryReadExclusive(vaddr, bitsize / 8U);
++                return vaddr;
++            });
++        code.mov(code.ABI_PARAM2, code.ABI_RETURN);
++        code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(&conf));
+         if (ordered) {
+             code.mfence();
+         }
+diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
+--- a/src/dynarmic/interface/A32/config.h
++++ b/src/dynarmic/interface/A32/config.h
+@@ -86,5 +86,10 @@ struct UserCallbacks : public TranslateCallbacks {
+     virtual std::uint16_t MemoryRead16(VAddr vaddr) = 0;
+     virtual std::uint32_t MemoryRead32(VAddr vaddr) = 0;
+     virtual std::uint64_t MemoryRead64(VAddr vaddr) = 0;
++
++    // Called immediately before an exclusive load establishes its monitor
++    // reservation. This is separate from MemoryRead* so a memory backend can
++    // revoke a direct-write alias before the following ordinary store.
++    virtual void MemoryReadExclusive(VAddr /*vaddr*/, std::size_t /*size*/) {}
+ 
+     // Writes through these callbacks may not be aligned.
+diff --git a/src/dynarmic/interface/A64/config.h b/src/dynarmic/interface/A64/config.h
+--- a/src/dynarmic/interface/A64/config.h
++++ b/src/dynarmic/interface/A64/config.h
+@@ -95,4 +95,9 @@ struct UserCallbacks {
+     virtual std::uint64_t MemoryRead64(VAddr vaddr) = 0;
+     virtual Vector MemoryRead128(VAddr vaddr) = 0;
++
++    // Called immediately before an exclusive load establishes its monitor
++    // reservation. This is separate from MemoryRead* so a memory backend can
++    // revoke a direct-write alias before the following ordinary store.
++    virtual void MemoryReadExclusive(VAddr /*vaddr*/, std::size_t /*size*/) {}
+ 
+     // Writes through these callbacks may not be aligned.
