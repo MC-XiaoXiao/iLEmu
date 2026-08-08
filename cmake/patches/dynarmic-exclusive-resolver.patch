@@ -1,0 +1,270 @@
+diff --git a/src/dynarmic/backend/arm64/exclusive_monitor.cpp b/src/dynarmic/backend/arm64/exclusive_monitor.cpp
+index d57a29c..f61a830 100644
+--- a/src/dynarmic/backend/arm64/exclusive_monitor.cpp
++++ b/src/dynarmic/backend/arm64/exclusive_monitor.cpp
+@@ -27,7 +27,8 @@ void ExclusiveMonitor::Unlock() {
+ }
+ 
+ bool ExclusiveMonitor::CheckAndClear(size_t processor_id, VAddr address) {
+-    const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
++    const VAddr masked_address =
++        ResolveAddress(processor_id, address) & RESERVATION_GRANULE_MASK;
+ 
+     Lock();
+     if (exclusive_addresses[processor_id] != masked_address) {
+diff --git a/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp b/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
+index c353032..851fe0b 100644
+--- a/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
++++ b/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
+@@ -189,7 +189,7 @@ void A32EmitX64::EmitA32ClearExclusive(A32EmitContext&, IR::Inst*) {
+ }
+ 
+ void A32EmitX64::EmitA32ExclusiveReadMemory8(A32EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveReadMemoryInline<8, &A32::UserCallbacks::MemoryRead8>(ctx, inst);
+     } else {
+         EmitExclusiveReadMemory<8, &A32::UserCallbacks::MemoryRead8>(ctx, inst);
+@@ -197,7 +197,7 @@ void A32EmitX64::EmitA32ExclusiveReadMemory8(A32EmitContext& ctx, IR::Inst* inst
+ }
+ 
+ void A32EmitX64::EmitA32ExclusiveReadMemory16(A32EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveReadMemoryInline<16, &A32::UserCallbacks::MemoryRead16>(ctx, inst);
+     } else {
+         EmitExclusiveReadMemory<16, &A32::UserCallbacks::MemoryRead16>(ctx, inst);
+@@ -205,7 +205,7 @@ void A32EmitX64::EmitA32ExclusiveReadMemory16(A32EmitContext& ctx, IR::Inst* ins
+ }
+ 
+ void A32EmitX64::EmitA32ExclusiveReadMemory32(A32EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveReadMemoryInline<32, &A32::UserCallbacks::MemoryRead32>(ctx, inst);
+     } else {
+         EmitExclusiveReadMemory<32, &A32::UserCallbacks::MemoryRead32>(ctx, inst);
+@@ -213,7 +213,7 @@ void A32EmitX64::EmitA32ExclusiveReadMemory32(A32EmitContext& ctx, IR::Inst* ins
+ }
+ 
+ void A32EmitX64::EmitA32ExclusiveReadMemory64(A32EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveReadMemoryInline<64, &A32::UserCallbacks::MemoryRead64>(ctx, inst);
+     } else {
+         EmitExclusiveReadMemory<64, &A32::UserCallbacks::MemoryRead64>(ctx, inst);
+@@ -221,7 +221,7 @@ void A32EmitX64::EmitA32ExclusiveReadMemory64(A32EmitContext& ctx, IR::Inst* ins
+ }
+ 
+ void A32EmitX64::EmitA32ExclusiveWriteMemory8(A32EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveWriteMemoryInline<8, &A32::UserCallbacks::MemoryWriteExclusive8>(ctx, inst);
+     } else {
+         EmitExclusiveWriteMemory<8, &A32::UserCallbacks::MemoryWriteExclusive8>(ctx, inst);
+@@ -229,7 +229,7 @@ void A32EmitX64::EmitA32ExclusiveWriteMemory8(A32EmitContext& ctx, IR::Inst* ins
+ }
+ 
+ void A32EmitX64::EmitA32ExclusiveWriteMemory16(A32EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveWriteMemoryInline<16, &A32::UserCallbacks::MemoryWriteExclusive16>(ctx, inst);
+     } else {
+         EmitExclusiveWriteMemory<16, &A32::UserCallbacks::MemoryWriteExclusive16>(ctx, inst);
+@@ -237,7 +237,7 @@ void A32EmitX64::EmitA32ExclusiveWriteMemory16(A32EmitContext& ctx, IR::Inst* in
+ }
+ 
+ void A32EmitX64::EmitA32ExclusiveWriteMemory32(A32EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveWriteMemoryInline<32, &A32::UserCallbacks::MemoryWriteExclusive32>(ctx, inst);
+     } else {
+         EmitExclusiveWriteMemory<32, &A32::UserCallbacks::MemoryWriteExclusive32>(ctx, inst);
+@@ -245,7 +245,7 @@ void A32EmitX64::EmitA32ExclusiveWriteMemory32(A32EmitContext& ctx, IR::Inst* in
+ }
+ 
+ void A32EmitX64::EmitA32ExclusiveWriteMemory64(A32EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveWriteMemoryInline<64, &A32::UserCallbacks::MemoryWriteExclusive64>(ctx, inst);
+     } else {
+         EmitExclusiveWriteMemory<64, &A32::UserCallbacks::MemoryWriteExclusive64>(ctx, inst);
+diff --git a/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp b/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp
+index 450b16d..3e01bfd 100644
+--- a/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp
++++ b/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp
+@@ -328,7 +328,7 @@ void A64EmitX64::EmitA64ClearExclusive(A64EmitContext&, IR::Inst*) {
+ }
+ 
+ void A64EmitX64::EmitA64ExclusiveReadMemory8(A64EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveReadMemoryInline<8, &A64::UserCallbacks::MemoryRead8>(ctx, inst);
+     } else {
+         EmitExclusiveReadMemory<8, &A64::UserCallbacks::MemoryRead8>(ctx, inst);
+@@ -336,7 +336,7 @@ void A64EmitX64::EmitA64ExclusiveReadMemory8(A64EmitContext& ctx, IR::Inst* inst
+ }
+ 
+ void A64EmitX64::EmitA64ExclusiveReadMemory16(A64EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveReadMemoryInline<16, &A64::UserCallbacks::MemoryRead16>(ctx, inst);
+     } else {
+         EmitExclusiveReadMemory<16, &A64::UserCallbacks::MemoryRead16>(ctx, inst);
+@@ -344,7 +344,7 @@ void A64EmitX64::EmitA64ExclusiveReadMemory16(A64EmitContext& ctx, IR::Inst* ins
+ }
+ 
+ void A64EmitX64::EmitA64ExclusiveReadMemory32(A64EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveReadMemoryInline<32, &A64::UserCallbacks::MemoryRead32>(ctx, inst);
+     } else {
+         EmitExclusiveReadMemory<32, &A64::UserCallbacks::MemoryRead32>(ctx, inst);
+@@ -352,7 +352,7 @@ void A64EmitX64::EmitA64ExclusiveReadMemory32(A64EmitContext& ctx, IR::Inst* ins
+ }
+ 
+ void A64EmitX64::EmitA64ExclusiveReadMemory64(A64EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveReadMemoryInline<64, &A64::UserCallbacks::MemoryRead64>(ctx, inst);
+     } else {
+         EmitExclusiveReadMemory<64, &A64::UserCallbacks::MemoryRead64>(ctx, inst);
+@@ -360,7 +360,7 @@ void A64EmitX64::EmitA64ExclusiveReadMemory64(A64EmitContext& ctx, IR::Inst* ins
+ }
+ 
+ void A64EmitX64::EmitA64ExclusiveReadMemory128(A64EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveReadMemoryInline<128, &A64::UserCallbacks::MemoryRead128>(ctx, inst);
+     } else {
+         EmitExclusiveReadMemory<128, &A64::UserCallbacks::MemoryRead128>(ctx, inst);
+@@ -368,7 +368,7 @@ void A64EmitX64::EmitA64ExclusiveReadMemory128(A64EmitContext& ctx, IR::Inst* in
+ }
+ 
+ void A64EmitX64::EmitA64ExclusiveWriteMemory8(A64EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveWriteMemoryInline<8, &A64::UserCallbacks::MemoryWriteExclusive8>(ctx, inst);
+     } else {
+         EmitExclusiveWriteMemory<8, &A64::UserCallbacks::MemoryWriteExclusive8>(ctx, inst);
+@@ -376,7 +376,7 @@ void A64EmitX64::EmitA64ExclusiveWriteMemory8(A64EmitContext& ctx, IR::Inst* ins
+ }
+ 
+ void A64EmitX64::EmitA64ExclusiveWriteMemory16(A64EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveWriteMemoryInline<16, &A64::UserCallbacks::MemoryWriteExclusive16>(ctx, inst);
+     } else {
+         EmitExclusiveWriteMemory<16, &A64::UserCallbacks::MemoryWriteExclusive16>(ctx, inst);
+@@ -384,7 +384,7 @@ void A64EmitX64::EmitA64ExclusiveWriteMemory16(A64EmitContext& ctx, IR::Inst* in
+ }
+ 
+ void A64EmitX64::EmitA64ExclusiveWriteMemory32(A64EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveWriteMemoryInline<32, &A64::UserCallbacks::MemoryWriteExclusive32>(ctx, inst);
+     } else {
+         EmitExclusiveWriteMemory<32, &A64::UserCallbacks::MemoryWriteExclusive32>(ctx, inst);
+@@ -392,7 +392,7 @@ void A64EmitX64::EmitA64ExclusiveWriteMemory32(A64EmitContext& ctx, IR::Inst* in
+ }
+ 
+ void A64EmitX64::EmitA64ExclusiveWriteMemory64(A64EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveWriteMemoryInline<64, &A64::UserCallbacks::MemoryWriteExclusive64>(ctx, inst);
+     } else {
+         EmitExclusiveWriteMemory<64, &A64::UserCallbacks::MemoryWriteExclusive64>(ctx, inst);
+@@ -400,7 +400,7 @@ void A64EmitX64::EmitA64ExclusiveWriteMemory64(A64EmitContext& ctx, IR::Inst* in
+ }
+ 
+ void A64EmitX64::EmitA64ExclusiveWriteMemory128(A64EmitContext& ctx, IR::Inst* inst) {
+-    if (conf.fastmem_exclusive_access) {
++    if (conf.fastmem_exclusive_access && !conf.global_monitor->HasAddressResolver()) {
+         EmitExclusiveWriteMemoryInline<128, &A64::UserCallbacks::MemoryWriteExclusive128>(ctx, inst);
+     } else {
+         EmitExclusiveWriteMemory<128, &A64::UserCallbacks::MemoryWriteExclusive128>(ctx, inst);
+diff --git a/src/dynarmic/backend/x64/exclusive_monitor.cpp b/src/dynarmic/backend/x64/exclusive_monitor.cpp
+index 984b67b..ff93875 100644
+--- a/src/dynarmic/backend/x64/exclusive_monitor.cpp
++++ b/src/dynarmic/backend/x64/exclusive_monitor.cpp
+@@ -27,7 +27,8 @@ void ExclusiveMonitor::Unlock() {
+ }
+ 
+ bool ExclusiveMonitor::CheckAndClear(size_t processor_id, VAddr address) {
+-    const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
++    const VAddr masked_address =
++        ResolveAddress(processor_id, address) & RESERVATION_GRANULE_MASK;
+ 
+     Lock();
+     if (exclusive_addresses[processor_id] != masked_address) {
+diff --git a/src/dynarmic/interface/exclusive_monitor.h b/src/dynarmic/interface/exclusive_monitor.h
+index 4813675..660dcf2 100644
+--- a/src/dynarmic/interface/exclusive_monitor.h
++++ b/src/dynarmic/interface/exclusive_monitor.h
+@@ -21,6 +21,13 @@ using Vector = std::array<std::uint64_t, 2>;
+ 
+ class ExclusiveMonitor {
+ public:
++    // The resolver maps a guest virtual address to a stable reservation key.
++    // It is called before the monitor lock is acquired, so callers may safely
++    // consult an address-space lock while resolving an alias. The callback
++    // and context must remain valid until the resolver is replaced or the
++    // monitor is destroyed.
++    using AddressResolver = VAddr (*)(void*, size_t, VAddr) noexcept;
++
+     /// @param processor_count Maximum number of processors using this global
+     ///                        exclusive monitor. Each processor must have a
+     ///                        unique id.
+@@ -28,12 +35,25 @@ public:
+ 
+     size_t GetProcessorCount() const;
+ 
++    /// Installs an optional guest-address resolver. A null resolver restores
++    /// the historical raw-address reservation semantics. This must be called
++    /// before any JIT using this monitor starts executing.
++    void SetAddressResolver(AddressResolver resolver, void* context) noexcept {
++        address_resolver_context.store(context, std::memory_order_relaxed);
++        address_resolver.store(resolver, std::memory_order_release);
++    }
++
++    [[nodiscard]] bool HasAddressResolver() const noexcept {
++        return address_resolver.load(std::memory_order_acquire) != nullptr;
++    }
++
+     /// Marks a region containing [address, address+size) to be exclusive to
+     /// processor processor_id.
+     template<typename T, typename Function>
+     T ReadAndMark(size_t processor_id, VAddr address, Function op) {
+         static_assert(std::is_trivially_copyable_v<T>);
+-        const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
++        const VAddr masked_address =
++            ResolveAddress(processor_id, address) & RESERVATION_GRANULE_MASK;
+ 
+         Lock();
+         exclusive_addresses[processor_id] = masked_address;
+@@ -70,6 +90,16 @@ public:
+ private:
+     bool CheckAndClear(size_t processor_id, VAddr address);
+ 
++    [[nodiscard]] VAddr ResolveAddress(
++        size_t processor_id, VAddr address) const noexcept {
++        const auto resolver = address_resolver.load(std::memory_order_acquire);
++        return resolver == nullptr
++                   ? address
++                   : resolver(address_resolver_context.load(
++                                  std::memory_order_relaxed),
++                              processor_id, address);
++    }
++
+     void Lock();
+     void Unlock();
+ 
+@@ -81,6 +111,8 @@ private:
+     static constexpr VAddr RESERVATION_GRANULE_MASK = 0xFFFF'FFFF'FFFF'FFFFull;
+     static constexpr VAddr INVALID_EXCLUSIVE_ADDRESS = 0xDEAD'DEAD'DEAD'DEADull;
+     SpinLock lock;
++    std::atomic<AddressResolver> address_resolver{nullptr};
++    std::atomic<void*> address_resolver_context{nullptr};
+     std::vector<VAddr> exclusive_addresses;
+     std::vector<Vector> exclusive_values;
+ };
+

@@ -51,6 +51,47 @@ set(DYNARMIC_USE_BUNDLED_EXTERNALS ON CACHE BOOL "" FORCE)
 set(DYNARMIC_USE_LLVM OFF CACHE BOOL "" FORCE)
 set(DYNARMIC_WARNINGS_AS_ERRORS OFF CACHE BOOL "" FORCE)
 set(DYNARMIC_USE_PRECOMPILED_HEADERS OFF CACHE BOOL "" FORCE)
+
+# The shared-monitor reservation resolver is a small, reproducible extension
+# of the pinned Dynarmic checkout. Keep the dependency checkout itself
+# ignored, but apply the tracked patch at configure time so a clean checkout
+# cannot silently fall back to raw Guest-VA reservations. The reverse check
+# makes repeated CMake reconfiguration idempotent.
+set(ILEMU_DYNARMIC_RESOLVER_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-exclusive-resolver.patch")
+execute_process(
+    COMMAND git apply --check "${ILEMU_DYNARMIC_RESOLVER_PATCH}"
+    WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+    RESULT_VARIABLE ILEMU_DYNARMIC_PATCH_CHECK
+    OUTPUT_VARIABLE ILEMU_DYNARMIC_PATCH_OUTPUT
+    ERROR_VARIABLE ILEMU_DYNARMIC_PATCH_ERROR)
+if(ILEMU_DYNARMIC_PATCH_CHECK EQUAL 0)
+    execute_process(
+        COMMAND git apply "${ILEMU_DYNARMIC_RESOLVER_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_PATCH_APPLY
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_PATCH_APPLY_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_PATCH_APPLY_ERROR)
+    if(NOT ILEMU_DYNARMIC_PATCH_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Failed to apply the Dynarmic reservation resolver patch: "
+            "${ILEMU_DYNARMIC_PATCH_APPLY_ERROR}")
+    endif()
+else()
+    execute_process(
+        COMMAND git apply --reverse --check "${ILEMU_DYNARMIC_RESOLVER_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_PATCH_REVERSE_CHECK
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_PATCH_REVERSE_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_PATCH_REVERSE_ERROR)
+    if(NOT ILEMU_DYNARMIC_PATCH_REVERSE_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Dynarmic reservation resolver patch is neither applicable nor "
+            "already applied. Apply it to the checkout or use a compatible "
+            "Dynarmic revision. git apply reported: "
+            "${ILEMU_DYNARMIC_PATCH_ERROR}")
+    endif()
+endif()
 add_subdirectory("${ILEMU_DYNARMIC_DIR}" external/dynarmic EXCLUDE_FROM_ALL)
 
 function(ilemu_configure_module target)
