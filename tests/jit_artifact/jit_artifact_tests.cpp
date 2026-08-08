@@ -196,6 +196,28 @@ int main() {
     }
   }
 
+  const auto corrupt_persistence = root / "corrupt-artifacts.bin";
+  {
+    std::ofstream stream{corrupt_persistence,
+                         std::ios::binary | std::ios::trunc};
+    const std::vector<std::byte> corrupt_bytes(12U, std::byte{0});
+    stream.write(reinterpret_cast<const char *>(corrupt_bytes.data()),
+                 static_cast<std::streamsize>(corrupt_bytes.size()));
+    if (!stream) {
+      std::cerr << "could not create corrupt artifact fixture\n";
+      return 1;
+    }
+  }
+  {
+    ilemu::JitArtifactStore safe_store;
+    if (!safe_store.publish(key, ilemu::JitArtifactData{{std::byte{0x44}}, {},
+                                                         {}, 1U}) ||
+        safe_store.load(corrupt_persistence) || safe_store.size() != 1U) {
+      std::cerr << "corrupt artifact load did not preserve the live store\n";
+      return 1;
+    }
+  }
+
   const auto code_path = root / "immutable-code.bin";
   std::vector<std::byte> code(ilemu::AddressSpace::page_size);
   write_le32(code, 0, 0xe3a00001U); // mov r0, #1
