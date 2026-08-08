@@ -606,6 +606,7 @@ std::string usage() {
          "  ilemu inspect --rootfs DIR [--binary /sbin/launchd] "
          "[--device PROFILE] [--symbols SUBSTRING] [--output FILE]\n"
          "  ilemu catalog --rootfs DIR [--device PROFILE] [--manifest FILE] "
+         "[--host-cache DIR] "
          "[--output FILE]\n"
          "  ilemu disasm --rootfs DIR --binary PATH "
          "(--symbol NAME | --address ADDR) [--device PROFILE] [--count N] [--thumb]\n"
@@ -615,7 +616,7 @@ std::string usage() {
          "[--watch-address ADDR] [--gdb PORT] "
          "[--display headless|sdl] [--network isolated|loopback|host] "
          "[--gles-backend auto|software|vulkan] [--gpu] "
-         "[--host-cache DIR] "
+         "[--host-cache DIR] [--catalog FILE] "
          "[--display-size WIDTHxHEIGHT] "
          "[--activation activated|unactivated|preserve] "
          "[--frame-output FILE] [--touch-replay FILE] [--control-stdin] "
@@ -849,10 +850,13 @@ void catalog(const std::vector<std::string> &args, Output &output) {
       select_device_profile(args).cpu_model);
   ExecutableCatalog executable_catalog;
   const auto summary = executable_catalog.register_tree(*rootfs, architecture);
-  const auto manifest = option(args, "--manifest");
-  if (manifest && !executable_catalog.save(*manifest)) {
+  const auto manifest = option(args, "--manifest").value_or(
+      (host_cache_directory(args, std::filesystem::path{*rootfs}) /
+       "executable-catalog.bin")
+          .string());
+  if (!executable_catalog.save(manifest)) {
     throw std::runtime_error{"failed to save executable catalog manifest: " +
-                             *manifest};
+                             manifest};
   }
   output.line(
       "[catalog] rootfs=" + *rootfs +
@@ -864,7 +868,7 @@ void catalog(const std::vector<std::string> &args, Output &output) {
       std::to_string(summary.dyld_shared_cache_images) +
       " failed-files=" + std::to_string(summary.failed_files) +
       " entries=" + std::to_string(executable_catalog.size()) +
-      (manifest ? " manifest=" + *manifest : ""));
+      " manifest=" + manifest);
 }
 
 template <std::size_t Size>
@@ -1095,6 +1099,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
   }
   const auto host_cache =
       host_cache_directory(args, std::filesystem::path{*rootfs});
+  const auto catalog_manifest = option(args, "--catalog").value_or(
+      (host_cache / "executable-catalog.bin").string());
+  ExecutableCatalog executable_catalog;
+  const auto catalog_loaded = executable_catalog.load(catalog_manifest);
+  output.line("[catalog] manifest=" + catalog_manifest +
+              " status=" + (catalog_loaded ? "loaded" : "fallback") +
+              " entries=" + std::to_string(executable_catalog.size()));
+  const auto *catalog_index = catalog_loaded ? &executable_catalog : nullptr;
   const auto gles_backend = parse_gles_backend(args);
   configure_gles_pipeline_cache(
       host_cache / "vulkan-pipeline-cache.bin");
@@ -1312,7 +1324,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
 
   auto initial_memory = std::make_unique<AddressSpace>();
   initial_memory->set_parallel_access(guest_processor_count > 1);
-  ProcessLoader loader{*rootfs, *initial_memory, guest_architecture};
+  ProcessLoader loader{*rootfs, *initial_memory, guest_architecture,
+                       catalog_index};
   std::vector<std::string> initial_environment{
       "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
       "SHELL=/bin/sh"};
@@ -1698,7 +1711,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                          std::vector<std::string> arguments,
                          std::vector<std::string> environment) {
           ProcessLoader validator{*rootfs, *runtime_ptr->memory,
-                                  guest_architecture};
+                                  guest_architecture, catalog_index};
           if (!validator.validate(path)) {
             output.line("[process] exec rejected pid=" +
                         std::to_string(runtime_ptr->kernel->process().pid) +
@@ -1732,7 +1745,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
             {
               PerformanceLatencyScope latency{PerfLatencyKind::SpawnImageLoad};
               ProcessLoader loader{*rootfs, *child_runtime->memory,
-                                   guest_architecture};
+                                   guest_architecture, catalog_index};
               loaded = loader.load(path, std::move(arguments), environment);
             }
             {
@@ -2561,8 +2574,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         runtime.pending_exec.reset();
         debug_target.notify_exec(runtime.kernel->process().pid);
         runtime.memory->clear();
-        ProcessLoader exec_loader{*rootfs, *runtime.memory,
-                                  guest_architecture};
+        ProcessLoader exec_loader{*rootfs, *runtime.memory, guest_architecture,
+                                  catalog_index};
         auto loaded =
             exec_loader.load(pending.path, std::move(pending.arguments),
                              pending.environment);

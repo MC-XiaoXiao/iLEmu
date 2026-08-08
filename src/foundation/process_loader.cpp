@@ -1,5 +1,7 @@
 #include "ilemu/process_loader.hpp"
 
+#include "ilemu/executable_catalog.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -94,8 +96,10 @@ read_interpreter_directive(const std::filesystem::path& path) {
 } // namespace
 
 ProcessLoader::ProcessLoader(std::filesystem::path rootfs, AddressSpace& memory,
-                             ArmArchitectureVersion architecture)
-    : rootfs_{std::move(rootfs)}, memory_{memory}, architecture_{architecture} {}
+                             ArmArchitectureVersion architecture,
+                             const ExecutableCatalog *catalog)
+    : rootfs_{std::move(rootfs)}, memory_{memory}, architecture_{architecture},
+      catalog_{catalog} {}
 
 std::filesystem::path
 ProcessLoader::host_path(const std::string& guest_path) const {
@@ -114,6 +118,19 @@ ProcessLoader::host_path(const std::string& guest_path) const {
     return rootfs_ / relative;
 }
 
+MachOImage ProcessLoader::parse_catalogued(
+    const std::filesystem::path &path) const {
+    const auto *entry = catalog_ ? catalog_->find_path(path) : nullptr;
+    if (entry == nullptr || entry->file_size == 0U || !entry->uuid) {
+        return MachOImage::parse(path, architecture_);
+    }
+    auto image = MachOImage::parse(path, architecture_, entry->content_identity);
+    if (image.file_size() != entry->file_size || image.uuid() != entry->uuid) {
+        return MachOImage::parse(path, architecture_);
+    }
+    return image;
+}
+
 LoadedProcess ProcessLoader::load(std::string guest_executable,
                                   std::vector<std::string> arguments,
                                   std::vector<std::string> environment) {
@@ -122,14 +139,13 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
     auto mapped_executable = std::move(invocation.executable_path);
     arguments = std::move(invocation.arguments);
 
-    auto executable =
-        MachOImage::parse(host_path(mapped_executable), architecture_);
+    auto executable = parse_catalogued(host_path(mapped_executable));
     if (!executable.dynamic_linker() || !executable.entry_point()) {
         throw std::runtime_error{
             "executable lacks LC_LOAD_DYLINKER or LC_UNIXTHREAD"};
     }
     auto dynamic_linker =
-        MachOImage::parse(host_path(*executable.dynamic_linker()), architecture_);
+        parse_catalogued(host_path(*executable.dynamic_linker()));
     if (!dynamic_linker.entry_point()) {
         throw std::runtime_error{"dynamic linker lacks LC_UNIXTHREAD"};
     }
@@ -292,14 +308,12 @@ bool ProcessLoader::validate(std::string guest_executable) const {
         const auto invocation =
             resolve_invocation(std::move(guest_executable), {});
         const auto executable =
-            MachOImage::parse(host_path(invocation.executable_path),
-                              architecture_);
+            parse_catalogued(host_path(invocation.executable_path));
         if (!executable.dynamic_linker() || !executable.entry_point()) {
             return false;
         }
         const auto dynamic_linker =
-            MachOImage::parse(host_path(*executable.dynamic_linker()),
-                              architecture_);
+            parse_catalogued(host_path(*executable.dynamic_linker()));
         return dynamic_linker.entry_point().has_value();
     } catch (const std::exception&) {
         return false;

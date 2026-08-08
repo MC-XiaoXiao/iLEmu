@@ -11,6 +11,8 @@
 
 namespace ilemu {
 
+class ExecutableCatalog;
+
 struct LoadedProcess {
     MachOImage executable;
     MachOImage dynamic_linker;
@@ -25,7 +27,8 @@ class ProcessLoader {
 public:
     ProcessLoader(
         std::filesystem::path rootfs, AddressSpace& memory,
-        ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
+        ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
+        const ExecutableCatalog *catalog = nullptr);
 
     LoadedProcess load(
         std::string guest_executable,
@@ -40,6 +43,8 @@ private:
     };
 
     [[nodiscard]] std::filesystem::path host_path(const std::string& guest_path) const;
+    [[nodiscard]] MachOImage parse_catalogued(
+        const std::filesystem::path &path) const;
     [[nodiscard]] ResolvedInvocation resolve_invocation(
         std::string guest_executable,
         std::vector<std::string> arguments) const;
@@ -47,6 +52,7 @@ private:
     std::filesystem::path rootfs_;
     AddressSpace& memory_;
     ArmArchitectureVersion architecture_;
+    const ExecutableCatalog *catalog_{};
 };
 
 }  // namespace ilemu

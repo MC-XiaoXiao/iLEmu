@@ -103,6 +103,17 @@ int main() {
     std::cerr << "Mach-O content identity or UUID failed\n";
     return 1;
   }
+  ilemu::ContentIdentity supplied_identity;
+  supplied_identity.digest.fill(std::byte{0x5a});
+  const auto supplied_image = ilemu::MachOImage::parse(
+      framework_path, ilemu::ArmArchitectureVersion::Armv6K,
+      supplied_identity);
+  if (supplied_image.content_identity() != supplied_identity ||
+      supplied_image.file_size() != image.file_size() ||
+      supplied_image.uuid() != image.uuid()) {
+    std::cerr << "Mach-O supplied identity reuse failed\n";
+    return 1;
+  }
   ilemu::ExecutableCatalog catalog;
   const auto &entry = catalog.register_image(image);
   if (!entry.kinds.contains(ilemu::ExecutableCatalogKind::Framework) ||

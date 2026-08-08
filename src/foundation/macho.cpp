@@ -226,7 +226,8 @@ std::uint32_t align_up(std::uint64_t value) {
 }  // namespace
 
 MachOImage MachOImage::parse(const std::filesystem::path& path,
-                             ArmArchitectureVersion architecture) {
+                             ArmArchitectureVersion architecture,
+                             std::optional<ContentIdentity> known_identity) {
     std::ifstream input{path, std::ios::binary | std::ios::ate};
     if (!input) {
         throw std::runtime_error{"cannot open Mach-O: " + path.string()};
@@ -305,7 +306,7 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     }
 
     const std::span<const std::byte> bytes{image.bytes_};
-    image.content_identity_ = sha256(bytes);
+    image.content_identity_ = known_identity ? *known_identity : sha256(bytes);
     if (bytes.size() < 28 || read_u32(bytes, 0) != mh_magic) {
         throw std::runtime_error{"expected a little-endian 32-bit Mach-O: " + path.string()};
     }
