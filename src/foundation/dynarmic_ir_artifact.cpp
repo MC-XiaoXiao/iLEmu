@@ -8,6 +8,7 @@
 #include <utility>
 
 #include <dynarmic/frontend/A32/a32_types.h>
+#include <dynarmic/frontend/A32/a32_location_descriptor.h>
 #include <dynarmic/frontend/A64/a64_types.h>
 #include <dynarmic/ir/acc_type.h>
 #include <dynarmic/ir/cond.h>
@@ -155,6 +156,72 @@ private:
     return false;
   }
   return false;
+}
+
+[[nodiscard]] bool canonical_a32_location(
+    Dynarmic::IR::LocationDescriptor location) {
+  const Dynarmic::A32::LocationDescriptor decoded{location};
+  return static_cast<Dynarmic::IR::LocationDescriptor>(decoded).Value() ==
+         location.Value();
+}
+
+[[nodiscard]] bool valid_terminal(
+    const Dynarmic::IR::Terminal& terminal,
+    const Dynarmic::A32::LocationDescriptor& initial_location) {
+  struct Visitor : boost::static_visitor<bool> {
+    const Dynarmic::A32::LocationDescriptor& initial_location;
+
+    explicit Visitor(const Dynarmic::A32::LocationDescriptor& initial)
+        : initial_location{initial} {}
+
+    bool operator()(const Dynarmic::IR::Term::Invalid&) const {
+      return false;
+    }
+
+    bool operator()(const Dynarmic::IR::Term::Interpret& value) const {
+      const Dynarmic::A32::LocationDescriptor next{value.next};
+      // Both current backends either assert these invariants or do not emit
+      // Interpret terminals at all. Keep malformed portable IR off Emit().
+      return canonical_a32_location(value.next) && value.num_instructions == 1U &&
+             next.TFlag() == initial_location.TFlag() &&
+             next.EFlag() == initial_location.EFlag();
+    }
+
+    bool operator()(const Dynarmic::IR::Term::ReturnToDispatch&) const {
+      return true;
+    }
+
+    bool operator()(const Dynarmic::IR::Term::LinkBlock& value) const {
+      return canonical_a32_location(value.next);
+    }
+
+    bool operator()(const Dynarmic::IR::Term::LinkBlockFast& value) const {
+      return canonical_a32_location(value.next);
+    }
+
+    bool operator()(const Dynarmic::IR::Term::PopRSBHint&) const {
+      return true;
+    }
+
+    bool operator()(const Dynarmic::IR::Term::FastDispatchHint&) const {
+      return true;
+    }
+
+    bool operator()(const Dynarmic::IR::Term::If& value) const {
+      return valid_terminal(value.then_, initial_location) &&
+             valid_terminal(value.else_, initial_location);
+    }
+
+    bool operator()(const Dynarmic::IR::Term::CheckBit& value) const {
+      return valid_terminal(value.then_, initial_location) &&
+             valid_terminal(value.else_, initial_location);
+    }
+
+    bool operator()(const Dynarmic::IR::Term::CheckHalt& value) const {
+      return valid_terminal(value.else_, initial_location);
+    }
+  } visitor{initial_location};
+  return boost::apply_visitor(visitor, terminal);
 }
 
 void write_location(Writer& writer, Dynarmic::IR::LocationDescriptor location) {
@@ -659,8 +726,17 @@ std::optional<Dynarmic::IR::Block> deserialize_dynarmic_ir(
     return std::nullopt;
   }
   block.SetTerminal(std::move(*terminal));
-  if (block.GetCondition() != Dynarmic::IR::Cond::AL &&
-      !block.HasConditionFailedLocation()) {
+  const auto initial_location =
+      Dynarmic::A32::LocationDescriptor{block.Location()};
+  if (!canonical_a32_location(block.Location()) ||
+      !canonical_a32_location(block.EndLocation()) ||
+      (block.GetCondition() == Dynarmic::IR::Cond::AL &&
+       block.HasConditionFailedLocation()) ||
+      (block.GetCondition() != Dynarmic::IR::Cond::AL &&
+       !block.HasConditionFailedLocation()) ||
+      (block.HasConditionFailedLocation() &&
+       !canonical_a32_location(block.ConditionFailedLocation())) ||
+      !valid_terminal(block.GetTerminal(), initial_location)) {
     return std::nullopt;
   }
   return block;
