@@ -4,6 +4,7 @@
 #include "ilemu/jit_artifact.hpp"
 #include "ilemu/performance.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -214,6 +215,27 @@ int main() {
                                                          {}, 1U}) ||
         safe_store.load(corrupt_persistence) || safe_store.size() != 1U) {
       std::cerr << "corrupt artifact load did not preserve the live store\n";
+      return 1;
+    }
+  }
+
+  const auto legacy_persistence = root / "legacy-artifacts.bin";
+  {
+    std::ofstream stream{legacy_persistence,
+                         std::ios::binary | std::ios::trunc};
+    stream.write("iLJARTF1", 8);
+    const std::array<char, 4> zero_count{};
+    stream.write(zero_count.data(),
+                 static_cast<std::streamsize>(zero_count.size()));
+    if (!stream) {
+      std::cerr << "could not create legacy artifact fixture\n";
+      return 1;
+    }
+  }
+  {
+    ilemu::JitArtifactStore safe_store;
+    if (safe_store.load(legacy_persistence) || safe_store.size() != 0U) {
+      std::cerr << "legacy artifact container was not rejected\n";
       return 1;
     }
   }

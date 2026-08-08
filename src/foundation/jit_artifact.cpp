@@ -14,8 +14,6 @@
 namespace ilemu {
 namespace {
 
-constexpr std::array<char, 8> legacy_artifact_magic{
-    'i', 'L', 'J', 'A', 'R', 'T', 'F', '1'};
 constexpr std::array<char, 8> artifact_magic{
     'i', 'L', 'J', 'A', 'R', 'T', 'F', '2'};
 constexpr std::uint32_t maximum_artifacts = 1'000'000;
@@ -361,11 +359,13 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
     if (!stream) return false;
     std::array<char, artifact_magic.size()> magic{};
     stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
-    if (!stream ||
-        (magic != legacy_artifact_magic && magic != artifact_magic)) {
+    // F1 stored text DumpBlock output and has no safe portable-IR validation
+    // boundary. Reject it instead of retaining an artifact that can never be
+    // imported safely. Unknown containers must take the same ordinary-JIT
+    // fallback path.
+    if (!stream || magic != artifact_magic) {
       return false;
     }
-    const bool legacy_format = magic == legacy_artifact_magic;
     const auto count = read_u32(stream);
     if (!count || *count > maximum_artifacts) return false;
 
@@ -382,9 +382,7 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
       const auto relocation_count = read_u32(stream);
       const auto exit_count = read_u32(stream);
       const auto instruction_count = read_u32(stream);
-      const auto translation_nanoseconds =
-          legacy_format ? std::optional<std::uint64_t>{0}
-                        : read_u64(stream);
+      const auto translation_nanoseconds = read_u64(stream);
       if (!key || !ir_size || !relocation_count || !exit_count ||
           !instruction_count || !translation_nanoseconds ||
           *relocation_count > maximum_metadata_entries ||
