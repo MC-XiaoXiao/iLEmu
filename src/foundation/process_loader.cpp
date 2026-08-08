@@ -97,7 +97,7 @@ read_interpreter_directive(const std::filesystem::path& path) {
 
 ProcessLoader::ProcessLoader(std::filesystem::path rootfs, AddressSpace& memory,
                              ArmArchitectureVersion architecture,
-                             const ExecutableCatalog *catalog)
+                             ExecutableCatalog *catalog)
     : rootfs_{std::move(rootfs)}, memory_{memory}, architecture_{architecture},
       catalog_{catalog} {}
 
@@ -121,13 +121,21 @@ ProcessLoader::host_path(const std::string& guest_path) const {
 MachOImage ProcessLoader::parse_catalogued(
     const std::filesystem::path &path) const {
     const auto *entry = catalog_ ? catalog_->find_path(path) : nullptr;
-    if (entry == nullptr || entry->file_size == 0U || !entry->uuid ||
+    const auto parse_and_refresh = [&]() {
+        auto image = MachOImage::parse(path, architecture_);
+        if (catalog_ != nullptr) {
+            static_cast<void>(catalog_->register_image(image));
+        }
+        return image;
+    };
+    if (catalog_ == nullptr || entry == nullptr || entry->file_size == 0U ||
+        !entry->uuid ||
         !catalog_->path_is_current(path)) {
-        return MachOImage::parse(path, architecture_);
+        return parse_and_refresh();
     }
     auto image = MachOImage::parse(path, architecture_, entry->content_identity);
     if (image.file_size() != entry->file_size || image.uuid() != entry->uuid) {
-        return MachOImage::parse(path, architecture_);
+        return parse_and_refresh();
     }
     return image;
 }

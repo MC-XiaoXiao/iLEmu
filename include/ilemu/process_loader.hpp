@@ -28,7 +28,7 @@ public:
     ProcessLoader(
         std::filesystem::path rootfs, AddressSpace& memory,
         ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
-        const ExecutableCatalog *catalog = nullptr);
+        ExecutableCatalog *catalog = nullptr);
 
     LoadedProcess load(
         std::string guest_executable,
@@ -52,7 +52,7 @@ private:
     std::filesystem::path rootfs_;
     AddressSpace& memory_;
     ArmArchitectureVersion architecture_;
-    const ExecutableCatalog *catalog_{};
+    ExecutableCatalog *catalog_{};
 };
 
 }  // namespace ilemu

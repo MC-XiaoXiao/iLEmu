@@ -1111,7 +1111,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   output.line("[catalog] manifest=" + catalog_manifest +
               " status=" + (catalog_loaded ? "loaded" : "fallback") +
               " entries=" + std::to_string(executable_catalog.size()));
-  const auto *catalog_index = catalog_loaded ? &executable_catalog : nullptr;
+  auto *catalog_index = catalog_loaded ? &executable_catalog : nullptr;
   const auto gles_backend = parse_gles_backend(args);
   configure_gles_pipeline_cache(
       host_cache / "vulkan-pipeline-cache.bin");
@@ -3102,6 +3102,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                  ? performance_counters().snapshot()
                                  : PerformanceSnapshot{};
   host_resources.wait_idle();
+  if (catalog_loaded && !executable_catalog.save(catalog_manifest)) {
+    output.line("[catalog] manifest-save=failed");
+  }
   for (auto &runtime : runtimes) {
     runtime_index.erase(*runtime);
     runtime_reaper.retire(std::move(runtime));
