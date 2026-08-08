@@ -15,7 +15,8 @@ namespace ilemu {
 namespace {
 
 constexpr std::array<char, 8> artifact_magic{
-    'i', 'L', 'J', 'A', 'R', 'T', 'F', '4'};
+    'i', 'L', 'J', 'A', 'R', 'T', 'F', '5'};
+constexpr std::size_t artifact_checksum_bytes = 32U;
 constexpr std::uint32_t maximum_artifacts = 1'000'000;
 constexpr std::uint32_t maximum_ir_bytes = 16U * 1024U * 1024U;
 constexpr std::uint32_t maximum_metadata_entries = 1'000'000;
@@ -369,14 +370,17 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
   try {
     std::error_code size_error;
     const auto file_size = std::filesystem::file_size(path, size_error);
-    if (!size_error) {
-      const auto configured_limit = limits_.persistence_bytes == 0U
-                                        ? maximum_persistence_bytes
-                                        : std::min<std::uintmax_t>(
-                                              limits_.persistence_bytes,
-                                              maximum_persistence_bytes);
-      if (file_size > configured_limit) return false;
+    if (size_error || file_size < artifact_magic.size() + sizeof(std::uint32_t) +
+                                   artifact_checksum_bytes) {
+      return false;
     }
+    const auto configured_limit = limits_.persistence_bytes == 0U
+                                      ? maximum_persistence_bytes
+                                      : std::min<std::uintmax_t>(
+                                            limits_.persistence_bytes,
+                                            maximum_persistence_bytes);
+    if (file_size > configured_limit) return false;
+    const auto payload_size = file_size - artifact_checksum_bytes;
     std::ifstream stream{path, std::ios::binary};
     if (!stream) return false;
     std::array<char, artifact_magic.size()> magic{};
@@ -502,7 +506,18 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
       loaded.push_back(artifact);
       loaded_index.emplace(artifact->key, std::prev(loaded.end()));
     }
-    if (stream.peek() != std::char_traits<char>::eof()) return false;
+    if (stream.tellg() != static_cast<std::streamoff>(payload_size)) {
+      return false;
+    }
+    ContentIdentity expected_checksum;
+    stream.read(reinterpret_cast<char *>(expected_checksum.digest.data()),
+                static_cast<std::streamsize>(expected_checksum.digest.size()));
+    if (!stream) return false;
+    const auto actual_checksum = sha256_file(
+        path, 0, static_cast<std::uint64_t>(payload_size));
+    if (!actual_checksum || *actual_checksum != expected_checksum) {
+      return false;
+    }
 
     const std::lock_guard lock{mutex_};
     for (auto &artifact : loaded) {
@@ -545,11 +560,16 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
       }
       serialized_size += *artifact_bytes;
     }
-    if (limits_.persistence_bytes != 0U &&
-        serialized_size > limits_.persistence_bytes) {
+    if (serialized_size >
+        std::numeric_limits<std::size_t>::max() - artifact_checksum_bytes) {
       return false;
     }
-    if (serialized_size > maximum_persistence_bytes) return false;
+    const auto total_size = serialized_size + artifact_checksum_bytes;
+    if (limits_.persistence_bytes != 0U &&
+        total_size > limits_.persistence_bytes) {
+      return false;
+    }
+    if (total_size > maximum_persistence_bytes) return false;
     const auto parent = path.parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent);
     const auto temporary = std::filesystem::path{
@@ -603,6 +623,17 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
           write_identity(stream, constant.layout_identity);
         }
       }
+      stream.flush();
+      if (!stream) return false;
+    }
+    const auto checksum = sha256_file(
+        temporary, 0, static_cast<std::uint64_t>(serialized_size));
+    if (!checksum) return false;
+    {
+      std::ofstream stream{temporary, std::ios::binary | std::ios::app};
+      if (!stream) return false;
+      stream.write(reinterpret_cast<const char *>(checksum->digest.data()),
+                   static_cast<std::streamsize>(checksum->digest.size()));
       stream.flush();
       if (!stream) return false;
     }
