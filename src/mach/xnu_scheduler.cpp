@@ -533,6 +533,7 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position) {
     record.queued = true;
     record.queued_priority = priority;
     record.queued_processor = record.info.bound_processor;
+    record.enqueue_sequence = next_enqueue_sequence_++;
     ++runnable_count_;
     ++run_queue.count;
     run_queue.bitmap[static_cast<std::size_t>(priority) / 32U] |=
@@ -540,28 +541,64 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position) {
     run_queue.high_queue = std::max(run_queue.high_queue, priority);
 }
 
+std::optional<XnuScheduler::QueueCandidate>
+XnuScheduler::candidate_for_queue(const RunQueue& run_queue,
+                                  bool local) const {
+    if (run_queue.count == 0) return std::nullopt;
+    const auto thread = peek_highest(run_queue);
+    const auto iterator = threads_.find(thread);
+    if (iterator == threads_.end() || !iterator->second.queued ||
+        iterator->second.queued_priority != run_queue.high_queue ||
+        iterator->second.queued_processor.has_value() != local) {
+        throw std::logic_error{"XNU run queue candidate is inconsistent"};
+    }
+    const auto& record = iterator->second;
+    return QueueCandidate{thread,
+                          record.info.scheduled_priority,
+                          record.info.realtime_deadline,
+                          record.enqueue_sequence,
+                          record.info.realtime,
+                          local};
+}
+
+bool XnuScheduler::candidate_is_better(const QueueCandidate& left,
+                                       const QueueCandidate& right) {
+    if (left.priority != right.priority)
+        return left.priority > right.priority;
+    if (left.realtime != right.realtime)
+        return left.realtime;
+    if (left.realtime &&
+        left.realtime_deadline != right.realtime_deadline) {
+        return left.realtime_deadline < right.realtime_deadline;
+    }
+    if (left.enqueue_sequence != right.enqueue_sequence)
+        return left.enqueue_sequence < right.enqueue_sequence;
+    if (left.local != right.local) return left.local;
+    return left.thread < right.thread;
+}
+
 XnuScheduler::RunQueue* XnuScheduler::selected_run_queue(
     std::size_t processor) {
     if (processor >= processor_run_queues_.size()) return nullptr;
     auto& local_run_queue = processor_run_queues_[processor];
-    if (local_run_queue.count != 0 &&
-        local_run_queue.high_queue >= processor_set_run_queue_.high_queue) {
+    const auto local = candidate_for_queue(local_run_queue, true);
+    const auto global = candidate_for_queue(processor_set_run_queue_, false);
+    if (!local) return global ? &processor_set_run_queue_ : nullptr;
+    if (!global || candidate_is_better(*local, *global))
         return &local_run_queue;
-    }
-    if (processor_set_run_queue_.count != 0) return &processor_set_run_queue_;
-    return nullptr;
+    return &processor_set_run_queue_;
 }
 
 const XnuScheduler::RunQueue* XnuScheduler::selected_run_queue(
     std::size_t processor) const {
     if (processor >= processor_run_queues_.size()) return nullptr;
     const auto& local_run_queue = processor_run_queues_[processor];
-    if (local_run_queue.count != 0 &&
-        local_run_queue.high_queue >= processor_set_run_queue_.high_queue) {
+    const auto local = candidate_for_queue(local_run_queue, true);
+    const auto global = candidate_for_queue(processor_set_run_queue_, false);
+    if (!local) return global ? &processor_set_run_queue_ : nullptr;
+    if (!global || candidate_is_better(*local, *global))
         return &local_run_queue;
-    }
-    if (processor_set_run_queue_.count != 0) return &processor_set_run_queue_;
-    return nullptr;
+    return &processor_set_run_queue_;
 }
 
 XnuThreadId XnuScheduler::peek_highest(const RunQueue& run_queue) const {

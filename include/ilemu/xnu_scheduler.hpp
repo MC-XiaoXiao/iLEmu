@@ -203,10 +203,20 @@ private:
         std::size_t count{};
     };
 
+    struct QueueCandidate {
+        XnuThreadId thread;
+        std::int32_t priority{};
+        std::uint64_t realtime_deadline{};
+        std::uint64_t enqueue_sequence{};
+        bool realtime{};
+        bool local{};
+    };
+
     struct ThreadRecord {
         XnuThreadSchedulingInfo info;
         bool queued{};
         std::int32_t queued_priority{};
+        std::uint64_t enqueue_sequence{};
         std::optional<ReadyQueue::iterator> queue_position;
         std::optional<RealtimeQueueKey> realtime_queue_key;
         std::optional<std::uint32_t> priority_usage_shift;
@@ -232,6 +242,10 @@ private:
     void index_failsafe(XnuThreadId thread, const ThreadRecord& record);
     void unindex_failsafe(XnuThreadId thread, const ThreadRecord& record);
     void unindex_thread(XnuThreadId thread);
+    [[nodiscard]] std::optional<QueueCandidate> candidate_for_queue(
+        const RunQueue& run_queue, bool local) const;
+    [[nodiscard]] static bool candidate_is_better(
+        const QueueCandidate& left, const QueueCandidate& right);
     [[nodiscard]] RunQueue* selected_run_queue(std::size_t processor);
     [[nodiscard]] const RunQueue* selected_run_queue(
         std::size_t processor) const;
@@ -269,6 +283,7 @@ private:
     std::uint64_t elapsed_since_scheduler_tick_{};
     std::uint64_t elapsed_ticks_{};
     std::uint64_t scheduler_tick_{};
+    std::uint64_t next_enqueue_sequence_{};
 };
 
 }  // namespace ilemu
