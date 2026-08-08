@@ -2330,6 +2330,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
     // the AddressSpace and exclusive-monitor lifetimes.
     constexpr auto execution_reclaim_grace = std::chrono::milliseconds{1500};
     const auto reclaim_now = std::chrono::steady_clock::now();
+    const auto precompile_finished = [&](Runtime &runtime) {
+      if (!runtime.precompile_task) return true;
+      if (!runtime.precompile_task->finished()) {
+        runtime.precompile_task->cancel();
+        host_resources.wake();
+        return false;
+      }
+      runtime.precompile_task.reset();
+      return true;
+    };
     for (auto &runtime : runtimes) {
       if (runtime->kernel->process().exited &&
           runtime->cpus->has_execution_resources()) {
@@ -2341,7 +2351,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
             scheduler.runnable_count() != 0) {
           continue;
         }
-        host_resources.wait_idle();
+        if (!precompile_finished(*runtime)) continue;
         runtime_reaper.retire_execution_resources(
             runtime->cpus->release_execution_resources());
         runtime->execution_reclaim_after.reset();
@@ -2376,7 +2386,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
           !(*runtime)->cpus->has_execution_resources()) {
         if (runtime->get() == display_scanout_owner)
           display_scanout_owner = nullptr;
-        host_resources.wait_idle();
+        if (!precompile_finished(**runtime)) {
+          ++runtime;
+          continue;
+        }
         runtime_index.erase(**runtime);
         runtime_reaper.retire(std::move(*runtime));
         runtime = runtimes.erase(runtime);

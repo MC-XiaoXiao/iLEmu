@@ -74,6 +74,9 @@ public:
       std::chrono::nanoseconds estimated_cost =
           std::chrono::nanoseconds::zero());
   void set_next_deadline(std::optional<Clock::time_point> deadline);
+  // Wakes workers after a queued token is cancelled so the cancellation can
+  // be observed without waiting for the current duty window to expire.
+  void wake() noexcept;
   void wait_idle();
 
   [[nodiscard]] std::size_t queued() const;

@@ -326,6 +326,75 @@ int main() {
     std::cerr << "background task did not run after deadline advanced\n";
     return 1;
   }
+
+  ilemu::HostResourceBudget cancellation_budget;
+  cancellation_budget.worker_count = 1U;
+  cancellation_budget.duty_period = 250ms;
+  cancellation_budget.interactive_compile_budget = 1ms;
+  cancellation_budget.deadline_reserve = 0ms;
+  ilemu::HostResourceController cancellation_controller{
+      cancellation_budget};
+  std::mutex cancellation_mutex;
+  std::condition_variable cancellation_condition;
+  bool cancellation_blocker_started = false;
+  bool release_cancellation_blocker = false;
+  const auto cancellation_blocker = cancellation_controller.submit(
+      ilemu::HostWorkKind::BackgroundCompile, std::nullopt,
+      [&] {
+        std::unique_lock lock{cancellation_mutex};
+        cancellation_blocker_started = true;
+        cancellation_condition.notify_all();
+        cancellation_condition.wait(
+            lock, [&] { return release_cancellation_blocker; });
+      },
+      1ms);
+  if (!cancellation_blocker) {
+    std::cerr << "cancellation blocker was not accepted\n";
+    return 1;
+  }
+  {
+    std::unique_lock lock{cancellation_mutex};
+    if (!cancellation_condition.wait_for(
+            lock, 100ms, [&] { return cancellation_blocker_started; })) {
+      std::cerr << "cancellation blocker did not start\n";
+      release_cancellation_blocker = true;
+    }
+  }
+  cancellation_condition.notify_all();
+  std::atomic<bool> cancelled_task_ran{};
+  const auto cancelled_task = cancellation_controller.submit(
+      ilemu::HostWorkKind::BackgroundCompile, std::nullopt,
+      [&] { cancelled_task_ran.store(true, std::memory_order_release); },
+      1ms);
+  if (!cancelled_task) {
+    std::cerr << "cancellation task was not accepted\n";
+    {
+      std::lock_guard lock{cancellation_mutex};
+      release_cancellation_blocker = true;
+    }
+    cancellation_condition.notify_all();
+    cancellation_controller.wait_idle();
+    return 1;
+  }
+  cancelled_task->cancel();
+  cancellation_controller.wake();
+  {
+    std::lock_guard lock{cancellation_mutex};
+    release_cancellation_blocker = true;
+  }
+  cancellation_condition.notify_all();
+  const auto cancellation_wait_started =
+      ilemu::HostResourceController::Clock::now();
+  cancellation_controller.wait_idle();
+  const auto cancellation_wait =
+      ilemu::HostResourceController::Clock::now() - cancellation_wait_started;
+  if (!cancelled_task->finished() ||
+      cancelled_task_ran.load(std::memory_order_acquire) ||
+      cancellation_wait >= 100ms) {
+    std::cerr << "cancelled queued work was not drained promptly\n";
+    return 1;
+  }
+
   ilemu::performance_counters().reset(false);
   ilemu::performance_counters().record_jit_block_compile(
       std::chrono::duration_cast<std::chrono::nanoseconds>(1ms).count());

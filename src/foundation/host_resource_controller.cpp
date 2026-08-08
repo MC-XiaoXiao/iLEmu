@@ -102,6 +102,8 @@ void HostResourceController::set_next_deadline(
   work_available_.notify_all();
 }
 
+void HostResourceController::wake() noexcept { work_available_.notify_all(); }
+
 void HostResourceController::wait_idle() {
   std::unique_lock lock{mutex_};
   idle_.wait(lock, [this] {
@@ -153,6 +155,10 @@ void HostResourceController::worker_loop() {
         auto iterator = tasks_.end();
         for (auto candidate = tasks_.begin(); candidate != tasks_.end();
              ++candidate) {
+          if (candidate->second.token->cancelled()) {
+            iterator = candidate;
+            break;
+          }
           const auto budgeted =
               candidate->second.kind == HostWorkKind::BackgroundCompile ||
               candidate->second.kind == HostWorkKind::OfflineCompile;
