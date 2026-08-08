@@ -908,8 +908,15 @@ public:
                 }
                 const auto imported = callbacks_->import_artifact(*jit_, *entry);
                 if (!imported) {
+                    const auto block_started = std::chrono::steady_clock::now();
                     callbacks_->begin(0);
                     jit_->Precompile(*entry);
+                    performance_counters().record_jit_block_compile(
+                        static_cast<std::uint64_t>(
+                            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now() -
+                                block_started)
+                                .count()));
                 }
                 if (key) {
                     artifact_probes_[*entry] = ArtifactProbe{*key, imported};

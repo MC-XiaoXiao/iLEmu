@@ -2778,8 +2778,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // A Dynarmic block compile is not preemptible. Keep a conservative
       // reserve beyond the nominal batch budget so profile warming cannot
       // consume the next guest timer or host-input deadline.
-      constexpr auto idle_precompile_deadline_reserve =
-          std::chrono::milliseconds{20};
+      const auto historical_block_reserve = std::chrono::nanoseconds{
+          static_cast<std::chrono::nanoseconds::rep>(std::max(
+              performance_counters().jit_block_compile_p95_nanoseconds(),
+              performance_counters().jit_block_compile_p99_nanoseconds()))};
+      // Keep the existing conservative floor until enough history exists;
+      // then let the measured P95/P99 of one non-preemptible block extend it.
+      const auto idle_precompile_deadline_reserve = std::max(
+          std::chrono::nanoseconds{std::chrono::milliseconds{20}},
+          historical_block_reserve);
       constexpr auto idle_precompile_display_quiet_period =
           std::chrono::milliseconds{100};
       constexpr auto idle_precompile_no_deadline_quiet_period =

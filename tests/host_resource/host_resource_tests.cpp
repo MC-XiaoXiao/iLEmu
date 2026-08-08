@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "ilemu/deadline_queue.hpp"
+#include "ilemu/performance.hpp"
 
 int main() {
   using namespace std::chrono_literals;
@@ -323,6 +324,16 @@ int main() {
   deadline_controller.wait_idle();
   if (!deadline_background_ran) {
     std::cerr << "background task did not run after deadline advanced\n";
+    return 1;
+  }
+  ilemu::performance_counters().reset(false);
+  ilemu::performance_counters().record_jit_block_compile(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(1ms).count());
+  ilemu::performance_counters().record_jit_block_compile(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(3ms).count());
+  if (ilemu::performance_counters().jit_block_compile_p95_nanoseconds() == 0 ||
+      ilemu::performance_counters().jit_block_compile_p99_nanoseconds() == 0) {
+    std::cerr << "JIT block compile history did not produce a reserve\n";
     return 1;
   }
   return 0;

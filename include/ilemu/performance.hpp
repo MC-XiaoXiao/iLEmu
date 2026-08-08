@@ -106,6 +106,7 @@ enum class PerfLatencyKind : std::uint8_t {
     VsyncSwapEndToGuestSubmit,
     VsyncDueToGuestSubmit,
     JitColdPath,
+    JitBlockCompile,
     RuntimeDestructor,
     GlesTargetRelease,
     PosixSpawnTotal,
@@ -219,6 +220,18 @@ class PerformanceCounters {
     }
 
     void record_jit(std::uint64_t creation_nanoseconds = 0);
+    // Background precompilation uses this always-on history to reserve time
+    // for one non-preemptible Dynarmic block even when verbose perf output is
+    // disabled.
+    void record_jit_block_compile(std::uint64_t nanoseconds);
+    [[nodiscard]] std::uint64_t jit_block_compile_p95_nanoseconds() const {
+        return jit_block_compile_p95_nanoseconds_.load(
+            std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint64_t jit_block_compile_p99_nanoseconds() const {
+        return jit_block_compile_p99_nanoseconds_.load(
+            std::memory_order_relaxed);
+    }
     void record_jit_destroyed();
     void record_jit_code_cache_usage(std::uint32_t process_id,
                                      std::uint32_t slot,
@@ -320,6 +333,7 @@ class PerformanceCounters {
         std::uint64_t value = 1);
     void record_global_latency(PerfLatencyKind kind,
                                std::uint64_t nanoseconds);
+    void refresh_jit_block_compile_percentiles();
     void record_display_window_latency(PerfLatencyKind kind,
                                        std::uint64_t nanoseconds);
     void record_display_window_latency_locked(PerfLatencyKind kind,
@@ -333,6 +347,8 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> jit_live_instances_{};
     std::atomic<std::uint64_t> jit_live_peak_instances_{};
     std::atomic<std::uint64_t> jit_creation_nanoseconds_{};
+    std::atomic<std::uint64_t> jit_block_compile_p95_nanoseconds_{};
+    std::atomic<std::uint64_t> jit_block_compile_p99_nanoseconds_{};
     std::atomic<std::uint64_t> jit_code_cache_current_bytes_{};
     std::atomic<std::uint64_t> jit_code_cache_peak_bytes_{};
     std::atomic<std::uint64_t> translation_blocks_{};

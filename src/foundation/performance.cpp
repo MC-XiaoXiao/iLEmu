@@ -259,6 +259,7 @@ bool is_display_window_latency(PerfLatencyKind kind) {
     case PerfLatencyKind::InputEnqueue:
     case PerfLatencyKind::DisplayPresent:
     case PerfLatencyKind::JitColdPath:
+    case PerfLatencyKind::JitBlockCompile:
     case PerfLatencyKind::RuntimeDestructor:
     case PerfLatencyKind::GlesTargetRelease:
     case PerfLatencyKind::PosixSpawnTotal:
@@ -290,6 +291,8 @@ void PerformanceCounters::reset(bool enabled) {
     jit_live_instances_.store(0, std::memory_order_relaxed);
     jit_live_peak_instances_.store(0, std::memory_order_relaxed);
     jit_creation_nanoseconds_.store(0, std::memory_order_relaxed);
+    jit_block_compile_p95_nanoseconds_.store(0, std::memory_order_relaxed);
+    jit_block_compile_p99_nanoseconds_.store(0, std::memory_order_relaxed);
     jit_code_cache_current_bytes_.store(0, std::memory_order_relaxed);
     jit_code_cache_peak_bytes_.store(0, std::memory_order_relaxed);
     translation_blocks_.store(0, std::memory_order_relaxed);
@@ -602,6 +605,42 @@ void PerformanceCounters::record_jit(std::uint64_t creation_nanoseconds) {
                peak, live, std::memory_order_relaxed,
                std::memory_order_relaxed)) {
     }
+}
+
+void PerformanceCounters::record_jit_block_compile(
+    std::uint64_t nanoseconds) {
+    // Keep this small history even when --perf-summary is not requested: the
+    // scheduler uses it to protect the next guest deadline from one
+    // non-preemptible background translation.
+    record_global_latency(PerfLatencyKind::JitBlockCompile, nanoseconds);
+    refresh_jit_block_compile_percentiles();
+}
+
+void PerformanceCounters::refresh_jit_block_compile_percentiles() {
+    const auto &histogram =
+        latencies_[static_cast<std::size_t>(PerfLatencyKind::JitBlockCompile)];
+    const auto samples = histogram.samples.load(std::memory_order_relaxed);
+    if (samples == 0) return;
+    const auto percentile = [&](std::uint64_t numerator) {
+        const auto rank = (samples * numerator + 99U) / 100U;
+        std::uint64_t cumulative{};
+        for (std::size_t bucket = 0; bucket < histogram.buckets.size();
+             ++bucket) {
+            cumulative += histogram.buckets[bucket].load(
+                std::memory_order_relaxed);
+            if (cumulative >= rank) {
+                return latency_bucket_upper_bound(
+                    bucket,
+                    histogram.maximum_nanoseconds.load(
+                        std::memory_order_relaxed));
+            }
+        }
+        return histogram.maximum_nanoseconds.load(std::memory_order_relaxed);
+    };
+    jit_block_compile_p95_nanoseconds_.store(percentile(95),
+                                             std::memory_order_relaxed);
+    jit_block_compile_p99_nanoseconds_.store(percentile(99),
+                                             std::memory_order_relaxed);
 }
 
 void PerformanceCounters::record_jit_destroyed() {
@@ -1549,6 +1588,7 @@ std::string_view perf_latency_kind_name(PerfLatencyKind kind) {
     case PerfLatencyKind::VsyncDueToGuestSubmit:
         return "vsync-due-guest-submit";
     case PerfLatencyKind::JitColdPath: return "jit-cold-path";
+    case PerfLatencyKind::JitBlockCompile: return "jit-block-compile";
     case PerfLatencyKind::RuntimeDestructor: return "runtime-destructor";
     case PerfLatencyKind::GlesTargetRelease: return "gles-target-release";
     case PerfLatencyKind::PosixSpawnTotal: return "posix-spawn-total";
