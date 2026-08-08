@@ -605,7 +605,8 @@ std::string usage() {
          "  ilemu profile [--device iPhone1,1|iPhone1,2|iPhone2,1] [--output FILE]\n"
          "  ilemu inspect --rootfs DIR [--binary /sbin/launchd] "
          "[--device PROFILE] [--symbols SUBSTRING] [--output FILE]\n"
-         "  ilemu catalog --rootfs DIR [--device PROFILE] [--output FILE]\n"
+         "  ilemu catalog --rootfs DIR [--device PROFILE] [--manifest FILE] "
+         "[--output FILE]\n"
          "  ilemu disasm --rootfs DIR --binary PATH "
          "(--symbol NAME | --address ADDR) [--device PROFILE] [--count N] [--thumb]\n"
          "  ilemu boot --rootfs DIR [--device iPhone1,1|iPhone1,2|iPhone2,1] "
@@ -848,6 +849,11 @@ void catalog(const std::vector<std::string> &args, Output &output) {
       select_device_profile(args).cpu_model);
   ExecutableCatalog executable_catalog;
   const auto summary = executable_catalog.register_tree(*rootfs, architecture);
+  const auto manifest = option(args, "--manifest");
+  if (manifest && !executable_catalog.save(*manifest)) {
+    throw std::runtime_error{"failed to save executable catalog manifest: " +
+                             *manifest};
+  }
   output.line(
       "[catalog] rootfs=" + *rootfs +
       " regular-files=" + std::to_string(summary.regular_files) +
@@ -857,7 +863,8 @@ void catalog(const std::vector<std::string> &args, Output &output) {
       " shared-cache-images=" +
       std::to_string(summary.dyld_shared_cache_images) +
       " failed-files=" + std::to_string(summary.failed_files) +
-      " entries=" + std::to_string(executable_catalog.size()));
+      " entries=" + std::to_string(executable_catalog.size()) +
+      (manifest ? " manifest=" + *manifest : ""));
 }
 
 template <std::size_t Size>
