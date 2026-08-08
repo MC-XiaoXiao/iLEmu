@@ -75,6 +75,17 @@ constexpr std::uint32_t jit_artifact_format_version = 6U;
 #endif
 }
 
+[[nodiscard]] constexpr bool portable_artifact_import_supported() noexcept {
+#if defined(__x86_64__) || defined(_M_X64)
+    return true;
+#else
+    // Dynarmic's ARM64 A32 emitter currently rejects Interpret terminals;
+    // keep portable IR as a publish-only diagnostic/cache format until that
+    // backend can validate and emit every imported terminal safely.
+    return false;
+#endif
+}
+
 }  // namespace
 
 class JitCallbacks final : public Dynarmic::A32::UserCallbacks {
@@ -134,7 +145,9 @@ public:
     [[nodiscard]] bool import_artifact(
         Dynarmic::A32::Jit& jit,
         std::uint64_t location_descriptor) const noexcept {
-        if (!artifact_store_) return false;
+        if (!artifact_store_ || !portable_artifact_import_supported()) {
+            return false;
+        }
         try {
             const auto artifact = find_artifact(location_descriptor);
             if (!artifact || artifact->data.normalized_ir.empty()) return false;
