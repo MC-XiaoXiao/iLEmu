@@ -74,6 +74,9 @@ int main() {
     ilemu::JitArtifactData first_data{
         {std::byte{0xa1}, std::byte{0xb2}}, {0x2000U}, {0x3000U}, 2U,
         17U};
+    first_data.constant_dependencies.push_back(ilemu::JitConstantDependency{
+        0x5000U, 4U, 0x12345678U, key.content_identity,
+        key.layout_identity});
     auto first = store.publish(
         key, std::move(first_data));
     auto duplicate = store.publish(
@@ -134,11 +137,16 @@ int main() {
       std::cerr << "translation metadata did not reload\n";
       return 1;
     }
+    if (artifact->data.constant_dependencies.size() != 1U ||
+        artifact->data.constant_dependencies.front().value != 0x12345678U) {
+      std::cerr << "constant-memory dependency did not reload\n";
+      return 1;
+    }
   }
 
   {
     ilemu::JitArtifactLimits resident_limits;
-    resident_limits.resident_bytes = 306U;
+    resident_limits.resident_bytes = 314U;
     ilemu::JitArtifactStore resident_limited{
         std::filesystem::path{}, resident_limits};
     auto first_limited_key = key;
@@ -179,7 +187,7 @@ int main() {
                 << static_cast<bool>(third_final_hit) << "\n";
       return 1;
     }
-    resident_limits.resident_bytes = 153U;
+    resident_limits.resident_bytes = 157U;
     ilemu::JitArtifactStore reloaded_limited{persistence, resident_limits};
     if (reloaded_limited.size() != 1U) {
       std::cerr << "resident artifact budget was ignored during load\n";
@@ -295,7 +303,7 @@ int main() {
     key.codegen_options = 1U;
     key.host_isa = host_isa();
     key.host_feature_mask = 0U;
-    key.artifact_format_version = 5U;
+    key.artifact_format_version = 6U;
     return key;
   };
 

@@ -55,7 +55,7 @@ std::uint64_t jit_code_cache_used(const Jit& jit) {
 constexpr std::uint32_t jit_artifact_hle_abi_version = 1U;
 constexpr std::uint32_t jit_artifact_backend_abi_version = 2U;
 constexpr std::uint64_t jit_artifact_codegen_options = 1U;
-constexpr std::uint32_t jit_artifact_format_version = 5U;
+constexpr std::uint32_t jit_artifact_format_version = 6U;
 
 [[nodiscard]] ArmCpuModelKind jit_artifact_cpu_model(
     const ArmCpuModel& cpu_model) noexcept {
@@ -98,6 +98,8 @@ public:
             performance_counters().record_translation_block();
             translation_block_ = &ir.block;
             translation_code_pages_.clear();
+            translation_constant_dependencies_.clear();
+            constant_dependency_failed_ = false;
         }
         if (translation_block_ == &ir.block) {
             const auto page = address & ~(AddressSpace::page_size - 1U);
@@ -162,6 +164,33 @@ public:
     }
 
 private:
+    void record_constant_dependency(
+        std::uint32_t address, std::uint32_t size,
+        std::uint64_t value) {
+        if (translation_block_ == nullptr ||
+            constant_dependency_failed_) {
+            return;
+        }
+        const auto identity =
+            memory_.executable_backing_identity(address, size);
+        if (!identity) {
+            constant_dependency_failed_ = true;
+            return;
+        }
+        for (const auto &existing : translation_constant_dependencies_) {
+            if (existing.address == address && existing.size == size) {
+                if (existing.value != value ||
+                    existing.content_identity != identity->content ||
+                    existing.layout_identity != identity->layout) {
+                    constant_dependency_failed_ = true;
+                }
+                return;
+            }
+        }
+        translation_constant_dependencies_.push_back(JitConstantDependency{
+            address, size, value, identity->content, identity->layout});
+    }
+
     [[nodiscard]] bool dependencies_match(
         const BlockArtifact &artifact) const noexcept {
         if (artifact.data.code_dependencies.empty()) return false;
@@ -177,6 +206,44 @@ private:
                 current->layout != dependency.layout_identity) {
                 return false;
             }
+        }
+        for (const auto &constant : artifact.data.constant_dependencies) {
+            const auto current = memory_.executable_backing_identity(
+                constant.address, constant.size);
+            if (!current || current->content != constant.content_identity ||
+                current->layout != constant.layout_identity) {
+                return false;
+            }
+            std::optional<std::uint64_t> value;
+            switch (constant.size) {
+            case 1U: {
+                const auto read = memory_.read8(
+                    constant.address, MemoryPermission::Read);
+                if (read) value = *read;
+                break;
+            }
+            case 2U: {
+                const auto read = memory_.read16(
+                    constant.address, MemoryPermission::Read);
+                if (read) value = *read;
+                break;
+            }
+            case 4U: {
+                const auto read = memory_.read32(
+                    constant.address, MemoryPermission::Read);
+                if (read) value = *read;
+                break;
+            }
+            case 8U: {
+                const auto read = memory_.read64(
+                    constant.address, MemoryPermission::Read);
+                if (read) value = *read;
+                break;
+            }
+            default:
+                return false;
+            }
+            if (!value || *value != constant.value) return false;
         }
         return true;
     }
@@ -206,16 +273,44 @@ public:
     }
 
     std::uint8_t MemoryRead8(std::uint32_t address) override {
-        return read<std::uint8_t>(address, &AddressSpace::read8);
+        const auto value = memory_.read8(address, MemoryPermission::Read);
+        if (!value) {
+            memory_fault(address, sizeof(std::uint8_t),
+                         MemoryPermission::Read);
+            return 0;
+        }
+        record_constant_dependency(address, 1U, *value);
+        return *value;
     }
     std::uint16_t MemoryRead16(std::uint32_t address) override {
-        return read<std::uint16_t>(address, &AddressSpace::read16);
+        const auto value = memory_.read16(address, MemoryPermission::Read);
+        if (!value) {
+            memory_fault(address, sizeof(std::uint16_t),
+                         MemoryPermission::Read);
+            return 0;
+        }
+        record_constant_dependency(address, 2U, *value);
+        return *value;
     }
     std::uint32_t MemoryRead32(std::uint32_t address) override {
-        return read<std::uint32_t>(address, &AddressSpace::read32);
+        const auto value = memory_.read32(address, MemoryPermission::Read);
+        if (!value) {
+            memory_fault(address, sizeof(std::uint32_t),
+                         MemoryPermission::Read);
+            return 0;
+        }
+        record_constant_dependency(address, 4U, *value);
+        return *value;
     }
     std::uint64_t MemoryRead64(std::uint32_t address) override {
-        return read<std::uint64_t>(address, &AddressSpace::read64);
+        const auto value = memory_.read64(address, MemoryPermission::Read);
+        if (!value) {
+            memory_fault(address, sizeof(std::uint64_t),
+                         MemoryPermission::Read);
+            return 0;
+        }
+        record_constant_dependency(address, 8U, *value);
+        return *value;
     }
 
     void MemoryWrite8(std::uint32_t address, std::uint8_t value) override {
@@ -395,6 +490,7 @@ private:
             auto key = make_artifact_key(location_descriptor);
             if (!key) return;
             if (translation_code_pages_.empty()) return;
+            if (constant_dependency_failed_) return;
 
             JitArtifactData data;
             data.code_dependencies.reserve(translation_code_pages_.size());
@@ -407,6 +503,7 @@ private:
                     page, AddressSpace::page_size, dependency->content,
                     dependency->layout});
             }
+            data.constant_dependencies = translation_constant_dependencies_;
             if (optimized_block != nullptr) {
                 const auto serialized = serialize_dynarmic_ir(*optimized_block);
                 if (serialized) data.normalized_ir = *serialized;
@@ -523,6 +620,8 @@ private:
     std::shared_ptr<JitArtifactStore> artifact_store_;
     Dynarmic::IR::Block *translation_block_{};
     std::vector<std::uint32_t> translation_code_pages_;
+    std::vector<JitConstantDependency> translation_constant_dependencies_;
+    bool constant_dependency_failed_{};
 };
 
 // The iPhone ARM user ABI uses CP15 thread-pointer registers in addition to

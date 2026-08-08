@@ -62,6 +62,14 @@ struct JitCodeDependency {
   ContentIdentity layout_identity;
 };
 
+struct JitConstantDependency {
+  std::uint32_t address{};
+  std::uint32_t size{};
+  std::uint64_t value{};
+  ContentIdentity content_identity;
+  ContentIdentity layout_identity;
+};
+
 struct JitArtifactData {
   // This is a normalized, portable representation. It is deliberately not a
   // copy of Dynarmic's native code cache.
@@ -77,6 +85,8 @@ struct JitArtifactData {
   // Every executable page observed by Dynarmic while translating the block.
   // Empty dependencies are not importable by the CPU integration.
   std::vector<JitCodeDependency> code_dependencies;
+  // Read-only values folded by Dynarmic's constant-memory pass.
+  std::vector<JitConstantDependency> constant_dependencies;
 };
 
 struct JitArtifactLimits {
