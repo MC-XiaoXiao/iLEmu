@@ -20,6 +20,10 @@ constexpr std::uint32_t page_base(std::uint32_t address) {
 }
 
 constexpr std::uint8_t mapped_page_flag = 0x80U;
+constexpr std::uint32_t exclusive_granule_mask = ~std::uint32_t{63U};
+constexpr std::uint64_t backing_reservation_tag = std::uint64_t{1} << 63U;
+constexpr std::uint64_t maximum_backing_reservation_identity =
+    (std::uint64_t{1} << 52U) - 1U;
 
 constexpr std::uint8_t permission_bits(MemoryPermission permissions) {
   return static_cast<std::uint8_t>(permissions);
@@ -36,6 +40,18 @@ std::uint64_t page_range_end(std::uint32_t address, std::size_t size) {
   return static_cast<std::uint64_t>(
              page_base(address + static_cast<std::uint32_t>(size - 1U))) +
          AddressSpace::page_size;
+}
+
+[[nodiscard]] std::uint64_t backing_reservation_key(
+    const GuestPageBacking &backing, std::uint32_t address) noexcept {
+  const auto identity = backing.reservation_identity();
+  if (identity == 0 || identity > maximum_backing_reservation_identity) {
+    return static_cast<std::uint64_t>(address & exclusive_granule_mask);
+  }
+  const auto page_offset =
+      static_cast<std::uint64_t>(address & (AddressSpace::page_size - 1U) &
+                                 exclusive_granule_mask);
+  return backing_reservation_tag | (identity << 12U) | page_offset;
 }
 
 void append_u64(std::vector<std::byte> &bytes, std::uint64_t value) {
@@ -95,6 +111,22 @@ AddressSpace::~AddressSpace() {
              1U);
 }
 
+std::uint64_t AddressSpace::exclusive_reservation_key(
+    std::uint32_t address) const noexcept {
+  try {
+    auto lock = read_lock();
+    const auto *page = find_page_locked(address);
+    if (page != nullptr && page->backing) {
+      return backing_reservation_key(*page->backing, address);
+    }
+  } catch (...) {
+    // A resolver is called from generated guest code. If a host allocation or
+    // lock operation fails, preserve the safe legacy virtual-address key and
+    // let the ordinary memory callback report the actual fault.
+  }
+  return static_cast<std::uint64_t>(address & exclusive_granule_mask);
+}
+
 void AddressSpace::set_parallel_access(bool enabled) {
   std::unique_lock lock{mutex_};
   parallel_access_ = enabled;
@@ -129,7 +161,8 @@ std::uint8_t **AddressSpace::jit_read_page_table() {
 
 std::uint8_t **AddressSpace::jit_write_page_table() {
   auto lock = write_lock();
-  if (!jit_page_table_enabled_) return nullptr;
+  if (!jit_page_table_enabled_ || !jit_write_page_table_enabled_)
+    return nullptr;
   ensure_jit_page_tables_locked();
   return jit_write_page_table_->entries();
 }
@@ -137,7 +170,15 @@ std::uint8_t **AddressSpace::jit_write_page_table() {
 void AddressSpace::disable_jit_page_table() {
   auto lock = write_lock();
   jit_page_table_enabled_ = false;
+  jit_write_page_table_enabled_ = false;
   clear_jit_page_table_locked();
+}
+
+void AddressSpace::disable_jit_write_page_table() {
+  auto lock = write_lock();
+  jit_write_page_table_enabled_ = false;
+  if (jit_write_page_table_) jit_write_page_table_->clear();
+  direct_jit_write_pages_.clear();
 }
 
 void AddressSpace::synchronize_shared_write_tracking() {
@@ -869,7 +910,8 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address) {
   constexpr auto write_required = static_cast<std::uint8_t>(
       mapped_page_flag | permission_bits(MemoryPermission::Read) |
       permission_bits(MemoryPermission::Write));
-  if (!write_entry || (flags & write_required) != write_required ||
+  if (!jit_write_page_table_enabled_ ||
+      !write_entry || (flags & write_required) != write_required ||
       tracks_write_locked(base, page_size) ||
       (page != nullptr && page->backing &&
        page->backing->shared_write_tracking_enabled())) {
@@ -957,8 +999,10 @@ AddressSpace::writable_backing_locked(Page &page) {
 }
 
 void AddressSpace::mark_shared_backing_written_locked(Page &page) {
-  if (page.backing)
+  if (page.backing) {
+    page.backing->invalidate_reservation_identity();
     page.backing->mark_shared_write();
+  }
   if (exclusive_write_observer_)
     exclusive_write_observer_();
 }

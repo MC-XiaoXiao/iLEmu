@@ -1156,7 +1156,8 @@ CpuCluster::CpuCluster(
     const ArmCpuModel& cpu_model,
     Dynarmic::ExclusiveMonitor& monitor,
     std::size_t monitor_processor_base,
-    std::shared_ptr<JitArtifactStore> artifact_store)
+    std::shared_ptr<JitArtifactStore> artifact_store,
+    std::shared_ptr<GuestExclusiveAddressResolver> address_resolver)
     : memory_{&memory},
       maximum_processor_count_{maximum_processor_count},
       serialized_execution_{execution_slot_count == 1},
@@ -1164,6 +1165,8 @@ CpuCluster::CpuCluster(
       monitor_{1U},
       execution_monitor_{&monitor},
       monitor_processor_base_{monitor_processor_base},
+      monitor_processor_count_{execution_slot_count},
+      address_resolver_{std::move(address_resolver)},
       execution_pool_{std::make_shared<CpuExecutionPool>(
           memory, *execution_monitor_, execution_slot_count,
           monitor_processor_base_, cpu_model, std::move(artifact_store))} {
@@ -1175,11 +1178,33 @@ CpuCluster::CpuCluster(
         throw std::invalid_argument{
             "maximum_processor_count must cover the initial processors"};
     }
-    memory.set_exclusive_write_observer(
-        [&monitor] { monitor.Clear(); });
+    if (address_resolver_) {
+        address_resolver_->bind(
+            monitor_processor_base_, monitor_processor_count_, memory);
+        monitor.SetAddressResolver(
+            &GuestExclusiveAddressResolver::resolve_callback,
+            address_resolver_.get());
+        // Dynarmic's direct write page table has no callback at which the
+        // backing reservation generation can be advanced. Keep exact
+        // reservation identity on the checked write path until that backend
+        // hook exists; immutable read paths remain available to ordinary
+        // non-resolver clusters.
+        memory.disable_jit_write_page_table();
+    }
+    if (!address_resolver_) {
+        memory.set_exclusive_write_observer(
+            [&monitor] { monitor.Clear(); });
+    }
     cpus_.reserve(maximum_processor_count);
     while (cpus_.size() < initial_processor_count) {
         static_cast<void>(add_cpu());
+    }
+}
+
+CpuCluster::~CpuCluster() {
+    if (address_resolver_ != nullptr) {
+        address_resolver_->unbind(
+            monitor_processor_base_, monitor_processor_count_, *memory_);
     }
 }
 

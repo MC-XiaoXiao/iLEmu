@@ -1272,6 +1272,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   // mappings can invalidate reservations across process boundaries.
   Dynarmic::ExclusiveMonitor shared_exclusive_monitor{
       maximum_shared_monitor_slots};
+  auto shared_exclusive_address_resolver =
+      std::make_shared<GuestExclusiveAddressResolver>();
   std::size_t next_shared_monitor_slot{};
   const auto allocate_shared_monitor_slots = [&]() {
     if (guest_processor_count >
@@ -1333,7 +1335,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   initial->cpus = std::make_unique<CpuCluster>(
       initial_guest_thread_slots, maximum_guest_threads, *initial->memory,
       guest_processor_count, *cpu_model, shared_exclusive_monitor,
-      allocate_shared_monitor_slots(), jit_artifacts);
+      allocate_shared_monitor_slots(), jit_artifacts,
+      shared_exclusive_address_resolver);
   initial->cpus->set_jit_code_cache_size(
       configured_jit_code_cache_size);
   assign_translation_profile(*initial->cpus,
@@ -1581,7 +1584,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 initial_guest_thread_slots, maximum_guest_threads,
                 *child->memory, guest_processor_count, *cpu_model,
                 shared_exclusive_monitor, allocate_shared_monitor_slots(),
-                jit_artifacts);
+                jit_artifacts, shared_exclusive_address_resolver);
             child->cpus->set_jit_code_cache_size(
                 configured_jit_code_cache_size);
           }

@@ -52,9 +52,17 @@ struct GuestFileBacking {
 struct GuestPageBacking {
   mutable GuestPageBytes bytes{};
 
-  GuestPageBacking() = default;
+  GuestPageBacking();
   GuestPageBacking(const GuestPageBacking &other);
   GuestPageBacking &operator=(const GuestPageBacking &) = delete;
+
+  // Stable for the lifetime of this physical backing. Copy-on-write creates
+  // a new backing and therefore receives a new identity; shared aliases keep
+  // the same identity through their shared_ptr.
+  [[nodiscard]] std::uint64_t reservation_identity() const noexcept {
+    return reservation_identity_.load(std::memory_order_acquire);
+  }
+  void invalidate_reservation_identity() noexcept;
 
   // File-backed mappings are materialized on first guest access. Anonymous
   // and IPC-backed pages have no source and remain ordinary byte arrays.
@@ -79,6 +87,7 @@ private:
   std::shared_ptr<GuestFileBacking> file_writeback_;
   std::uint64_t file_offset_{};
   std::uint32_t file_byte_count_{};
+  std::atomic<std::uint64_t> reservation_identity_{};
   // Set before this page is published and never changed afterwards. This
   // avoids taking the page lock for anonymous and already-private pages.
   bool has_file_source_{};

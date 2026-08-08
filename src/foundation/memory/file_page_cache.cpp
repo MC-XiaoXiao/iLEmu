@@ -17,6 +17,7 @@ constexpr std::uint64_t file_prefetch_bytes =
     guest_file_prefetch_pages * guest_memory_page_size;
 
 std::atomic<std::uint64_t> global_shared_write_tracking_epoch{};
+std::atomic<std::uint64_t> next_reservation_identity{1};
 
 [[nodiscard]] std::string stable_path(const std::filesystem::path &path) {
   std::error_code error;
@@ -26,10 +27,23 @@ std::atomic<std::uint64_t> global_shared_write_tracking_epoch{};
 
 } // namespace
 
+GuestPageBacking::GuestPageBacking()
+    : reservation_identity_{next_reservation_identity.fetch_add(
+          1, std::memory_order_relaxed)} {}
+
 GuestPageBacking::GuestPageBacking(const GuestPageBacking &other) {
   other.materialize();
   const std::scoped_lock lock{other.mutex_};
   bytes = other.bytes;
+  reservation_identity_.store(
+      next_reservation_identity.fetch_add(1, std::memory_order_relaxed),
+      std::memory_order_release);
+}
+
+void GuestPageBacking::invalidate_reservation_identity() noexcept {
+  reservation_identity_.store(
+      next_reservation_identity.fetch_add(1, std::memory_order_relaxed),
+      std::memory_order_release);
 }
 
 void GuestPageBacking::materialize() const {

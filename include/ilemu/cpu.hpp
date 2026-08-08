@@ -14,6 +14,7 @@
 
 #include "ilemu/address_space.hpp"
 #include "ilemu/arm_cpu_model.hpp"
+#include "ilemu/guest_exclusive_address_resolver.hpp"
 
 namespace ilemu {
 
@@ -112,6 +113,8 @@ private:
 
 class CpuCluster {
 public:
+    ~CpuCluster();
+
     CpuCluster(std::size_t processor_count, AddressSpace& memory);
     CpuCluster(
         std::size_t initial_processor_count,
@@ -148,7 +151,8 @@ public:
         const ArmCpuModel& cpu_model,
         Dynarmic::ExclusiveMonitor& monitor,
         std::size_t monitor_processor_base,
-        std::shared_ptr<JitArtifactStore> artifact_store = {});
+        std::shared_ptr<JitArtifactStore> artifact_store = {},
+        std::shared_ptr<GuestExclusiveAddressResolver> address_resolver = {});
 
     [[nodiscard]] std::size_t size() const { return cpus_.size(); }
     [[nodiscard]] std::size_t capacity() const {
@@ -186,6 +190,8 @@ private:
     Dynarmic::ExclusiveMonitor monitor_;
     Dynarmic::ExclusiveMonitor* execution_monitor_{};
     std::size_t monitor_processor_base_{};
+    std::size_t monitor_processor_count_{};
+    std::shared_ptr<GuestExclusiveAddressResolver> address_resolver_;
     std::shared_ptr<CpuExecutionPool> execution_pool_;
     std::vector<std::unique_ptr<Cpu>> cpus_;
 };

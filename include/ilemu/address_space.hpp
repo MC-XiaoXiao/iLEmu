@@ -69,6 +69,10 @@ public:
   // access to pass through callbacks. Existing JITs retain a valid all-null
   // table after this call.
   void disable_jit_page_table();
+  // Exact exclusive reservation tracking needs checked writes so each store
+  // can advance its backing identity; immutable/read-only direct accesses may
+  // continue using the read table.
+  void disable_jit_write_page_table();
   // A physical page can become write-tracked after another AddressSpace has
   // already cached a direct JIT write pointer to it. The execution boundary
   // calls this safe point before re-entering Dynarmic so those old aliases are
@@ -149,6 +153,12 @@ public:
   [[nodiscard]] std::optional<ExecutableBackingIdentity>
   executable_backing_identity(std::uint32_t address,
                               std::size_t size) const;
+  // Resolves an exclusive-access address to the physical GuestPageBacking
+  // identity when resident. Shared aliases therefore reserve the same
+  // monitor granule, while unmapped/lazy pages conservatively retain a
+  // virtual-address key until their backing is materialized.
+  [[nodiscard]] std::uint64_t
+  exclusive_reservation_key(std::uint32_t address) const noexcept;
   // Persistent translation hints may only retain code whose guest address is
   // invariant across process launches. Fixed Mach-O mappings opt into this
   // range separately from ordinary executable permission; slid bundles,
@@ -344,6 +354,7 @@ private:
   // CoreSurface/Mach shared-memory publication.
   std::unordered_set<std::uint32_t> direct_jit_write_pages_;
   bool jit_page_table_enabled_{};
+  bool jit_write_page_table_enabled_{true};
   std::atomic<std::uint64_t> observed_shared_write_tracking_epoch_{};
   std::vector<TrackedWriteRange> tracked_write_ranges_;
   std::uint64_t write_generation_{};
