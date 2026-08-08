@@ -232,6 +232,12 @@ private:
     void index_failsafe(XnuThreadId thread, const ThreadRecord& record);
     void unindex_failsafe(XnuThreadId thread, const ThreadRecord& record);
     void unindex_thread(XnuThreadId thread);
+    [[nodiscard]] RunQueue* selected_run_queue(std::size_t processor);
+    [[nodiscard]] const RunQueue* selected_run_queue(
+        std::size_t processor) const;
+    [[nodiscard]] XnuThreadId peek_highest(const RunQueue& run_queue) const;
+    [[nodiscard]] std::optional<XnuThreadId> peek_next_for_processor(
+        std::size_t processor) const;
     static void refresh_high_queue(RunQueue& run_queue);
     [[nodiscard]] XnuThreadId pop_highest(RunQueue& run_queue);
     void advance_scheduler_time(std::uint64_t consumed_ticks);

@@ -307,14 +307,7 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
             *preferred, processor, record.info.remaining_quantum};
     }
 
-    auto& local_run_queue = processor_run_queues_[processor];
-    RunQueue* selected_queue = nullptr;
-    if (local_run_queue.count != 0 &&
-        local_run_queue.high_queue >= processor_set_run_queue_.high_queue) {
-        selected_queue = &local_run_queue;
-    } else if (processor_set_run_queue_.count != 0) {
-        selected_queue = &processor_set_run_queue_;
-    }
+    auto* selected_queue = selected_run_queue(processor);
     if (selected_queue == nullptr) return std::nullopt;
 
     const auto thread = pop_highest(*selected_queue);
@@ -345,34 +338,26 @@ XnuPreemption XnuScheduler::preemption_for(
         return XnuPreemption::None;
     }
 
-    const auto& local_run_queue = processor_run_queues_[processor];
-    const RunQueue* candidate_queue = nullptr;
-    if (local_run_queue.count != 0 &&
-        local_run_queue.high_queue >= processor_set_run_queue_.high_queue) {
-        candidate_queue = &local_run_queue;
-    } else if (processor_set_run_queue_.count != 0) {
-        candidate_queue = &processor_set_run_queue_;
-    }
-    if (candidate_queue == nullptr) return XnuPreemption::None;
+    const auto candidate_thread = peek_next_for_processor(processor);
+    if (!candidate_thread) return XnuPreemption::None;
 
-    const auto candidate_priority = candidate_queue->high_queue;
+    const auto candidate = threads_.find(*candidate_thread);
+    if (candidate == threads_.end()) return XnuPreemption::None;
+    const auto candidate_priority = candidate->second.info.scheduled_priority;
     const auto current_priority = current->second.info.scheduled_priority;
     const auto first_timeslice =
         current->second.info.remaining_quantum != 0;
     bool preempt = first_timeslice
         ? candidate_priority > current_priority
         : candidate_priority >= current_priority;
-    const auto& queue = candidate_queue->queues[
-        static_cast<std::size_t>(candidate_priority)];
-    const auto candidate = threads_.find(queue.front());
-    if (!preempt && candidate != threads_.end() &&
+    if (!preempt &&
         candidate_priority >= xnu792::scheduler::realtime_queue_priority &&
         current->second.info.realtime && candidate->second.info.realtime &&
         candidate->second.info.realtime_deadline <
             current->second.info.realtime_deadline) {
         preempt = true;
     }
-    if (!preempt || candidate == threads_.end()) return XnuPreemption::None;
+    if (!preempt) return XnuPreemption::None;
     return !candidate->second.info.timeshare &&
                    candidate_priority >= xnu792::scheduler::preempt_priority
         ? XnuPreemption::Urgent
@@ -555,6 +540,62 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position) {
     run_queue.high_queue = std::max(run_queue.high_queue, priority);
 }
 
+XnuScheduler::RunQueue* XnuScheduler::selected_run_queue(
+    std::size_t processor) {
+    if (processor >= processor_run_queues_.size()) return nullptr;
+    auto& local_run_queue = processor_run_queues_[processor];
+    if (local_run_queue.count != 0 &&
+        local_run_queue.high_queue >= processor_set_run_queue_.high_queue) {
+        return &local_run_queue;
+    }
+    if (processor_set_run_queue_.count != 0) return &processor_set_run_queue_;
+    return nullptr;
+}
+
+const XnuScheduler::RunQueue* XnuScheduler::selected_run_queue(
+    std::size_t processor) const {
+    if (processor >= processor_run_queues_.size()) return nullptr;
+    const auto& local_run_queue = processor_run_queues_[processor];
+    if (local_run_queue.count != 0 &&
+        local_run_queue.high_queue >= processor_set_run_queue_.high_queue) {
+        return &local_run_queue;
+    }
+    if (processor_set_run_queue_.count != 0) return &processor_set_run_queue_;
+    return nullptr;
+}
+
+XnuThreadId XnuScheduler::peek_highest(const RunQueue& run_queue) const {
+    if (run_queue.count == 0 ||
+        run_queue.high_queue < xnu792::scheduler::minimum_priority) {
+        throw std::logic_error{"cannot peek an empty XNU run queue"};
+    }
+    const auto priority = run_queue.high_queue;
+    if (priority >= xnu792::scheduler::realtime_queue_priority) {
+        if (run_queue.realtime_order.empty()) {
+            throw std::logic_error{"XNU realtime queue index is inconsistent"};
+        }
+        const auto thread = run_queue.realtime_order.begin()->second;
+        const auto iterator = threads_.find(thread);
+        if (iterator == threads_.end() || !iterator->second.queued ||
+            iterator->second.queued_priority != priority) {
+            throw std::logic_error{"XNU realtime queue index is inconsistent"};
+        }
+        return thread;
+    }
+    const auto& queue = run_queue.queues[static_cast<std::size_t>(priority)];
+    if (queue.empty()) {
+        throw std::logic_error{"XNU run queue bitmap is inconsistent"};
+    }
+    return queue.front();
+}
+
+std::optional<XnuThreadId> XnuScheduler::peek_next_for_processor(
+    std::size_t processor) const {
+    const auto* selected_queue = selected_run_queue(processor);
+    if (selected_queue == nullptr) return std::nullopt;
+    return peek_highest(*selected_queue);
+}
+
 void XnuScheduler::index_depression(
     XnuThreadId thread, const ThreadRecord& record) {
     if (record.depression_deadline) {
@@ -632,11 +673,10 @@ XnuThreadId XnuScheduler::pop_highest(RunQueue& run_queue) {
     }
     const auto priority = run_queue.high_queue;
     auto& queue = run_queue.queues[static_cast<std::size_t>(priority)];
-    XnuThreadId thread;
+    const auto thread = peek_highest(run_queue);
     if (priority >= xnu792::scheduler::realtime_queue_priority &&
         !run_queue.realtime_order.empty()) {
         const auto realtime_iterator = run_queue.realtime_order.begin();
-        thread = realtime_iterator->second;
         auto &record = threads_.at(thread);
         if (!record.queue_position) {
             throw std::logic_error{
@@ -647,7 +687,6 @@ XnuThreadId XnuScheduler::pop_highest(RunQueue& run_queue) {
         record.realtime_queue_key.reset();
         run_queue.realtime_order.erase(realtime_iterator);
     } else {
-        thread = queue.front();
         auto &record = threads_.at(thread);
         record.queue_position.reset();
         queue.pop_front();

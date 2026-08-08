@@ -274,6 +274,40 @@ void xnu_scheduler_test() {
               realtime_info->scheduled_priority == realtime_queue_priority,
           "realtime policy metadata does not match XNU 792");
 
+  XnuScheduler candidate_scheduler;
+  const XnuThreadId running_realtime{21, 1};
+  const XnuThreadId late_realtime{21, 2};
+  const XnuThreadId early_realtime{21, 3};
+  require(candidate_scheduler.register_thread(
+              running_realtime, default_base_priority, false) &&
+              candidate_scheduler.set_realtime(
+                  running_realtime, 0, minimum_realtime_computation_ticks,
+                  minimum_realtime_computation_ticks * 3, true) &&
+              candidate_scheduler.make_runnable(running_realtime),
+          "scheduler could not prepare the running realtime candidate");
+  const auto running_slice = candidate_scheduler.choose_next();
+  require(running_slice && running_slice->thread == running_realtime,
+          "scheduler could not start the running realtime candidate");
+  require(candidate_scheduler.register_thread(
+              late_realtime, default_base_priority, false) &&
+              candidate_scheduler.register_thread(
+                  early_realtime, default_base_priority, false) &&
+              candidate_scheduler.set_realtime(
+                  late_realtime, 0, minimum_realtime_computation_ticks,
+                  minimum_realtime_computation_ticks * 5, true) &&
+              candidate_scheduler.set_realtime(
+                  early_realtime, 0, minimum_realtime_computation_ticks,
+                  minimum_realtime_computation_ticks * 2, true) &&
+              candidate_scheduler.make_runnable(late_realtime) &&
+              candidate_scheduler.make_runnable(early_realtime),
+          "scheduler could not prepare ordered realtime candidates");
+  require(candidate_scheduler.preemption_for(running_realtime, 0) ==
+              XnuPreemption::Urgent,
+          "preemption did not inspect the earliest realtime deadline");
+  const auto chosen_candidate = candidate_scheduler.choose_next();
+  require(chosen_candidate && chosen_candidate->thread == early_realtime,
+          "choose_next did not select the earliest realtime deadline");
+
   constexpr std::size_t fail_safe_test_quantum_ticks = 100;
   XnuScheduler failsafe_scheduler{fail_safe_test_quantum_ticks, 1'000};
   const XnuThreadId unsafe_realtime{30, 1};
