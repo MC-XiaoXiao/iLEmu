@@ -78,9 +78,9 @@ constexpr std::size_t maximum_shared_monitor_slots =
 constexpr std::size_t maximum_background_workers = 8;
 constexpr std::size_t arm_thumb_breakpoint_size = 2;
 constexpr std::size_t arm_breakpoint_size = 4;
-// SDL's event wrapper currently exposes only a polling API. This bounded
-// fallback is used for SDL/GDB sessions; headless control-stdin sessions wait
-// on their descriptor or on the next Guest/automation deadline directly.
+// GDB and mixed SDL/control sessions still use this bounded fallback because
+// those wrappers do not expose one waitable host descriptor. A standalone SDL
+// session blocks directly on the SDL event queue.
 constexpr auto sdl_event_poll_fallback = std::chrono::milliseconds{4};
 
 struct HostMemorySnapshot {
@@ -1977,7 +1977,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
   };
   const auto wait_for_host_activity = [&](std::chrono::nanoseconds delay) {
     if (delay <= std::chrono::nanoseconds::zero()) return;
-    if (sdl_display) {
+    const auto waitable_sdl_session =
+        sdl_display && (!live_control || live_control->closed()) &&
+        !gdb_server;
+    if (waitable_sdl_session) {
+      static_cast<void>(sdl_display->wait_for_event(delay));
+    } else if (sdl_display) {
       delay = std::min(
           delay,
           std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -2881,8 +2886,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         break;
       // An interactive emulator remains alive while every guest thread
       // is blocked: wait for the next automation deadline or control input.
-      // GDB and SDL still use the bounded fallback because their current
-      // wrappers do not expose a waitable host descriptor.
+      // Standalone SDL sessions block on SDL's event queue; GDB and mixed
+      // control sessions retain the bounded compatibility fallback.
       auto delay = std::chrono::nanoseconds::max();
       if (const auto deadline = next_host_control_deadline()) {
         const auto now = std::chrono::steady_clock::now();
@@ -2892,8 +2897,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         } else {
           delay = std::chrono::nanoseconds::zero();
         }
-      } else if (!live_control || live_control->closed() || sdl_display ||
-                 gdb_server) {
+      } else if ((!live_control || live_control->closed()) &&
+                 (sdl_display || gdb_server)) {
         delay = std::chrono::duration_cast<std::chrono::nanoseconds>(
             sdl_event_poll_fallback);
       }

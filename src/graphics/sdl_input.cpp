@@ -1,6 +1,7 @@
 #include "sdl_input.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <optional>
 
 #include "ilemu/display.hpp"
@@ -103,6 +104,57 @@ bool SdlInput::poll(SDL_Window *window) {
        static_cast<std::uint32_t>(std::max(window_height, 0))});
   SDL_Event event{};
   while (SDL_PollEvent(&event) != 0) {
+    process_event(event, window_width, window_height, viewport);
+  }
+#else
+  static_cast<void>(window);
+#endif
+  return running_;
+}
+
+bool SdlInput::wait(SDL_Window *window, std::chrono::nanoseconds timeout) {
+#if defined(ILEMU_HAS_SDL2)
+  if (!running_) return false;
+  int timeout_milliseconds = 0;
+  const auto indefinite = timeout == std::chrono::nanoseconds::max();
+  if (!indefinite) {
+    if (timeout <= std::chrono::nanoseconds::zero()) return poll(window);
+    const auto rounded = std::chrono::duration_cast<
+        std::chrono::milliseconds>(timeout);
+    auto milliseconds = rounded.count();
+    if (std::chrono::duration_cast<std::chrono::nanoseconds>(rounded) <
+        timeout) {
+      ++milliseconds;
+    }
+    milliseconds = std::min<std::int64_t>(
+        milliseconds, std::numeric_limits<int>::max());
+    timeout_milliseconds = static_cast<int>(milliseconds);
+  }
+
+  SDL_Event event{};
+  const auto received = indefinite ? SDL_WaitEvent(&event)
+                                   : SDL_WaitEventTimeout(
+                                         &event, timeout_milliseconds);
+  if (received != 0) {
+    int window_width = 1;
+    int window_height = 1;
+    SDL_GetWindowSize(window, &window_width, &window_height);
+    const auto viewport = fit_display_viewport(
+        display_geometry_,
+        {static_cast<std::uint32_t>(std::max(window_width, 0)),
+         static_cast<std::uint32_t>(std::max(window_height, 0))});
+    process_event(event, window_width, window_height, viewport);
+  }
+#else
+  static_cast<void>(window);
+  static_cast<void>(timeout);
+#endif
+  return running_;
+}
+
+void SdlInput::process_event(const SDL_Event &event, int window_width,
+                             int window_height, DisplayViewport viewport) {
+#if defined(ILEMU_HAS_SDL2)
     switch (event.type) {
     case SDL_WINDOWEVENT:
       switch (event.window.event) {
@@ -205,11 +257,12 @@ bool SdlInput::poll(SDL_Window *window) {
     default:
       break;
     }
-  }
 #else
-  static_cast<void>(window);
+  static_cast<void>(event);
+  static_cast<void>(window_width);
+  static_cast<void>(window_height);
+  static_cast<void>(viewport);
 #endif
-  return running_;
 }
 
 std::vector<TouchInput> SdlInput::take_touch_events() {

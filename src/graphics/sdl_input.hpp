@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <unordered_set>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "ilemu/touch_input.hpp"
 
 struct SDL_Window;
+union SDL_Event;
 
 namespace ilemu {
 
@@ -25,6 +27,7 @@ public:
       display_geometry_ = geometry;
   }
   [[nodiscard]] bool poll(SDL_Window *window);
+  [[nodiscard]] bool wait(SDL_Window *window, std::chrono::nanoseconds timeout);
   [[nodiscard]] std::vector<TouchInput> take_touch_events();
   [[nodiscard]] std::vector<SystemButtonInput> take_button_events();
   [[nodiscard]] std::vector<RingerSwitchInput>
@@ -39,6 +42,9 @@ public:
   }
 
 private:
+  void process_event(const SDL_Event &event, int window_width,
+                     int window_height, DisplayViewport viewport);
+
   DisplayGeometry geometry_;
   DisplayGeometry display_geometry_;
   DisplayOrientation orientation_{DisplayOrientation::Portrait};

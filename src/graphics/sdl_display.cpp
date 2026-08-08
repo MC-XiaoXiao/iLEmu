@@ -796,6 +796,15 @@ bool SdlDisplay::poll_events() {
   return impl_->running;
 }
 
+bool SdlDisplay::wait_for_event(std::chrono::nanoseconds timeout) {
+#if defined(ILEMU_HAS_SDL2)
+  impl_->running = impl_->input.wait(impl_->window, timeout);
+#else
+  static_cast<void>(timeout);
+#endif
+  return impl_->running;
+}
+
 std::vector<TouchInput> SdlDisplay::take_touch_events() {
   return impl_->input.take_touch_events();
 }

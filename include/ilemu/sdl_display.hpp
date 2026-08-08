@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -34,6 +35,9 @@ public:
   [[nodiscard]] std::uint64_t presented_frames() const;
   // Returns false after the user closes the window.
   [[nodiscard]] bool poll_events();
+  // Blocks on the SDL event queue until an event or the supplied deadline.
+  // The caller remains responsible for processing Guest deadlines.
+  [[nodiscard]] bool wait_for_event(std::chrono::nanoseconds timeout);
   [[nodiscard]] std::vector<TouchInput> take_touch_events();
   [[nodiscard]] std::vector<SystemButtonInput> take_button_events();
   [[nodiscard]] std::vector<RingerSwitchInput>
