@@ -10,6 +10,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <string_view>
@@ -154,6 +155,11 @@ public:
         if (!artifact_store_) return nullptr;
         const auto key = make_artifact_key(location_descriptor);
         return key ? artifact_store_->find(*key) : nullptr;
+    }
+
+    [[nodiscard]] std::optional<JitArtifactKey> artifact_key(
+        std::uint64_t location_descriptor) const noexcept {
+        return make_artifact_key(location_descriptor);
     }
 
     void discard_translation_location(
@@ -780,6 +786,7 @@ public:
     }
 
     void clear_cache() {
+        artifact_probes_.clear();
         if (jit_) {
             jit_->ClearCache();
             record_code_cache_usage();
@@ -788,6 +795,7 @@ public:
 
     void invalidate_cache_range(std::uint32_t address, std::size_t length) {
         if (jit_ && length != 0) {
+            artifact_probes_.clear();
             jit_->InvalidateCacheRange(address, length);
             record_code_cache_usage();
         }
@@ -885,9 +893,21 @@ public:
                 // turn unrelated data into a translated block.
                 callbacks_->discard_translation_location(*entry);
             } else {
-                if (!callbacks_->import_artifact(*jit_, *entry)) {
+                const auto key = callbacks_->artifact_key(*entry);
+                const auto probe = key ? artifact_probes_.find(*entry)
+                                       : artifact_probes_.end();
+                if (key && probe != artifact_probes_.end() &&
+                    probe->second.key == *key) {
+                    ++compiled;
+                    continue;
+                }
+                const auto imported = callbacks_->import_artifact(*jit_, *entry);
+                if (!imported) {
                     callbacks_->begin(0);
                     jit_->Precompile(*entry);
+                }
+                if (key) {
+                    artifact_probes_[*entry] = ArtifactProbe{*key, imported};
                 }
                 ++compiled;
             }
@@ -942,13 +962,24 @@ public:
     }
 
 private:
+    struct ArtifactProbe {
+        JitArtifactKey key;
+        bool imported{};
+    };
+
     void preload_current_artifact() {
         const Dynarmic::A32::LocationDescriptor descriptor{
             jit_->Regs()[15], Dynarmic::A32::PSR{jit_->Cpsr()},
             Dynarmic::A32::FPSCR{jit_->Fpscr()}};
         const auto location =
             static_cast<Dynarmic::IR::LocationDescriptor>(descriptor).Value();
-        static_cast<void>(callbacks_->import_artifact(*jit_, location));
+        if (artifact_probes_.find(location) != artifact_probes_.end()) {
+            return;
+        }
+        const auto key = callbacks_->artifact_key(location);
+        if (!key) return;
+        const auto imported = callbacks_->import_artifact(*jit_, location);
+        artifact_probes_.emplace(location, ArtifactProbe{*key, imported});
     }
 
     [[nodiscard]] static constexpr Dynarmic::HaltReason all_halt_reasons() {
@@ -1072,6 +1103,7 @@ private:
     std::uint64_t recorded_jit_code_cache_bytes_{};
     std::deque<std::uint64_t> pending_precompile_entries_;
     std::unordered_set<std::uint64_t> seen_precompile_entries_;
+    std::unordered_map<std::uint64_t, ArtifactProbe> artifact_probes_;
     std::mutex precompile_queue_mutex_;
     std::mutex execution_mutex_;
 };
