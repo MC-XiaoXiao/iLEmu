@@ -139,6 +139,10 @@ public:
   [[nodiscard]] bool save(const std::filesystem::path &path) const noexcept;
 
 private:
+  struct DiskArtifactRecord {
+    std::uint64_t offset{};
+    std::uint64_t serialized_bytes{};
+  };
   struct ArtifactRecord {
     std::shared_ptr<const BlockArtifact> artifact;
     std::size_t serialized_bytes{};
@@ -147,19 +151,25 @@ private:
   };
   using ArtifactMap =
       std::unordered_map<JitArtifactKey, ArtifactRecord, JitArtifactKeyHash>;
+  using DiskArtifactMap = std::unordered_map<JitArtifactKey,
+                                             DiskArtifactRecord,
+                                             JitArtifactKeyHash>;
 
   void touch_locked(ArtifactMap::iterator iterator) const;
-  void evict_until_fit_locked(std::size_t required_bytes);
+  void evict_until_fit_locked(std::size_t required_bytes) const;
   void insert_locked(std::shared_ptr<const BlockArtifact> artifact,
                      std::size_t serialized_bytes,
-                     bool loaded_from_disk = false);
+                     bool loaded_from_disk = false) const;
 
   mutable std::mutex mutex_;
   mutable ArtifactMap artifacts_;
   mutable std::list<JitArtifactKey> lru_;
+  mutable DiskArtifactMap disk_artifacts_;
+  mutable std::vector<JitArtifactKey> disk_order_;
   JitArtifactLimits limits_;
-  std::size_t resident_bytes_{};
+  mutable std::size_t resident_bytes_{};
   std::filesystem::path persistence_path_;
+  mutable std::filesystem::path disk_source_path_;
   mutable JitArtifactStoreStats stats_;
 };
 

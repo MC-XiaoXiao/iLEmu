@@ -9,6 +9,7 @@
 #include <limits>
 #include <system_error>
 #include <thread>
+#include <unordered_set>
 #include <utility>
 
 namespace ilemu {
@@ -187,22 +188,24 @@ read_bytes(std::istream &stream, std::uint32_t count) {
 }
 
 [[nodiscard]] std::optional<std::size_t> serialized_artifact_bytes(
-    const JitArtifactData &data) {
-  if (data.normalized_ir.size() > maximum_ir_bytes ||
-      data.relocation_targets.size() > maximum_metadata_entries ||
-      data.exit_locations.size() > maximum_metadata_entries) {
+    std::size_t normalized_ir_bytes, std::size_t relocation_count,
+    std::size_t exit_count, std::size_t dependency_count,
+    std::size_t constant_dependency_count) {
+  if (normalized_ir_bytes > maximum_ir_bytes ||
+      relocation_count > maximum_metadata_entries ||
+      exit_count > maximum_metadata_entries) {
     return std::nullopt;
   }
   constexpr std::size_t serialized_key_bytes = 132U;
   constexpr std::size_t serialized_data_header_bytes = 32U;
   constexpr std::size_t serialized_dependency_bytes = 72U;
   constexpr std::size_t serialized_constant_dependency_bytes = 80U;
-  if (data.code_dependencies.size() > maximum_metadata_entries ||
-      data.code_dependencies.size() >
+  if (dependency_count > maximum_metadata_entries ||
+      dependency_count >
           std::numeric_limits<std::size_t>::max() /
               serialized_dependency_bytes ||
-      data.constant_dependencies.size() > maximum_metadata_entries ||
-      data.constant_dependencies.size() >
+      constant_dependency_count > maximum_metadata_entries ||
+      constant_dependency_count >
           std::numeric_limits<std::size_t>::max() /
               serialized_constant_dependency_bytes) {
     return std::nullopt;
@@ -215,15 +218,191 @@ read_bytes(std::istream &stream, std::uint32_t count) {
     size += value;
     return true;
   };
-  return add(data.normalized_ir.size()) &&
-                 add(data.relocation_targets.size() * sizeof(std::uint64_t)) &&
-                 add(data.exit_locations.size() * sizeof(std::uint64_t)) &&
-                 add(data.code_dependencies.size() *
+  return add(normalized_ir_bytes) &&
+                 add(relocation_count * sizeof(std::uint64_t)) &&
+                 add(exit_count * sizeof(std::uint64_t)) &&
+                 add(dependency_count *
                      serialized_dependency_bytes) &&
-                 add(data.constant_dependencies.size() *
+                 add(constant_dependency_count *
                      serialized_constant_dependency_bytes)
              ? std::optional<std::size_t>{size}
              : std::nullopt;
+}
+
+[[nodiscard]] std::optional<std::size_t> serialized_artifact_bytes(
+    const JitArtifactData &data) {
+  return serialized_artifact_bytes(
+      data.normalized_ir.size(), data.relocation_targets.size(),
+      data.exit_locations.size(), data.code_dependencies.size(),
+      data.constant_dependencies.size());
+}
+
+[[nodiscard]] bool skip_bytes(std::istream &stream, std::uint64_t count,
+                              std::uint64_t payload_size) {
+  const auto current = stream.tellg();
+  if (current < 0) return false;
+  const auto current_offset = static_cast<std::uint64_t>(current);
+  if (current_offset > payload_size || count > payload_size - current_offset ||
+      count > static_cast<std::uint64_t>(
+                   std::numeric_limits<std::streamoff>::max())) {
+    return false;
+  }
+  stream.seekg(static_cast<std::streamoff>(count), std::ios::cur);
+  return stream && stream.tellg() ==
+                       static_cast<std::streamoff>(current_offset + count);
+}
+
+[[nodiscard]] std::optional<std::shared_ptr<const BlockArtifact>>
+read_artifact_at(const std::filesystem::path &path, std::uint64_t offset,
+                 std::uint64_t expected_bytes) {
+  if (offset > static_cast<std::uint64_t>(
+                   std::numeric_limits<std::streamoff>::max()) ||
+      expected_bytes > std::numeric_limits<std::uint64_t>::max() - offset) {
+    return std::nullopt;
+  }
+  std::ifstream stream{path, std::ios::binary};
+  if (!stream) return std::nullopt;
+  stream.seekg(static_cast<std::streamoff>(offset));
+  if (!stream) return std::nullopt;
+
+  const auto key = read_key(stream);
+  const auto ir_size = read_u32(stream);
+  const auto relocation_count = read_u32(stream);
+  const auto exit_count = read_u32(stream);
+  const auto dependency_count = read_u32(stream);
+  const auto constant_dependency_count = read_u32(stream);
+  const auto instruction_count = read_u32(stream);
+  const auto translation_nanoseconds = read_u64(stream);
+  if (!key || !ir_size || !relocation_count || !exit_count ||
+      !dependency_count || !constant_dependency_count || !instruction_count ||
+      !translation_nanoseconds ||
+      *relocation_count > maximum_metadata_entries ||
+      *exit_count > maximum_metadata_entries ||
+      *dependency_count > maximum_metadata_entries ||
+      *constant_dependency_count > maximum_metadata_entries) {
+    return std::nullopt;
+  }
+
+  const auto ir = read_bytes(stream, *ir_size);
+  if (!ir) return std::nullopt;
+  JitArtifactData data;
+  data.normalized_ir = *ir;
+  data.instruction_count = *instruction_count;
+  data.translation_nanoseconds = *translation_nanoseconds;
+  data.relocation_targets.reserve(*relocation_count);
+  for (std::uint32_t index = 0; index < *relocation_count; ++index) {
+    const auto target = read_u64(stream);
+    if (!target) return std::nullopt;
+    data.relocation_targets.push_back(*target);
+  }
+  data.exit_locations.reserve(*exit_count);
+  for (std::uint32_t index = 0; index < *exit_count; ++index) {
+    const auto location = read_u64(stream);
+    if (!location) return std::nullopt;
+    data.exit_locations.push_back(*location);
+  }
+  data.code_dependencies.reserve(*dependency_count);
+  for (std::uint32_t index = 0; index < *dependency_count; ++index) {
+    const auto address = read_u32(stream);
+    const auto size = read_u32(stream);
+    JitCodeDependency dependency;
+    if (!address || !size || *size == 0 ||
+        !read_identity(stream, dependency.content_identity) ||
+        !read_identity(stream, dependency.layout_identity)) {
+      return std::nullopt;
+    }
+    dependency.address = *address;
+    dependency.size = *size;
+    data.code_dependencies.push_back(std::move(dependency));
+  }
+  data.constant_dependencies.reserve(*constant_dependency_count);
+  for (std::uint32_t index = 0; index < *constant_dependency_count; ++index) {
+    const auto address = read_u32(stream);
+    const auto size = read_u32(stream);
+    const auto value = read_u64(stream);
+    JitConstantDependency dependency;
+    if (!address || !size || *size == 0 || !value ||
+        !read_identity(stream, dependency.content_identity) ||
+        !read_identity(stream, dependency.layout_identity)) {
+      return std::nullopt;
+    }
+    dependency.address = *address;
+    dependency.size = *size;
+    dependency.value = *value;
+    data.constant_dependencies.push_back(std::move(dependency));
+  }
+  const auto actual_bytes = serialized_artifact_bytes(data);
+  const auto end = stream.tellg();
+  if (!actual_bytes || *actual_bytes != expected_bytes || end < 0 ||
+      static_cast<std::uint64_t>(end) != offset + expected_bytes) {
+    return std::nullopt;
+  }
+  return std::make_shared<const BlockArtifact>(
+      BlockArtifact{*key, std::move(data)});
+}
+
+bool write_artifact(std::ostream &stream, const BlockArtifact &artifact) {
+  if (!serialized_artifact_bytes(artifact.data)) return false;
+  write_key(stream, artifact.key);
+  write_u32(stream,
+            static_cast<std::uint32_t>(artifact.data.normalized_ir.size()));
+  write_u32(stream, static_cast<std::uint32_t>(
+                             artifact.data.relocation_targets.size()));
+  write_u32(stream,
+            static_cast<std::uint32_t>(artifact.data.exit_locations.size()));
+  write_u32(stream, static_cast<std::uint32_t>(
+                             artifact.data.code_dependencies.size()));
+  write_u32(stream, static_cast<std::uint32_t>(
+                             artifact.data.constant_dependencies.size()));
+  write_u32(stream, artifact.data.instruction_count);
+  write_u64(stream, artifact.data.translation_nanoseconds);
+  stream.write(
+      reinterpret_cast<const char *>(artifact.data.normalized_ir.data()),
+      static_cast<std::streamsize>(artifact.data.normalized_ir.size()));
+  for (const auto target : artifact.data.relocation_targets)
+    write_u64(stream, target);
+  for (const auto location : artifact.data.exit_locations)
+    write_u64(stream, location);
+  for (const auto &dependency : artifact.data.code_dependencies) {
+    write_u32(stream, dependency.address);
+    write_u32(stream, dependency.size);
+    write_identity(stream, dependency.content_identity);
+    write_identity(stream, dependency.layout_identity);
+  }
+  for (const auto &dependency : artifact.data.constant_dependencies) {
+    write_u32(stream, dependency.address);
+    write_u32(stream, dependency.size);
+    write_u64(stream, dependency.value);
+    write_identity(stream, dependency.content_identity);
+    write_identity(stream, dependency.layout_identity);
+  }
+  return static_cast<bool>(stream);
+}
+
+bool copy_disk_record(std::istream &source, std::ostream &destination,
+                      std::uint64_t offset, std::uint64_t byte_count) {
+  if (offset > static_cast<std::uint64_t>(
+                   std::numeric_limits<std::streamoff>::max()) ||
+      byte_count > static_cast<std::uint64_t>(
+                       std::numeric_limits<std::streamsize>::max())) {
+    return false;
+  }
+  source.clear();
+  source.seekg(static_cast<std::streamoff>(offset));
+  if (!source) return false;
+  std::array<char, 64U * 1024U> buffer{};
+  auto remaining = byte_count;
+  while (remaining != 0U) {
+    const auto requested = std::min<std::uint64_t>(remaining, buffer.size());
+    source.read(buffer.data(), static_cast<std::streamsize>(requested));
+    if (source.gcount() != static_cast<std::streamsize>(requested)) {
+      return false;
+    }
+    destination.write(buffer.data(), static_cast<std::streamsize>(requested));
+    if (!destination) return false;
+    remaining -= requested;
+  }
+  return true;
 }
 
 } // namespace
@@ -263,10 +442,27 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
     const JitArtifactKey &key) const {
   const std::lock_guard lock{mutex_};
   ++stats_.lookups;
-  const auto artifact = artifacts_.find(key);
+  auto artifact = artifacts_.find(key);
   if (artifact == artifacts_.end()) {
-    ++stats_.misses;
-    return nullptr;
+    const auto disk_artifact = disk_artifacts_.find(key);
+    if (disk_artifact != disk_artifacts_.end() &&
+        disk_artifact->second.serialized_bytes <=
+            std::numeric_limits<std::size_t>::max()) {
+      const auto loaded = read_artifact_at(
+          disk_source_path_, disk_artifact->second.offset,
+          disk_artifact->second.serialized_bytes);
+      if (loaded && (*loaded)->key == key) {
+        insert_locked(*loaded,
+                      static_cast<std::size_t>(
+                          disk_artifact->second.serialized_bytes),
+                      true);
+        artifact = artifacts_.find(key);
+      }
+    }
+    if (artifact == artifacts_.end()) {
+      ++stats_.misses;
+      return nullptr;
+    }
   }
   if (artifact->second.loaded_from_disk) {
     ++stats_.disk_hits;
@@ -284,7 +480,7 @@ void JitArtifactStore::touch_locked(ArtifactMap::iterator iterator) const {
 }
 
 void JitArtifactStore::evict_until_fit_locked(
-    std::size_t required_bytes) {
+    std::size_t required_bytes) const {
   if (limits_.resident_bytes == 0U) return;
   while (resident_bytes_ > limits_.resident_bytes -
                               std::min(limits_.resident_bytes,
@@ -302,7 +498,7 @@ void JitArtifactStore::evict_until_fit_locked(
 
 void JitArtifactStore::insert_locked(
     std::shared_ptr<const BlockArtifact> artifact,
-    std::size_t serialized_bytes, bool loaded_from_disk) {
+    std::size_t serialized_bytes, bool loaded_from_disk) const {
   const auto key = artifact->key;
   if (const auto existing = artifacts_.find(key); existing != artifacts_.end()) {
     touch_locked(existing);
@@ -356,16 +552,25 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
 
 std::size_t JitArtifactStore::size() const {
   const std::lock_guard lock{mutex_};
-  return artifacts_.size();
+  std::size_t result = disk_artifacts_.size();
+  for (const auto &artifact : artifacts_) {
+    if (disk_artifacts_.find(artifact.first) == disk_artifacts_.end()) {
+      ++result;
+    }
+  }
+  return result;
 }
 
 JitArtifactStoreStats JitArtifactStore::stats() const {
   const std::lock_guard lock{mutex_};
   auto result = stats_;
   result.resident_bytes = resident_bytes_;
-  if (!persistence_path_.empty()) {
+  const auto &disk_path = !persistence_path_.empty()
+                              ? persistence_path_
+                              : disk_source_path_;
+  if (!disk_path.empty()) {
     std::error_code error;
-    result.disk_bytes = std::filesystem::file_size(persistence_path_, error);
+    result.disk_bytes = std::filesystem::file_size(disk_path, error);
     if (error) result.disk_bytes = 0;
   }
   return result;
@@ -373,6 +578,11 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
 
 bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
   try {
+    struct DiskEntry {
+      JitArtifactKey key;
+      DiskArtifactRecord record;
+    };
+
     std::error_code size_error;
     const auto file_size = std::filesystem::file_size(path, size_error);
     if (size_error || file_size < artifact_magic.size() + sizeof(std::uint32_t) +
@@ -385,7 +595,9 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
                                             limits_.persistence_bytes,
                                             maximum_persistence_bytes);
     if (file_size > configured_limit) return false;
-    const auto payload_size = file_size - artifact_checksum_bytes;
+    if (file_size > std::numeric_limits<std::uint64_t>::max()) return false;
+    const auto payload_size = static_cast<std::uint64_t>(
+        file_size - artifact_checksum_bytes);
     std::ifstream stream{path, std::ios::binary};
     if (!stream) return false;
     std::array<char, artifact_magic.size()> magic{};
@@ -400,14 +612,13 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
     const auto count = read_u32(stream);
     if (!count || *count > maximum_artifacts) return false;
 
-    using LoadedList = std::list<std::shared_ptr<const BlockArtifact>>;
-    LoadedList loaded;
-    std::unordered_map<JitArtifactKey, LoadedList::iterator,
-                       JitArtifactKeyHash>
-        loaded_index;
+    DiskArtifactMap loaded_index;
     loaded_index.reserve(*count);
-    std::size_t loaded_bytes = 0;
+    std::vector<DiskEntry> scanned;
+    scanned.reserve(*count);
     for (std::uint32_t index = 0; index < *count; ++index) {
+      const auto record_offset = stream.tellg();
+      if (record_offset < 0) return false;
       const auto key = read_key(stream);
       const auto ir_size = read_u32(stream);
       const auto relocation_count = read_u32(stream);
@@ -425,91 +636,61 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
           *constant_dependency_count > maximum_metadata_entries) {
         return false;
       }
-      const auto ir = read_bytes(stream, *ir_size);
-      if (!ir) return false;
-      JitArtifactData data;
-      data.normalized_ir = *ir;
-      data.instruction_count = *instruction_count;
-      data.translation_nanoseconds = *translation_nanoseconds;
-      data.relocation_targets.reserve(*relocation_count);
-      for (std::uint32_t relocation = 0; relocation < *relocation_count;
-           ++relocation) {
-        const auto target = read_u64(stream);
-        if (!target) return false;
-        data.relocation_targets.push_back(*target);
+      const auto record_bytes = serialized_artifact_bytes(
+          *ir_size, *relocation_count, *exit_count, *dependency_count,
+          *constant_dependency_count);
+      if (!record_bytes ||
+          *record_bytes > std::numeric_limits<std::uint64_t>::max()) {
+        return false;
       }
-      data.exit_locations.reserve(*exit_count);
-      for (std::uint32_t exit = 0; exit < *exit_count; ++exit) {
-        const auto location = read_u64(stream);
-        if (!location) return false;
-        data.exit_locations.push_back(*location);
+      if (!skip_bytes(stream, *ir_size, payload_size) ||
+          !skip_bytes(stream,
+                      static_cast<std::uint64_t>(*relocation_count) *
+                          sizeof(std::uint64_t),
+                      payload_size) ||
+          !skip_bytes(stream,
+                      static_cast<std::uint64_t>(*exit_count) *
+                          sizeof(std::uint64_t),
+                      payload_size)) {
+        return false;
       }
-      data.code_dependencies.reserve(*dependency_count);
       for (std::uint32_t dependency = 0; dependency < *dependency_count;
            ++dependency) {
         const auto address = read_u32(stream);
         const auto size = read_u32(stream);
-        JitCodeDependency value;
         if (!address || !size || *size == 0 ||
-            !read_identity(stream, value.content_identity) ||
-            !read_identity(stream, value.layout_identity)) {
+            !skip_bytes(stream, ContentIdentity{}.digest.size(),
+                        payload_size) ||
+            !skip_bytes(stream, ContentIdentity{}.digest.size(),
+                        payload_size)) {
           return false;
         }
-        value.address = *address;
-        value.size = *size;
-        data.code_dependencies.push_back(std::move(value));
       }
-      data.constant_dependencies.reserve(*constant_dependency_count);
       for (std::uint32_t dependency = 0;
            dependency < *constant_dependency_count; ++dependency) {
         const auto address = read_u32(stream);
         const auto size = read_u32(stream);
         const auto value = read_u64(stream);
-        JitConstantDependency constant;
         if (!address || !size || *size == 0 || !value ||
-            !read_identity(stream, constant.content_identity) ||
-            !read_identity(stream, constant.layout_identity)) {
+            !skip_bytes(stream, ContentIdentity{}.digest.size(),
+                        payload_size) ||
+            !skip_bytes(stream, ContentIdentity{}.digest.size(),
+                        payload_size)) {
           return false;
         }
-        constant.address = *address;
-        constant.size = *size;
-        constant.value = *value;
-        data.constant_dependencies.push_back(std::move(constant));
       }
-      const auto artifact_bytes = serialized_artifact_bytes(data);
-      if (!artifact_bytes) return false;
-      if (limits_.resident_bytes != 0U &&
-          *artifact_bytes > limits_.resident_bytes) {
-        continue;
-      }
-      const auto artifact = std::make_shared<const BlockArtifact>(
-          BlockArtifact{*key, std::move(data)});
-      if (const auto existing = loaded_index.find(artifact->key);
-          existing != loaded_index.end()) {
-        loaded_bytes -= serialized_artifact_bytes(
-                            (*existing->second)->data)
-                            .value();
-        loaded.erase(existing->second);
-        loaded_index.erase(existing);
-      }
-      if (limits_.resident_bytes != 0U) {
-        while (loaded_bytes >
-                   limits_.resident_bytes - *artifact_bytes &&
-               !loaded.empty()) {
-          const auto oldest = loaded.begin();
-          loaded_bytes -=
-              serialized_artifact_bytes((*oldest)->data).value();
-          loaded_index.erase((*oldest)->key);
-          loaded.erase(oldest);
-        }
-      }
-      if (*artifact_bytes >
-          std::numeric_limits<std::size_t>::max() - loaded_bytes) {
+      const auto end = stream.tellg();
+      if (end < 0 || static_cast<std::uint64_t>(end) <
+                          static_cast<std::uint64_t>(record_offset) ||
+          static_cast<std::uint64_t>(end) -
+                  static_cast<std::uint64_t>(record_offset) != *record_bytes) {
         return false;
       }
-      loaded_bytes += *artifact_bytes;
-      loaded.push_back(artifact);
-      loaded_index.emplace(artifact->key, std::prev(loaded.end()));
+      const auto offset = static_cast<std::uint64_t>(record_offset);
+      const DiskArtifactRecord record{offset,
+                                      static_cast<std::uint64_t>(*record_bytes)};
+      loaded_index[*key] = record;
+      scanned.push_back(DiskEntry{*key, record});
     }
     if (stream.tellg() != static_cast<std::streamoff>(payload_size)) {
       return false;
@@ -524,7 +705,55 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
       return false;
     }
 
+    std::vector<DiskEntry> unique;
+    unique.reserve(scanned.size());
+    for (const auto &entry : scanned) {
+      const auto latest = loaded_index.find(entry.key);
+      if (latest != loaded_index.end() &&
+          latest->second.offset == entry.record.offset) {
+        unique.push_back(entry);
+      }
+    }
+
+    std::vector<DiskEntry> preload;
+    std::size_t preload_bytes = 0;
+    for (auto iterator = unique.rbegin(); iterator != unique.rend();
+         ++iterator) {
+      if (iterator->record.serialized_bytes >
+          std::numeric_limits<std::size_t>::max()) {
+        continue;
+      }
+      const auto bytes = static_cast<std::size_t>(
+          iterator->record.serialized_bytes);
+      if (limits_.resident_bytes != 0U &&
+          (bytes > limits_.resident_bytes ||
+           preload_bytes > limits_.resident_bytes - bytes)) {
+        continue;
+      }
+      if (bytes > std::numeric_limits<std::size_t>::max() - preload_bytes) {
+        return false;
+      }
+      preload_bytes += bytes;
+      preload.push_back(*iterator);
+    }
+    std::reverse(preload.begin(), preload.end());
+    std::vector<std::shared_ptr<const BlockArtifact>> loaded;
+    loaded.reserve(preload.size());
+    for (const auto &entry : preload) {
+      const auto artifact = read_artifact_at(
+          path, entry.record.offset, entry.record.serialized_bytes);
+      if (!artifact || (*artifact)->key != entry.key) return false;
+      loaded.push_back(*artifact);
+    }
+    std::vector<JitArtifactKey> loaded_order;
+    loaded_order.reserve(unique.size());
+    for (const auto &entry : unique) loaded_order.push_back(entry.key);
+    std::filesystem::path loaded_source_path{path};
+
     const std::lock_guard lock{mutex_};
+    disk_artifacts_ = std::move(loaded_index);
+    disk_order_ = std::move(loaded_order);
+    disk_source_path_ = std::move(loaded_source_path);
     for (auto &artifact : loaded) {
       const auto artifact_bytes = serialized_artifact_bytes(artifact->data);
       if (artifact_bytes)
@@ -543,27 +772,74 @@ bool JitArtifactStore::save() const noexcept {
 bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
   try {
     if (path.empty()) return false;
-    std::vector<std::shared_ptr<const BlockArtifact>> snapshot;
-    {
-      const std::lock_guard lock{mutex_};
-      snapshot.reserve(lru_.size());
-      for (const auto &key : lru_) {
-        const auto artifact = artifacts_.find(key);
-        if (artifact != artifacts_.end())
-          snapshot.push_back(artifact->second.artifact);
+    struct SaveEntry {
+      JitArtifactKey key;
+      std::shared_ptr<const BlockArtifact> artifact;
+      DiskArtifactRecord disk_record;
+      bool resident{};
+    };
+
+    const std::lock_guard lock{mutex_};
+    std::vector<SaveEntry> entries;
+    entries.reserve(disk_artifacts_.size() + artifacts_.size());
+    std::unordered_set<JitArtifactKey, JitArtifactKeyHash> emitted;
+    emitted.reserve(disk_artifacts_.size() + artifacts_.size());
+    const auto append_disk_entry = [&entries, &emitted, this](
+                                       const JitArtifactKey &key) {
+      const auto disk = disk_artifacts_.find(key);
+      if (disk == disk_artifacts_.end() || !emitted.insert(key).second) {
+        return;
       }
-      if (snapshot.size() != artifacts_.size()) return false;
+      const auto resident = artifacts_.find(key);
+      if (resident != artifacts_.end()) {
+        entries.push_back(
+            SaveEntry{key, resident->second.artifact, {}, true});
+      } else {
+        entries.push_back(SaveEntry{key, {}, disk->second, false});
+      }
+    };
+    for (const auto &key : disk_order_) append_disk_entry(key);
+    for (const auto &entry : disk_artifacts_) {
+      append_disk_entry(entry.first);
     }
-    if (snapshot.size() > maximum_artifacts) return false;
-    std::size_t serialized_size = 8U + sizeof(std::uint32_t);
-    for (const auto &artifact : snapshot) {
-      const auto artifact_bytes = serialized_artifact_bytes(artifact->data);
-      if (!artifact_bytes ||
-          *artifact_bytes >
+    const auto append_resident_entry = [&entries, &emitted, this](
+                                           const JitArtifactKey &key) {
+      if (!emitted.insert(key).second) return;
+      const auto resident = artifacts_.find(key);
+      if (resident != artifacts_.end()) {
+        entries.push_back(
+            SaveEntry{key, resident->second.artifact, {}, true});
+      }
+    };
+    for (const auto &key : lru_) append_resident_entry(key);
+    for (const auto &entry : artifacts_) append_resident_entry(entry.first);
+
+    if (entries.size() > maximum_artifacts) return false;
+    std::vector<std::uint64_t> record_bytes;
+    record_bytes.reserve(entries.size());
+    std::size_t serialized_size = artifact_magic.size() + sizeof(std::uint32_t);
+    bool needs_source = false;
+    for (const auto &entry : entries) {
+      std::uint64_t bytes = 0;
+      if (entry.resident) {
+        const auto artifact_size =
+            serialized_artifact_bytes(entry.artifact->data);
+        if (!artifact_size ||
+            *artifact_size > std::numeric_limits<std::uint64_t>::max()) {
+          return false;
+        }
+        bytes = static_cast<std::uint64_t>(*artifact_size);
+      } else {
+        bytes = entry.disk_record.serialized_bytes;
+        needs_source = true;
+      }
+      if (bytes > std::numeric_limits<std::size_t>::max() ||
+          static_cast<std::size_t>(bytes) >
               std::numeric_limits<std::size_t>::max() - serialized_size) {
         return false;
       }
-      serialized_size += *artifact_bytes;
+      serialized_size += static_cast<std::size_t>(bytes);
+      record_bytes.push_back(bytes);
     }
     if (serialized_size >
         std::numeric_limits<std::size_t>::max() - artifact_checksum_bytes) {
@@ -575,6 +851,13 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
       return false;
     }
     if (total_size > maximum_persistence_bytes) return false;
+    std::filesystem::path new_source_path{path};
+    std::ifstream source;
+    if (needs_source) {
+      if (disk_source_path_.empty()) return false;
+      source.open(disk_source_path_, std::ios::binary);
+      if (!source) return false;
+    }
     const auto parent = path.parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent);
     const auto temporary = std::filesystem::path{
@@ -589,67 +872,69 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
       if (!stream) return false;
       stream.write(artifact_magic.data(),
                    static_cast<std::streamsize>(artifact_magic.size()));
-      write_u32(stream, static_cast<std::uint32_t>(snapshot.size()));
-      for (const auto &artifact : snapshot) {
-        if (!serialized_artifact_bytes(artifact->data)) {
+      write_u32(stream, static_cast<std::uint32_t>(entries.size()));
+      std::uint64_t output_offset =
+          artifact_magic.size() + sizeof(std::uint32_t);
+      std::vector<DiskArtifactRecord> output_records;
+      output_records.reserve(entries.size());
+      for (std::size_t index = 0; index < entries.size(); ++index) {
+        const auto &entry = entries[index];
+        const auto bytes = record_bytes[index];
+        const bool written = entry.resident
+                                 ? write_artifact(stream, *entry.artifact)
+                                 : copy_disk_record(
+                                       source, stream,
+                                       entry.disk_record.offset, bytes);
+        if (!written) return false;
+        output_records.push_back(DiskArtifactRecord{output_offset, bytes});
+        if (output_offset > std::numeric_limits<std::uint64_t>::max() -
+                                bytes) {
           return false;
         }
-        write_key(stream, artifact->key);
-        write_u32(stream, static_cast<std::uint32_t>(
-                              artifact->data.normalized_ir.size()));
-        write_u32(stream, static_cast<std::uint32_t>(
-                              artifact->data.relocation_targets.size()));
-        write_u32(stream, static_cast<std::uint32_t>(
-                              artifact->data.exit_locations.size()));
-        write_u32(stream, static_cast<std::uint32_t>(
-                              artifact->data.code_dependencies.size()));
-        write_u32(stream, static_cast<std::uint32_t>(
-                              artifact->data.constant_dependencies.size()));
-        write_u32(stream, artifact->data.instruction_count);
-        write_u64(stream, artifact->data.translation_nanoseconds);
-        stream.write(
-            reinterpret_cast<const char *>(artifact->data.normalized_ir.data()),
-            static_cast<std::streamsize>(artifact->data.normalized_ir.size()));
-        for (const auto target : artifact->data.relocation_targets)
-          write_u64(stream, target);
-        for (const auto location : artifact->data.exit_locations)
-          write_u64(stream, location);
-        for (const auto &dependency : artifact->data.code_dependencies) {
-          write_u32(stream, dependency.address);
-          write_u32(stream, dependency.size);
-          write_identity(stream, dependency.content_identity);
-          write_identity(stream, dependency.layout_identity);
-        }
-        for (const auto &constant : artifact->data.constant_dependencies) {
-          write_u32(stream, constant.address);
-          write_u32(stream, constant.size);
-          write_u64(stream, constant.value);
-          write_identity(stream, constant.content_identity);
-          write_identity(stream, constant.layout_identity);
-        }
+        output_offset += bytes;
       }
       stream.flush();
-      if (!stream) return false;
+      if (!stream || stream.tellp() != static_cast<std::streamoff>(
+                                output_offset)) {
+        return false;
+      }
+
+      DiskArtifactMap output_index;
+      output_index.reserve(entries.size());
+      std::vector<JitArtifactKey> output_order;
+      output_order.reserve(entries.size());
+      for (std::size_t index = 0; index < entries.size(); ++index) {
+        const auto [iterator, inserted] = output_index.emplace(
+            entries[index].key, output_records[index]);
+        if (!inserted || iterator->first != entries[index].key) return false;
+        output_order.push_back(entries[index].key);
+      }
+
+      const auto checksum = sha256_file(
+          temporary, 0, static_cast<std::uint64_t>(serialized_size));
+      if (!checksum) return false;
+      stream.close();
+      std::ofstream checksum_stream{temporary,
+                                    std::ios::binary | std::ios::app};
+      if (!checksum_stream) return false;
+      checksum_stream.write(
+          reinterpret_cast<const char *>(checksum->digest.data()),
+          static_cast<std::streamsize>(checksum->digest.size()));
+      checksum_stream.flush();
+      if (!checksum_stream) return false;
+
+      std::error_code error;
+      std::filesystem::rename(temporary, path, error);
+      if (error) {
+        error.clear();
+        std::filesystem::remove(temporary, error);
+        return false;
+      }
+      disk_artifacts_ = std::move(output_index);
+      disk_order_ = std::move(output_order);
+      disk_source_path_ = std::move(new_source_path);
+      return true;
     }
-    const auto checksum = sha256_file(
-        temporary, 0, static_cast<std::uint64_t>(serialized_size));
-    if (!checksum) return false;
-    {
-      std::ofstream stream{temporary, std::ios::binary | std::ios::app};
-      if (!stream) return false;
-      stream.write(reinterpret_cast<const char *>(checksum->digest.data()),
-                   static_cast<std::streamsize>(checksum->digest.size()));
-      stream.flush();
-      if (!stream) return false;
-    }
-    std::error_code error;
-    std::filesystem::rename(temporary, path, error);
-    if (error) {
-      error.clear();
-      std::filesystem::remove(temporary, error);
-      return false;
-    }
-    return true;
   } catch (...) {
     return false;
   }
