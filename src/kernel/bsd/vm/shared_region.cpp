@@ -2,6 +2,7 @@
 
 #include "../support.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -11,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 namespace ilemu {
@@ -29,8 +31,12 @@ constexpr std::uint32_t arm_shared_region_end = 0x4000'0000U;
 constexpr std::uint32_t arm_shared_half_size = 0x0800'0000U;
 constexpr std::uint32_t vm_protection_copy_on_write = 0x08U;
 constexpr std::uint32_t vm_protection_zero_fill = 0x10U;
+constexpr std::uint32_t shared_region_range_size =
+    2U * sizeof(std::uint64_t);
 constexpr std::uint32_t maximum_mapping_count =
     (2U * arm_shared_half_size) / AddressSpace::page_size;
+constexpr std::uint32_t maximum_range_count =
+    (arm_shared_region_end - arm_shared_text_base) / AddressSpace::page_size;
 
 struct Mapping {
   std::uint32_t address{};
@@ -43,6 +49,16 @@ struct Mapping {
 struct AppliedMapping {
   std::uint32_t address{};
   std::uint32_t size{};
+};
+
+struct SharedRegionRange {
+  std::uint32_t address{};
+  std::uint32_t end{};
+};
+
+struct SharedRegionRangeRead {
+  std::vector<SharedRegionRange> ranges;
+  std::uint32_t error{};
 };
 
 struct MappingSource {
@@ -69,6 +85,105 @@ enum class MappingLayout {
   const auto end = address + size;
   return (address >= arm_shared_text_base && end <= arm_shared_data_base) ||
          (address >= arm_shared_data_base && end <= arm_shared_region_end);
+}
+
+[[nodiscard]] SharedRegionRangeRead read_shared_region_ranges(
+    const AddressSpace &memory, std::uint32_t range_count,
+    std::uint32_t ranges_address) {
+  if (range_count > maximum_range_count ||
+      (range_count != 0 && ranges_address == 0)) {
+    return {{}, bsd_support::invalid_argument};
+  }
+
+  std::vector<SharedRegionRange> ranges;
+  ranges.reserve(range_count);
+  for (std::uint32_t index = 0; index < range_count; ++index) {
+    const auto offset = static_cast<std::uint64_t>(index) *
+                        shared_region_range_size;
+    if (offset > std::numeric_limits<std::uint32_t>::max() -
+                     ranges_address ||
+        ranges_address + static_cast<std::uint32_t>(offset) >
+            std::numeric_limits<std::uint32_t>::max() -
+                shared_region_range_size + 1U) {
+      return {{}, bsd_support::bad_address};
+    }
+    const auto address = ranges_address + static_cast<std::uint32_t>(offset);
+    const auto range_address = memory.read64(address);
+    const auto range_size = memory.read64(address + sizeof(std::uint64_t));
+    if (!range_address || !range_size) {
+      return {{}, bsd_support::bad_address};
+    }
+    if (*range_address > std::numeric_limits<std::uint32_t>::max() ||
+        *range_size > std::numeric_limits<std::uint32_t>::max() ||
+        *range_size == 0 ||
+        !page_aligned(*range_address) || !page_aligned(*range_size) ||
+        !in_arm_shared_region(static_cast<std::uint32_t>(*range_address),
+                              static_cast<std::uint32_t>(*range_size))) {
+      return {{}, bsd_support::invalid_argument};
+    }
+    const auto start = static_cast<std::uint32_t>(*range_address);
+    ranges.push_back({start, start + static_cast<std::uint32_t>(*range_size)});
+  }
+
+  std::sort(ranges.begin(), ranges.end(),
+            [](const SharedRegionRange &left, const SharedRegionRange &right) {
+              return left.address < right.address;
+            });
+  std::vector<SharedRegionRange> merged;
+  merged.reserve(ranges.size());
+  for (const auto &range : ranges) {
+    if (!merged.empty() && range.address <= merged.back().end) {
+      merged.back().end = std::max(merged.back().end, range.end);
+    } else {
+      merged.push_back(range);
+    }
+  }
+  return {std::move(merged), 0};
+}
+
+[[nodiscard]] std::vector<SharedRegionRange> ranges_to_release(
+    const AddressSpace &memory, const std::vector<SharedRegionRange> &keep) {
+  std::vector<SharedRegionRange> release;
+  std::size_t keep_index = 0;
+  for (std::uint64_t cursor = arm_shared_text_base;
+       cursor < arm_shared_region_end;) {
+    const auto region =
+        memory.mapping_region_at_or_after(static_cast<std::uint32_t>(cursor));
+    if (!region) break;
+    const auto mapped_start = std::max<std::uint64_t>(
+        cursor, std::max<std::uint64_t>(region->address,
+                                        arm_shared_text_base));
+    if (mapped_start >= arm_shared_region_end) break;
+    const auto mapped_end = std::min<std::uint64_t>(
+        region->end, arm_shared_region_end);
+    if (mapped_end <= mapped_start) {
+      cursor = std::max<std::uint64_t>(cursor + AddressSpace::page_size,
+                                       region->end);
+      continue;
+    }
+
+    while (keep_index < keep.size() && keep[keep_index].end <= mapped_start)
+      ++keep_index;
+    auto position = mapped_start;
+    for (std::size_t index = keep_index;
+         index < keep.size() && keep[index].address < mapped_end; ++index) {
+      if (keep[index].address > position) {
+        release.push_back(
+            {static_cast<std::uint32_t>(position),
+             static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                 keep[index].address, mapped_end))});
+      }
+      position = std::max<std::uint64_t>(position, keep[index].end);
+      if (position >= mapped_end) break;
+    }
+    if (position < mapped_end) {
+      release.push_back(
+          {static_cast<std::uint32_t>(position),
+           static_cast<std::uint32_t>(mapped_end)});
+    }
+    cursor = mapped_end;
+  }
+  return release;
 }
 
 [[nodiscard]] MemoryPermission permissions(std::uint32_t protection) {
@@ -262,9 +377,30 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
     return true;
   }
   if (number == 300) { // shared_region_make_private_np
-    // Each guest process currently owns its own vm_map and backing pages, so
-    // detaching from the system map requires no page copy.  Keep the syscall
-    // boundary because dyld uses it before retrying syscall 299 with a slide.
+    // The old ARM ABI passes (rangeCount, ranges), where each range contains
+    // two mach_vm_* (64-bit) fields.  AddressSpace is already process-local;
+    // map_file() gives retained file pages private-on-write semantics.  The
+    // observable part of privatization is therefore releasing every mapped
+    // shared-region interval outside the requested ranges.
+    const auto parsed = read_shared_region_ranges(memory_, registers[0],
+                                                  registers[1]);
+    if (parsed.error != 0) {
+      bsd_error(cpu, parsed.error);
+      return true;
+    }
+    const auto release = ranges_to_release(memory_, parsed.ranges);
+    for (const auto &range : release) {
+      static_cast<void>(memory_.unmap(range.address,
+                                      range.end - range.address));
+    }
+    std::uint64_t released_bytes = 0;
+    for (const auto &range : release)
+      released_bytes += range.end - range.address;
+    output_.write("[shared-region] private pid=" +
+                  std::to_string(process_.pid) +
+                  " keep-ranges=" + std::to_string(parsed.ranges.size()) +
+                  " released-bytes=" + std::to_string(released_bytes) +
+                  "\n");
     bsd_success(cpu, 0);
     return true;
   }

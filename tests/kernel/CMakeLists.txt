@@ -8,3 +8,7 @@ ilegacysim_add_compatibility_suite(
 target_link_libraries(ilegacysim_kernel_tests PRIVATE
     iLegacySim::kernel_iokit_power_tests
     iLegacySim::kernel_iokit_display_tests)
+
+ilemu_add_compatibility_suite(
+    ilemu_shared_region_tests shared_region
+    shared_region_tests.cpp)
