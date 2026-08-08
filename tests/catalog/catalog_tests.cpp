@@ -117,10 +117,19 @@ int main() {
   ilemu::ExecutableCatalog catalog;
   const auto &entry = catalog.register_image(image);
   if (!entry.kinds.contains(ilemu::ExecutableCatalogKind::Framework) ||
-      catalog.find(image.content_identity()) != &entry) {
+      catalog.find(image.content_identity()) != &entry ||
+      !catalog.path_is_current(framework_path)) {
     std::cerr << "framework catalog classification failed\n";
     return 1;
   }
+  auto changed_framework_bytes = framework_bytes;
+  changed_framework_bytes.push_back(std::byte{0});
+  write_file(framework_path, changed_framework_bytes);
+  if (catalog.path_is_current(framework_path)) {
+    std::cerr << "catalog generation change was not detected\n";
+    return 1;
+  }
+  write_file(framework_path, framework_bytes);
 
   auto fat_bytes = std::vector<std::byte>(0x240U);
   write_be32(fat_bytes, 0, 0xcafebabeU);

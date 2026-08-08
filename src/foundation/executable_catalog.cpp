@@ -13,6 +13,8 @@
 #include <string_view>
 #include <utility>
 
+#include <sys/stat.h>
+
 namespace {
 
 using ilemu::ContentIdentity;
@@ -21,7 +23,7 @@ using ilemu::DyldSharedCache;
 
 constexpr std::array<char, 8> catalog_magic{
     'i', 'L', 'E', 'M', 'C', 'A', 'T', '1'};
-constexpr std::uint32_t catalog_schema_version = 3U;
+constexpr std::uint32_t catalog_schema_version = 4U;
 constexpr std::size_t catalog_checksum_size = 32U;
 constexpr std::uint32_t maximum_manifest_entries = 100'000U;
 constexpr std::uint32_t maximum_manifest_items = 65'536U;
@@ -101,6 +103,23 @@ void write_string(std::ostream &stream, std::string_view value) {
   return value;
 }
 
+[[nodiscard]] std::optional<ilemu::ExecutableCatalogFileGeneration>
+read_file_generation(const std::filesystem::path &path) {
+  struct stat file_stat {};
+  if (::stat(path.c_str(), &file_stat) != 0 || !S_ISREG(file_stat.st_mode) ||
+      file_stat.st_size < 0) {
+    return std::nullopt;
+  }
+  return ilemu::ExecutableCatalogFileGeneration{
+      static_cast<std::uint64_t>(file_stat.st_dev),
+      static_cast<std::uint64_t>(file_stat.st_ino),
+      static_cast<std::uint64_t>(file_stat.st_size),
+      static_cast<std::int64_t>(file_stat.st_mtim.tv_sec),
+      static_cast<std::int64_t>(file_stat.st_mtim.tv_nsec),
+      static_cast<std::int64_t>(file_stat.st_ctim.tv_sec),
+      static_cast<std::int64_t>(file_stat.st_ctim.tv_nsec)};
+}
+
 void write_identity(std::ostream &stream, const ContentIdentity &identity) {
   stream.write(reinterpret_cast<const char *>(identity.digest.data()),
                static_cast<std::streamsize>(identity.digest.size()));
@@ -137,6 +156,37 @@ read_manifest_entry(std::istream &stream) {
     const auto alias = read_string(stream);
     if (!alias) return std::nullopt;
     entry.aliases.emplace_back(*alias);
+  }
+
+  const auto generation_count = read_u32(stream);
+  if (!generation_count || *generation_count > maximum_manifest_items) {
+    return std::nullopt;
+  }
+  entry.file_generations.reserve(*generation_count);
+  for (std::uint32_t index = 0; index < *generation_count; ++index) {
+    const auto path = read_string(stream);
+    const auto device = read_u64(stream);
+    const auto inode = read_u64(stream);
+    const auto file_size = read_u64(stream);
+    const auto modified_seconds = read_u64(stream);
+    const auto modified_nanoseconds = read_u64(stream);
+    const auto changed_seconds = read_u64(stream);
+    const auto changed_nanoseconds = read_u64(stream);
+    if (!path || !device || !inode || !file_size || !modified_seconds ||
+        !modified_nanoseconds || !changed_seconds || !changed_nanoseconds) {
+      return std::nullopt;
+    }
+    entry.file_generations.push_back(
+        ilemu::ExecutableCatalogPathGeneration{
+            *path,
+            ilemu::ExecutableCatalogFileGeneration{
+                *device,
+                *inode,
+                *file_size,
+                static_cast<std::int64_t>(*modified_seconds),
+                static_cast<std::int64_t>(*modified_nanoseconds),
+                static_cast<std::int64_t>(*changed_seconds),
+                static_cast<std::int64_t>(*changed_nanoseconds)}});
   }
 
   const auto kind_count = read_u32(stream);
@@ -302,6 +352,19 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_image(
   entry.file_type = image.file_type();
   entry.file_size = image.file_size();
   entry.fat_container = image.fat_container();
+  if (const auto generation = read_file_generation(normalized)) {
+    const auto existing = std::find_if(
+        entry.file_generations.begin(), entry.file_generations.end(),
+        [&normalized](const ExecutableCatalogPathGeneration &record) {
+          return record.path == normalized;
+        });
+    if (existing == entry.file_generations.end()) {
+      entry.file_generations.push_back(
+          ExecutableCatalogPathGeneration{normalized, *generation});
+    } else {
+      existing->generation = *generation;
+    }
+  }
   for (const auto &segment : image.segments()) {
     if ((segment.initial_protection & 4) == 0 || segment.file_size == 0) {
       continue;
@@ -335,12 +398,26 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_mapping(
     throw std::runtime_error{"cannot hash dynamic executable mapping: " +
                              path.string()};
   }
-  auto &entry = upsert(*identity, normalize_path(path),
+  const auto normalized_path = normalize_path(path);
+  auto &entry = upsert(*identity, normalized_path,
                        ExecutableCatalogKind::DynamicMapping);
   if (entry.file_size == 0) {
     std::error_code size_error;
     const auto size = std::filesystem::file_size(path, size_error);
     if (!size_error) entry.file_size = size;
+  }
+  if (const auto generation = read_file_generation(normalized_path)) {
+    const auto existing = std::find_if(
+        entry.file_generations.begin(), entry.file_generations.end(),
+        [&normalized_path](const ExecutableCatalogPathGeneration &record) {
+          return record.path == normalized_path;
+        });
+    if (existing == entry.file_generations.end()) {
+      entry.file_generations.push_back(
+          ExecutableCatalogPathGeneration{normalized_path, *generation});
+    } else {
+      existing->generation = *generation;
+    }
   }
   const auto mapping = ExecutableMappingIdentity{file_offset, byte_count};
   if (std::find(entry.mappings.begin(), entry.mappings.end(), mapping) ==
@@ -534,6 +611,7 @@ bool ExecutableCatalog::save(const std::filesystem::path &path) const noexcept {
     write_u32(stream, static_cast<std::uint32_t>(entries_.size()));
     for (const auto &entry : entries_) {
       if (entry.aliases.size() > maximum_manifest_items ||
+          entry.file_generations.size() > maximum_manifest_items ||
           entry.kinds.size() > maximum_manifest_items ||
           entry.dependencies.size() > maximum_manifest_items ||
           entry.mappings.size() > maximum_manifest_items) {
@@ -545,6 +623,24 @@ bool ExecutableCatalog::save(const std::filesystem::path &path) const noexcept {
         const auto text = alias.generic_string();
         if (text.size() > maximum_manifest_string) return fail();
         write_string(stream, text);
+      }
+      write_u32(stream,
+                static_cast<std::uint32_t>(entry.file_generations.size()));
+      for (const auto &record : entry.file_generations) {
+        const auto text = record.path.generic_string();
+        if (text.size() > maximum_manifest_string) return fail();
+        write_string(stream, text);
+        write_u64(stream, record.generation.device);
+        write_u64(stream, record.generation.inode);
+        write_u64(stream, record.generation.file_size);
+        write_u64(stream, static_cast<std::uint64_t>(
+                              record.generation.modified_seconds));
+        write_u64(stream, static_cast<std::uint64_t>(
+                              record.generation.modified_nanoseconds));
+        write_u64(stream, static_cast<std::uint64_t>(
+                              record.generation.changed_seconds));
+        write_u64(stream, static_cast<std::uint64_t>(
+                              record.generation.changed_nanoseconds));
       }
       write_u32(stream, static_cast<std::uint32_t>(entry.kinds.size()));
       for (const auto kind : entry.kinds) {
@@ -632,6 +728,19 @@ const ExecutableCatalogEntry *ExecutableCatalog::find_path(
   return fallback;
 }
 
+bool ExecutableCatalog::path_is_current(
+    const std::filesystem::path &path) const {
+  const auto normalized = normalize_path(path);
+  const auto *entry = find_path(normalized);
+  const auto current = read_file_generation(normalized);
+  if (entry == nullptr || !current) return false;
+  return std::any_of(
+      entry->file_generations.begin(), entry->file_generations.end(),
+      [&normalized, &current](const ExecutableCatalogPathGeneration &record) {
+        return record.path == normalized && record.generation == *current;
+      });
+}
+
 std::filesystem::path ExecutableCatalog::normalize_path(
     const std::filesystem::path &path) {
   std::error_code error;
@@ -666,6 +775,7 @@ ExecutableCatalogEntry &ExecutableCatalog::upsert(
     entries_.push_back(ExecutableCatalogEntry{
         .content_identity = identity,
         .aliases = {path},
+        .file_generations = {},
         .kinds = {kind},
         .uuid = std::nullopt,
         .cpu_type = 0U,

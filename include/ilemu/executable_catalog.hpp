@@ -32,9 +32,29 @@ struct ExecutableMappingIdentity {
       default;
 };
 
+struct ExecutableCatalogFileGeneration {
+  std::uint64_t device{};
+  std::uint64_t inode{};
+  std::uint64_t file_size{};
+  std::int64_t modified_seconds{};
+  std::int64_t modified_nanoseconds{};
+  std::int64_t changed_seconds{};
+  std::int64_t changed_nanoseconds{};
+
+  friend constexpr bool operator==(const ExecutableCatalogFileGeneration &,
+                                   const ExecutableCatalogFileGeneration &) =
+      default;
+};
+
+struct ExecutableCatalogPathGeneration {
+  std::filesystem::path path;
+  ExecutableCatalogFileGeneration generation;
+};
+
 struct ExecutableCatalogEntry {
   ContentIdentity content_identity;
   std::vector<std::filesystem::path> aliases;
+  std::vector<ExecutableCatalogPathGeneration> file_generations;
   std::set<ExecutableCatalogKind> kinds;
   std::optional<std::array<std::byte, 16>> uuid;
   std::uint32_t cpu_type{};
@@ -82,6 +102,8 @@ public:
   [[nodiscard]] const ExecutableCatalogEntry *find(
       const ContentIdentity &identity) const;
   [[nodiscard]] const ExecutableCatalogEntry *find_path(
+      const std::filesystem::path &path) const;
+  [[nodiscard]] bool path_is_current(
       const std::filesystem::path &path) const;
   [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
 
