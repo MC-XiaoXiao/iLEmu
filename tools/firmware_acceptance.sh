@@ -6,6 +6,7 @@ repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 build_dir=${ILEMU_BUILD_DIR:-"$repo_root/build"}
 build_jobs=${ILEMU_BUILD_JOBS:-8}
 ticks=${ILEMU_ACCEPTANCE_TICKS:-110000000}
+multicore_ticks=${ILEMU_ACCEPTANCE_MULTICORE_TICKS:-1000000}
 timeout_seconds=${ILEMU_ACCEPTANCE_TIMEOUT_SECONDS:-120}
 ilemu="$build_dir/ilemu"
 
@@ -27,6 +28,7 @@ else
 fi
 printf '%s\n' "[acceptance] host-arch=$(uname -m)"
 printf '%s\n' "[acceptance] compiler=$(c++ --version | sed -n '1p')"
+printf '%s\n' "[acceptance] ticks=$ticks multicore-ticks=$multicore_ticks"
 if [ -f "$build_dir/CMakeCache.txt" ]; then
     cmake -LA -N "$build_dir" 2>/dev/null |
         rg -e '^BUILD_TESTING:' -e '^CMAKE_BUILD_TYPE:' || true
@@ -44,6 +46,7 @@ run_boot() {
     boot_cache=$3
     boot_log=$4
     boot_cores=$5
+    boot_ticks=${6:-$ticks}
 
     printf '%s\n' "[acceptance] case=$boot_label rootfs=$boot_rootfs cache=$boot_cache"
     if [ "$boot_cores" = faithful ]; then
@@ -53,7 +56,7 @@ run_boot() {
             --gles-backend software \
             --network isolated \
             --activation unactivated \
-            --ticks "$ticks" \
+            --ticks "$boot_ticks" \
             --perf-summary \
             --host-cache "$boot_cache" </dev/null >"$boot_log" 2>&1; then
             boot_status=0
@@ -68,7 +71,7 @@ run_boot() {
             --gles-backend software \
             --network isolated \
             --activation unactivated \
-            --ticks "$ticks" \
+            --ticks "$boot_ticks" \
             --perf-summary \
             --host-cache "$boot_cache" </dev/null >"$boot_log" 2>&1; then
             boot_status=0
@@ -114,7 +117,7 @@ run_firmware() {
 
     firmware_multicore_cache=$(mktemp -d "$cache_root/${firmware_label}-multi-XXXXXX")
     run_boot "$firmware_label-multicore" "$firmware_rootfs" "$firmware_multicore_cache" \
-        "$firmware_multicore_cache/multicore.log" 2
+        "$firmware_multicore_cache/multicore.log" 2 "$multicore_ticks"
 }
 
 overall_status=0
