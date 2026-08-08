@@ -45,6 +45,22 @@ struct SystemVersion {
   std::string build_version;
 };
 
+DarwinGuestCapabilities capabilities_for_build(std::string_view build) {
+  // Local XNU 792 defines slot 322 as nosys. Public xnu-1228 keeps the old
+  // disk-only iopolicysys contract, while later xnu-4903 adds policy types
+  // and values that are intentionally not exposed through this profile.
+  if (build == "1A543a" || build == "3A109a") {
+    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs1, false};
+  }
+  if (build == "5A347") {
+    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs2, true};
+  }
+  if (build == "7A341") {
+    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs3, true};
+  }
+  return {};
+}
+
 SystemVersion read_system_version(const std::filesystem::path &rootfs) {
   const auto bytes =
       read_file(rootfs / "System/Library/CoreServices/SystemVersion.plist");
@@ -86,6 +102,7 @@ make_darwin_kernel_identity_profile(const std::filesystem::path &rootfs) {
   DarwinKernelIdentityProfile profile;
   if (!system_version.build_version.empty())
     profile.build_version = system_version.build_version;
+  profile.capabilities = capabilities_for_build(profile.build_version);
   return profile;
 }
 

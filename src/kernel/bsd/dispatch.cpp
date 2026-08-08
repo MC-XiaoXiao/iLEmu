@@ -22,7 +22,6 @@
 #include <span>
 #include <sstream>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -80,15 +79,6 @@ std::optional<std::uint32_t> canonical_no_cancel_syscall(
   }
 }
 
-bool guest_exposes_legacy_iopolicysys(std::string_view build_version) {
-  // The exact iOS kernel sources for xnu-1228.6.76 and xnu-1357.2.89 are not
-  // available locally. The firmware's Libsyscall versions, together with the
-  // public xnu-1228/xnu-1456 sources, identify this as the old disk-only
-  // iopolicysys ABI. Keep the dispatch list explicit so a later firmware does
-  // not accidentally inherit this pre-QoS contract.
-  return build_version == "5A347" || build_version == "7A341";
-}
-
 } // namespace
 
 void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
@@ -99,8 +89,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
 
   switch (number) {
   case 322: { // iopolicysys on 5A347/7A341; nosys on the older 3A ABI.
-    if (!guest_exposes_legacy_iopolicysys(
-            shared_state_->darwin_kernel_identity.build_version)) {
+    if (!shared_state_->darwin_kernel_identity.capabilities
+             .legacy_iopolicysys) {
       // xnu-792.24.17 and the firmware's pre-iopolicy xnu-933-era slot both
       // define syscall 322 as nosys. It must return ENOSYS without entering
       // trace_unknown(), because an expected nosys result is not a fatal ABI

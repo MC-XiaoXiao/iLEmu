@@ -6,6 +6,20 @@
 
 namespace ilemu {
 
+enum class DarwinAbiEpoch {
+  Unknown,
+  IphoneOs1,
+  IphoneOs2,
+  IphoneOs3,
+};
+
+struct DarwinGuestCapabilities {
+  DarwinAbiEpoch epoch{DarwinAbiEpoch::Unknown};
+  // Syscall 322 is nosys on the 3A/older contract and the old disk-only
+  // iopolicysys ABI on 5A/7A. Later policy extensions are not implied.
+  bool legacy_iopolicysys{};
+};
+
 struct DarwinKernelIdentityProfile {
   std::string name{"darwin9.4"};
   std::string operating_system_type{"Darwin"};
@@ -15,6 +29,7 @@ struct DarwinKernelIdentityProfile {
       "Darwin Kernel Version 9.4.0: iLEmu compatibility kernel; "
       "darwin9.4/RELEASE_ARM"};
   std::string build_version{"1A543a"};
+  DarwinGuestCapabilities capabilities;
 };
 
 // Reports the compatibility kernel's highest supported Darwin contract. The
