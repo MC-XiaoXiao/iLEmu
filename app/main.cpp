@@ -211,7 +211,7 @@ public:
                        std::size_t guest_processor_count)
       : per_executor_cap_{per_executor_cap},
         total_budget_{std::max<std::size_t>(
-            std::size_t{512U} * 1024U * 1024U,
+            std::size_t{640U} * 1024U * 1024U,
             std::size_t{1U} * 1024U * 1024U *
                 std::max<std::size_t>(1U, guest_processor_count))},
         normal_budget_{total_budget_ - emergency_budget_bytes} {}
@@ -284,7 +284,7 @@ private:
       // exception instead of a bounded cache admission.
       8U * 1024U * 1024U;
   static constexpr std::size_t emergency_budget_bytes =
-      64U * 1024U * 1024U;
+      192U * 1024U * 1024U;
 
   friend class JitCodeCacheReservation;
 
