@@ -935,7 +935,19 @@ void smoke(const std::vector<std::string> &args, Output &output) {
   append_word(code, 4, 0xef000080U); // svc #0x80 (Darwin syscall gate)
   memory.copy_in(code_address, code);
 
-  CpuCluster cluster{core_count, memory};
+  Dynarmic::ExclusiveMonitor shared_exclusive_monitor{core_count};
+  auto shared_exclusive_address_resolver =
+      std::make_shared<GuestExclusiveAddressResolver>();
+  CpuCluster cluster{
+      core_count,
+      core_count,
+      memory,
+      core_count,
+      default_arm_cpu_model(),
+      shared_exclusive_monitor,
+      0,
+      {},
+      shared_exclusive_address_resolver};
   cluster.set_jit_code_cache_size(jit_code_cache_size(args));
   for (std::size_t index = 0; index < cluster.size(); ++index) {
     cluster.cpu(index).registers()[0] = static_cast<std::uint32_t>(index * 100);
@@ -948,9 +960,8 @@ void smoke(const std::vector<std::string> &args, Output &output) {
   text << "Dynarmic ARMv6 parallel smoke test: " << core_count
        << " virtual CPU(s)\n";
   if (core_count > 1) {
-    text << "mode: stress/dev; execution-slot LDREX state follows the host "
-            "slot and process-local ExclusiveMonitor does not model "
-            "cross-process shared-page atomics\n";
+    text << "mode: exact; execution-slot LDREX state resolves through "
+            "GuestPageBacking identity for shared-page atomics\n";
   }
   for (std::size_t index = 0; index < cluster.size(); ++index) {
     text << "cpu" << index << " r0=" << cluster.cpu(index).registers()[0]
