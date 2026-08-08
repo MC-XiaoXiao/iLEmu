@@ -764,13 +764,78 @@ void MachOImage::map_into(AddressSpace& memory) const {
         const auto prefix = segment.vm_address - base;
         const auto mapping_size = align_up(static_cast<std::uint64_t>(prefix) + segment.vm_size);
         const auto permissions = vm_protection(segment.initial_protection);
-        if (!memory.map(base, mapping_size, permissions)) {
-            throw std::runtime_error{"failed to map segment " + segment.name};
-        }
-        if (segment.file_size != 0 &&
-            !memory.copy_in(segment.vm_address,
-                            bytes.subspan(segment.file_offset, segment.file_size))) {
-            throw std::runtime_error{"failed to populate segment " + segment.name};
+
+        const auto map_anonymous = [&](std::uint32_t range_start,
+                                       std::uint32_t range_end) {
+            if (range_start >= range_end) return;
+            if (!memory.map(range_start, range_end - range_start,
+                            permissions)) {
+                throw std::runtime_error{"failed to map segment " +
+                                         segment.name};
+            }
+
+            const auto copy_start = std::max<std::uint64_t>(
+                range_start, segment.vm_address);
+            const auto copy_end = std::min<std::uint64_t>(
+                range_end,
+                static_cast<std::uint64_t>(segment.vm_address) +
+                    segment.file_size);
+            if (copy_start >= copy_end) return;
+            const auto file_offset =
+                static_cast<std::uint64_t>(segment.file_offset) +
+                (copy_start - segment.vm_address);
+            const auto copy_size = copy_end - copy_start;
+            if (file_offset > bytes.size() ||
+                copy_size > bytes.size() - file_offset) {
+                throw std::runtime_error{"invalid file range in segment " +
+                                         segment.name};
+            }
+            if (!memory.copy_in(
+                    static_cast<std::uint32_t>(copy_start),
+                    bytes.subspan(static_cast<std::size_t>(file_offset),
+                                  static_cast<std::size_t>(copy_size)))) {
+                throw std::runtime_error{"failed to populate segment " +
+                                         segment.name};
+            }
+        };
+
+        const bool immutable_executable =
+            !fat_container_ && segment.file_size != 0 &&
+            has_permission(permissions, MemoryPermission::Execute) &&
+            !has_permission(permissions, MemoryPermission::Write) &&
+            segment.file_offset % AddressSpace::page_size ==
+                segment.vm_address % AddressSpace::page_size;
+        const auto mapping_end = base + mapping_size;
+        if (!immutable_executable) {
+            map_anonymous(base, mapping_end);
+        } else {
+            const auto file_guest_start =
+                (static_cast<std::uint64_t>(segment.vm_address) +
+                 AddressSpace::page_size - 1U) &
+                ~(static_cast<std::uint64_t>(AddressSpace::page_size) - 1U);
+            const auto file_guest_end =
+                (static_cast<std::uint64_t>(segment.vm_address) +
+                 segment.file_size) &
+                ~(static_cast<std::uint64_t>(AddressSpace::page_size) - 1U);
+            if (file_guest_end <= file_guest_start ||
+                file_guest_start > mapping_end || file_guest_end > mapping_end) {
+                map_anonymous(base, mapping_end);
+            } else {
+                map_anonymous(base, static_cast<std::uint32_t>(file_guest_start));
+                const auto file_offset =
+                    static_cast<std::uint64_t>(segment.file_offset) +
+                    (file_guest_start - segment.vm_address);
+                if (!memory.map_file(
+                        static_cast<std::uint32_t>(file_guest_start),
+                        static_cast<std::uint32_t>(file_guest_end -
+                                                   file_guest_start),
+                        permissions, path_, file_offset)) {
+                    throw std::runtime_error{"failed to file-map segment " +
+                                             segment.name};
+                }
+                map_anonymous(static_cast<std::uint32_t>(file_guest_end),
+                              mapping_end);
+            }
         }
         if (has_permission(permissions, MemoryPermission::Execute)) {
             memory.mark_translation_profile_stable(base, mapping_size);
