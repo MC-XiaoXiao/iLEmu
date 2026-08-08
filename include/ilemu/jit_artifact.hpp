@@ -55,6 +55,13 @@ struct JitArtifactKeyHash {
       const JitArtifactKey &key) const noexcept;
 };
 
+struct JitCodeDependency {
+  std::uint32_t address{};
+  std::uint32_t size{};
+  ContentIdentity content_identity;
+  ContentIdentity layout_identity;
+};
+
 struct JitArtifactData {
   // This is a normalized, portable representation. It is deliberately not a
   // copy of Dynarmic's native code cache.
@@ -67,6 +74,9 @@ struct JitArtifactData {
   // speculative profile hint, but it does not participate in executable
   // artifact identity.
   std::uint64_t translation_nanoseconds{};
+  // Every executable page observed by Dynarmic while translating the block.
+  // Empty dependencies are not importable by the CPU integration.
+  std::vector<JitCodeDependency> code_dependencies;
 };
 
 struct JitArtifactLimits {

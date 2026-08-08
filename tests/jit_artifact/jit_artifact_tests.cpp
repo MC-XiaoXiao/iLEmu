@@ -138,7 +138,7 @@ int main() {
 
   {
     ilemu::JitArtifactLimits resident_limits;
-    resident_limits.resident_bytes = 298U;
+    resident_limits.resident_bytes = 306U;
     ilemu::JitArtifactStore resident_limited{
         std::filesystem::path{}, resident_limits};
     auto first_limited_key = key;
@@ -179,7 +179,7 @@ int main() {
                 << static_cast<bool>(third_final_hit) << "\n";
       return 1;
     }
-    resident_limits.resident_bytes = 149U;
+    resident_limits.resident_bytes = 153U;
     ilemu::JitArtifactStore reloaded_limited{persistence, resident_limits};
     if (reloaded_limited.size() != 1U) {
       std::cerr << "resident artifact budget was ignored during load\n";
@@ -295,7 +295,7 @@ int main() {
     key.codegen_options = 1U;
     key.host_isa = host_isa();
     key.host_feature_mask = 0U;
-    key.artifact_format_version = 4U;
+    key.artifact_format_version = 5U;
     return key;
   };
 
@@ -322,6 +322,7 @@ int main() {
   const auto first_artifact = runtime_artifacts->find(runtime_key(*backing,
                                                                    code_address));
   if (!first_artifact || first_artifact->data.normalized_ir.empty() ||
+      first_artifact->data.code_dependencies.empty() ||
       !ilemu::validate_dynarmic_ir(first_artifact->data.normalized_ir)) {
     std::cerr << "first process did not publish valid portable IR\n";
     return 1;

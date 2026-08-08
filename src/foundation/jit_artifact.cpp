@@ -15,7 +15,7 @@ namespace ilemu {
 namespace {
 
 constexpr std::array<char, 8> artifact_magic{
-    'i', 'L', 'J', 'A', 'R', 'T', 'F', '3'};
+    'i', 'L', 'J', 'A', 'R', 'T', 'F', '4'};
 constexpr std::uint32_t maximum_artifacts = 1'000'000;
 constexpr std::uint32_t maximum_ir_bytes = 16U * 1024U * 1024U;
 constexpr std::uint32_t maximum_metadata_entries = 1'000'000;
@@ -189,7 +189,14 @@ read_bytes(std::istream &stream, std::uint32_t count) {
     return std::nullopt;
   }
   constexpr std::size_t serialized_key_bytes = 124U;
-  constexpr std::size_t serialized_data_header_bytes = 24U;
+  constexpr std::size_t serialized_data_header_bytes = 28U;
+  constexpr std::size_t serialized_dependency_bytes = 72U;
+  if (data.code_dependencies.size() > maximum_metadata_entries ||
+      data.code_dependencies.size() >
+          std::numeric_limits<std::size_t>::max() /
+              serialized_dependency_bytes) {
+    return std::nullopt;
+  }
   std::size_t size = serialized_key_bytes + serialized_data_header_bytes;
   const auto add = [&size](std::size_t value) {
     if (value > std::numeric_limits<std::size_t>::max() - size) {
@@ -200,7 +207,9 @@ read_bytes(std::istream &stream, std::uint32_t count) {
   };
   return add(data.normalized_ir.size()) &&
                  add(data.relocation_targets.size() * sizeof(std::uint64_t)) &&
-                 add(data.exit_locations.size() * sizeof(std::uint64_t))
+                 add(data.exit_locations.size() * sizeof(std::uint64_t)) &&
+                 add(data.code_dependencies.size() *
+                     serialized_dependency_bytes)
              ? std::optional<std::size_t>{size}
              : std::nullopt;
 }
@@ -387,12 +396,15 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
       const auto ir_size = read_u32(stream);
       const auto relocation_count = read_u32(stream);
       const auto exit_count = read_u32(stream);
+      const auto dependency_count = read_u32(stream);
       const auto instruction_count = read_u32(stream);
       const auto translation_nanoseconds = read_u64(stream);
       if (!key || !ir_size || !relocation_count || !exit_count ||
-          !instruction_count || !translation_nanoseconds ||
+          !dependency_count || !instruction_count ||
+          !translation_nanoseconds ||
           *relocation_count > maximum_metadata_entries ||
-          *exit_count > maximum_metadata_entries) {
+          *exit_count > maximum_metadata_entries ||
+          *dependency_count > maximum_metadata_entries) {
         return false;
       }
       const auto ir = read_bytes(stream, *ir_size);
@@ -413,6 +425,21 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
         const auto location = read_u64(stream);
         if (!location) return false;
         data.exit_locations.push_back(*location);
+      }
+      data.code_dependencies.reserve(*dependency_count);
+      for (std::uint32_t dependency = 0; dependency < *dependency_count;
+           ++dependency) {
+        const auto address = read_u32(stream);
+        const auto size = read_u32(stream);
+        JitCodeDependency value;
+        if (!address || !size || *size == 0 ||
+            !read_identity(stream, value.content_identity) ||
+            !read_identity(stream, value.layout_identity)) {
+          return false;
+        }
+        value.address = *address;
+        value.size = *size;
+        data.code_dependencies.push_back(std::move(value));
       }
       const auto artifact_bytes = serialized_artifact_bytes(data);
       if (!artifact_bytes) return false;
@@ -523,6 +550,8 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
                               artifact->data.relocation_targets.size()));
         write_u32(stream, static_cast<std::uint32_t>(
                               artifact->data.exit_locations.size()));
+        write_u32(stream, static_cast<std::uint32_t>(
+                              artifact->data.code_dependencies.size()));
         write_u32(stream, artifact->data.instruction_count);
         write_u64(stream, artifact->data.translation_nanoseconds);
         stream.write(
@@ -532,6 +561,12 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
           write_u64(stream, target);
         for (const auto location : artifact->data.exit_locations)
           write_u64(stream, location);
+        for (const auto &dependency : artifact->data.code_dependencies) {
+          write_u32(stream, dependency.address);
+          write_u32(stream, dependency.size);
+          write_identity(stream, dependency.content_identity);
+          write_identity(stream, dependency.layout_identity);
+        }
       }
       stream.flush();
       if (!stream) return false;

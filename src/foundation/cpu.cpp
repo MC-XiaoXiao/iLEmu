@@ -55,7 +55,7 @@ std::uint64_t jit_code_cache_used(const Jit& jit) {
 constexpr std::uint32_t jit_artifact_hle_abi_version = 1U;
 constexpr std::uint32_t jit_artifact_backend_abi_version = 2U;
 constexpr std::uint64_t jit_artifact_codegen_options = 1U;
-constexpr std::uint32_t jit_artifact_format_version = 4U;
+constexpr std::uint32_t jit_artifact_format_version = 5U;
 
 [[nodiscard]] ArmCpuModelKind jit_artifact_cpu_model(
     const ArmCpuModel& cpu_model) noexcept {
@@ -92,10 +92,20 @@ public:
     }
 
     bool PreCodeReadHook(
-        bool, Dynarmic::A32::VAddr, Dynarmic::A32::IREmitter& ir) override {
+    bool, Dynarmic::A32::VAddr address,
+    Dynarmic::A32::IREmitter& ir) override {
         if (ir.block.CycleCount() == 0) {
             performance_counters().record_translation_block();
             translation_block_ = &ir.block;
+            translation_code_pages_.clear();
+        }
+        if (translation_block_ == &ir.block) {
+            const auto page = address & ~(AddressSpace::page_size - 1U);
+            if (std::find(translation_code_pages_.begin(),
+                          translation_code_pages_.end(), page) ==
+                translation_code_pages_.end()) {
+                translation_code_pages_.push_back(page);
+            }
         }
         // This fork's translator continues normal decoding when the hook returns
         // true. Returning false is reserved for a hook that already emitted an IR
@@ -125,6 +135,7 @@ public:
         try {
             const auto artifact = find_artifact(location_descriptor);
             if (!artifact || artifact->data.normalized_ir.empty()) return false;
+            if (!dependencies_match(*artifact)) return false;
             auto block = deserialize_dynarmic_ir(artifact->data.normalized_ir);
             if (!block || block->Location().Value() != location_descriptor) {
                 return false;
@@ -151,6 +162,25 @@ public:
     }
 
 private:
+    [[nodiscard]] bool dependencies_match(
+        const BlockArtifact &artifact) const noexcept {
+        if (artifact.data.code_dependencies.empty()) return false;
+        for (const auto &dependency : artifact.data.code_dependencies) {
+            if (dependency.size == 0 ||
+                !memory_.is_read_only_executable(dependency.address,
+                                                 dependency.size)) {
+                return false;
+            }
+            const auto current = memory_.executable_backing_identity(
+                dependency.address, dependency.size);
+            if (!current || current->content != dependency.content_identity ||
+                current->layout != dependency.layout_identity) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void translation_completed(
         std::uint64_t location_descriptor,
         std::uint64_t translation_nanoseconds,
@@ -364,8 +394,19 @@ private:
             translation_block_ = nullptr;
             auto key = make_artifact_key(location_descriptor);
             if (!key) return;
+            if (translation_code_pages_.empty()) return;
 
             JitArtifactData data;
+            data.code_dependencies.reserve(translation_code_pages_.size());
+            for (const auto page : translation_code_pages_) {
+                const auto dependency =
+                    memory_.executable_backing_identity(
+                        page, AddressSpace::page_size);
+                if (!dependency) return;
+                data.code_dependencies.push_back(JitCodeDependency{
+                    page, AddressSpace::page_size, dependency->content,
+                    dependency->layout});
+            }
             if (optimized_block != nullptr) {
                 const auto serialized = serialize_dynarmic_ir(*optimized_block);
                 if (serialized) data.normalized_ir = *serialized;
@@ -481,6 +522,7 @@ private:
     std::shared_ptr<JitTranslationProfile> translation_profile_;
     std::shared_ptr<JitArtifactStore> artifact_store_;
     Dynarmic::IR::Block *translation_block_{};
+    std::vector<std::uint32_t> translation_code_pages_;
 };
 
 // The iPhone ARM user ABI uses CP15 thread-pointer registers in addition to
