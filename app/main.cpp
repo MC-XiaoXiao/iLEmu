@@ -278,7 +278,11 @@ public:
 
 private:
   static constexpr std::size_t minimum_per_executor_bytes =
-      1U * 1024U * 1024U;
+      // Dynarmic allocates a 2 MiB constant pool while constructing each
+      // backend. Keep emergency admissions large enough to construct a JIT;
+      // a smaller reservation turns process creation into an avoidable host
+      // exception instead of a bounded cache admission.
+      8U * 1024U * 1024U;
   static constexpr std::size_t emergency_budget_bytes =
       64U * 1024U * 1024U;
 
