@@ -195,6 +195,54 @@ int main() {
     return 1;
   }
 
+  ilemu::HostResourceBudget split_budget;
+  split_budget.worker_count = 2U;
+  split_budget.duty_period = 250ms;
+  split_budget.interactive_compile_budget = 5ms;
+  split_budget.offline_compile_budget = 20ms;
+  split_budget.deadline_reserve = 0ms;
+  ilemu::HostResourceController split_controller{split_budget};
+  std::mutex split_mutex;
+  std::condition_variable split_condition;
+  int split_started = 0;
+  bool release_split = false;
+  const auto split_work = [&] {
+    std::unique_lock lock{split_mutex};
+    ++split_started;
+    split_condition.notify_all();
+    split_condition.wait(lock, [&] { return release_split; });
+  };
+  const auto interactive = split_controller.submit(
+      ilemu::HostWorkKind::BackgroundCompile, std::nullopt, split_work, 5ms);
+  const auto offline = split_controller.submit(
+      ilemu::HostWorkKind::OfflineCompile, std::nullopt, split_work, 20ms);
+  if (!interactive || !offline) {
+    std::cerr << "separate compile budgets rejected valid work\n";
+    {
+      std::lock_guard lock{split_mutex};
+      release_split = true;
+    }
+    split_condition.notify_all();
+    split_controller.wait_idle();
+    return 1;
+  }
+  {
+    std::unique_lock lock{split_mutex};
+    if (!split_condition.wait_for(lock, 100ms,
+                                  [&] { return split_started == 2; })) {
+      std::cerr << "separate compile budgets serialized independent work\n";
+      release_split = true;
+    } else {
+      release_split = true;
+    }
+  }
+  split_condition.notify_all();
+  split_controller.wait_idle();
+  if (split_started != 2 || split_controller.completed() != 2U) {
+    std::cerr << "separate compile budgets did not run independently\n";
+    return 1;
+  }
+
   ilemu::HostResourceBudget deadline_budget;
   deadline_budget.worker_count = 1U;
   deadline_budget.interactive_compile_budget = 20ms;

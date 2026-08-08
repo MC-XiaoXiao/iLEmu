@@ -26,6 +26,8 @@ struct HostResourceBudget {
   std::chrono::nanoseconds duty_period{std::chrono::seconds{1}};
   std::chrono::nanoseconds interactive_compile_budget{
       std::chrono::milliseconds{100}};
+  std::chrono::nanoseconds offline_compile_budget{
+      std::chrono::milliseconds{800}};
   std::chrono::nanoseconds deadline_reserve{
       std::chrono::milliseconds{2}};
 };
@@ -104,6 +106,8 @@ private:
   Clock::time_point duty_window_start_{};
   std::chrono::nanoseconds interactive_work_{};
   std::chrono::nanoseconds interactive_reserved_{};
+  std::chrono::nanoseconds offline_work_{};
+  std::chrono::nanoseconds offline_reserved_{};
   std::uint64_t next_sequence_{1};
   std::uint64_t active_tasks_{};
   std::uint64_t completed_{};

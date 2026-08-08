@@ -40,6 +40,7 @@ HostResourceController::HostResourceController(HostResourceBudget budget)
       budget_.interactive_compile_budget <
           std::chrono::nanoseconds::zero() ||
       budget_.interactive_compile_budget > budget_.duty_period ||
+      budget_.offline_compile_budget < std::chrono::nanoseconds::zero() ||
       budget_.deadline_reserve < std::chrono::nanoseconds::zero()) {
     throw std::invalid_argument{"invalid host resource budget"};
   }
@@ -59,19 +60,25 @@ std::shared_ptr<HostWorkToken> HostResourceController::submit(
   const auto now = Clock::now();
   const std::lock_guard lock{mutex_};
   if (stopping_ || workers_.empty() ||
-      (kind == HostWorkKind::BackgroundCompile && next_deadline_ &&
+      ((kind == HostWorkKind::BackgroundCompile ||
+        kind == HostWorkKind::OfflineCompile) && next_deadline_ &&
        *next_deadline_ <= now + budget_.deadline_reserve)) {
     ++rejected_;
     return nullptr;
   }
-  if (kind == HostWorkKind::BackgroundCompile) {
+  if (kind == HostWorkKind::BackgroundCompile ||
+      kind == HostWorkKind::OfflineCompile) {
+    const auto limit = kind == HostWorkKind::BackgroundCompile
+                           ? budget_.interactive_compile_budget
+                           : budget_.offline_compile_budget;
     if (estimated_cost < std::chrono::nanoseconds::zero()) {
       ++rejected_;
       return nullptr;
     }
     if (estimated_cost == std::chrono::nanoseconds::zero())
-      estimated_cost = budget_.interactive_compile_budget;
-    if (estimated_cost > budget_.interactive_compile_budget) {
+      estimated_cost = limit;
+    if (limit == std::chrono::nanoseconds::zero() ||
+        estimated_cost > limit) {
       ++rejected_;
       return nullptr;
     }
@@ -138,6 +145,7 @@ void HostResourceController::worker_loop() {
         if (now - duty_window_start_ >= budget_.duty_period) {
           duty_window_start_ = now;
           interactive_work_ = std::chrono::nanoseconds::zero();
+          offline_work_ = std::chrono::nanoseconds::zero();
         }
         const auto background_deadline_too_close =
             next_deadline_ &&
@@ -145,17 +153,26 @@ void HostResourceController::worker_loop() {
         auto iterator = tasks_.end();
         for (auto candidate = tasks_.begin(); candidate != tasks_.end();
              ++candidate) {
-          if (!stopping_ &&
-              candidate->second.kind == HostWorkKind::BackgroundCompile) {
+          const auto budgeted =
+              candidate->second.kind == HostWorkKind::BackgroundCompile ||
+              candidate->second.kind == HostWorkKind::OfflineCompile;
+          if (!stopping_ && budgeted) {
             if (background_deadline_too_close)
               continue;
-            if (interactive_work_ >= budget_.interactive_compile_budget)
+            const auto interactive =
+                candidate->second.kind == HostWorkKind::BackgroundCompile;
+            const auto limit = interactive
+                                   ? budget_.interactive_compile_budget
+                                   : budget_.offline_compile_budget;
+            const auto work = interactive ? interactive_work_ : offline_work_;
+            const auto reserved = interactive ? interactive_reserved_
+                                              : offline_reserved_;
+            if (work >= limit)
               continue;
-            const auto available =
-                budget_.interactive_compile_budget - interactive_work_;
-            if (interactive_reserved_ > available ||
+            const auto available = limit - work;
+            if (reserved > available ||
                 candidate->second.estimated_cost >
-                    available - interactive_reserved_) {
+                    available - reserved) {
               continue;
             }
           }
@@ -173,6 +190,8 @@ void HostResourceController::worker_loop() {
         tasks_.erase(iterator);
         if (task.kind == HostWorkKind::BackgroundCompile)
           interactive_reserved_ += task.estimated_cost;
+        else if (task.kind == HostWorkKind::OfflineCompile)
+          offline_reserved_ += task.estimated_cost;
         ++active_tasks_;
         break;
       }
@@ -195,6 +214,9 @@ void HostResourceController::worker_loop() {
       if (task.kind == HostWorkKind::BackgroundCompile) {
         interactive_reserved_ -= task.estimated_cost;
         interactive_work_ += elapsed;
+      } else if (task.kind == HostWorkKind::OfflineCompile) {
+        offline_reserved_ -= task.estimated_cost;
+        offline_work_ += elapsed;
       }
       --active_tasks_;
       ++completed_;
