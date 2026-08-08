@@ -58,10 +58,10 @@ struct JitArtifactData {
   std::vector<std::uint64_t> relocation_targets;
   std::vector<std::uint64_t> exit_locations;
   std::uint32_t instruction_count{};
-  // Translation timing is advisory metadata until a portable IR exporter is
-  // available at the Dynarmic boundary. It is still useful for deciding
+  // Translation timing is advisory metadata. It is useful for deciding
   // whether an entry was produced by a real translation rather than a
-  // speculative profile hint.
+  // speculative profile hint, but it does not participate in executable
+  // artifact identity.
   std::uint64_t translation_nanoseconds{};
 };
 
@@ -70,6 +70,19 @@ struct JitArtifactLimits {
   // metadata budget; native code is still owned by Dynarmic's live cache.
   std::size_t resident_bytes{64U * 1024U * 1024U};
   std::size_t persistence_bytes{};
+};
+
+struct JitArtifactStoreStats {
+  std::uint64_t lookups{};
+  std::uint64_t memory_hits{};
+  std::uint64_t disk_hits{};
+  std::uint64_t misses{};
+  std::uint64_t publish_calls{};
+  std::uint64_t deduplicated_publishes{};
+  std::uint64_t disk_loaded_entries{};
+  std::uint64_t evictions{};
+  std::size_t resident_bytes{};
+  std::uintmax_t disk_bytes{};
 };
 
 struct BlockArtifact {
@@ -92,6 +105,7 @@ public:
   [[nodiscard]] std::shared_ptr<const BlockArtifact> publish(
       JitArtifactKey key, JitArtifactData data);
   [[nodiscard]] std::size_t size() const;
+  [[nodiscard]] JitArtifactStoreStats stats() const;
 
   // Persistence is metadata-only and atomic. Loading malformed data leaves
   // the existing store unchanged and lets execution fall back to JIT.
@@ -104,6 +118,7 @@ private:
     std::shared_ptr<const BlockArtifact> artifact;
     std::size_t serialized_bytes{};
     std::list<JitArtifactKey>::iterator lru_position;
+    bool loaded_from_disk{};
   };
   using ArtifactMap =
       std::unordered_map<JitArtifactKey, ArtifactRecord, JitArtifactKeyHash>;
@@ -111,7 +126,8 @@ private:
   void touch_locked(ArtifactMap::iterator iterator) const;
   void evict_until_fit_locked(std::size_t required_bytes);
   void insert_locked(std::shared_ptr<const BlockArtifact> artifact,
-                     std::size_t serialized_bytes);
+                     std::size_t serialized_bytes,
+                     bool loaded_from_disk = false);
 
   mutable std::mutex mutex_;
   mutable ArtifactMap artifacts_;
@@ -119,6 +135,7 @@ private:
   JitArtifactLimits limits_;
   std::size_t resident_bytes_{};
   std::filesystem::path persistence_path_;
+  mutable JitArtifactStoreStats stats_;
 };
 
 // Per-process mutable execution state. CPU registers, AddressSpace and HLE

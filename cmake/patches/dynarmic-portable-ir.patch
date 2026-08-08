@@ -1,0 +1,117 @@
+diff --git a/src/dynarmic/backend/x64/a32_interface.cpp b/src/dynarmic/backend/x64/a32_interface.cpp
+index 13f3a60..f899337 100644
+--- a/src/dynarmic/backend/x64/a32_interface.cpp
++++ b/src/dynarmic/backend/x64/a32_interface.cpp
+@@ -7,6 +7,7 @@
+ #include <functional>
+ #include <memory>
+ #include <mutex>
++#include <utility>
+ 
+ #include <boost/icl/interval_set.hpp>
+ #include <fmt/format.h>
+@@ -124,6 +125,23 @@ struct Jit::Impl {
+                 IR::LocationDescriptor{location_descriptor}));
+     }
+ 
++    bool Precompile(IR::Block block) {
++        ASSERT(!jit_interface->is_executing);
++        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
++        if (emitter.GetBasicBlock(block.Location())) {
++            return false;
++        }
++
++        constexpr size_t MINIMUM_REMAINING_CODESIZE = 1 * 1024 * 1024;
++        if (block_of_code.SpaceRemaining() < MINIMUM_REMAINING_CODESIZE) {
++            invalidate_entire_cache = true;
++            PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
++        }
++        block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
++        static_cast<void>(emitter.Emit(block));
++        return true;
++    }
++
+     void ClearCache() {
+         std::unique_lock lock{invalidation_mutex};
+         invalidate_entire_cache = true;
+@@ -252,7 +270,7 @@ private:
+                         std::chrono::steady_clock::now() - translation_started)
+                         .count());
+         conf.callbacks->CodeTranslationCompleted(
+-                descriptor.Value(), translation_nanoseconds);
++                descriptor.Value(), translation_nanoseconds, ir_block);
+         return emitted;
+     }
+ 
+@@ -310,6 +328,10 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
+     impl->Precompile(location_descriptor);
+ }
+ 
++bool Jit::Precompile(IR::Block block) {
++    return impl->Precompile(std::move(block));
++}
++
+ void Jit::ClearCache() {
+     impl->ClearCache();
+ }
+diff --git a/src/dynarmic/interface/A32/a32.h b/src/dynarmic/interface/A32/a32.h
+index 776471a..72a94ae 100644
+--- a/src/dynarmic/interface/A32/a32.h
++++ b/src/dynarmic/interface/A32/a32.h
+@@ -15,6 +15,10 @@
+ #include "dynarmic/interface/halt_reason.h"
+ 
+ namespace Dynarmic {
++namespace IR {
++class Block;
++}  // namespace IR
++
+ namespace A32 {
+ 
+ class Jit final {
+@@ -40,6 +44,13 @@ public:
+      */
+     void Precompile(std::uint64_t location_descriptor);
+ 
++    /**
++     * Emits a previously optimized IR block without translating guest code.
++     * The caller must guarantee that execution is stopped. The return value
++     * is false when the location was already compiled.
++     */
++    bool Precompile(IR::Block block);
++
+     /**
+      * Clears the code cache of all compiled code.
+      * Can be called at any time. Halts execution if called within a callback.
+diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
+index 093cb57..d990fbd 100644
+--- a/src/dynarmic/interface/A32/config.h
++++ b/src/dynarmic/interface/A32/config.h
+@@ -16,6 +16,10 @@
+ #include "dynarmic/interface/optimization_flags.h"
+ 
+ namespace Dynarmic {
++namespace IR {
++class Block;
++}  // namespace IR
++
+ class ExclusiveMonitor;
+ }  // namespace Dynarmic
+ 
+@@ -80,6 +84,16 @@ struct UserCallbacks : public TranslateCallbacks {
+             std::uint64_t /*location_descriptor*/,
+             std::uint64_t /*translation_nanoseconds*/) noexcept {}
+ 
++    // Called after the backend has emitted host code for the block and gives
++    // clients a chance to persist a versioned, portable representation of the
++    // optimized IR. The default preserves the legacy callback contract.
++    virtual void CodeTranslationCompleted(
++            std::uint64_t location_descriptor,
++            std::uint64_t translation_nanoseconds,
++            const Dynarmic::IR::Block& /*block*/) noexcept {
++        CodeTranslationCompleted(location_descriptor, translation_nanoseconds);
++    }
++
+     // Reads through these callbacks may not be aligned.
+     // Memory must be interpreted as if ENDIANSTATE == 0, endianness will be corrected by the JIT.
+     virtual std::uint8_t MemoryRead8(VAddr vaddr) = 0;

@@ -233,8 +233,18 @@ JitArtifactStore::~JitArtifactStore() { static_cast<void>(save()); }
 std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
     const JitArtifactKey &key) const {
   const std::lock_guard lock{mutex_};
+  ++stats_.lookups;
   const auto artifact = artifacts_.find(key);
-  if (artifact == artifacts_.end()) return nullptr;
+  if (artifact == artifacts_.end()) {
+    ++stats_.misses;
+    return nullptr;
+  }
+  if (artifact->second.loaded_from_disk) {
+    ++stats_.disk_hits;
+    artifact->second.loaded_from_disk = false;
+  } else {
+    ++stats_.memory_hits;
+  }
   touch_locked(artifact);
   return artifact->second.artifact;
 }
@@ -256,13 +266,14 @@ void JitArtifactStore::evict_until_fit_locked(
     const auto iterator = artifacts_.find(key);
     if (iterator == artifacts_.end()) continue;
     resident_bytes_ -= iterator->second.serialized_bytes;
+    ++stats_.evictions;
     artifacts_.erase(iterator);
   }
 }
 
 void JitArtifactStore::insert_locked(
     std::shared_ptr<const BlockArtifact> artifact,
-    std::size_t serialized_bytes) {
+    std::size_t serialized_bytes, bool loaded_from_disk) {
   const auto key = artifact->key;
   if (const auto existing = artifacts_.find(key); existing != artifacts_.end()) {
     touch_locked(existing);
@@ -285,13 +296,14 @@ void JitArtifactStore::insert_locked(
   const auto lru_position = std::prev(lru_.end());
   const auto [iterator, inserted] = artifacts_.try_emplace(
       key, ArtifactRecord{std::move(artifact), serialized_bytes,
-                          lru_position});
+                          lru_position, loaded_from_disk});
   if (!inserted) {
     lru_.erase(lru_position);
     touch_locked(iterator);
     return;
   }
   resident_bytes_ += serialized_bytes;
+  if (loaded_from_disk) ++stats_.disk_loaded_entries;
 }
 
 std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
@@ -299,7 +311,9 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
   const auto artifact_bytes = serialized_artifact_bytes(data);
   if (!artifact_bytes) return nullptr;
   const std::lock_guard lock{mutex_};
+  ++stats_.publish_calls;
   if (const auto existing = artifacts_.find(key); existing != artifacts_.end()) {
+    ++stats_.deduplicated_publishes;
     touch_locked(existing);
     return existing->second.artifact;
   }
@@ -314,6 +328,18 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
 std::size_t JitArtifactStore::size() const {
   const std::lock_guard lock{mutex_};
   return artifacts_.size();
+}
+
+JitArtifactStoreStats JitArtifactStore::stats() const {
+  const std::lock_guard lock{mutex_};
+  auto result = stats_;
+  result.resident_bytes = resident_bytes_;
+  if (!persistence_path_.empty()) {
+    std::error_code error;
+    result.disk_bytes = std::filesystem::file_size(persistence_path_, error);
+    if (error) result.disk_bytes = 0;
+  }
+  return result;
 }
 
 bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
@@ -421,7 +447,8 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
     const std::lock_guard lock{mutex_};
     for (auto &artifact : loaded) {
       const auto artifact_bytes = serialized_artifact_bytes(artifact->data);
-      if (artifact_bytes) insert_locked(std::move(artifact), *artifact_bytes);
+      if (artifact_bytes)
+        insert_locked(std::move(artifact), *artifact_bytes, true);
     }
     return true;
   } catch (...) {

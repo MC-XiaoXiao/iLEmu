@@ -27,6 +27,7 @@
 
 #include "ilemu/jit_translation_profile.hpp"
 #include "ilemu/jit_artifact.hpp"
+#include "dynarmic_ir_artifact.hpp"
 #include "ilemu/performance.hpp"
 
 namespace ilemu {
@@ -52,9 +53,9 @@ std::uint64_t jit_code_cache_used(const Jit& jit) {
 }
 
 constexpr std::uint32_t jit_artifact_hle_abi_version = 1U;
-constexpr std::uint32_t jit_artifact_backend_abi_version = 1U;
+constexpr std::uint32_t jit_artifact_backend_abi_version = 2U;
 constexpr std::uint64_t jit_artifact_codegen_options = 1U;
-constexpr std::uint32_t jit_artifact_format_version = 2U;
+constexpr std::uint32_t jit_artifact_format_version = 3U;
 
 [[nodiscard]] ArmCpuModelKind jit_artifact_cpu_model(
     const ArmCpuModel& cpu_model) noexcept {
@@ -105,13 +106,41 @@ public:
     void CodeTranslationCompleted(
         std::uint64_t location_descriptor,
         std::uint64_t translation_nanoseconds) noexcept override {
-        const auto pc = static_cast<std::uint32_t>(location_descriptor);
-        if (translation_profile_ &&
-            memory_.translation_profile_stable(
-                pc, sizeof(std::uint32_t))) {
-            translation_profile_->record(location_descriptor);
+        translation_completed(location_descriptor, translation_nanoseconds,
+                              nullptr);
+    }
+
+    void CodeTranslationCompleted(
+        std::uint64_t location_descriptor,
+        std::uint64_t translation_nanoseconds,
+        const Dynarmic::IR::Block& block) noexcept override {
+        translation_completed(location_descriptor, translation_nanoseconds,
+                              &block);
+    }
+
+    [[nodiscard]] bool import_artifact(
+        Dynarmic::A32::Jit& jit,
+        std::uint64_t location_descriptor) const noexcept {
+        if (!artifact_store_) return false;
+        try {
+            const auto artifact = find_artifact(location_descriptor);
+            if (!artifact || artifact->data.normalized_ir.empty()) return false;
+            auto block = deserialize_dynarmic_ir(artifact->data.normalized_ir);
+            if (!block || block->Location().Value() != location_descriptor) {
+                return false;
+            }
+            static_cast<void>(jit.Precompile(std::move(*block)));
+            return true;
+        } catch (...) {
+            return false;
         }
-        publish_artifact(location_descriptor, translation_nanoseconds);
+    }
+
+    [[nodiscard]] std::shared_ptr<const BlockArtifact> find_artifact(
+        std::uint64_t location_descriptor) const noexcept {
+        if (!artifact_store_) return nullptr;
+        const auto key = make_artifact_key(location_descriptor);
+        return key ? artifact_store_->find(*key) : nullptr;
     }
 
     void discard_translation_location(
@@ -120,6 +149,23 @@ public:
             translation_profile_->discard(location_descriptor);
         }
     }
+
+private:
+    void translation_completed(
+        std::uint64_t location_descriptor,
+        std::uint64_t translation_nanoseconds,
+        const Dynarmic::IR::Block* optimized_block) noexcept {
+        const auto pc = static_cast<std::uint32_t>(location_descriptor);
+        if (translation_profile_ &&
+            memory_.translation_profile_stable(
+                pc, sizeof(std::uint32_t))) {
+            translation_profile_->record(location_descriptor);
+        }
+        publish_artifact(location_descriptor, translation_nanoseconds,
+                         optimized_block);
+    }
+
+public:
 
     std::optional<std::uint32_t> MemoryReadCode(std::uint32_t address) override {
         const auto value = memory_.read32(address, MemoryPermission::Execute);
@@ -273,18 +319,15 @@ public:
         std::shared_ptr<JitTranslationProfile> profile) {
         translation_profile_ = std::move(profile);
     }
+
 private:
-    void publish_artifact(
-        std::uint64_t location_descriptor,
-        std::uint64_t translation_nanoseconds) noexcept {
-        if (!artifact_store_) return;
+    [[nodiscard]] std::optional<JitArtifactKey> make_artifact_key(
+        std::uint64_t location_descriptor) const noexcept {
         try {
-            const auto *translation_block = translation_block_;
-            translation_block_ = nullptr;
             const auto pc = static_cast<std::uint32_t>(location_descriptor);
             const auto backing = memory_.executable_backing_identity(
                 pc & ~std::uint32_t{3}, sizeof(std::uint32_t));
-            if (!backing) return;
+            if (!backing) return std::nullopt;
 
             JitArtifactKey key;
             key.content_identity = backing->content;
@@ -304,16 +347,34 @@ private:
             key.host_isa = jit_artifact_host_isa();
             key.host_feature_mask = 0U;
             key.artifact_format_version = jit_artifact_format_version;
+            return key;
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
+    void publish_artifact(
+        std::uint64_t location_descriptor,
+        std::uint64_t translation_nanoseconds,
+        const Dynarmic::IR::Block* optimized_block) noexcept {
+        if (!artifact_store_) return;
+        try {
+            const auto *translation_block = translation_block_;
+            translation_block_ = nullptr;
+            auto key = make_artifact_key(location_descriptor);
+            if (!key) return;
 
             JitArtifactData data;
-            if (translation_block != nullptr) {
+            if (optimized_block != nullptr) {
+                const auto serialized = serialize_dynarmic_ir(*optimized_block);
+                if (serialized) data.normalized_ir = *serialized;
+            } else if (translation_block != nullptr) {
+                // Retain a readable fallback for legacy callback users, but
+                // it is intentionally not importable as portable IR.
                 data.normalized_ir = normalized_ir(*translation_block);
             }
             data.translation_nanoseconds = translation_nanoseconds;
-            // The public Dynarmic interface reports completion but does not
-            // export portable IR. Publish only timing metadata here; lookup
-            // remains advisory until a versioned IR importer is available.
-            static_cast<void>(artifact_store_->publish(std::move(key),
+            static_cast<void>(artifact_store_->publish(std::move(*key),
                                                        std::move(data)));
         } catch (...) {
             // Artifact persistence must never make guest execution fail.
@@ -560,6 +621,9 @@ public:
         load_state(cpu);
         callbacks_->begin(single_step ? 1 : ticks);
         try {
+            if (!single_step) {
+                preload_current_artifact();
+            }
             const auto reason = single_step ? jit_->Step() : jit_->Run();
             auto result = callbacks_->result(reason);
             save_state(cpu);
@@ -679,8 +743,10 @@ public:
                 // turn unrelated data into a translated block.
                 callbacks_->discard_translation_location(*entry);
             } else {
-                callbacks_->begin(0);
-                jit_->Precompile(*entry);
+                if (!callbacks_->import_artifact(*jit_, *entry)) {
+                    callbacks_->begin(0);
+                    jit_->Precompile(*entry);
+                }
                 ++compiled;
             }
             const auto elapsed =
@@ -734,6 +800,15 @@ public:
     }
 
 private:
+    void preload_current_artifact() {
+        const Dynarmic::A32::LocationDescriptor descriptor{
+            jit_->Regs()[15], Dynarmic::A32::PSR{jit_->Cpsr()},
+            Dynarmic::A32::FPSCR{jit_->Fpscr()}};
+        const auto location =
+            static_cast<Dynarmic::IR::LocationDescriptor>(descriptor).Value();
+        static_cast<void>(callbacks_->import_artifact(*jit_, location));
+    }
+
     [[nodiscard]] static constexpr Dynarmic::HaltReason all_halt_reasons() {
         return Dynarmic::HaltReason::MemoryAbort |
                Dynarmic::HaltReason::UserDefined1 |

@@ -92,6 +92,44 @@ else()
             "${ILEMU_DYNARMIC_PATCH_ERROR}")
     endif()
 endif()
+
+# Expose only the narrow Dynarmic boundary needed by the project-owned
+# portable-IR serializer. The dependency checkout remains ignored; this
+# tracked patch keeps clean configurations reproducible and idempotent.
+set(ILEMU_DYNARMIC_PORTABLE_IR_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-portable-ir.patch")
+execute_process(
+    COMMAND git apply --check "${ILEMU_DYNARMIC_PORTABLE_IR_PATCH}"
+    WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+    RESULT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_CHECK
+    OUTPUT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_OUTPUT
+    ERROR_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_ERROR)
+if(ILEMU_DYNARMIC_PORTABLE_IR_CHECK EQUAL 0)
+    execute_process(
+        COMMAND git apply "${ILEMU_DYNARMIC_PORTABLE_IR_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_APPLY
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_APPLY_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_APPLY_ERROR)
+    if(NOT ILEMU_DYNARMIC_PORTABLE_IR_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Failed to apply the Dynarmic portable-IR patch: "
+            "${ILEMU_DYNARMIC_PORTABLE_IR_APPLY_ERROR}")
+    endif()
+else()
+    execute_process(
+        COMMAND git apply --reverse --check "${ILEMU_DYNARMIC_PORTABLE_IR_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_CHECK
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_ERROR)
+    if(NOT ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Dynarmic portable-IR patch is neither applicable nor already "
+            "applied. git apply reported: "
+            "${ILEMU_DYNARMIC_PORTABLE_IR_ERROR}")
+    endif()
+endif()
 add_subdirectory("${ILEMU_DYNARMIC_DIR}" external/dynarmic EXCLUDE_FROM_ALL)
 
 function(ilemu_configure_module target)

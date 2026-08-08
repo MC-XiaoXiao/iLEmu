@@ -1,6 +1,8 @@
 #include "ilemu/address_space.hpp"
 #include "ilemu/cpu.hpp"
+#include "ilemu/dynarmic_ir_artifact.hpp"
 #include "ilemu/jit_artifact.hpp"
+#include "ilemu/performance.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -116,6 +118,11 @@ int main() {
       std::cerr << "portable artifact metadata did not reload\n";
       return 1;
     }
+    const auto reload_stats = reloaded.stats();
+    if (reload_stats.disk_loaded_entries == 0 || reload_stats.disk_hits != 1U) {
+      std::cerr << "disk artifact hit was not recorded\n";
+      return 1;
+    }
     if (artifact->data.translation_nanoseconds != 17U) {
       std::cerr << "translation metadata did not reload\n";
       return 1;
@@ -204,6 +211,7 @@ int main() {
   }
 
   auto runtime_artifacts = std::make_shared<ilemu::JitArtifactStore>();
+  ilemu::performance_counters().reset(true);
   ilemu::AddressSpace memory;
   constexpr std::uint32_t code_address = 0x4000U;
   if (!memory.map_file(code_address, ilemu::AddressSpace::page_size,
@@ -219,6 +227,27 @@ int main() {
     return 1;
   }
 
+  const auto runtime_key = [&](const ilemu::ExecutableBackingIdentity& value,
+                               std::uint32_t pc) {
+    ilemu::JitArtifactKey key;
+    key.content_identity = value.content;
+    key.layout_identity = value.layout;
+    key.guest_pc = pc;
+    key.thumb = false;
+    key.architecture = ilemu::ArmArchitectureVersion::Armv6K;
+    key.cpu_model = ilemu::ArmCpuModelKind::Arm1176JzfS;
+    key.timing_model_version = 1U;
+    key.guest_ticks_per_second = 400'000'000U;
+    key.image_slide = 0U;
+    key.hle_abi_version = 1U;
+    key.backend_abi_version = 2U;
+    key.codegen_options = 1U;
+    key.host_isa = host_isa();
+    key.host_feature_mask = 0U;
+    key.artifact_format_version = 3U;
+    return key;
+  };
+
   Dynarmic::ExclusiveMonitor monitor{3};
   {
     ilemu::CpuCluster cluster{1, 1, memory, 1,
@@ -233,6 +262,24 @@ int main() {
       std::cerr << "CPU translation did not publish an executable artifact\n";
       return 1;
     }
+  }
+  const auto first_process_perf = ilemu::performance_counters().snapshot();
+  if (first_process_perf.translation_blocks == 0) {
+    std::cerr << "first process did not translate a cold block\n";
+    return 1;
+  }
+  const auto first_artifact = runtime_artifacts->find(runtime_key(*backing,
+                                                                   code_address));
+  if (!first_artifact || first_artifact->data.normalized_ir.empty() ||
+      !ilemu::validate_dynarmic_ir(first_artifact->data.normalized_ir)) {
+    std::cerr << "first process did not publish valid portable IR\n";
+    return 1;
+  }
+  auto truncated_ir = first_artifact->data.normalized_ir;
+  truncated_ir.pop_back();
+  if (ilemu::validate_dynarmic_ir(truncated_ir)) {
+    std::cerr << "truncated portable IR was accepted\n";
+    return 1;
   }
 
   {
@@ -253,6 +300,82 @@ int main() {
     const auto result = cpu.run(16);
     if (!result.svc || runtime_artifacts->size() != 1U) {
       std::cerr << "same executable content was not reused across processes\n";
+      return 1;
+    }
+  }
+  const auto second_process_perf = ilemu::performance_counters().snapshot();
+  if (second_process_perf.translation_blocks !=
+      first_process_perf.translation_blocks) {
+    std::cerr << "portable artifact hit still retranlated the block: "
+              << first_process_perf.translation_blocks << " -> "
+              << second_process_perf.translation_blocks << "\n";
+    return 1;
+  }
+  const auto cross_process_stats = runtime_artifacts->stats();
+  if (cross_process_stats.lookups != 3U ||
+      cross_process_stats.memory_hits != 2U ||
+      cross_process_stats.misses != 1U) {
+    std::cerr << "cross-process artifact lookup metrics were wrong: "
+              << cross_process_stats.lookups << "/"
+              << cross_process_stats.memory_hits << "/"
+              << cross_process_stats.disk_hits << "/"
+              << cross_process_stats.misses << "\n";
+    return 1;
+  }
+
+  const auto runtime_persistence = root / "runtime-artifacts.bin";
+  {
+    auto persistent_artifacts = std::make_shared<ilemu::JitArtifactStore>(
+        runtime_persistence);
+    ilemu::AddressSpace persistent_memory;
+    if (!persistent_memory.map_file(
+            code_address, ilemu::AddressSpace::page_size,
+            ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Execute,
+            code_path, 0)) {
+      std::cerr << "could not map persistent code fixture\n";
+      return 1;
+    }
+    ilemu::CpuCluster persistent_cluster{
+        1, 1, persistent_memory, 1, ilemu::default_arm_cpu_model(), monitor,
+        0, persistent_artifacts};
+    auto &cpu = persistent_cluster.cpu(0);
+    cpu.registers()[15] = code_address;
+    cpu.set_cpsr(0x10U);
+    const auto result = cpu.run(16);
+    if (!result.svc || *result.svc != 0x80U) {
+      std::cerr << "persistent artifact producer did not execute\n";
+      return 1;
+    }
+  }
+  const auto before_disk_process = ilemu::performance_counters().snapshot();
+  {
+    auto persistent_artifacts = std::make_shared<ilemu::JitArtifactStore>(
+        runtime_persistence);
+    if (persistent_artifacts->stats().disk_loaded_entries == 0) {
+      std::cerr << "persistent artifact store did not load an entry\n";
+      return 1;
+    }
+    ilemu::AddressSpace persistent_memory;
+    if (!persistent_memory.map_file(
+            code_address, ilemu::AddressSpace::page_size,
+            ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Execute,
+            code_path, 0)) {
+      std::cerr << "could not remap persistent code fixture\n";
+      return 1;
+    }
+    ilemu::CpuCluster persistent_cluster{
+        1, 1, persistent_memory, 1, ilemu::default_arm_cpu_model(), monitor,
+        0, persistent_artifacts};
+    auto &cpu = persistent_cluster.cpu(0);
+    cpu.registers()[15] = code_address;
+    cpu.set_cpsr(0x10U);
+    const auto result = cpu.run(16);
+    const auto stats = persistent_artifacts->stats();
+    const auto after_disk_process = ilemu::performance_counters().snapshot();
+    if (!result.svc || *result.svc != 0x80U || stats.disk_hits != 1U ||
+        after_disk_process.translation_blocks !=
+            before_disk_process.translation_blocks) {
+      std::cerr << "persistent artifact was not imported without translation\n";
       return 1;
     }
   }
@@ -280,24 +403,10 @@ int main() {
     }
   }
 
-  ilemu::JitArtifactKey expected;
-  expected.content_identity = backing->content;
-  expected.layout_identity = backing->layout;
-  expected.guest_pc = code_address;
-  expected.thumb = false;
-  expected.architecture = ilemu::ArmArchitectureVersion::Armv6K;
-  expected.cpu_model = ilemu::ArmCpuModelKind::Arm1176JzfS;
-  expected.timing_model_version = 1U;
-  expected.guest_ticks_per_second = 400'000'000U;
-  expected.image_slide = 0U;
-  expected.hle_abi_version = 1U;
-  expected.backend_abi_version = 1U;
-  expected.codegen_options = 1U;
-  expected.host_isa = host_isa();
-  expected.host_feature_mask = 0U;
-  expected.artifact_format_version = 2U;
+  const auto expected = runtime_key(*backing, code_address);
   const auto published = runtime_artifacts->find(expected);
-  if (!published || published->data.normalized_ir.empty()) {
+  if (!published || published->data.normalized_ir.empty() ||
+      !ilemu::validate_dynarmic_ir(published->data.normalized_ir)) {
     std::cerr << "published artifact key did not match executable backing\n";
     return 1;
   }
