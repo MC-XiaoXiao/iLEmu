@@ -2,16 +2,19 @@ diff --git a/src/dynarmic/backend/arm64/exclusive_monitor.cpp b/src/dynarmic/bac
 index d57a29c..f61a830 100644
 --- a/src/dynarmic/backend/arm64/exclusive_monitor.cpp
 +++ b/src/dynarmic/backend/arm64/exclusive_monitor.cpp
-@@ -27,7 +27,8 @@ void ExclusiveMonitor::Unlock() {
+@@ -27,9 +27,9 @@ void ExclusiveMonitor::Unlock() {
  }
  
  bool ExclusiveMonitor::CheckAndClear(size_t processor_id, VAddr address) {
 -    const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
+-
+     Lock();
 +    const VAddr masked_address =
 +        ResolveAddress(processor_id, address) & RESERVATION_GRANULE_MASK;
- 
-     Lock();
      if (exclusive_addresses[processor_id] != masked_address) {
+         Unlock();
+         return false;
+     }
 diff --git a/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp b/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
 index c353032..851fe0b 100644
 --- a/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
@@ -186,35 +189,37 @@ diff --git a/src/dynarmic/backend/x64/exclusive_monitor.cpp b/src/dynarmic/backe
 index 984b67b..ff93875 100644
 --- a/src/dynarmic/backend/x64/exclusive_monitor.cpp
 +++ b/src/dynarmic/backend/x64/exclusive_monitor.cpp
-@@ -27,7 +27,8 @@ void ExclusiveMonitor::Unlock() {
+@@ -27,9 +27,9 @@ void ExclusiveMonitor::Unlock() {
  }
  
  bool ExclusiveMonitor::CheckAndClear(size_t processor_id, VAddr address) {
 -    const VAddr masked_address = address & RESERVATION_GRANULE_MASK;
+-
+     Lock();
 +    const VAddr masked_address =
 +        ResolveAddress(processor_id, address) & RESERVATION_GRANULE_MASK;
- 
-     Lock();
      if (exclusive_addresses[processor_id] != masked_address) {
+         Unlock();
+         return false;
+     }
 diff --git a/src/dynarmic/interface/exclusive_monitor.h b/src/dynarmic/interface/exclusive_monitor.h
 index 4813675..660dcf2 100644
 --- a/src/dynarmic/interface/exclusive_monitor.h
 +++ b/src/dynarmic/interface/exclusive_monitor.h
-@@ -21,6 +21,13 @@ using Vector = std::array<std::uint64_t, 2>;
+@@ -21,6 +21,12 @@ using Vector = std::array<std::uint64_t, 2>;
  
  class ExclusiveMonitor {
  public:
 +    // The resolver maps a guest virtual address to a stable reservation key.
-+    // It is called before the monitor lock is acquired, so callers may safely
-+    // consult an address-space lock while resolving an alias. The callback
-+    // and context must remain valid until the resolver is replaced or the
-+    // monitor is destroyed.
++    // ReadAndMark invokes it before acquiring the monitor lock, while
++    // CheckAndClear invokes it under that lock. The callback and context must
++    // remain valid until the resolver is replaced or the monitor is destroyed.
 +    using AddressResolver = VAddr (*)(void*, size_t, VAddr) noexcept;
 +
      /// @param processor_count Maximum number of processors using this global
      ///                        exclusive monitor. Each processor must have a
      ///                        unique id.
-@@ -28,12 +35,25 @@ public:
+@@ -28,12 +34,25 @@ public:
  
      size_t GetProcessorCount() const;
  
@@ -267,4 +272,3 @@ index 4813675..660dcf2 100644
      std::vector<VAddr> exclusive_addresses;
      std::vector<Vector> exclusive_values;
  };
-
