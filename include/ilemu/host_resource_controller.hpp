@@ -63,10 +63,14 @@ public:
 
   // A deadline is advisory: work is rejected only when the controller knows
   // that the next deadline is inside the reserve window. The caller can retry
-  // after the deadline advances.
+  // after the deadline advances. Background work reserves estimated_cost when
+  // it starts; a zero estimate conservatively consumes the full configured
+  // interactive compile budget for that duty window.
   [[nodiscard]] std::shared_ptr<HostWorkToken> submit(
       HostWorkKind kind, std::optional<Clock::time_point> deadline,
-      Work work);
+      Work work,
+      std::chrono::nanoseconds estimated_cost =
+          std::chrono::nanoseconds::zero());
   void set_next_deadline(std::optional<Clock::time_point> deadline);
   void wait_idle();
 
@@ -82,6 +86,7 @@ private:
     std::uint64_t sequence{};
     std::shared_ptr<HostWorkToken> token;
     Work work;
+    std::chrono::nanoseconds estimated_cost{};
   };
 
   [[nodiscard]] static bool task_precedes(const Task &left,
@@ -98,6 +103,7 @@ private:
   std::optional<Clock::time_point> next_deadline_;
   Clock::time_point duty_window_start_{};
   std::chrono::nanoseconds interactive_work_{};
+  std::chrono::nanoseconds interactive_reserved_{};
   std::uint64_t next_sequence_{1};
   std::uint64_t active_tasks_{};
   std::uint64_t completed_{};

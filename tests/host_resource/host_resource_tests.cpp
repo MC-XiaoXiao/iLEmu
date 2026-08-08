@@ -46,7 +46,8 @@ int main() {
         background_ran.store(true, std::memory_order_release);
         worker_is_distinct.store(std::this_thread::get_id() != caller,
                                  std::memory_order_release);
-      });
+      },
+      1ms);
   const auto maintenance = controller.submit(
       ilemu::HostWorkKind::Maintenance, std::nullopt,
       [&] { maintenance_ran.store(true, std::memory_order_release); });
@@ -66,14 +67,14 @@ int main() {
   controller.set_next_deadline(
       ilemu::HostResourceController::Clock::now() + 1ms);
   if (controller.submit(ilemu::HostWorkKind::BackgroundCompile, std::nullopt,
-                        [] {}) != nullptr ||
+                        [] {}, 1ms) != nullptr ||
       controller.rejected() == 0U) {
     std::cerr << "near-deadline compile work was not rejected\n";
     return 1;
   }
   controller.set_next_deadline(std::nullopt);
   const auto retry = controller.submit(
-      ilemu::HostWorkKind::BackgroundCompile, std::nullopt, [] {});
+      ilemu::HostWorkKind::BackgroundCompile, std::nullopt, [] {}, 1ms);
   if (!retry) {
     std::cerr << "compile work was not accepted after the deadline moved\n";
     return 1;
@@ -108,7 +109,8 @@ int main() {
       [&] {
         std::lock_guard lock{ordering_mutex};
         ordering.push_back(1);
-      });
+      },
+      1ms);
   const auto late = controller.submit(
       ilemu::HostWorkKind::OfflineCompile, now + 20ms,
       [&] {
@@ -133,6 +135,63 @@ int main() {
   controller.wait_idle();
   if (ordering != std::vector<int>{0, 1, 2, 3}) {
     std::cerr << "host work did not honor deadline ordering\n";
+    return 1;
+  }
+
+  ilemu::HostResourceBudget shared_budget;
+  shared_budget.worker_count = 2U;
+  shared_budget.duty_period = 250ms;
+  shared_budget.interactive_compile_budget = 20ms;
+  shared_budget.deadline_reserve = 0ms;
+  ilemu::HostResourceController shared_controller{shared_budget};
+  std::mutex reservation_mutex;
+  std::condition_variable reservation_condition;
+  int started = 0;
+  bool release_first = false;
+  const auto first = shared_controller.submit(
+      ilemu::HostWorkKind::BackgroundCompile, std::nullopt,
+      [&] {
+        std::unique_lock lock{reservation_mutex};
+        ++started;
+        reservation_condition.notify_all();
+        reservation_condition.wait(lock, [&] { return release_first; });
+      },
+      15ms);
+  const auto second = shared_controller.submit(
+      ilemu::HostWorkKind::BackgroundCompile, std::nullopt,
+      [&] {
+        std::lock_guard lock{reservation_mutex};
+        ++started;
+        reservation_condition.notify_all();
+      },
+      15ms);
+  if (!first || !second) {
+    std::cerr << "budget reservation tasks were not accepted\n";
+    {
+      std::lock_guard lock{reservation_mutex};
+      release_first = true;
+    }
+    reservation_condition.notify_all();
+    shared_controller.wait_idle();
+    return 1;
+  }
+  bool overlapped = false;
+  {
+    std::unique_lock lock{reservation_mutex};
+    if (!reservation_condition.wait_for(lock, 100ms,
+                                        [&] { return started >= 1; })) {
+      std::cerr << "budget reservation first task did not start\n";
+      release_first = true;
+    } else {
+      overlapped = reservation_condition.wait_for(
+          lock, 100ms, [&] { return started >= 2; });
+      release_first = true;
+    }
+  }
+  reservation_condition.notify_all();
+  shared_controller.wait_idle();
+  if (overlapped || started != 2 || shared_controller.completed() != 2U) {
+    std::cerr << "background workers bypassed the shared duty budget\n";
     return 1;
   }
   return 0;

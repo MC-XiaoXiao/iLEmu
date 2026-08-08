@@ -52,7 +52,8 @@ HostResourceController::HostResourceController(HostResourceBudget budget)
 HostResourceController::~HostResourceController() { stop(); }
 
 std::shared_ptr<HostWorkToken> HostResourceController::submit(
-    HostWorkKind kind, std::optional<Clock::time_point> deadline, Work work) {
+    HostWorkKind kind, std::optional<Clock::time_point> deadline, Work work,
+    std::chrono::nanoseconds estimated_cost) {
   if (!work) return nullptr;
   const auto token = std::make_shared<HostWorkToken>();
   const auto now = Clock::now();
@@ -63,9 +64,24 @@ std::shared_ptr<HostWorkToken> HostResourceController::submit(
     ++rejected_;
     return nullptr;
   }
+  if (kind == HostWorkKind::BackgroundCompile) {
+    if (estimated_cost < std::chrono::nanoseconds::zero()) {
+      ++rejected_;
+      return nullptr;
+    }
+    if (estimated_cost == std::chrono::nanoseconds::zero())
+      estimated_cost = budget_.interactive_compile_budget;
+    if (estimated_cost > budget_.interactive_compile_budget) {
+      ++rejected_;
+      return nullptr;
+    }
+  } else {
+    estimated_cost = std::chrono::nanoseconds::zero();
+  }
   const auto sequence = next_sequence_++;
   tasks_.emplace(sequence,
-                 Task{kind, deadline, sequence, token, std::move(work)});
+                 Task{kind, deadline, sequence, token, std::move(work),
+                      estimated_cost});
   work_available_.notify_one();
   return token;
 }
@@ -123,14 +139,20 @@ void HostResourceController::worker_loop() {
           duty_window_start_ = now;
           interactive_work_ = std::chrono::nanoseconds::zero();
         }
-        const auto interactive_budget_exhausted =
-            interactive_work_ >= budget_.interactive_compile_budget;
         auto iterator = tasks_.end();
         for (auto candidate = tasks_.begin(); candidate != tasks_.end();
              ++candidate) {
-          if (!stopping_ && interactive_budget_exhausted &&
+          if (!stopping_ &&
               candidate->second.kind == HostWorkKind::BackgroundCompile) {
-            continue;
+            if (interactive_work_ >= budget_.interactive_compile_budget)
+              continue;
+            const auto available =
+                budget_.interactive_compile_budget - interactive_work_;
+            if (interactive_reserved_ > available ||
+                candidate->second.estimated_cost >
+                    available - interactive_reserved_) {
+              continue;
+            }
           }
           if (iterator == tasks_.end() ||
               task_precedes(candidate->second, iterator->second)) {
@@ -144,6 +166,8 @@ void HostResourceController::worker_loop() {
         }
         task = std::move(iterator->second);
         tasks_.erase(iterator);
+        if (task.kind == HostWorkKind::BackgroundCompile)
+          interactive_reserved_ += task.estimated_cost;
         ++active_tasks_;
         break;
       }
@@ -164,6 +188,7 @@ void HostResourceController::worker_loop() {
       const std::lock_guard lock{mutex_};
       task.token->mark_finished();
       if (task.kind == HostWorkKind::BackgroundCompile) {
+        interactive_reserved_ -= task.estimated_cost;
         interactive_work_ += elapsed;
       }
       --active_tasks_;

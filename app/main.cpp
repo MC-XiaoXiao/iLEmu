@@ -2827,7 +2827,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
             [runtime, budget, idle_precompile_block_budget] {
               static_cast<void>(runtime->cpus->precompile_pending(
                   idle_precompile_block_budget, budget));
-            });
+            },
+            std::chrono::nanoseconds{
+                static_cast<std::chrono::nanoseconds::rep>(budget)});
       };
       schedule_precompile_runtime(active_runtime);
       // The scanout publisher may be a background compositor while an App is
