@@ -188,6 +188,69 @@ int main() {
     return 1;
   }
 
+  const auto same_content_path = root / "same-content-target.bin";
+  const auto same_content_old_alias = root / "same-content-old.bin";
+  const auto same_content_replacement = root / "same-content-target.new";
+  if (!write_page(same_content_path, std::byte{0x88})) return 1;
+  ilemu::FilePageCache generation_cache;
+  const auto old_generation_mapping = generation_cache.open_mapping(
+      same_content_path, 0, guest_memory_page_size);
+  if (!old_generation_mapping) {
+    std::cerr << "same-content old mapping setup failed\n";
+    return 1;
+  }
+  const auto old_generation_page = generation_cache.load_page(
+      *old_generation_mapping, 0, guest_memory_page_size);
+  old_generation_page->materialize();
+  std::filesystem::create_hard_link(same_content_path,
+                                    same_content_old_alias, error);
+  if (error || !write_page(same_content_replacement, std::byte{0x88})) {
+    std::cerr << "same-content replacement setup failed\n";
+    return 1;
+  }
+  std::filesystem::rename(same_content_replacement, same_content_path, error);
+  if (error) {
+    std::cerr << "same-content replacement failed\n";
+    return 1;
+  }
+  const auto new_generation_mapping = generation_cache.open_mapping(
+      same_content_path, 0, guest_memory_page_size);
+  if (!new_generation_mapping) {
+    std::cerr << "same-content new mapping setup failed\n";
+    return 1;
+  }
+  const auto new_generation_page = generation_cache.load_page(
+      *new_generation_mapping, 0, guest_memory_page_size);
+  if (new_generation_page == old_generation_page) {
+    std::cerr << "same-content replacement reused the old file object\n";
+    return 1;
+  }
+  const std::array<std::shared_ptr<ilemu::GuestPageBacking>, 1>
+      generation_pages{new_generation_page};
+  ilemu::AddressSpace generation_mapping;
+  if (!generation_mapping.map_page_backings(
+          0x7000U, guest_memory_page_size,
+          ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Write,
+          generation_pages, ilemu::AddressSpace::PageMappingMode::SharedFile) ||
+      !generation_mapping.write8(0x7000U, 0x99U) ||
+      !generation_mapping.unmap(0x7000U, guest_memory_page_size)) {
+    std::cerr << "same-content generation writeback failed\n";
+    return 1;
+  }
+  std::ifstream same_content_old_file{same_content_old_alias,
+                                      std::ios::binary};
+  std::ifstream same_content_new_file{same_content_path, std::ios::binary};
+  char same_content_old_byte{};
+  char same_content_new_byte{};
+  same_content_old_file.read(&same_content_old_byte, 1);
+  same_content_new_file.read(&same_content_new_byte, 1);
+  if (!same_content_old_file || !same_content_new_file ||
+      same_content_old_byte != static_cast<char>(0x88) ||
+      same_content_new_byte != static_cast<char>(0x99)) {
+    std::cerr << "same-content writeback used the old file object\n";
+    return 1;
+  }
+
   ilemu::AddressSpace memory;
   if (!memory.map_file(0x4000U, guest_memory_page_size,
                        ilemu::MemoryPermission::Read |

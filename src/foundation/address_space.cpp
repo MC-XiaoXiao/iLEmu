@@ -800,6 +800,7 @@ void AddressSpace::unmap_file_mappings_locked(std::uint32_t address,
     backing->cache_path = source.cache_path;
     backing->file_size = source.file_size;
     backing->modified = source.modified;
+    backing->generation = source.generation;
     backing->content_identity = source.content_identity;
     backing->io_state = source.io_state;
     return backing;

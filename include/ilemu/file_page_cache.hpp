@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <compare>
 #include <filesystem>
 #include <list>
 #include <map>
@@ -21,6 +22,23 @@ namespace ilemu {
 inline constexpr std::uint32_t guest_memory_page_size = 4096;
 inline constexpr std::size_t guest_file_prefetch_pages = 32;
 using GuestPageBytes = std::array<std::byte, guest_memory_page_size>;
+
+// Identifies both the host file object and the metadata generation observed
+// while its descriptor was opened. ContentIdentity alone is insufficient:
+// an atomic replacement can preserve bytes while changing the vnode that a
+// shared mapping must write back to.
+struct GuestFileGeneration {
+  std::uint64_t device{};
+  std::uint64_t inode{};
+  std::uint64_t file_size{};
+  std::int64_t modified_seconds{};
+  std::int64_t modified_nanoseconds{};
+
+  friend constexpr bool operator==(const GuestFileGeneration &,
+                                   const GuestFileGeneration &) = default;
+  friend constexpr auto operator<=>(const GuestFileGeneration &,
+                                    const GuestFileGeneration &) = default;
+};
 
 struct GuestFileIoState {
   ~GuestFileIoState();
@@ -44,6 +62,7 @@ struct GuestFileBacking {
   std::string cache_path;
   std::uintmax_t file_size{};
   std::filesystem::file_time_type modified;
+  GuestFileGeneration generation;
   ContentIdentity content_identity;
   // The stream is opened when the mapping is created and shared by range
   // splits. This preserves the old vnode/file object across atomic rename.
@@ -132,13 +151,13 @@ public:
 
 private:
   struct Identity {
-    std::uintmax_t file_size{};
-    std::filesystem::file_time_type modified;
+    GuestFileGeneration generation;
     ContentIdentity content_identity;
   };
 
   struct Key {
     std::string path;
+    GuestFileGeneration generation;
     ContentIdentity content_identity;
     std::uint64_t file_offset{};
     std::uint32_t byte_count{};

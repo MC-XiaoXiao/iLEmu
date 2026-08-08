@@ -37,12 +37,19 @@ std::atomic<std::uint64_t> next_reservation_identity{1};
       duration_cast<std::filesystem::file_time_type::duration>(duration)};
 }
 
+[[nodiscard]] GuestFileGeneration generation_from_stat(
+    const struct stat &file_stat) {
+  return GuestFileGeneration{
+      static_cast<std::uint64_t>(file_stat.st_dev),
+      static_cast<std::uint64_t>(file_stat.st_ino),
+      static_cast<std::uint64_t>(file_stat.st_size),
+      static_cast<std::int64_t>(file_stat.st_mtim.tv_sec),
+      static_cast<std::int64_t>(file_stat.st_mtim.tv_nsec)};
+}
+
 [[nodiscard]] bool same_file_stat(const struct stat &first,
                                   const struct stat &second) {
-  return first.st_dev == second.st_dev && first.st_ino == second.st_ino &&
-         first.st_size == second.st_size &&
-         first.st_mtim.tv_sec == second.st_mtim.tv_sec &&
-         first.st_mtim.tv_nsec == second.st_mtim.tv_nsec;
+  return generation_from_stat(first) == generation_from_stat(second);
 }
 
 [[nodiscard]] std::string stable_path(const std::filesystem::path &path) {
@@ -206,9 +213,9 @@ bool GuestPageBacking::flush_file() {
 }
 
 bool FilePageCache::Key::operator<(const Key &other) const {
-  return std::tie(path, content_identity, file_offset, byte_count) <
-         std::tie(other.path, other.content_identity, other.file_offset,
-                  other.byte_count);
+  return std::tie(path, generation, content_identity, file_offset, byte_count) <
+         std::tie(other.path, other.generation, other.content_identity,
+                  other.file_offset, other.byte_count);
 }
 
 void FilePageCache::touch_locked(
@@ -275,6 +282,7 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     return std::nullopt;
   }
   const auto modified = file_time_from_stat(file_stat);
+  const auto generation = generation_from_stat(file_stat);
   const auto content_identity = sha256_file(descriptor);
   if (!content_identity) {
     close_descriptor();
@@ -293,14 +301,14 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     const auto identity = identities_.find(normalized_path);
     if (identity == identities_.end()) {
       identities_.emplace(normalized_path,
-                          Identity{file_size, modified, *content_identity});
-    } else if (identity->second.content_identity != *content_identity) {
+                          Identity{generation, *content_identity});
+    } else if (identity->second.generation != generation ||
+               identity->second.content_identity != *content_identity) {
       erase_path_locked(normalized_path);
       identity->second =
-          Identity{file_size, modified, *content_identity};
+          Identity{generation, *content_identity};
     } else {
-      identity->second.file_size = file_size;
-      identity->second.modified = modified;
+      identity->second.generation = generation;
     }
   }
 
@@ -309,6 +317,7 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   mapping->cache_path = normalized_path;
   mapping->file_size = file_size;
   mapping->modified = modified;
+  mapping->generation = generation;
   mapping->content_identity = *content_identity;
   mapping->io_state->file_descriptor = descriptor;
   descriptor = -1;
@@ -316,10 +325,10 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
 }
 
 std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
-    const std::shared_ptr<GuestFileBacking> &mapping,
+  const std::shared_ptr<GuestFileBacking> &mapping,
     std::uint64_t file_offset, std::uint32_t byte_count) {
-  const Key key{mapping->cache_path, mapping->content_identity, file_offset,
-                byte_count};
+  const Key key{mapping->cache_path, mapping->generation,
+                mapping->content_identity, file_offset, byte_count};
   {
     const std::scoped_lock lock{mutex_};
     if (const auto cached = pages_.find(key); cached != pages_.end()) {
