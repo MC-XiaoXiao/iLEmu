@@ -55,7 +55,7 @@ std::uint64_t jit_code_cache_used(const Jit& jit) {
 constexpr std::uint32_t jit_artifact_hle_abi_version = 1U;
 constexpr std::uint32_t jit_artifact_backend_abi_version = 2U;
 constexpr std::uint64_t jit_artifact_codegen_options = 1U;
-constexpr std::uint32_t jit_artifact_format_version = 3U;
+constexpr std::uint32_t jit_artifact_format_version = 4U;
 
 [[nodiscard]] ArmCpuModelKind jit_artifact_cpu_model(
     const ArmCpuModel& cpu_model) noexcept {
@@ -334,6 +334,7 @@ private:
             key.layout_identity = backing->layout;
             key.guest_pc = pc;
             key.thumb = ((location_descriptor >> 32U) & 1U) != 0;
+            key.location_descriptor = location_descriptor;
             key.architecture = cpu_model_.architecture_version();
             key.cpu_model = jit_artifact_cpu_model(cpu_model_);
             key.timing_model_version = 1U;

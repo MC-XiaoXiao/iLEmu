@@ -15,7 +15,7 @@ namespace ilemu {
 namespace {
 
 constexpr std::array<char, 8> artifact_magic{
-    'i', 'L', 'J', 'A', 'R', 'T', 'F', '2'};
+    'i', 'L', 'J', 'A', 'R', 'T', 'F', '3'};
 constexpr std::uint32_t maximum_artifacts = 1'000'000;
 constexpr std::uint32_t maximum_ir_bytes = 16U * 1024U * 1024U;
 constexpr std::uint32_t maximum_metadata_entries = 1'000'000;
@@ -92,6 +92,7 @@ void write_key(std::ostream &stream, const JitArtifactKey &key) {
   write_identity(stream, key.layout_identity);
   write_u32(stream, key.guest_pc);
   stream.put(static_cast<char>(key.thumb));
+  write_u64(stream, key.location_descriptor);
   stream.put(static_cast<char>(key.architecture));
   stream.put(static_cast<char>(key.cpu_model));
   stream.put('\0');
@@ -119,6 +120,11 @@ void write_key(std::ostream &stream, const JitArtifactKey &key) {
   if (!guest_pc) return std::nullopt;
   key.guest_pc = *guest_pc;
   const auto thumb = stream.get();
+  if (thumb == std::char_traits<char>::eof()) return std::nullopt;
+  key.thumb = thumb != 0;
+  const auto location_descriptor = read_u64(stream);
+  if (!location_descriptor) return std::nullopt;
+  key.location_descriptor = *location_descriptor;
   const auto architecture = stream.get();
   const auto cpu_model = stream.get();
   if (thumb == std::char_traits<char>::eof() ||
@@ -127,7 +133,6 @@ void write_key(std::ostream &stream, const JitArtifactKey &key) {
       stream.get() == std::char_traits<char>::eof()) {
     return std::nullopt;
   }
-  key.thumb = thumb != 0;
   key.architecture = static_cast<ArmArchitectureVersion>(architecture);
   key.cpu_model = static_cast<ArmCpuModelKind>(cpu_model);
   const auto timing = read_u32(stream);
@@ -183,7 +188,7 @@ read_bytes(std::istream &stream, std::uint32_t count) {
       data.exit_locations.size() > maximum_metadata_entries) {
     return std::nullopt;
   }
-  constexpr std::size_t serialized_key_bytes = 116U;
+  constexpr std::size_t serialized_key_bytes = 124U;
   constexpr std::size_t serialized_data_header_bytes = 24U;
   std::size_t size = serialized_key_bytes + serialized_data_header_bytes;
   const auto add = [&size](std::size_t value) {
@@ -209,6 +214,7 @@ std::size_t JitArtifactKeyHash::operator()(
   hash_identity(hash, key.layout_identity);
   hash_scalar(hash, key.guest_pc);
   hash_scalar(hash, key.thumb);
+  hash_scalar(hash, key.location_descriptor);
   hash_scalar(hash, key.architecture);
   hash_scalar(hash, key.cpu_model);
   hash_scalar(hash, key.timing_model_version);

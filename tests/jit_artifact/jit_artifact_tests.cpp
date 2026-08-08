@@ -92,6 +92,12 @@ int main() {
       std::cerr << "different image layout reused an artifact\n";
       return 1;
     }
+    auto different_location = key;
+    different_location.location_descriptor = 0x0000000100001000ULL;
+    if (different_location == key) {
+      std::cerr << "full location descriptor was omitted from artifact key\n";
+      return 1;
+    }
 
     ilemu::ExecutionContext first_context{101U};
     ilemu::ExecutionContext second_context{202U};
@@ -132,7 +138,7 @@ int main() {
 
   {
     ilemu::JitArtifactLimits resident_limits;
-    resident_limits.resident_bytes = 282U;
+    resident_limits.resident_bytes = 298U;
     ilemu::JitArtifactStore resident_limited{
         std::filesystem::path{}, resident_limits};
     auto first_limited_key = key;
@@ -173,7 +179,7 @@ int main() {
                 << static_cast<bool>(third_final_hit) << "\n";
       return 1;
     }
-    resident_limits.resident_bytes = 141U;
+    resident_limits.resident_bytes = 149U;
     ilemu::JitArtifactStore reloaded_limited{persistence, resident_limits};
     if (reloaded_limited.size() != 1U) {
       std::cerr << "resident artifact budget was ignored during load\n";
@@ -278,6 +284,7 @@ int main() {
     key.layout_identity = value.layout;
     key.guest_pc = pc;
     key.thumb = false;
+    key.location_descriptor = pc;
     key.architecture = ilemu::ArmArchitectureVersion::Armv6K;
     key.cpu_model = ilemu::ArmCpuModelKind::Arm1176JzfS;
     key.timing_model_version = 1U;
@@ -288,7 +295,7 @@ int main() {
     key.codegen_options = 1U;
     key.host_isa = host_isa();
     key.host_feature_mask = 0U;
-    key.artifact_format_version = 3U;
+    key.artifact_format_version = 4U;
     return key;
   };
 

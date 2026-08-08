@@ -30,6 +30,10 @@ struct JitArtifactKey {
   ContentIdentity layout_identity;
   std::uint32_t guest_pc{};
   bool thumb{};
+  // Dynarmic's complete block location. guest_pc/thumb remain as readable
+  // fields for diagnostics, but this value is the cache identity for all
+  // CPSR/FPSCR/IT/single-step state that affects translation.
+  std::uint64_t location_descriptor{};
   ArmArchitectureVersion architecture{ArmArchitectureVersion::Armv6K};
   ArmCpuModelKind cpu_model{ArmCpuModelKind::Arm1176JzfS};
   std::uint32_t timing_model_version{};
