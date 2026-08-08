@@ -152,6 +152,13 @@ int main() {
     std::cerr << "firmware catalog tree scan failed\n";
     return 1;
   }
+  const auto *catalogued_framework =
+      scanned_catalog.find_path(framework_path);
+  if (catalogued_framework == nullptr ||
+      catalogued_framework->file_size != framework_bytes.size()) {
+    std::cerr << "catalog path lookup or generation size failed\n";
+    return 1;
+  }
   const auto manifest_path = root / "catalog.bin";
   if (!scanned_catalog.save(manifest_path) ||
       !scanned_catalog.save(manifest_path)) {

@@ -78,6 +78,9 @@ public:
     [[nodiscard]] const ContentIdentity& content_identity() const {
         return content_identity_;
     }
+    [[nodiscard]] std::uint64_t file_size() const noexcept {
+        return bytes_.size();
+    }
     [[nodiscard]] const std::optional<std::array<std::byte, 16>>& uuid() const {
         return uuid_;
     }

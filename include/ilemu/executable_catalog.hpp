@@ -40,6 +40,7 @@ struct ExecutableCatalogEntry {
   std::uint32_t cpu_type{};
   std::uint32_t cpu_subtype{};
   std::uint32_t file_type{};
+  std::uint64_t file_size{};
   bool fat_container{};
   std::vector<std::string> dependencies;
   std::vector<ExecutableMappingIdentity> mappings;
@@ -80,6 +81,8 @@ public:
 
   [[nodiscard]] const ExecutableCatalogEntry *find(
       const ContentIdentity &identity) const;
+  [[nodiscard]] const ExecutableCatalogEntry *find_path(
+      const std::filesystem::path &path) const;
   [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
 
 private:

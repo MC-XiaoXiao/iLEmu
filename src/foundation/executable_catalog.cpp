@@ -21,7 +21,7 @@ using ilemu::DyldSharedCache;
 
 constexpr std::array<char, 8> catalog_magic{
     'i', 'L', 'E', 'M', 'C', 'A', 'T', '1'};
-constexpr std::uint32_t catalog_schema_version = 2U;
+constexpr std::uint32_t catalog_schema_version = 3U;
 constexpr std::size_t catalog_checksum_size = 32U;
 constexpr std::uint32_t maximum_manifest_entries = 100'000U;
 constexpr std::uint32_t maximum_manifest_items = 65'536U;
@@ -165,10 +165,14 @@ read_manifest_entry(std::istream &stream) {
   const auto cpu_type = read_u32(stream);
   const auto cpu_subtype = read_u32(stream);
   const auto file_type = read_u32(stream);
-  if (!cpu_type || !cpu_subtype || !file_type) return std::nullopt;
+  const auto file_size = read_u64(stream);
+  if (!cpu_type || !cpu_subtype || !file_type || !file_size) {
+    return std::nullopt;
+  }
   entry.cpu_type = *cpu_type;
   entry.cpu_subtype = *cpu_subtype;
   entry.file_type = *file_type;
+  entry.file_size = *file_size;
 
   const auto fat_container = read_u8(stream);
   if (!fat_container || *fat_container > 1U) return std::nullopt;
@@ -296,7 +300,19 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_image(
   entry.cpu_type = image.cpu_type();
   entry.cpu_subtype = image.cpu_subtype();
   entry.file_type = image.file_type();
+  entry.file_size = image.file_size();
   entry.fat_container = image.fat_container();
+  for (const auto &segment : image.segments()) {
+    if ((segment.initial_protection & 4) == 0 || segment.file_size == 0) {
+      continue;
+    }
+    const auto mapping =
+        ExecutableMappingIdentity{segment.file_offset, segment.file_size};
+    if (std::find(entry.mappings.begin(), entry.mappings.end(), mapping) ==
+        entry.mappings.end()) {
+      entry.mappings.push_back(mapping);
+    }
+  }
   for (const auto &dylib : image.dylibs()) {
     if (std::find(entry.dependencies.begin(), entry.dependencies.end(),
                   dylib.path) == entry.dependencies.end()) {
@@ -321,6 +337,11 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_mapping(
   }
   auto &entry = upsert(*identity, normalize_path(path),
                        ExecutableCatalogKind::DynamicMapping);
+  if (entry.file_size == 0) {
+    std::error_code size_error;
+    const auto size = std::filesystem::file_size(path, size_error);
+    if (!size_error) entry.file_size = size;
+  }
   const auto mapping = ExecutableMappingIdentity{file_offset, byte_count};
   if (std::find(entry.mappings.begin(), entry.mappings.end(), mapping) ==
       entry.mappings.end()) {
@@ -537,6 +558,7 @@ bool ExecutableCatalog::save(const std::filesystem::path &path) const noexcept {
       write_u32(stream, entry.cpu_type);
       write_u32(stream, entry.cpu_subtype);
       write_u32(stream, entry.file_type);
+      write_u64(stream, entry.file_size);
       write_u8(stream, static_cast<std::uint8_t>(entry.fat_container));
       write_u32(stream,
                 static_cast<std::uint32_t>(entry.dependencies.size()));
@@ -592,6 +614,24 @@ const ExecutableCatalogEntry *ExecutableCatalog::find(
                                             : &entries_[iterator->second];
 }
 
+const ExecutableCatalogEntry *ExecutableCatalog::find_path(
+    const std::filesystem::path &path) const {
+  const auto normalized = normalize_path(path);
+  const ExecutableCatalogEntry *fallback = nullptr;
+  for (const auto &entry : entries_) {
+    if (std::find(entry.aliases.begin(), entry.aliases.end(), normalized) ==
+        entry.aliases.end()) {
+      continue;
+    }
+    if (entry.file_size != 0U &&
+        !entry.kinds.contains(ExecutableCatalogKind::DynamicMapping)) {
+      return &entry;
+    }
+    fallback = &entry;
+  }
+  return fallback;
+}
+
 std::filesystem::path ExecutableCatalog::normalize_path(
     const std::filesystem::path &path) {
   std::error_code error;
@@ -631,6 +671,7 @@ ExecutableCatalogEntry &ExecutableCatalog::upsert(
         .cpu_type = 0U,
         .cpu_subtype = 0U,
         .file_type = 0U,
+        .file_size = 0U,
         .fat_container = false,
         .dependencies = {},
         .mappings = {},
