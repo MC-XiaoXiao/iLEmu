@@ -33,6 +33,8 @@ struct GuestFileGeneration {
   std::uint64_t file_size{};
   std::int64_t modified_seconds{};
   std::int64_t modified_nanoseconds{};
+  std::int64_t changed_seconds{};
+  std::int64_t changed_nanoseconds{};
 
   friend constexpr bool operator==(const GuestFileGeneration &,
                                    const GuestFileGeneration &) = default;
@@ -64,7 +66,7 @@ struct GuestFileBacking {
   std::filesystem::file_time_type modified;
   GuestFileGeneration generation;
   ContentIdentity content_identity;
-  // The stream is opened when the mapping is created and shared by range
+  // The descriptor is opened when the mapping is created and shared by range
   // splits. This preserves the old vnode/file object across atomic rename.
   std::shared_ptr<GuestFileIoState> io_state;
   std::uint64_t first_offset{};
@@ -126,6 +128,14 @@ struct FilePageCacheLimits {
   std::size_t maximum_pages{32U * 1024U};
 };
 
+struct FilePageCacheStats {
+  std::uint64_t identity_queries{};
+  std::uint64_t sha_computations{};
+  std::uint64_t sha_bytes{};
+  std::uint64_t identity_hits{};
+  std::uint64_t generation_invalidations{};
+};
+
 class FilePageCache {
 public:
   explicit FilePageCache(FilePageCacheLimits limits = {})
@@ -148,6 +158,7 @@ public:
              std::uint32_t size);
 
   [[nodiscard]] std::size_t page_count() const;
+  [[nodiscard]] FilePageCacheStats stats() const;
 
 private:
   struct Identity {
@@ -179,6 +190,7 @@ private:
   std::map<std::string, Identity> identities_;
   std::map<Key, PageRecord> pages_;
   std::list<Key> lru_;
+  FilePageCacheStats stats_;
 };
 
 } // namespace ilemu

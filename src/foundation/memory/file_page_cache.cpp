@@ -44,7 +44,9 @@ std::atomic<std::uint64_t> next_reservation_identity{1};
       static_cast<std::uint64_t>(file_stat.st_ino),
       static_cast<std::uint64_t>(file_stat.st_size),
       static_cast<std::int64_t>(file_stat.st_mtim.tv_sec),
-      static_cast<std::int64_t>(file_stat.st_mtim.tv_nsec)};
+      static_cast<std::int64_t>(file_stat.st_mtim.tv_nsec),
+      static_cast<std::int64_t>(file_stat.st_ctim.tv_sec),
+      static_cast<std::int64_t>(file_stat.st_ctim.tv_nsec)};
 }
 
 [[nodiscard]] bool same_file_stat(const struct stat &first,
@@ -283,33 +285,37 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   }
   const auto modified = file_time_from_stat(file_stat);
   const auto generation = generation_from_stat(file_stat);
-  const auto content_identity = sha256_file(descriptor);
-  if (!content_identity) {
-    close_descriptor();
-    return std::nullopt;
+  const auto normalized_path = stable_path(path);
+  std::optional<ContentIdentity> content_identity;
+  {
+    const std::scoped_lock lock{mutex_};
+    ++stats_.identity_queries;
+    const auto identity = identities_.find(normalized_path);
+    if (identity != identities_.end() &&
+        identity->second.generation == generation) {
+      content_identity = identity->second.content_identity;
+      ++stats_.identity_hits;
+    } else {
+      if (identity != identities_.end()) {
+        erase_path_locked(normalized_path);
+        ++stats_.generation_invalidations;
+      }
+      ++stats_.sha_computations;
+      stats_.sha_bytes += static_cast<std::uint64_t>(file_size);
+      content_identity = sha256_file(descriptor);
+      if (!content_identity) {
+        close_descriptor();
+        return std::nullopt;
+      }
+      identities_[normalized_path] =
+          Identity{generation, *content_identity};
+    }
   }
   struct stat final_file_stat {};
   if (::fstat(descriptor, &final_file_stat) != 0 ||
       !same_file_stat(file_stat, final_file_stat)) {
     close_descriptor();
     return std::nullopt;
-  }
-  const auto normalized_path = stable_path(path);
-
-  {
-    const std::scoped_lock lock{mutex_};
-    const auto identity = identities_.find(normalized_path);
-    if (identity == identities_.end()) {
-      identities_.emplace(normalized_path,
-                          Identity{generation, *content_identity});
-    } else if (identity->second.generation != generation ||
-               identity->second.content_identity != *content_identity) {
-      erase_path_locked(normalized_path);
-      identity->second =
-          Identity{generation, *content_identity};
-    } else {
-      identity->second.generation = generation;
-    }
   }
 
   auto mapping = std::make_shared<GuestFileBacking>(
@@ -385,6 +391,11 @@ FilePageCache::load_pages(const std::filesystem::path &path,
 std::size_t FilePageCache::page_count() const {
   const std::scoped_lock lock{mutex_};
   return pages_.size();
+}
+
+FilePageCacheStats FilePageCache::stats() const {
+  const std::scoped_lock lock{mutex_};
+  return stats_;
 }
 
 } // namespace ilemu

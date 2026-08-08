@@ -78,6 +78,22 @@ int main() {
     std::cerr << "obsolete file pages were not invalidated\n";
     return 1;
   }
+  const auto repeated_mapping =
+      cache.open_mapping(path, 0, guest_memory_page_size);
+  const auto identity_stats = cache.stats();
+  if (!repeated_mapping || identity_stats.identity_queries != 3U ||
+      identity_stats.sha_computations != 2U ||
+      identity_stats.sha_bytes != 2U * guest_memory_page_size ||
+      identity_stats.identity_hits != 1U ||
+      identity_stats.generation_invalidations != 1U) {
+    std::cerr << "file identity generation was not reused: "
+              << identity_stats.identity_queries << "/"
+              << identity_stats.sha_computations << "/"
+              << identity_stats.sha_bytes << "/"
+              << identity_stats.identity_hits << "/"
+              << identity_stats.generation_invalidations << "\n";
+    return 1;
+  }
 
   const auto limited_path = root / "limited.bin";
   if (!write_page(limited_path, std::byte{0x2a})) return 1;
