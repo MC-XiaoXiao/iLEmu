@@ -915,6 +915,8 @@ void catalog(const std::vector<std::string> &args, Output &output) {
       std::to_string(summary.dyld_shared_cache_images) +
       " failed-files=" + std::to_string(summary.failed_files) +
       " entries=" + std::to_string(executable_catalog.size()) +
+      " reliable-entry-points=" +
+      std::to_string(executable_catalog.reliable_entry_point_count()) +
       " manifest=" + manifest);
 }
 
@@ -1465,10 +1467,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
       host_cache / "jit-artifacts.bin", jit_artifact_limits);
   std::shared_ptr<HostWorkToken> artifact_compaction_task;
   const auto assign_translation_profile =
-      [&translation_profiles](CpuCluster &cpus,
-                              const ContentIdentity &executable_identity) {
-        cpus.set_translation_profile(
-            translation_profiles.profile_for(executable_identity));
+      [&translation_profiles, catalog_index](CpuCluster &cpus,
+                                             const LoadedProcess &loaded) {
+        cpus.set_translation_profile(translation_profiles.profile_for(
+            loaded.executable.content_identity()));
+        if (catalog_index == nullptr) return;
+        std::vector<std::uint64_t> entry_points;
+        const auto append_entry_points = [&](const MachOImage &image) {
+          const auto *entry = catalog_index->find(image.content_identity());
+          if (entry == nullptr) return;
+          entry_points.insert(entry_points.end(),
+                              entry->reliable_entry_points.begin(),
+                              entry->reliable_entry_points.end());
+        };
+        append_entry_points(loaded.executable);
+        append_entry_points(loaded.dynamic_linker);
+        cpus.add_precompile_entries(entry_points);
       };
   auto initial = std::make_unique<Runtime>();
   initial->memory = std::move(initial_memory);
@@ -1479,8 +1493,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       shared_exclusive_address_resolver);
   initial->cpus->set_jit_code_cache_size(
       configured_jit_code_cache_size);
-  assign_translation_profile(*initial->cpus,
-                             process.executable.content_identity());
+  assign_translation_profile(*initial->cpus, process);
   initial->kernel =
       std::make_unique<CompatibilityKernel>(*initial->memory, output, *rootfs,
                                             device, activation_override,
@@ -1834,7 +1847,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
               child_runtime->kernel->set_process_image(
                   path, loaded.executable.code_signature_entitlements());
               assign_translation_profile(
-                  *child_runtime->cpus, loaded.executable.content_identity());
+                  *child_runtime->cpus, loaded);
               child_runtime->kernel->prepare_exec(0);
               auto &child_cpu = child_runtime->cpus->cpu(0);
               child_cpu.reset();
@@ -2674,8 +2687,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                               pending.environment);
         runtime.kernel->set_process_image(
             pending.path, loaded.executable.code_signature_entitlements());
-        assign_translation_profile(*runtime.cpus,
-                                   loaded.executable.content_identity());
+        assign_translation_profile(*runtime.cpus, loaded);
         runtime.kernel->prepare_exec(pending.processor);
         auto &exec_cpu = runtime.cpus->cpu(pending.processor);
         exec_cpu.reset();
@@ -2940,8 +2952,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
         const auto budget = available_precompile_budget();
         if (budget == 0)
           return;
+        const auto work_kind = catalog_index != nullptr
+                                   ? HostWorkKind::OfflineCompile
+                                   : HostWorkKind::BackgroundCompile;
         runtime->precompile_task = host_resources.submit(
-            HostWorkKind::BackgroundCompile, host_compile_deadline,
+            work_kind, host_compile_deadline,
             [runtime, budget, idle_precompile_block_budget] {
               static_cast<void>(runtime->cpus->precompile_pending(
                   idle_precompile_block_budget, budget));

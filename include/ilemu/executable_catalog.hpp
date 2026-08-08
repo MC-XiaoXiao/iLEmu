@@ -64,6 +64,9 @@ struct ExecutableCatalogEntry {
   bool fat_container{};
   std::vector<std::string> dependencies;
   std::vector<ExecutableMappingIdentity> mappings;
+  // Only entry points that can be tied to Mach-O metadata are retained. The
+  // high bit of the location descriptor marks an ARM Thumb entry.
+  std::vector<std::uint64_t> reliable_entry_points;
 };
 
 struct ExecutableCatalogScanSummary {
@@ -112,6 +115,7 @@ public:
       const std::filesystem::path &path) const;
   [[nodiscard]] bool path_is_current(
       const std::filesystem::path &path) const;
+  [[nodiscard]] std::size_t reliable_entry_point_count() const noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
 
 private:

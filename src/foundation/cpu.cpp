@@ -907,6 +907,21 @@ public:
         }
     }
 
+    void add_precompile_entries(
+        const std::vector<std::uint64_t> &location_descriptors) {
+        const std::lock_guard queue_lock{precompile_queue_mutex_};
+        for (auto entry = location_descriptors.rbegin();
+             entry != location_descriptors.rend() &&
+             pending_precompile_entries_.size() <
+                 jit_translation_profile_maximum_locations;
+             ++entry) {
+            if (*entry != 0 &&
+                seen_precompile_entries_.insert(*entry).second) {
+                pending_precompile_entries_.push_front(*entry);
+            }
+        }
+    }
+
     std::size_t precompile_pending(
         std::size_t maximum_blocks, std::uint64_t budget_nanoseconds) {
         if (maximum_blocks == 0 || budget_nanoseconds == 0) {
@@ -1249,6 +1264,13 @@ public:
         }
     }
 
+    void add_precompile_entries(
+        const std::vector<std::uint64_t> &location_descriptors) {
+        for (auto& executor : executors_) {
+            executor->add_precompile_entries(location_descriptors);
+        }
+    }
+
     std::size_t precompile_pending(
         std::size_t maximum_blocks, std::uint64_t budget_nanoseconds) {
         if (executors_.empty()) {
@@ -1560,6 +1582,13 @@ void CpuCluster::invalidate_cache_range(
 void CpuCluster::set_translation_profile(
     std::shared_ptr<JitTranslationProfile> profile) {
     execution_pool_->set_translation_profile(std::move(profile));
+}
+
+void CpuCluster::add_precompile_entries(
+    const std::vector<std::uint64_t> &location_descriptors) {
+    if (execution_pool_) {
+        execution_pool_->add_precompile_entries(location_descriptors);
+    }
 }
 
 std::size_t CpuCluster::precompile_pending(

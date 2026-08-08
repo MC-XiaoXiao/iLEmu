@@ -23,7 +23,7 @@ using ilemu::DyldSharedCache;
 
 constexpr std::array<char, 8> catalog_magic{
     'i', 'L', 'E', 'M', 'C', 'A', 'T', '1'};
-constexpr std::uint32_t catalog_schema_version = 4U;
+constexpr std::uint32_t catalog_schema_version = 5U;
 constexpr std::size_t catalog_checksum_size = 32U;
 constexpr std::uint32_t maximum_manifest_entries = 100'000U;
 constexpr std::uint32_t maximum_manifest_items = 65'536U;
@@ -143,7 +143,7 @@ read_string(std::istream &stream) {
 }
 
 [[nodiscard]] std::optional<ilemu::ExecutableCatalogEntry>
-read_manifest_entry(std::istream &stream) {
+read_manifest_entry(std::istream &stream, bool has_entry_points) {
   ilemu::ExecutableCatalogEntry entry;
   if (!read_identity(stream, entry.content_identity)) return std::nullopt;
 
@@ -251,6 +251,22 @@ read_manifest_entry(std::istream &stream) {
     entry.mappings.push_back(
         ilemu::ExecutableMappingIdentity{*file_offset, *byte_count});
   }
+  if (has_entry_points) {
+    const auto entry_point_count = read_u32(stream);
+    if (!entry_point_count || *entry_point_count > maximum_manifest_items) {
+      return std::nullopt;
+    }
+    entry.reliable_entry_points.reserve(*entry_point_count);
+    for (std::uint32_t index = 0; index < *entry_point_count; ++index) {
+      const auto entry_point = read_u64(stream);
+      if (!entry_point || *entry_point == 0U ||
+          (*entry_point & ~(std::uint64_t{1} << 32U)) >
+              std::numeric_limits<std::uint32_t>::max()) {
+        return std::nullopt;
+      }
+      entry.reliable_entry_points.push_back(*entry_point);
+    }
+  }
   if (entry.aliases.empty() || entry.kinds.empty()) return std::nullopt;
   return entry;
 }
@@ -337,6 +353,47 @@ ilemu::ExecutableCatalogKind classify_shared_cache_image(
   return ilemu::ExecutableCatalogKind::Dylib;
 }
 
+bool executable_address(const ilemu::MachOImage &image, std::uint32_t address) {
+  for (const auto &segment : image.segments()) {
+    if ((segment.initial_protection & 4) == 0 ||
+        address < segment.vm_address ||
+        address - segment.vm_address >= segment.vm_size) {
+      continue;
+    }
+    return true;
+  }
+  return false;
+}
+
+void collect_reliable_entry_points(
+    const ilemu::MachOImage &image,
+    std::vector<std::uint64_t> &entry_points) {
+  constexpr std::uint64_t thumb_descriptor_bit = std::uint64_t{1} << 32U;
+  constexpr std::size_t maximum_entry_points = 65'536U;
+  const auto add = [&](std::uint32_t address, bool thumb) {
+    if (address == 0 || !executable_address(image, address) ||
+        entry_points.size() >= maximum_entry_points) {
+      return;
+    }
+    const auto descriptor = static_cast<std::uint64_t>(address) |
+                            (thumb ? thumb_descriptor_bit : 0U);
+    if (std::find(entry_points.begin(), entry_points.end(), descriptor) ==
+        entry_points.end()) {
+      entry_points.push_back(descriptor);
+    }
+  };
+  if (image.entry_point()) add(*image.entry_point(), false);
+  for (const auto &symbol : image.symbols()) {
+    // N_SECT definitions are the only symbol records with an image-local
+    // address. Their executable-segment check filters data symbols and keeps
+    // the catalog from treating every byte as an instruction entry.
+    if ((symbol.type & 0x0eU) == 0x0eU) {
+      add(symbol.value, symbol.thumb_definition());
+    }
+  }
+  for (const auto &stub : image.stubs()) add(stub.address, false);
+}
+
 } // namespace
 
 namespace ilemu {
@@ -353,6 +410,8 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_image(
   entry.file_type = image.file_type();
   entry.file_size = image.file_size();
   entry.fat_container = image.fat_container();
+  entry.reliable_entry_points.clear();
+  collect_reliable_entry_points(image, entry.reliable_entry_points);
   if (const auto generation = read_file_generation(normalized)) {
     const auto existing = std::find_if(
         entry.file_generations.begin(), entry.file_generations.end(),
@@ -547,6 +606,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
         entry.fat_container = old_entry->fat_container;
         entry.dependencies = old_entry->dependencies;
         entry.mappings = old_entry->mappings;
+        entry.reliable_entry_points = old_entry->reliable_entry_points;
         entry.file_generations.push_back(
             ExecutableCatalogPathGeneration{normalized, *current_generation});
         ++summary.mach_o_images;
@@ -615,7 +675,8 @@ bool ExecutableCatalog::load(const std::filesystem::path &path) noexcept {
     if (!stream || magic != catalog_magic) return false;
     const auto schema = read_u32(stream);
     const auto count = read_u32(stream);
-    if (!schema || *schema != catalog_schema_version || !count ||
+    if (!schema || (*schema != 4U && *schema != catalog_schema_version) ||
+        !count ||
         *count > maximum_manifest_entries) {
       return false;
     }
@@ -626,7 +687,8 @@ bool ExecutableCatalog::load(const std::filesystem::path &path) noexcept {
         identity_index;
     identity_index.reserve(*count);
     for (std::uint32_t index = 0; index < *count; ++index) {
-      const auto entry = read_manifest_entry(stream);
+      const auto entry = read_manifest_entry(
+          stream, *schema == catalog_schema_version);
       if (!entry ||
           !identity_index.emplace(entry->content_identity, entries.size())
                .second) {
@@ -669,7 +731,8 @@ bool ExecutableCatalog::save(const std::filesystem::path &path) const noexcept {
           entry.file_generations.size() > maximum_manifest_items ||
           entry.kinds.size() > maximum_manifest_items ||
           entry.dependencies.size() > maximum_manifest_items ||
-          entry.mappings.size() > maximum_manifest_items) {
+          entry.mappings.size() > maximum_manifest_items ||
+          entry.reliable_entry_points.size() > maximum_manifest_items) {
         return fail();
       }
       write_identity(stream, entry.content_identity);
@@ -721,6 +784,11 @@ bool ExecutableCatalog::save(const std::filesystem::path &path) const noexcept {
       for (const auto &mapping : entry.mappings) {
         write_u64(stream, mapping.file_offset);
         write_u64(stream, mapping.byte_count);
+      }
+      write_u32(stream,
+                static_cast<std::uint32_t>(entry.reliable_entry_points.size()));
+      for (const auto entry_point : entry.reliable_entry_points) {
+        write_u64(stream, entry_point);
       }
     }
     stream.flush();
@@ -796,6 +864,19 @@ bool ExecutableCatalog::path_is_current(
       });
 }
 
+std::size_t ExecutableCatalog::reliable_entry_point_count() const noexcept {
+  std::size_t count = 0;
+  for (const auto &entry : entries_) {
+    if (entry.reliable_entry_points.size() <=
+        std::numeric_limits<std::size_t>::max() - count) {
+      count += entry.reliable_entry_points.size();
+    } else {
+      return std::numeric_limits<std::size_t>::max();
+    }
+  }
+  return count;
+}
+
 std::filesystem::path ExecutableCatalog::normalize_path(
     const std::filesystem::path &path) {
   std::error_code error;
@@ -840,6 +921,7 @@ ExecutableCatalogEntry &ExecutableCatalog::upsert(
         .fat_container = false,
         .dependencies = {},
         .mappings = {},
+        .reliable_entry_points = {},
     });
     identity_index_.emplace(std::move(identity), index);
     return entries_.back();

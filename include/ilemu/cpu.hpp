@@ -167,6 +167,8 @@ public:
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
     void set_translation_profile(
         std::shared_ptr<JitTranslationProfile> profile);
+    void add_precompile_entries(
+        const std::vector<std::uint64_t> &location_descriptors);
     std::size_t precompile_pending(
         std::size_t maximum_blocks, std::uint64_t budget_nanoseconds);
     // A dead guest task keeps its small register context until the parent
