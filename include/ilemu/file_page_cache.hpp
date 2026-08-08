@@ -24,8 +24,13 @@ inline constexpr std::size_t guest_file_prefetch_pages = 32;
 using GuestPageBytes = std::array<std::byte, guest_memory_page_size>;
 
 struct GuestFileIoState {
+  ~GuestFileIoState();
+
   mutable std::mutex mutex;
   mutable std::shared_ptr<std::ifstream> stream;
+  // A shared-file mapping keeps this descriptor open so writeback remains
+  // attached to the original vnode/file object after pathname replacement.
+  int writeback_descriptor{-1};
   mutable std::map<std::uint64_t, GuestPageBytes> prefetched_pages;
 };
 

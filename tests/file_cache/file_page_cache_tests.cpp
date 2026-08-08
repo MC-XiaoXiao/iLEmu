@@ -141,6 +141,53 @@ int main() {
     return 1;
   }
 
+  const auto shared_path = root / "shared-rename-target.bin";
+  const auto shared_old_alias = root / "shared-rename-old.bin";
+  const auto shared_replacement_path = root / "shared-rename-target.new";
+  if (!write_page(shared_path, std::byte{0x55})) return 1;
+  ilemu::FilePageCache shared_cache;
+  const auto shared_file_mapping =
+      shared_cache.open_mapping(shared_path, 0, guest_memory_page_size);
+  if (!shared_file_mapping) {
+    std::cerr << "shared-file mapping setup failed\n";
+    return 1;
+  }
+  const auto shared_page = shared_cache.load_page(
+      *shared_file_mapping, 0, guest_memory_page_size);
+  const std::array<std::shared_ptr<ilemu::GuestPageBacking>, 1> shared_pages{
+      shared_page};
+  ilemu::AddressSpace shared_mapping;
+  if (!shared_mapping.map_page_backings(
+          0x6000U, guest_memory_page_size,
+          ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Write,
+          shared_pages, ilemu::AddressSpace::PageMappingMode::SharedFile) ||
+      !shared_mapping.read8(0x6000U) ||
+      !shared_mapping.write8(0x6000U, 0x66U)) {
+    std::cerr << "shared-file write setup failed\n";
+    return 1;
+  }
+  std::filesystem::create_hard_link(shared_path, shared_old_alias, error);
+  if (error || !write_page(shared_replacement_path, std::byte{0x77})) {
+    std::cerr << "shared-file rename fixture setup failed\n";
+    return 1;
+  }
+  std::filesystem::rename(shared_replacement_path, shared_path, error);
+  if (error || !shared_mapping.unmap(0x6000U, guest_memory_page_size)) {
+    std::cerr << "shared-file rename/writeback failed\n";
+    return 1;
+  }
+  std::ifstream old_file{shared_old_alias, std::ios::binary};
+  std::ifstream replacement_file{shared_path, std::ios::binary};
+  char old_byte{};
+  char replacement_byte{};
+  old_file.read(&old_byte, 1);
+  replacement_file.read(&replacement_byte, 1);
+  if (!old_file || !replacement_file || old_byte != static_cast<char>(0x66) ||
+      replacement_byte != static_cast<char>(0x77)) {
+    std::cerr << "shared-file writeback followed pathname replacement\n";
+    return 1;
+  }
+
   ilemu::AddressSpace memory;
   if (!memory.map_file(0x4000U, guest_memory_page_size,
                        ilemu::MemoryPermission::Read |

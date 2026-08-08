@@ -27,6 +27,12 @@ std::atomic<std::uint64_t> next_reservation_identity{1};
 
 } // namespace
 
+GuestFileIoState::~GuestFileIoState() {
+  if (writeback_descriptor >= 0) {
+    static_cast<void>(::close(writeback_descriptor));
+  }
+}
+
 GuestPageBacking::GuestPageBacking()
     : reservation_identity_{next_reservation_identity.fetch_add(
           1, std::memory_order_relaxed)} {}
@@ -159,7 +165,7 @@ bool GuestPageBacking::flush_file() {
   const auto file = file_writeback_;
   const auto io_state = file->io_state;
   const std::scoped_lock file_lock{io_state->mutex};
-  const auto descriptor = ::open(file->path.c_str(), O_WRONLY | O_CLOEXEC);
+  const auto descriptor = io_state->writeback_descriptor;
   if (descriptor < 0) return false;
 
   std::size_t written = 0;
@@ -175,9 +181,7 @@ bool GuestPageBacking::flush_file() {
       break;
     written += static_cast<std::size_t>(result);
   }
-  const auto close_result = ::close(descriptor);
-  const auto complete = written == file_byte_count_ && close_result == 0;
-  return complete;
+  return written == file_byte_count_;
 }
 
 bool FilePageCache::Key::operator<(const Key &other) const {
@@ -268,6 +272,8 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   mapping->io_state->stream =
       std::make_shared<std::ifstream>(path, std::ios::binary);
   if (!mapping->io_state->stream->is_open()) return std::nullopt;
+  mapping->io_state->writeback_descriptor =
+      ::open(path.c_str(), O_RDWR | O_CLOEXEC);
   return mapping;
 }
 
