@@ -73,6 +73,13 @@ int main() {
     std::cerr << "shared backing alias setup failed\n";
     return 1;
   }
+  if (!shared_source.map_page_backings(
+          0x3000U, ilemu::AddressSpace::page_size,
+          ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Write,
+          *shared_backings, ilemu::AddressSpace::PageMappingMode::Shared)) {
+    std::cerr << "same-address-space alias setup failed\n";
+    return 1;
+  }
   shared_alias.set_parallel_access(false);
   auto **shared_write_table = shared_alias.jit_write_page_table();
   if (shared_write_table == nullptr ||
@@ -88,6 +95,70 @@ int main() {
       monitor.DoExclusiveOperation<std::uint32_t>(
           0, 0x2000U, [](std::uint32_t) { return true; })) {
     std::cerr << "shared alias write bypassed reservation invalidation\n";
+    return 1;
+  }
+
+  Dynarmic::ExclusiveMonitor identity_monitor{2};
+  auto address_resolver =
+      std::make_shared<ilemu::GuestExclusiveAddressResolver>();
+  address_resolver->bind(0, 1, shared_source);
+  identity_monitor.SetAddressResolver(
+      &ilemu::GuestExclusiveAddressResolver::resolve_callback,
+      address_resolver.get());
+  static_cast<void>(identity_monitor.ReadAndMark<std::uint32_t>(
+      0, 0x2000U,
+      [&] { return shared_source.read32(0x2000U).value_or(0U); }));
+  if (!identity_monitor.DoExclusiveOperation<std::uint32_t>(
+          0, 0x3000U, [](std::uint32_t) { return true; })) {
+    std::cerr << "shared aliases did not resolve to one reservation key\n";
+    return 1;
+  }
+  static_cast<void>(identity_monitor.ReadAndMark<std::uint32_t>(
+      0, 0x2000U,
+      [&] { return shared_source.read32(0x2000U).value_or(0U); }));
+  if (!shared_alias.write32(0x3000U, 8U) ||
+      identity_monitor.DoExclusiveOperation<std::uint32_t>(
+          0, 0x2000U, [](std::uint32_t) { return true; })) {
+    std::cerr << "cross-address-space shared write kept a stale reservation\n";
+    return 1;
+  }
+
+  ilemu::AddressSpace cow_source;
+  if (!cow_source.map(0x4000U, ilemu::AddressSpace::page_size,
+                      ilemu::MemoryPermission::Read |
+                          ilemu::MemoryPermission::Write) ||
+      !cow_source.write32(0x4000U, 7U)) {
+    std::cerr << "copy-on-write source setup failed\n";
+    return 1;
+  }
+  auto copy_on_write = cow_source.clone();
+  if (!copy_on_write || !copy_on_write->write32(0x4000U, 5U)) {
+    std::cerr << "copy-on-write reservation setup failed\n";
+    return 1;
+  }
+  address_resolver->unbind(0, 1, shared_source);
+  address_resolver->bind(0, 1, cow_source);
+  address_resolver->bind(1, 1, *copy_on_write);
+  static_cast<void>(identity_monitor.ReadAndMark<std::uint32_t>(
+      0, 0x4000U,
+      [&] { return cow_source.read32(0x4000U).value_or(0U); }));
+  if (!identity_monitor.DoExclusiveOperation<std::uint32_t>(
+          0, 0x4000U, [](std::uint32_t) { return true; })) {
+    std::cerr << "copy-on-write changed the original reservation identity\n";
+    return 1;
+  }
+
+  static_cast<void>(identity_monitor.ReadAndMark<std::uint32_t>(
+      0, 0x4000U,
+      [&] { return cow_source.read32(0x4000U).value_or(0U); }));
+  if (!cow_source.unmap(0x4000U, ilemu::AddressSpace::page_size) ||
+      !cow_source.map(0x4000U, ilemu::AddressSpace::page_size,
+                         ilemu::MemoryPermission::Read |
+                             ilemu::MemoryPermission::Write) ||
+      !cow_source.write32(0x4000U, 6U) ||
+      identity_monitor.DoExclusiveOperation<std::uint32_t>(
+          0, 0x4000U, [](std::uint32_t) { return true; })) {
+    std::cerr << "unmap/remap reused an old reservation identity\n";
     return 1;
   }
 
