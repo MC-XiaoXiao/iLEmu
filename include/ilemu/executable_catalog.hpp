@@ -69,6 +69,7 @@ struct ExecutableCatalogEntry {
 struct ExecutableCatalogScanSummary {
   std::size_t regular_files{};
   std::size_t mach_o_images{};
+  std::size_t reused_mach_o_images{};
   std::size_t dyld_shared_cache_generations{};
   std::size_t dyld_shared_cache_images{};
   std::size_t failed_files{};
@@ -90,6 +91,12 @@ public:
   // executable input. Malformed candidates are counted and skipped so an
   // incomplete optional bundle cannot prevent a catalog rebuild.
   [[nodiscard]] ExecutableCatalogScanSummary register_tree(
+      const std::filesystem::path &root,
+      ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
+  // Refreshes an existing catalog from a tree. Unchanged ordinary Mach-O
+  // paths are retained from the prior manifest without reading or hashing the
+  // whole file; changed, new, and malformed paths follow the normal scan path.
+  [[nodiscard]] ExecutableCatalogScanSummary refresh_tree(
       const std::filesystem::path &root,
       ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
 
@@ -115,6 +122,9 @@ private:
   [[nodiscard]] ExecutableCatalogEntry &upsert(
       ContentIdentity identity, const std::filesystem::path &path,
       ExecutableCatalogKind kind);
+  [[nodiscard]] ExecutableCatalogScanSummary scan_tree(
+      const std::filesystem::path &root, ArmArchitectureVersion architecture,
+      const ExecutableCatalog *previous);
 
   std::vector<ExecutableCatalogEntry> entries_;
   std::unordered_map<ContentIdentity, std::size_t, ContentIdentityHash>

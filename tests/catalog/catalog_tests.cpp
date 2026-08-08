@@ -192,6 +192,27 @@ int main() {
     std::cerr << "catalog manifest round-trip failed\n";
     return 1;
   }
+  const auto refreshed_scan = reloaded_catalog.refresh_tree(root);
+  if (refreshed_scan.mach_o_images != 2U ||
+      refreshed_scan.reused_mach_o_images != 2U ||
+      reloaded_catalog.size() != scanned_catalog.size()) {
+    std::cerr << "catalog unchanged generation reuse failed\n";
+    return 1;
+  }
+  const auto old_framework_identity =
+      reloaded_catalog.find_path(framework_path)->content_identity;
+  auto refreshed_framework_bytes = framework_bytes;
+  refreshed_framework_bytes.push_back(std::byte{0});
+  write_file(framework_path, refreshed_framework_bytes);
+  const auto changed_scan = reloaded_catalog.refresh_tree(root);
+  const auto *changed_framework = reloaded_catalog.find_path(framework_path);
+  if (changed_scan.mach_o_images != 2U ||
+      changed_scan.reused_mach_o_images != 1U || changed_framework == nullptr ||
+      changed_framework->content_identity == old_framework_identity ||
+      changed_framework->file_size != refreshed_framework_bytes.size()) {
+    std::cerr << "catalog changed generation refresh failed\n";
+    return 1;
+  }
   const auto corrupt_manifest = root / "catalog-corrupt.bin";
   const std::vector<std::byte> corrupt_bytes(8U, std::byte{0});
   write_file(corrupt_manifest, corrupt_bytes);

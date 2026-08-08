@@ -849,11 +849,14 @@ void catalog(const std::vector<std::string> &args, Output &output) {
   const auto architecture = arm_architecture_for_model(
       select_device_profile(args).cpu_model);
   ExecutableCatalog executable_catalog;
-  const auto summary = executable_catalog.register_tree(*rootfs, architecture);
   const auto manifest = option(args, "--manifest").value_or(
       (host_cache_directory(args, std::filesystem::path{*rootfs}) /
        "executable-catalog.bin")
           .string());
+  const auto had_manifest = executable_catalog.load(manifest);
+  const auto summary = had_manifest
+                           ? executable_catalog.refresh_tree(*rootfs, architecture)
+                           : executable_catalog.register_tree(*rootfs, architecture);
   if (!executable_catalog.save(manifest)) {
     throw std::runtime_error{"failed to save executable catalog manifest: " +
                              manifest};
@@ -862,6 +865,8 @@ void catalog(const std::vector<std::string> &args, Output &output) {
       "[catalog] rootfs=" + *rootfs +
       " regular-files=" + std::to_string(summary.regular_files) +
       " macho-images=" + std::to_string(summary.mach_o_images) +
+      " reused-macho-images=" +
+      std::to_string(summary.reused_mach_o_images) +
       " shared-cache-generations=" +
       std::to_string(summary.dyld_shared_cache_generations) +
       " shared-cache-images=" +

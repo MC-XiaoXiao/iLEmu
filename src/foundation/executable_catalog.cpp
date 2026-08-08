@@ -459,6 +459,23 @@ std::size_t ExecutableCatalog::register_shared_cache(
 ExecutableCatalogScanSummary ExecutableCatalog::register_tree(
     const std::filesystem::path &root,
     ArmArchitectureVersion architecture) {
+  entries_.clear();
+  identity_index_.clear();
+  return scan_tree(root, architecture, nullptr);
+}
+
+ExecutableCatalogScanSummary ExecutableCatalog::refresh_tree(
+    const std::filesystem::path &root,
+    ArmArchitectureVersion architecture) {
+  ExecutableCatalog previous = std::move(*this);
+  entries_.clear();
+  identity_index_.clear();
+  return scan_tree(root, architecture, &previous);
+}
+
+ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
+    const std::filesystem::path &root, ArmArchitectureVersion architecture,
+    const ExecutableCatalog *previous) {
   std::error_code error;
   if (!std::filesystem::is_directory(root, error) || error) {
     throw std::runtime_error{"catalog root is not a directory: " +
@@ -499,6 +516,42 @@ ExecutableCatalogScanSummary ExecutableCatalog::register_tree(
   std::sort(regular_files.begin(), regular_files.end());
   for (const auto &path : regular_files) {
     if (cache_files.contains(path)) continue;
+    const auto normalized = normalize_path(path);
+    if (previous != nullptr) {
+      const auto *old_entry = previous->find_path(normalized);
+      const auto current_generation = read_file_generation(normalized);
+      const ExecutableCatalogPathGeneration *old_generation = nullptr;
+      if (old_entry != nullptr) {
+        const auto existing = std::find_if(
+            old_entry->file_generations.begin(), old_entry->file_generations.end(),
+            [&normalized](const ExecutableCatalogPathGeneration &record) {
+              return record.path == normalized;
+            });
+        if (existing != old_entry->file_generations.end()) old_generation = &*existing;
+      }
+      if (old_entry != nullptr && current_generation && old_generation != nullptr &&
+          !old_entry->kinds.empty() &&
+          old_entry->file_size != 0U && old_entry->uuid &&
+          !old_entry->kinds.contains(ExecutableCatalogKind::DynamicMapping) &&
+          old_generation->generation == *current_generation) {
+        auto &entry = upsert(old_entry->content_identity, normalized,
+                             *old_entry->kinds.begin());
+        entry.kinds.insert(old_entry->kinds.begin(), old_entry->kinds.end());
+        entry.uuid = old_entry->uuid;
+        entry.cpu_type = old_entry->cpu_type;
+        entry.cpu_subtype = old_entry->cpu_subtype;
+        entry.file_type = old_entry->file_type;
+        entry.file_size = old_entry->file_size;
+        entry.fat_container = old_entry->fat_container;
+        entry.dependencies = old_entry->dependencies;
+        entry.mappings = old_entry->mappings;
+        entry.file_generations.push_back(
+            ExecutableCatalogPathGeneration{normalized, *current_generation});
+        ++summary.mach_o_images;
+        ++summary.reused_mach_o_images;
+        continue;
+      }
+    }
     const auto prefix = read_file_prefix(path);
     if (!prefix) {
       ++summary.failed_files;
