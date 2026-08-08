@@ -26,6 +26,8 @@ add_library(ilemu_foundation STATIC
     virtual_clock.cpp)
 add_library(iLEmu::foundation ALIAS ilemu_foundation)
 ilemu_configure_module(ilemu_foundation)
+target_compile_definitions(ilemu_foundation PRIVATE
+    ILEMU_DYNARMIC_BUILD_FINGERPRINT=${ILEMU_DYNARMIC_BUILD_FINGERPRINT})
 target_include_directories(ilemu_foundation SYSTEM PRIVATE
     "${ILEMU_DYNARMIC_DIR}/externals/mcl/include"
     "${ILEMU_DYNARMIC_DIR}/externals/fmt/include"

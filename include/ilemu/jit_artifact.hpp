@@ -41,6 +41,7 @@ struct JitArtifactKey {
   std::uint32_t image_slide{};
   std::uint32_t hle_abi_version{};
   std::uint32_t backend_abi_version{};
+  std::uint64_t dynarmic_build_fingerprint{};
   std::uint64_t codegen_options{};
   JitHostIsa host_isa{JitHostIsa::Unknown};
   std::uint64_t host_feature_mask{};

@@ -56,7 +56,14 @@ std::uint64_t jit_code_cache_used(const Jit& jit) {
 constexpr std::uint32_t jit_artifact_hle_abi_version = 1U;
 constexpr std::uint32_t jit_artifact_backend_abi_version = 2U;
 constexpr std::uint64_t jit_artifact_codegen_options = 1U;
-constexpr std::uint32_t jit_artifact_format_version = 6U;
+constexpr std::uint32_t jit_artifact_format_version = 7U;
+
+#ifndef ILEMU_DYNARMIC_BUILD_FINGERPRINT
+#define ILEMU_DYNARMIC_BUILD_FINGERPRINT 0x0ULL
+#endif
+
+constexpr std::uint64_t jit_artifact_dynarmic_build_fingerprint =
+    ILEMU_DYNARMIC_BUILD_FINGERPRINT;
 
 [[nodiscard]] ArmCpuModelKind jit_artifact_cpu_model(
     const ArmCpuModel& cpu_model) noexcept {
@@ -531,6 +538,8 @@ private:
             key.image_slide = 0U;
             key.hle_abi_version = jit_artifact_hle_abi_version;
             key.backend_abi_version = jit_artifact_backend_abi_version;
+            key.dynarmic_build_fingerprint =
+                jit_artifact_dynarmic_build_fingerprint;
             key.codegen_options = jit_artifact_codegen_options;
             key.host_isa = jit_artifact_host_isa();
             key.host_feature_mask = jit_artifact_host_feature_mask();

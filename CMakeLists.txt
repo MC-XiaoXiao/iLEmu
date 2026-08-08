@@ -130,6 +130,32 @@ else()
             "${ILEMU_DYNARMIC_PORTABLE_IR_ERROR}")
     endif()
 endif()
+
+# Persistent portable-IR artifacts must not cross a different Dynarmic build.
+# Include the pinned revision and any applied working-tree patches so a
+# locally modified dependency cannot silently reuse an older artifact key.
+set(ILEMU_DYNARMIC_BUILD_FINGERPRINT 0x0ULL)
+execute_process(
+    COMMAND git rev-parse HEAD
+    WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+    RESULT_VARIABLE ILEMU_DYNARMIC_REVISION_RESULT
+    OUTPUT_VARIABLE ILEMU_DYNARMIC_REVISION
+    ERROR_QUIET
+    OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(ILEMU_DYNARMIC_REVISION_RESULT EQUAL 0 AND
+   NOT ILEMU_DYNARMIC_REVISION STREQUAL "")
+    execute_process(
+        COMMAND git diff --no-ext-diff --binary
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_WORKTREE_DIFF
+        ERROR_QUIET)
+    string(SHA256 ILEMU_DYNARMIC_BUILD_HASH
+           "${ILEMU_DYNARMIC_REVISION}\n${ILEMU_DYNARMIC_WORKTREE_DIFF}")
+    string(SUBSTRING "${ILEMU_DYNARMIC_BUILD_HASH}" 0 16
+           ILEMU_DYNARMIC_BUILD_HASH_PREFIX)
+    set(ILEMU_DYNARMIC_BUILD_FINGERPRINT
+        "0x${ILEMU_DYNARMIC_BUILD_HASH_PREFIX}ULL")
+endif()
 add_subdirectory("${ILEMU_DYNARMIC_DIR}" external/dynarmic EXCLUDE_FROM_ALL)
 
 function(ilemu_configure_module target)

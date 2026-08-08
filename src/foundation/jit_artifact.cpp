@@ -15,7 +15,7 @@ namespace ilemu {
 namespace {
 
 constexpr std::array<char, 8> artifact_magic{
-    'i', 'L', 'J', 'A', 'R', 'T', 'F', '5'};
+    'i', 'L', 'J', 'A', 'R', 'T', 'F', '6'};
 constexpr std::size_t artifact_checksum_bytes = 32U;
 constexpr std::uint32_t maximum_artifacts = 1'000'000;
 constexpr std::uint32_t maximum_ir_bytes = 16U * 1024U * 1024U;
@@ -102,6 +102,7 @@ void write_key(std::ostream &stream, const JitArtifactKey &key) {
   write_u32(stream, key.image_slide);
   write_u32(stream, key.hle_abi_version);
   write_u32(stream, key.backend_abi_version);
+  write_u64(stream, key.dynarmic_build_fingerprint);
   write_u64(stream, key.codegen_options);
   stream.put(static_cast<char>(key.host_isa));
   stream.put('\0');
@@ -141,8 +142,10 @@ void write_key(std::ostream &stream, const JitArtifactKey &key) {
   const auto slide = read_u32(stream);
   const auto hle = read_u32(stream);
   const auto backend = read_u32(stream);
+  const auto dynarmic = read_u64(stream);
   const auto options = read_u64(stream);
-  if (!timing || !ticks || !slide || !hle || !backend || !options) {
+  if (!timing || !ticks || !slide || !hle || !backend || !dynarmic ||
+      !options) {
     return std::nullopt;
   }
   key.timing_model_version = *timing;
@@ -150,6 +153,7 @@ void write_key(std::ostream &stream, const JitArtifactKey &key) {
   key.image_slide = *slide;
   key.hle_abi_version = *hle;
   key.backend_abi_version = *backend;
+  key.dynarmic_build_fingerprint = *dynarmic;
   key.codegen_options = *options;
   const auto host_isa = stream.get();
   if (host_isa == std::char_traits<char>::eof() ||
@@ -189,7 +193,7 @@ read_bytes(std::istream &stream, std::uint32_t count) {
       data.exit_locations.size() > maximum_metadata_entries) {
     return std::nullopt;
   }
-  constexpr std::size_t serialized_key_bytes = 124U;
+  constexpr std::size_t serialized_key_bytes = 132U;
   constexpr std::size_t serialized_data_header_bytes = 32U;
   constexpr std::size_t serialized_dependency_bytes = 72U;
   constexpr std::size_t serialized_constant_dependency_bytes = 80U;
@@ -239,6 +243,7 @@ std::size_t JitArtifactKeyHash::operator()(
   hash_scalar(hash, key.image_slide);
   hash_scalar(hash, key.hle_abi_version);
   hash_scalar(hash, key.backend_abi_version);
+  hash_scalar(hash, key.dynarmic_build_fingerprint);
   hash_scalar(hash, key.codegen_options);
   hash_scalar(hash, key.host_isa);
   hash_scalar(hash, key.host_feature_mask);
