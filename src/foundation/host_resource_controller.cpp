@@ -139,11 +139,16 @@ void HostResourceController::worker_loop() {
           duty_window_start_ = now;
           interactive_work_ = std::chrono::nanoseconds::zero();
         }
+        const auto background_deadline_too_close =
+            next_deadline_ &&
+            *next_deadline_ <= now + budget_.deadline_reserve;
         auto iterator = tasks_.end();
         for (auto candidate = tasks_.begin(); candidate != tasks_.end();
              ++candidate) {
           if (!stopping_ &&
               candidate->second.kind == HostWorkKind::BackgroundCompile) {
+            if (background_deadline_too_close)
+              continue;
             if (interactive_work_ >= budget_.interactive_compile_budget)
               continue;
             const auto available =

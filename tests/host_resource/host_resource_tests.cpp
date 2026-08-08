@@ -194,5 +194,88 @@ int main() {
     std::cerr << "background workers bypassed the shared duty budget\n";
     return 1;
   }
+
+  ilemu::HostResourceBudget deadline_budget;
+  deadline_budget.worker_count = 1U;
+  deadline_budget.interactive_compile_budget = 20ms;
+  deadline_budget.deadline_reserve = 2ms;
+  ilemu::HostResourceController deadline_controller{deadline_budget};
+  std::mutex deadline_mutex;
+  std::condition_variable deadline_condition;
+  bool deadline_blocker_started = false;
+  bool release_deadline_blocker = false;
+  bool deadline_background_ran = false;
+  const auto deadline_blocker = deadline_controller.submit(
+      ilemu::HostWorkKind::Maintenance, std::nullopt, [&] {
+        std::unique_lock lock{deadline_mutex};
+        deadline_blocker_started = true;
+        deadline_condition.notify_all();
+        deadline_condition.wait(lock,
+                                [&] { return release_deadline_blocker; });
+      });
+  const auto initial_deadline =
+      ilemu::HostResourceController::Clock::now() + 100ms;
+  if (!deadline_blocker) {
+    std::cerr << "deadline recheck tasks were not accepted\n";
+    {
+      std::lock_guard lock{deadline_mutex};
+      release_deadline_blocker = true;
+    }
+    deadline_condition.notify_all();
+    deadline_controller.wait_idle();
+    return 1;
+  }
+  bool deadline_setup_failed = false;
+  std::shared_ptr<ilemu::HostWorkToken> deadline_background;
+  {
+    std::unique_lock lock{deadline_mutex};
+    if (!deadline_condition.wait_for(
+            lock, 100ms, [&] { return deadline_blocker_started; })) {
+      std::cerr << "deadline recheck blocker did not start\n";
+      release_deadline_blocker = true;
+      deadline_setup_failed = true;
+    } else {
+      deadline_background = deadline_controller.submit(
+          ilemu::HostWorkKind::BackgroundCompile, initial_deadline,
+          [&] {
+            std::lock_guard lock{deadline_mutex};
+            deadline_background_ran = true;
+          },
+          1ms);
+      deadline_controller.set_next_deadline(
+          ilemu::HostResourceController::Clock::now() + 1ms);
+      release_deadline_blocker = true;
+    }
+  }
+  deadline_condition.notify_all();
+  if (deadline_setup_failed) {
+    deadline_controller.set_next_deadline(std::nullopt);
+    deadline_controller.wait_idle();
+    return 1;
+  }
+  if (!deadline_background) {
+    std::cerr << "deadline recheck task was not accepted\n";
+    deadline_controller.set_next_deadline(std::nullopt);
+    deadline_controller.wait_idle();
+    return 1;
+  }
+  std::this_thread::sleep_for(10ms);
+  bool deadline_was_ignored = false;
+  {
+    std::lock_guard lock{deadline_mutex};
+    deadline_was_ignored = deadline_background_ran;
+  }
+  if (deadline_was_ignored) {
+    std::cerr << "background task ignored the latest deadline\n";
+    deadline_controller.set_next_deadline(std::nullopt);
+    deadline_controller.wait_idle();
+    return 1;
+  }
+  deadline_controller.set_next_deadline(std::nullopt);
+  deadline_controller.wait_idle();
+  if (!deadline_background_ran) {
+    std::cerr << "background task did not run after deadline advanced\n";
+    return 1;
+  }
   return 0;
 }
