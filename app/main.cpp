@@ -3101,6 +3101,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const auto stopped_guest = report_performance
                                  ? performance_counters().snapshot()
                                  : PerformanceSnapshot{};
+  const auto file_cache_stats = report_performance
+                                    ? initial_runtime->memory->file_page_cache_stats()
+                                    : FilePageCacheStats{};
   host_resources.wait_idle();
   if (catalog_loaded && !executable_catalog.save(catalog_manifest)) {
     output.line("[catalog] manifest-save=failed");
@@ -3137,6 +3140,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(host_memory.peak_rss_bytes) + " virtual-bytes=" +
         std::to_string(host_memory.virtual_bytes) + " mmap-file-bytes=" +
         std::to_string(host_memory.file_mapped_bytes));
+    output.line(
+        "[perf-file-cache] identity-queries=" +
+        std::to_string(file_cache_stats.identity_queries) +
+        " sha-computations=" +
+        std::to_string(file_cache_stats.sha_computations) + " sha-bytes=" +
+        std::to_string(file_cache_stats.sha_bytes) + " identity-hits=" +
+        std::to_string(file_cache_stats.identity_hits) +
+        " generation-invalidations=" +
+        std::to_string(file_cache_stats.generation_invalidations));
     // Preserve stopped-guest live/current values, then include Runtime
     // destructor latency measured by the reaper in the final snapshot.
     auto final_snapshot = performance_counters().snapshot();

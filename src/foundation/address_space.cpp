@@ -1643,6 +1643,10 @@ std::size_t AddressSpace::cached_file_page_count() const {
   return file_page_cache_->page_count();
 }
 
+FilePageCacheStats AddressSpace::file_page_cache_stats() const {
+  return file_page_cache_->stats();
+}
+
 std::size_t AddressSpace::mapping_region_count() const {
   auto lock = read_lock();
   return vm_map_.region_count();
