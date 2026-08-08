@@ -177,7 +177,103 @@ struct PendingExec {
   std::vector<std::string> environment;
 };
 
+class JitCodeCacheGovernor;
+
+class JitCodeCacheReservation {
+public:
+  JitCodeCacheReservation(JitCodeCacheGovernor &governor,
+                          std::size_t per_executor_bytes,
+                          std::size_t reserved_bytes)
+      : governor_{&governor},
+        per_executor_bytes_{per_executor_bytes},
+        reserved_bytes_{reserved_bytes} {}
+  ~JitCodeCacheReservation();
+
+  JitCodeCacheReservation(const JitCodeCacheReservation &) = delete;
+  JitCodeCacheReservation &operator=(const JitCodeCacheReservation &) =
+      delete;
+
+  [[nodiscard]] std::size_t per_executor_bytes() const noexcept {
+    return per_executor_bytes_;
+  }
+
+private:
+  JitCodeCacheGovernor *governor_{};
+  std::size_t per_executor_bytes_{};
+  std::size_t reserved_bytes_{};
+};
+
+class JitCodeCacheGovernor {
+public:
+  JitCodeCacheGovernor(std::size_t per_executor_cap,
+                       std::size_t guest_processor_count)
+      : per_executor_cap_{per_executor_cap},
+        total_budget_{std::max<std::size_t>(
+            std::size_t{512U} * 1024U * 1024U,
+            std::size_t{1U} * 1024U * 1024U *
+                std::max<std::size_t>(1U, guest_processor_count))} {}
+
+  JitCodeCacheGovernor(const JitCodeCacheGovernor &) = delete;
+  JitCodeCacheGovernor &operator=(const JitCodeCacheGovernor &) = delete;
+
+  [[nodiscard]] std::shared_ptr<JitCodeCacheReservation> reserve(
+      std::size_t processor_count) {
+    if (processor_count == 0U) return {};
+    constexpr std::size_t minimum_per_executor = 1U * 1024U * 1024U;
+    std::lock_guard lock{mutex_};
+    const auto available = total_reserved_bytes_ < total_budget_
+                               ? total_budget_ - total_reserved_bytes_
+                               : 0U;
+    auto per_executor = std::min(per_executor_cap_,
+                                 available / processor_count);
+    per_executor = std::max(per_executor, minimum_per_executor);
+    if (per_executor > std::numeric_limits<std::size_t>::max() /
+                           processor_count) {
+      per_executor = minimum_per_executor;
+    }
+    const auto reserved = per_executor * processor_count;
+    if (reserved > std::numeric_limits<std::size_t>::max() -
+                       total_reserved_bytes_) {
+      return {};
+    }
+    total_reserved_bytes_ += reserved;
+    return std::shared_ptr<JitCodeCacheReservation>{
+        new JitCodeCacheReservation{*this, per_executor, reserved}};
+  }
+
+  void release(std::size_t reserved_bytes) noexcept {
+    std::lock_guard lock{mutex_};
+    total_reserved_bytes_ = reserved_bytes > total_reserved_bytes_
+                                ? 0U
+                                : total_reserved_bytes_ - reserved_bytes;
+  }
+
+  [[nodiscard]] std::size_t total_budget() const noexcept {
+    return total_budget_;
+  }
+
+  [[nodiscard]] std::size_t total_reserved() const noexcept {
+    std::lock_guard lock{mutex_};
+    return total_reserved_bytes_;
+  }
+
+private:
+  friend class JitCodeCacheReservation;
+
+  const std::size_t per_executor_cap_;
+  const std::size_t total_budget_;
+  mutable std::mutex mutex_;
+  std::size_t total_reserved_bytes_{};
+};
+
+JitCodeCacheReservation::~JitCodeCacheReservation() {
+  if (governor_ != nullptr) governor_->release(reserved_bytes_);
+}
+
 struct Runtime {
+  // Keep the reservation before the native runtime fields so its destructor
+  // releases the budget only after Dynarmic's code cache has been destroyed.
+  std::shared_ptr<JitCodeCacheReservation> jit_cache_reservation;
   std::unique_ptr<AddressSpace> memory;
   std::unique_ptr<CpuCluster> cpus;
   std::unique_ptr<CompatibilityKernel> kernel;
@@ -1397,6 +1493,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
     next_shared_monitor_slot += guest_processor_count;
     return base;
   };
+  JitCodeCacheGovernor jit_code_cache_governor{
+      configured_jit_code_cache_size, guest_processor_count};
+  output.line(
+      "[jit] global-code-cache-budget-mib=" +
+      std::to_string(jit_code_cache_governor.total_budget() / 1024U / 1024U));
   RuntimeReaper runtime_reaper;
   std::vector<std::unique_ptr<Runtime>> runtimes;
   RuntimeIndex runtime_index;
@@ -1491,8 +1592,17 @@ void boot(const std::vector<std::string> &args, Output &output) {
       guest_processor_count, *cpu_model, shared_exclusive_monitor,
       allocate_shared_monitor_slots(), jit_artifacts,
       shared_exclusive_address_resolver);
+  initial->jit_cache_reservation =
+      jit_code_cache_governor.reserve(guest_processor_count);
+  if (!initial->jit_cache_reservation) {
+    throw std::runtime_error{"failed to reserve initial JIT code cache"};
+  }
   initial->cpus->set_jit_code_cache_size(
-      configured_jit_code_cache_size);
+      initial->jit_cache_reservation->per_executor_bytes());
+  output.line(
+      "[jit] initial-runtime-code-cache-mib=" +
+      std::to_string(initial->jit_cache_reservation->per_executor_bytes() /
+                     1024U / 1024U));
   assign_translation_profile(*initial->cpus, process);
   initial->kernel =
       std::make_unique<CompatibilityKernel>(*initial->memory, output, *rootfs,
@@ -1739,8 +1849,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 *child->memory, guest_processor_count, *cpu_model,
                 shared_exclusive_monitor, allocate_shared_monitor_slots(),
                 jit_artifacts, shared_exclusive_address_resolver);
+            child->jit_cache_reservation =
+                jit_code_cache_governor.reserve(guest_processor_count);
+            if (!child->jit_cache_reservation) {
+              return std::nullopt;
+            }
             child->cpus->set_jit_code_cache_size(
-                configured_jit_code_cache_size);
+                child->jit_cache_reservation->per_executor_bytes());
           }
           {
             PerformanceLatencyScope latency{
