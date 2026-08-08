@@ -88,9 +88,10 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   }
 
   switch (number) {
-  case 322: { // iopolicysys on 5A347/7A341; nosys on the older 3A ABI.
-    if (!shared_state_->darwin_kernel_identity.capabilities
-             .legacy_iopolicysys) {
+  case 322: { // VersionSensitive nosys/iopolicysys collision.
+    if (!darwin_abi_route_supported(
+            legacy_iopolicysys_route,
+            shared_state_->darwin_kernel_identity.capabilities.epoch)) {
       // xnu-792.24.17 and the firmware's pre-iopolicy xnu-933-era slot both
       // define syscall 322 as nosys. It must return ENOSYS without entering
       // trace_unknown(), because an expected nosys result is not a fatal ABI

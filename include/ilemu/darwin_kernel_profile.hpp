@@ -4,20 +4,12 @@
 #include <filesystem>
 #include <string>
 
-namespace ilemu {
+#include "ilemu/darwin_abi_route.hpp"
 
-enum class DarwinAbiEpoch {
-  Unknown,
-  IphoneOs1,
-  IphoneOs2,
-  IphoneOs3,
-};
+namespace ilemu {
 
 struct DarwinGuestCapabilities {
   DarwinAbiEpoch epoch{DarwinAbiEpoch::Unknown};
-  // Syscall 322 is nosys on the 3A/older contract and the old disk-only
-  // iopolicysys ABI on 5A/7A. Later policy extensions are not implied.
-  bool legacy_iopolicysys{};
 };
 
 struct DarwinKernelIdentityProfile {

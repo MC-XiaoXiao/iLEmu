@@ -50,13 +50,13 @@ DarwinGuestCapabilities capabilities_for_build(std::string_view build) {
   // disk-only iopolicysys contract, while later xnu-4903 adds policy types
   // and values that are intentionally not exposed through this profile.
   if (build == "1A543a" || build == "3A109a") {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs1, false};
+    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs1};
   }
   if (build == "5A347") {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs2, true};
+    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs2};
   }
   if (build == "7A341") {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs3, true};
+    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs3};
   }
   return {};
 }
