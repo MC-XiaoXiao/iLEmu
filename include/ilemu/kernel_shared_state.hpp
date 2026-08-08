@@ -67,6 +67,12 @@ struct ProcessContext {
       mach_task_identity::initial_io_registry_options_name};
   std::int32_t thread_base_priority{xnu792::scheduler::default_base_priority};
   std::int32_t nice_value{};
+  // Darwin 9.3/10.0's iopolicysys(2) keeps the disk policy separately for
+  // the process and current thread. These are the old four-policy values;
+  // later XNU iotypes and policy values are intentionally not represented in
+  // this Guest ABI state.
+  std::uint32_t disk_io_policy{};
+  std::map<std::uint32_t, std::uint32_t> thread_disk_io_policies;
   bool exited{};
   bool waiting_for_events{};
   std::uint32_t exit_status{};

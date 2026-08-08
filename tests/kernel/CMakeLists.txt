@@ -10,5 +10,9 @@ target_link_libraries(ilegacysim_kernel_tests PRIVATE
     iLegacySim::kernel_iokit_display_tests)
 
 ilemu_add_compatibility_suite(
+    ilemu_kernel_legacy_nosys_tests legacy_nosys
+    legacy_nosys_tests.cpp)
+
+ilemu_add_compatibility_suite(
     ilemu_shared_region_tests shared_region
     shared_region_tests.cpp)

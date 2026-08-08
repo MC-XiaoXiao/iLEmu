@@ -18,8 +18,8 @@ struct DarwinKernelIdentityProfile {
 };
 
 // Reports the compatibility kernel's highest supported Darwin contract. The
-// firmware metadata contributes only its descriptive build identifier and
-// never selects kernel behavior.
+// firmware build is also available to explicitly audited ABI dispatch points;
+// unknown builds retain the conservative compatibility behavior.
 [[nodiscard]] DarwinKernelIdentityProfile
 make_darwin_kernel_identity_profile(const std::filesystem::path &rootfs);
 

@@ -80,6 +80,15 @@ std::optional<std::uint32_t> canonical_no_cancel_syscall(
   }
 }
 
+bool guest_exposes_legacy_iopolicysys(std::string_view build_version) {
+  // The exact iOS kernel sources for xnu-1228.6.76 and xnu-1357.2.89 are not
+  // available locally. The firmware's Libsyscall versions, together with the
+  // public xnu-1228/xnu-1456 sources, identify this as the old disk-only
+  // iopolicysys ABI. Keep the dispatch list explicit so a later firmware does
+  // not accidentally inherit this pre-QoS contract.
+  return build_version == "5A347" || build_version == "7A341";
+}
+
 } // namespace
 
 void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
@@ -89,6 +98,72 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   }
 
   switch (number) {
+  case 322: { // iopolicysys on 5A347/7A341; nosys on the older 3A ABI.
+    if (!guest_exposes_legacy_iopolicysys(
+            shared_state_->darwin_kernel_identity.build_version)) {
+      // xnu-792.24.17 and the firmware's pre-iopolicy xnu-933-era slot both
+      // define syscall 322 as nosys. It must return ENOSYS without entering
+      // trace_unknown(), because an expected nosys result is not a fatal ABI
+      // violation.
+      bsd_error(cpu, bsd_support::not_implemented);
+      return;
+    }
+
+    constexpr std::uint32_t iopol_cmd_get = 1;
+    constexpr std::uint32_t iopol_cmd_set = 2;
+    constexpr std::uint32_t iopol_type_disk = 0;
+    constexpr std::uint32_t iopol_scope_process = 0;
+    constexpr std::uint32_t iopol_scope_thread = 1;
+    constexpr std::uint32_t iopol_policy_max = 3;
+    constexpr std::uint32_t iopol_policy_offset =
+        2U * sizeof(std::uint32_t);
+
+    const auto address = cpu.registers()[1];
+    if (address > std::numeric_limits<std::uint32_t>::max() -
+                     iopol_policy_offset) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
+    const auto scope = memory_.read32(address);
+    const auto iotype = memory_.read32(address + sizeof(std::uint32_t));
+    const auto policy = memory_.read32(address + 2U * sizeof(std::uint32_t));
+    if (!scope || !iotype || !policy) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
+    if (*iotype != iopol_type_disk ||
+        (*scope != iopol_scope_process && *scope != iopol_scope_thread)) {
+      bsd_error(cpu, bsd_support::invalid_argument);
+      return;
+    }
+
+    auto &stored_policy =
+        *scope == iopol_scope_process
+            ? process_.disk_io_policy
+            : process_.thread_disk_io_policies[process_.thread_port];
+    switch (cpu.registers()[0]) {
+    case iopol_cmd_get:
+      if (!memory_.write32(address + 2U * sizeof(std::uint32_t),
+                           stored_policy)) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+      bsd_success(cpu, 0);
+      return;
+    case iopol_cmd_set:
+      if (*policy > iopol_policy_max) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+        return;
+      }
+      stored_policy = *policy;
+      bsd_success(cpu, 0);
+      return;
+    default:
+      bsd_error(cpu, bsd_support::invalid_argument);
+      return;
+    }
+  }
+    return;
   case 0:
   case 1:
   case 2:
