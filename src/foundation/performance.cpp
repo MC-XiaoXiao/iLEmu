@@ -314,6 +314,7 @@ void PerformanceCounters::reset(bool enabled) {
     display_mailbox_coalesced_.store(0, std::memory_order_relaxed);
     display_vsync_budget_cuts_.store(0, std::memory_order_relaxed);
     display_vsync_budget_saved_ticks_.store(0, std::memory_order_relaxed);
+    sdl_idle_waits_.store(0, std::memory_order_relaxed);
     native_present_attempts_.store(0, std::memory_order_relaxed);
     native_present_mailbox_coalesced_.store(0,
                                             std::memory_order_relaxed);
@@ -822,6 +823,12 @@ void PerformanceCounters::record_display_vsync_budget(
     add_display_window_counter(
         &PerformanceSnapshot::display_vsync_budget_saved_ticks,
         original_ticks - limited_ticks);
+}
+
+void PerformanceCounters::record_sdl_idle_wait() {
+    if (!enabled())
+        return;
+    sdl_idle_waits_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void PerformanceCounters::record_native_present_attempt() {
@@ -1362,6 +1369,8 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
         display_vsync_budget_cuts_.load(std::memory_order_relaxed);
     result.display_vsync_budget_saved_ticks =
         display_vsync_budget_saved_ticks_.load(std::memory_order_relaxed);
+    result.sdl_idle_waits =
+        sdl_idle_waits_.load(std::memory_order_relaxed);
     result.native_present_attempts =
         native_present_attempts_.load(std::memory_order_relaxed);
     result.native_present_mailbox_coalesced =
@@ -1595,6 +1604,7 @@ std::string format_performance_summary(
          << " display-coalesced=" << snapshot.display_mailbox_coalesced
          << " display-vsync-budget=" << snapshot.display_vsync_budget_cuts
          << '/' << snapshot.display_vsync_budget_saved_ticks
+         << " sdl-idle-waits=" << snapshot.sdl_idle_waits
          << " native-attempt=" << snapshot.native_present_attempts
          << " native-coalesced="
          << snapshot.native_present_mailbox_coalesced

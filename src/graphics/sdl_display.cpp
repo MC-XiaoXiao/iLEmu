@@ -797,6 +797,7 @@ bool SdlDisplay::poll_events() {
 }
 
 bool SdlDisplay::wait_for_event(std::chrono::nanoseconds timeout) {
+  performance_counters().record_sdl_idle_wait();
 #if defined(ILEMU_HAS_SDL2)
   impl_->running = impl_->input.wait(impl_->window, timeout);
 #else
