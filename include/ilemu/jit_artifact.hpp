@@ -95,6 +95,12 @@ struct JitArtifactLimits {
   // metadata budget; native code is still owned by Dynarmic's live cache.
   std::size_t resident_bytes{64U * 1024U * 1024U};
   std::size_t persistence_bytes{};
+  // A disabled persistence store is a successful no-op on save and a cache
+  // miss on load. This lets the host disable optional storage under pressure
+  // without affecting Guest execution.
+  bool persistence_enabled{true};
+  // Zero disables the filesystem free-space safety check.
+  std::uintmax_t minimum_free_bytes{};
 };
 
 struct JitArtifactStoreStats {

@@ -617,6 +617,8 @@ std::string usage() {
          "[--display headless|sdl] [--network isolated|loopback|host] "
          "[--gles-backend auto|software|vulkan] [--gpu] "
          "[--host-cache DIR] [--catalog FILE] "
+         "[--jit-artifact-disk-mib 0..4096] "
+         "[--jit-artifact-memory-mib 1..4096] "
          "[--display-size WIDTHxHEIGHT] "
          "[--activation activated|unactivated|preserve] "
          "[--frame-output FILE] [--touch-replay FILE] [--control-stdin] "
@@ -665,6 +667,23 @@ std::filesystem::path host_cache_directory(
   return normalized.parent_path() / ".ilegacysim-cache" / rootfs_name;
 }
 
+std::filesystem::path nearest_existing_filesystem_path(
+    const std::filesystem::path &path) {
+  std::error_code error;
+  auto candidate = std::filesystem::absolute(path, error);
+  if (error || candidate.empty()) candidate = path;
+  for (;;) {
+    const auto status = std::filesystem::status(candidate, error);
+    if (!error && status.type() != std::filesystem::file_type::not_found) {
+      return candidate;
+    }
+    const auto parent = candidate.parent_path();
+    if (parent.empty() || parent == candidate) return {};
+    candidate = parent;
+    error.clear();
+  }
+}
+
 bool flag(const std::vector<std::string> &args, std::string_view name) {
   return std::find(args.begin(), args.end(), name) != args.end();
 }
@@ -678,6 +697,29 @@ std::size_t jit_code_cache_size(const std::vector<std::string> &args) {
         "--jit-cache-mib must be in the range 8..128"};
   }
   return static_cast<std::size_t>(mebibytes) * 1024U * 1024U;
+}
+
+std::uintmax_t parse_mib_value(std::string_view value, std::string_view name,
+                               std::uintmax_t minimum,
+                               std::uintmax_t maximum) {
+  std::size_t consumed{};
+  const auto mebibytes = std::stoull(std::string{value}, &consumed, 10);
+  if (consumed != value.size() || mebibytes < minimum ||
+      mebibytes > maximum ||
+      mebibytes > std::numeric_limits<std::uintmax_t>::max() /
+                        (1024U * 1024U)) {
+    throw std::runtime_error{std::string{name} + " must be in the range " +
+                             std::to_string(minimum) + ".." +
+                             std::to_string(maximum) + " MiB"};
+  }
+  return static_cast<std::uintmax_t>(mebibytes) * 1024U * 1024U;
+}
+
+std::size_t jit_artifact_memory_limit(
+    const std::vector<std::string> &args) {
+  const auto value = option(args, "--jit-artifact-memory-mib").value_or("64");
+  return static_cast<std::size_t>(parse_mib_value(
+      value, "--jit-artifact-memory-mib", 1U, 4096U));
 }
 
 GlesBackend parse_gles_backend(const std::vector<std::string> &args) {
@@ -1377,19 +1419,48 @@ void boot(const std::vector<std::string> &args, Output &output) {
       host_cache /
       "jit-translation-profiles"};
   JitArtifactLimits jit_artifact_limits;
-  std::error_code disk_space_error;
-  const auto disk_space = std::filesystem::space(
-      std::filesystem::path{*rootfs}, disk_space_error);
-  if (!disk_space_error) {
-    constexpr auto minimum_artifact_disk_bytes =
-        std::uintmax_t{512U} * 1024U * 1024U;
-    constexpr auto maximum_artifact_disk_bytes =
-        std::uintmax_t{4U} * 1024U * 1024U * 1024U;
-    jit_artifact_limits.persistence_bytes = static_cast<std::size_t>(
-        std::clamp(disk_space.available / 10U,
-                   minimum_artifact_disk_bytes,
-                   maximum_artifact_disk_bytes));
+  jit_artifact_limits.resident_bytes = jit_artifact_memory_limit(args);
+  constexpr auto minimum_artifact_free_bytes =
+      std::uintmax_t{128U} * 1024U * 1024U;
+  constexpr auto maximum_artifact_disk_bytes =
+      std::uintmax_t{4U} * 1024U * 1024U * 1024U;
+  jit_artifact_limits.minimum_free_bytes = minimum_artifact_free_bytes;
+  const auto configured_disk_mib = option(args, "--jit-artifact-disk-mib");
+  const auto artifact_filesystem =
+      nearest_existing_filesystem_path(host_cache);
+  if (configured_disk_mib) {
+    const auto configured_bytes = parse_mib_value(
+        *configured_disk_mib, "--jit-artifact-disk-mib", 0U, 4096U);
+    if (configured_bytes == 0U) {
+      jit_artifact_limits.persistence_enabled = false;
+    } else {
+      jit_artifact_limits.persistence_bytes = static_cast<std::size_t>(
+          std::min(configured_bytes, maximum_artifact_disk_bytes));
+    }
+  } else {
+    std::error_code disk_space_error;
+    const auto disk_space = std::filesystem::space(
+        artifact_filesystem, disk_space_error);
+    if (!disk_space_error &&
+        disk_space.available > minimum_artifact_free_bytes) {
+      const auto available_budget =
+          disk_space.available - minimum_artifact_free_bytes;
+      jit_artifact_limits.persistence_bytes = static_cast<std::size_t>(
+          std::min(available_budget, maximum_artifact_disk_bytes));
+    } else {
+      jit_artifact_limits.persistence_enabled = false;
+    }
   }
+  output.line(
+      "[jit-artifact] memory-mib=" +
+      std::to_string(jit_artifact_limits.resident_bytes / 1024U / 1024U) +
+      " disk-mib=" +
+      std::to_string(jit_artifact_limits.persistence_bytes / 1024U / 1024U) +
+      " persistence=" +
+      (jit_artifact_limits.persistence_enabled ? "enabled" : "disabled") +
+      " filesystem=" +
+      (artifact_filesystem.empty() ? std::string{"unavailable"}
+                                    : artifact_filesystem.string()));
   auto jit_artifacts = std::make_shared<JitArtifactStore>(
       host_cache / "jit-artifacts.bin", jit_artifact_limits);
   const auto assign_translation_profile =

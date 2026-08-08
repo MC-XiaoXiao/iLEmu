@@ -331,6 +331,28 @@ struct ArtifactMetadata {
   return std::filesystem::path{path.string() + ".append"};
 }
 
+[[nodiscard]] bool has_storage_headroom(
+    const std::filesystem::path &path, std::uintmax_t minimum_free_bytes,
+    std::uintmax_t additional_bytes) {
+  if (minimum_free_bytes == 0U) return true;
+  std::error_code error;
+  auto candidate = std::filesystem::absolute(path, error);
+  if (error || candidate.empty()) candidate = path;
+  for (;;) {
+    const auto status = std::filesystem::status(candidate, error);
+    if (!error && status.type() != std::filesystem::file_type::not_found) {
+      break;
+    }
+    const auto parent = candidate.parent_path();
+    if (parent.empty() || parent == candidate) return false;
+    candidate = parent;
+    error.clear();
+  }
+  const auto space = std::filesystem::space(candidate, error);
+  if (error || space.available < minimum_free_bytes) return false;
+  return additional_bytes <= space.available - minimum_free_bytes;
+}
+
 struct JournalArtifactEntry {
   JitArtifactKey key;
   std::uint64_t offset{};
@@ -735,6 +757,7 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
   const std::lock_guard lock{mutex_};
   auto result = stats_;
   result.resident_bytes = resident_bytes_;
+  if (!limits_.persistence_enabled) return result;
   const auto &disk_path = !persistence_path_.empty()
                               ? persistence_path_
                               : disk_source_path_;
@@ -760,6 +783,7 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
 
 bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
   try {
+    if (!limits_.persistence_enabled) return false;
     struct DiskEntry {
       JitArtifactKey key;
       DiskArtifactRecord record;
@@ -905,6 +929,7 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
 JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
     const std::filesystem::path &path) const noexcept {
   try {
+    if (!limits_.persistence_enabled) return AppendResult::Failed;
     if (path.empty()) return AppendResult::Failed;
 
     const std::lock_guard lock{mutex_};
@@ -1030,6 +1055,10 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
         append_bytes > configured_limit - base_size - journal.file_size) {
       return AppendResult::Failed;
     }
+    if (!has_storage_headroom(path, limits_.minimum_free_bytes,
+                              static_cast<std::uintmax_t>(append_bytes))) {
+      return AppendResult::Failed;
+    }
 
     std::ofstream stream{append_path, std::ios::binary | std::ios::app};
     if (!stream) return AppendResult::Failed;
@@ -1091,6 +1120,7 @@ bool JitArtifactStore::save() const noexcept {
 
 bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
   if (path.empty()) return false;
+  if (!limits_.persistence_enabled) return true;
   const auto append_result = append_new_artifacts(path);
   if (append_result == AppendResult::Saved) return true;
   if (append_result == AppendResult::Failed) return false;
@@ -1185,6 +1215,11 @@ bool JitArtifactStore::save_full(
       return false;
     }
     if (total_size > maximum_persistence_bytes) return false;
+    if (!has_storage_headroom(
+            path, limits_.minimum_free_bytes,
+            static_cast<std::uintmax_t>(total_size))) {
+      return false;
+    }
     std::filesystem::path new_source_path{path};
     std::ifstream source;
     if (needs_source) {
