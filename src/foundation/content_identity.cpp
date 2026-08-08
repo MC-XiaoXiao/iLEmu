@@ -2,8 +2,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <fstream>
 #include <limits>
+
+#include <unistd.h>
 
 namespace ilemu {
 namespace {
@@ -180,6 +183,48 @@ std::size_t ContentIdentityHash::operator()(
 ContentIdentity sha256(std::span<const std::byte> bytes) {
   Sha256State state;
   state.update(bytes);
+  return state.finish();
+}
+
+std::optional<ContentIdentity> sha256_file(
+    int descriptor, std::uint64_t file_offset,
+    std::optional<std::uint64_t> byte_count) {
+  if (descriptor < 0 ||
+      file_offset >
+          static_cast<std::uint64_t>(std::numeric_limits<off_t>::max())) {
+    return std::nullopt;
+  }
+
+  Sha256State state;
+  std::array<std::byte, 64U * 1024U> buffer{};
+  std::uint64_t current_offset = file_offset;
+  auto remaining = byte_count;
+  while (!remaining || *remaining != 0U) {
+    const auto requested = remaining
+                               ? std::min<std::uint64_t>(
+                                     *remaining, buffer.size())
+                               : buffer.size();
+    ssize_t count = -1;
+    do {
+      count = ::pread(descriptor, buffer.data(), requested,
+                      static_cast<off_t>(current_offset));
+    } while (count < 0 && errno == EINTR);
+    if (count < 0) return std::nullopt;
+    if (count == 0) {
+      if (remaining && *remaining != 0U) return std::nullopt;
+      break;
+    }
+
+    state.update(std::span<const std::byte>{
+        buffer.data(), static_cast<std::size_t>(count)});
+    const auto received = static_cast<std::uint64_t>(count);
+    if (current_offset > std::numeric_limits<std::uint64_t>::max() -
+                              received) {
+      return std::nullopt;
+    }
+    current_offset += received;
+    if (remaining) *remaining -= received;
+  }
   return state.finish();
 }
 

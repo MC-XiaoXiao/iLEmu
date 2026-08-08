@@ -1,13 +1,14 @@
 #include "ilemu/file_page_cache.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cerrno>
-#include <fstream>
 #include <iterator>
 #include <limits>
 #include <tuple>
 
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 namespace ilemu {
@@ -19,6 +20,31 @@ constexpr std::uint64_t file_prefetch_bytes =
 std::atomic<std::uint64_t> global_shared_write_tracking_epoch{};
 std::atomic<std::uint64_t> next_reservation_identity{1};
 
+[[nodiscard]] int open_file_descriptor(const std::filesystem::path &path) {
+  auto descriptor = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+  if (descriptor < 0) {
+    descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  }
+  return descriptor;
+}
+
+[[nodiscard]] std::filesystem::file_time_type file_time_from_stat(
+    const struct stat &file_stat) {
+  using namespace std::chrono;
+  const auto duration = seconds{file_stat.st_mtim.tv_sec} +
+                        nanoseconds{file_stat.st_mtim.tv_nsec};
+  return std::filesystem::file_time_type{
+      duration_cast<std::filesystem::file_time_type::duration>(duration)};
+}
+
+[[nodiscard]] bool same_file_stat(const struct stat &first,
+                                  const struct stat &second) {
+  return first.st_dev == second.st_dev && first.st_ino == second.st_ino &&
+         first.st_size == second.st_size &&
+         first.st_mtim.tv_sec == second.st_mtim.tv_sec &&
+         first.st_mtim.tv_nsec == second.st_mtim.tv_nsec;
+}
+
 [[nodiscard]] std::string stable_path(const std::filesystem::path &path) {
   std::error_code error;
   const auto canonical = std::filesystem::canonical(path, error);
@@ -28,8 +54,8 @@ std::atomic<std::uint64_t> next_reservation_identity{1};
 } // namespace
 
 GuestFileIoState::~GuestFileIoState() {
-  if (writeback_descriptor >= 0) {
-    static_cast<void>(::close(writeback_descriptor));
+  if (file_descriptor >= 0) {
+    static_cast<void>(::close(file_descriptor));
   }
 }
 
@@ -67,11 +93,6 @@ void GuestPageBacking::materialize() const {
     bytes = prefetched_page->second;
     io_state->prefetched_pages.erase(prefetched_page);
   } else {
-    if (!io_state->stream) {
-      io_state->stream = std::make_shared<std::ifstream>(
-          file->path, std::ios::binary);
-    }
-
     const auto aligned_start = file_offset_ & ~(file_prefetch_bytes - 1U);
     const auto read_start = std::max(file->first_offset, aligned_start);
     const auto read_size = std::min(file->end_offset - read_start,
@@ -79,21 +100,21 @@ void GuestPageBacking::materialize() const {
     const auto read_pages = static_cast<std::size_t>(
         (read_size + guest_memory_page_size - 1U) /
         guest_memory_page_size);
-    if (io_state->stream && io_state->stream->is_open())
-      io_state->stream->clear();
-    if (io_state->stream && io_state->stream->is_open() &&
-        read_start <= static_cast<std::uint64_t>(
-                          std::numeric_limits<std::streamoff>::max())) {
-      auto &stream = *io_state->stream;
-      stream.seekg(static_cast<std::streamoff>(read_start));
+    if (io_state->file_descriptor >= 0 &&
+        read_start <=
+            static_cast<std::uint64_t>(std::numeric_limits<off_t>::max())) {
       std::vector<std::byte> batch(static_cast<std::size_t>(read_size));
-      stream.read(reinterpret_cast<char *>(batch.data()),
-                  static_cast<std::streamsize>(batch.size()));
-      const auto received = static_cast<std::size_t>(stream.gcount());
-      if (!stream && !stream.eof()) {
-        std::fill(batch.begin(), batch.end(), std::byte{});
-      } else {
-        batch.resize(received);
+      std::size_t received = 0;
+      while (received < batch.size()) {
+        ssize_t count = -1;
+        do {
+          count = ::pread(
+              io_state->file_descriptor, batch.data() + received,
+              batch.size() - received,
+              static_cast<off_t>(read_start + received));
+        } while (count < 0 && errno == EINTR);
+        if (count <= 0) break;
+        received += static_cast<std::size_t>(count);
       }
       for (std::size_t index = 0; index < read_pages; ++index) {
         const auto offset = index * guest_memory_page_size;
@@ -165,7 +186,7 @@ bool GuestPageBacking::flush_file() {
   const auto file = file_writeback_;
   const auto io_state = file->io_state;
   const std::scoped_lock file_lock{io_state->mutex};
-  const auto descriptor = io_state->writeback_descriptor;
+  const auto descriptor = io_state->file_descriptor;
   if (descriptor < 0) return false;
 
   std::size_t written = 0;
@@ -225,21 +246,46 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     return std::nullopt;
   }
 
-  std::error_code error;
-  const auto file_size = std::filesystem::file_size(path, error);
-  if (error || file_offset > file_size) {
+  auto descriptor = open_file_descriptor(path);
+  if (descriptor < 0) return std::nullopt;
+  const auto close_descriptor = [&]() {
+    if (descriptor >= 0) {
+      static_cast<void>(::close(descriptor));
+      descriptor = -1;
+    }
+  };
+
+  struct stat file_stat {};
+  if (::fstat(descriptor, &file_stat) != 0 || !S_ISREG(file_stat.st_mode) ||
+      file_stat.st_size < 0) {
+    close_descriptor();
+    return std::nullopt;
+  }
+  const auto file_size = static_cast<std::uintmax_t>(file_stat.st_size);
+  if (file_offset > file_size) {
+    close_descriptor();
     return std::nullopt;
   }
   const auto available = file_size - file_offset;
   const auto page_rounded_available =
       (available + guest_memory_page_size - 1U) &
       ~(static_cast<std::uintmax_t>(guest_memory_page_size) - 1U);
-  if (size > page_rounded_available)
+  if (size > page_rounded_available) {
+    close_descriptor();
     return std::nullopt;
-  const auto modified = std::filesystem::last_write_time(path, error);
-  if (error) return std::nullopt;
-  const auto content_identity = sha256_file(path);
-  if (!content_identity) return std::nullopt;
+  }
+  const auto modified = file_time_from_stat(file_stat);
+  const auto content_identity = sha256_file(descriptor);
+  if (!content_identity) {
+    close_descriptor();
+    return std::nullopt;
+  }
+  struct stat final_file_stat {};
+  if (::fstat(descriptor, &final_file_stat) != 0 ||
+      !same_file_stat(file_stat, final_file_stat)) {
+    close_descriptor();
+    return std::nullopt;
+  }
   const auto normalized_path = stable_path(path);
 
   {
@@ -258,22 +304,14 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     }
   }
 
-  const auto final_size = std::filesystem::file_size(path, error);
-  if (error || final_size != file_size) return std::nullopt;
-  const auto final_modified = std::filesystem::last_write_time(path, error);
-  if (error || final_modified != modified) return std::nullopt;
-
   auto mapping = std::make_shared<GuestFileBacking>(
       path, file_offset, file_offset + std::min<std::uintmax_t>(size, available));
   mapping->cache_path = normalized_path;
   mapping->file_size = file_size;
   mapping->modified = modified;
   mapping->content_identity = *content_identity;
-  mapping->io_state->stream =
-      std::make_shared<std::ifstream>(path, std::ios::binary);
-  if (!mapping->io_state->stream->is_open()) return std::nullopt;
-  mapping->io_state->writeback_descriptor =
-      ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+  mapping->io_state->file_descriptor = descriptor;
+  descriptor = -1;
   return mapping;
 }
 

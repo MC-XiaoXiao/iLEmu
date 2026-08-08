@@ -5,7 +5,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
-#include <fstream>
 #include <list>
 #include <map>
 #include <memory>
@@ -27,10 +26,9 @@ struct GuestFileIoState {
   ~GuestFileIoState();
 
   mutable std::mutex mutex;
-  mutable std::shared_ptr<std::ifstream> stream;
+  int file_descriptor{-1};
   // A shared-file mapping keeps this descriptor open so writeback remains
   // attached to the original vnode/file object after pathname replacement.
-  int writeback_descriptor{-1};
   mutable std::map<std::uint64_t, GuestPageBytes> prefetched_pages;
 };
 
