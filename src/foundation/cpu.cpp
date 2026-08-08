@@ -75,6 +75,44 @@ constexpr std::uint32_t jit_artifact_format_version = 6U;
 #endif
 }
 
+[[nodiscard]] std::uint64_t jit_artifact_host_feature_mask() noexcept {
+    static const auto mask = [] {
+        std::uint64_t result = 0;
+#if (defined(__GNUC__) || defined(__clang__)) && \
+    (defined(__x86_64__) || defined(_M_X64))
+        // Keep these bit positions aligned with Dynarmic's X64 HostFeature
+        // enum. Its emitter selects different instructions for these
+        // capabilities, so the portable-IR key must distinguish them even
+        // though the artifact itself is not native host code.
+        __builtin_cpu_init();
+        if (__builtin_cpu_supports("ssse3")) result |= std::uint64_t{1} << 0U;
+        if (__builtin_cpu_supports("sse4.1")) result |= std::uint64_t{1} << 1U;
+        if (__builtin_cpu_supports("sse4.2")) result |= std::uint64_t{1} << 2U;
+        if (__builtin_cpu_supports("avx")) result |= std::uint64_t{1} << 3U;
+        if (__builtin_cpu_supports("avx2")) result |= std::uint64_t{1} << 4U;
+        if (__builtin_cpu_supports("avx512f")) result |= std::uint64_t{1} << 5U;
+        if (__builtin_cpu_supports("avx512cd")) result |= std::uint64_t{1} << 6U;
+        if (__builtin_cpu_supports("avx512vl")) result |= std::uint64_t{1} << 7U;
+        if (__builtin_cpu_supports("avx512bw")) result |= std::uint64_t{1} << 8U;
+        if (__builtin_cpu_supports("avx512dq")) result |= std::uint64_t{1} << 9U;
+        if (__builtin_cpu_supports("avx512bitalg")) result |= std::uint64_t{1} << 10U;
+        if (__builtin_cpu_supports("avx512vbmi")) result |= std::uint64_t{1} << 11U;
+        if (__builtin_cpu_supports("pclmul")) result |= std::uint64_t{1} << 12U;
+        if (__builtin_cpu_supports("f16c")) result |= std::uint64_t{1} << 13U;
+        if (__builtin_cpu_supports("fma")) result |= std::uint64_t{1} << 14U;
+        if (__builtin_cpu_supports("aes")) result |= std::uint64_t{1} << 15U;
+        if (__builtin_cpu_supports("sha")) result |= std::uint64_t{1} << 16U;
+        if (__builtin_cpu_supports("popcnt")) result |= std::uint64_t{1} << 17U;
+        if (__builtin_cpu_supports("bmi")) result |= std::uint64_t{1} << 18U;
+        if (__builtin_cpu_supports("bmi2")) result |= std::uint64_t{1} << 19U;
+        if (__builtin_cpu_supports("lzcnt")) result |= std::uint64_t{1} << 20U;
+        if (__builtin_cpu_supports("gfni")) result |= std::uint64_t{1} << 21U;
+#endif
+        return result;
+    }();
+    return mask;
+}
+
 [[nodiscard]] constexpr bool portable_artifact_import_supported() noexcept {
 #if defined(__x86_64__) || defined(_M_X64)
     return true;
@@ -495,7 +533,7 @@ private:
             key.backend_abi_version = jit_artifact_backend_abi_version;
             key.codegen_options = jit_artifact_codegen_options;
             key.host_isa = jit_artifact_host_isa();
-            key.host_feature_mask = 0U;
+            key.host_feature_mask = jit_artifact_host_feature_mask();
             key.artifact_format_version = jit_artifact_format_version;
             return key;
         } catch (...) {
