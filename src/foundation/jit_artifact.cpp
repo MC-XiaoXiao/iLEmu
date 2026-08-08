@@ -2,10 +2,13 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 namespace ilemu {
@@ -492,7 +495,13 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
     if (serialized_size > maximum_persistence_bytes) return false;
     const auto parent = path.parent_path();
     if (!parent.empty()) std::filesystem::create_directories(parent);
-    const auto temporary = path.string() + ".tmp";
+    const auto temporary = std::filesystem::path{
+        path.string() + ".tmp-" +
+        std::to_string(std::hash<std::thread::id>{}(
+            std::this_thread::get_id())) +
+        "-" + std::to_string(std::chrono::steady_clock::now()
+                                 .time_since_epoch()
+                                 .count())};
     {
       std::ofstream stream{temporary, std::ios::binary | std::ios::trunc};
       if (!stream) return false;
