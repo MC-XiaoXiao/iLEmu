@@ -232,5 +232,73 @@ int main() {
     return 1;
   }
 
+  ilemu::AddressSpace multicore_memory;
+  constexpr std::uint32_t multicore_reservation_code = 0x8000U;
+  constexpr std::uint32_t multicore_writer_code = 0x9000U;
+  constexpr std::uint32_t multicore_data = 0xa000U;
+  if (!multicore_memory.map(
+          multicore_reservation_code, ilemu::AddressSpace::page_size,
+          ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Write |
+              ilemu::MemoryPermission::Execute) ||
+      !multicore_memory.map(
+          multicore_writer_code, ilemu::AddressSpace::page_size,
+          ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Write |
+              ilemu::MemoryPermission::Execute) ||
+      !multicore_memory.map(
+          multicore_data, ilemu::AddressSpace::page_size,
+          ilemu::MemoryPermission::Read | ilemu::MemoryPermission::Write) ||
+      !multicore_memory.write32(multicore_data, 1U)) {
+    std::cerr << "multi-core reservation mapping setup failed\n";
+    return 1;
+  }
+  const std::array<std::uint32_t, 3> reservation_code_words{
+      0xe1921f9fU, // ldrex r1, [r2]
+      0xe1820f93U, // strex r0, r3, [r2]
+      0xef000080U, // svc #0x80
+  };
+  const std::array<std::uint32_t, 3> writer_code_words{
+      0xe3a03002U, // mov r3, #2
+      0xe5823000U, // str r3, [r2]
+      0xef000080U, // svc #0x80
+  };
+  if (!multicore_memory.copy_in(
+          multicore_reservation_code,
+          std::as_bytes(std::span{reservation_code_words})) ||
+      !multicore_memory.copy_in(
+          multicore_writer_code, std::as_bytes(std::span{writer_code_words}))) {
+    std::cerr << "multi-core reservation code setup failed\n";
+    return 1;
+  }
+  Dynarmic::ExclusiveMonitor multicore_monitor{2};
+  auto multicore_resolver =
+      std::make_shared<ilemu::GuestExclusiveAddressResolver>();
+  ilemu::CpuCluster multicore_cluster{
+      2, 2, multicore_memory, 2, ilemu::default_arm_cpu_model(),
+      multicore_monitor, 0, {}, multicore_resolver};
+  auto &reservation_cpu = multicore_cluster.cpu(0);
+  auto &writer_cpu = multicore_cluster.cpu(1);
+  reservation_cpu.registers()[2] = multicore_data;
+  reservation_cpu.registers()[3] = 3U;
+  reservation_cpu.registers()[15] = multicore_reservation_code;
+  reservation_cpu.set_cpsr(0x10U);
+  writer_cpu.registers()[2] = multicore_data;
+  writer_cpu.registers()[15] = multicore_writer_code;
+  writer_cpu.set_cpsr(0x10U);
+  static_cast<void>(reservation_cpu.step());
+  if (reservation_cpu.registers()[15] != multicore_reservation_code + 4U) {
+    std::cerr << "multi-core LDREX step did not advance\n";
+    return 1;
+  }
+  const auto writer_result = writer_cpu.run(64);
+  const auto reservation_result = reservation_cpu.run(64);
+  if (writer_result.svc != std::optional<std::uint32_t>{0x80U} ||
+      reservation_result.svc != std::optional<std::uint32_t>{0x80U} ||
+      reservation_cpu.registers()[0] != 1U ||
+      multicore_memory.read32(multicore_data) !=
+          std::optional<std::uint32_t>{2U}) {
+    std::cerr << "multi-core ordinary store kept a stale reservation\n";
+    return 1;
+  }
+
   return 0;
 }
