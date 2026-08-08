@@ -71,6 +71,10 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
         !thread_terminate_handler_ ||
         thread_terminate_handler_(target->first, target->second);
     if (accepted) {
+      if (target->first == process_.pid) {
+        process_.thread_disk_io_policies.erase(*target_object);
+        thread_ports_.erase(target->second);
+      }
       std::lock_guard mach_lock{shared_state_->mach_mutex};
       auto task = shared_state_->task_thread_port_objects.find(target->first);
       if (task != shared_state_->task_thread_port_objects.end()) {

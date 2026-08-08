@@ -620,20 +620,44 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id) {
   signal_actions_ = {};
   signal_mask_ = 0;
   process_.waiting_for_events = false;
-  thread_ports_.clear();
-  thread_ports_.emplace(processor_id, process_.thread_port);
+  const auto current_thread_port =
+      thread_ports_.find(processor_id) != thread_ports_.end()
+          ? thread_ports_.at(processor_id)
+          : process_.thread_port;
+  std::optional<std::uint32_t> surviving_thread_object;
+  std::optional<std::uint32_t> surviving_thread_policy;
   {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
     auto &thread_objects =
         shared_state_->task_thread_port_objects[process_.pid];
-    const auto surviving_thread = shared_state_->mach_namespaces.resolve(
-        process_.pid, process_.thread_port);
+    if (const auto current = thread_objects.find(
+            static_cast<std::uint32_t>(processor_id));
+        current != thread_objects.end()) {
+      surviving_thread_object = current->second;
+    } else {
+      surviving_thread_object = shared_state_->mach_namespaces.resolve(
+          process_.pid, current_thread_port);
+    }
+    if (surviving_thread_object) {
+      if (const auto policy = process_.thread_disk_io_policies.find(
+              *surviving_thread_object);
+          policy != process_.thread_disk_io_policies.end()) {
+        surviving_thread_policy = policy->second;
+      }
+    }
     thread_objects.clear();
-    if (surviving_thread) {
+    if (surviving_thread_object) {
       thread_objects[static_cast<std::uint32_t>(processor_id)] =
-          *surviving_thread;
+          *surviving_thread_object;
     }
   }
+  process_.thread_disk_io_policies.clear();
+  if (surviving_thread_object && surviving_thread_policy) {
+    process_.thread_disk_io_policies.emplace(*surviving_thread_object,
+                                             *surviving_thread_policy);
+  }
+  thread_ports_.clear();
+  thread_ports_.emplace(processor_id, current_thread_port);
   disabled_thread_signals_.clear();
   pending_waits_.clear();
   pending_mach_receives_.clear();
@@ -1641,6 +1665,28 @@ void CompatibilityKernel::attach(Cpu &cpu) {
   });
 }
 
+std::optional<std::uint32_t>
+CompatibilityKernel::thread_object_for_processor(
+    std::size_t processor) const {
+  std::lock_guard mach_lock{shared_state_->mach_mutex};
+  if (const auto task =
+          shared_state_->task_thread_port_objects.find(process_.pid);
+      task != shared_state_->task_thread_port_objects.end()) {
+    if (const auto thread = task->second.find(
+            static_cast<std::uint32_t>(processor));
+        thread != task->second.end()) {
+      return thread->second;
+    }
+  }
+  return std::nullopt;
+}
+
+void CompatibilityKernel::clear_thread_io_policy(std::size_t processor_id) {
+  if (const auto thread_object = thread_object_for_processor(processor_id)) {
+    process_.thread_disk_io_policies.erase(*thread_object);
+  }
+}
+
 void CompatibilityKernel::inherit_process_state(
     const CompatibilityKernel &parent, std::uint32_t child_pid,
     ProcessInheritance inheritance) {
@@ -1704,6 +1750,10 @@ void CompatibilityKernel::inherit_process_state(
   process_.calendar_clock_port = parent.process_.calendar_clock_port;
   process_.io_master_port = parent.process_.io_master_port;
   process_.io_registry_options_port = parent.process_.io_registry_options_port;
+  // fork/posix_spawn creates a new current uthread. Process policy is copied
+  // with proc, but a stale parent uthread policy must not follow its new
+  // kernel thread object.
+  process_.thread_disk_io_policies.clear();
   file_descriptors_ = parent.file_descriptors_;
   regular_file_open_descriptions_ = parent.regular_file_open_descriptions_;
   virtual_block_descriptors_ = parent.virtual_block_descriptors_;

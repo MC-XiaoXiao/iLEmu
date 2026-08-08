@@ -149,6 +149,23 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
       return write_create_error(darwin::mach::resource_shortage);
     }
     if (processor) {
+      thread_ports_.erase(*processor);
+      {
+        std::lock_guard mach_lock{shared_state_->mach_mutex};
+        if (auto task = shared_state_->task_thread_port_objects.find(
+                process_.pid);
+            task != shared_state_->task_thread_port_objects.end()) {
+          if (const auto old_thread = task->second.find(
+                  static_cast<std::uint32_t>(*processor));
+              old_thread != task->second.end()) {
+            process_.thread_disk_io_policies.erase(old_thread->second);
+            task->second.erase(old_thread);
+          }
+          if (task->second.empty()) {
+            shared_state_->task_thread_port_objects.erase(task);
+          }
+        }
+      }
       if (creates_suspended_thread && thread_runnable_handler_ &&
           !thread_runnable_handler_(process_.pid,
                                     static_cast<std::uint32_t>(*processor),

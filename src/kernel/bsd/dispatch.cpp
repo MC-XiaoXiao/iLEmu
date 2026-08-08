@@ -127,14 +127,20 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
       return;
     }
 
-    auto &stored_policy =
-        *scope == iopol_scope_process
-            ? process_.disk_io_policy
-            : process_.thread_disk_io_policies[process_.thread_port];
+    auto *stored_policy = &process_.disk_io_policy;
+    if (*scope == iopol_scope_thread) {
+      const auto thread_object =
+          thread_object_for_processor(cpu.processor_id());
+      if (!thread_object) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+        return;
+      }
+      stored_policy = &process_.thread_disk_io_policies[*thread_object];
+    }
     switch (cpu.registers()[0]) {
     case iopol_cmd_get:
       if (!memory_.write32(address + 2U * sizeof(std::uint32_t),
-                           stored_policy)) {
+                           *stored_policy)) {
         bsd_error(cpu, bsd_support::bad_address);
         return;
       }
@@ -145,7 +151,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
         bsd_error(cpu, bsd_support::invalid_argument);
         return;
       }
-      stored_policy = *policy;
+      *stored_policy = *policy;
       bsd_success(cpu, 0);
       return;
     default:

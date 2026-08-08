@@ -1567,6 +1567,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   XnuThreadId{pid, static_cast<std::uint32_t>(processor)})) {
             return false;
           }
+          runtime_ptr->kernel->clear_thread_io_policy(processor);
           guest_parallelism_policy.forget(
               XnuThreadId{pid, static_cast<std::uint32_t>(processor)});
           runtime_ptr->allocated[processor] = false;
