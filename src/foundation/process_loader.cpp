@@ -121,7 +121,8 @@ ProcessLoader::host_path(const std::string& guest_path) const {
 MachOImage ProcessLoader::parse_catalogued(
     const std::filesystem::path &path) const {
     const auto *entry = catalog_ ? catalog_->find_path(path) : nullptr;
-    if (entry == nullptr || entry->file_size == 0U || !entry->uuid) {
+    if (entry == nullptr || entry->file_size == 0U || !entry->uuid ||
+        !catalog_->path_is_current(path)) {
         return MachOImage::parse(path, architecture_);
     }
     auto image = MachOImage::parse(path, architecture_, entry->content_identity);
