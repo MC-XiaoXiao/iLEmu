@@ -60,6 +60,14 @@ std::atomic<std::uint64_t> next_reservation_identity{1};
   return (error ? path.lexically_normal() : canonical).string();
 }
 
+struct GlobalIdentityRecord {
+  GuestFileGeneration generation;
+  ContentIdentity content_identity;
+};
+
+std::mutex global_identity_mutex;
+std::map<std::string, GlobalIdentityRecord> global_identities;
+
 } // namespace
 
 GuestFileIoState::~GuestFileIoState() {
@@ -300,16 +308,37 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
         erase_path_locked(normalized_path);
         ++stats_.generation_invalidations;
       }
+    }
+  }
+  if (!content_identity) {
+    bool computed = false;
+    {
+      const std::scoped_lock lock{global_identity_mutex};
+      const auto identity = global_identities.find(normalized_path);
+      if (identity != global_identities.end() &&
+          identity->second.generation == generation) {
+        content_identity = identity->second.content_identity;
+      } else {
+        computed = true;
+        content_identity = sha256_file(descriptor);
+        if (content_identity) {
+          global_identities[normalized_path] =
+              GlobalIdentityRecord{generation, *content_identity};
+        }
+      }
+    }
+    if (!content_identity) {
+      close_descriptor();
+      return std::nullopt;
+    }
+    const std::scoped_lock lock{mutex_};
+    if (computed) {
       ++stats_.sha_computations;
       stats_.sha_bytes += static_cast<std::uint64_t>(file_size);
-      content_identity = sha256_file(descriptor);
-      if (!content_identity) {
-        close_descriptor();
-        return std::nullopt;
-      }
-      identities_[normalized_path] =
-          Identity{generation, *content_identity};
+    } else {
+      ++stats_.identity_hits;
     }
+    identities_[normalized_path] = Identity{generation, *content_identity};
   }
   struct stat final_file_stat {};
   if (::fstat(descriptor, &final_file_stat) != 0 ||
