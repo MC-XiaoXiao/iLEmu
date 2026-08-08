@@ -8,6 +8,7 @@
 #include <deque>
 #include <exception>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <iomanip>
 #include <iostream>
@@ -81,6 +82,37 @@ constexpr std::size_t arm_breakpoint_size = 4;
 // fallback is used for SDL/GDB sessions; headless control-stdin sessions wait
 // on their descriptor or on the next Guest/automation deadline directly.
 constexpr auto sdl_event_poll_fallback = std::chrono::milliseconds{4};
+
+struct HostMemorySnapshot {
+  std::uint64_t rss_bytes{};
+  std::uint64_t peak_rss_bytes{};
+  std::uint64_t virtual_bytes{};
+  std::uint64_t file_mapped_bytes{};
+};
+
+[[nodiscard]] HostMemorySnapshot host_memory_snapshot() {
+  HostMemorySnapshot snapshot;
+#if defined(__linux__)
+  std::ifstream status{ "/proc/self/status" };
+  std::string line;
+  while (std::getline(status, line)) {
+    std::istringstream fields{line};
+    std::string label;
+    std::uint64_t value{};
+    std::string unit;
+    fields >> label >> value >> unit;
+    if (!fields || unit != "kB") continue;
+    if (value > std::numeric_limits<std::uint64_t>::max() / 1024U)
+      continue;
+    const auto bytes = value * 1024U;
+    if (label == "VmRSS:") snapshot.rss_bytes = bytes;
+    if (label == "VmHWM:") snapshot.peak_rss_bytes = bytes;
+    if (label == "VmSize:") snapshot.virtual_bytes = bytes;
+    if (label == "RssFile:") snapshot.file_mapped_bytes = bytes;
+  }
+#endif
+  return snapshot;
+}
 
 class GuestTickClock {
 public:
@@ -3025,6 +3057,31 @@ void boot(const std::vector<std::string> &args, Output &output) {
   runtimes.clear();
   runtime_reaper.finish();
   if (report_performance) {
+    // Make the reported disk footprint include artifacts generated during the
+    // run. The store still performs the same atomic save again at destruction.
+    static_cast<void>(jit_artifacts->save());
+    const auto artifact_stats = jit_artifacts->stats();
+    output.line(
+        "[perf-artifact] lookup=" + std::to_string(artifact_stats.lookups) +
+        " memory-hit=" + std::to_string(artifact_stats.memory_hits) +
+        " disk-hit=" + std::to_string(artifact_stats.disk_hits) +
+        " miss=" + std::to_string(artifact_stats.misses) +
+        " publish=" + std::to_string(artifact_stats.publish_calls) +
+        " dedup=" +
+        std::to_string(artifact_stats.deduplicated_publishes) +
+        " disk-load=" +
+        std::to_string(artifact_stats.disk_loaded_entries) +
+        " evict=" + std::to_string(artifact_stats.evictions) +
+        " resident-bytes=" +
+        std::to_string(artifact_stats.resident_bytes) +
+        " disk-bytes=" + std::to_string(artifact_stats.disk_bytes));
+    const auto host_memory = host_memory_snapshot();
+    output.line(
+        "[perf-host-memory] rss-bytes=" +
+        std::to_string(host_memory.rss_bytes) + " rss-peak-bytes=" +
+        std::to_string(host_memory.peak_rss_bytes) + " virtual-bytes=" +
+        std::to_string(host_memory.virtual_bytes) + " mmap-file-bytes=" +
+        std::to_string(host_memory.file_mapped_bytes));
     // Preserve stopped-guest live/current values, then include Runtime
     // destructor latency measured by the reaper in the final snapshot.
     auto final_snapshot = performance_counters().snapshot();
