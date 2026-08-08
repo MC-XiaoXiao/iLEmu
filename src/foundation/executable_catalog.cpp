@@ -5,8 +5,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <iterator>
+#include <span>
 #include <stdexcept>
 #include <system_error>
+#include <sstream>
 #include <string_view>
 #include <utility>
 
@@ -18,7 +21,8 @@ using ilemu::DyldSharedCache;
 
 constexpr std::array<char, 8> catalog_magic{
     'i', 'L', 'E', 'M', 'C', 'A', 'T', '1'};
-constexpr std::uint32_t catalog_schema_version = 1U;
+constexpr std::uint32_t catalog_schema_version = 2U;
+constexpr std::size_t catalog_checksum_size = 32U;
 constexpr std::uint32_t maximum_manifest_entries = 100'000U;
 constexpr std::uint32_t maximum_manifest_items = 65'536U;
 constexpr std::uint32_t maximum_manifest_string = 1U << 20U;
@@ -430,9 +434,28 @@ bool ExecutableCatalog::load(const std::filesystem::path &path) noexcept {
   try {
     std::error_code size_error;
     const auto file_size = std::filesystem::file_size(path, size_error);
-    if (size_error || file_size > maximum_manifest_file_size) return false;
-    std::ifstream stream{path, std::ios::binary};
-    if (!stream) return false;
+    if (size_error || file_size > maximum_manifest_file_size ||
+        file_size < catalog_checksum_size) {
+      return false;
+    }
+    std::ifstream input{path, std::ios::binary};
+    if (!input) return false;
+    std::vector<std::byte> bytes(static_cast<std::size_t>(file_size));
+    input.read(reinterpret_cast<char *>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+    if (input.gcount() != static_cast<std::streamsize>(bytes.size())) {
+      return false;
+    }
+    const auto payload_size = bytes.size() - catalog_checksum_size;
+    ContentIdentity expected_checksum;
+    std::copy_n(bytes.begin() + static_cast<std::ptrdiff_t>(payload_size),
+                expected_checksum.digest.size(),
+                expected_checksum.digest.begin());
+    const auto payload = std::span<const std::byte>{bytes.data(), payload_size};
+    if (ilemu::sha256(payload) != expected_checksum) return false;
+    std::string serialized{reinterpret_cast<const char *>(bytes.data()),
+                           payload_size};
+    std::istringstream stream{std::move(serialized)};
 
     std::array<char, catalog_magic.size()> magic{};
     stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
@@ -530,6 +553,24 @@ bool ExecutableCatalog::save(const std::filesystem::path &path) const noexcept {
     stream.flush();
     if (!stream) return fail();
     stream.close();
+
+    std::ifstream payload_stream{temporary, std::ios::binary};
+    if (!payload_stream) return fail();
+    const std::string payload{
+        std::istreambuf_iterator<char>{payload_stream},
+        std::istreambuf_iterator<char>{}};
+    if (payload_stream.bad()) return fail();
+    const auto checksum = ilemu::sha256(std::span<const std::byte>{
+        reinterpret_cast<const std::byte *>(payload.data()), payload.size()});
+    std::ofstream checksum_stream{temporary,
+                                  std::ios::binary | std::ios::app};
+    if (!checksum_stream) return fail();
+    checksum_stream.write(
+        reinterpret_cast<const char *>(checksum.digest.data()),
+        static_cast<std::streamsize>(checksum.digest.size()));
+    checksum_stream.flush();
+    if (!checksum_stream) return fail();
+    checksum_stream.close();
 
     std::error_code error;
     std::filesystem::rename(temporary, path, error);
