@@ -92,6 +92,7 @@ private:
     std::shared_ptr<HostWorkToken> token;
     Work work;
     std::chrono::nanoseconds estimated_cost{};
+    bool budget_reserved{};
   };
 
   [[nodiscard]] static bool task_precedes(const Task &left,

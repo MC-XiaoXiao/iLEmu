@@ -200,10 +200,13 @@ void HostResourceController::worker_loop() {
         }
         task = std::move(iterator->second);
         tasks_.erase(iterator);
-        if (is_interactive_work(task.kind))
+        if (is_interactive_work(task.kind)) {
           interactive_reserved_ += task.estimated_cost;
-        else if (is_deferred_work(task.kind))
+          task.budget_reserved = true;
+        } else if (is_deferred_work(task.kind)) {
           offline_reserved_ += task.estimated_cost;
+          task.budget_reserved = true;
+        }
         ++active_tasks_;
         break;
       }
@@ -223,12 +226,14 @@ void HostResourceController::worker_loop() {
     {
       const std::lock_guard lock{mutex_};
       task.token->mark_finished();
-      if (is_interactive_work(task.kind)) {
-        interactive_reserved_ -= task.estimated_cost;
-        interactive_work_ += elapsed;
-      } else if (is_deferred_work(task.kind)) {
-        offline_reserved_ -= task.estimated_cost;
-        offline_work_ += elapsed;
+      if (task.budget_reserved) {
+        if (is_interactive_work(task.kind)) {
+          interactive_reserved_ -= task.estimated_cost;
+          interactive_work_ += elapsed;
+        } else if (is_deferred_work(task.kind)) {
+          offline_reserved_ -= task.estimated_cost;
+          offline_work_ += elapsed;
+        }
       }
       --active_tasks_;
       ++completed_;
