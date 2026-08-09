@@ -162,8 +162,9 @@ public:
 
   // Persistence is metadata-only. Initial snapshots carry an authenticated
   // tail index and per-record checksums; incremental publications use a
-  // checksummed append journal. Loading malformed data leaves the existing
-  // store unchanged and lets execution fall back to JIT.
+  // journal of authenticated compact indexes with per-record checksums.
+  // Loading malformed data leaves the existing store unchanged and lets
+  // execution fall back to JIT.
   [[nodiscard]] bool load(const std::filesystem::path &path) noexcept;
   [[nodiscard]] bool save() const noexcept;
   [[nodiscard]] bool save(const std::filesystem::path &path) const noexcept;
@@ -247,6 +248,7 @@ private:
   mutable std::filesystem::path disk_source_path_;
   mutable std::filesystem::path disk_append_path_;
   mutable std::uint64_t disk_append_valid_bytes_{};
+  mutable bool disk_append_indexed_{true};
   mutable std::uint64_t disk_index_generation_{};
   mutable std::uint64_t external_writer_generation_{};
   mutable std::mutex persistence_mutex_;
