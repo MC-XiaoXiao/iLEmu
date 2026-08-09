@@ -648,46 +648,99 @@ JitArtifactStore::~JitArtifactStore() {
 
 std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
     const JitArtifactKey &key) const {
-  const std::lock_guard lock{mutex_};
-  ++stats_.lookups;
-  auto artifact = artifacts_.find(key);
-  if (artifact == artifacts_.end()) {
+  const auto record_matches = [](const DiskArtifactRecord &left,
+                                 const DiskArtifactRecord &right) {
+    return left.offset == right.offset &&
+           left.serialized_bytes == right.serialized_bytes &&
+           left.append_log == right.append_log;
+  };
+  constexpr unsigned maximum_record_attempts = 3U;
+  for (unsigned attempt = 0; attempt < maximum_record_attempts; ++attempt) {
+    DiskArtifactRecord record;
+    std::filesystem::path source_path;
+    {
+      const std::lock_guard lock{mutex_};
+      if (attempt == 0U) ++stats_.lookups;
+      if (auto artifact = artifacts_.find(key);
+          artifact != artifacts_.end()) {
+        if (artifact->second.loaded_from_disk) {
+          ++stats_.disk_hits;
+          artifact->second.loaded_from_disk = false;
+        } else {
+          ++stats_.memory_hits;
+        }
+        touch_locked(artifact);
+        return artifact->second.artifact;
+      }
+      if (const auto pending = pending_writebacks_.find(key);
+          pending != pending_writebacks_.end()) {
+        ++stats_.memory_hits;
+        return pending->second.artifact;
+      }
+      const auto disk_artifact = disk_artifacts_.find(key);
+      if (disk_artifact == disk_artifacts_.end() ||
+          disk_artifact->second.serialized_bytes >
+              std::numeric_limits<std::size_t>::max()) {
+        ++stats_.misses;
+        return nullptr;
+      }
+      record = disk_artifact->second;
+      source_path = record.append_log ? disk_append_path_
+                                      : disk_source_path_;
+    }
+
+    // Disk latency and deserialization must not serialize unrelated vCPU
+    // lookups or artifact publications behind the store mutex.
+    const auto loaded =
+        read_artifact_at(source_path, record.offset, record.serialized_bytes);
+
+    const std::lock_guard lock{mutex_};
+    if (auto artifact = artifacts_.find(key);
+        artifact != artifacts_.end()) {
+      if (artifact->second.loaded_from_disk) {
+        ++stats_.disk_hits;
+        artifact->second.loaded_from_disk = false;
+      } else {
+        ++stats_.memory_hits;
+      }
+      touch_locked(artifact);
+      return artifact->second.artifact;
+    }
     if (const auto pending = pending_writebacks_.find(key);
         pending != pending_writebacks_.end()) {
       ++stats_.memory_hits;
       return pending->second.artifact;
     }
-    const auto disk_artifact = disk_artifacts_.find(key);
-    if (disk_artifact != disk_artifacts_.end() &&
-        disk_artifact->second.serialized_bytes <=
-            std::numeric_limits<std::size_t>::max()) {
-      const auto &source_path = disk_artifact->second.append_log
-                                    ? disk_append_path_
-                                    : disk_source_path_;
-      const auto loaded = read_artifact_at(
-          source_path, disk_artifact->second.offset,
-          disk_artifact->second.serialized_bytes);
-      if (loaded && (*loaded)->key == key) {
-        insert_locked(*loaded,
-                      static_cast<std::size_t>(
-                          disk_artifact->second.serialized_bytes),
-                      true);
-        artifact = artifacts_.find(key);
-      }
+    const auto current = disk_artifacts_.find(key);
+    const auto current_path =
+        current != disk_artifacts_.end()
+            ? (current->second.append_log ? disk_append_path_
+                                          : disk_source_path_)
+            : std::filesystem::path{};
+    if (current == disk_artifacts_.end() ||
+        !record_matches(current->second, record) ||
+        current_path != source_path) {
+      if (attempt + 1U < maximum_record_attempts) continue;
+      ++stats_.misses;
+      return nullptr;
     }
+    if (!loaded || (*loaded)->key != key) {
+      ++stats_.misses;
+      return nullptr;
+    }
+    insert_locked(*loaded, static_cast<std::size_t>(record.serialized_bytes),
+                  true);
+    auto artifact = artifacts_.find(key);
     if (artifact == artifacts_.end()) {
       ++stats_.misses;
       return nullptr;
     }
-  }
-  if (artifact->second.loaded_from_disk) {
     ++stats_.disk_hits;
     artifact->second.loaded_from_disk = false;
-  } else {
-    ++stats_.memory_hits;
+    touch_locked(artifact);
+    return artifact->second.artifact;
   }
-  touch_locked(artifact);
-  return artifact->second.artifact;
+  return nullptr;
 }
 
 void JitArtifactStore::touch_locked(ArtifactMap::iterator iterator) const {
