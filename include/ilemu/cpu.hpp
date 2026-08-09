@@ -18,6 +18,20 @@
 
 namespace ilemu {
 
+// Offline work is ordered by boot usefulness. Entries still remain advisory:
+// an executor compiles them only after their exact file generation is mapped
+// executable in that process.
+enum class JitPrecompilePhase : std::uint8_t {
+    Loader,
+    SystemUi,
+    StartupService,
+    ForegroundApplication,
+    Remaining,
+};
+
+inline constexpr std::size_t jit_precompile_phase_count =
+    static_cast<std::size_t>(JitPrecompilePhase::Remaining) + 1U;
+
 class JitTranslationProfile;
 class JitArtifactStore;
 enum class JitArtifactRetention : std::uint8_t;
@@ -167,13 +181,17 @@ public:
     void clear_cache();
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
     void set_translation_profile(
-        std::shared_ptr<JitTranslationProfile> profile);
+        std::shared_ptr<JitTranslationProfile> profile,
+        JitPrecompilePhase phase = JitPrecompilePhase::Remaining);
     // Boot-critical processes mark every executable artifact they actually
     // consume, naturally covering dyld and the mapped dependency closure
     // without putting process paths into artifact identity.
     void set_jit_artifact_retention(JitArtifactRetention retention);
     void add_precompile_entries(
-        const std::vector<std::uint64_t> &location_descriptors);
+        const std::vector<std::uint64_t> &location_descriptors,
+        JitPrecompilePhase phase = JitPrecompilePhase::Remaining);
+    [[nodiscard]] std::optional<JitPrecompilePhase>
+    next_precompile_phase();
     std::size_t precompile_pending(
         std::size_t maximum_blocks, std::uint64_t budget_nanoseconds);
     // A dead guest task keeps its small register context until the parent

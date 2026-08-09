@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <chrono>
 #include <cstddef>
@@ -29,6 +30,7 @@
 #include <dynarmic/interface/A32/disassembler.h>
 
 #include "ilemu/address_space.hpp"
+#include "ilemu/application_path.hpp"
 #include "ilemu/baseband_replay.hpp"
 #include "ilemu/cpu.hpp"
 #include "ilemu/darwin_abi.hpp"
@@ -314,6 +316,7 @@ struct Runtime {
   std::vector<bool> allocated;
   std::optional<PendingExec> pending_exec;
   std::shared_ptr<HostWorkToken> precompile_task;
+  JitPrecompilePhase precompile_phase{JitPrecompilePhase::Remaining};
   std::optional<std::chrono::steady_clock::time_point>
       execution_reclaim_after;
   bool fresh_spawn_address_space{};
@@ -1623,10 +1626,21 @@ void boot(const std::vector<std::string> &args, Output &output) {
   auto jit_artifacts = std::make_shared<JitArtifactStore>(
       host_cache / "jit-artifacts.bin", jit_artifact_limits);
   std::shared_ptr<HostWorkToken> artifact_compaction_task;
+  const auto precompile_phase_for_process =
+      [springboard_boot_path](std::string_view executable_path) {
+        if (executable_path == springboard_boot_path) {
+          return JitPrecompilePhase::SystemUi;
+        }
+        if (is_application_executable_path(executable_path)) {
+          return JitPrecompilePhase::ForegroundApplication;
+        }
+        return JitPrecompilePhase::StartupService;
+      };
   const auto assign_jit_process_profile =
       [&translation_profiles, catalog_index, &boot_image_identities,
-       springboard_boot_path](
-          CpuCluster &cpus, const LoadedProcess &loaded) {
+       springboard_boot_path](Runtime &runtime, const LoadedProcess &loaded,
+                              JitPrecompilePhase phase) {
+        runtime.precompile_phase = phase;
         const auto retention =
             boot_image_identities.contains(
                 loaded.executable.content_identity()) ||
@@ -1637,9 +1651,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
           boot_image_identities.insert(
               loaded.executable.content_identity());
         }
-        cpus.set_jit_artifact_retention(retention);
-        cpus.set_translation_profile(translation_profiles.profile_for(
-            loaded.executable.content_identity()));
+        runtime.cpus->set_jit_artifact_retention(retention);
+        runtime.cpus->set_translation_profile(
+            translation_profiles.profile_for(
+                loaded.executable.content_identity()),
+            phase);
         if (catalog_index == nullptr) return;
         std::vector<std::uint64_t> entry_points;
         const auto append_entry_points = [&](const MachOImage &image) {
@@ -1651,7 +1667,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         };
         append_entry_points(loaded.executable);
         append_entry_points(loaded.dynamic_linker);
-        cpus.add_precompile_entries(entry_points);
+        runtime.cpus->add_precompile_entries(entry_points, phase);
       };
   auto initial = std::make_unique<Runtime>();
   initial->memory = std::move(initial_memory);
@@ -1671,7 +1687,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       "[jit] initial-runtime-code-cache-mib=" +
       std::to_string(initial->jit_cache_reservation->per_executor_bytes() /
                      1024U / 1024U));
-  assign_jit_process_profile(*initial->cpus, process);
+  assign_jit_process_profile(*initial, process, JitPrecompilePhase::Loader);
   initial->kernel =
       std::make_unique<CompatibilityKernel>(*initial->memory, output, *rootfs,
                                             device, activation_override,
@@ -1743,15 +1759,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::mutex watchpoint_mutex;
   std::uint64_t catalog_mapped_executable_ranges = 0;
   std::uint64_t catalog_mapped_entry_hints = 0;
+  std::array<std::uint64_t, jit_precompile_phase_count>
+      catalog_mapped_entry_hints_by_phase{};
+  std::array<std::uint64_t, jit_precompile_phase_count>
+      precompile_tasks_by_phase{};
+  std::array<std::atomic<std::uint64_t>, jit_precompile_phase_count>
+      precompile_blocks_by_phase{};
   std::function<void(Runtime &)> configure_runtime;
   configure_runtime = [&](Runtime &runtime) {
     auto *runtime_ptr = &runtime;
     runtime.kernel->set_host_network_policy(*network_policy);
     if (catalog_index != nullptr) {
       runtime.kernel->set_mapped_executable_handler(
-          [runtime_ptr, catalog_index,
+           [runtime_ptr, catalog_index,
            &catalog_mapped_executable_ranges,
-           &catalog_mapped_entry_hints](
+           &catalog_mapped_entry_hints,
+           &catalog_mapped_entry_hints_by_phase](
               const std::filesystem::path &path,
               std::uint32_t mapping_address, std::uint32_t mapping_size,
               std::uint64_t file_offset) {
@@ -1760,7 +1783,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
             if (entry_points.empty()) return;
             ++catalog_mapped_executable_ranges;
             catalog_mapped_entry_hints += entry_points.size();
-            runtime_ptr->cpus->add_precompile_entries(entry_points);
+            catalog_mapped_entry_hints_by_phase[static_cast<std::size_t>(
+                runtime_ptr->precompile_phase)] += entry_points.size();
+            runtime_ptr->cpus->add_precompile_entries(
+                entry_points, runtime_ptr->precompile_phase);
           });
     }
     if (!runtime.kernel->set_virtual_processor_count(guest_processor_count)) {
@@ -2048,7 +2074,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
               child_runtime->kernel->set_process_image(
                   path, loaded.executable.code_signature_entitlements());
               assign_jit_process_profile(
-                  *child_runtime->cpus, loaded);
+                  *child_runtime, loaded,
+                  precompile_phase_for_process(loaded.executable_path));
               child_runtime->kernel->prepare_exec(0);
               auto &child_cpu = child_runtime->cpus->cpu(0);
               child_cpu.reset();
@@ -2890,7 +2917,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                                 pending.environment);
           runtime.kernel->set_process_image(
               pending.path, loaded.executable.code_signature_entitlements());
-          assign_jit_process_profile(*runtime.cpus, loaded);
+          assign_jit_process_profile(
+              runtime, loaded,
+              precompile_phase_for_process(loaded.executable_path));
           runtime.kernel->prepare_exec(pending.processor);
           auto &exec_cpu = runtime.cpus->cpu(pending.processor);
           exec_cpu.reset();
@@ -3152,29 +3181,37 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
       }
       host_resources.set_next_deadline(host_compile_deadline);
-      const auto schedule_precompile_runtime = [&](Runtime *runtime) {
+      const auto schedule_precompile_runtime =
+          [&](Runtime *runtime, HostWorkKind work_kind) {
         if (runtime == nullptr || runtime->kernel->process().exited)
           return;
         if (runtime->precompile_task) {
           if (!runtime->precompile_task->finished()) return;
           runtime->precompile_task.reset();
         }
+        const auto next_phase = runtime->cpus->next_precompile_phase();
+        if (!next_phase) return;
+        const auto phase = *next_phase;
         const auto budget = available_precompile_budget();
         if (budget == 0)
           return;
-        const auto work_kind = catalog_index != nullptr
-                                   ? HostWorkKind::OfflineCompile
-                                   : HostWorkKind::BackgroundCompile;
         runtime->precompile_task = host_resources.submit(
             work_kind, host_compile_deadline,
-            [runtime, budget, idle_precompile_block_budget] {
-              static_cast<void>(runtime->cpus->precompile_pending(
-                  idle_precompile_block_budget, budget));
+            [runtime, budget, idle_precompile_block_budget, phase,
+             &precompile_blocks_by_phase] {
+              const auto compiled = runtime->cpus->precompile_pending(
+                  idle_precompile_block_budget, budget);
+              precompile_blocks_by_phase[static_cast<std::size_t>(phase)]
+                  .fetch_add(compiled, std::memory_order_relaxed);
             },
             std::chrono::nanoseconds{
                 static_cast<std::chrono::nanoseconds::rep>(budget)});
+        if (runtime->precompile_task) {
+          ++precompile_tasks_by_phase[static_cast<std::size_t>(phase)];
+        }
       };
-      schedule_precompile_runtime(active_runtime);
+      schedule_precompile_runtime(active_runtime,
+                                  HostWorkKind::BackgroundCompile);
       const auto schedule_artifact_compaction = [&]() {
         if (artifact_compaction_task) {
           if (!artifact_compaction_task->finished()) {
@@ -3200,8 +3237,35 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // active. Its cached exit/unlock paths are just as latency-sensitive as
       // the foreground process, so consume their host-only profile hints while
       // every guest thread is idle.
-      if (display_scanout_owner != active_runtime)
-        schedule_precompile_runtime(display_scanout_owner);
+      if (display_scanout_owner != active_runtime) {
+        schedule_precompile_runtime(display_scanout_owner,
+                                    HostWorkKind::BackgroundCompile);
+      }
+      Runtime *offline_precompile_runtime = nullptr;
+      std::optional<JitPrecompilePhase> offline_precompile_phase;
+      // Active and scanout owners were submitted above with interactive
+      // priority. Use one remaining worker slot for the earliest boot phase
+      // across every other live process; creation order breaks equal-phase
+      // ties and therefore preserves startup-service age.
+      for (const auto &runtime : runtimes) {
+        if (runtime.get() == active_runtime ||
+            runtime.get() == display_scanout_owner ||
+            runtime->kernel->process().exited ||
+            (runtime->precompile_task &&
+             !runtime->precompile_task->finished())) {
+          continue;
+        }
+        const auto phase = runtime->cpus->next_precompile_phase();
+        if (phase &&
+            (!offline_precompile_phase ||
+             static_cast<std::uint8_t>(*phase) <
+                 static_cast<std::uint8_t>(*offline_precompile_phase))) {
+          offline_precompile_runtime = runtime.get();
+          offline_precompile_phase = phase;
+        }
+      }
+      schedule_precompile_runtime(offline_precompile_runtime,
+                                  HostWorkKind::OfflineCompile);
       if (next_deadline) {
         if (realtime_pacer) {
           const auto guest_ahead_delay =
@@ -3424,12 +3488,42 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                     ? initial_runtime->memory->file_page_cache_stats()
                                     : FilePageCacheStats{};
   host_resources.wait_idle();
+  output.line(
+      "[precompile] loader=" +
+      std::to_string(precompile_tasks_by_phase[0]) + "/" +
+      std::to_string(precompile_blocks_by_phase[0].load(
+          std::memory_order_relaxed)) +
+      " system-ui=" + std::to_string(precompile_tasks_by_phase[1]) + "/" +
+      std::to_string(precompile_blocks_by_phase[1].load(
+          std::memory_order_relaxed)) +
+      " startup-service=" +
+      std::to_string(precompile_tasks_by_phase[2]) + "/" +
+      std::to_string(precompile_blocks_by_phase[2].load(
+          std::memory_order_relaxed)) +
+      " foreground-application=" +
+      std::to_string(precompile_tasks_by_phase[3]) + "/" +
+      std::to_string(precompile_blocks_by_phase[3].load(
+          std::memory_order_relaxed)) +
+      " remaining=" + std::to_string(precompile_tasks_by_phase[4]) + "/" +
+      std::to_string(precompile_blocks_by_phase[4].load(
+          std::memory_order_relaxed)));
   if (catalog_loaded) {
     output.line(
         "[catalog] mapped-executable-ranges=" +
         std::to_string(catalog_mapped_executable_ranges) +
         " mapped-entry-hints=" +
         std::to_string(catalog_mapped_entry_hints));
+    output.line(
+        "[catalog] mapped-entry-phases=loader:" +
+        std::to_string(catalog_mapped_entry_hints_by_phase[0]) +
+        ",system-ui:" +
+        std::to_string(catalog_mapped_entry_hints_by_phase[1]) +
+        ",startup-service:" +
+        std::to_string(catalog_mapped_entry_hints_by_phase[2]) +
+        ",foreground-application:" +
+        std::to_string(catalog_mapped_entry_hints_by_phase[3]) +
+        ",remaining:" +
+        std::to_string(catalog_mapped_entry_hints_by_phase[4]));
   }
   if (catalog_loaded && !executable_catalog.save(catalog_manifest)) {
     output.line("[catalog] manifest-save=failed");
