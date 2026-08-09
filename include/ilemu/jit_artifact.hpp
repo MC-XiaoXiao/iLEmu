@@ -194,7 +194,7 @@ private:
   struct ArtifactRecord {
     std::shared_ptr<const BlockArtifact> artifact;
     std::size_t serialized_bytes{};
-    std::list<JitArtifactKey>::iterator lru_position;
+    std::list<const JitArtifactKey *>::iterator lru_position;
     bool loaded_from_disk{};
     std::uint64_t benefit_generation{};
     bool boot_working_set{};
@@ -202,7 +202,7 @@ private:
   struct PendingWriteback {
     std::shared_ptr<const BlockArtifact> artifact;
     std::size_t serialized_bytes{};
-    std::list<JitArtifactKey>::iterator queue_position;
+    std::list<const JitArtifactKey *>::iterator queue_position;
     std::uint64_t benefit_generation{};
     bool boot_working_set{};
   };
@@ -212,14 +212,43 @@ private:
     bool complete{};
     bool disk_hit{};
   };
+  struct JitArtifactKeyPointerHash {
+    using is_transparent = void;
+    [[nodiscard]] std::size_t operator()(
+        const JitArtifactKey *key) const noexcept {
+      return JitArtifactKeyHash{}(*key);
+    }
+    [[nodiscard]] std::size_t operator()(
+        const JitArtifactKey &key) const noexcept {
+      return JitArtifactKeyHash{}(key);
+    }
+  };
+  struct JitArtifactKeyPointerEqual {
+    using is_transparent = void;
+    [[nodiscard]] bool operator()(const JitArtifactKey *left,
+                                  const JitArtifactKey *right) const noexcept {
+      return *left == *right;
+    }
+    [[nodiscard]] bool operator()(const JitArtifactKey *left,
+                                  const JitArtifactKey &right) const noexcept {
+      return *left == right;
+    }
+    [[nodiscard]] bool operator()(const JitArtifactKey &left,
+                                  const JitArtifactKey *right) const noexcept {
+      return left == *right;
+    }
+  };
   using ArtifactMap =
-      std::unordered_map<JitArtifactKey, ArtifactRecord, JitArtifactKeyHash>;
+      std::unordered_map<const JitArtifactKey *, ArtifactRecord,
+                         JitArtifactKeyPointerHash,
+                         JitArtifactKeyPointerEqual>;
   using DiskArtifactMap = std::unordered_map<JitArtifactKey,
                                              DiskArtifactRecord,
                                              JitArtifactKeyHash>;
   using PendingWritebackMap =
-      std::unordered_map<JitArtifactKey, PendingWriteback,
-                         JitArtifactKeyHash>;
+      std::unordered_map<const JitArtifactKey *, PendingWriteback,
+                         JitArtifactKeyPointerHash,
+                         JitArtifactKeyPointerEqual>;
   using DiskReadFlightMap =
       std::unordered_map<JitArtifactKey, std::shared_ptr<DiskReadFlight>,
                          JitArtifactKeyHash>;
@@ -261,14 +290,18 @@ private:
       const std::filesystem::path &path) const noexcept;
 
   mutable std::mutex mutex_;
+  // Pointer-keyed resident and pending metadata is anchored by the immutable
+  // artifact shared_ptr in each value. Their order lists borrow the same key.
   mutable ArtifactMap artifacts_;
-  mutable std::list<JitArtifactKey> lru_;
-  mutable std::list<JitArtifactKey>::iterator boot_lru_begin_;
+  mutable std::list<const JitArtifactKey *> lru_;
+  mutable std::list<const JitArtifactKey *>::iterator boot_lru_begin_;
   mutable PendingWritebackMap pending_writebacks_;
-  mutable std::list<JitArtifactKey> writeback_order_;
+  mutable std::list<const JitArtifactKey *> writeback_order_;
   mutable DiskReadFlightMap disk_read_flights_;
   mutable DiskArtifactMap disk_artifacts_;
-  mutable std::vector<JitArtifactKey> disk_order_;
+  // unordered_map rehash preserves element addresses; wholesale index swaps
+  // always install the matching pointer order while holding mutex_.
+  mutable std::vector<const JitArtifactKey *> disk_order_;
   JitArtifactLimits limits_;
   mutable std::size_t resident_bytes_{};
   mutable std::size_t pending_writeback_bytes_{};

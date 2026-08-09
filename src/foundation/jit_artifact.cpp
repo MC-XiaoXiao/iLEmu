@@ -372,6 +372,23 @@ struct SnapshotArtifactEntry {
   ContentIdentity checksum;
 };
 
+struct SnapshotArtifactWriteEntry {
+  const JitArtifactKey *key{};
+  std::uint64_t offset{};
+  std::uint64_t serialized_bytes{};
+  ContentIdentity checksum;
+};
+
+[[nodiscard]] const JitArtifactKey *snapshot_artifact_key(
+    const SnapshotArtifactEntry &entry) noexcept {
+  return &entry.key;
+}
+
+[[nodiscard]] const JitArtifactKey *snapshot_artifact_key(
+    const SnapshotArtifactWriteEntry &entry) noexcept {
+  return entry.key;
+}
+
 struct ArtifactIndexImage {
   ContentIdentity content_identity;
   ContentIdentity layout_identity;
@@ -528,9 +545,10 @@ struct CompactIndexLayout {
   return result;
 }
 
-[[nodiscard]] std::optional<std::vector<std::byte>> encode_compact_index(
+template <typename Entry>
+[[nodiscard]] std::optional<std::vector<std::byte>> encode_compact_index_impl(
     const CompactIndexLayout &layout,
-    std::span<const SnapshotArtifactEntry> entries) {
+    std::span<const Entry> entries) {
   const auto serialized_bytes = layout.serialized_bytes();
   if (!serialized_bytes || entries.size() != layout.references.size()) {
     return std::nullopt;
@@ -566,13 +584,14 @@ struct CompactIndexLayout {
   for (std::size_t index = 0; index < entries.size(); ++index) {
     const auto &reference = layout.references[index];
     const auto &entry = entries[index];
-    if (reference.image >= layout.images.size() ||
+    const auto *key = snapshot_artifact_key(entry);
+    if (key == nullptr || reference.image >= layout.images.size() ||
         reference.profile >= layout.profiles.size() ||
-        index_image_for(entry.key) != layout.images[reference.image] ||
-        index_profile_for(entry.key) != layout.profiles[reference.profile] ||
-        entry.key.guest_pc != reference.guest_pc ||
-        entry.key.thumb != reference.thumb ||
-        entry.key.location_descriptor != reference.location_descriptor) {
+        index_image_for(*key) != layout.images[reference.image] ||
+        index_profile_for(*key) != layout.profiles[reference.profile] ||
+        key->guest_pc != reference.guest_pc ||
+        key->thumb != reference.thumb ||
+        key->location_descriptor != reference.location_descriptor) {
       return std::nullopt;
     }
     append_u32(result, reference.image);
@@ -587,6 +606,18 @@ struct CompactIndexLayout {
   }
   if (result.size() != *serialized_bytes) return std::nullopt;
   return result;
+}
+
+[[nodiscard]] std::optional<std::vector<std::byte>> encode_compact_index(
+    const CompactIndexLayout &layout,
+    std::span<const SnapshotArtifactEntry> entries) {
+  return encode_compact_index_impl(layout, entries);
+}
+
+[[nodiscard]] std::optional<std::vector<std::byte>> encode_compact_index(
+    const CompactIndexLayout &layout,
+    std::span<const SnapshotArtifactWriteEntry> entries) {
+  return encode_compact_index_impl(layout, entries);
 }
 
 [[nodiscard]] std::optional<std::vector<std::byte>>
@@ -1854,7 +1885,7 @@ void JitArtifactStore::evict_until_fit_locked(
                                        required_bytes) &&
          !lru_.empty()) {
     const auto victim = lru_.begin();
-    const auto key = *victim;
+    const auto *key = *victim;
     if (victim == boot_lru_begin_) {
       boot_lru_begin_ = std::next(victim);
     }
@@ -1872,7 +1903,8 @@ void JitArtifactStore::insert_locked(
     std::shared_ptr<const BlockArtifact> artifact,
     std::size_t serialized_bytes, bool loaded_from_disk,
     JitArtifactRetention retention) const {
-  const auto key = artifact->key;
+  const auto &key = artifact->key;
+  const auto *key_pointer = &key;
   if (const auto existing = artifacts_.find(key); existing != artifacts_.end()) {
     if (retention == JitArtifactRetention::BootWorkingSet) {
       promote_resident_retention_locked(existing);
@@ -1899,16 +1931,16 @@ void JitArtifactStore::insert_locked(
       (disk != disk_artifacts_.end() && disk->second.boot_working_set);
   const bool had_boot_records = boot_lru_begin_ != lru_.end();
   const auto lru_position =
-      boot_working_set ? lru_.insert(lru_.end(), key)
-                       : lru_.insert(boot_lru_begin_, key);
+      boot_working_set ? lru_.insert(lru_.end(), key_pointer)
+                       : lru_.insert(boot_lru_begin_, key_pointer);
   if (boot_working_set && !had_boot_records) {
     boot_lru_begin_ = lru_position;
   }
   const auto [iterator, inserted] = artifacts_.try_emplace(
-      key, ArtifactRecord{std::move(artifact), serialized_bytes,
-                          lru_position, loaded_from_disk,
-                          next_benefit_generation_locked(),
-                          boot_working_set});
+      key_pointer,
+      ArtifactRecord{std::move(artifact), serialized_bytes, lru_position,
+                     loaded_from_disk, next_benefit_generation_locked(),
+                     boot_working_set});
   if (!inserted) {
     if (boot_lru_begin_ == lru_position) {
       boot_lru_begin_ = std::next(lru_position);
@@ -1937,10 +1969,10 @@ bool JitArtifactStore::enqueue_writeback_locked(
     ++stats_.writeback_dropped;
     return false;
   }
-  writeback_order_.push_back(artifact->key);
+  writeback_order_.push_back(&artifact->key);
   const auto queue_position = std::prev(writeback_order_.end());
   const auto [iterator, inserted] = pending_writebacks_.try_emplace(
-      artifact->key,
+      &artifact->key,
       PendingWriteback{artifact, serialized_bytes, queue_position,
                        next_benefit_generation_locked(),
                        retention == JitArtifactRetention::BootWorkingSet});
@@ -1995,7 +2027,7 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
     }
     auto artifact = std::make_shared<const BlockArtifact>(
         BlockArtifact{std::move(key), std::move(data)});
-    const auto lookup_key = artifact->key;
+    const auto &lookup_key = artifact->key;
     // The queue owns the immutable artifact before insert_locked can evict a
     // resident entry to make room for it.
     const auto requires_writeback =
@@ -2025,12 +2057,12 @@ std::size_t JitArtifactStore::size() const {
   const std::lock_guard lock{mutex_};
   std::size_t result = disk_artifacts_.size();
   for (const auto &artifact : artifacts_) {
-    if (disk_artifacts_.find(artifact.first) == disk_artifacts_.end()) {
+    if (disk_artifacts_.find(*artifact.first) == disk_artifacts_.end()) {
       ++result;
     }
   }
   for (const auto &pending : pending_writebacks_) {
-    if (disk_artifacts_.find(pending.first) == disk_artifacts_.end() &&
+    if (disk_artifacts_.find(*pending.first) == disk_artifacts_.end() &&
         artifacts_.find(pending.first) == artifacts_.end()) {
       ++result;
     }
@@ -2052,12 +2084,12 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
       }
     }
     for (const auto &[key, record] : artifacts_) {
-      if (record.boot_working_set && !disk_artifacts_.contains(key)) {
+      if (record.boot_working_set && !disk_artifacts_.contains(*key)) {
         ++result.boot_working_set_artifacts;
       }
     }
     for (const auto &[key, record] : pending_writebacks_) {
-      if (record.boot_working_set && !disk_artifacts_.contains(key) &&
+      if (record.boot_working_set && !disk_artifacts_.contains(*key) &&
           !artifacts_.contains(key)) {
         ++result.boot_working_set_artifacts;
       }
@@ -2098,8 +2130,8 @@ void JitArtifactStore::cancel_writeback() noexcept {
     writeback_disabled_ = true;
     ++stats_.writeback_cancellations;
     stats_.writeback_dropped += pending_writebacks_.size();
-    pending_writebacks_.clear();
     writeback_order_.clear();
+    pending_writebacks_.clear();
     pending_writeback_bytes_ = 0;
   }
   writeback_condition_.notify_all();
@@ -2127,10 +2159,10 @@ void JitArtifactStore::writeback_loop() {
           key = writeback_order_.erase(key);
           continue;
         }
-        if (disk_artifacts_.contains(*key)) {
-          const auto persisted_key = *key;
+        if (disk_artifacts_.contains(**key)) {
+          const auto *persisted_key = *key;
           ++key;
-          retire_writeback_locked(persisted_key);
+          retire_writeback_locked(*persisted_key);
           continue;
         }
         std::size_t batch_bytes = 0;
@@ -2138,7 +2170,7 @@ void JitArtifactStore::writeback_loop() {
              ++candidate) {
           const auto entry = pending_writebacks_.find(*candidate);
           if (entry == pending_writebacks_.end() ||
-              disk_artifacts_.contains(*candidate)) {
+              disk_artifacts_.contains(**candidate)) {
             continue;
           }
           const auto bytes = entry->second.serialized_bytes;
@@ -2166,8 +2198,8 @@ void JitArtifactStore::writeback_loop() {
       }
       ++stats_.writeback_failures;
       stats_.writeback_dropped += pending_writebacks_.size();
-      pending_writebacks_.clear();
       writeback_order_.clear();
+      pending_writebacks_.clear();
       pending_writeback_bytes_ = 0;
       writeback_disabled_ = true;
       continue;
@@ -2347,8 +2379,10 @@ bool JitArtifactStore::append_writeback_batch(
            resident->second.boot_working_set) ||
           (pending != pending_writebacks_.end() &&
            pending->second.boot_working_set);
-      disk_artifacts_[artifacts[index]->key] = records[index];
-      disk_order_.push_back(artifacts[index]->key);
+      const auto [disk, inserted] = disk_artifacts_.insert_or_assign(
+          artifacts[index]->key, records[index]);
+      static_cast<void>(inserted);
+      disk_order_.push_back(&disk->first);
     }
     return true;
   } catch (...) {
@@ -2444,7 +2478,7 @@ bool JitArtifactStore::load_coordinated(
   try {
     if (!limits_.persistence_enabled) return false;
     struct DiskEntry {
-      JitArtifactKey key;
+      const JitArtifactKey *key;
       DiskArtifactRecord record;
     };
 
@@ -2473,8 +2507,10 @@ bool JitArtifactStore::load_coordinated(
                                       entry.checksum,
                                       true,
                                       0U};
-      if (!loaded_index.emplace(entry.key, record).second) return false;
-      scanned.push_back(DiskEntry{entry.key, record});
+      const auto [indexed_entry, inserted] =
+          loaded_index.emplace(entry.key, record);
+      if (!inserted) return false;
+      scanned.push_back(DiskEntry{&indexed_entry->first, record});
     }
 
     const auto append_path = append_path_for(path);
@@ -2488,14 +2524,16 @@ bool JitArtifactStore::load_coordinated(
         const DiskArtifactRecord record{
             entry.offset, entry.serialized_bytes, true, entry.checksum,
             entry.checksum_valid, 0U};
-        loaded_index[entry.key] = record;
-        scanned.push_back(DiskEntry{entry.key, record});
+        const auto [indexed_entry, inserted] =
+            loaded_index.insert_or_assign(entry.key, record);
+        static_cast<void>(inserted);
+        scanned.push_back(DiskEntry{&indexed_entry->first, record});
       }
     }
     std::vector<DiskEntry> unique;
     unique.reserve(scanned.size());
     for (const auto &entry : scanned) {
-      const auto latest = loaded_index.find(entry.key);
+      const auto latest = loaded_index.find(*entry.key);
       if (latest != loaded_index.end() &&
           latest->second.offset == entry.record.offset &&
           latest->second.append_log == entry.record.append_log) {
@@ -2533,12 +2571,14 @@ bool JitArtifactStore::load_coordinated(
       const auto artifact = read_artifact_at(
           source_path, entry.record.offset, entry.record.serialized_bytes,
           entry.record.checksum_valid ? &entry.record.checksum : nullptr);
-      if (!artifact || (*artifact)->key != entry.key) return false;
+      if (!artifact || (*artifact)->key != *entry.key) return false;
       loaded.push_back(*artifact);
     }
-    std::vector<JitArtifactKey> loaded_order;
+    std::vector<const JitArtifactKey *> loaded_order;
     loaded_order.reserve(unique.size());
-    for (const auto &entry : unique) loaded_order.push_back(entry.key);
+    for (const auto &entry : unique) {
+      loaded_order.push_back(entry.key);
+    }
     std::filesystem::path loaded_source_path{path};
     std::filesystem::path loaded_append_path{append_path};
 
@@ -2573,8 +2613,8 @@ bool JitArtifactStore::load_coordinated(
           (pending != pending_writebacks_.end() &&
            pending->second.boot_working_set);
     }
-    for (const auto &key : loaded_order) {
-      const auto entry = loaded_index.find(key);
+    for (const auto *key : loaded_order) {
+      const auto entry = loaded_index.find(*key);
       if (entry != loaded_index.end() &&
           entry->second.benefit_generation == 0U) {
         entry->second.benefit_generation =
@@ -2636,7 +2676,7 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
 
     const auto append_path = append_path_for(path);
     auto journal = scan_artifact_journal(append_path);
-    std::vector<std::pair<JitArtifactKey,
+    std::vector<std::pair<const JitArtifactKey *,
                           std::shared_ptr<const BlockArtifact>>>
         new_artifacts;
     {
@@ -2677,8 +2717,10 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
             record.generation = next_disk_generation_locked();
             record.benefit_generation =
                 next_benefit_generation_locked();
-            disk_artifacts_[entry.key] = record;
-            disk_order_.push_back(entry.key);
+            const auto [disk, inserted] =
+                disk_artifacts_.insert_or_assign(entry.key, record);
+            static_cast<void>(inserted);
+            disk_order_.push_back(&disk->first);
           }
         }
         disk_append_path_ = append_path;
@@ -2688,34 +2730,38 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
 
       for (auto pending = writeback_order_.begin();
            pending != writeback_order_.end();) {
-        if (!disk_artifacts_.contains(*pending)) {
+        if (!disk_artifacts_.contains(**pending)) {
           ++pending;
           continue;
         }
-        const auto persisted_key = *pending;
+        const auto *persisted_key = *pending;
         ++pending;
-        retire_writeback_locked(persisted_key);
+        retire_writeback_locked(*persisted_key);
       }
 
       new_artifacts.reserve(artifacts_.size() + pending_writebacks_.size());
-      std::unordered_set<JitArtifactKey, JitArtifactKeyHash> considered;
+      std::unordered_set<const JitArtifactKey *, JitArtifactKeyPointerHash,
+                         JitArtifactKeyPointerEqual>
+          considered;
       considered.reserve(artifacts_.size() + pending_writebacks_.size());
-      const auto consider = [&](const JitArtifactKey &key) {
+      const auto consider = [&](const JitArtifactKey *key) {
         if (!considered.insert(key).second) return;
-        if (disk_artifacts_.find(key) != disk_artifacts_.end()) return;
-        const auto resident = artifacts_.find(key);
+        if (disk_artifacts_.find(*key) != disk_artifacts_.end()) return;
+        const auto resident = artifacts_.find(*key);
         if (resident != artifacts_.end()) {
-          new_artifacts.emplace_back(key, resident->second.artifact);
+          new_artifacts.emplace_back(
+              &resident->second.artifact->key, resident->second.artifact);
           return;
         }
-        const auto pending = pending_writebacks_.find(key);
+        const auto pending = pending_writebacks_.find(*key);
         if (pending != pending_writebacks_.end()) {
-          new_artifacts.emplace_back(key, pending->second.artifact);
+          new_artifacts.emplace_back(
+              &pending->second.artifact->key, pending->second.artifact);
         }
       };
-      for (const auto &key : lru_) consider(key);
+      for (const auto *key : lru_) consider(key);
       for (const auto &entry : artifacts_) consider(entry.first);
-      for (const auto &key : writeback_order_) consider(key);
+      for (const auto *key : writeback_order_) consider(key);
       for (const auto &entry : pending_writebacks_) consider(entry.first);
       if (new_artifacts.size() > maximum_artifacts ||
           disk_artifacts_.size() >
@@ -2796,7 +2842,7 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
     output_records.reserve(new_artifacts.size());
     for (std::size_t index = 0; index < new_artifacts.size(); ++index) {
       const auto &entry = written->entries[index];
-      if (entry.key != new_artifacts[index].first) {
+      if (entry.key != *new_artifacts[index].first) {
         return AppendResult::Failed;
       }
       output_records.push_back(DiskArtifactRecord{
@@ -2811,7 +2857,7 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
       }
       disk_append_path_ = append_path;
       for (std::size_t index = 0; index < new_artifacts.size(); ++index) {
-        const auto &key = new_artifacts[index].first;
+        const auto &key = *new_artifacts[index].first;
         output_records[index].generation = next_disk_generation_locked();
         output_records[index].benefit_generation =
             next_benefit_generation_locked();
@@ -2824,8 +2870,10 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
              resident->second.boot_working_set) ||
             (pending != pending_writebacks_.end() &&
              pending->second.boot_working_set);
-        disk_artifacts_[key] = output_records[index];
-        disk_order_.push_back(key);
+        const auto [disk, inserted] =
+            disk_artifacts_.insert_or_assign(key, output_records[index]);
+        static_cast<void>(inserted);
+        disk_order_.push_back(&disk->first);
         retire_writeback_locked(key);
       }
       disk_append_valid_bytes_ = journal_end;
@@ -2883,7 +2931,7 @@ bool JitArtifactStore::save_full(
   try {
     if (path.empty()) return false;
     struct SaveEntry {
-      JitArtifactKey key;
+      const JitArtifactKey *key;
       std::shared_ptr<const BlockArtifact> artifact;
       DiskArtifactRecord disk_record;
       bool resident{};
@@ -2897,13 +2945,16 @@ bool JitArtifactStore::save_full(
       const std::lock_guard lock{mutex_};
       entries.reserve(disk_artifacts_.size() + artifacts_.size() +
                       pending_writebacks_.size());
-      std::unordered_set<JitArtifactKey, JitArtifactKeyHash> emitted;
+      std::unordered_set<const JitArtifactKey *, JitArtifactKeyPointerHash,
+                         JitArtifactKeyPointerEqual>
+          emitted;
       emitted.reserve(disk_artifacts_.size() + artifacts_.size() +
                       pending_writebacks_.size());
       const auto append_disk_entry = [&entries, &emitted, this](
                                          const JitArtifactKey &key) {
         const auto disk = disk_artifacts_.find(key);
-        if (disk == disk_artifacts_.end() || !emitted.insert(key).second) {
+        if (disk == disk_artifacts_.end() ||
+            !emitted.insert(&disk->first).second) {
           return;
         }
         const auto resident = artifacts_.find(key);
@@ -2916,7 +2967,7 @@ bool JitArtifactStore::save_full(
               record.boot_working_set ||
               resident->second.boot_working_set;
           entries.push_back(SaveEntry{
-              key, resident->second.artifact, record, true,
+              &disk->first, resident->second.artifact, record, true,
               record.boot_working_set});
         } else if (const auto pending = pending_writebacks_.find(key);
                    pending != pending_writebacks_.end()) {
@@ -2928,20 +2979,20 @@ bool JitArtifactStore::save_full(
               record.boot_working_set ||
               pending->second.boot_working_set;
           entries.push_back(SaveEntry{
-              key, pending->second.artifact, record, true,
+              &disk->first, pending->second.artifact, record, true,
               record.boot_working_set});
         } else {
-          entries.push_back(SaveEntry{key, {}, disk->second, false,
+          entries.push_back(SaveEntry{&disk->first, {}, disk->second, false,
                                       disk->second.boot_working_set});
         }
       };
-      for (const auto &key : disk_order_) append_disk_entry(key);
+      for (const auto *key : disk_order_) append_disk_entry(*key);
       for (const auto &entry : disk_artifacts_) {
         append_disk_entry(entry.first);
       }
       const auto append_resident_entry = [&entries, &emitted, this](
                                              const JitArtifactKey &key) {
-        if (!emitted.insert(key).second) return;
+        if (!emitted.insert(&key).second) return;
         const auto resident = artifacts_.find(key);
         if (resident != artifacts_.end()) {
           DiskArtifactRecord record;
@@ -2950,7 +3001,8 @@ bool JitArtifactStore::save_full(
           record.boot_working_set =
               resident->second.boot_working_set;
           entries.push_back(SaveEntry{
-              key, resident->second.artifact, record, true,
+              &resident->second.artifact->key, resident->second.artifact,
+              record, true,
               record.boot_working_set});
           return;
         }
@@ -2962,15 +3014,20 @@ bool JitArtifactStore::save_full(
           record.boot_working_set =
               pending->second.boot_working_set;
           entries.push_back(SaveEntry{
-              key, pending->second.artifact, record, true,
+              &pending->second.artifact->key, pending->second.artifact,
+              record, true,
               record.boot_working_set});
         }
       };
-      for (const auto &key : lru_) append_resident_entry(key);
-      for (const auto &entry : artifacts_) append_resident_entry(entry.first);
-      for (const auto &key : writeback_order_) append_resident_entry(key);
+      for (const auto *key : lru_) append_resident_entry(*key);
+      for (const auto &entry : artifacts_) {
+        append_resident_entry(*entry.first);
+      }
+      for (const auto *key : writeback_order_) {
+        append_resident_entry(*key);
+      }
       for (const auto &entry : pending_writebacks_) {
-        append_resident_entry(entry.first);
+        append_resident_entry(*entry.first);
       }
       for (auto &entry : entries) {
         if (entry.disk_record.benefit_generation == 0U) {
@@ -3016,10 +3073,14 @@ bool JitArtifactStore::save_full(
         artifact_footer_bytes;
     if (configured_limit < fixed_snapshot_bytes) return false;
 
-    std::vector<JitArtifactKey> quota_evicted_keys;
+    struct QuotaEvictedKey {
+      const JitArtifactKey *key{};
+      std::shared_ptr<const BlockArtifact> owner;
+    };
+    std::vector<QuotaEvictedKey> quota_evicted_keys;
     std::vector<const JitArtifactKey *> index_keys;
     index_keys.reserve(entries.size());
-    for (const auto &entry : entries) index_keys.push_back(&entry.key);
+    for (const auto &entry : entries) index_keys.push_back(entry.key);
     auto index_layout = build_compact_index_layout(index_keys);
     if (!index_layout) return false;
     auto compact_index_size = index_layout->serialized_bytes();
@@ -3080,8 +3141,8 @@ bool JitArtifactStore::save_full(
       std::vector<bool> selected(entries.size());
       std::uint64_t selected_bytes = fixed_snapshot_bytes;
       for (const auto index : candidates) {
-        const auto image = index_image_for(entries[index].key);
-        const auto profile = index_profile_for(entries[index].key);
+        const auto image = index_image_for(*entries[index].key);
+        const auto profile = index_profile_for(*entries[index].key);
         const bool new_image = !selected_images.contains(image);
         const bool new_profile = !selected_profiles.contains(profile);
         std::uint64_t additional =
@@ -3102,7 +3163,8 @@ bool JitArtifactStore::save_full(
         if (selected[index]) {
           retained_indices.push_back(index);
         } else {
-          quota_evicted_keys.push_back(entries[index].key);
+          quota_evicted_keys.push_back(
+              QuotaEvictedKey{entries[index].key, entries[index].artifact});
         }
       }
       std::stable_sort(
@@ -3130,7 +3192,7 @@ bool JitArtifactStore::save_full(
 
       index_keys.clear();
       index_keys.reserve(entries.size());
-      for (const auto &entry : entries) index_keys.push_back(&entry.key);
+      for (const auto &entry : entries) index_keys.push_back(entry.key);
       index_layout = build_compact_index_layout(index_keys);
       if (!index_layout) return false;
       compact_index_size = index_layout->serialized_bytes();
@@ -3261,10 +3323,10 @@ bool JitArtifactStore::save_full(
       }
 
       const auto index_offset = output_offset;
-      std::vector<SnapshotArtifactEntry> indexed_entries;
+      std::vector<SnapshotArtifactWriteEntry> indexed_entries;
       indexed_entries.reserve(entries.size());
       for (std::size_t index = 0; index < entries.size(); ++index) {
-        indexed_entries.push_back(SnapshotArtifactEntry{
+        indexed_entries.push_back(SnapshotArtifactWriteEntry{
             entries[index].key, output_records[index].offset,
             output_records[index].serialized_bytes,
             output_records[index].checksum});
@@ -3307,13 +3369,13 @@ bool JitArtifactStore::save_full(
 
       DiskArtifactMap output_index;
       output_index.reserve(entries.size());
-      std::vector<JitArtifactKey> output_order;
+      std::vector<const JitArtifactKey *> output_order;
       output_order.reserve(entries.size());
       for (std::size_t index = 0; index < entries.size(); ++index) {
         const auto [iterator, inserted] = output_index.emplace(
-            entries[index].key, output_records[index]);
-        if (!inserted || iterator->first != entries[index].key) return false;
-        output_order.push_back(entries[index].key);
+            *entries[index].key, output_records[index]);
+        if (!inserted || iterator->first != *entries[index].key) return false;
+        output_order.push_back(&iterator->first);
       }
 
       const std::lock_guard lock{mutex_};
@@ -3344,18 +3406,20 @@ bool JitArtifactStore::save_full(
              pending->second.boot_working_set);
         entry.second.generation = next_disk_generation_locked();
       }
+      // Disk-backed SaveEntry pointers still refer to the old index. Retire
+      // pending owners before replacing that index, while every key is valid.
+      for (const auto &entry : entries) {
+        retire_writeback_locked(*entry.key);
+      }
+      for (const auto &entry : quota_evicted_keys) {
+        retire_writeback_locked(*entry.key);
+      }
       disk_artifacts_ = std::move(output_index);
       disk_order_ = std::move(output_order);
       disk_source_path_ = std::move(new_source_path);
       disk_append_path_ = append_path_for(path);
       disk_append_valid_bytes_ = 0;
       disk_append_indexed_ = true;
-      for (const auto &entry : entries) {
-        retire_writeback_locked(entry.key);
-      }
-      for (const auto &key : quota_evicted_keys) {
-        retire_writeback_locked(key);
-      }
       stats_.quota_evictions += quota_evicted_keys.size();
       std::error_code sidecar_error;
       std::filesystem::remove(disk_append_path_, sidecar_error);

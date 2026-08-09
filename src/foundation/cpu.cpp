@@ -996,7 +996,7 @@ public:
                 const auto probe = key ? artifact_probes_.find(*entry)
                                        : artifact_probes_.end();
                 if (key && probe != artifact_probes_.end() &&
-                    probe->second.key == *key) {
+                    probe->second.matches(*key)) {
                     ++compiled;
                     continue;
                 }
@@ -1013,7 +1013,9 @@ public:
                                 .count()));
                 }
                 if (key) {
-                    artifact_probes_[*entry] = ArtifactProbe{*key, imported};
+                    artifact_probes_[*entry] = ArtifactProbe{
+                        key->content_identity, key->layout_identity,
+                        imported};
                 }
                 ++compiled;
             }
@@ -1069,8 +1071,14 @@ public:
 
 private:
     struct ArtifactProbe {
-        JitArtifactKey key;
+        ContentIdentity content_identity;
+        ContentIdentity layout_identity;
         bool imported{};
+
+        [[nodiscard]] bool matches(const JitArtifactKey& key) const noexcept {
+            return content_identity == key.content_identity &&
+                   layout_identity == key.layout_identity;
+        }
     };
 
     void preload_current_artifact() {
@@ -1085,7 +1093,10 @@ private:
         const auto key = callbacks_->artifact_key(location);
         if (!key) return;
         const auto imported = callbacks_->import_artifact(*jit_, location);
-        artifact_probes_.emplace(location, ArtifactProbe{*key, imported});
+        artifact_probes_.emplace(
+            location,
+            ArtifactProbe{key->content_identity, key->layout_identity,
+                          imported});
     }
 
     [[nodiscard]] static constexpr Dynarmic::HaltReason all_halt_reasons() {
