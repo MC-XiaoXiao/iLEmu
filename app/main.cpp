@@ -284,7 +284,10 @@ private:
       // exception instead of a bounded cache admission.
       8U * 1024U * 1024U;
   static constexpr std::size_t emergency_budget_bytes =
-      192U * 1024U * 1024U;
+      // Keep enough bounded minimum-cache admissions for SpringBoard's
+      // service fan-out and one foreground application without increasing
+      // the global 640 MiB reservation ceiling.
+      256U * 1024U * 1024U;
 
   friend class JitCodeCacheReservation;
 
