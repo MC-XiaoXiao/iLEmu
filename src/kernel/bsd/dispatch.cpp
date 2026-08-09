@@ -221,6 +221,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case darwin::syscall::change_flags_fd:
   case darwin::syscall::change_owner_fd:
   case darwin::syscall::change_mode_fd:
+  case darwin::syscall::change_mode_extended_fd:
   case darwin::syscall::flock:
   case darwin::syscall::synchronize_file:
   case 36:
@@ -231,6 +232,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case 136:
   case 137:
   case darwin::syscall::update_file_times:
+  case darwin::syscall::update_file_times_fd:
   case 153:
   case 154:
   case 157:

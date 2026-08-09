@@ -6,6 +6,7 @@
 #include <bit>
 #include <cerrno>
 #include <cstdint>
+#include <filesystem>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -62,14 +63,21 @@ timeval host_timeval(const hfs::Timestamp &timestamp) {
 
 bool CompatibilityKernel::dispatch_bsd_filesystem_timestamps(
     Cpu &cpu, std::uint32_t number) {
-  if (number != darwin::syscall::update_file_times)
+  if (number != darwin::syscall::update_file_times &&
+      number != darwin::syscall::update_file_times_fd)
     return false;
 
   const auto &registers = cpu.registers();
-  const auto path = memory_.read_c_string(registers[0]);
-  if (!path) {
-    bsd_error(cpu, bsd_support::bad_address);
-    return true;
+  std::filesystem::path host;
+  std::string target;
+  if (number == darwin::syscall::update_file_times) {
+    const auto path = memory_.read_c_string(registers[0]);
+    if (!path) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return true;
+    }
+    host = resolve_guest_path(*path);
+    target = *path;
   }
 
   hfs::Timestamp access_time;
@@ -89,7 +97,20 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_timestamps(
     modification_time = *modification.value;
   }
 
-  const auto host = resolve_guest_path(*path);
+  if (number == darwin::syscall::update_file_times_fd) {
+    auto fd = registers[0];
+    if (const auto duplicate = duplicated_descriptors_.find(fd);
+        duplicate != duplicated_descriptors_.end()) {
+      fd = duplicate->second;
+    }
+    const auto descriptor = file_descriptors_.find(fd);
+    if (descriptor == file_descriptors_.end()) {
+      bsd_error(cpu, bsd_support::bad_file_descriptor);
+      return true;
+    }
+    host = descriptor->second;
+    target = "fd=" + std::to_string(fd);
+  }
   const auto metadata = query_hfs_metadata(host, true);
   if (!metadata) {
     bsd_error(cpu, darwin::error::no_entry);
@@ -117,9 +138,12 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_timestamps(
     override.change_time = change_time;
   }
 
-  output_.write("[vfs] utimes " + *path +
-                " mtime=" + std::to_string(modification_time.seconds) + "." +
-                std::to_string(modification_time.nanoseconds) + "\n");
+  output_.write("[vfs] " +
+                std::string{number == darwin::syscall::update_file_times
+                                ? "utimes "
+                                : "futimes "} +
+                target + " mtime=" + std::to_string(modification_time.seconds) +
+                "." + std::to_string(modification_time.nanoseconds) + "\n");
   bsd_success(cpu, 0);
   return true;
 }

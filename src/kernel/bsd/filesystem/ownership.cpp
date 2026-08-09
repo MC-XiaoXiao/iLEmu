@@ -116,6 +116,73 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
     bsd_success(cpu, 0);
     return true;
   }
+  case darwin::syscall::change_mode_extended_fd: {
+    auto fd = registers[0];
+    if (const auto duplicate = duplicated_descriptors_.find(fd);
+        duplicate != duplicated_descriptors_.end()) {
+      fd = duplicate->second;
+    }
+    const auto descriptor = file_descriptors_.find(fd);
+    if (descriptor == file_descriptors_.end()) {
+      bsd_error(cpu, bsd_support::bad_file_descriptor);
+      return true;
+    }
+    const auto metadata = query_hfs_metadata(descriptor->second, true);
+    if (!metadata) {
+      bsd_error(cpu, darwin::error::no_entry);
+      return true;
+    }
+
+    const auto requested_owner = registers[1];
+    const auto requested_group = registers[2];
+    const auto requested_mode = registers[3];
+    const auto extended_security = registers[4];
+    // XNU 792 and 1228 use NULL to remove the ACL and -1 to leave it
+    // unchanged. ACLs are not exposed by the current HFS metadata projection,
+    // so both operations are representable as no-ops. Refuse a real filesec
+    // payload instead of reporting a silently incomplete mutation.
+    if (extended_security != 0 && extended_security != unchanged_identity) {
+      bsd_error(cpu, darwin::error::operation_not_supported);
+      return true;
+    }
+
+    if (process_.effective_uid != 0) {
+      const bool owns_vnode = process_.effective_uid == metadata->owner;
+      const bool owner_unchanged = requested_owner == unchanged_identity ||
+                                   requested_owner == metadata->owner;
+      const bool group_allowed = requested_group == unchanged_identity ||
+                                 requested_group == metadata->group ||
+                                 requested_group == process_.effective_gid;
+      const bool mode_allowed =
+          requested_mode == unchanged_identity || owns_vnode;
+      if (!owns_vnode || !owner_unchanged || !group_allowed || !mode_allowed) {
+        bsd_error(cpu, darwin::error::operation_not_permitted);
+        return true;
+      }
+    }
+
+    {
+      const std::lock_guard filesystem_lock{shared_state_->filesystem_mutex};
+      auto &metadata_override =
+          shared_state_->hfs_metadata_overrides[metadata->permanent_id];
+      if (requested_mode != unchanged_identity) {
+        metadata_override.mode = (metadata->mode & ~permission_bits) |
+                                 (requested_mode & permission_bits);
+      }
+      if (requested_owner != unchanged_identity)
+        metadata_override.owner = requested_owner;
+      if (requested_group != unchanged_identity)
+        metadata_override.group = requested_group;
+      metadata_override.change_time =
+          bsd_support::guest_filesystem_timestamp(shared_state_->clock);
+    }
+    output_.write("[vfs] fchmod_extended fd=" + std::to_string(fd) +
+                  " uid=" + std::to_string(requested_owner) +
+                  " gid=" + std::to_string(requested_group) + " mode=" +
+                  std::to_string(requested_mode & permission_bits) + "\n");
+    bsd_success(cpu, 0);
+    return true;
+  }
   case darwin::syscall::change_owner: {
     const auto path = memory_.read_c_string(registers[0]);
     if (!path) {
