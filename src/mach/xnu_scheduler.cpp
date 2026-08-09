@@ -82,6 +82,24 @@ std::size_t XnuScheduler::remove_process(std::uint32_t process) {
     return process_threads.size();
 }
 
+std::size_t XnuScheduler::process_runnable_count(
+    std::uint32_t process) const {
+    const auto process_iterator = process_threads_.find(process);
+    if (process_iterator == process_threads_.end()) return 0;
+
+    std::size_t count = 0;
+    for (const auto thread : process_iterator->second) {
+        const auto thread_iterator = threads_.find(thread);
+        if (thread_iterator == threads_.end()) continue;
+        const auto state = thread_iterator->second.info.state;
+        if (state == XnuThreadState::Runnable ||
+            state == XnuThreadState::Running) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 bool XnuScheduler::make_runnable(XnuThreadId thread) {
     const auto iterator = threads_.find(thread);
     if (iterator == threads_.end()) return false;

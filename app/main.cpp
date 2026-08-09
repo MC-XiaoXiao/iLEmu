@@ -2586,7 +2586,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
               reclaim_now + execution_reclaim_grace;
         }
         if (reclaim_now < *runtime->execution_reclaim_after ||
-            scheduler.runnable_count() != 0) {
+            scheduler.process_runnable_count(
+                runtime->kernel->process().pid) != 0) {
           continue;
         }
         if (!precompile_finished(*runtime)) continue;

@@ -182,6 +182,11 @@ public:
         return processor_run_queues_.size();
     }
     [[nodiscard]] std::size_t runnable_count() const { return runnable_count_; }
+    // Process exit can retire a task's host execution pool while unrelated
+    // Guest processes remain runnable. Count only this process's Runnable or
+    // Running threads so reclamation never depends on global queue activity.
+    [[nodiscard]] std::size_t process_runnable_count(
+        std::uint32_t process) const;
     [[nodiscard]] std::size_t waiting_count() const;
     [[nodiscard]] std::int32_t highest_runnable_priority() const;
     [[nodiscard]] std::uint64_t scheduler_tick() const { return scheduler_tick_; }
