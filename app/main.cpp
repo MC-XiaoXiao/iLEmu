@@ -3395,6 +3395,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         "[perf-artifact] lookup=" + std::to_string(artifact_stats.lookups) +
         " memory-hit=" + std::to_string(artifact_stats.memory_hits) +
         " disk-hit=" + std::to_string(artifact_stats.disk_hits) +
+        " disk-retry=" +
+        std::to_string(artifact_stats.disk_read_retries) +
         " miss=" + std::to_string(artifact_stats.misses) +
         " publish=" + std::to_string(artifact_stats.publish_calls) +
         " dedup=" +

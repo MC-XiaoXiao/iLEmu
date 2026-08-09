@@ -650,7 +650,8 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
     const JitArtifactKey &key) const {
   const auto record_matches = [](const DiskArtifactRecord &left,
                                  const DiskArtifactRecord &right) {
-    return left.offset == right.offset &&
+    return left.generation == right.generation &&
+           left.offset == right.offset &&
            left.serialized_bytes == right.serialized_bytes &&
            left.append_log == right.append_log;
   };
@@ -720,7 +721,10 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
     if (current == disk_artifacts_.end() ||
         !record_matches(current->second, record) ||
         current_path != source_path) {
-      if (attempt + 1U < maximum_record_attempts) continue;
+      if (attempt + 1U < maximum_record_attempts) {
+        ++stats_.disk_read_retries;
+        continue;
+      }
       ++stats_.misses;
       return nullptr;
     }
@@ -746,6 +750,10 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
 void JitArtifactStore::touch_locked(ArtifactMap::iterator iterator) const {
   lru_.splice(lru_.end(), lru_, iterator->second.lru_position);
   iterator->second.lru_position = std::prev(lru_.end());
+}
+
+std::uint64_t JitArtifactStore::next_disk_generation_locked() const noexcept {
+  return ++disk_index_generation_;
 }
 
 void JitArtifactStore::evict_until_fit_locked(
@@ -1203,6 +1211,7 @@ bool JitArtifactStore::append_writeback_batch(
     disk_append_path_ = append_path;
     disk_append_valid_bytes_ = journal_end;
     for (std::size_t index = 0; index < artifacts.size(); ++index) {
+      records[index].generation = next_disk_generation_locked();
       disk_artifacts_[artifacts[index]->key] = records[index];
       disk_order_.push_back(artifacts[index]->key);
     }
@@ -1390,6 +1399,9 @@ bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
     std::filesystem::path loaded_append_path{append_path};
 
     const std::lock_guard lock{mutex_};
+    for (auto &entry : loaded_index) {
+      entry.second.generation = next_disk_generation_locked();
+    }
     disk_artifacts_ = std::move(loaded_index);
     disk_order_ = std::move(loaded_order);
     disk_source_path_ = std::move(loaded_source_path);
@@ -1434,16 +1446,18 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
     auto journal = scan_artifact_journal(append_path);
     if (journal.header_valid) {
       for (const auto &entry : journal.entries) {
-        const DiskArtifactRecord record{entry.offset, entry.serialized_bytes,
-                                        true};
+        DiskArtifactRecord record{entry.offset, entry.serialized_bytes, true};
         const auto existing = disk_artifacts_.find(entry.key);
         const bool changed =
             existing == disk_artifacts_.end() ||
             existing->second.offset != record.offset ||
             existing->second.serialized_bytes != record.serialized_bytes ||
             existing->second.append_log != record.append_log;
-        disk_artifacts_[entry.key] = record;
-        if (changed) disk_order_.push_back(entry.key);
+        if (changed) {
+          record.generation = next_disk_generation_locked();
+          disk_artifacts_[entry.key] = record;
+          disk_order_.push_back(entry.key);
+        }
       }
       disk_append_path_ = append_path;
       disk_append_valid_bytes_ = journal.valid_bytes;
@@ -1607,6 +1621,7 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
 
     for (std::size_t index = 0; index < new_artifacts.size(); ++index) {
       const auto &key = new_artifacts[index].first;
+      output_records[index].generation = next_disk_generation_locked();
       disk_artifacts_[key] = output_records[index];
       disk_order_.push_back(key);
       retire_writeback_locked(key);
@@ -1827,6 +1842,9 @@ bool JitArtifactStore::save_full(
         error.clear();
         std::filesystem::remove(temporary, error);
         return false;
+      }
+      for (auto &entry : output_index) {
+        entry.second.generation = next_disk_generation_locked();
       }
       disk_artifacts_ = std::move(output_index);
       disk_order_ = std::move(output_order);

@@ -115,6 +115,7 @@ struct JitArtifactStoreStats {
   std::uint64_t lookups{};
   std::uint64_t memory_hits{};
   std::uint64_t disk_hits{};
+  std::uint64_t disk_read_retries{};
   std::uint64_t misses{};
   std::uint64_t publish_calls{};
   std::uint64_t deduplicated_publishes{};
@@ -170,6 +171,7 @@ private:
     std::uint64_t offset{};
     std::uint64_t serialized_bytes{};
     bool append_log{};
+    std::uint64_t generation{};
   };
   struct ArtifactRecord {
     std::shared_ptr<const BlockArtifact> artifact;
@@ -197,6 +199,7 @@ private:
   };
 
   void touch_locked(ArtifactMap::iterator iterator) const;
+  [[nodiscard]] std::uint64_t next_disk_generation_locked() const noexcept;
   void evict_until_fit_locked(std::size_t required_bytes) const;
   void insert_locked(std::shared_ptr<const BlockArtifact> artifact,
                      std::size_t serialized_bytes,
@@ -228,6 +231,7 @@ private:
   mutable std::filesystem::path disk_source_path_;
   mutable std::filesystem::path disk_append_path_;
   mutable std::uint64_t disk_append_valid_bytes_{};
+  mutable std::uint64_t disk_index_generation_{};
   mutable std::mutex persistence_mutex_;
   mutable std::condition_variable writeback_condition_;
   mutable bool writeback_stopping_{};
