@@ -274,14 +274,16 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     MachOImage image;
     image.path_ = path;
     image.file_generation_ = file_generation_from_stat(file_stat);
-    image.bytes_.resize(static_cast<std::size_t>(file_stat.st_size));
+    auto image_bytes = std::make_shared<std::vector<std::byte>>(
+        static_cast<std::size_t>(file_stat.st_size));
+    image.bytes_ = image_bytes;
     std::size_t received = 0;
-    while (received < image.bytes_.size()) {
-        const auto remaining = image.bytes_.size() - received;
+    while (received < image_bytes->size()) {
+        const auto remaining = image_bytes->size() - received;
         const auto requested = std::min<std::size_t>(remaining, 64U * 1024U);
         ssize_t count = -1;
         do {
-            count = ::pread(input.value, image.bytes_.data() + received,
+            count = ::pread(input.value, image_bytes->data() + received,
                             requested, static_cast<off_t>(received));
         } while (count < 0 && errno == EINTR);
         if (count <= 0) {
@@ -300,7 +302,7 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     // App bundles may carry a classic FAT container. Select the best slice for
     // the guest architecture instead of making each caller know how to unpack
     // it; ARMv7 remains compatible with an ARMv6 slice when no v7 slice exists.
-    const std::span<const std::byte> container{image.bytes_};
+    const std::span<const std::byte> container{*image_bytes};
     if (read_be_u32(container, 0U) == fat_magic) {
         image.fat_container_ = true;
         const auto architecture_count = read_be_u32(container, 4U);
@@ -348,13 +350,14 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
                 "FAT Mach-O has no compatible 32-bit ARM slice"};
         }
         const auto [slice_offset, slice_size] = *selected;
-        image.bytes_ = std::vector<std::byte>{
-            image.bytes_.begin() + static_cast<std::ptrdiff_t>(slice_offset),
-            image.bytes_.begin() +
-                static_cast<std::ptrdiff_t>(slice_offset + slice_size)};
+        image_bytes = std::make_shared<std::vector<std::byte>>(
+            image_bytes->begin() + static_cast<std::ptrdiff_t>(slice_offset),
+            image_bytes->begin() +
+                static_cast<std::ptrdiff_t>(slice_offset + slice_size));
+        image.bytes_ = image_bytes;
     }
 
-    const std::span<const std::byte> bytes{image.bytes_};
+    const std::span<const std::byte> bytes{*image_bytes};
     image.content_identity_ = known_identity ? *known_identity : sha256(bytes);
     if (bytes.size() < 28 || read_u32(bytes, 0) != mh_magic) {
         throw std::runtime_error{"expected a little-endian 32-bit Mach-O: " + path.string()};
@@ -581,7 +584,7 @@ std::optional<std::uint32_t> MachOImage::read_vm_u32(std::uint32_t address) cons
         }
         const auto offset = static_cast<std::size_t>(segment.file_offset) +
                             (address - segment.vm_address);
-        return read_u32(bytes_, offset);
+        return read_u32(*bytes_, offset);
     }
     return std::nullopt;
 }
@@ -594,7 +597,7 @@ std::optional<std::uint16_t> MachOImage::read_vm_u16(std::uint32_t address) cons
         }
         const auto offset = static_cast<std::size_t>(segment.file_offset) +
                             (address - segment.vm_address);
-        const std::span<const std::byte> bytes{bytes_};
+        const std::span<const std::byte> bytes{*bytes_};
         return static_cast<std::uint16_t>(
             std::to_integer<std::uint16_t>(bytes[offset]) |
             (std::to_integer<std::uint16_t>(bytes[offset + 1]) << 8U));
@@ -660,7 +663,7 @@ std::optional<std::uint32_t> MachOImage::find_objc_method(
             const auto name = read_vm_u32(entry);
             const auto implementation = read_vm_u32(entry + 8U);
             if (!name || !implementation) return std::nullopt;
-            const auto candidate = vm_c_string(bytes_, segments_, *name);
+            const auto candidate = vm_c_string(*bytes_, segments_, *name);
             if (candidate && *candidate == selector &&
                 executable(*implementation)) {
                 return implementation;
@@ -712,7 +715,7 @@ std::optional<std::uint32_t> MachOImage::find_objc_method(
                     read_vm_u32(class_ro + objc2_class_ro_name_offset);
                 if (!name) continue;
                 const auto candidate =
-                    vm_c_string(bytes_, segments_, *name);
+                    vm_c_string(*bytes_, segments_, *name);
                 if (!candidate || *candidate != class_name) continue;
                 const auto methods =
                     read_vm_u32(class_ro + objc2_class_ro_methods_offset);
@@ -750,7 +753,7 @@ std::optional<std::uint32_t> MachOImage::find_objc_method(
                 const auto name =
                     read_vm_u32(object + objc1_class_name_offset);
                 if (!name) continue;
-                const auto candidate = vm_c_string(bytes_, segments_, *name);
+                const auto candidate = vm_c_string(*bytes_, segments_, *name);
                 if (!candidate || *candidate != class_name) continue;
                 const auto method_object =
                     class_method ? read_vm_u32(object)
@@ -799,7 +802,7 @@ std::optional<std::uint32_t> MachOImage::find_objc_method(
 }
 
 void MachOImage::map_into(AddressSpace& memory) const {
-    const std::span<const std::byte> bytes{bytes_};
+    const std::span<const std::byte> bytes{*bytes_};
     for (const auto& segment : segments_) {
         if (segment.vm_size == 0 || segment.name == "__PAGEZERO") {
             continue;
@@ -879,7 +882,7 @@ void MachOImage::map_into(AddressSpace& memory) const {
                         static_cast<std::uint32_t>(file_guest_end -
                                                    file_guest_start),
                         permissions, path_, file_offset, file_generation_,
-                        content_identity_)) {
+                        content_identity_, bytes_)) {
                     // File backing is an optimization for immutable text, not
                     // part of the Mach-O loading contract. A transient host
                     // mapping failure must retain the original anonymous-copy

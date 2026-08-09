@@ -433,14 +433,16 @@ bool AddressSpace::map_file(std::uint32_t address, std::uint32_t size,
                             std::optional<GuestFileGeneration>
                                 expected_generation,
                             std::optional<ContentIdentity>
-                                expected_content_identity) {
+                                expected_content_identity,
+                            std::shared_ptr<const std::vector<std::byte>>
+                                immutable_snapshot) {
   if (size == 0 || range_overflows(address, size) ||
       address % page_size != 0 || file_offset % page_size != 0) {
     return false;
   }
   const auto backing = file_page_cache_->open_mapping(
       path, file_offset, size, std::move(expected_generation),
-      std::move(expected_content_identity));
+      std::move(expected_content_identity), std::move(immutable_snapshot));
   if (!backing) return false;
 
   auto lock = write_lock();
@@ -792,8 +794,8 @@ bool AddressSpace::fault_file_pages(std::uint32_t address,
         auto backing = file_page_cache_->load_page(
             mapping.backing, file_page, byte_count);
         // The vnode-style cluster fault publishes ready pages as one unit.
-        // GuestFileBacking performs only one host read for the cluster; the
-        // remaining calls consume its prefetched pages.
+        // Descriptor-backed mappings perform one host read for the cluster;
+        // immutable executable mappings copy each page from their snapshot.
         backing->materialize();
         resident->second.backing = std::move(backing);
         resident->second.file_cached = true;
@@ -826,6 +828,7 @@ void AddressSpace::unmap_file_mappings_locked(std::uint32_t address,
     backing->modified = source.modified;
     backing->generation = source.generation;
     backing->content_identity = source.content_identity;
+    backing->immutable_snapshot = source.immutable_snapshot;
     backing->io_state = source.io_state;
     return backing;
   };

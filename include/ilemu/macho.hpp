@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -80,7 +81,7 @@ public:
         return content_identity_;
     }
     [[nodiscard]] std::uint64_t file_size() const noexcept {
-        return bytes_.size();
+        return bytes_ ? bytes_->size() : 0U;
     }
     [[nodiscard]] const std::optional<std::array<std::byte, 16>>& uuid() const {
         return uuid_;
@@ -117,7 +118,9 @@ private:
         bool class_method) const;
 
     std::filesystem::path path_;
-    std::vector<std::byte> bytes_;
+    // Parsing owns one immutable byte snapshot. File-backed executable pages
+    // share it so delayed faults cannot observe later in-place host writes.
+    std::shared_ptr<const std::vector<std::byte>> bytes_;
     std::uint32_t cpu_type_{};
     std::uint32_t cpu_subtype_{};
     std::uint32_t file_type_{};

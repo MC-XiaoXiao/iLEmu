@@ -102,7 +102,9 @@ public:
                 std::optional<GuestFileGeneration> expected_generation =
                     std::nullopt,
                 std::optional<ContentIdentity> expected_content_identity =
-                    std::nullopt);
+                    std::nullopt,
+                std::shared_ptr<const std::vector<std::byte>>
+                    immutable_snapshot = {});
   enum class PageMappingMode {
     CopyOnWrite,
     Shared,

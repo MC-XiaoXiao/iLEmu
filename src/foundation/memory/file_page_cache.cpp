@@ -102,9 +102,22 @@ void GuestPageBacking::materialize() const {
   if (!file_backing_) return;
 
   const auto file = file_backing_;
+  std::fill(bytes.begin(), bytes.end(), std::byte{});
+  if (file->immutable_snapshot) {
+    const auto &snapshot = *file->immutable_snapshot;
+    if (file_offset_ < snapshot.size()) {
+      const auto available =
+          snapshot.size() - static_cast<std::size_t>(file_offset_);
+      const auto copied = std::min<std::size_t>(file_byte_count_, available);
+      std::copy_n(snapshot.begin() +
+                      static_cast<std::ptrdiff_t>(file_offset_),
+                  copied, bytes.begin());
+    }
+    file_backing_.reset();
+    return;
+  }
   const auto io_state = file->io_state;
   const std::scoped_lock file_lock{io_state->mutex};
-  std::fill(bytes.begin(), bytes.end(), std::byte{});
   if (const auto prefetched_page =
           io_state->prefetched_pages.find(file_offset_);
       prefetched_page != io_state->prefetched_pages.end()) {
@@ -224,9 +237,11 @@ bool GuestPageBacking::flush_file() {
 }
 
 bool FilePageCache::Key::operator<(const Key &other) const {
-  return std::tie(path, generation, content_identity, file_offset, byte_count) <
+  return std::tie(path, generation, content_identity, file_offset, byte_count,
+                  immutable_snapshot) <
          std::tie(other.path, other.generation, other.content_identity,
-                  other.file_offset, other.byte_count);
+                  other.file_offset, other.byte_count,
+                  other.immutable_snapshot);
 }
 
 void FilePageCache::touch_locked(
@@ -263,7 +278,9 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
                             std::optional<GuestFileGeneration>
                                 expected_generation,
                             std::optional<ContentIdentity>
-                                expected_content_identity) {
+                                expected_content_identity,
+                            std::shared_ptr<const std::vector<std::byte>>
+                                immutable_snapshot) {
   if (size == 0 || file_offset % guest_memory_page_size != 0) {
     return std::nullopt;
   }
@@ -285,6 +302,10 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   }
   const auto file_size = static_cast<std::uintmax_t>(file_stat.st_size);
   const auto generation = generation_from_stat(file_stat);
+  if (immutable_snapshot && immutable_snapshot->size() != file_size) {
+    close_descriptor();
+    return std::nullopt;
+  }
   if (expected_generation && *expected_generation != generation) {
     close_descriptor();
     return std::nullopt;
@@ -399,6 +420,7 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   mapping->modified = modified;
   mapping->generation = generation;
   mapping->content_identity = *content_identity;
+  mapping->immutable_snapshot = std::move(immutable_snapshot);
   mapping->io_state = std::move(io_state);
   return mapping;
 }
@@ -407,7 +429,8 @@ std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
   const std::shared_ptr<GuestFileBacking> &mapping,
     std::uint64_t file_offset, std::uint32_t byte_count) {
   const Key key{mapping->cache_path, mapping->generation,
-                mapping->content_identity, file_offset, byte_count};
+                mapping->content_identity, file_offset, byte_count,
+                static_cast<bool>(mapping->immutable_snapshot)};
   {
     const std::scoped_lock lock{mutex_};
     if (const auto cached = pages_.find(key); cached != pages_.end()) {

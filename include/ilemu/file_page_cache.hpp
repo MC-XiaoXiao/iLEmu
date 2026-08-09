@@ -66,6 +66,10 @@ struct GuestFileBacking {
   std::filesystem::file_time_type modified;
   GuestFileGeneration generation;
   ContentIdentity content_identity;
+  // Executable loaders that already captured a validated file generation can
+  // retain that immutable image for byte-lazy faults. Ordinary mmap keeps the
+  // descriptor-backed path and its normal live-file semantics.
+  std::shared_ptr<const std::vector<std::byte>> immutable_snapshot;
   // The descriptor is opened when the mapping is created and shared by range
   // splits. This preserves the old vnode/file object across atomic rename.
   std::shared_ptr<GuestFileIoState> io_state;
@@ -149,7 +153,9 @@ public:
                std::optional<GuestFileGeneration> expected_generation =
                    std::nullopt,
                std::optional<ContentIdentity> expected_content_identity =
-                   std::nullopt);
+                   std::nullopt,
+               std::shared_ptr<const std::vector<std::byte>>
+                   immutable_snapshot = {});
 
   // Creates or reuses one page for an already validated mapping. The page
   // remains byte-lazy; GuestPageBacking::materialize performs clustered I/O.
@@ -176,6 +182,7 @@ private:
     ContentIdentity content_identity;
     std::uint64_t file_offset{};
     std::uint32_t byte_count{};
+    bool immutable_snapshot{};
 
     [[nodiscard]] bool operator<(const Key &other) const;
   };
