@@ -5,6 +5,7 @@
 #include <boost/variant/apply_visitor.hpp>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 #include <dynarmic/frontend/A32/a32_types.h>
@@ -25,6 +26,11 @@ constexpr std::uint32_t format_version = 1U;
 constexpr std::size_t maximum_bytes = 16U * 1024U * 1024U;
 constexpr std::uint32_t maximum_instructions = 16U * 1024U;
 constexpr std::uint32_t maximum_terminal_depth = 32U;
+// Dynarmic's x64 allocator has 64 spill slots. Keeping the entire live-value
+// frontier within that pool guarantees that an adversarial dependency graph
+// cannot exhaust spills regardless of which host registers the configuration
+// reserves for fastmem or page-table state.
+constexpr std::size_t maximum_live_values = 64U;
 
 enum class ValueTag : std::uint8_t {
   Reference,
@@ -126,7 +132,7 @@ private:
 };
 
 [[nodiscard]] bool valid_condition(std::uint8_t value) {
-  return value <= static_cast<std::uint8_t>(Dynarmic::IR::Cond::NV);
+  return value <= static_cast<std::uint8_t>(Dynarmic::IR::Cond::AL);
 }
 
 [[nodiscard]] bool valid_acc_type(std::uint8_t value) {
@@ -165,14 +171,24 @@ private:
          location.Value();
 }
 
+[[nodiscard]] bool aligned_a32_location(
+    Dynarmic::IR::LocationDescriptor location) {
+  const Dynarmic::A32::LocationDescriptor decoded{location};
+  const auto alignment = decoded.TFlag() ? 2U : 4U;
+  return decoded.PC() % alignment == 0U;
+}
+
 [[nodiscard]] bool valid_terminal(
     const Dynarmic::IR::Terminal& terminal,
-    const Dynarmic::A32::LocationDescriptor& initial_location) {
+    const Dynarmic::A32::LocationDescriptor& initial_location,
+    bool has_set_check_bit) {
   struct Visitor : boost::static_visitor<bool> {
     const Dynarmic::A32::LocationDescriptor& initial_location;
+    bool has_set_check_bit;
 
-    explicit Visitor(const Dynarmic::A32::LocationDescriptor& initial)
-        : initial_location{initial} {}
+    Visitor(const Dynarmic::A32::LocationDescriptor& initial,
+            bool has_set_check_bit_)
+        : initial_location{initial}, has_set_check_bit{has_set_check_bit_} {}
 
     bool operator()(const Dynarmic::IR::Term::Invalid&) const {
       return false;
@@ -182,7 +198,8 @@ private:
       const Dynarmic::A32::LocationDescriptor next{value.next};
       // Both current backends either assert these invariants or do not emit
       // Interpret terminals at all. Keep malformed portable IR off Emit().
-      return canonical_a32_location(value.next) && value.num_instructions == 1U &&
+      return canonical_a32_location(value.next) &&
+             aligned_a32_location(value.next) && value.num_instructions == 1U &&
              next.TFlag() == initial_location.TFlag() &&
              next.EFlag() == initial_location.EFlag();
     }
@@ -192,11 +209,13 @@ private:
     }
 
     bool operator()(const Dynarmic::IR::Term::LinkBlock& value) const {
-      return canonical_a32_location(value.next);
+      return canonical_a32_location(value.next) &&
+             aligned_a32_location(value.next);
     }
 
     bool operator()(const Dynarmic::IR::Term::LinkBlockFast& value) const {
-      return canonical_a32_location(value.next);
+      return canonical_a32_location(value.next) &&
+             aligned_a32_location(value.next);
     }
 
     bool operator()(const Dynarmic::IR::Term::PopRSBHint&) const {
@@ -208,19 +227,26 @@ private:
     }
 
     bool operator()(const Dynarmic::IR::Term::If& value) const {
-      return valid_terminal(value.then_, initial_location) &&
-             valid_terminal(value.else_, initial_location);
+      return value.if_ <= Dynarmic::IR::Cond::AL &&
+             valid_terminal(value.then_, initial_location,
+                            has_set_check_bit) &&
+             valid_terminal(value.else_, initial_location,
+                            has_set_check_bit);
     }
 
     bool operator()(const Dynarmic::IR::Term::CheckBit& value) const {
-      return valid_terminal(value.then_, initial_location) &&
-             valid_terminal(value.else_, initial_location);
+      return has_set_check_bit &&
+             valid_terminal(value.then_, initial_location,
+                            has_set_check_bit) &&
+             valid_terminal(value.else_, initial_location,
+                            has_set_check_bit);
     }
 
     bool operator()(const Dynarmic::IR::Term::CheckHalt& value) const {
-      return valid_terminal(value.else_, initial_location);
+      return valid_terminal(value.else_, initial_location,
+                            has_set_check_bit);
     }
-  } visitor{initial_location};
+  } visitor{initial_location, has_set_check_bit};
   return boost::apply_visitor(visitor, terminal);
 }
 
@@ -378,6 +404,446 @@ struct EncodedValue {
   std::array<std::uint8_t, 8> coprocessor{};
 };
 
+struct EncodedInstruction {
+  Dynarmic::IR::Opcode opcode{Dynarmic::IR::Opcode::Void};
+  std::uint32_t name{};
+  std::vector<EncodedValue> arguments;
+};
+
+[[nodiscard]] bool emitter_safe_opcode(Dynarmic::IR::Opcode opcode) {
+  using Opcode = Dynarmic::IR::Opcode;
+  switch (opcode) {
+  case Opcode::Void:
+  case Opcode::Identity:
+  case Opcode::Breakpoint:
+  case Opcode::CallHostFunction:
+  case Opcode::VectorMultiplySignedWiden8:
+  case Opcode::VectorMultiplySignedWiden16:
+  case Opcode::VectorMultiplySignedWiden32:
+  case Opcode::VectorMultiplyUnsignedWiden8:
+  case Opcode::VectorMultiplyUnsignedWiden16:
+  case Opcode::VectorMultiplyUnsignedWiden32:
+  case Opcode::A32CoprocInternalOperation:
+  case Opcode::A32CoprocSendOneWord:
+  case Opcode::A32CoprocSendTwoWords:
+  case Opcode::A32CoprocGetOneWord:
+  case Opcode::A32CoprocGetTwoWords:
+  case Opcode::A32CoprocLoadWords:
+  case Opcode::A32CoprocStoreWords:
+    return false;
+  default:
+    break;
+  }
+  switch (opcode) {
+#define OPCODE(name, type, ...) case Opcode::name:
+#define A32OPC(name, type, ...) case Opcode::A32##name:
+#define A64OPC(...)
+#include <dynarmic/ir/opcodes.inc>
+#undef OPCODE
+#undef A32OPC
+#undef A64OPC
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] Dynarmic::IR::Type encoded_value_type(
+    const EncodedValue& value,
+    const std::vector<EncodedInstruction>& instructions) {
+  if (value.tag == ValueTag::Immediate) return value.type;
+  return Dynarmic::IR::GetTypeOf(instructions[value.reference].opcode);
+}
+
+[[nodiscard]] bool encoded_is_scalar(
+    const EncodedValue& value,
+    const std::vector<EncodedInstruction>& instructions) {
+  switch (encoded_value_type(value, instructions)) {
+  case Dynarmic::IR::Type::U8:
+  case Dynarmic::IR::Type::U16:
+  case Dynarmic::IR::Type::U32:
+  case Dynarmic::IR::Type::U64:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool carry_parent(Dynarmic::IR::Opcode opcode) {
+  using Opcode = Dynarmic::IR::Opcode;
+  switch (opcode) {
+  case Opcode::MostSignificantWord:
+  case Opcode::LogicalShiftLeft32:
+  case Opcode::LogicalShiftRight32:
+  case Opcode::ArithmeticShiftRight32:
+  case Opcode::RotateRight32:
+  case Opcode::RotateRightExtended:
+  case Opcode::Add32:
+  case Opcode::Add64:
+  case Opcode::Sub32:
+  case Opcode::Sub64:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool overflow_parent(Dynarmic::IR::Opcode opcode) {
+  using Opcode = Dynarmic::IR::Opcode;
+  switch (opcode) {
+  case Opcode::Add32:
+  case Opcode::Add64:
+  case Opcode::Sub32:
+  case Opcode::Sub64:
+  case Opcode::SignedSaturatedAddWithFlag32:
+  case Opcode::SignedSaturatedSubWithFlag32:
+  case Opcode::SignedSaturation:
+  case Opcode::UnsignedSaturation:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool ge_parent(Dynarmic::IR::Opcode opcode) {
+  using Opcode = Dynarmic::IR::Opcode;
+  switch (opcode) {
+  case Opcode::PackedAddU8:
+  case Opcode::PackedAddS8:
+  case Opcode::PackedSubU8:
+  case Opcode::PackedSubS8:
+  case Opcode::PackedAddU16:
+  case Opcode::PackedAddS16:
+  case Opcode::PackedSubU16:
+  case Opcode::PackedSubS16:
+  case Opcode::PackedAddSubU16:
+  case Opcode::PackedAddSubS16:
+  case Opcode::PackedSubAddU16:
+  case Opcode::PackedSubAddS16:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool nzcv_parent(Dynarmic::IR::Opcode opcode) {
+  using Opcode = Dynarmic::IR::Opcode;
+  switch (opcode) {
+  case Opcode::Add32:
+  case Opcode::Add64:
+  case Opcode::Sub32:
+  case Opcode::Sub64:
+  case Opcode::And32:
+  case Opcode::And64:
+  case Opcode::AndNot32:
+  case Opcode::AndNot64:
+  case Opcode::Eor32:
+  case Opcode::Eor64:
+  case Opcode::Or32:
+  case Opcode::Or64:
+  case Opcode::Not32:
+  case Opcode::Not64:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool upper_lower_parent(Dynarmic::IR::Opcode opcode) {
+  using Opcode = Dynarmic::IR::Opcode;
+  switch (opcode) {
+  case Opcode::VectorSignedMultiply16:
+  case Opcode::VectorSignedMultiply32:
+  case Opcode::VectorUnsignedMultiply16:
+  case Opcode::VectorUnsignedMultiply32:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool a32_memory_opcode(Dynarmic::IR::Opcode opcode) {
+  using Opcode = Dynarmic::IR::Opcode;
+  switch (opcode) {
+  case Opcode::A32ReadMemory8:
+  case Opcode::A32ReadMemory16:
+  case Opcode::A32ReadMemory32:
+  case Opcode::A32ReadMemory64:
+  case Opcode::A32ExclusiveReadMemory8:
+  case Opcode::A32ExclusiveReadMemory16:
+  case Opcode::A32ExclusiveReadMemory32:
+  case Opcode::A32ExclusiveReadMemory64:
+  case Opcode::A32WriteMemory8:
+  case Opcode::A32WriteMemory16:
+  case Opcode::A32WriteMemory32:
+  case Opcode::A32WriteMemory64:
+  case Opcode::A32SwapMemory8:
+  case Opcode::A32SwapMemory32:
+  case Opcode::A32ExclusiveWriteMemory8:
+  case Opcode::A32ExclusiveWriteMemory16:
+  case Opcode::A32ExclusiveWriteMemory32:
+  case Opcode::A32ExclusiveWriteMemory64:
+    return true;
+  default:
+    return false;
+  }
+}
+
+[[nodiscard]] bool immediate_value(const EncodedValue& value) {
+  return value.tag == ValueTag::Immediate;
+}
+
+[[nodiscard]] bool immediate_at(const EncodedInstruction& instruction,
+                                std::size_t argument) {
+  return argument < instruction.arguments.size() &&
+         immediate_value(instruction.arguments[argument]);
+}
+
+[[nodiscard]] bool a32_execution_mode_equal(
+    Dynarmic::IR::LocationDescriptor lhs,
+    Dynarmic::IR::LocationDescriptor rhs) {
+  const Dynarmic::A32::LocationDescriptor lhs_decoded{lhs};
+  const Dynarmic::A32::LocationDescriptor rhs_decoded{rhs};
+  return lhs_decoded.TFlag() == rhs_decoded.TFlag() &&
+         lhs_decoded.EFlag() == rhs_decoded.EFlag() &&
+         lhs_decoded.SingleStepping() == rhs_decoded.SingleStepping() &&
+         lhs_decoded.FPSCR().Value() == rhs_decoded.FPSCR().Value();
+}
+
+[[nodiscard]] bool a32_location_in_block(
+    Dynarmic::IR::LocationDescriptor candidate,
+    Dynarmic::IR::LocationDescriptor start,
+    Dynarmic::IR::LocationDescriptor end) {
+  if (!canonical_a32_location(candidate) ||
+      !aligned_a32_location(candidate) ||
+      !a32_execution_mode_equal(candidate, start)) {
+    return false;
+  }
+  const Dynarmic::A32::LocationDescriptor candidate_decoded{candidate};
+  const Dynarmic::A32::LocationDescriptor start_decoded{start};
+  const Dynarmic::A32::LocationDescriptor end_decoded{end};
+  return candidate_decoded.PC() >= start_decoded.PC() &&
+         candidate_decoded.PC() < end_decoded.PC();
+}
+
+[[nodiscard]] bool is_fp_opcode(Dynarmic::IR::Opcode opcode) {
+  return opcode >= Dynarmic::IR::Opcode::FPAbs16 &&
+         opcode <= Dynarmic::IR::Opcode::FPVectorToUnsignedFixed64;
+}
+
+[[nodiscard]] bool valid_fp_instruction(
+    const EncodedInstruction& instruction,
+    const Dynarmic::A32::LocationDescriptor& initial_location) {
+  using Opcode = Dynarmic::IR::Opcode;
+  if (!is_fp_opcode(instruction.opcode)) return true;
+
+  // Dynarmic's FP control operands are compile-time IR metadata. Several x64
+  // emitters dereference lookup tables or optional rounding encodings directly,
+  // so a reference here is not merely semantically odd: it is unsafe input.
+  for (std::size_t argument = 0;
+       argument < instruction.arguments.size(); ++argument) {
+    const auto expected =
+        Dynarmic::IR::GetArgTypeOf(instruction.opcode, argument);
+    if ((expected == Dynarmic::IR::Type::U1 ||
+         expected == Dynarmic::IR::Type::U8) &&
+        !immediate_at(instruction, argument)) {
+      return false;
+    }
+  }
+
+  const auto rounding_valid = [](const EncodedValue& value) {
+    return value.scalar <= 4U;
+  };
+  const auto fixed = [&](std::size_t bits) {
+    return immediate_at(instruction, 1) && immediate_at(instruction, 2) &&
+           instruction.arguments[1].scalar <= bits &&
+           rounding_valid(instruction.arguments[2]);
+  };
+  const auto conversion = [&] {
+    return immediate_at(instruction, 1) &&
+           instruction.arguments[1].scalar <= 3U;
+  };
+
+  switch (instruction.opcode) {
+  case Opcode::FPRoundInt16:
+  case Opcode::FPRoundInt32:
+  case Opcode::FPRoundInt64:
+  case Opcode::FPVectorRoundInt16:
+  case Opcode::FPVectorRoundInt32:
+  case Opcode::FPVectorRoundInt64:
+    return rounding_valid(instruction.arguments[1]);
+
+  case Opcode::FPHalfToDouble:
+  case Opcode::FPHalfToSingle:
+  case Opcode::FPSingleToDouble:
+  case Opcode::FPDoubleToHalf:
+  case Opcode::FPDoubleToSingle:
+    return rounding_valid(instruction.arguments[1]);
+  case Opcode::FPSingleToHalf:
+    return conversion();
+
+  case Opcode::FPDoubleToFixedS16:
+  case Opcode::FPDoubleToFixedU16:
+  case Opcode::FPHalfToFixedS16:
+  case Opcode::FPHalfToFixedU16:
+  case Opcode::FPSingleToFixedS16:
+  case Opcode::FPSingleToFixedU16:
+    return fixed(16U);
+  case Opcode::FPDoubleToFixedS32:
+  case Opcode::FPDoubleToFixedU32:
+  case Opcode::FPHalfToFixedS32:
+  case Opcode::FPHalfToFixedU32:
+  case Opcode::FPSingleToFixedS32:
+  case Opcode::FPSingleToFixedU32:
+    return fixed(32U);
+  case Opcode::FPDoubleToFixedS64:
+  case Opcode::FPDoubleToFixedU64:
+  case Opcode::FPHalfToFixedS64:
+  case Opcode::FPHalfToFixedU64:
+  case Opcode::FPSingleToFixedS64:
+  case Opcode::FPSingleToFixedU64:
+    return fixed(64U);
+
+  case Opcode::FPFixedU16ToSingle:
+  case Opcode::FPFixedS16ToSingle:
+  case Opcode::FPFixedU16ToDouble:
+  case Opcode::FPFixedS16ToDouble:
+    return fixed(16U);
+  case Opcode::FPFixedU32ToSingle:
+  case Opcode::FPFixedS32ToSingle:
+  case Opcode::FPFixedU32ToDouble:
+  case Opcode::FPFixedS32ToDouble:
+    if (!fixed(32U)) return false;
+    if (instruction.opcode == Opcode::FPFixedU32ToSingle ||
+        instruction.opcode == Opcode::FPFixedS32ToSingle) {
+      const auto rounding = instruction.arguments[2].scalar;
+      return rounding == static_cast<std::uint8_t>(
+                             initial_location.FPSCR().RMode()) ||
+             rounding == 0U;
+    }
+    return true;
+  case Opcode::FPFixedU64ToDouble:
+  case Opcode::FPFixedU64ToSingle:
+  case Opcode::FPFixedS64ToDouble:
+  case Opcode::FPFixedS64ToSingle:
+    return fixed(64U) &&
+           instruction.arguments[2].scalar ==
+               static_cast<std::uint8_t>(
+                   initial_location.FPSCR().RMode());
+
+  case Opcode::FPVectorFromSignedFixed32:
+  case Opcode::FPVectorFromUnsignedFixed32:
+  case Opcode::FPVectorFromSignedFixed64:
+  case Opcode::FPVectorFromUnsignedFixed64: {
+    const std::size_t bits =
+        instruction.opcode == Opcode::FPVectorFromSignedFixed32 ||
+                instruction.opcode == Opcode::FPVectorFromUnsignedFixed32
+            ? 32U
+            : 64U;
+    if (!fixed(bits) || !immediate_at(instruction, 3)) return false;
+    const auto required_rounding = instruction.arguments[3].scalar != 0U
+                                       ? static_cast<std::uint8_t>(
+                                             initial_location.FPSCR().RMode())
+                                       : 0U;
+    return instruction.arguments[2].scalar == required_rounding;
+  }
+
+  case Opcode::FPVectorToSignedFixed16:
+  case Opcode::FPVectorToUnsignedFixed16:
+    return fixed(16U) && immediate_at(instruction, 3);
+  case Opcode::FPVectorToSignedFixed32:
+  case Opcode::FPVectorToUnsignedFixed32:
+    return fixed(32U) && immediate_at(instruction, 3);
+  case Opcode::FPVectorToSignedFixed64:
+  case Opcode::FPVectorToUnsignedFixed64:
+    return fixed(64U) && immediate_at(instruction, 3);
+
+  case Opcode::FPVectorFromHalf32:
+    return rounding_valid(instruction.arguments[1]);
+  case Opcode::FPVectorToHalf32:
+    return conversion();
+  default:
+    return true;
+  }
+}
+
+[[nodiscard]] bool valid_vector_instruction(
+    const EncodedInstruction& instruction) {
+  using Opcode = Dynarmic::IR::Opcode;
+  const auto immediate_below = [&](std::size_t argument,
+                                   std::uint64_t limit) {
+    return immediate_at(instruction, argument) &&
+           instruction.arguments[argument].scalar < limit;
+  };
+
+  switch (instruction.opcode) {
+  case Opcode::VectorGetElement8:
+  case Opcode::VectorSetElement8:
+  case Opcode::VectorBroadcastElementLower8:
+  case Opcode::VectorBroadcastElement8:
+    return immediate_below(1, 16U);
+  case Opcode::VectorGetElement16:
+  case Opcode::VectorSetElement16:
+  case Opcode::VectorBroadcastElementLower16:
+  case Opcode::VectorBroadcastElement16:
+    return immediate_below(1, 8U);
+  case Opcode::VectorGetElement32:
+  case Opcode::VectorSetElement32:
+  case Opcode::VectorBroadcastElementLower32:
+  case Opcode::VectorBroadcastElement32:
+    return immediate_below(1, 4U);
+  case Opcode::VectorGetElement64:
+  case Opcode::VectorSetElement64:
+  case Opcode::VectorBroadcastElement64:
+    return immediate_below(1, 2U);
+
+  case Opcode::VectorExtract:
+    return immediate_at(instruction, 2) &&
+           instruction.arguments[2].scalar <= 128U &&
+           instruction.arguments[2].scalar % 8U == 0U;
+  case Opcode::VectorExtractLower:
+    return immediate_at(instruction, 2) &&
+           instruction.arguments[2].scalar <= 64U &&
+           instruction.arguments[2].scalar % 8U == 0U;
+
+  case Opcode::VectorArithmeticShiftRight8:
+  case Opcode::VectorArithmeticShiftRight16:
+  case Opcode::VectorArithmeticShiftRight32:
+  case Opcode::VectorArithmeticShiftRight64:
+  case Opcode::VectorLogicalShiftLeft8:
+  case Opcode::VectorLogicalShiftLeft16:
+  case Opcode::VectorLogicalShiftLeft32:
+  case Opcode::VectorLogicalShiftLeft64:
+  case Opcode::VectorLogicalShiftRight8:
+  case Opcode::VectorLogicalShiftRight16:
+  case Opcode::VectorLogicalShiftRight32:
+  case Opcode::VectorLogicalShiftRight64:
+    return immediate_at(instruction, 1);
+
+  case Opcode::VectorSignedSaturatedShiftLeftUnsigned8:
+    return immediate_below(1, 8U);
+  case Opcode::VectorSignedSaturatedShiftLeftUnsigned16:
+    return immediate_below(1, 16U);
+  case Opcode::VectorSignedSaturatedShiftLeftUnsigned32:
+    return immediate_below(1, 32U);
+  case Opcode::VectorSignedSaturatedShiftLeftUnsigned64:
+    return immediate_below(1, 64U);
+
+  case Opcode::VectorRotateWholeVectorRight:
+    return immediate_at(instruction, 1) &&
+           instruction.arguments[1].scalar % 32U == 0U;
+  case Opcode::VectorTranspose8:
+  case Opcode::VectorTranspose16:
+  case Opcode::VectorTranspose32:
+  case Opcode::VectorTranspose64:
+    return immediate_at(instruction, 2);
+  case Opcode::SHA256Hash:
+    return immediate_at(instruction, 3);
+  default:
+    return true;
+  }
+}
+
 [[nodiscard]] std::optional<EncodedValue> encode_value(
     const Dynarmic::IR::Value& value,
     const std::unordered_map<const Dynarmic::IR::Inst*, std::uint32_t>& indices) {
@@ -479,18 +945,17 @@ void write_encoded_value(Writer& writer, const EncodedValue& value) {
   }
 }
 
-[[nodiscard]] std::optional<Dynarmic::IR::Value> read_value(
-    Reader& reader, const std::vector<Dynarmic::IR::Inst*>& instructions,
-    std::size_t current_index) {
+[[nodiscard]] std::optional<EncodedValue> read_encoded_value(
+    Reader& reader, std::size_t current_index) {
   std::uint8_t raw_tag{};
   if (!reader.byte(raw_tag)) return std::nullopt;
   if (raw_tag == static_cast<std::uint8_t>(ValueTag::Reference)) {
     std::uint32_t reference{};
-    if (!reader.u32(reference) || reference >= current_index ||
-        reference >= instructions.size()) {
+    if (!reader.u32(reference) || reference >= current_index) {
       return std::nullopt;
     }
-    return Dynarmic::IR::Value{instructions[reference]};
+    return EncodedValue{ValueTag::Reference, Dynarmic::IR::Type::Opaque,
+                        reference, 0, {}};
   }
   if (raw_tag != static_cast<std::uint8_t>(ValueTag::Immediate)) {
     return std::nullopt;
@@ -507,24 +972,22 @@ void write_encoded_value(Writer& writer, const EncodedValue& value) {
     if (!reader.byte(value) || (type == Dynarmic::IR::Type::U1 && value > 1U)) {
       return std::nullopt;
     }
-    return type == Dynarmic::IR::Type::U1
-               ? Dynarmic::IR::Value{value != 0}
-               : Dynarmic::IR::Value{value};
+    return EncodedValue{ValueTag::Immediate, type, 0, value, {}};
   }
   case Dynarmic::IR::Type::U16: {
     std::uint16_t value{};
     if (!reader.u16(value)) return std::nullopt;
-    return Dynarmic::IR::Value{value};
+    return EncodedValue{ValueTag::Immediate, type, 0, value, {}};
   }
   case Dynarmic::IR::Type::U32: {
     std::uint32_t value{};
     if (!reader.u32(value)) return std::nullopt;
-    return Dynarmic::IR::Value{value};
+    return EncodedValue{ValueTag::Immediate, type, 0, value, {}};
   }
   case Dynarmic::IR::Type::U64: {
     std::uint64_t value{};
     if (!reader.u64(value)) return std::nullopt;
-    return Dynarmic::IR::Value{value};
+    return EncodedValue{ValueTag::Immediate, type, 0, value, {}};
   }
   case Dynarmic::IR::Type::A32Reg:
   case Dynarmic::IR::Type::A32ExtReg:
@@ -542,35 +1005,390 @@ void write_encoded_value(Writer& writer, const EncodedValue& value) {
          type == Dynarmic::IR::Type::A64Vec) && value > 31U) {
       return std::nullopt;
     }
-    if (type == Dynarmic::IR::Type::A32Reg) {
-      return Dynarmic::IR::Value{static_cast<Dynarmic::A32::Reg>(value)};
-    }
-    if (type == Dynarmic::IR::Type::A32ExtReg) {
-      return Dynarmic::IR::Value{static_cast<Dynarmic::A32::ExtReg>(value)};
-    }
-    if (type == Dynarmic::IR::Type::A64Reg) {
-      return Dynarmic::IR::Value{static_cast<Dynarmic::A64::Reg>(value)};
-    }
-    return Dynarmic::IR::Value{static_cast<Dynarmic::A64::Vec>(value)};
+    return EncodedValue{ValueTag::Immediate, type, 0, value, {}};
   }
   case Dynarmic::IR::Type::CoprocInfo: {
     std::array<std::uint8_t, 8> value{};
     if (!reader.raw(value)) return std::nullopt;
-    return Dynarmic::IR::Value{
-        Dynarmic::IR::Value::CoprocessorInfo{value}};
+    return EncodedValue{ValueTag::Immediate, type, 0, 0, value};
   }
   case Dynarmic::IR::Type::NZCVFlags:
-    return Dynarmic::IR::Value::EmptyNZCVImmediateMarker();
+    return EncodedValue{ValueTag::Immediate, type};
   case Dynarmic::IR::Type::Cond: {
     std::uint8_t value{};
     if (!reader.byte(value) || !valid_condition(value)) return std::nullopt;
-    return Dynarmic::IR::Value{static_cast<Dynarmic::IR::Cond>(value)};
+    return EncodedValue{ValueTag::Immediate, type, 0, value, {}};
   }
   case Dynarmic::IR::Type::AccType: {
     std::uint8_t value{};
     if (!reader.byte(value) || !valid_acc_type(value)) return std::nullopt;
-    return Dynarmic::IR::Value{static_cast<Dynarmic::IR::AccType>(value)};
+    return EncodedValue{ValueTag::Immediate, type, 0, value, {}};
   }
+  default:
+    return std::nullopt;
+  }
+}
+
+[[nodiscard]] bool valid_encoded_ir(
+    Dynarmic::IR::LocationDescriptor location,
+    Dynarmic::IR::LocationDescriptor end_location,
+    Dynarmic::IR::Cond condition,
+    const std::optional<Dynarmic::IR::LocationDescriptor>& condition_failed,
+    std::uint64_t condition_failed_cycles, std::uint64_t cycles,
+    const std::vector<EncodedInstruction>& instructions,
+    const Dynarmic::IR::Terminal& terminal) {
+  using Opcode = Dynarmic::IR::Opcode;
+  using Type = Dynarmic::IR::Type;
+
+  if (!canonical_a32_location(location) ||
+      !aligned_a32_location(location) ||
+      !canonical_a32_location(end_location) ||
+      !aligned_a32_location(end_location) ||
+      !a32_execution_mode_equal(end_location, location)) {
+    return false;
+  }
+  const Dynarmic::A32::LocationDescriptor initial_location{location};
+  const Dynarmic::A32::LocationDescriptor final_location{end_location};
+  const auto pc_delta = static_cast<std::uint64_t>(final_location.PC()) -
+                        static_cast<std::uint64_t>(initial_location.PC());
+  if (final_location.PC() <= initial_location.PC() ||
+      pc_delta > static_cast<std::uint64_t>(maximum_instructions) * 4U) {
+    return false;
+  }
+
+  const auto maximum_cycle_count = static_cast<std::uint64_t>(
+      std::numeric_limits<std::int32_t>::max());
+  if (cycles == 0U || cycles >= maximum_cycle_count ||
+      condition_failed_cycles >= maximum_cycle_count) {
+    return false;
+  }
+  if ((condition == Dynarmic::IR::Cond::AL) != !condition_failed) {
+    return false;
+  }
+  if (!condition_failed) {
+    if (condition_failed_cycles != 0U) return false;
+  } else {
+    if (!canonical_a32_location(*condition_failed) ||
+        !aligned_a32_location(*condition_failed) ||
+        !a32_execution_mode_equal(*condition_failed, location)) {
+      return false;
+    }
+    const Dynarmic::A32::LocationDescriptor failed{*condition_failed};
+    if (failed.PC() <= initial_location.PC() ||
+        failed.PC() > final_location.PC() ||
+        condition_failed_cycles == 0U || condition_failed_cycles > cycles) {
+      return false;
+    }
+  }
+
+  std::vector<std::size_t> use_counts(instructions.size());
+  std::vector<std::size_t> last_uses(instructions.size());
+  for (std::size_t index = 0; index < instructions.size(); ++index) {
+    for (const auto& argument : instructions[index].arguments) {
+      if (argument.tag == ValueTag::Reference) {
+        if (argument.reference >= instructions.size()) return false;
+        ++use_counts[argument.reference];
+        last_uses[argument.reference] = index;
+      }
+    }
+  }
+
+  bool has_set_check_bit = false;
+  std::uint32_t previous_name = 0U;
+  std::unordered_set<std::uint64_t> associated_pseudo_operations;
+  associated_pseudo_operations.reserve(instructions.size());
+  std::vector<std::size_t> live_expirations(instructions.size() + 1U);
+  std::size_t live_values = 0U;
+
+  for (std::size_t index = 0; index < instructions.size(); ++index) {
+    if (live_expirations[index] > live_values) return false;
+    live_values -= live_expirations[index];
+    const auto& instruction = instructions[index];
+    if (!emitter_safe_opcode(instruction.opcode) ||
+        instruction.name == 0U || instruction.name <= previous_name ||
+        instruction.name > maximum_instructions ||
+        instruction.arguments.size() !=
+            Dynarmic::IR::GetNumArgsOf(instruction.opcode) ||
+        instruction.arguments.size() > Dynarmic::IR::max_arg_count) {
+      return false;
+    }
+    previous_name = instruction.name;
+
+    if (use_counts[index] != 0U) {
+      const auto result_type = Dynarmic::IR::GetTypeOf(instruction.opcode);
+      const bool allocated_value =
+          result_type == Type::U1 || result_type == Type::U8 ||
+          result_type == Type::U16 || result_type == Type::U32 ||
+          result_type == Type::U64 || result_type == Type::U128 ||
+          result_type == Type::NZCVFlags;
+      if (allocated_value) {
+        if (++live_values > maximum_live_values ||
+            last_uses[index] >= instructions.size()) {
+          return false;
+        }
+        ++live_expirations[last_uses[index] + 1U];
+      }
+    }
+
+    for (std::size_t argument_index = 0;
+         argument_index < instruction.arguments.size(); ++argument_index) {
+      const auto& argument = instruction.arguments[argument_index];
+      if (argument.tag == ValueTag::Reference &&
+          argument.reference >= index) {
+        return false;
+      }
+      const auto actual_type = encoded_value_type(argument, instructions);
+      const auto expected_type =
+          Dynarmic::IR::GetArgTypeOf(instruction.opcode, argument_index);
+      if (!Dynarmic::IR::AreTypesCompatible(actual_type, expected_type)) {
+        return false;
+      }
+      if (argument.tag == ValueTag::Immediate &&
+          argument.type == Type::NZCVFlags &&
+          !(instruction.opcode == Opcode::A32SetCpsrNZC &&
+            argument_index == 0U)) {
+        return false;
+      }
+    }
+
+    if (!valid_fp_instruction(instruction, initial_location) ||
+        !valid_vector_instruction(instruction)) {
+      return false;
+    }
+
+    const auto ext_reg_in = [&](std::uint64_t first, std::uint64_t last) {
+      return immediate_at(instruction, 0) &&
+             instruction.arguments[0].scalar >= first &&
+             instruction.arguments[0].scalar <= last;
+    };
+    switch (instruction.opcode) {
+    case Opcode::A32GetRegister:
+    case Opcode::A32SetRegister:
+      if (!immediate_at(instruction, 0) ||
+          instruction.arguments[0].type != Type::A32Reg ||
+          instruction.arguments[0].scalar > 15U) {
+        return false;
+      }
+      break;
+    case Opcode::A32GetExtendedRegister32:
+    case Opcode::A32SetExtendedRegister32:
+      if (!ext_reg_in(0U, 31U)) return false;
+      break;
+    case Opcode::A32GetExtendedRegister64:
+    case Opcode::A32SetExtendedRegister64:
+      if (!ext_reg_in(32U, 63U)) return false;
+      break;
+    case Opcode::A32GetVector:
+    case Opcode::A32SetVector:
+      if (!ext_reg_in(32U, 79U)) return false;
+      break;
+    default:
+      break;
+    }
+
+    if (a32_memory_opcode(instruction.opcode)) {
+      if (!immediate_at(instruction, 0) ||
+          !a32_location_in_block(
+              Dynarmic::IR::LocationDescriptor{
+                  instruction.arguments[0].scalar},
+              location, end_location)) {
+        return false;
+      }
+    }
+
+    switch (instruction.opcode) {
+    case Opcode::PushRSB: {
+      if (!immediate_at(instruction, 0)) return false;
+      const Dynarmic::IR::LocationDescriptor target{
+          instruction.arguments[0].scalar};
+      if (!canonical_a32_location(target) || !aligned_a32_location(target)) {
+        return false;
+      }
+      break;
+    }
+    case Opcode::TestBit:
+      if (!immediate_at(instruction, 1) ||
+          instruction.arguments[1].scalar >= 64U) {
+        return false;
+      }
+      break;
+    case Opcode::ExtractRegister32:
+      if (!immediate_at(instruction, 2) ||
+          instruction.arguments[2].scalar >= 32U) {
+        return false;
+      }
+      break;
+    case Opcode::ExtractRegister64:
+      if (!immediate_at(instruction, 2) ||
+          instruction.arguments[2].scalar >= 64U) {
+        return false;
+      }
+      break;
+    case Opcode::ReplicateBit32:
+      if (!immediate_at(instruction, 1) ||
+          instruction.arguments[1].scalar >= 32U) {
+        return false;
+      }
+      break;
+    case Opcode::ReplicateBit64:
+      if (!immediate_at(instruction, 1) ||
+          instruction.arguments[1].scalar >= 64U) {
+        return false;
+      }
+      break;
+    case Opcode::SignedSaturation:
+      if (!immediate_at(instruction, 1) ||
+          instruction.arguments[1].scalar == 0U ||
+          instruction.arguments[1].scalar > 32U) {
+        return false;
+      }
+      break;
+    case Opcode::UnsignedSaturation:
+      if (!immediate_at(instruction, 1) ||
+          instruction.arguments[1].scalar > 31U) {
+        return false;
+      }
+      break;
+    case Opcode::A32SetGEFlags:
+      if (immediate_at(instruction, 0)) return false;
+      break;
+    case Opcode::A32SetCpsrNZCV:
+    case Opcode::A32SetCpsrNZ:
+    case Opcode::A32SetFpscrNZCV:
+      if (immediate_at(instruction, 0)) return false;
+      break;
+    case Opcode::A32ExceptionRaised:
+      if (!immediate_at(instruction, 0) ||
+          !immediate_at(instruction, 1)) {
+        return false;
+      }
+      break;
+    case Opcode::A32SetCheckBit:
+      has_set_check_bit = true;
+      break;
+    default:
+      break;
+    }
+
+    const auto validate_associated_pseudo = [&](auto parent_predicate) {
+      const auto& parent = instruction.arguments[0];
+      if (parent.tag != ValueTag::Reference ||
+          !parent_predicate(instructions[parent.reference].opcode)) {
+        return false;
+      }
+      const auto key =
+          (static_cast<std::uint64_t>(parent.reference) << 32U) |
+          static_cast<std::uint32_t>(instruction.opcode);
+      return associated_pseudo_operations.insert(key).second;
+    };
+
+    switch (instruction.opcode) {
+    case Opcode::GetCarryFromOp:
+      if (!validate_associated_pseudo(carry_parent)) return false;
+      break;
+    case Opcode::GetOverflowFromOp:
+      if (!validate_associated_pseudo(overflow_parent)) return false;
+      break;
+    case Opcode::GetGEFromOp:
+      if (!validate_associated_pseudo(ge_parent)) return false;
+      break;
+    case Opcode::GetUpperFromOp:
+    case Opcode::GetLowerFromOp:
+      if (!validate_associated_pseudo(upper_lower_parent)) return false;
+      break;
+    case Opcode::GetNZCVFromOp: {
+      const auto& value = instruction.arguments[0];
+      if (value.tag == ValueTag::Reference) {
+        if (!nzcv_parent(instructions[value.reference].opcode)) return false;
+      } else if (!encoded_is_scalar(value, instructions)) {
+        return false;
+      }
+      break;
+    }
+    case Opcode::GetNZFromOp:
+      if (!encoded_is_scalar(instruction.arguments[0], instructions)) {
+        return false;
+      }
+      break;
+    case Opcode::VectorTable: {
+      if (use_counts[index] != 1U) return false;
+      std::optional<Type> element_type;
+      for (const auto& value : instruction.arguments) {
+        if (value.tag != ValueTag::Reference) return false;
+        const auto type = encoded_value_type(value, instructions);
+        if (type != Type::U64 && type != Type::U128) return false;
+        if (element_type && *element_type != type) return false;
+        element_type = type;
+      }
+      break;
+    }
+    case Opcode::VectorTableLookup64:
+    case Opcode::VectorTableLookup128: {
+      const auto& table = instruction.arguments[1];
+      if (table.tag != ValueTag::Reference ||
+          instructions[table.reference].opcode != Opcode::VectorTable) {
+        return false;
+      }
+      const auto required_type =
+          instruction.opcode == Opcode::VectorTableLookup64 ? Type::U64
+                                                             : Type::U128;
+      for (const auto& table_value :
+           instructions[table.reference].arguments) {
+        if (encoded_value_type(table_value, instructions) != required_type) {
+          return false;
+        }
+      }
+      break;
+    }
+    default:
+      break;
+    }
+  }
+
+  return valid_terminal(terminal, initial_location, has_set_check_bit);
+}
+
+[[nodiscard]] std::optional<Dynarmic::IR::Value> decode_value(
+    const EncodedValue& encoded,
+    const std::vector<Dynarmic::IR::Inst*>& instructions) {
+  if (encoded.tag == ValueTag::Reference) {
+    if (encoded.reference >= instructions.size()) return std::nullopt;
+    return Dynarmic::IR::Value{instructions[encoded.reference]};
+  }
+  switch (encoded.type) {
+  case Dynarmic::IR::Type::U1:
+    return Dynarmic::IR::Value{encoded.scalar != 0};
+  case Dynarmic::IR::Type::U8:
+    return Dynarmic::IR::Value{static_cast<std::uint8_t>(encoded.scalar)};
+  case Dynarmic::IR::Type::U16:
+    return Dynarmic::IR::Value{static_cast<std::uint16_t>(encoded.scalar)};
+  case Dynarmic::IR::Type::U32:
+    return Dynarmic::IR::Value{static_cast<std::uint32_t>(encoded.scalar)};
+  case Dynarmic::IR::Type::U64:
+    return Dynarmic::IR::Value{encoded.scalar};
+  case Dynarmic::IR::Type::A32Reg:
+    return Dynarmic::IR::Value{
+        static_cast<Dynarmic::A32::Reg>(encoded.scalar)};
+  case Dynarmic::IR::Type::A32ExtReg:
+    return Dynarmic::IR::Value{
+        static_cast<Dynarmic::A32::ExtReg>(encoded.scalar)};
+  case Dynarmic::IR::Type::A64Reg:
+    return Dynarmic::IR::Value{
+        static_cast<Dynarmic::A64::Reg>(encoded.scalar)};
+  case Dynarmic::IR::Type::A64Vec:
+    return Dynarmic::IR::Value{
+        static_cast<Dynarmic::A64::Vec>(encoded.scalar)};
+  case Dynarmic::IR::Type::CoprocInfo:
+    return Dynarmic::IR::Value{
+        Dynarmic::IR::Value::CoprocessorInfo{encoded.coprocessor}};
+  case Dynarmic::IR::Type::NZCVFlags:
+    return Dynarmic::IR::Value::EmptyNZCVImmediateMarker();
+  case Dynarmic::IR::Type::Cond:
+    return Dynarmic::IR::Value{
+        static_cast<Dynarmic::IR::Cond>(encoded.scalar)};
+  case Dynarmic::IR::Type::AccType:
+    return Dynarmic::IR::Value{
+        static_cast<Dynarmic::IR::AccType>(encoded.scalar)};
   default:
     return std::nullopt;
   }
@@ -681,16 +1499,8 @@ std::optional<Dynarmic::IR::Block> deserialize_dynarmic_ir(
     return std::nullopt;
   }
 
-  Dynarmic::IR::Block block{location};
-  block.SetEndLocation(end_location);
-  block.SetCondition(static_cast<Dynarmic::IR::Cond>(condition));
-  if (condition_failed) block.SetConditionFailedLocation(*condition_failed);
-  block.ConditionFailedCycleCount() =
-      static_cast<std::size_t>(condition_failed_cycles);
-  block.CycleCount() = static_cast<std::size_t>(cycles);
-
-  std::vector<Dynarmic::IR::Inst*> instructions;
-  instructions.reserve(instruction_count);
+  std::vector<EncodedInstruction> encoded_instructions;
+  encoded_instructions.reserve(instruction_count);
   for (std::uint32_t index = 0; index < instruction_count; ++index) {
     std::uint32_t raw_opcode{};
     std::uint32_t name{};
@@ -704,41 +1514,54 @@ std::optional<Dynarmic::IR::Block> deserialize_dynarmic_ir(
       return std::nullopt;
     }
     const auto opcode = static_cast<Dynarmic::IR::Opcode>(raw_opcode);
-    std::vector<Dynarmic::IR::Value> args;
-    args.reserve(argument_count);
+    EncodedInstruction instruction{opcode, name, {}};
+    instruction.arguments.reserve(argument_count);
     for (std::uint8_t argument = 0; argument < argument_count; ++argument) {
-      auto value = read_value(reader, instructions, index);
-      if (!value || !Dynarmic::IR::AreTypesCompatible(
-                         value->GetType(),
-                         Dynarmic::IR::GetArgTypeOf(opcode, argument))) {
-        return std::nullopt;
-      }
-      args.push_back(std::move(*value));
+      auto value = read_encoded_value(reader, index);
+      if (!value) return std::nullopt;
+      instruction.arguments.push_back(std::move(*value));
     }
-    if (!append_instruction(block, opcode, args)) return std::nullopt;
-    auto& instruction = block.back();
-    instruction.SetName(name);
-    instructions.push_back(&instruction);
+    encoded_instructions.push_back(std::move(instruction));
   }
 
   auto terminal = read_terminal(reader, 0);
   if (!terminal || !reader.at_end() || terminal->which() == 0) {
     return std::nullopt;
   }
-  block.SetTerminal(std::move(*terminal));
-  const auto initial_location =
-      Dynarmic::A32::LocationDescriptor{block.Location()};
-  if (!canonical_a32_location(block.Location()) ||
-      !canonical_a32_location(block.EndLocation()) ||
-      (block.GetCondition() == Dynarmic::IR::Cond::AL &&
-       block.HasConditionFailedLocation()) ||
-      (block.GetCondition() != Dynarmic::IR::Cond::AL &&
-       !block.HasConditionFailedLocation()) ||
-      (block.HasConditionFailedLocation() &&
-       !canonical_a32_location(block.ConditionFailedLocation())) ||
-      !valid_terminal(block.GetTerminal(), initial_location)) {
+  if (!valid_encoded_ir(
+          location, end_location, static_cast<Dynarmic::IR::Cond>(condition),
+          condition_failed, condition_failed_cycles, cycles,
+          encoded_instructions, *terminal)) {
     return std::nullopt;
   }
+
+  // No Dynarmic IR object is touched until every byte and every x64 emitter
+  // precondition above has been checked without assertions. The construction
+  // calls below therefore only receive producer-shaped data.
+  Dynarmic::IR::Block block{location};
+  std::vector<Dynarmic::IR::Inst*> instructions;
+  instructions.reserve(encoded_instructions.size());
+  for (const auto& encoded_instruction : encoded_instructions) {
+    std::vector<Dynarmic::IR::Value> arguments;
+    arguments.reserve(encoded_instruction.arguments.size());
+    for (const auto& encoded_argument : encoded_instruction.arguments) {
+      auto value = decode_value(encoded_argument, instructions);
+      if (!value) return std::nullopt;
+      arguments.push_back(std::move(*value));
+    }
+    if (!append_instruction(block, encoded_instruction.opcode, arguments)) {
+      return std::nullopt;
+    }
+    block.back().SetName(encoded_instruction.name);
+    instructions.push_back(&block.back());
+  }
+  block.SetEndLocation(end_location);
+  block.SetCondition(static_cast<Dynarmic::IR::Cond>(condition));
+  if (condition_failed) block.SetConditionFailedLocation(*condition_failed);
+  block.ConditionFailedCycleCount() =
+      static_cast<std::size_t>(condition_failed_cycles);
+  block.CycleCount() = static_cast<std::size_t>(cycles);
+  block.SetTerminal(std::move(*terminal));
   return block;
 }
 
