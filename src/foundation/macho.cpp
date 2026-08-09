@@ -830,8 +830,13 @@ void MachOImage::map_into(AddressSpace& memory) const {
                         static_cast<std::uint32_t>(file_guest_end -
                                                    file_guest_start),
                         permissions, path_, file_offset)) {
-                    throw std::runtime_error{"failed to file-map segment " +
-                                             segment.name};
+                    // File backing is an optimization for immutable text, not
+                    // part of the Mach-O loading contract. A transient host
+                    // mapping failure must retain the original anonymous-copy
+                    // behavior instead of terminating the whole emulator.
+                    map_anonymous(
+                        static_cast<std::uint32_t>(file_guest_start),
+                        static_cast<std::uint32_t>(file_guest_end));
                 }
                 map_anonymous(static_cast<std::uint32_t>(file_guest_end),
                               mapping_end);

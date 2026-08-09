@@ -63,6 +63,7 @@ std::atomic<std::uint64_t> next_reservation_identity{1};
 struct GlobalIdentityRecord {
   GuestFileGeneration generation;
   ContentIdentity content_identity;
+  std::weak_ptr<GuestFileIoState> io_state;
 };
 
 std::mutex global_identity_mutex;
@@ -320,11 +321,11 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
         content_identity = identity->second.content_identity;
       } else {
         computed = true;
-        content_identity = sha256_file(descriptor);
-        if (content_identity) {
-          global_identities[normalized_path] =
-              GlobalIdentityRecord{generation, *content_identity};
-        }
+          content_identity = sha256_file(descriptor);
+          if (content_identity) {
+            global_identities[normalized_path] =
+              GlobalIdentityRecord{generation, *content_identity, {}};
+          }
       }
     }
     if (!content_identity) {
@@ -347,6 +348,37 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     return std::nullopt;
   }
 
+  // Every immutable executable mapping used to retain its own descriptor.
+  // Firmware fork fan-out maps the same binaries into many AddressSpaces and
+  // can therefore exhaust a normal host RLIMIT_NOFILE even though only a
+  // modest number of distinct vnodes are in use. Share the descriptor for an
+  // unchanged canonical path/generation; replacement installs a new record
+  // while existing mappings keep the old vnode alive through their shared
+  // state.
+  std::shared_ptr<GuestFileIoState> io_state;
+  {
+    const std::scoped_lock lock{global_identity_mutex};
+    const auto identity = global_identities.find(normalized_path);
+    if (identity != global_identities.end() &&
+        identity->second.generation == generation &&
+        identity->second.content_identity == *content_identity) {
+      io_state = identity->second.io_state.lock();
+      if (!io_state) {
+        io_state = std::make_shared<GuestFileIoState>();
+        io_state->file_descriptor = descriptor;
+        descriptor = -1;
+        identity->second.io_state = io_state;
+      }
+    }
+  }
+  if (!io_state) {
+    io_state = std::make_shared<GuestFileIoState>();
+    io_state->file_descriptor = descriptor;
+    descriptor = -1;
+  } else {
+    close_descriptor();
+  }
+
   auto mapping = std::make_shared<GuestFileBacking>(
       path, file_offset, file_offset + std::min<std::uintmax_t>(size, available));
   mapping->cache_path = normalized_path;
@@ -354,8 +386,7 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   mapping->modified = modified;
   mapping->generation = generation;
   mapping->content_identity = *content_identity;
-  mapping->io_state->file_descriptor = descriptor;
-  descriptor = -1;
+  mapping->io_state = std::move(io_state);
   return mapping;
 }
 

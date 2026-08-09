@@ -2828,41 +2828,49 @@ void boot(const std::vector<std::string> &args, Output &output) {
                  runtime.pending_exec) {
         auto pending = std::move(*runtime.pending_exec);
         runtime.pending_exec.reset();
-        debug_target.notify_exec(runtime.kernel->process().pid);
-        runtime.memory->clear();
-        ProcessLoader exec_loader{*rootfs, *runtime.memory, guest_architecture,
-                                  catalog_index};
-        auto loaded =
-            exec_loader.load(pending.path, std::move(pending.arguments),
-                             pending.environment);
-        runtime.kernel->set_process_arguments(loaded.arguments,
-                                              pending.environment);
-        runtime.kernel->set_process_image(
-            pending.path, loaded.executable.code_signature_entitlements());
-        assign_translation_profile(*runtime.cpus, loaded);
-        runtime.kernel->prepare_exec(pending.processor);
-        auto &exec_cpu = runtime.cpus->cpu(pending.processor);
-        exec_cpu.reset();
-        exec_cpu.clear_cache();
-        exec_cpu.registers().fill(0);
-        exec_cpu.registers()[13] = loaded.stack_pointer;
-        exec_cpu.registers()[15] = loaded.entry_point;
-        exec_cpu.set_cpsr(0x10);
-        runtime.kernel->install_main_image_hle(exec_cpu,
-                                               loaded.executable_path);
-        static_cast<void>(scheduler.complete_slice(
-            scheduled->thread, result.ticks_consumed,
-            XnuSliceCompletion::Terminate, XnuTimeAccounting::Deferred));
-        scheduler.remove_process(runtime.kernel->process().pid);
-        guest_parallelism_policy.forget_process(
-            runtime.kernel->process().pid);
-        std::fill(runtime.allocated.begin(), runtime.allocated.end(), false);
-        runtime.allocated[pending.processor] = true;
-        static_cast<void>(scheduler.register_thread(
-            XnuThreadId{runtime.kernel->process().pid,
-                        static_cast<std::uint32_t>(pending.processor)},
-            runtime.kernel->process().thread_base_priority));
-        scheduler_completed = true;
+        try {
+          debug_target.notify_exec(runtime.kernel->process().pid);
+          runtime.memory->clear();
+          ProcessLoader exec_loader{*rootfs, *runtime.memory,
+                                    guest_architecture, catalog_index};
+          auto loaded =
+              exec_loader.load(pending.path, std::move(pending.arguments),
+                               pending.environment);
+          runtime.kernel->set_process_arguments(loaded.arguments,
+                                                pending.environment);
+          runtime.kernel->set_process_image(
+              pending.path, loaded.executable.code_signature_entitlements());
+          assign_translation_profile(*runtime.cpus, loaded);
+          runtime.kernel->prepare_exec(pending.processor);
+          auto &exec_cpu = runtime.cpus->cpu(pending.processor);
+          exec_cpu.reset();
+          exec_cpu.clear_cache();
+          exec_cpu.registers().fill(0);
+          exec_cpu.registers()[13] = loaded.stack_pointer;
+          exec_cpu.registers()[15] = loaded.entry_point;
+          exec_cpu.set_cpsr(0x10);
+          runtime.kernel->install_main_image_hle(exec_cpu,
+                                                 loaded.executable_path);
+          static_cast<void>(scheduler.complete_slice(
+              scheduled->thread, result.ticks_consumed,
+              XnuSliceCompletion::Terminate, XnuTimeAccounting::Deferred));
+          scheduler.remove_process(runtime.kernel->process().pid);
+          guest_parallelism_policy.forget_process(
+              runtime.kernel->process().pid);
+          std::fill(runtime.allocated.begin(), runtime.allocated.end(), false);
+          runtime.allocated[pending.processor] = true;
+          static_cast<void>(scheduler.register_thread(
+              XnuThreadId{runtime.kernel->process().pid,
+                          static_cast<std::uint32_t>(pending.processor)},
+              runtime.kernel->process().thread_base_priority));
+          scheduler_completed = true;
+        } catch (const std::exception &error) {
+          output.line("[process] exec failed pid=" +
+                      std::to_string(runtime.kernel->process().pid) +
+                      " path=" + pending.path + " error=" + error.what());
+          runtime.kernel->exit_process(127);
+          completion = XnuSliceCompletion::Terminate;
+        }
       } else if (fatal_result) {
         if (gdb_server) {
           debug_stop = true;
