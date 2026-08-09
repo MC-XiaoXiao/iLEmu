@@ -116,6 +116,7 @@ struct JitArtifactStoreStats {
   std::uint64_t memory_hits{};
   std::uint64_t disk_hits{};
   std::uint64_t disk_read_retries{};
+  std::uint64_t disk_read_waits{};
   std::uint64_t misses{};
   std::uint64_t publish_calls{};
   std::uint64_t deduplicated_publishes{};
@@ -184,6 +185,12 @@ private:
     std::size_t serialized_bytes{};
     std::list<JitArtifactKey>::iterator queue_position;
   };
+  struct DiskReadFlight {
+    std::condition_variable condition;
+    std::shared_ptr<const BlockArtifact> artifact;
+    bool complete{};
+    bool disk_hit{};
+  };
   using ArtifactMap =
       std::unordered_map<JitArtifactKey, ArtifactRecord, JitArtifactKeyHash>;
   using DiskArtifactMap = std::unordered_map<JitArtifactKey,
@@ -191,6 +198,9 @@ private:
                                              JitArtifactKeyHash>;
   using PendingWritebackMap =
       std::unordered_map<JitArtifactKey, PendingWriteback,
+                         JitArtifactKeyHash>;
+  using DiskReadFlightMap =
+      std::unordered_map<JitArtifactKey, std::shared_ptr<DiskReadFlight>,
                          JitArtifactKeyHash>;
   enum class AppendResult : std::uint8_t {
     NotApplicable,
@@ -222,6 +232,7 @@ private:
   mutable std::list<JitArtifactKey> lru_;
   mutable PendingWritebackMap pending_writebacks_;
   mutable std::list<JitArtifactKey> writeback_order_;
+  mutable DiskReadFlightMap disk_read_flights_;
   mutable DiskArtifactMap disk_artifacts_;
   mutable std::vector<JitArtifactKey> disk_order_;
   JitArtifactLimits limits_;

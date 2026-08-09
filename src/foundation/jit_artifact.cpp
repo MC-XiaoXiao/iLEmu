@@ -656,46 +656,10 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
            left.append_log == right.append_log;
   };
   constexpr unsigned maximum_record_attempts = 3U;
-  for (unsigned attempt = 0; attempt < maximum_record_attempts; ++attempt) {
-    DiskArtifactRecord record;
-    std::filesystem::path source_path;
-    {
-      const std::lock_guard lock{mutex_};
-      if (attempt == 0U) ++stats_.lookups;
-      if (auto artifact = artifacts_.find(key);
-          artifact != artifacts_.end()) {
-        if (artifact->second.loaded_from_disk) {
-          ++stats_.disk_hits;
-          artifact->second.loaded_from_disk = false;
-        } else {
-          ++stats_.memory_hits;
-        }
-        touch_locked(artifact);
-        return artifact->second.artifact;
-      }
-      if (const auto pending = pending_writebacks_.find(key);
-          pending != pending_writebacks_.end()) {
-        ++stats_.memory_hits;
-        return pending->second.artifact;
-      }
-      const auto disk_artifact = disk_artifacts_.find(key);
-      if (disk_artifact == disk_artifacts_.end() ||
-          disk_artifact->second.serialized_bytes >
-              std::numeric_limits<std::size_t>::max()) {
-        ++stats_.misses;
-        return nullptr;
-      }
-      record = disk_artifact->second;
-      source_path = record.append_log ? disk_append_path_
-                                      : disk_source_path_;
-    }
-
-    // Disk latency and deserialization must not serialize unrelated vCPU
-    // lookups or artifact publications behind the store mutex.
-    const auto loaded =
-        read_artifact_at(source_path, record.offset, record.serialized_bytes);
-
-    const std::lock_guard lock{mutex_};
+  std::shared_ptr<DiskReadFlight> flight;
+  {
+    std::unique_lock lock{mutex_};
+    ++stats_.lookups;
     if (auto artifact = artifacts_.find(key);
         artifact != artifacts_.end()) {
       if (artifact->second.loaded_from_disk) {
@@ -712,39 +676,153 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
       ++stats_.memory_hits;
       return pending->second.artifact;
     }
-    const auto current = disk_artifacts_.find(key);
-    const auto current_path =
-        current != disk_artifacts_.end()
-            ? (current->second.append_log ? disk_append_path_
-                                          : disk_source_path_)
-            : std::filesystem::path{};
-    if (current == disk_artifacts_.end() ||
-        !record_matches(current->second, record) ||
-        current_path != source_path) {
-      if (attempt + 1U < maximum_record_attempts) {
-        ++stats_.disk_read_retries;
-        continue;
+    const auto disk_artifact = disk_artifacts_.find(key);
+    if (disk_artifact == disk_artifacts_.end() ||
+        disk_artifact->second.serialized_bytes >
+            std::numeric_limits<std::size_t>::max()) {
+      ++stats_.misses;
+      return nullptr;
+    }
+    if (const auto active = disk_read_flights_.find(key);
+        active != disk_read_flights_.end()) {
+      flight = active->second;
+      ++stats_.disk_read_waits;
+      flight->condition.wait(lock, [&flight] { return flight->complete; });
+      const auto result = flight->artifact;
+      if (!result) {
+        ++stats_.misses;
+        return nullptr;
       }
-      ++stats_.misses;
-      return nullptr;
+      if (flight->disk_hit) {
+        ++stats_.disk_hits;
+      } else {
+        ++stats_.memory_hits;
+      }
+      if (auto resident = artifacts_.find(key);
+          resident != artifacts_.end()) {
+        touch_locked(resident);
+      }
+      return result;
     }
-    if (!loaded || (*loaded)->key != key) {
-      ++stats_.misses;
-      return nullptr;
-    }
-    insert_locked(*loaded, static_cast<std::size_t>(record.serialized_bytes),
-                  true);
-    auto artifact = artifacts_.find(key);
-    if (artifact == artifacts_.end()) {
-      ++stats_.misses;
-      return nullptr;
-    }
-    ++stats_.disk_hits;
-    artifact->second.loaded_from_disk = false;
-    touch_locked(artifact);
-    return artifact->second.artifact;
+    flight = std::make_shared<DiskReadFlight>();
+    disk_read_flights_.emplace(key, flight);
   }
-  return nullptr;
+
+  const auto finish_locked =
+      [this, &key, &flight](std::unique_lock<std::mutex> &lock,
+                            std::shared_ptr<const BlockArtifact> artifact,
+                            bool disk_hit) {
+        flight->artifact = artifact;
+        flight->disk_hit = disk_hit;
+        flight->complete = true;
+        if (const auto active = disk_read_flights_.find(key);
+            active != disk_read_flights_.end() &&
+            active->second == flight) {
+          disk_read_flights_.erase(active);
+        }
+        lock.unlock();
+        flight->condition.notify_all();
+        return artifact;
+      };
+
+  try {
+    for (unsigned attempt = 0; attempt < maximum_record_attempts; ++attempt) {
+      DiskArtifactRecord record;
+      std::filesystem::path source_path;
+      {
+        std::unique_lock lock{mutex_};
+        if (auto artifact = artifacts_.find(key);
+            artifact != artifacts_.end()) {
+          const auto disk_hit = artifact->second.loaded_from_disk;
+          if (disk_hit) {
+            ++stats_.disk_hits;
+            artifact->second.loaded_from_disk = false;
+          } else {
+            ++stats_.memory_hits;
+          }
+          touch_locked(artifact);
+          return finish_locked(lock, artifact->second.artifact, disk_hit);
+        }
+        if (const auto pending = pending_writebacks_.find(key);
+            pending != pending_writebacks_.end()) {
+          ++stats_.memory_hits;
+          return finish_locked(lock, pending->second.artifact, false);
+        }
+        const auto disk_artifact = disk_artifacts_.find(key);
+        if (disk_artifact == disk_artifacts_.end() ||
+            disk_artifact->second.serialized_bytes >
+                std::numeric_limits<std::size_t>::max()) {
+          ++stats_.misses;
+          return finish_locked(lock, nullptr, false);
+        }
+        record = disk_artifact->second;
+        source_path = record.append_log ? disk_append_path_
+                                        : disk_source_path_;
+      }
+
+      // The per-key flight owns retries while disk latency and deserialization
+      // remain outside the global store mutex.
+      const auto loaded =
+          read_artifact_at(source_path, record.offset, record.serialized_bytes);
+
+      std::unique_lock lock{mutex_};
+      if (auto artifact = artifacts_.find(key);
+          artifact != artifacts_.end()) {
+        const auto disk_hit = artifact->second.loaded_from_disk;
+        if (disk_hit) {
+          ++stats_.disk_hits;
+          artifact->second.loaded_from_disk = false;
+        } else {
+          ++stats_.memory_hits;
+        }
+        touch_locked(artifact);
+        return finish_locked(lock, artifact->second.artifact, disk_hit);
+      }
+      if (const auto pending = pending_writebacks_.find(key);
+          pending != pending_writebacks_.end()) {
+        ++stats_.memory_hits;
+        return finish_locked(lock, pending->second.artifact, false);
+      }
+      const auto current = disk_artifacts_.find(key);
+      const auto current_path =
+          current != disk_artifacts_.end()
+              ? (current->second.append_log ? disk_append_path_
+                                            : disk_source_path_)
+              : std::filesystem::path{};
+      if (current == disk_artifacts_.end() ||
+          !record_matches(current->second, record) ||
+          current_path != source_path) {
+        if (attempt + 1U < maximum_record_attempts) {
+          ++stats_.disk_read_retries;
+          continue;
+        }
+        ++stats_.misses;
+        return finish_locked(lock, nullptr, false);
+      }
+      if (!loaded || (*loaded)->key != key) {
+        ++stats_.misses;
+        return finish_locked(lock, nullptr, false);
+      }
+      insert_locked(*loaded, static_cast<std::size_t>(record.serialized_bytes),
+                    true);
+      auto artifact = artifacts_.find(key);
+      if (artifact == artifacts_.end()) {
+        ++stats_.misses;
+        return finish_locked(lock, nullptr, false);
+      }
+      ++stats_.disk_hits;
+      artifact->second.loaded_from_disk = false;
+      touch_locked(artifact);
+      return finish_locked(lock, artifact->second.artifact, true);
+    }
+  } catch (...) {
+    std::unique_lock lock{mutex_};
+    ++stats_.misses;
+    return finish_locked(lock, nullptr, false);
+  }
+  std::unique_lock lock{mutex_};
+  ++stats_.misses;
+  return finish_locked(lock, nullptr, false);
 }
 
 void JitArtifactStore::touch_locked(ArtifactMap::iterator iterator) const {

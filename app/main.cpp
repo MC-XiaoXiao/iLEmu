@@ -3397,6 +3397,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         " disk-hit=" + std::to_string(artifact_stats.disk_hits) +
         " disk-retry=" +
         std::to_string(artifact_stats.disk_read_retries) +
+        " disk-wait=" + std::to_string(artifact_stats.disk_read_waits) +
         " miss=" + std::to_string(artifact_stats.misses) +
         " publish=" + std::to_string(artifact_stats.publish_calls) +
         " dedup=" +
