@@ -64,6 +64,12 @@ constexpr std::uint32_t jit_artifact_format_version = 7U;
 
 constexpr std::uint64_t jit_artifact_dynarmic_build_fingerprint =
     ILEMU_DYNARMIC_BUILD_FINGERPRINT;
+// A zero fingerprint means the dependency producer could not be identified
+// (for example, when Dynarmic is supplied without its Git metadata).  Such a
+// key cannot establish producer compatibility, so it must never authorize a
+// persistent IR import.
+constexpr bool jit_artifact_producer_fingerprint_available =
+    jit_artifact_dynarmic_build_fingerprint != 0U;
 
 [[nodiscard]] ArmCpuModelKind jit_artifact_cpu_model(
     const ArmCpuModel& cpu_model) noexcept {
@@ -190,7 +196,8 @@ public:
     [[nodiscard]] bool import_artifact(
         Dynarmic::A32::Jit& jit,
         std::uint64_t location_descriptor) const noexcept {
-        if (!artifact_store_ || !portable_artifact_import_supported()) {
+        if (!artifact_store_ || !portable_artifact_import_supported() ||
+            !jit_artifact_producer_fingerprint_available) {
             return false;
         }
         try {
