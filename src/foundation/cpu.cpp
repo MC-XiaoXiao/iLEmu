@@ -219,7 +219,8 @@ public:
         std::uint64_t location_descriptor) const noexcept {
         if (!artifact_store_) return nullptr;
         const auto key = make_artifact_key(location_descriptor);
-        return key ? artifact_store_->find(*key) : nullptr;
+        return key ? artifact_store_->find(*key, artifact_retention_)
+                   : nullptr;
     }
 
     [[nodiscard]] std::optional<JitArtifactKey> artifact_key(
@@ -521,6 +522,10 @@ public:
         translation_profile_ = std::move(profile);
     }
 
+    void set_artifact_retention(JitArtifactRetention retention) noexcept {
+        artifact_retention_ = retention;
+    }
+
 private:
     [[nodiscard]] std::optional<JitArtifactKey> make_artifact_key(
         std::uint64_t location_descriptor) const noexcept {
@@ -592,7 +597,8 @@ private:
             }
             data.translation_nanoseconds = translation_nanoseconds;
             static_cast<void>(artifact_store_->publish(std::move(*key),
-                                                       std::move(data)));
+                                                       std::move(data),
+                                                       artifact_retention_));
         } catch (...) {
             // Artifact persistence must never make guest execution fail.
         }
@@ -696,6 +702,7 @@ private:
     std::string exception_;
     std::shared_ptr<JitTranslationProfile> translation_profile_;
     std::shared_ptr<JitArtifactStore> artifact_store_;
+    JitArtifactRetention artifact_retention_{JitArtifactRetention::Normal};
     Dynarmic::IR::Block *translation_block_{};
     std::vector<std::uint32_t> translation_code_pages_;
     std::vector<JitConstantDependency> translation_constant_dependencies_;
@@ -912,6 +919,11 @@ public:
                 pending_precompile_entries_.push_back(*location);
             }
         }
+    }
+
+    void set_artifact_retention(JitArtifactRetention retention) {
+        const std::lock_guard execution_lock{execution_mutex_};
+        callbacks_->set_artifact_retention(retention);
     }
 
     void add_precompile_entries(
@@ -1271,6 +1283,12 @@ public:
         }
     }
 
+    void set_artifact_retention(JitArtifactRetention retention) {
+        for (auto& executor : executors_) {
+            executor->set_artifact_retention(retention);
+        }
+    }
+
     void add_precompile_entries(
         const std::vector<std::uint64_t> &location_descriptors) {
         for (auto& executor : executors_) {
@@ -1589,6 +1607,11 @@ void CpuCluster::invalidate_cache_range(
 void CpuCluster::set_translation_profile(
     std::shared_ptr<JitTranslationProfile> profile) {
     execution_pool_->set_translation_profile(std::move(profile));
+}
+
+void CpuCluster::set_jit_artifact_retention(
+    JitArtifactRetention retention) {
+    execution_pool_->set_artifact_retention(retention);
 }
 
 void CpuCluster::add_precompile_entries(

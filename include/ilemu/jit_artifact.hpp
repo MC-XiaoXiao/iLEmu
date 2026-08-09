@@ -24,6 +24,11 @@ enum class JitHostIsa : std::uint8_t {
   Arm64,
 };
 
+enum class JitArtifactRetention : std::uint8_t {
+  Normal,
+  BootWorkingSet,
+};
+
 // Every field that can change the generated block or its calling convention
 // belongs in this key. In particular, no path or mtime participates in cache
 // identity.
@@ -124,6 +129,7 @@ struct JitArtifactStoreStats {
   std::uint64_t evictions{};
   std::uint64_t compactions{};
   std::uint64_t quota_evictions{};
+  std::uint64_t boot_working_set_artifacts{};
   std::uint64_t writeback_enqueued{};
   std::uint64_t writeback_saved{};
   std::uint64_t writeback_dropped{};
@@ -150,9 +156,11 @@ public:
   JitArtifactStore &operator=(const JitArtifactStore &) = delete;
 
   [[nodiscard]] std::shared_ptr<const BlockArtifact> find(
-      const JitArtifactKey &key) const;
+      const JitArtifactKey &key,
+      JitArtifactRetention retention = JitArtifactRetention::Normal) const;
   [[nodiscard]] std::shared_ptr<const BlockArtifact> publish(
-      JitArtifactKey key, JitArtifactData data);
+      JitArtifactKey key, JitArtifactData data,
+      JitArtifactRetention retention = JitArtifactRetention::Normal);
   [[nodiscard]] std::size_t size() const;
   [[nodiscard]] JitArtifactStoreStats stats() const;
   // Stops optional background persistence and releases queued artifacts.
@@ -181,6 +189,7 @@ private:
     std::uint64_t benefit_generation{};
     std::uint64_t benefit_hits{};
     std::uint64_t translation_nanoseconds{};
+    bool boot_working_set{};
   };
   struct ArtifactRecord {
     std::shared_ptr<const BlockArtifact> artifact;
@@ -188,12 +197,14 @@ private:
     std::list<JitArtifactKey>::iterator lru_position;
     bool loaded_from_disk{};
     std::uint64_t benefit_generation{};
+    bool boot_working_set{};
   };
   struct PendingWriteback {
     std::shared_ptr<const BlockArtifact> artifact;
     std::size_t serialized_bytes{};
     std::list<JitArtifactKey>::iterator queue_position;
     std::uint64_t benefit_generation{};
+    bool boot_working_set{};
   };
   struct DiskReadFlight {
     std::condition_variable condition;
@@ -224,13 +235,19 @@ private:
   void note_disk_benefit_locked(
       const JitArtifactKey &key,
       const BlockArtifact *artifact = nullptr) const noexcept;
+  void promote_retention_locked(
+      const JitArtifactKey &key, JitArtifactRetention retention) const;
+  void promote_resident_retention_locked(
+      ArtifactMap::iterator iterator) const;
   void evict_until_fit_locked(std::size_t required_bytes) const;
   void insert_locked(std::shared_ptr<const BlockArtifact> artifact,
                      std::size_t serialized_bytes,
-                     bool loaded_from_disk = false) const;
+                     bool loaded_from_disk = false,
+                     JitArtifactRetention retention =
+                         JitArtifactRetention::Normal) const;
   [[nodiscard]] bool enqueue_writeback_locked(
       const std::shared_ptr<const BlockArtifact> &artifact,
-      std::size_t serialized_bytes) const;
+      std::size_t serialized_bytes, JitArtifactRetention retention) const;
   void retire_writeback_locked(const JitArtifactKey &key) const;
   void writeback_loop();
   [[nodiscard]] bool append_writeback_batch(
@@ -246,6 +263,7 @@ private:
   mutable std::mutex mutex_;
   mutable ArtifactMap artifacts_;
   mutable std::list<JitArtifactKey> lru_;
+  mutable std::list<JitArtifactKey>::iterator boot_lru_begin_;
   mutable PendingWritebackMap pending_writebacks_;
   mutable std::list<JitArtifactKey> writeback_order_;
   mutable DiskReadFlightMap disk_read_flights_;

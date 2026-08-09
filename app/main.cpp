@@ -22,6 +22,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -1271,6 +1272,8 @@ void benchmark(const std::vector<std::string> &args, Output &output) {
 }
 
 void boot(const std::vector<std::string> &args, Output &output) {
+  constexpr std::string_view springboard_boot_path =
+      "/System/Library/CoreServices/SpringBoard.app/SpringBoard";
   const auto rootfs = option(args, "--rootfs");
   if (!rootfs) {
     throw std::runtime_error{"boot requires --rootfs"};
@@ -1508,6 +1511,20 @@ void boot(const std::vector<std::string> &args, Output &output) {
       "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
       "SHELL=/bin/sh"};
   auto process = loader.load(binary, {}, initial_environment);
+  std::unordered_set<ContentIdentity, ContentIdentityHash>
+      boot_image_identities;
+  boot_image_identities.insert(process.executable.content_identity());
+  if (catalog_index != nullptr) {
+    auto springboard_host_path = std::filesystem::path{*rootfs};
+    springboard_host_path /=
+        std::filesystem::path{springboard_boot_path}.relative_path();
+    if (const auto *springboard =
+            catalog_index->find_path(springboard_host_path)) {
+      boot_image_identities.insert(springboard->content_identity);
+    }
+  }
+  output.line("[jit-artifact] boot-image-roots=" +
+              std::to_string(boot_image_identities.size()));
   // Dynarmic's global monitor indexes reservations by processor id. Reserve
   // disjoint ranges for boot-created Guest processes so same-address shared
   // mappings can invalidate reservations across process boundaries.
@@ -1606,9 +1623,21 @@ void boot(const std::vector<std::string> &args, Output &output) {
   auto jit_artifacts = std::make_shared<JitArtifactStore>(
       host_cache / "jit-artifacts.bin", jit_artifact_limits);
   std::shared_ptr<HostWorkToken> artifact_compaction_task;
-  const auto assign_translation_profile =
-      [&translation_profiles, catalog_index](CpuCluster &cpus,
-                                             const LoadedProcess &loaded) {
+  const auto assign_jit_process_profile =
+      [&translation_profiles, catalog_index, &boot_image_identities,
+       springboard_boot_path](
+          CpuCluster &cpus, const LoadedProcess &loaded) {
+        const auto retention =
+            boot_image_identities.contains(
+                loaded.executable.content_identity()) ||
+                    loaded.executable_path == springboard_boot_path
+                ? JitArtifactRetention::BootWorkingSet
+                : JitArtifactRetention::Normal;
+        if (retention == JitArtifactRetention::BootWorkingSet) {
+          boot_image_identities.insert(
+              loaded.executable.content_identity());
+        }
+        cpus.set_jit_artifact_retention(retention);
         cpus.set_translation_profile(translation_profiles.profile_for(
             loaded.executable.content_identity()));
         if (catalog_index == nullptr) return;
@@ -1642,7 +1671,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       "[jit] initial-runtime-code-cache-mib=" +
       std::to_string(initial->jit_cache_reservation->per_executor_bytes() /
                      1024U / 1024U));
-  assign_translation_profile(*initial->cpus, process);
+  assign_jit_process_profile(*initial->cpus, process);
   initial->kernel =
       std::make_unique<CompatibilityKernel>(*initial->memory, output, *rootfs,
                                             device, activation_override,
@@ -2000,7 +2029,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                                            environment);
               child_runtime->kernel->set_process_image(
                   path, loaded.executable.code_signature_entitlements());
-              assign_translation_profile(
+              assign_jit_process_profile(
                   *child_runtime->cpus, loaded);
               child_runtime->kernel->prepare_exec(0);
               auto &child_cpu = child_runtime->cpus->cpu(0);
@@ -2843,7 +2872,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                                 pending.environment);
           runtime.kernel->set_process_image(
               pending.path, loaded.executable.code_signature_entitlements());
-          assign_translation_profile(*runtime.cpus, loaded);
+          assign_jit_process_profile(*runtime.cpus, loaded);
           runtime.kernel->prepare_exec(pending.processor);
           auto &exec_cpu = runtime.cpus->cpu(pending.processor);
           exec_cpu.reset();
@@ -3408,6 +3437,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         " compactions=" + std::to_string(artifact_stats.compactions) +
         " quota-evictions=" +
         std::to_string(artifact_stats.quota_evictions) +
+        " boot-working-set=" +
+        std::to_string(artifact_stats.boot_working_set_artifacts) +
         " writeback-enqueued=" +
         std::to_string(artifact_stats.writeback_enqueued) +
         " writeback-saved=" +

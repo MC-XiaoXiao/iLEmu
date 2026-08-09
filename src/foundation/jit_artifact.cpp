@@ -1541,6 +1541,7 @@ std::size_t JitArtifactKeyHash::operator()(
 JitArtifactStore::JitArtifactStore(
     std::filesystem::path persistence_path, JitArtifactLimits limits)
     : limits_{std::move(limits)}, persistence_path_{std::move(persistence_path)} {
+  boot_lru_begin_ = lru_.end();
   bool persistence_ready = false;
   if (!persistence_path_.empty() && limits_.persistence_enabled) {
     persistence_path_ = current_snapshot_path(persistence_path_);
@@ -1566,7 +1567,7 @@ JitArtifactStore::~JitArtifactStore() {
 }
 
 std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
-    const JitArtifactKey &key) const {
+    const JitArtifactKey &key, JitArtifactRetention retention) const {
   const auto record_matches = [](const DiskArtifactRecord &left,
                                  const DiskArtifactRecord &right) {
     return left.generation == right.generation &&
@@ -1581,6 +1582,7 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
   {
     std::unique_lock lock{mutex_};
     ++stats_.lookups;
+    promote_retention_locked(key, retention);
     if (auto artifact = artifacts_.find(key);
         artifact != artifacts_.end()) {
       note_disk_benefit_locked(key, artifact->second.artifact.get());
@@ -1626,6 +1628,9 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
       }
       if (auto resident = artifacts_.find(key);
           resident != artifacts_.end()) {
+        if (retention == JitArtifactRetention::BootWorkingSet) {
+          resident->second.boot_working_set = true;
+        }
         touch_locked(resident);
       }
       return result;
@@ -1657,6 +1662,7 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
       std::filesystem::path source_path;
       {
         std::unique_lock lock{mutex_};
+        promote_retention_locked(key, retention);
         if (auto artifact = artifacts_.find(key);
             artifact != artifacts_.end()) {
           note_disk_benefit_locked(key, artifact->second.artifact.get());
@@ -1697,6 +1703,7 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
           record.checksum_valid ? &record.checksum : nullptr);
 
       std::unique_lock lock{mutex_};
+      promote_retention_locked(key, retention);
       if (auto artifact = artifacts_.find(key);
           artifact != artifacts_.end()) {
         note_disk_benefit_locked(key, artifact->second.artifact.get());
@@ -1740,7 +1747,10 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
       }
       note_disk_benefit_locked(key, loaded->get());
       insert_locked(*loaded, static_cast<std::size_t>(record.serialized_bytes),
-                    true);
+                    true,
+                    current->second.boot_working_set
+                        ? JitArtifactRetention::BootWorkingSet
+                        : retention);
       auto artifact = artifacts_.find(key);
       if (artifact == artifacts_.end()) {
         ++stats_.misses;
@@ -1762,8 +1772,19 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
 }
 
 void JitArtifactStore::touch_locked(ArtifactMap::iterator iterator) const {
-  lru_.splice(lru_.end(), lru_, iterator->second.lru_position);
-  iterator->second.lru_position = std::prev(lru_.end());
+  const auto position = iterator->second.lru_position;
+  if (iterator->second.boot_working_set) {
+    const bool was_first_boot = position == boot_lru_begin_;
+    const auto next = std::next(position);
+    lru_.splice(lru_.end(), lru_, position);
+    iterator->second.lru_position = std::prev(lru_.end());
+    if (was_first_boot) {
+      boot_lru_begin_ =
+          next == lru_.end() ? iterator->second.lru_position : next;
+    }
+  } else {
+    lru_.splice(boot_lru_begin_, lru_, position);
+  }
   iterator->second.benefit_generation =
       next_benefit_generation_locked();
 }
@@ -1796,6 +1817,35 @@ void JitArtifactStore::note_disk_benefit_locked(
   }
 }
 
+void JitArtifactStore::promote_retention_locked(
+    const JitArtifactKey &key, JitArtifactRetention retention) const {
+  if (retention != JitArtifactRetention::BootWorkingSet) return;
+  if (const auto disk = disk_artifacts_.find(key);
+      disk != disk_artifacts_.end()) {
+    disk->second.boot_working_set = true;
+  }
+  if (const auto resident = artifacts_.find(key);
+      resident != artifacts_.end()) {
+    promote_resident_retention_locked(resident);
+  }
+  if (const auto pending = pending_writebacks_.find(key);
+      pending != pending_writebacks_.end()) {
+    pending->second.boot_working_set = true;
+  }
+}
+
+void JitArtifactStore::promote_resident_retention_locked(
+    ArtifactMap::iterator iterator) const {
+  if (iterator->second.boot_working_set) return;
+  const bool had_boot_records = boot_lru_begin_ != lru_.end();
+  lru_.splice(lru_.end(), lru_, iterator->second.lru_position);
+  iterator->second.lru_position = std::prev(lru_.end());
+  iterator->second.boot_working_set = true;
+  if (!had_boot_records) {
+    boot_lru_begin_ = iterator->second.lru_position;
+  }
+}
+
 void JitArtifactStore::evict_until_fit_locked(
     std::size_t required_bytes) const {
   if (limits_.resident_bytes == 0U) return;
@@ -1803,8 +1853,13 @@ void JitArtifactStore::evict_until_fit_locked(
                               std::min(limits_.resident_bytes,
                                        required_bytes) &&
          !lru_.empty()) {
-    const auto key = lru_.front();
-    lru_.pop_front();
+    const auto victim = lru_.begin();
+    const auto key = *victim;
+    if (victim == boot_lru_begin_) {
+      boot_lru_begin_ = std::next(victim);
+    }
+    lru_.erase(victim);
+    if (lru_.empty()) boot_lru_begin_ = lru_.end();
     const auto iterator = artifacts_.find(key);
     if (iterator == artifacts_.end()) continue;
     resident_bytes_ -= iterator->second.serialized_bytes;
@@ -1815,9 +1870,13 @@ void JitArtifactStore::evict_until_fit_locked(
 
 void JitArtifactStore::insert_locked(
     std::shared_ptr<const BlockArtifact> artifact,
-    std::size_t serialized_bytes, bool loaded_from_disk) const {
+    std::size_t serialized_bytes, bool loaded_from_disk,
+    JitArtifactRetention retention) const {
   const auto key = artifact->key;
   if (const auto existing = artifacts_.find(key); existing != artifacts_.end()) {
+    if (retention == JitArtifactRetention::BootWorkingSet) {
+      promote_resident_retention_locked(existing);
+    }
     touch_locked(existing);
     return;
   }
@@ -1834,14 +1893,28 @@ void JitArtifactStore::insert_locked(
       std::numeric_limits<std::size_t>::max() - resident_bytes_) {
     return;
   }
-  lru_.push_back(key);
-  const auto lru_position = std::prev(lru_.end());
+  const auto disk = disk_artifacts_.find(key);
+  const bool boot_working_set =
+      retention == JitArtifactRetention::BootWorkingSet ||
+      (disk != disk_artifacts_.end() && disk->second.boot_working_set);
+  const bool had_boot_records = boot_lru_begin_ != lru_.end();
+  const auto lru_position =
+      boot_working_set ? lru_.insert(lru_.end(), key)
+                       : lru_.insert(boot_lru_begin_, key);
+  if (boot_working_set && !had_boot_records) {
+    boot_lru_begin_ = lru_position;
+  }
   const auto [iterator, inserted] = artifacts_.try_emplace(
       key, ArtifactRecord{std::move(artifact), serialized_bytes,
                           lru_position, loaded_from_disk,
-                          next_benefit_generation_locked()});
+                          next_benefit_generation_locked(),
+                          boot_working_set});
   if (!inserted) {
+    if (boot_lru_begin_ == lru_position) {
+      boot_lru_begin_ = std::next(lru_position);
+    }
     lru_.erase(lru_position);
+    if (lru_.empty()) boot_lru_begin_ = lru_.end();
     touch_locked(iterator);
     return;
   }
@@ -1851,7 +1924,7 @@ void JitArtifactStore::insert_locked(
 
 bool JitArtifactStore::enqueue_writeback_locked(
     const std::shared_ptr<const BlockArtifact> &artifact,
-    std::size_t serialized_bytes) const {
+    std::size_t serialized_bytes, JitArtifactRetention retention) const {
   if (writeback_disabled_ || persistence_path_.empty() ||
       !limits_.persistence_enabled || limits_.writeback_bytes == 0U ||
       disk_artifacts_.contains(artifact->key) ||
@@ -1869,7 +1942,8 @@ bool JitArtifactStore::enqueue_writeback_locked(
   const auto [iterator, inserted] = pending_writebacks_.try_emplace(
       artifact->key,
       PendingWriteback{artifact, serialized_bytes, queue_position,
-                       next_benefit_generation_locked()});
+                       next_benefit_generation_locked(),
+                       retention == JitArtifactRetention::BootWorkingSet});
   if (!inserted) {
     writeback_order_.erase(queue_position);
     return false;
@@ -1896,7 +1970,8 @@ void JitArtifactStore::retire_writeback_locked(
 }
 
 std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
-    JitArtifactKey key, JitArtifactData data) {
+    JitArtifactKey key, JitArtifactData data,
+    JitArtifactRetention retention) {
   const auto artifact_bytes = serialized_artifact_bytes(data);
   if (!artifact_bytes) return nullptr;
   std::shared_ptr<const BlockArtifact> result;
@@ -1904,6 +1979,7 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
   {
     const std::lock_guard lock{mutex_};
     ++stats_.publish_calls;
+    promote_retention_locked(key, retention);
     if (const auto existing = artifacts_.find(key);
         existing != artifacts_.end()) {
       ++stats_.deduplicated_publishes;
@@ -1926,12 +2002,15 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
         !writeback_disabled_ && !persistence_path_.empty() &&
         limits_.persistence_enabled && limits_.writeback_bytes != 0U &&
         !disk_artifacts_.contains(lookup_key);
-    notify_writeback = enqueue_writeback_locked(artifact, *artifact_bytes);
-    // Under queue pressure, degrade by declining the optional cache
-    // publication. In particular, do not evict a retained artifact on behalf
-    // of a new artifact that the bounded writer could not accept.
-    if (!requires_writeback || notify_writeback) {
-      insert_locked(artifact, *artifact_bytes);
+    notify_writeback =
+        enqueue_writeback_locked(artifact, *artifact_bytes, retention);
+    // Under ordinary queue pressure, decline the optional publication rather
+    // than evicting a retained artifact for an unqueued newcomer. Boot-set
+    // translations are the exception: keep them resident so the next full
+    // save can persist them after the bounded writer catches up.
+    if (!requires_writeback || notify_writeback ||
+        retention == JitArtifactRetention::BootWorkingSet) {
+      insert_locked(artifact, *artifact_bytes, false, retention);
     }
     const auto inserted = artifacts_.find(lookup_key);
     result = inserted != artifacts_.end()
@@ -1966,6 +2045,23 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
   {
     const std::lock_guard lock{mutex_};
     result = stats_;
+    for (const auto &[key, record] : disk_artifacts_) {
+      static_cast<void>(key);
+      if (record.boot_working_set) {
+        ++result.boot_working_set_artifacts;
+      }
+    }
+    for (const auto &[key, record] : artifacts_) {
+      if (record.boot_working_set && !disk_artifacts_.contains(key)) {
+        ++result.boot_working_set_artifacts;
+      }
+    }
+    for (const auto &[key, record] : pending_writebacks_) {
+      if (record.boot_working_set && !disk_artifacts_.contains(key) &&
+          !artifacts_.contains(key)) {
+        ++result.boot_working_set_artifacts;
+      }
+    }
     result.resident_bytes = resident_bytes_;
     result.writeback_pending_bytes = pending_writeback_bytes_;
     if (!limits_.persistence_enabled) return result;
@@ -2244,6 +2340,13 @@ bool JitArtifactStore::append_writeback_batch(
           next_benefit_generation_locked();
       records[index].translation_nanoseconds =
           artifacts[index]->data.translation_nanoseconds;
+      const auto resident = artifacts_.find(artifacts[index]->key);
+      const auto pending = pending_writebacks_.find(artifacts[index]->key);
+      records[index].boot_working_set =
+          (resident != artifacts_.end() &&
+           resident->second.boot_working_set) ||
+          (pending != pending_writebacks_.end() &&
+           pending->second.boot_working_set);
       disk_artifacts_[artifacts[index]->key] = records[index];
       disk_order_.push_back(artifacts[index]->key);
     }
@@ -2449,15 +2552,26 @@ bool JitArtifactStore::load_coordinated(
     }
     for (auto &entry : loaded_index) {
       const auto previous = disk_artifacts_.find(entry.first);
-      if (previous == disk_artifacts_.end()) continue;
-      entry.second.benefit_generation =
-          previous->second.benefit_generation;
-      entry.second.benefit_hits = previous->second.benefit_hits;
-      entry.second.translation_nanoseconds = std::max(
-          entry.second.translation_nanoseconds,
-          previous->second.translation_nanoseconds);
-      benefit_generation_ = std::max(
-          benefit_generation_, entry.second.benefit_generation);
+      if (previous != disk_artifacts_.end()) {
+        entry.second.benefit_generation =
+            previous->second.benefit_generation;
+        entry.second.benefit_hits = previous->second.benefit_hits;
+        entry.second.translation_nanoseconds = std::max(
+            entry.second.translation_nanoseconds,
+            previous->second.translation_nanoseconds);
+        entry.second.boot_working_set =
+            previous->second.boot_working_set;
+        benefit_generation_ = std::max(
+            benefit_generation_, entry.second.benefit_generation);
+      }
+      const auto resident = artifacts_.find(entry.first);
+      const auto pending = pending_writebacks_.find(entry.first);
+      entry.second.boot_working_set =
+          entry.second.boot_working_set ||
+          (resident != artifacts_.end() &&
+           resident->second.boot_working_set) ||
+          (pending != pending_writebacks_.end() &&
+           pending->second.boot_working_set);
     }
     for (const auto &key : loaded_order) {
       const auto entry = loaded_index.find(key);
@@ -2479,8 +2593,15 @@ bool JitArtifactStore::load_coordinated(
     disk_append_indexed_ = !journal.header_valid || journal.indexed;
     for (auto &artifact : loaded) {
       const auto artifact_bytes = serialized_artifact_bytes(artifact->data);
-      if (artifact_bytes)
-        insert_locked(std::move(artifact), *artifact_bytes, true);
+      if (artifact_bytes) {
+        const auto record = disk_artifacts_.find(artifact->key);
+        insert_locked(
+            std::move(artifact), *artifact_bytes, true,
+            record != disk_artifacts_.end() &&
+                    record->second.boot_working_set
+                ? JitArtifactRetention::BootWorkingSet
+                : JitArtifactRetention::Normal);
+      }
     }
     return true;
   } catch (...) {
@@ -2542,7 +2663,17 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
               record.benefit_hits = existing->second.benefit_hits;
               record.translation_nanoseconds =
                   existing->second.translation_nanoseconds;
+              record.boot_working_set =
+                  existing->second.boot_working_set;
             }
+            const auto resident = artifacts_.find(entry.key);
+            const auto pending = pending_writebacks_.find(entry.key);
+            record.boot_working_set =
+                record.boot_working_set ||
+                (resident != artifacts_.end() &&
+                 resident->second.boot_working_set) ||
+                (pending != pending_writebacks_.end() &&
+                 pending->second.boot_working_set);
             record.generation = next_disk_generation_locked();
             record.benefit_generation =
                 next_benefit_generation_locked();
@@ -2686,6 +2817,13 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
             next_benefit_generation_locked();
         output_records[index].translation_nanoseconds =
             new_artifacts[index].second->data.translation_nanoseconds;
+        const auto resident = artifacts_.find(key);
+        const auto pending = pending_writebacks_.find(key);
+        output_records[index].boot_working_set =
+            (resident != artifacts_.end() &&
+             resident->second.boot_working_set) ||
+            (pending != pending_writebacks_.end() &&
+             pending->second.boot_working_set);
         disk_artifacts_[key] = output_records[index];
         disk_order_.push_back(key);
         retire_writeback_locked(key);
@@ -2749,6 +2887,7 @@ bool JitArtifactStore::save_full(
       std::shared_ptr<const BlockArtifact> artifact;
       DiskArtifactRecord disk_record;
       bool resident{};
+      bool boot_working_set{};
     };
 
     std::vector<SaveEntry> entries;
@@ -2773,18 +2912,27 @@ bool JitArtifactStore::save_full(
           record.benefit_generation =
               std::max(record.benefit_generation,
                        resident->second.benefit_generation);
+          record.boot_working_set =
+              record.boot_working_set ||
+              resident->second.boot_working_set;
           entries.push_back(SaveEntry{
-              key, resident->second.artifact, record, true});
+              key, resident->second.artifact, record, true,
+              record.boot_working_set});
         } else if (const auto pending = pending_writebacks_.find(key);
                    pending != pending_writebacks_.end()) {
           auto record = disk->second;
           record.benefit_generation =
               std::max(record.benefit_generation,
                        pending->second.benefit_generation);
+          record.boot_working_set =
+              record.boot_working_set ||
+              pending->second.boot_working_set;
           entries.push_back(SaveEntry{
-              key, pending->second.artifact, record, true});
+              key, pending->second.artifact, record, true,
+              record.boot_working_set});
         } else {
-          entries.push_back(SaveEntry{key, {}, disk->second, false});
+          entries.push_back(SaveEntry{key, {}, disk->second, false,
+                                      disk->second.boot_working_set});
         }
       };
       for (const auto &key : disk_order_) append_disk_entry(key);
@@ -2799,8 +2947,11 @@ bool JitArtifactStore::save_full(
           DiskArtifactRecord record;
           record.benefit_generation =
               resident->second.benefit_generation;
+          record.boot_working_set =
+              resident->second.boot_working_set;
           entries.push_back(SaveEntry{
-              key, resident->second.artifact, record, true});
+              key, resident->second.artifact, record, true,
+              record.boot_working_set});
           return;
         }
         const auto pending = pending_writebacks_.find(key);
@@ -2808,8 +2959,11 @@ bool JitArtifactStore::save_full(
           DiskArtifactRecord record;
           record.benefit_generation =
               pending->second.benefit_generation;
+          record.boot_working_set =
+              pending->second.boot_working_set;
           entries.push_back(SaveEntry{
-              key, pending->second.artifact, record, true});
+              key, pending->second.artifact, record, true,
+              record.boot_working_set});
         }
       };
       for (const auto &key : lru_) append_resident_entry(key);
@@ -2892,6 +3046,10 @@ bool JitArtifactStore::save_full(
           [&entries, &record_bytes](std::size_t left, std::size_t right) {
             const auto &left_entry = entries[left];
             const auto &right_entry = entries[right];
+            if (left_entry.boot_working_set !=
+                right_entry.boot_working_set) {
+              return left_entry.boot_working_set;
+            }
             if (left_entry.resident != right_entry.resident) {
               return left_entry.resident;
             }
@@ -2950,6 +3108,12 @@ bool JitArtifactStore::save_full(
       std::stable_sort(
           retained_indices.begin(), retained_indices.end(),
           [&entries](std::size_t left, std::size_t right) {
+            if (entries[left].boot_working_set !=
+                entries[right].boot_working_set) {
+              // The on-disk order is the restart recency proxy. Keep protected
+              // records at the recent end even before their process next runs.
+              return !entries[left].boot_working_set;
+            }
             return entries[left].disk_record.benefit_generation <
                    entries[right].disk_record.benefit_generation;
           });
@@ -3071,6 +3235,7 @@ bool JitArtifactStore::save_full(
         output_record.benefit_hits = entry.disk_record.benefit_hits;
         output_record.translation_nanoseconds =
             entry.disk_record.translation_nanoseconds;
+        output_record.boot_working_set = entry.boot_working_set;
         output_records.push_back(std::move(output_record));
         if (output_offset > std::numeric_limits<std::uint64_t>::max() -
                                 bytes) {
@@ -3166,6 +3331,17 @@ bool JitArtifactStore::save_full(
         return false;
       }
       for (auto &entry : output_index) {
+        const auto current_disk = disk_artifacts_.find(entry.first);
+        const auto resident = artifacts_.find(entry.first);
+        const auto pending = pending_writebacks_.find(entry.first);
+        entry.second.boot_working_set =
+            entry.second.boot_working_set ||
+            (current_disk != disk_artifacts_.end() &&
+             current_disk->second.boot_working_set) ||
+            (resident != artifacts_.end() &&
+             resident->second.boot_working_set) ||
+            (pending != pending_writebacks_.end() &&
+             pending->second.boot_working_set);
         entry.second.generation = next_disk_generation_locked();
       }
       disk_artifacts_ = std::move(output_index);

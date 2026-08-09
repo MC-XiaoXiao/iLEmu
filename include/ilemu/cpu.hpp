@@ -20,6 +20,7 @@ namespace ilemu {
 
 class JitTranslationProfile;
 class JitArtifactStore;
+enum class JitArtifactRetention : std::uint8_t;
 
 struct CpuRunResult {
     Dynarmic::HaltReason reason{};
@@ -167,6 +168,10 @@ public:
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
     void set_translation_profile(
         std::shared_ptr<JitTranslationProfile> profile);
+    // Boot-critical processes mark every executable artifact they actually
+    // consume, naturally covering dyld and the mapped dependency closure
+    // without putting process paths into artifact identity.
+    void set_jit_artifact_retention(JitArtifactRetention retention);
     void add_precompile_entries(
         const std::vector<std::uint64_t> &location_descriptors);
     std::size_t precompile_pending(
