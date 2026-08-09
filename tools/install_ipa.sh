@@ -128,6 +128,70 @@ uuid=$(printf '%s' "$digest" | cut -c1-32 | awk '{print toupper($0)}' | sed \
 target=$app_root/$uuid/$(basename "$app_dir")
 target_parent=$(dirname "$target")
 
+# Keep a previous installation of the same bundle visible until the new User
+# record has been atomically published.  The cache stores guest paths while
+# the host rootfs keeps the data volume below private/; reject anything that
+# cannot be proven to remain inside this application's directory.
+old_install_path=$(python3 - "$cache_path" "$bundle_id" <<'PY'
+import os
+import plistlib
+import sys
+
+cache_path, bundle_id = sys.argv[1:]
+if not os.path.exists(cache_path):
+    print("")
+    raise SystemExit(0)
+with open(cache_path, "rb") as stream:
+    cache = plistlib.load(stream)
+if not isinstance(cache, dict):
+    raise SystemExit("install-ipa: installation cache root is not a dictionary")
+user = cache.get("User", {})
+if not isinstance(user, dict):
+    raise SystemExit("install-ipa: installation cache User map is not a dictionary")
+record = user.get(bundle_id, {})
+if not isinstance(record, dict):
+    raise SystemExit("install-ipa: installation cache record is not a dictionary")
+path = record.get("Path", "")
+if path and not isinstance(path, str):
+    raise SystemExit("install-ipa: installation cache Path is not a string")
+if path:
+    prefix = "/var/mobile/Applications/"
+    if not path.startswith(prefix):
+        raise SystemExit("install-ipa: previous application path is outside Applications")
+    components = path[len(prefix):].split("/")
+    if (len(components) != 2 or any(
+            not component or component in {".", ".."}
+            for component in components) or
+            not components[1].endswith(".app")):
+        raise SystemExit("install-ipa: previous application path is not an app bundle")
+print(path)
+PY
+)
+old_target_parent=
+if [ -n "$old_install_path" ]; then
+    case "$old_install_path" in
+        /var/mobile/Applications/*) ;;
+        *)
+            echo "install-ipa: invalid previous application path: $old_install_path" >&2
+            exit 1
+            ;;
+    esac
+    case "$old_install_path" in
+        *..*|*//*|*" "*)
+            echo "install-ipa: invalid previous application path: $old_install_path" >&2
+            exit 1
+            ;;
+    esac
+    old_target=$rootfs/private$old_install_path
+    case "$old_target" in
+        "$app_root"/*) old_target_parent=$(dirname "$old_target") ;;
+        *)
+            echo "install-ipa: previous application path escapes data volume: $old_install_path" >&2
+            exit 1
+            ;;
+    esac
+fi
+
 # Move the extracted tree into the data volume before publishing it.  A
 # failed metadata transaction therefore leaves no partially visible bundle.
 if [ -e "$target_parent" ]; then
@@ -138,7 +202,7 @@ mv "$app_dir" "$target"
 chmod -R u+rwX,go+rX "$target_parent"
 chmod 755 "$target/$executable"
 
-python3 - "$metadata_plist" "$cache_path" "/var/mobile/Applications/$uuid/$(basename "$target")" <<'PY'
+if ! python3 - "$metadata_plist" "$cache_path" "/var/mobile/Applications/$uuid/$(basename "$target")" <<'PY'
 import os
 import plistlib
 import sys
@@ -185,5 +249,23 @@ except Exception:
         pass
     raise
 PY
+
+then
+    # A different UUID means the old install is still the live one.  Do not
+    # leave an unreferenced executable that a later catalog scan can mistake
+    # for an installed application.
+    if [ "$old_target_parent" != "$target_parent" ]; then
+        rm -rf "$target_parent"
+    fi
+    exit 1
+fi
+
+if [ -n "$old_target_parent" ] &&
+    [ "$old_target_parent" != "$target_parent" ] &&
+    [ -e "$old_target_parent" ]; then
+    if ! rm -rf "$old_target_parent"; then
+        echo "install-ipa: warning: old application directory was retained: $old_target_parent" >&2
+    fi
+fi
 
 echo "installed $bundle_id at /var/mobile/Applications/$uuid/$(basename "$target")"
