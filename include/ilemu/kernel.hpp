@@ -129,9 +129,7 @@ public:
   [[nodiscard]] const ProcessContext &process() const { return process_; }
   void clear_thread_io_policy(std::size_t processor_id);
   void exit_process(std::uint32_t status, std::uint32_t signal = 0);
-  [[nodiscard]] WaitChildResult wait_child(std::int32_t target_pid,
-                                           bool reap);
-  void set_halt_on_unknown(bool value) { halt_on_unknown_ = value; }
+  [[nodiscard]] WaitChildResult wait_child(std::int32_t target_pid, bool reap);
   void set_thread_create_handler(ThreadCreateHandler handler) {
     thread_create_handler_ = std::move(handler);
   }
@@ -663,7 +661,6 @@ private:
   LayerKitHle layerkit_hle_;
   std::uint32_t baseband_io_trace_count_{};
   std::optional<std::uint64_t> next_display_scanout_deadline_;
-  bool halt_on_unknown_{true};
   std::uint32_t virtual_processor_count_{1};
   HostNetworkPolicy host_network_policy_{HostNetworkPolicy::Isolated};
   std::mutex mutex_;

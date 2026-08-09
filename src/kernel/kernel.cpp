@@ -1827,6 +1827,10 @@ void CompatibilityKernel::dispatch(Cpu &cpu, std::uint32_t svc_immediate) {
   }
   if (svc_immediate != 0x80) {
     trace_unknown(cpu, "SVC", svc_immediate);
+    // An unexpected SVC immediate is an invalid instruction encoding for the
+    // supported ARM userspace ABI, rather than an unimplemented kernel entry.
+    // Keep that fatal policy explicit and separate from unknown-ABI tracing.
+    cpu.halt(Dynarmic::HaltReason::UserDefined4);
     return;
   }
   if (cpu.registers()[12] == darwin::arm_fast_trap::syscall_number) {
@@ -2280,9 +2284,6 @@ void CompatibilityKernel::trace_unknown(Cpu &cpu, std::string kind,
   }
   message << std::dec << '\n';
   output_.write(message.str());
-  if (halt_on_unknown_) {
-    cpu.halt(Dynarmic::HaltReason::UserDefined4);
-  }
 }
 
 } // namespace ilemu
