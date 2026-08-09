@@ -1594,6 +1594,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   output.line(
       "[jit-artifact] memory-mib=" +
       std::to_string(jit_artifact_limits.resident_bytes / 1024U / 1024U) +
+      " writeback-mib=" +
+      std::to_string(jit_artifact_limits.writeback_bytes / 1024U / 1024U) +
       " disk-mib=" +
       std::to_string(jit_artifact_limits.persistence_bytes / 1024U / 1024U) +
       " persistence=" +
@@ -3401,8 +3403,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(artifact_stats.disk_loaded_entries) +
         " evict=" + std::to_string(artifact_stats.evictions) +
         " compactions=" + std::to_string(artifact_stats.compactions) +
+        " writeback-enqueued=" +
+        std::to_string(artifact_stats.writeback_enqueued) +
+        " writeback-saved=" +
+        std::to_string(artifact_stats.writeback_saved) +
+        " writeback-dropped=" +
+        std::to_string(artifact_stats.writeback_dropped) +
+        " writeback-failures=" +
+        std::to_string(artifact_stats.writeback_failures) +
         " resident-bytes=" +
         std::to_string(artifact_stats.resident_bytes) +
+        " writeback-pending-bytes=" +
+        std::to_string(artifact_stats.writeback_pending_bytes) +
         " disk-bytes=" + std::to_string(artifact_stats.disk_bytes));
     const auto host_memory = host_memory_snapshot();
     output.line(

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -8,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -104,6 +106,9 @@ struct JitArtifactLimits {
   // A journal at or above this size is eligible for low-priority compaction.
   // Zero disables automatic compaction.
   std::size_t compaction_bytes{64U * 1024U * 1024U};
+  // Newly translated artifacts enter this bounded queue before the resident
+  // LRU can evict them. Zero disables asynchronous writeback.
+  std::size_t writeback_bytes{16U * 1024U * 1024U};
 };
 
 struct JitArtifactStoreStats {
@@ -116,7 +121,12 @@ struct JitArtifactStoreStats {
   std::uint64_t disk_loaded_entries{};
   std::uint64_t evictions{};
   std::uint64_t compactions{};
+  std::uint64_t writeback_enqueued{};
+  std::uint64_t writeback_saved{};
+  std::uint64_t writeback_dropped{};
+  std::uint64_t writeback_failures{};
   std::size_t resident_bytes{};
+  std::size_t writeback_pending_bytes{};
   std::uintmax_t disk_bytes{};
 };
 
@@ -163,11 +173,19 @@ private:
     std::list<JitArtifactKey>::iterator lru_position;
     bool loaded_from_disk{};
   };
+  struct PendingWriteback {
+    std::shared_ptr<const BlockArtifact> artifact;
+    std::size_t serialized_bytes{};
+    std::list<JitArtifactKey>::iterator queue_position;
+  };
   using ArtifactMap =
       std::unordered_map<JitArtifactKey, ArtifactRecord, JitArtifactKeyHash>;
   using DiskArtifactMap = std::unordered_map<JitArtifactKey,
                                              DiskArtifactRecord,
                                              JitArtifactKeyHash>;
+  using PendingWritebackMap =
+      std::unordered_map<JitArtifactKey, PendingWriteback,
+                         JitArtifactKeyHash>;
   enum class AppendResult : std::uint8_t {
     NotApplicable,
     Saved,
@@ -179,6 +197,14 @@ private:
   void insert_locked(std::shared_ptr<const BlockArtifact> artifact,
                      std::size_t serialized_bytes,
                      bool loaded_from_disk = false) const;
+  [[nodiscard]] bool enqueue_writeback_locked(
+      const std::shared_ptr<const BlockArtifact> &artifact,
+      std::size_t serialized_bytes) const;
+  void retire_writeback_locked(const JitArtifactKey &key) const;
+  void writeback_loop();
+  [[nodiscard]] bool append_writeback_batch(
+      const std::vector<std::shared_ptr<const BlockArtifact>> &batch) const
+      noexcept;
   [[nodiscard]] AppendResult append_new_artifacts(
       const std::filesystem::path &path) const noexcept;
   [[nodiscard]] bool save_full(
@@ -187,13 +213,22 @@ private:
   mutable std::mutex mutex_;
   mutable ArtifactMap artifacts_;
   mutable std::list<JitArtifactKey> lru_;
+  mutable PendingWritebackMap pending_writebacks_;
+  mutable std::list<JitArtifactKey> writeback_order_;
   mutable DiskArtifactMap disk_artifacts_;
   mutable std::vector<JitArtifactKey> disk_order_;
   JitArtifactLimits limits_;
   mutable std::size_t resident_bytes_{};
+  mutable std::size_t pending_writeback_bytes_{};
   std::filesystem::path persistence_path_;
   mutable std::filesystem::path disk_source_path_;
   mutable std::filesystem::path disk_append_path_;
+  mutable std::uint64_t disk_append_valid_bytes_{};
+  mutable std::mutex persistence_mutex_;
+  mutable std::condition_variable writeback_condition_;
+  mutable bool writeback_stopping_{};
+  mutable bool writeback_disabled_{};
+  std::thread writeback_thread_;
   mutable JitArtifactStoreStats stats_;
 };
 
