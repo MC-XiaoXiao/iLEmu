@@ -883,6 +883,23 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
   return result;
 }
 
+void JitArtifactStore::cancel_writeback() noexcept {
+  if (writeback_cancel_requested_.exchange(true,
+                                           std::memory_order_acq_rel)) {
+    return;
+  }
+  {
+    const std::lock_guard lock{mutex_};
+    writeback_disabled_ = true;
+    ++stats_.writeback_cancellations;
+    stats_.writeback_dropped += pending_writebacks_.size();
+    pending_writebacks_.clear();
+    writeback_order_.clear();
+    pending_writeback_bytes_ = 0;
+  }
+  writeback_condition_.notify_all();
+}
+
 void JitArtifactStore::writeback_loop() {
   constexpr std::size_t maximum_batch_bytes = 4U * 1024U * 1024U;
   for (;;) {
@@ -939,6 +956,9 @@ void JitArtifactStore::writeback_loop() {
     const auto saved = append_writeback_batch(batch);
     const std::lock_guard lock{mutex_};
     if (!saved) {
+      if (writeback_cancel_requested_.load(std::memory_order_acquire)) {
+        continue;
+      }
       ++stats_.writeback_failures;
       stats_.writeback_dropped += pending_writebacks_.size();
       pending_writebacks_.clear();
@@ -964,7 +984,13 @@ bool JitArtifactStore::append_writeback_batch(
     if (!limits_.persistence_enabled || persistence_path_.empty()) {
       return false;
     }
+    if (writeback_cancel_requested_.load(std::memory_order_acquire)) {
+      return false;
+    }
     const std::lock_guard persistence_lock{persistence_mutex_};
+    if (writeback_cancel_requested_.load(std::memory_order_acquire)) {
+      return false;
+    }
 
     std::vector<std::shared_ptr<const BlockArtifact>> artifacts;
     {
@@ -1083,6 +1109,9 @@ bool JitArtifactStore::append_writeback_batch(
     std::vector<DiskArtifactRecord> records;
     records.reserve(artifacts.size());
     for (std::size_t index = 0; index < artifacts.size(); ++index) {
+      if (writeback_cancel_requested_.load(std::memory_order_acquire)) {
+        return false;
+      }
       if (!write_artifact(stream, *artifacts[index])) return false;
       records.push_back(
           DiskArtifactRecord{record_offset, record_bytes[index], true});
@@ -1097,9 +1126,15 @@ bool JitArtifactStore::append_writeback_batch(
         stream.tellp() != static_cast<std::streamoff>(record_offset)) {
       return false;
     }
+    if (writeback_cancel_requested_.load(std::memory_order_acquire)) {
+      return false;
+    }
     const auto checksum = sha256_file(
         append_path, segment_offset, record_offset - segment_offset);
     if (!checksum) return false;
+    if (writeback_cancel_requested_.load(std::memory_order_acquire)) {
+      return false;
+    }
     stream.write(reinterpret_cast<const char *>(checksum->digest.data()),
                  static_cast<std::streamsize>(checksum->digest.size()));
     stream.flush();

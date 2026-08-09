@@ -125,6 +125,7 @@ struct JitArtifactStoreStats {
   std::uint64_t writeback_saved{};
   std::uint64_t writeback_dropped{};
   std::uint64_t writeback_failures{};
+  std::uint64_t writeback_cancellations{};
   std::size_t resident_bytes{};
   std::size_t writeback_pending_bytes{};
   std::uintmax_t disk_bytes{};
@@ -151,6 +152,9 @@ public:
       JitArtifactKey key, JitArtifactData data);
   [[nodiscard]] std::size_t size() const;
   [[nodiscard]] JitArtifactStoreStats stats() const;
+  // Stops optional background persistence and releases queued artifacts.
+  // Guest execution and resident-cache lookups remain available.
+  void cancel_writeback() noexcept;
   [[nodiscard]] bool compaction_needed() const noexcept;
   [[nodiscard]] bool compact() const noexcept;
 
@@ -228,6 +232,7 @@ private:
   mutable std::condition_variable writeback_condition_;
   mutable bool writeback_stopping_{};
   mutable bool writeback_disabled_{};
+  mutable std::atomic<bool> writeback_cancel_requested_{};
   std::thread writeback_thread_;
   mutable JitArtifactStoreStats stats_;
 };

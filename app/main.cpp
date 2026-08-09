@@ -3411,6 +3411,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(artifact_stats.writeback_dropped) +
         " writeback-failures=" +
         std::to_string(artifact_stats.writeback_failures) +
+        " writeback-cancellations=" +
+        std::to_string(artifact_stats.writeback_cancellations) +
         " resident-bytes=" +
         std::to_string(artifact_stats.resident_bytes) +
         " writeback-pending-bytes=" +
