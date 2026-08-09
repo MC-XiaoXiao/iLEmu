@@ -875,7 +875,8 @@ public:
         AddressSpace& memory,
         Dynarmic::ExclusiveMonitor& monitor,
         const ArmCpuModel& cpu_model,
-        std::shared_ptr<JitArtifactStore> artifact_store)
+        std::shared_ptr<JitArtifactStore> artifact_store,
+        std::shared_ptr<ExecutionContext> execution_context)
         : processor_id_{processor_id},
           execution_slot_{execution_slot},
           memory_{memory},
@@ -883,9 +884,23 @@ public:
           callbacks_{std::make_unique<JitCallbacks>(
               memory, cpu_model, std::move(artifact_store))},
           cp15_{std::make_unique<ArmSystemControlCoprocessor>(
-              *callbacks_)} {}
+              *callbacks_)},
+          execution_context_{std::move(execution_context)} {
+        if (!execution_context_) {
+            throw std::invalid_argument{
+                "JIT executor requires an execution context"};
+        }
+        runtime_link_cell_ = execution_context_->create_link_cell();
+        execution_context_->link(
+            runtime_link_cell_,
+            static_cast<std::uint64_t>(
+                reinterpret_cast<std::uintptr_t>(callbacks_.get())));
+        runtime_link_cell_address_ =
+            execution_context_->link_cell_address(runtime_link_cell_);
+    }
 
     ~JitExecutor() {
+        execution_context_->unlink(runtime_link_cell_);
         performance_counters().record_jit_code_cache_usage(
             process_id_, static_cast<std::uint32_t>(execution_slot_),
             recorded_jit_code_cache_bytes_, 0);
@@ -1203,6 +1218,12 @@ private:
         if (jit_) {
             return;
         }
+        if (runtime_link_cell_address_->load(std::memory_order_acquire) !=
+            static_cast<std::uint64_t>(
+                reinterpret_cast<std::uintptr_t>(callbacks_.get()))) {
+            throw std::logic_error{
+                "JIT runtime callback link is not bound"};
+        }
         Dynarmic::A32::UserConfig config{callbacks_.get()};
         config.processor_id = processor_id_;
         config.global_monitor = &monitor_;
@@ -1364,6 +1385,9 @@ private:
     Dynarmic::ExclusiveMonitor& monitor_;
     std::unique_ptr<JitCallbacks> callbacks_;
     std::shared_ptr<ArmSystemControlCoprocessor> cp15_;
+    std::shared_ptr<ExecutionContext> execution_context_;
+    std::size_t runtime_link_cell_{};
+    const std::atomic<std::uint64_t> *runtime_link_cell_address_{};
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
     std::size_t code_cache_size_{64U * 1024U * 1024U};
     std::uint64_t recorded_jit_code_cache_bytes_{};
@@ -1387,7 +1411,8 @@ public:
         std::size_t first_processor_id,
         const ArmCpuModel& cpu_model,
         std::shared_ptr<JitArtifactStore> artifact_store)
-        : memory_{memory} {
+        : memory_{memory},
+          execution_context_{std::make_shared<ExecutionContext>()} {
         if (execution_slot_count == 0) {
             throw std::invalid_argument{
                 "execution_slot_count must be at least one"};
@@ -1402,7 +1427,7 @@ public:
         for (std::size_t slot = 0; slot < execution_slot_count; ++slot) {
             executors_.push_back(std::make_unique<JitExecutor>(
                 first_processor_id + slot, slot, memory, monitor, cpu_model,
-                artifact_store));
+                artifact_store, execution_context_));
         }
     }
 
@@ -1415,6 +1440,7 @@ public:
     }
 
     void set_process_id(std::uint32_t process_id) {
+        execution_context_->bind_process_id(process_id);
         for (auto& executor : executors_)
             executor->set_process_id(process_id);
     }
@@ -1496,6 +1522,7 @@ public:
 
 private:
     AddressSpace& memory_;
+    std::shared_ptr<ExecutionContext> execution_context_;
     std::vector<std::unique_ptr<JitExecutor>> executors_;
 };
 

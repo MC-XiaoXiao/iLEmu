@@ -8,6 +8,7 @@
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <stdexcept>
 #include <sys/file.h>
 #include <system_error>
 #include <thread>
@@ -3430,9 +3431,26 @@ bool JitArtifactStore::save_full(
   }
 }
 
+ExecutionContext::ExecutionContext()
+    : context_id_{next_context_id.fetch_add(1, std::memory_order_relaxed)} {}
+
 ExecutionContext::ExecutionContext(std::uint32_t process_id)
-    : context_id_{next_context_id.fetch_add(1, std::memory_order_relaxed)},
-      process_id_{process_id} {}
+    : ExecutionContext{} {
+  bind_process_id(process_id);
+}
+
+void ExecutionContext::bind_process_id(std::uint32_t process_id) {
+  const std::lock_guard lock{mutex_};
+  if (process_id_bound_) {
+    if (process_id_.load(std::memory_order_relaxed) != process_id) {
+      throw std::logic_error{
+          "execution context cannot be rebound to another process"};
+    }
+    return;
+  }
+  process_id_.store(process_id, std::memory_order_release);
+  process_id_bound_ = true;
+}
 
 std::size_t ExecutionContext::create_link_cell() {
   const std::lock_guard lock{mutex_};
@@ -3451,6 +3469,12 @@ void ExecutionContext::unlink(std::size_t cell) { link(cell, 0); }
 std::uint64_t ExecutionContext::linked_target(std::size_t cell) const {
   const std::lock_guard lock{mutex_};
   return link_cells_.at(cell)->target_token.load(std::memory_order_acquire);
+}
+
+const std::atomic<std::uint64_t> *
+ExecutionContext::link_cell_address(std::size_t cell) const {
+  const std::lock_guard lock{mutex_};
+  return &link_cells_.at(cell)->target_token;
 }
 
 } // namespace ilemu

@@ -327,19 +327,26 @@ private:
 // supplies context identity and writable link cells for immutable artifacts.
 class ExecutionContext {
 public:
+  ExecutionContext();
   explicit ExecutionContext(std::uint32_t process_id);
 
   [[nodiscard]] std::uint64_t context_id() const noexcept {
     return context_id_;
   }
   [[nodiscard]] std::uint32_t process_id() const noexcept {
-    return process_id_;
+    return process_id_.load(std::memory_order_acquire);
   }
 
+  // A CpuExecutionPool is created before the guest task receives its PID.
+  // Bind that metadata exactly once without replacing the context or any
+  // stable link-cell addresses already handed to executors.
+  void bind_process_id(std::uint32_t process_id);
   [[nodiscard]] std::size_t create_link_cell();
   void link(std::size_t cell, std::uint64_t target_token);
   void unlink(std::size_t cell);
   [[nodiscard]] std::uint64_t linked_target(std::size_t cell) const;
+  [[nodiscard]] const std::atomic<std::uint64_t> *
+  link_cell_address(std::size_t cell) const;
 
 private:
   struct LinkCell {
@@ -347,8 +354,9 @@ private:
   };
 
   std::uint64_t context_id_{};
-  std::uint32_t process_id_{};
+  std::atomic<std::uint32_t> process_id_{};
   mutable std::mutex mutex_;
+  bool process_id_bound_{};
   std::vector<std::unique_ptr<LinkCell>> link_cells_;
 };
 
