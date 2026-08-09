@@ -1741,10 +1741,28 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::uint32_t next_pid = 2;
   std::size_t watchpoint_trace_count = 0;
   std::mutex watchpoint_mutex;
+  std::uint64_t catalog_mapped_executable_ranges = 0;
+  std::uint64_t catalog_mapped_entry_hints = 0;
   std::function<void(Runtime &)> configure_runtime;
   configure_runtime = [&](Runtime &runtime) {
     auto *runtime_ptr = &runtime;
     runtime.kernel->set_host_network_policy(*network_policy);
+    if (catalog_index != nullptr) {
+      runtime.kernel->set_mapped_executable_handler(
+          [runtime_ptr, catalog_index,
+           &catalog_mapped_executable_ranges,
+           &catalog_mapped_entry_hints](
+              const std::filesystem::path &path,
+              std::uint32_t mapping_address, std::uint32_t mapping_size,
+              std::uint64_t file_offset) {
+            auto entry_points = catalog_index->fixed_mapping_entry_points(
+                path, mapping_address, mapping_size, file_offset);
+            if (entry_points.empty()) return;
+            ++catalog_mapped_executable_ranges;
+            catalog_mapped_entry_hints += entry_points.size();
+            runtime_ptr->cpus->add_precompile_entries(entry_points);
+          });
+    }
     if (!runtime.kernel->set_virtual_processor_count(guest_processor_count)) {
       throw std::runtime_error{"invalid virtual processor topology"};
     }
@@ -3406,6 +3424,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                     ? initial_runtime->memory->file_page_cache_stats()
                                     : FilePageCacheStats{};
   host_resources.wait_idle();
+  if (catalog_loaded) {
+    output.line(
+        "[catalog] mapped-executable-ranges=" +
+        std::to_string(catalog_mapped_executable_ranges) +
+        " mapped-entry-hints=" +
+        std::to_string(catalog_mapped_entry_hints));
+  }
   if (catalog_loaded && !executable_catalog.save(catalog_manifest)) {
     output.line("[catalog] manifest-save=failed");
   }

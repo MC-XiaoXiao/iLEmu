@@ -693,6 +693,10 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
                                    mapping_address, mapping_size, file_offset,
                                    arm_architecture_for_model(
                                        device_profile_.cpu_model));
+  if (!shared_cache_mapping && mapped_executable_handler_) {
+    mapped_executable_handler_(image_path, mapping_address, mapping_size,
+                               file_offset);
+  }
   constexpr std::string_view uikit_image{"/UIKit.framework/UIKit"};
   constexpr std::string_view graphics_services_image{
       "/GraphicsServices.framework/GraphicsServices"};

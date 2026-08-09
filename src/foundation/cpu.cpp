@@ -912,6 +912,8 @@ public:
         for (auto location = locations.rbegin();
              location != locations.rend() &&
              pending_precompile_entries_.size() <
+                 jit_translation_profile_maximum_locations &&
+             seen_precompile_entries_.size() <
                  jit_translation_profile_maximum_locations;
              ++location) {
             if (*location != 0 &&
@@ -932,6 +934,8 @@ public:
         for (auto entry = location_descriptors.rbegin();
              entry != location_descriptors.rend() &&
              pending_precompile_entries_.size() <
+                 jit_translation_profile_maximum_locations &&
+             seen_precompile_entries_.size() <
                  jit_translation_profile_maximum_locations;
              ++entry) {
             if (*entry != 0 &&

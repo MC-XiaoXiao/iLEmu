@@ -115,6 +115,9 @@ public:
   };
   using TaskMemoryShareQuery = std::function<std::optional<SharedTaskMemoryRange>(
       std::uint32_t, std::uint32_t, std::uint32_t)>;
+  using MappedExecutableHandler = std::function<void(
+      const std::filesystem::path &, std::uint32_t, std::uint32_t,
+      std::uint64_t)>;
 
   CompatibilityKernel(AddressSpace &memory, Output &output,
                       std::filesystem::path rootfs = {},
@@ -162,6 +165,9 @@ public:
   }
   void set_spawn_exec_handler(SpawnExecHandler handler) {
     spawn_exec_handler_ = std::move(handler);
+  }
+  void set_mapped_executable_handler(MappedExecutableHandler handler) {
+    mapped_executable_handler_ = std::move(handler);
   }
   void set_scheduler_runnable_query(SchedulerRunnableQuery query) {
     scheduler_runnable_query_ = std::move(query);
@@ -628,6 +634,7 @@ private:
   SpawnCreateHandler spawn_create_handler_;
   ExecHandler exec_handler_;
   SpawnExecHandler spawn_exec_handler_;
+  MappedExecutableHandler mapped_executable_handler_;
   SchedulerRunnableQuery scheduler_runnable_query_;
   LegacyThreadPolicyHandler legacy_thread_policy_handler_;
   ThreadPolicyHandler thread_policy_handler_;

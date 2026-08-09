@@ -26,6 +26,8 @@ enum class ExecutableCatalogKind : std::uint8_t {
 struct ExecutableMappingIdentity {
   std::uint64_t file_offset{};
   std::uint64_t byte_count{};
+  std::uint64_t guest_address{};
+  std::uint64_t guest_byte_count{};
 
   friend constexpr bool operator==(const ExecutableMappingIdentity &,
                                    const ExecutableMappingIdentity &) =
@@ -115,6 +117,12 @@ public:
       const std::filesystem::path &path) const;
   [[nodiscard]] bool path_is_current(
       const std::filesystem::path &path) const;
+  // Returns only metadata-backed entries for an executable segment mapped at
+  // its catalogued address. Slid, partial, stale, and non-executable mappings
+  // deliberately fall back to ordinary demand translation.
+  [[nodiscard]] std::vector<std::uint64_t> fixed_mapping_entry_points(
+      const std::filesystem::path &path, std::uint32_t mapping_address,
+      std::uint32_t mapping_size, std::uint64_t file_offset) const;
   [[nodiscard]] std::size_t reliable_entry_point_count() const noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
 

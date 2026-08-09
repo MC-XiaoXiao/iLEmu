@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <span>
 #include <stdexcept>
 #include <system_error>
@@ -23,7 +24,7 @@ using ilemu::DyldSharedCache;
 
 constexpr std::array<char, 8> catalog_magic{
     'i', 'L', 'E', 'M', 'C', 'A', 'T', '1'};
-constexpr std::uint32_t catalog_schema_version = 5U;
+constexpr std::uint32_t catalog_schema_version = 6U;
 constexpr std::size_t catalog_checksum_size = 32U;
 constexpr std::uint32_t maximum_manifest_entries = 100'000U;
 constexpr std::uint32_t maximum_manifest_items = 65'536U;
@@ -143,7 +144,7 @@ read_string(std::istream &stream) {
 }
 
 [[nodiscard]] std::optional<ilemu::ExecutableCatalogEntry>
-read_manifest_entry(std::istream &stream, bool has_entry_points) {
+read_manifest_entry(std::istream &stream, std::uint32_t schema) {
   ilemu::ExecutableCatalogEntry entry;
   if (!read_identity(stream, entry.content_identity)) return std::nullopt;
 
@@ -248,10 +249,21 @@ read_manifest_entry(std::istream &stream, bool has_entry_points) {
     const auto file_offset = read_u64(stream);
     const auto byte_count = read_u64(stream);
     if (!file_offset || !byte_count) return std::nullopt;
-    entry.mappings.push_back(
-        ilemu::ExecutableMappingIdentity{*file_offset, *byte_count});
+    std::uint64_t guest_address = 0;
+    std::uint64_t guest_byte_count = 0;
+    if (schema >= 6U) {
+      const auto serialized_guest_address = read_u64(stream);
+      const auto serialized_guest_byte_count = read_u64(stream);
+      if (!serialized_guest_address || !serialized_guest_byte_count) {
+        return std::nullopt;
+      }
+      guest_address = *serialized_guest_address;
+      guest_byte_count = *serialized_guest_byte_count;
+    }
+    entry.mappings.push_back(ilemu::ExecutableMappingIdentity{
+        *file_offset, *byte_count, guest_address, guest_byte_count});
   }
-  if (has_entry_points) {
+  if (schema >= 5U) {
     const auto entry_point_count = read_u32(stream);
     if (!entry_point_count || *entry_point_count > maximum_manifest_items) {
       return std::nullopt;
@@ -430,7 +442,8 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_image(
       continue;
     }
     const auto mapping =
-        ExecutableMappingIdentity{segment.file_offset, segment.file_size};
+        ExecutableMappingIdentity{segment.file_offset, segment.file_size,
+                                  segment.vm_address, segment.vm_size};
     if (std::find(entry.mappings.begin(), entry.mappings.end(), mapping) ==
         entry.mappings.end()) {
       entry.mappings.push_back(mapping);
@@ -480,7 +493,8 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_mapping(
       existing->generation = *generation;
     }
   }
-  const auto mapping = ExecutableMappingIdentity{file_offset, byte_count};
+  const auto mapping =
+      ExecutableMappingIdentity{file_offset, byte_count, 0U, 0U};
   if (std::find(entry.mappings.begin(), entry.mappings.end(), mapping) ==
       entry.mappings.end()) {
     entry.mappings.push_back(mapping);
@@ -499,7 +513,8 @@ std::size_t ExecutableCatalog::register_shared_cache(
     entry.file_type = 6U; // MH_DYLIB: shared-cache images are dylib code.
     for (const auto &range : image.executable_ranges) {
       const auto mapping =
-          ExecutableMappingIdentity{range.file_offset, range.size};
+          ExecutableMappingIdentity{range.file_offset, range.size,
+                                    range.address, range.size};
       if (std::find(entry.mappings.begin(), entry.mappings.end(), mapping) ==
           entry.mappings.end()) {
         entry.mappings.push_back(mapping);
@@ -594,6 +609,10 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
           !old_entry->kinds.empty() &&
           old_entry->file_size != 0U && old_entry->uuid &&
           !old_entry->kinds.contains(ExecutableCatalogKind::DynamicMapping) &&
+          std::all_of(old_entry->mappings.begin(), old_entry->mappings.end(),
+                      [](const ExecutableMappingIdentity &mapping) {
+                        return mapping.guest_byte_count != 0U;
+                      }) &&
           old_generation->generation == *current_generation) {
         auto &entry = upsert(old_entry->content_identity, normalized,
                              *old_entry->kinds.begin());
@@ -675,7 +694,9 @@ bool ExecutableCatalog::load(const std::filesystem::path &path) noexcept {
     if (!stream || magic != catalog_magic) return false;
     const auto schema = read_u32(stream);
     const auto count = read_u32(stream);
-    if (!schema || (*schema != 4U && *schema != catalog_schema_version) ||
+    if (!schema ||
+        (*schema != 4U && *schema != 5U &&
+         *schema != catalog_schema_version) ||
         !count ||
         *count > maximum_manifest_entries) {
       return false;
@@ -687,8 +708,7 @@ bool ExecutableCatalog::load(const std::filesystem::path &path) noexcept {
         identity_index;
     identity_index.reserve(*count);
     for (std::uint32_t index = 0; index < *count; ++index) {
-      const auto entry = read_manifest_entry(
-          stream, *schema == catalog_schema_version);
+      const auto entry = read_manifest_entry(stream, *schema);
       if (!entry ||
           !identity_index.emplace(entry->content_identity, entries.size())
                .second) {
@@ -784,6 +804,8 @@ bool ExecutableCatalog::save(const std::filesystem::path &path) const noexcept {
       for (const auto &mapping : entry.mappings) {
         write_u64(stream, mapping.file_offset);
         write_u64(stream, mapping.byte_count);
+        write_u64(stream, mapping.guest_address);
+        write_u64(stream, mapping.guest_byte_count);
       }
       write_u32(stream,
                 static_cast<std::uint32_t>(entry.reliable_entry_points.size()));
@@ -862,6 +884,49 @@ bool ExecutableCatalog::path_is_current(
       [&normalized, &current](const ExecutableCatalogPathGeneration &record) {
         return record.path == normalized && record.generation == *current;
       });
+}
+
+std::vector<std::uint64_t> ExecutableCatalog::fixed_mapping_entry_points(
+    const std::filesystem::path &path, std::uint32_t mapping_address,
+    std::uint32_t mapping_size, std::uint64_t file_offset) const {
+  std::vector<std::uint64_t> result;
+  if (mapping_size == 0U) return result;
+  const auto *entry = find_path(path);
+  if (entry == nullptr || !path_is_current(path)) return result;
+
+  const auto mapping = std::find_if(
+      entry->mappings.begin(), entry->mappings.end(),
+      [mapping_address, mapping_size,
+       file_offset](const ExecutableMappingIdentity &candidate) {
+        return candidate.file_offset == file_offset &&
+               candidate.guest_address == mapping_address &&
+               candidate.byte_count != 0U &&
+               candidate.byte_count <= mapping_size &&
+               candidate.guest_byte_count != 0U;
+      });
+  if (mapping == entry->mappings.end() ||
+      mapping->guest_address >
+          std::numeric_limits<std::uint64_t>::max() -
+              std::min<std::uint64_t>(mapping->guest_byte_count,
+                                      mapping_size)) {
+    return result;
+  }
+  const auto mapping_end =
+      mapping->guest_address +
+      std::min<std::uint64_t>(mapping->guest_byte_count, mapping_size);
+  constexpr auto thumb_descriptor_bit = std::uint64_t{1} << 32U;
+  constexpr auto descriptor_mask =
+      thumb_descriptor_bit | std::numeric_limits<std::uint32_t>::max();
+  result.reserve(std::min<std::size_t>(
+      entry->reliable_entry_points.size(), std::size_t{4096}));
+  for (const auto descriptor : entry->reliable_entry_points) {
+    if ((descriptor & ~descriptor_mask) != 0U) continue;
+    const auto address = static_cast<std::uint32_t>(descriptor);
+    if (address >= mapping->guest_address && address < mapping_end) {
+      result.push_back(descriptor);
+    }
+  }
+  return result;
 }
 
 std::size_t ExecutableCatalog::reliable_entry_point_count() const noexcept {
