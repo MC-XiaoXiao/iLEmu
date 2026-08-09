@@ -1225,6 +1225,7 @@ private:
                 "JIT runtime callback link is not bound"};
         }
         Dynarmic::A32::UserConfig config{callbacks_.get()};
+        config.callbacks_link = runtime_link_cell_address_;
         config.processor_id = processor_id_;
         config.global_monitor = &monitor_;
         config.arch_version = dynarmic_architecture_version(
