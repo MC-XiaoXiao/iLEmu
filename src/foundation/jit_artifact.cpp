@@ -3,13 +3,16 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <fcntl.h>
 #include <fstream>
 #include <functional>
 #include <iterator>
 #include <limits>
+#include <sys/file.h>
 #include <system_error>
 #include <thread>
 #include <unordered_set>
+#include <unistd.h>
 #include <utility>
 
 namespace ilemu {
@@ -26,6 +29,84 @@ constexpr std::uint32_t maximum_metadata_entries = 1'000'000;
 constexpr std::uintmax_t maximum_persistence_bytes =
     std::uintmax_t{4U} * 1024U * 1024U * 1024U;
 std::atomic<std::uint64_t> next_context_id{1};
+
+class ArtifactFileLock {
+public:
+  enum class Mode { Shared, Exclusive };
+
+  ArtifactFileLock(const ArtifactFileLock &) = delete;
+  ArtifactFileLock &operator=(const ArtifactFileLock &) = delete;
+  ArtifactFileLock(ArtifactFileLock &&other) noexcept
+      : descriptor_{std::exchange(other.descriptor_, -1)} {}
+  ArtifactFileLock &operator=(ArtifactFileLock &&) = delete;
+  ~ArtifactFileLock() {
+    if (descriptor_ < 0) return;
+    static_cast<void>(::flock(descriptor_, LOCK_UN));
+    static_cast<void>(::close(descriptor_));
+  }
+
+  [[nodiscard]] static std::optional<ArtifactFileLock>
+  acquire(const std::filesystem::path &persistence_path, Mode mode) noexcept {
+    try {
+      const auto lock_path = std::filesystem::path{
+          persistence_path.string() + ".writer.lock"};
+      const auto parent = lock_path.parent_path();
+      if (!parent.empty()) {
+        std::error_code directory_error;
+        std::filesystem::create_directories(parent, directory_error);
+        if (directory_error) return std::nullopt;
+      }
+      const auto descriptor =
+          ::open(lock_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+      if (descriptor < 0) return std::nullopt;
+      const auto operation = mode == Mode::Exclusive ? LOCK_EX : LOCK_SH;
+      if (::flock(descriptor, operation) != 0) {
+        static_cast<void>(::close(descriptor));
+        return std::nullopt;
+      }
+      return ArtifactFileLock{descriptor};
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
+  [[nodiscard]] std::optional<std::uint64_t> generation() const noexcept {
+    std::array<std::byte, sizeof(std::uint64_t)> bytes{};
+    const auto count = ::pread(descriptor_, bytes.data(), bytes.size(), 0);
+    if (count == 0) return 0U;
+    if (count != static_cast<ssize_t>(bytes.size())) return std::nullopt;
+    std::uint64_t result = 0;
+    for (unsigned index = 0; index < bytes.size(); ++index) {
+      result |= static_cast<std::uint64_t>(
+                    std::to_integer<std::uint8_t>(bytes[index]))
+                << (index * 8U);
+    }
+    return result;
+  }
+
+  [[nodiscard]] std::optional<std::uint64_t> begin_write() const noexcept {
+    const auto current = generation();
+    if (!current || *current == std::numeric_limits<std::uint64_t>::max()) {
+      return std::nullopt;
+    }
+    const auto next = *current + 1U;
+    std::array<std::byte, sizeof(next)> bytes{};
+    for (unsigned index = 0; index < bytes.size(); ++index) {
+      bytes[index] = static_cast<std::byte>(next >> (index * 8U));
+    }
+    if (::pwrite(descriptor_, bytes.data(), bytes.size(), 0) !=
+            static_cast<ssize_t>(bytes.size()) ||
+        ::ftruncate(descriptor_, static_cast<off_t>(bytes.size())) != 0 ||
+        ::fsync(descriptor_) != 0) {
+      return std::nullopt;
+    }
+    return next;
+  }
+
+private:
+  explicit ArtifactFileLock(int descriptor) : descriptor_{descriptor} {}
+  int descriptor_{-1};
+};
 
 void hash_bytes(std::size_t &hash, const void *data, std::size_t size) noexcept {
   const auto *bytes = static_cast<const std::byte *>(data);
@@ -626,8 +707,7 @@ JitArtifactStore::JitArtifactStore(
   if (!persistence_path_.empty() && limits_.persistence_enabled) {
     persistence_ready = load(persistence_path_);
     if (!persistence_ready) {
-      const std::lock_guard persistence_lock{persistence_mutex_};
-      persistence_ready = save_full(persistence_path_);
+      persistence_ready = save(persistence_path_);
     }
   }
   writeback_disabled_ = !persistence_ready || limits_.writeback_bytes == 0U;
@@ -1134,6 +1214,30 @@ bool JitArtifactStore::append_writeback_batch(
     if (writeback_cancel_requested_.load(std::memory_order_acquire)) {
       return false;
     }
+    auto file_lock = ArtifactFileLock::acquire(
+        persistence_path_, ArtifactFileLock::Mode::Exclusive);
+    if (!file_lock) return false;
+    const auto writer_generation = file_lock->generation();
+    if (!writer_generation) return false;
+    std::uint64_t known_generation = 0;
+    {
+      const std::lock_guard lock{mutex_};
+      known_generation = external_writer_generation_;
+    }
+    if (known_generation != *writer_generation) {
+      if (!load_coordinated(persistence_path_)) return false;
+      const std::lock_guard lock{mutex_};
+      external_writer_generation_ = *writer_generation;
+    }
+    if (writeback_cancel_requested_.load(std::memory_order_acquire)) {
+      return false;
+    }
+    const auto next_writer_generation = file_lock->begin_write();
+    if (!next_writer_generation) return false;
+    {
+      const std::lock_guard lock{mutex_};
+      external_writer_generation_ = *next_writer_generation;
+    }
 
     std::vector<std::shared_ptr<const BlockArtifact>> artifacts;
     {
@@ -1338,10 +1442,31 @@ bool JitArtifactStore::compact() const noexcept {
     if (disk_path.empty()) return true;
     {
       const std::lock_guard persistence_lock{persistence_mutex_};
+      auto file_lock = ArtifactFileLock::acquire(
+          disk_path, ArtifactFileLock::Mode::Exclusive);
+      if (!file_lock) return false;
+      const auto writer_generation = file_lock->generation();
+      if (!writer_generation) return false;
+      std::uint64_t known_generation = 0;
+      {
+        const std::lock_guard lock{mutex_};
+        known_generation = external_writer_generation_;
+      }
+      if (known_generation != *writer_generation) {
+        if (!load_coordinated(disk_path)) return false;
+        const std::lock_guard lock{mutex_};
+        external_writer_generation_ = *writer_generation;
+      }
       std::error_code error;
       const auto append_bytes = std::filesystem::file_size(
           append_path_for(disk_path), error);
       if (error || append_bytes < limits_.compaction_bytes) return true;
+      const auto next_writer_generation = file_lock->begin_write();
+      if (!next_writer_generation) return false;
+      {
+        const std::lock_guard lock{mutex_};
+        external_writer_generation_ = *next_writer_generation;
+      }
       if (!save_full(disk_path)) return false;
     }
     const std::lock_guard lock{mutex_};
@@ -1353,9 +1478,22 @@ bool JitArtifactStore::compact() const noexcept {
 }
 
 bool JitArtifactStore::load(const std::filesystem::path &path) noexcept {
+  if (!limits_.persistence_enabled || path.empty()) return false;
+  const std::lock_guard persistence_lock{persistence_mutex_};
+  auto file_lock =
+      ArtifactFileLock::acquire(path, ArtifactFileLock::Mode::Shared);
+  if (!file_lock) return false;
+  const auto writer_generation = file_lock->generation();
+  if (!writer_generation || !load_coordinated(path)) return false;
+  const std::lock_guard lock{mutex_};
+  external_writer_generation_ = *writer_generation;
+  return true;
+}
+
+bool JitArtifactStore::load_coordinated(
+    const std::filesystem::path &path) const noexcept {
   try {
     if (!limits_.persistence_enabled) return false;
-    const std::lock_guard persistence_lock{persistence_mutex_};
     struct DiskEntry {
       JitArtifactKey key;
       DiskArtifactRecord record;
@@ -1738,6 +1876,33 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
   if (path.empty()) return false;
   if (!limits_.persistence_enabled) return true;
   const std::lock_guard persistence_lock{persistence_mutex_};
+  auto file_lock = ArtifactFileLock::acquire(
+      path, ArtifactFileLock::Mode::Exclusive);
+  if (!file_lock) return false;
+  const auto writer_generation = file_lock->generation();
+  if (!writer_generation) return false;
+  bool tracks_path = false;
+  std::uint64_t known_generation = 0;
+  {
+    const std::lock_guard lock{mutex_};
+    tracks_path = persistence_path_ == path || disk_source_path_ == path;
+    known_generation = external_writer_generation_;
+  }
+  if (tracks_path && known_generation != *writer_generation) {
+    std::error_code exists_error;
+    const auto cache_exists = std::filesystem::exists(path, exists_error);
+    if (exists_error || (cache_exists && !load_coordinated(path))) {
+      return false;
+    }
+    const std::lock_guard lock{mutex_};
+    external_writer_generation_ = *writer_generation;
+  }
+  const auto next_writer_generation = file_lock->begin_write();
+  if (!next_writer_generation) return false;
+  {
+    const std::lock_guard lock{mutex_};
+    external_writer_generation_ = *next_writer_generation;
+  }
   const auto append_result = append_new_artifacts(path);
   if (append_result == AppendResult::Saved) return true;
   if (append_result == AppendResult::Failed) return false;

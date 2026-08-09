@@ -222,6 +222,8 @@ private:
   [[nodiscard]] bool append_writeback_batch(
       const std::vector<std::shared_ptr<const BlockArtifact>> &batch) const
       noexcept;
+  [[nodiscard]] bool load_coordinated(
+      const std::filesystem::path &path) const noexcept;
   [[nodiscard]] AppendResult append_new_artifacts(
       const std::filesystem::path &path) const noexcept;
   [[nodiscard]] bool save_full(
@@ -243,6 +245,7 @@ private:
   mutable std::filesystem::path disk_append_path_;
   mutable std::uint64_t disk_append_valid_bytes_{};
   mutable std::uint64_t disk_index_generation_{};
+  mutable std::uint64_t external_writer_generation_{};
   mutable std::mutex persistence_mutex_;
   mutable std::condition_variable writeback_condition_;
   mutable bool writeback_stopping_{};
