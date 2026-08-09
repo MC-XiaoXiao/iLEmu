@@ -160,9 +160,10 @@ public:
   [[nodiscard]] bool compaction_needed() const noexcept;
   [[nodiscard]] bool compact() const noexcept;
 
-  // Persistence is metadata-only. Initial snapshots are atomic; incremental
-  // publications use a checksummed append journal. Loading malformed data
-  // leaves the existing store unchanged and lets execution fall back to JIT.
+  // Persistence is metadata-only. Initial snapshots carry an authenticated
+  // tail index and per-record checksums; incremental publications use a
+  // checksummed append journal. Loading malformed data leaves the existing
+  // store unchanged and lets execution fall back to JIT.
   [[nodiscard]] bool load(const std::filesystem::path &path) noexcept;
   [[nodiscard]] bool save() const noexcept;
   [[nodiscard]] bool save(const std::filesystem::path &path) const noexcept;
@@ -172,6 +173,8 @@ private:
     std::uint64_t offset{};
     std::uint64_t serialized_bytes{};
     bool append_log{};
+    ContentIdentity checksum;
+    bool checksum_valid{};
     std::uint64_t generation{};
   };
   struct ArtifactRecord {

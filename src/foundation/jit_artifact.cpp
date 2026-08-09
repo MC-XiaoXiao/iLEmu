@@ -19,10 +19,25 @@ namespace ilemu {
 namespace {
 
 constexpr std::array<char, 8> artifact_magic{
-    'i', 'L', 'J', 'A', 'R', 'T', 'F', '6'};
+    'i', 'L', 'J', 'A', 'R', 'T', 'F', '7'};
 constexpr std::array<char, 8> artifact_append_magic{
     'i', 'L', 'J', 'A', 'P', 'P', 'F', '2'};
+constexpr std::array<char, 8> artifact_index_magic{
+    'i', 'L', 'J', 'I', 'D', 'X', 'F', '1'};
+constexpr std::array<char, 8> artifact_footer_magic{
+    'i', 'L', 'J', 'F', 'O', 'O', 'T', '1'};
 constexpr std::size_t artifact_checksum_bytes = 32U;
+constexpr std::size_t serialized_key_bytes = 132U;
+constexpr std::size_t artifact_header_bytes =
+    artifact_magic.size() + sizeof(std::uint32_t);
+constexpr std::size_t artifact_index_entry_bytes =
+    serialized_key_bytes + sizeof(std::uint64_t) * 2U +
+    artifact_checksum_bytes;
+constexpr std::size_t artifact_index_header_bytes =
+    artifact_index_magic.size() + sizeof(std::uint32_t);
+constexpr std::size_t artifact_footer_bytes =
+    artifact_footer_magic.size() + sizeof(std::uint64_t) * 2U +
+    sizeof(std::uint32_t) + artifact_checksum_bytes;
 constexpr std::uint32_t maximum_artifacts = 1'000'000;
 constexpr std::uint32_t maximum_ir_bytes = 16U * 1024U * 1024U;
 constexpr std::uint32_t maximum_metadata_entries = 1'000'000;
@@ -105,6 +120,45 @@ public:
 
 private:
   explicit ArtifactFileLock(int descriptor) : descriptor_{descriptor} {}
+  int descriptor_{-1};
+};
+
+class ArtifactReadHandle {
+public:
+  ArtifactReadHandle(const ArtifactReadHandle &) = delete;
+  ArtifactReadHandle &operator=(const ArtifactReadHandle &) = delete;
+  ArtifactReadHandle(ArtifactReadHandle &&other) noexcept
+      : descriptor_{std::exchange(other.descriptor_, -1)} {}
+  ArtifactReadHandle &operator=(ArtifactReadHandle &&) = delete;
+  ~ArtifactReadHandle() {
+    if (descriptor_ >= 0) static_cast<void>(::close(descriptor_));
+  }
+
+  [[nodiscard]] static std::optional<ArtifactReadHandle>
+  open(const std::filesystem::path &path) noexcept {
+    const auto descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (descriptor < 0) return std::nullopt;
+    return ArtifactReadHandle{descriptor};
+  }
+
+  [[nodiscard]] int descriptor() const noexcept { return descriptor_; }
+
+  [[nodiscard]] std::ifstream stream() const {
+    // Reopening the descriptor link retains the inode selected above even if
+    // another process atomically replaces the cache path between checksum and
+    // deserialization.
+    std::ifstream result{
+        std::filesystem::path{"/proc/self/fd/" +
+                              std::to_string(descriptor_)},
+        std::ios::binary};
+    if (result) return result;
+    return std::ifstream{
+        std::filesystem::path{"/dev/fd/" + std::to_string(descriptor_)},
+        std::ios::binary};
+  }
+
+private:
+  explicit ArtifactReadHandle(int descriptor) : descriptor_{descriptor} {}
   int descriptor_{-1};
 };
 
@@ -279,7 +333,6 @@ read_bytes(std::istream &stream, std::uint32_t count) {
       exit_count > maximum_metadata_entries) {
     return std::nullopt;
   }
-  constexpr std::size_t serialized_key_bytes = 132U;
   constexpr std::size_t serialized_data_header_bytes = 32U;
   constexpr std::size_t serialized_dependency_bytes = 72U;
   constexpr std::size_t serialized_constant_dependency_bytes = 80U;
@@ -407,6 +460,128 @@ struct ArtifactMetadata {
   return ArtifactMetadata{*key, static_cast<std::uint64_t>(*record_bytes)};
 }
 
+struct SnapshotArtifactEntry {
+  JitArtifactKey key;
+  std::uint64_t offset{};
+  std::uint64_t serialized_bytes{};
+  ContentIdentity checksum;
+};
+
+[[nodiscard]] std::optional<std::vector<SnapshotArtifactEntry>>
+read_snapshot_index(const std::filesystem::path &path,
+                    std::uint64_t file_size) {
+  if (file_size < artifact_header_bytes + artifact_index_header_bytes +
+                      artifact_footer_bytes) {
+    return std::nullopt;
+  }
+  auto source = ArtifactReadHandle::open(path);
+  if (!source) return std::nullopt;
+  auto stream = source->stream();
+  if (!stream) return std::nullopt;
+  std::array<char, artifact_magic.size()> magic{};
+  stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+  const auto header_count = read_u32(stream);
+  if (!stream || magic != artifact_magic || !header_count ||
+      *header_count > maximum_artifacts) {
+    return std::nullopt;
+  }
+
+  const auto footer_offset = file_size - artifact_footer_bytes;
+  if (footer_offset > static_cast<std::uint64_t>(
+                          std::numeric_limits<std::streamoff>::max())) {
+    return std::nullopt;
+  }
+  stream.seekg(static_cast<std::streamoff>(footer_offset));
+  std::array<char, artifact_footer_magic.size()> footer_magic{};
+  stream.read(footer_magic.data(),
+              static_cast<std::streamsize>(footer_magic.size()));
+  const auto index_offset = read_u64(stream);
+  const auto index_bytes = read_u64(stream);
+  const auto footer_count = read_u32(stream);
+  ContentIdentity expected_index_checksum;
+  if (!index_offset || !index_bytes || !footer_count ||
+      !read_identity(stream, expected_index_checksum) ||
+      footer_magic != artifact_footer_magic ||
+      *footer_count != *header_count) {
+    return std::nullopt;
+  }
+  const auto expected_index_bytes =
+      static_cast<std::uint64_t>(artifact_index_header_bytes) +
+      static_cast<std::uint64_t>(*header_count) *
+          artifact_index_entry_bytes;
+  if (*index_bytes != expected_index_bytes ||
+      *index_offset < artifact_header_bytes ||
+      *index_offset > footer_offset ||
+      *index_bytes != footer_offset - *index_offset) {
+    return std::nullopt;
+  }
+  const auto actual_index_checksum =
+      sha256_file(source->descriptor(), *index_offset, *index_bytes);
+  if (!actual_index_checksum ||
+      *actual_index_checksum != expected_index_checksum ||
+      *index_offset > static_cast<std::uint64_t>(
+                          std::numeric_limits<std::streamoff>::max())) {
+    return std::nullopt;
+  }
+
+  stream.clear();
+  stream.seekg(static_cast<std::streamoff>(*index_offset));
+  std::array<char, artifact_index_magic.size()> index_magic{};
+  stream.read(index_magic.data(),
+              static_cast<std::streamsize>(index_magic.size()));
+  const auto index_count = read_u32(stream);
+  if (!stream || index_magic != artifact_index_magic || !index_count ||
+      *index_count != *header_count) {
+    return std::nullopt;
+  }
+  const auto maximum_record_bytes = serialized_artifact_bytes(
+      maximum_ir_bytes, maximum_metadata_entries,
+      maximum_metadata_entries, maximum_metadata_entries,
+      maximum_metadata_entries);
+  if (!maximum_record_bytes) return std::nullopt;
+  std::vector<SnapshotArtifactEntry> entries;
+  entries.reserve(*index_count);
+  std::uint64_t expected_record_offset = artifact_header_bytes;
+  for (std::uint32_t index = 0; index < *index_count; ++index) {
+    const auto key = read_key(stream);
+    const auto record_offset = read_u64(stream);
+    const auto record_bytes = read_u64(stream);
+    ContentIdentity checksum;
+    if (!key || !record_offset || !record_bytes || *record_bytes == 0U ||
+        *record_bytes > *maximum_record_bytes ||
+        !read_identity(stream, checksum) ||
+        *record_offset != expected_record_offset ||
+        *record_offset > *index_offset ||
+        *record_bytes > *index_offset - *record_offset) {
+      return std::nullopt;
+    }
+    expected_record_offset += *record_bytes;
+    entries.push_back(SnapshotArtifactEntry{
+        *key, *record_offset, *record_bytes, checksum});
+  }
+  if (expected_record_offset != *index_offset ||
+      stream.tellg() != static_cast<std::streamoff>(footer_offset)) {
+    return std::nullopt;
+  }
+  return entries;
+}
+
+[[nodiscard]] std::filesystem::path current_snapshot_path(
+    const std::filesystem::path &path) {
+  // F7 is intentionally not layout-compatible with prior snapshots. Keep an
+  // unrecognized user cache and its journal intact while all current writers
+  // converge on the same versioned sibling.
+  std::error_code error;
+  if (!std::filesystem::exists(path, error) || error) return path;
+  std::ifstream stream{path, std::ios::binary};
+  std::array<char, artifact_magic.size()> magic{};
+  if (stream) {
+    stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
+    if (stream && magic == artifact_magic) return path;
+  }
+  return std::filesystem::path{path.string() + ".indexed-v1"};
+}
+
 [[nodiscard]] std::filesystem::path append_path_for(
     const std::filesystem::path &path) {
   return std::filesystem::path{path.string() + ".append"};
@@ -524,13 +699,23 @@ struct ArtifactJournalScan {
 
 [[nodiscard]] std::optional<std::shared_ptr<const BlockArtifact>>
 read_artifact_at(const std::filesystem::path &path, std::uint64_t offset,
-                 std::uint64_t expected_bytes) {
+                 std::uint64_t expected_bytes,
+                 const ContentIdentity *expected_checksum = nullptr) {
   if (offset > static_cast<std::uint64_t>(
                    std::numeric_limits<std::streamoff>::max()) ||
       expected_bytes > std::numeric_limits<std::uint64_t>::max() - offset) {
     return std::nullopt;
   }
-  std::ifstream stream{path, std::ios::binary};
+  auto source = ArtifactReadHandle::open(path);
+  if (!source) return std::nullopt;
+  if (expected_checksum != nullptr) {
+    const auto actual_checksum =
+        sha256_file(source->descriptor(), offset, expected_bytes);
+    if (!actual_checksum || *actual_checksum != *expected_checksum) {
+      return std::nullopt;
+    }
+  }
+  auto stream = source->stream();
   if (!stream) return std::nullopt;
   stream.seekg(static_cast<std::streamoff>(offset));
   if (!stream) return std::nullopt;
@@ -705,6 +890,7 @@ JitArtifactStore::JitArtifactStore(
     : limits_{std::move(limits)}, persistence_path_{std::move(persistence_path)} {
   bool persistence_ready = false;
   if (!persistence_path_.empty() && limits_.persistence_enabled) {
+    persistence_path_ = current_snapshot_path(persistence_path_);
     persistence_ready = load(persistence_path_);
     if (!persistence_ready) {
       persistence_ready = save(persistence_path_);
@@ -733,7 +919,9 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
     return left.generation == right.generation &&
            left.offset == right.offset &&
            left.serialized_bytes == right.serialized_bytes &&
-           left.append_log == right.append_log;
+           left.append_log == right.append_log &&
+           left.checksum_valid == right.checksum_valid &&
+           (!left.checksum_valid || left.checksum == right.checksum);
   };
   constexpr unsigned maximum_record_attempts = 3U;
   std::shared_ptr<DiskReadFlight> flight;
@@ -842,8 +1030,9 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
 
       // The per-key flight owns retries while disk latency and deserialization
       // remain outside the global store mutex.
-      const auto loaded =
-          read_artifact_at(source_path, record.offset, record.serialized_bytes);
+      const auto loaded = read_artifact_at(
+          source_path, record.offset, record.serialized_bytes,
+          record.checksum_valid ? &record.checksum : nullptr);
 
       std::unique_lock lock{mutex_};
       if (auto artifact = artifacts_.find(key);
@@ -1361,7 +1550,8 @@ bool JitArtifactStore::append_writeback_batch(
       }
       if (!write_artifact(stream, *artifacts[index])) return false;
       records.push_back(
-          DiskArtifactRecord{record_offset, record_bytes[index], true});
+          DiskArtifactRecord{record_offset, record_bytes[index], true, {},
+                             false, 0U});
       if (record_offset > std::numeric_limits<std::uint64_t>::max() -
                               record_bytes[index]) {
         return false;
@@ -1501,10 +1691,7 @@ bool JitArtifactStore::load_coordinated(
 
     std::error_code size_error;
     const auto file_size = std::filesystem::file_size(path, size_error);
-    if (size_error || file_size < artifact_magic.size() + sizeof(std::uint32_t) +
-                                   artifact_checksum_bytes) {
-      return false;
-    }
+    if (size_error) return false;
     const auto configured_limit = limits_.persistence_bytes == 0U
                                       ? maximum_persistence_bytes
                                       : std::min<std::uintmax_t>(
@@ -1512,49 +1699,23 @@ bool JitArtifactStore::load_coordinated(
                                             maximum_persistence_bytes);
     if (file_size > configured_limit) return false;
     if (file_size > std::numeric_limits<std::uint64_t>::max()) return false;
-    const auto payload_size = static_cast<std::uint64_t>(
-        file_size - artifact_checksum_bytes);
-    std::ifstream stream{path, std::ios::binary};
-    if (!stream) return false;
-    std::array<char, artifact_magic.size()> magic{};
-    stream.read(magic.data(), static_cast<std::streamsize>(magic.size()));
-    // F1 stored text DumpBlock output and has no safe portable-IR validation
-    // boundary. Reject it instead of retaining an artifact that can never be
-    // imported safely. Unknown containers must take the same ordinary-JIT
-    // fallback path.
-    if (!stream || magic != artifact_magic) {
-      return false;
-    }
-    const auto count = read_u32(stream);
-    if (!count || *count > maximum_artifacts) return false;
+    const auto indexed = read_snapshot_index(
+        path, static_cast<std::uint64_t>(file_size));
+    if (!indexed) return false;
 
     DiskArtifactMap loaded_index;
-    loaded_index.reserve(*count);
+    loaded_index.reserve(indexed->size());
     std::vector<DiskEntry> scanned;
-    scanned.reserve(*count);
-    for (std::uint32_t index = 0; index < *count; ++index) {
-      const auto record_offset = stream.tellg();
-      if (record_offset < 0) return false;
-      const auto offset = static_cast<std::uint64_t>(record_offset);
-      const auto metadata =
-          read_artifact_metadata(stream, offset, payload_size);
-      if (!metadata) return false;
-      const DiskArtifactRecord record{offset,
-                                      metadata->serialized_bytes, false};
-      loaded_index[metadata->key] = record;
-      scanned.push_back(DiskEntry{metadata->key, record});
-    }
-    if (stream.tellg() != static_cast<std::streamoff>(payload_size)) {
-      return false;
-    }
-    ContentIdentity expected_checksum;
-    stream.read(reinterpret_cast<char *>(expected_checksum.digest.data()),
-                static_cast<std::streamsize>(expected_checksum.digest.size()));
-    if (!stream) return false;
-    const auto actual_checksum = sha256_file(
-        path, 0, static_cast<std::uint64_t>(payload_size));
-    if (!actual_checksum || *actual_checksum != expected_checksum) {
-      return false;
+    scanned.reserve(indexed->size());
+    for (const auto &entry : *indexed) {
+      const DiskArtifactRecord record{entry.offset,
+                                      entry.serialized_bytes,
+                                      false,
+                                      entry.checksum,
+                                      true,
+                                      0U};
+      if (!loaded_index.emplace(entry.key, record).second) return false;
+      scanned.push_back(DiskEntry{entry.key, record});
     }
 
     const auto append_path = append_path_for(path);
@@ -1566,7 +1727,8 @@ bool JitArtifactStore::load_coordinated(
     if (journal.header_valid) {
       for (const auto &entry : journal.entries) {
         const DiskArtifactRecord record{entry.offset,
-                                        entry.serialized_bytes, true};
+                                        entry.serialized_bytes, true, {},
+                                        false, 0U};
         loaded_index[entry.key] = record;
         scanned.push_back(DiskEntry{entry.key, record});
       }
@@ -1610,7 +1772,8 @@ bool JitArtifactStore::load_coordinated(
       const auto &source_path =
           entry.record.append_log ? append_path : path;
       const auto artifact = read_artifact_at(
-          source_path, entry.record.offset, entry.record.serialized_bytes);
+          source_path, entry.record.offset, entry.record.serialized_bytes,
+          entry.record.checksum_valid ? &entry.record.checksum : nullptr);
       if (!artifact || (*artifact)->key != entry.key) return false;
       loaded.push_back(*artifact);
     }
@@ -1679,7 +1842,7 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
       if (journal.header_valid) {
         for (const auto &entry : journal.entries) {
           DiskArtifactRecord record{entry.offset, entry.serialized_bytes,
-                                    true};
+                                    true, {}, false, 0U};
           const auto existing = disk_artifacts_.find(entry.key);
           const bool changed =
               existing == disk_artifacts_.end() ||
@@ -1823,7 +1986,8 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
         return AppendResult::Failed;
       }
       output_records.push_back(
-          DiskArtifactRecord{record_offset, record_bytes[index], true});
+          DiskArtifactRecord{record_offset, record_bytes[index], true, {},
+                             false, 0U});
       if (record_offset >
           std::numeric_limits<std::uint64_t>::max() - record_bytes[index]) {
         return AppendResult::Failed;
@@ -2009,11 +2173,22 @@ bool JitArtifactStore::save_full(
       serialized_size += static_cast<std::size_t>(bytes);
       record_bytes.push_back(bytes);
     }
-    if (serialized_size >
-        std::numeric_limits<std::size_t>::max() - artifact_checksum_bytes) {
+    if (entries.size() >
+        (std::numeric_limits<std::size_t>::max() -
+         artifact_index_header_bytes) /
+            artifact_index_entry_bytes) {
       return false;
     }
-    const auto total_size = serialized_size + artifact_checksum_bytes;
+    const auto index_size = artifact_index_header_bytes +
+                            entries.size() * artifact_index_entry_bytes;
+    if (serialized_size >
+            std::numeric_limits<std::size_t>::max() - index_size ||
+        serialized_size + index_size >
+            std::numeric_limits<std::size_t>::max() - artifact_footer_bytes) {
+      return false;
+    }
+    const auto total_size =
+        serialized_size + index_size + artifact_footer_bytes;
     if (limits_.persistence_bytes != 0U &&
         total_size > limits_.persistence_bytes) {
       return false;
@@ -2061,13 +2236,25 @@ bool JitArtifactStore::save_full(
         const auto bytes = record_bytes[index];
         auto &source_stream = entry.disk_record.append_log ? append_source
                                                             : source;
+        if (!entry.resident && entry.disk_record.checksum_valid) {
+          const auto &record_source = entry.disk_record.append_log
+                                          ? append_source_path
+                                          : source_path;
+          const auto source_checksum = sha256_file(
+              record_source, entry.disk_record.offset, bytes);
+          if (!source_checksum ||
+              *source_checksum != entry.disk_record.checksum) {
+            return false;
+          }
+        }
         const bool written = entry.resident
                                  ? write_artifact(stream, *entry.artifact)
                                  : copy_disk_record(
                                        source_stream, stream,
                                        entry.disk_record.offset, bytes);
         if (!written) return false;
-        output_records.push_back(DiskArtifactRecord{output_offset, bytes});
+        output_records.push_back(DiskArtifactRecord{
+            output_offset, bytes, false, {}, false, 0U});
         if (output_offset > std::numeric_limits<std::uint64_t>::max() -
                                 bytes) {
           return false;
@@ -2079,6 +2266,60 @@ bool JitArtifactStore::save_full(
                                 output_offset)) {
         return false;
       }
+      stream.close();
+      if (!stream || output_offset != serialized_size) return false;
+
+      for (std::size_t index = 0; index < entries.size(); ++index) {
+        const auto checksum = sha256_file(
+            temporary, output_records[index].offset,
+            output_records[index].serialized_bytes);
+        if (!checksum) return false;
+        output_records[index].checksum = *checksum;
+        output_records[index].checksum_valid = true;
+      }
+
+      const auto index_offset = output_offset;
+      std::ofstream index_stream{temporary, std::ios::binary | std::ios::app};
+      if (!index_stream) return false;
+      index_stream.write(
+          artifact_index_magic.data(),
+          static_cast<std::streamsize>(artifact_index_magic.size()));
+      write_u32(index_stream, static_cast<std::uint32_t>(entries.size()));
+      for (std::size_t index = 0; index < entries.size(); ++index) {
+        write_key(index_stream, entries[index].key);
+        write_u64(index_stream, output_records[index].offset);
+        write_u64(index_stream, output_records[index].serialized_bytes);
+        write_identity(index_stream, output_records[index].checksum);
+      }
+      index_stream.flush();
+      if (!index_stream ||
+          index_stream.tellp() != static_cast<std::streamoff>(
+                                      index_offset + index_size)) {
+        return false;
+      }
+      index_stream.close();
+      if (!index_stream) return false;
+      const auto index_checksum = sha256_file(
+          temporary, index_offset, static_cast<std::uint64_t>(index_size));
+      if (!index_checksum) return false;
+
+      std::ofstream footer_stream{temporary,
+                                  std::ios::binary | std::ios::app};
+      if (!footer_stream) return false;
+      footer_stream.write(
+          artifact_footer_magic.data(),
+          static_cast<std::streamsize>(artifact_footer_magic.size()));
+      write_u64(footer_stream, index_offset);
+      write_u64(footer_stream, static_cast<std::uint64_t>(index_size));
+      write_u32(footer_stream, static_cast<std::uint32_t>(entries.size()));
+      write_identity(footer_stream, *index_checksum);
+      footer_stream.flush();
+      if (!footer_stream ||
+          footer_stream.tellp() != static_cast<std::streamoff>(total_size)) {
+        return false;
+      }
+      footer_stream.close();
+      if (!footer_stream) return false;
 
       DiskArtifactMap output_index;
       output_index.reserve(entries.size());
@@ -2090,19 +2331,6 @@ bool JitArtifactStore::save_full(
         if (!inserted || iterator->first != entries[index].key) return false;
         output_order.push_back(entries[index].key);
       }
-
-      const auto checksum = sha256_file(
-          temporary, 0, static_cast<std::uint64_t>(serialized_size));
-      if (!checksum) return false;
-      stream.close();
-      std::ofstream checksum_stream{temporary,
-                                    std::ios::binary | std::ios::app};
-      if (!checksum_stream) return false;
-      checksum_stream.write(
-          reinterpret_cast<const char *>(checksum->digest.data()),
-          static_cast<std::streamsize>(checksum->digest.size()));
-      checksum_stream.flush();
-      if (!checksum_stream) return false;
 
       const std::lock_guard lock{mutex_};
       if (disk_source_path_ != source_path ||
