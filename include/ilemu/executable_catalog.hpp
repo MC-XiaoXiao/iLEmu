@@ -142,6 +142,11 @@ private:
   std::vector<ExecutableCatalogEntry> entries_;
   std::unordered_map<ContentIdentity, std::size_t, ContentIdentityHash>
       identity_index_;
+  // Older manifests classified N_SECT symbols by segment protection and can
+  // therefore contain __cstring/data addresses. They remain readable for
+  // generation migration, but their entry lists must never be consumed or
+  // reused as trusted metadata.
+  bool reliable_entry_points_current_{true};
 };
 
 } // namespace ilemu

@@ -24,7 +24,7 @@ using ilemu::DyldSharedCache;
 
 constexpr std::array<char, 8> catalog_magic{
     'i', 'L', 'E', 'M', 'C', 'A', 'T', '1'};
-constexpr std::uint32_t catalog_schema_version = 6U;
+constexpr std::uint32_t catalog_schema_version = 7U;
 constexpr std::size_t catalog_checksum_size = 32U;
 constexpr std::uint32_t maximum_manifest_entries = 100'000U;
 constexpr std::uint32_t maximum_manifest_items = 65'536U;
@@ -377,6 +377,29 @@ bool executable_address(const ilemu::MachOImage &image, std::uint32_t address) {
   return false;
 }
 
+bool instruction_symbol(const ilemu::MachOImage &image,
+                        const ilemu::MachSymbol &symbol) {
+  // n_sect is a one-based ordinal over every section in load-command order.
+  // Segment execute permission is not sufficient: __TEXT commonly contains
+  // __cstring, constants, and unwind metadata alongside __text.
+  constexpr std::uint32_t pure_instructions = 0x80000000U;
+  constexpr std::uint32_t some_instructions = 0x00000400U;
+  if (symbol.section == 0U) return false;
+  std::size_t ordinal = 1U;
+  for (const auto &segment : image.segments()) {
+    for (const auto &section : segment.sections) {
+      if (ordinal++ != symbol.section) continue;
+      if ((section.flags & (pure_instructions | some_instructions)) == 0U ||
+          section.size == 0U || symbol.value < section.address ||
+          symbol.value - section.address >= section.size) {
+        return false;
+      }
+      return executable_address(image, symbol.value);
+    }
+  }
+  return false;
+}
+
 void collect_reliable_entry_points(
     const ilemu::MachOImage &image,
     std::vector<std::uint64_t> &entry_points) {
@@ -397,9 +420,10 @@ void collect_reliable_entry_points(
   if (image.entry_point()) add(*image.entry_point(), false);
   for (const auto &symbol : image.symbols()) {
     // N_SECT definitions are the only symbol records with an image-local
-    // address. Their executable-segment check filters data symbols and keeps
-    // the catalog from treating every byte as an instruction entry.
-    if ((symbol.type & 0x0eU) == 0x0eU) {
+    // address. Require the referenced section itself to carry Mach-O's
+    // instruction attribute; an executable __TEXT segment also contains data.
+    if ((symbol.type & 0x0eU) == 0x0eU &&
+        instruction_symbol(image, symbol)) {
       add(symbol.value, symbol.thumb_definition());
     }
   }
@@ -606,6 +630,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
         if (existing != old_entry->file_generations.end()) old_generation = &*existing;
       }
       if (old_entry != nullptr && current_generation && old_generation != nullptr &&
+          previous->reliable_entry_points_current_ &&
           !old_entry->kinds.empty() &&
           old_entry->file_size != 0U && old_entry->uuid &&
           !old_entry->kinds.contains(ExecutableCatalogKind::DynamicMapping) &&
@@ -659,6 +684,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
       }
     }
   }
+  reliable_entry_points_current_ = true;
   return summary;
 }
 
@@ -695,7 +721,7 @@ bool ExecutableCatalog::load(const std::filesystem::path &path) noexcept {
     const auto schema = read_u32(stream);
     const auto count = read_u32(stream);
     if (!schema ||
-        (*schema != 4U && *schema != 5U &&
+        (*schema != 4U && *schema != 5U && *schema != 6U &&
          *schema != catalog_schema_version) ||
         !count ||
         *count > maximum_manifest_entries) {
@@ -718,8 +744,14 @@ bool ExecutableCatalog::load(const std::filesystem::path &path) noexcept {
     }
     if (stream.peek() != std::char_traits<char>::eof()) return false;
 
+    const auto reliable_entry_points_current =
+        *schema == catalog_schema_version;
+    if (!reliable_entry_points_current) {
+      for (auto &entry : entries) entry.reliable_entry_points.clear();
+    }
     entries_ = std::move(entries);
     identity_index_ = std::move(identity_index);
+    reliable_entry_points_current_ = reliable_entry_points_current;
     return true;
   } catch (...) {
     return false;
