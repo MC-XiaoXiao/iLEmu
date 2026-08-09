@@ -24,6 +24,11 @@ struct PortObject {
   // Zero denotes the kernel ipc_space or an active port whose receive right
   // is temporarily in transit. This is never a task-local Mach name.
   TaskIdentity receive_owner{};
+  // Preserve the receiver's identity across MOVE_RECEIVE. A user port in
+  // transit also has a zero receive_owner, but it must remain routable to its
+  // eventual user-space server; only ports created in the kernel ipc_space
+  // are kernel objects serviced by the in-kernel MIG demux.
+  bool kernel_owned{};
   std::uint32_t make_send_count{};
   std::uint32_t sequence_number{};
   std::uint32_t queue_limit{default_queue_limit};
@@ -35,7 +40,9 @@ public:
                             TaskIdentity receive_owner = 0) {
     if (object == 0 || object == 0xffff'ffffU)
       return false;
-    return objects_.emplace(object, PortObject{receive_owner}).second;
+    return objects_
+        .emplace(object, PortObject{receive_owner, receive_owner == 0})
+        .second;
   }
 
   [[nodiscard]] bool contains(PortObjectId object) const {

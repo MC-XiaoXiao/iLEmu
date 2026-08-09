@@ -212,6 +212,12 @@ inline constexpr std::uint32_t vm_flags_anywhere = 1;
 inline constexpr std::uint32_t vm_flags_overwrite = 0x4000U;
 } // namespace mach
 
+namespace mig {
+// Darwin 8 osfmk/mach/mig_errors.h. Keep the signed MIG value in its exact
+// 32-bit wire representation.
+inline constexpr std::uint32_t bad_id = 0xffff'fed1U; // -303
+} // namespace mig
+
 namespace mach_message {
 inline constexpr std::uint32_t option_send = 0x0000'0001U;
 inline constexpr std::uint32_t option_receive = 0x0000'0002U;

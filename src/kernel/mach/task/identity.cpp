@@ -15,6 +15,14 @@ constexpr auto receive_right = xnu792::ipc::type_mask(Right::Receive);
 bool install_kernel_send_port(KernelSharedState &state,
                               const ProcessContext &process,
                               std::uint32_t name) {
+  // The fixed early-boot names still denote global kernel ipc_port objects.
+  // Materialize them once so fallback MIG dispatch can distinguish a valid
+  // kernel destination from an invalid name without hard-coding a routine or
+  // firmware version.
+  if (!state.mach_port_objects.contains(name) &&
+      !state.mach_port_objects.create(name)) {
+    return false;
+  }
   return state.mach_namespaces.install(process.pid, name, name, send_right);
 }
 
