@@ -3406,6 +3406,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(artifact_stats.disk_loaded_entries) +
         " evict=" + std::to_string(artifact_stats.evictions) +
         " compactions=" + std::to_string(artifact_stats.compactions) +
+        " quota-evictions=" +
+        std::to_string(artifact_stats.quota_evictions) +
         " writeback-enqueued=" +
         std::to_string(artifact_stats.writeback_enqueued) +
         " writeback-saved=" +

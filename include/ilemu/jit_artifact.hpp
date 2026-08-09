@@ -123,6 +123,7 @@ struct JitArtifactStoreStats {
   std::uint64_t disk_loaded_entries{};
   std::uint64_t evictions{};
   std::uint64_t compactions{};
+  std::uint64_t quota_evictions{};
   std::uint64_t writeback_enqueued{};
   std::uint64_t writeback_saved{};
   std::uint64_t writeback_dropped{};
@@ -177,17 +178,22 @@ private:
     ContentIdentity checksum;
     bool checksum_valid{};
     std::uint64_t generation{};
+    std::uint64_t benefit_generation{};
+    std::uint64_t benefit_hits{};
+    std::uint64_t translation_nanoseconds{};
   };
   struct ArtifactRecord {
     std::shared_ptr<const BlockArtifact> artifact;
     std::size_t serialized_bytes{};
     std::list<JitArtifactKey>::iterator lru_position;
     bool loaded_from_disk{};
+    std::uint64_t benefit_generation{};
   };
   struct PendingWriteback {
     std::shared_ptr<const BlockArtifact> artifact;
     std::size_t serialized_bytes{};
     std::list<JitArtifactKey>::iterator queue_position;
+    std::uint64_t benefit_generation{};
   };
   struct DiskReadFlight {
     std::condition_variable condition;
@@ -214,6 +220,10 @@ private:
 
   void touch_locked(ArtifactMap::iterator iterator) const;
   [[nodiscard]] std::uint64_t next_disk_generation_locked() const noexcept;
+  [[nodiscard]] std::uint64_t next_benefit_generation_locked() const noexcept;
+  void note_disk_benefit_locked(
+      const JitArtifactKey &key,
+      const BlockArtifact *artifact = nullptr) const noexcept;
   void evict_until_fit_locked(std::size_t required_bytes) const;
   void insert_locked(std::shared_ptr<const BlockArtifact> artifact,
                      std::size_t serialized_bytes,
@@ -250,6 +260,7 @@ private:
   mutable std::uint64_t disk_append_valid_bytes_{};
   mutable bool disk_append_indexed_{true};
   mutable std::uint64_t disk_index_generation_{};
+  mutable std::uint64_t benefit_generation_{};
   mutable std::uint64_t external_writer_generation_{};
   mutable std::mutex persistence_mutex_;
   mutable std::condition_variable writeback_condition_;
