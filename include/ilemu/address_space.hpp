@@ -98,7 +98,11 @@ public:
   bool map_file(std::uint32_t address, std::uint32_t size,
                 MemoryPermission permissions,
                 const std::filesystem::path &path,
-                std::uint64_t file_offset);
+                std::uint64_t file_offset,
+                std::optional<GuestFileGeneration> expected_generation =
+                    std::nullopt,
+                std::optional<ContentIdentity> expected_content_identity =
+                    std::nullopt);
   enum class PageMappingMode {
     CopyOnWrite,
     Shared,

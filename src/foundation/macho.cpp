@@ -2,13 +2,17 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstring>
-#include <fstream>
 #include <limits>
 #include <set>
 #include <span>
 #include <sstream>
 #include <stdexcept>
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace ilemu {
 namespace {
@@ -223,29 +227,74 @@ std::uint32_t align_up(std::uint64_t value) {
     return static_cast<std::uint32_t>(aligned);
 }
 
+struct ScopedFileDescriptor {
+    int value{-1};
+
+    ScopedFileDescriptor() = default;
+
+    ~ScopedFileDescriptor() {
+        if (value >= 0) static_cast<void>(::close(value));
+    }
+
+    ScopedFileDescriptor(const ScopedFileDescriptor&) = delete;
+    ScopedFileDescriptor& operator=(const ScopedFileDescriptor&) = delete;
+};
+
+GuestFileGeneration file_generation_from_stat(const struct stat& file_stat) {
+    return GuestFileGeneration{
+        static_cast<std::uint64_t>(file_stat.st_dev),
+        static_cast<std::uint64_t>(file_stat.st_ino),
+        static_cast<std::uint64_t>(file_stat.st_size),
+        static_cast<std::int64_t>(file_stat.st_mtim.tv_sec),
+        static_cast<std::int64_t>(file_stat.st_mtim.tv_nsec),
+        static_cast<std::int64_t>(file_stat.st_ctim.tv_sec),
+        static_cast<std::int64_t>(file_stat.st_ctim.tv_nsec)};
+}
+
 }  // namespace
 
 MachOImage MachOImage::parse(const std::filesystem::path& path,
                              ArmArchitectureVersion architecture,
                              std::optional<ContentIdentity> known_identity) {
-    std::ifstream input{path, std::ios::binary | std::ios::ate};
-    if (!input) {
+    ScopedFileDescriptor input;
+    do {
+        input.value = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    } while (input.value < 0 && errno == EINTR);
+    if (input.value < 0) {
         throw std::runtime_error{"cannot open Mach-O: " + path.string()};
     }
-    const auto end = input.tellg();
-    if (end < 0) {
-        throw std::runtime_error{"cannot determine Mach-O size: " + path.string()};
+    struct stat file_stat {};
+    if (::fstat(input.value, &file_stat) != 0 || !S_ISREG(file_stat.st_mode) ||
+        file_stat.st_size < 0 ||
+        static_cast<std::uintmax_t>(file_stat.st_size) >
+            std::numeric_limits<std::size_t>::max()) {
+        throw std::runtime_error{"cannot determine Mach-O size: " +
+                                 path.string()};
     }
     MachOImage image;
     image.path_ = path;
-    image.bytes_.resize(static_cast<std::size_t>(end));
-    input.seekg(0);
-    if (!image.bytes_.empty()) {
-        input.read(reinterpret_cast<char*>(image.bytes_.data()),
-                   static_cast<std::streamsize>(image.bytes_.size()));
+    image.file_generation_ = file_generation_from_stat(file_stat);
+    image.bytes_.resize(static_cast<std::size_t>(file_stat.st_size));
+    std::size_t received = 0;
+    while (received < image.bytes_.size()) {
+        const auto remaining = image.bytes_.size() - received;
+        const auto requested = std::min<std::size_t>(remaining, 64U * 1024U);
+        ssize_t count = -1;
+        do {
+            count = ::pread(input.value, image.bytes_.data() + received,
+                            requested, static_cast<off_t>(received));
+        } while (count < 0 && errno == EINTR);
+        if (count <= 0) {
+            throw std::runtime_error{"failed to read Mach-O: " +
+                                     path.string()};
+        }
+        received += static_cast<std::size_t>(count);
     }
-    if (!input && !image.bytes_.empty()) {
-        throw std::runtime_error{"failed to read Mach-O: " + path.string()};
+    struct stat final_file_stat {};
+    if (::fstat(input.value, &final_file_stat) != 0 ||
+        file_generation_from_stat(final_file_stat) != *image.file_generation_) {
+        throw std::runtime_error{"Mach-O changed while reading: " +
+                                 path.string()};
     }
 
     // App bundles may carry a classic FAT container. Select the best slice for
@@ -829,7 +878,8 @@ void MachOImage::map_into(AddressSpace& memory) const {
                         static_cast<std::uint32_t>(file_guest_start),
                         static_cast<std::uint32_t>(file_guest_end -
                                                    file_guest_start),
-                        permissions, path_, file_offset)) {
+                        permissions, path_, file_offset, file_generation_,
+                        content_identity_)) {
                     // File backing is an optimization for immutable text, not
                     // part of the Mach-O loading contract. A transient host
                     // mapping failure must retain the original anonymous-copy

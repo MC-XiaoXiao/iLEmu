@@ -7,6 +7,7 @@
 #include <mutex>
 #include <new>
 #include <type_traits>
+#include <utility>
 
 #include <sys/mman.h>
 
@@ -428,12 +429,18 @@ bool AddressSpace::copy_out(std::uint32_t address,
 bool AddressSpace::map_file(std::uint32_t address, std::uint32_t size,
                             MemoryPermission permissions,
                             const std::filesystem::path &path,
-                            std::uint64_t file_offset) {
+                            std::uint64_t file_offset,
+                            std::optional<GuestFileGeneration>
+                                expected_generation,
+                            std::optional<ContentIdentity>
+                                expected_content_identity) {
   if (size == 0 || range_overflows(address, size) ||
       address % page_size != 0 || file_offset % page_size != 0) {
     return false;
   }
-  const auto backing = file_page_cache_->open_mapping(path, file_offset, size);
+  const auto backing = file_page_cache_->open_mapping(
+      path, file_offset, size, std::move(expected_generation),
+      std::move(expected_content_identity));
   if (!backing) return false;
 
   auto lock = write_lock();

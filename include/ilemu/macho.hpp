@@ -124,6 +124,10 @@ private:
     std::uint32_t flags_{};
     std::uint32_t command_count_{};
     ContentIdentity content_identity_;
+    // The parser and the later lazy file-backed mapping must agree on the
+    // opened vnode/file generation. If it changed, map_into copies this
+    // parsed snapshot instead of admitting a newer pathname generation.
+    std::optional<GuestFileGeneration> file_generation_;
     std::optional<std::array<std::byte, 16>> uuid_;
     bool fat_container_{};
     std::vector<MachSegment> segments_;

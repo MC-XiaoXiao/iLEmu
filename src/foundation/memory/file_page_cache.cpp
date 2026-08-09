@@ -259,7 +259,11 @@ void FilePageCache::evict_locked() {
 std::optional<std::shared_ptr<GuestFileBacking>>
 FilePageCache::open_mapping(const std::filesystem::path &path,
                             std::uint64_t file_offset,
-                            std::uint32_t size) {
+                            std::uint32_t size,
+                            std::optional<GuestFileGeneration>
+                                expected_generation,
+                            std::optional<ContentIdentity>
+                                expected_content_identity) {
   if (size == 0 || file_offset % guest_memory_page_size != 0) {
     return std::nullopt;
   }
@@ -280,6 +284,11 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     return std::nullopt;
   }
   const auto file_size = static_cast<std::uintmax_t>(file_stat.st_size);
+  const auto generation = generation_from_stat(file_stat);
+  if (expected_generation && *expected_generation != generation) {
+    close_descriptor();
+    return std::nullopt;
+  }
   if (file_offset > file_size) {
     close_descriptor();
     return std::nullopt;
@@ -293,7 +302,6 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     return std::nullopt;
   }
   const auto modified = file_time_from_stat(file_stat);
-  const auto generation = generation_from_stat(file_stat);
   const auto normalized_path = stable_path(path);
   std::optional<ContentIdentity> content_identity;
   {
@@ -344,6 +352,11 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   struct stat final_file_stat {};
   if (::fstat(descriptor, &final_file_stat) != 0 ||
       !same_file_stat(file_stat, final_file_stat)) {
+    close_descriptor();
+    return std::nullopt;
+  }
+  if (expected_content_identity &&
+      *expected_content_identity != *content_identity) {
     close_descriptor();
     return std::nullopt;
   }

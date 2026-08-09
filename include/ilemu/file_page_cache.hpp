@@ -145,7 +145,11 @@ public:
   // later page faults. No per-page objects or file contents are created here.
   [[nodiscard]] std::optional<std::shared_ptr<GuestFileBacking>>
   open_mapping(const std::filesystem::path &path, std::uint64_t file_offset,
-               std::uint32_t size);
+               std::uint32_t size,
+               std::optional<GuestFileGeneration> expected_generation =
+                   std::nullopt,
+               std::optional<ContentIdentity> expected_content_identity =
+                   std::nullopt);
 
   // Creates or reuses one page for an already validated mapping. The page
   // remains byte-lazy; GuestPageBacking::materialize performs clustered I/O.
