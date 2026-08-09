@@ -32,6 +32,14 @@ enum class JitPrecompilePhase : std::uint8_t {
 inline constexpr std::size_t jit_precompile_phase_count =
     static_cast<std::size_t>(JitPrecompilePhase::Remaining) + 1U;
 
+enum class JitPrecompileTarget : std::uint8_t {
+    NativeCode,
+    PortableIr,
+};
+
+inline constexpr std::size_t jit_precompile_target_count =
+    static_cast<std::size_t>(JitPrecompileTarget::PortableIr) + 1U;
+
 class JitTranslationProfile;
 class JitArtifactStore;
 enum class JitArtifactRetention : std::uint8_t;
@@ -193,7 +201,8 @@ public:
     [[nodiscard]] std::optional<JitPrecompilePhase>
     next_precompile_phase();
     std::size_t precompile_pending(
-        std::size_t maximum_blocks, std::uint64_t budget_nanoseconds);
+        std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
+        JitPrecompileTarget target = JitPrecompileTarget::NativeCode);
     // A dead guest task keeps its small register context until the parent
     // reaps the process, but no longer needs executable host code. Detach the
     // shared execution pool so its JIT caches can be destroyed off the

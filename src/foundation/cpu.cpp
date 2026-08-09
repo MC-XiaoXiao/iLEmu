@@ -196,21 +196,37 @@ public:
     [[nodiscard]] bool import_artifact(
         Dynarmic::A32::Jit& jit,
         std::uint64_t location_descriptor) const noexcept {
-        if (!artifact_store_ || !portable_artifact_import_supported() ||
+        auto block = validated_artifact_block(location_descriptor);
+        if (!block) return false;
+        try {
+            static_cast<void>(jit.Precompile(std::move(*block)));
+            return true;
+        } catch (...) {
+            return false;
+        }
+    }
+
+    [[nodiscard]] bool artifact_available(
+        std::uint64_t location_descriptor) const noexcept {
+        return validated_artifact_block(location_descriptor).has_value();
+    }
+
+    [[nodiscard]] bool generate_portable_artifact(
+        Dynarmic::A32::Jit& jit,
+        std::uint64_t location_descriptor) noexcept {
+        if (!artifact_store_ ||
             !jit_artifact_producer_fingerprint_available) {
             return false;
         }
         try {
-            const auto artifact = find_artifact(location_descriptor);
-            if (!artifact || artifact->data.normalized_ir.empty()) return false;
-            if (!dependencies_match(*artifact)) return false;
-            auto block = deserialize_dynarmic_ir(artifact->data.normalized_ir);
-            if (!block || block->Location().Value() != location_descriptor) {
-                return false;
-            }
-            static_cast<void>(jit.Precompile(std::move(*block)));
-            return true;
+            portable_generation_location_ = location_descriptor;
+            portable_generation_published_ = false;
+            jit.GeneratePortableIR(location_descriptor);
+            portable_generation_location_.reset();
+            return portable_generation_published_;
         } catch (...) {
+            portable_generation_location_.reset();
+            portable_generation_published_ = false;
             return false;
         }
     }
@@ -236,6 +252,29 @@ public:
     }
 
 private:
+    [[nodiscard]] std::optional<Dynarmic::IR::Block>
+    validated_artifact_block(
+        std::uint64_t location_descriptor) const noexcept {
+        if (!artifact_store_ || !portable_artifact_import_supported() ||
+            !jit_artifact_producer_fingerprint_available) {
+            return std::nullopt;
+        }
+        try {
+            const auto artifact = find_artifact(location_descriptor);
+            if (!artifact || artifact->data.normalized_ir.empty()) {
+                return std::nullopt;
+            }
+            if (!dependencies_match(*artifact)) return std::nullopt;
+            auto block = deserialize_dynarmic_ir(artifact->data.normalized_ir);
+            if (!block || block->Location().Value() != location_descriptor) {
+                return std::nullopt;
+            }
+            return block;
+        } catch (...) {
+            return std::nullopt;
+        }
+    }
+
     void record_constant_dependency(
         std::uint32_t address, std::uint32_t size,
         std::uint64_t value) {
@@ -330,8 +369,11 @@ private:
                 pc, sizeof(std::uint32_t))) {
             translation_profile_->record(location_descriptor);
         }
-        publish_artifact(location_descriptor, translation_nanoseconds,
-                         optimized_block);
+        const auto published = publish_artifact(
+            location_descriptor, translation_nanoseconds, optimized_block);
+        if (portable_generation_location_ == location_descriptor) {
+            portable_generation_published_ = published;
+        }
     }
 
 public:
@@ -562,18 +604,18 @@ private:
         }
     }
 
-    void publish_artifact(
+    [[nodiscard]] bool publish_artifact(
         std::uint64_t location_descriptor,
         std::uint64_t translation_nanoseconds,
         const Dynarmic::IR::Block* optimized_block) noexcept {
-        if (!artifact_store_) return;
+        if (!artifact_store_) return false;
         try {
             const auto *translation_block = translation_block_;
             translation_block_ = nullptr;
             auto key = make_artifact_key(location_descriptor);
-            if (!key) return;
-            if (translation_code_pages_.empty()) return;
-            if (constant_dependency_failed_) return;
+            if (!key) return false;
+            if (translation_code_pages_.empty()) return false;
+            if (constant_dependency_failed_) return false;
 
             JitArtifactData data;
             data.code_dependencies.reserve(translation_code_pages_.size());
@@ -581,7 +623,7 @@ private:
                 const auto dependency =
                     memory_.executable_backing_identity(
                         page, AddressSpace::page_size);
-                if (!dependency) return;
+                if (!dependency) return false;
                 data.code_dependencies.push_back(JitCodeDependency{
                     page, AddressSpace::page_size, dependency->content,
                     dependency->layout});
@@ -589,18 +631,27 @@ private:
             data.constant_dependencies = translation_constant_dependencies_;
             if (optimized_block != nullptr) {
                 const auto serialized = serialize_dynarmic_ir(*optimized_block);
-                if (serialized) data.normalized_ir = *serialized;
+                if (!serialized) return false;
+                if (portable_generation_location_ == location_descriptor) {
+                    const auto validated = deserialize_dynarmic_ir(*serialized);
+                    if (!validated ||
+                        validated->Location().Value() != location_descriptor) {
+                        return false;
+                    }
+                }
+                data.normalized_ir = *serialized;
             } else if (translation_block != nullptr) {
                 // Retain a readable fallback for legacy callback users, but
                 // it is intentionally not importable as portable IR.
                 data.normalized_ir = normalized_ir(*translation_block);
             }
             data.translation_nanoseconds = translation_nanoseconds;
-            static_cast<void>(artifact_store_->publish(std::move(*key),
-                                                       std::move(data),
-                                                       artifact_retention_));
+            return artifact_store_->publish(
+                       std::move(*key), std::move(data), artifact_retention_) !=
+                   nullptr;
         } catch (...) {
             // Artifact persistence must never make guest execution fail.
+            return false;
         }
     }
 
@@ -703,6 +754,8 @@ private:
     std::shared_ptr<JitTranslationProfile> translation_profile_;
     std::shared_ptr<JitArtifactStore> artifact_store_;
     JitArtifactRetention artifact_retention_{JitArtifactRetention::Normal};
+    std::optional<std::uint64_t> portable_generation_location_;
+    bool portable_generation_published_{};
     Dynarmic::IR::Block *translation_block_{};
     std::vector<std::uint32_t> translation_code_pages_;
     std::vector<JitConstantDependency> translation_constant_dependencies_;
@@ -939,7 +992,8 @@ public:
     }
 
     std::size_t precompile_pending(
-        std::size_t maximum_blocks, std::uint64_t budget_nanoseconds) {
+        std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
+        JitPrecompileTarget target) {
         if (maximum_blocks == 0 || budget_nanoseconds == 0) {
             return 0;
         }
@@ -958,7 +1012,8 @@ public:
         const auto started = std::chrono::steady_clock::now();
         std::size_t compiled = 0;
         while (compiled < maximum_blocks && candidates_remaining != 0) {
-            if (jit_code_cache_used(*jit_) + cache_reserve >= code_cache_size_) {
+            if (target == JitPrecompileTarget::NativeCode &&
+                jit_code_cache_used(*jit_) + cache_reserve >= code_cache_size_) {
                 break;
             }
             std::optional<std::pair<std::uint64_t, JitPrecompilePhase>> entry;
@@ -995,7 +1050,8 @@ public:
                 const auto key = callbacks_->artifact_key(descriptor);
                 const auto probe = key ? artifact_probes_.find(descriptor)
                                        : artifact_probes_.end();
-                if (key && probe != artifact_probes_.end() &&
+                if (target == JitPrecompileTarget::NativeCode && key &&
+                    probe != artifact_probes_.end() &&
                     probe->second.matches(*key)) {
                     const std::lock_guard queue_lock{precompile_queue_mutex_};
                     inflight_precompile_entries_.erase(descriptor);
@@ -1003,30 +1059,53 @@ public:
                     ++compiled;
                     continue;
                 }
-                const auto imported =
-                    callbacks_->import_artifact(*jit_, descriptor);
-                if (!imported) {
-                    const auto block_started = std::chrono::steady_clock::now();
-                    callbacks_->begin(0);
-                    jit_->Precompile(descriptor);
-                    performance_counters().record_jit_block_compile(
-                        static_cast<std::uint64_t>(
-                            std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                std::chrono::steady_clock::now() -
-                                block_started)
-                                .count()));
+                if (target == JitPrecompileTarget::PortableIr) {
+                    auto available = callbacks_->artifact_available(descriptor);
+                    if (!available) {
+                        // The global offline worker fills the reusable IR
+                        // store without consuming this process's native code
+                        // cache. Generated bytes are round-trip validated by
+                        // JitCallbacks before publication.
+                        callbacks_->begin(0);
+                        available = callbacks_->generate_portable_artifact(
+                            *jit_, descriptor);
+                    }
+                    {
+                        const std::lock_guard queue_lock{
+                            precompile_queue_mutex_};
+                        inflight_precompile_entries_.erase(descriptor);
+                        completed_precompile_entries_.insert(descriptor);
+                    }
+                    if (available) ++compiled;
+                } else {
+                    const auto imported =
+                        callbacks_->import_artifact(*jit_, descriptor);
+                    if (!imported) {
+                        const auto block_started =
+                            std::chrono::steady_clock::now();
+                        callbacks_->begin(0);
+                        jit_->Precompile(descriptor);
+                        performance_counters().record_jit_block_compile(
+                            static_cast<std::uint64_t>(
+                                std::chrono::duration_cast<
+                                    std::chrono::nanoseconds>(
+                                    std::chrono::steady_clock::now() -
+                                    block_started)
+                                    .count()));
+                    }
+                    if (key) {
+                        artifact_probes_[descriptor] = ArtifactProbe{
+                            key->content_identity, key->layout_identity,
+                            imported};
+                    }
+                    {
+                        const std::lock_guard queue_lock{
+                            precompile_queue_mutex_};
+                        inflight_precompile_entries_.erase(descriptor);
+                        completed_precompile_entries_.insert(descriptor);
+                    }
+                    ++compiled;
                 }
-                if (key) {
-                    artifact_probes_[descriptor] = ArtifactProbe{
-                        key->content_identity, key->layout_identity,
-                        imported};
-                }
-                {
-                    const std::lock_guard queue_lock{precompile_queue_mutex_};
-                    inflight_precompile_entries_.erase(descriptor);
-                    completed_precompile_entries_.insert(descriptor);
-                }
-                ++compiled;
             }
             const auto elapsed =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1398,7 +1477,8 @@ public:
     }
 
     std::size_t precompile_pending(
-        std::size_t maximum_blocks, std::uint64_t budget_nanoseconds) {
+        std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
+        JitPrecompileTarget target) {
         if (executors_.empty()) {
             return 0;
         }
@@ -1409,7 +1489,7 @@ public:
         std::size_t compiled = 0;
         for (auto& executor : executors_) {
             compiled += executor->precompile_pending(
-                blocks_per_executor, budget_per_executor);
+                blocks_per_executor, budget_per_executor, target);
         }
         return compiled;
     }
@@ -1731,12 +1811,13 @@ std::optional<JitPrecompilePhase> CpuCluster::next_precompile_phase() {
 }
 
 std::size_t CpuCluster::precompile_pending(
-    std::size_t maximum_blocks, std::uint64_t budget_nanoseconds) {
+    std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
+    JitPrecompileTarget target) {
     if (!execution_pool_) {
         return 0;
     }
     return execution_pool_->precompile_pending(
-        maximum_blocks, budget_nanoseconds);
+        maximum_blocks, budget_nanoseconds, target);
 }
 
 std::shared_ptr<CpuExecutionPool>

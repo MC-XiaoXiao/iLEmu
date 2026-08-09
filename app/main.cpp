@@ -1765,6 +1765,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
       precompile_tasks_by_phase{};
   std::array<std::atomic<std::uint64_t>, jit_precompile_phase_count>
       precompile_blocks_by_phase{};
+  std::array<std::uint64_t, jit_precompile_target_count>
+      precompile_tasks_by_target{};
+  std::array<std::atomic<std::uint64_t>, jit_precompile_target_count>
+      precompile_blocks_by_target{};
   std::function<void(Runtime &)> configure_runtime;
   configure_runtime = [&](Runtime &runtime) {
     auto *runtime_ptr = &runtime;
@@ -3182,7 +3186,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
       }
       host_resources.set_next_deadline(host_compile_deadline);
       const auto schedule_precompile_runtime =
-          [&](Runtime *runtime, HostWorkKind work_kind) {
+          [&](Runtime *runtime, HostWorkKind work_kind,
+              JitPrecompileTarget target) {
         if (runtime == nullptr || runtime->kernel->process().exited)
           return;
         if (runtime->precompile_task) {
@@ -3197,21 +3202,25 @@ void boot(const std::vector<std::string> &args, Output &output) {
           return;
         runtime->precompile_task = host_resources.submit(
             work_kind, host_compile_deadline,
-            [runtime, budget, idle_precompile_block_budget, phase,
-             &precompile_blocks_by_phase] {
+            [runtime, budget, idle_precompile_block_budget, phase, target,
+             &precompile_blocks_by_phase, &precompile_blocks_by_target] {
               const auto compiled = runtime->cpus->precompile_pending(
-                  idle_precompile_block_budget, budget);
+                  idle_precompile_block_budget, budget, target);
               precompile_blocks_by_phase[static_cast<std::size_t>(phase)]
+                  .fetch_add(compiled, std::memory_order_relaxed);
+              precompile_blocks_by_target[static_cast<std::size_t>(target)]
                   .fetch_add(compiled, std::memory_order_relaxed);
             },
             std::chrono::nanoseconds{
                 static_cast<std::chrono::nanoseconds::rep>(budget)});
         if (runtime->precompile_task) {
           ++precompile_tasks_by_phase[static_cast<std::size_t>(phase)];
+          ++precompile_tasks_by_target[static_cast<std::size_t>(target)];
         }
       };
       schedule_precompile_runtime(active_runtime,
-                                  HostWorkKind::BackgroundCompile);
+                                  HostWorkKind::BackgroundCompile,
+                                  JitPrecompileTarget::NativeCode);
       const auto schedule_artifact_compaction = [&]() {
         if (artifact_compaction_task) {
           if (!artifact_compaction_task->finished()) {
@@ -3239,14 +3248,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // every guest thread is idle.
       if (display_scanout_owner != active_runtime) {
         schedule_precompile_runtime(display_scanout_owner,
-                                    HostWorkKind::BackgroundCompile);
+                                    HostWorkKind::BackgroundCompile,
+                                    JitPrecompileTarget::NativeCode);
       }
       Runtime *offline_precompile_runtime = nullptr;
       std::optional<JitPrecompilePhase> offline_precompile_phase;
-      // Active and scanout owners were submitted above with interactive
-      // priority. Use one remaining worker slot for the earliest boot phase
-      // across every other live process; creation order breaks equal-phase
-      // ties and therefore preserves startup-service age.
+      // Active and scanout owners were submitted above for native warming.
+      // Use one remaining worker slot to generate reusable portable IR for the
+      // earliest phase across every other live process; creation order breaks
+      // equal-phase ties and therefore preserves startup-service age.
       for (const auto &runtime : runtimes) {
         if (runtime.get() == active_runtime ||
             runtime.get() == display_scanout_owner ||
@@ -3265,7 +3275,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
       }
       schedule_precompile_runtime(offline_precompile_runtime,
-                                  HostWorkKind::OfflineCompile);
+                                  HostWorkKind::OfflineCompile,
+                                  JitPrecompileTarget::PortableIr);
       if (next_deadline) {
         if (realtime_pacer) {
           const auto guest_ahead_delay =
@@ -3506,6 +3517,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
           std::memory_order_relaxed)) +
       " remaining=" + std::to_string(precompile_tasks_by_phase[4]) + "/" +
       std::to_string(precompile_blocks_by_phase[4].load(
+          std::memory_order_relaxed)) +
+      " native=" + std::to_string(precompile_tasks_by_target[0]) + "/" +
+      std::to_string(precompile_blocks_by_target[0].load(
+          std::memory_order_relaxed)) +
+      " portable-ir=" +
+      std::to_string(precompile_tasks_by_target[1]) + "/" +
+      std::to_string(precompile_blocks_by_target[1].load(
           std::memory_order_relaxed)));
   if (catalog_loaded) {
     output.line(
