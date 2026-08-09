@@ -304,6 +304,7 @@ inline constexpr std::uint32_t remove_extended_attribute_fd = 239;
 inline constexpr std::uint32_t list_extended_attributes = 240;
 inline constexpr std::uint32_t list_extended_attributes_fd = 241;
 inline constexpr std::uint32_t init_groups = 243;
+inline constexpr std::uint32_t change_mode_extended = 282;
 inline constexpr std::uint32_t change_mode_extended_fd = 283;
 inline constexpr std::uint32_t aio_synchronize = 313;
 inline constexpr std::uint32_t aio_return = 314;

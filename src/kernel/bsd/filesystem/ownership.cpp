@@ -116,6 +116,67 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
     bsd_success(cpu, 0);
     return true;
   }
+  case darwin::syscall::change_mode_extended: {
+    const auto requested_owner = registers[1];
+    const auto requested_group = registers[2];
+    const auto requested_mode = registers[3];
+    const auto extended_security = registers[4];
+    // Unlike fchmod_extended, XNU 792 and 1228 use NULL for no ACL
+    // mutation and the sentinel pointer 1 to remove an ACL.
+    constexpr std::uint32_t remove_acl = 1;
+    if (extended_security != 0 && extended_security != remove_acl) {
+      bsd_error(cpu, darwin::error::operation_not_supported);
+      return true;
+    }
+
+    const auto path = memory_.read_c_string(registers[0]);
+    if (!path) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return true;
+    }
+    const auto host = resolve_guest_path(*path);
+    std::error_code error;
+    const auto metadata = query_hfs_metadata(host, true);
+    if (!std::filesystem::exists(host, error) || !metadata) {
+      bsd_error(cpu, darwin::error::no_entry);
+      return true;
+    }
+
+    if (process_.effective_uid != 0) {
+      const bool owns_vnode = process_.effective_uid == metadata->owner;
+      const bool owner_unchanged = requested_owner == unchanged_identity ||
+                                   requested_owner == metadata->owner;
+      const bool group_allowed = requested_group == unchanged_identity ||
+                                 requested_group == metadata->group ||
+                                 requested_group == process_.effective_gid;
+      if (!owns_vnode || !owner_unchanged || !group_allowed) {
+        bsd_error(cpu, darwin::error::operation_not_permitted);
+        return true;
+      }
+    }
+
+    {
+      const std::lock_guard filesystem_lock{shared_state_->filesystem_mutex};
+      auto &metadata_override =
+          shared_state_->hfs_metadata_overrides[metadata->permanent_id];
+      if (requested_mode != unchanged_identity) {
+        metadata_override.mode = (metadata->mode & ~permission_bits) |
+                                 (requested_mode & permission_bits);
+      }
+      if (requested_owner != unchanged_identity)
+        metadata_override.owner = requested_owner;
+      if (requested_group != unchanged_identity)
+        metadata_override.group = requested_group;
+      metadata_override.change_time =
+          bsd_support::guest_filesystem_timestamp(shared_state_->clock);
+    }
+    output_.write("[vfs] chmod_extended " + *path +
+                  " uid=" + std::to_string(requested_owner) +
+                  " gid=" + std::to_string(requested_group) + " mode=" +
+                  std::to_string(requested_mode & permission_bits) + "\n");
+    bsd_success(cpu, 0);
+    return true;
+  }
   case darwin::syscall::change_mode_extended_fd: {
     auto fd = registers[0];
     if (const auto duplicate = duplicated_descriptors_.find(fd);
