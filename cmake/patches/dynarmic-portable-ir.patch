@@ -15,22 +15,37 @@ index d57a29c..ffa977d 100644
          Unlock();
          return false;
 diff --git a/src/dynarmic/backend/x64/a32_emit_x64.cpp b/src/dynarmic/backend/x64/a32_emit_x64.cpp
-index aa07357..0c8fbb5 100644
+index aa07357..64b2f37 100644
 --- a/src/dynarmic/backend/x64/a32_emit_x64.cpp
 +++ b/src/dynarmic/backend/x64/a32_emit_x64.cpp
-@@ -82,6 +82,11 @@ FP::FPCR A32EmitContext::FPCR(bool fpcr_controlled) const {
+@@ -82,6 +82,17 @@ FP::FPCR A32EmitContext::FPCR(bool fpcr_controlled) const {
  
  A32EmitX64::A32EmitX64(BlockOfCode& code, A32::UserConfig conf, A32::Jit* jit_interface)
          : EmitX64(code), conf(std::move(conf)), jit_interface(jit_interface) {
++    if (this->conf.fast_dispatch_table_storage) {
++        fast_dispatch_table = static_cast<FastDispatchEntry*>(this->conf.fast_dispatch_table_storage);
++    } else {
++        owned_fast_dispatch_table = std::make_unique<FastDispatchEntry[]>(fast_dispatch_table_size);
++        fast_dispatch_table = owned_fast_dispatch_table.get();
++    }
 +    if (this->conf.fast_dispatch_table_link) {
 +        this->conf.fast_dispatch_table_link->store(
-+                reinterpret_cast<u64>(fast_dispatch_table.data()),
++                reinterpret_cast<u64>(fast_dispatch_table),
 +                std::memory_order_release);
 +    }
      GenFastmemFallbacks();
      GenTerminalHandlers();
      code.PreludeComplete();
-@@ -245,6 +250,13 @@ void A32EmitX64::GenTerminalHandlers() {
+@@ -214,7 +225,7 @@ void A32EmitX64::EmitCondPrelude(const A32EmitContext& ctx) {
+ 
+ void A32EmitX64::ClearFastDispatchTable() {
+     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+-        fast_dispatch_table.fill({});
++        std::fill_n(fast_dispatch_table, fast_dispatch_table_size, FastDispatchEntry{});
+     }
+ }
+ 
+@@ -245,6 +256,13 @@ void A32EmitX64::GenTerminalHandlers() {
          code.jne(code.GetReturnFromRunCodeAddress());
      }
      code.mov(rax, qword[r15 + offsetof(A32JitState, rsb_codeptrs) + rax * sizeof(u64)]);
@@ -44,7 +59,7 @@ index aa07357..0c8fbb5 100644
      code.jmp(rax);
      PerfMapRegister(terminal_handler_pop_rsb_hint, code.getCurr(), "a32_terminal_handler_pop_rsb_hint");
  
-@@ -253,7 +265,15 @@ void A32EmitX64::GenTerminalHandlers() {
+@@ -253,7 +271,15 @@ void A32EmitX64::GenTerminalHandlers() {
          terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
          calculate_location_descriptor();
          code.L(rsb_cache_miss);
@@ -56,12 +71,12 @@ index aa07357..0c8fbb5 100644
 +                          offsetof(A32JitState, fast_dispatch_table_link)]);
 +            code.mov(r12, qword[r12]);
 +        } else {
-+            code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table.data()));
++            code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table));
 +        }
          code.mov(rbp, rbx);
          if (code.HasHostFeature(HostFeature::SSE42)) {
              code.crc32(rbp, r12);
-@@ -271,8 +291,8 @@ void A32EmitX64::GenTerminalHandlers() {
+@@ -271,8 +297,8 @@ void A32EmitX64::GenTerminalHandlers() {
          PerfMapRegister(terminal_handler_fast_dispatch_hint, code.getCurr(), "a32_terminal_handler_fast_dispatch_hint");
  
          code.align();
@@ -72,7 +87,7 @@ index aa07357..0c8fbb5 100644
          if (code.HasHostFeature(HostFeature::SSE42)) {
              code.crc32(code.ABI_PARAM1, code.ABI_PARAM2);
          }
-@@ -693,7 +713,9 @@ void A32EmitX64::EmitA32InstructionSynchronizationBarrier(A32EmitContext& ctx, I
+@@ -693,7 +719,9 @@ void A32EmitX64::EmitA32InstructionSynchronizationBarrier(A32EmitContext& ctx, I
      }
  
      ctx.reg_alloc.HostCall(nullptr);
@@ -83,7 +98,7 @@ index aa07357..0c8fbb5 100644
  }
  
  void A32EmitX64::EmitA32BXWritePC(A32EmitContext& ctx, IR::Inst* inst) {
-@@ -750,16 +772,22 @@ void A32EmitX64::EmitA32CallSupervisor(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -750,16 +778,22 @@ void A32EmitX64::EmitA32CallSupervisor(A32EmitContext& ctx, IR::Inst* inst) {
          ctx.reg_alloc.HostCall(nullptr);
          code.mov(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)]);
          code.sub(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)]);
@@ -109,7 +124,7 @@ index aa07357..0c8fbb5 100644
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], code.ABI_RETURN);
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], code.ABI_RETURN);
          code.SwitchMxcsrOnEntry();
-@@ -773,7 +801,9 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -773,7 +807,9 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
      if (conf.enable_cycle_counting) {
          code.mov(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)]);
          code.sub(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)]);
@@ -120,7 +135,7 @@ index aa07357..0c8fbb5 100644
      }
      ctx.reg_alloc.EndOfAllocScope();
  
-@@ -781,13 +811,17 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -781,13 +817,17 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
      ASSERT(args[0].IsImmediate() && args[1].IsImmediate());
      const u32 pc = args[0].GetImmediateU32();
      const u64 exception = args[1].GetImmediateU64();
@@ -140,7 +155,7 @@ index aa07357..0c8fbb5 100644
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], code.ABI_RETURN);
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], code.ABI_RETURN);
          code.SwitchMxcsrOnEntry();
-@@ -852,11 +886,25 @@ static void EmitCoprocessorException() {
+@@ -852,11 +892,25 @@ static void EmitCoprocessorException() {
      ASSERT_FALSE("Should raise coproc exception here");
  }
  
@@ -168,7 +183,7 @@ index aa07357..0c8fbb5 100644
      }
  
      code.CallFunction(callback.function);
-@@ -884,7 +932,7 @@ void A32EmitX64::EmitA32CoprocInternalOperation(A32EmitContext& ctx, IR::Inst* i
+@@ -884,7 +938,7 @@ void A32EmitX64::EmitA32CoprocInternalOperation(A32EmitContext& ctx, IR::Inst* i
          return;
      }
  
@@ -177,7 +192,7 @@ index aa07357..0c8fbb5 100644
  }
  
  void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
-@@ -911,7 +959,7 @@ void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -911,7 +965,7 @@ void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
      }
  
      if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
@@ -186,7 +201,7 @@ index aa07357..0c8fbb5 100644
          return;
      }
  
-@@ -951,7 +999,8 @@ void A32EmitX64::EmitA32CoprocSendTwoWords(A32EmitContext& ctx, IR::Inst* inst)
+@@ -951,7 +1005,8 @@ void A32EmitX64::EmitA32CoprocSendTwoWords(A32EmitContext& ctx, IR::Inst* inst)
      }
  
      if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
@@ -196,7 +211,7 @@ index aa07357..0c8fbb5 100644
          return;
      }
  
-@@ -995,7 +1044,7 @@ void A32EmitX64::EmitA32CoprocGetOneWord(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -995,7 +1050,7 @@ void A32EmitX64::EmitA32CoprocGetOneWord(A32EmitContext& ctx, IR::Inst* inst) {
      }
  
      if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
@@ -205,7 +220,7 @@ index aa07357..0c8fbb5 100644
          return;
      }
  
-@@ -1035,7 +1084,7 @@ void A32EmitX64::EmitA32CoprocGetTwoWords(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -1035,7 +1090,7 @@ void A32EmitX64::EmitA32CoprocGetTwoWords(A32EmitContext& ctx, IR::Inst* inst) {
      }
  
      if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
@@ -214,7 +229,7 @@ index aa07357..0c8fbb5 100644
          return;
      }
  
-@@ -1086,7 +1135,7 @@ void A32EmitX64::EmitA32CoprocLoadWords(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -1086,7 +1141,7 @@ void A32EmitX64::EmitA32CoprocLoadWords(A32EmitContext& ctx, IR::Inst* inst) {
          return;
      }
  
@@ -223,7 +238,7 @@ index aa07357..0c8fbb5 100644
  }
  
  void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
-@@ -1116,7 +1165,7 @@ void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -1116,7 +1171,7 @@ void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
          return;
      }
  
@@ -232,7 +247,7 @@ index aa07357..0c8fbb5 100644
  }
  
  std::string A32EmitX64::LocationDescriptorToFriendlyName(const IR::LocationDescriptor& ir_descriptor) const {
-@@ -1137,7 +1186,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDesc
+@@ -1137,7 +1192,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDesc
      code.mov(code.ABI_PARAM3.cvt32(), 1);
      code.mov(MJitStateReg(A32::Reg::PC), code.ABI_PARAM2.cvt32());
      code.SwitchMxcsrOnExit();
@@ -243,7 +258,7 @@ index aa07357..0c8fbb5 100644
      code.ReturnFromRunCode(true);  // TODO: Check cycles
  }
  
-@@ -1164,6 +1215,15 @@ void A32EmitX64::EmitSetUpperLocationDescriptor(IR::LocationDescriptor new_locat
+@@ -1164,6 +1221,15 @@ void A32EmitX64::EmitSetUpperLocationDescriptor(IR::LocationDescriptor new_locat
  void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
      EmitSetUpperLocationDescriptor(terminal.next, initial_location);
  
@@ -259,7 +274,7 @@ index aa07357..0c8fbb5 100644
      if (!conf.HasOptimization(OptimizationFlag::BlockLinking) || is_single_step) {
          code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{terminal.next}.PC());
          code.ReturnFromRunCode();
-@@ -1198,6 +1258,10 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
+@@ -1198,6 +1264,10 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
  void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
      EmitSetUpperLocationDescriptor(terminal.next, initial_location);
  
@@ -270,7 +285,7 @@ index aa07357..0c8fbb5 100644
      if (!conf.HasOptimization(OptimizationFlag::BlockLinking) || is_single_step) {
          code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{terminal.next}.PC());
          code.ReturnFromRunCode();
-@@ -1254,7 +1318,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDesc
+@@ -1254,7 +1324,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDesc
  
  void A32EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
      const CodePtr patch_location = code.getCurr();
@@ -281,7 +296,7 @@ index aa07357..0c8fbb5 100644
          code.jg(target_code_ptr);
      } else {
          code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{target_desc}.PC());
-@@ -1265,7 +1331,9 @@ void A32EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr
+@@ -1265,7 +1337,9 @@ void A32EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr
  
  void A32EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
      const CodePtr patch_location = code.getCurr();
@@ -292,7 +307,7 @@ index aa07357..0c8fbb5 100644
          code.jz(target_code_ptr);
      } else {
          code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{target_desc}.PC());
-@@ -1276,7 +1344,9 @@ void A32EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr
+@@ -1276,7 +1350,9 @@ void A32EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr
  
  void A32EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
      const CodePtr patch_location = code.getCurr();
@@ -303,7 +318,7 @@ index aa07357..0c8fbb5 100644
          code.jmp(target_code_ptr);
      } else {
          code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{target_desc}.PC());
-@@ -1286,6 +1356,12 @@ void A32EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr
+@@ -1286,6 +1362,12 @@ void A32EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr
  }
  
  void A32EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
@@ -316,20 +331,63 @@ index aa07357..0c8fbb5 100644
      if (!target_code_ptr) {
          target_code_ptr = code.GetReturnFromRunCodeAddress();
      }
-@@ -1298,7 +1374,7 @@ void A32EmitX64::Unpatch(const IR::LocationDescriptor& location) {
+@@ -1298,7 +1380,7 @@ void A32EmitX64::Unpatch(const IR::LocationDescriptor& location) {
      EmitX64::Unpatch(location);
      if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
          code.DisableWriting();
 -        (*fast_dispatch_table_lookup)(location.Value()) = {};
-+        (*fast_dispatch_table_lookup)(location.Value(), fast_dispatch_table.data()) = {};
++        (*fast_dispatch_table_lookup)(location.Value(), fast_dispatch_table) = {};
          code.EnableWriting();
      }
  }
 diff --git a/src/dynarmic/backend/x64/a32_emit_x64.h b/src/dynarmic/backend/x64/a32_emit_x64.h
-index 335dd30..33e76f1 100644
+index 335dd30..5bcc4b5 100644
 --- a/src/dynarmic/backend/x64/a32_emit_x64.h
 +++ b/src/dynarmic/backend/x64/a32_emit_x64.h
-@@ -81,7 +81,7 @@ protected:
+@@ -6,6 +6,7 @@
+ #pragma once
+ 
+ #include <array>
++#include <memory>
+ #include <optional>
+ #include <set>
+ #include <tuple>
+@@ -54,13 +55,9 @@ public:
+ 
+     void InvalidateCacheRanges(const boost::icl::interval_set<u32>& ranges);
+ 
+-protected:
+-    const A32::UserConfig conf;
+-    A32::Jit* jit_interface;
+-    BlockRangeInformation<u32> block_ranges;
+-
+-    void EmitCondPrelude(const A32EmitContext& ctx);
+-
++    // The dispatch table is mutable executor state. Keep its representation
++    // public so a Jit implementation can own it independently of generated
++    // code and emitter metadata.
+     struct FastDispatchEntry {
+         u64 location_descriptor = 0xFFFF'FFFF'FFFF'FFFFull;
+         const void* code_ptr = nullptr;
+@@ -68,7 +65,16 @@ protected:
+     static_assert(sizeof(FastDispatchEntry) == 0x10);
+     static constexpr u64 fast_dispatch_table_mask = 0xFFFF0;
+     static constexpr size_t fast_dispatch_table_size = 0x10000;
+-    std::array<FastDispatchEntry, fast_dispatch_table_size> fast_dispatch_table;
++
++protected:
++    const A32::UserConfig conf;
++    A32::Jit* jit_interface;
++    BlockRangeInformation<u32> block_ranges;
++
++    void EmitCondPrelude(const A32EmitContext& ctx);
++
++    std::unique_ptr<FastDispatchEntry[]> owned_fast_dispatch_table;
++    FastDispatchEntry* fast_dispatch_table = nullptr;
+     void ClearFastDispatchTable();
+ 
+     void (*memory_read_128)() = nullptr;   // Dummy
+@@ -81,7 +87,7 @@ protected:
  
      const void* terminal_handler_pop_rsb_hint;
      const void* terminal_handler_fast_dispatch_hint = nullptr;
@@ -505,7 +563,7 @@ index c353032..e1a2dac 100644
      } else {
          EmitExclusiveWriteMemory<64, &A32::UserCallbacks::MemoryWriteExclusive64>(ctx, inst);
 diff --git a/src/dynarmic/backend/x64/a32_interface.cpp b/src/dynarmic/backend/x64/a32_interface.cpp
-index 13f3a60..369310d 100644
+index 13f3a60..6031441 100644
 --- a/src/dynarmic/backend/x64/a32_interface.cpp
 +++ b/src/dynarmic/backend/x64/a32_interface.cpp
 @@ -7,6 +7,7 @@
@@ -579,8 +637,22 @@ index 13f3a60..369310d 100644
          } else if (conf.fastmem_pointer) {
              code.mov(code.r13, *conf.fastmem_pointer);
          }
-@@ -70,7 +104,19 @@ struct Jit::Impl {
-             , emitter(block_of_code, conf, jit)
+@@ -64,13 +98,31 @@ static Optimization::PolyfillOptions GenPolyfillOptions(const BlockOfCode& code)
+     };
+ }
+ 
++static A32::UserConfig WithFastDispatchTable(A32::UserConfig conf, void* storage) {
++    conf.fast_dispatch_table_storage = storage;
++    return conf;
++}
++
+ struct Jit::Impl {
+     Impl(Jit* jit, A32::UserConfig conf)
+-            : block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state}, conf.code_cache_size, GenRCP(conf))
+-            , emitter(block_of_code, conf, jit)
++            : fast_dispatch_table_storage(std::make_unique<A32EmitX64::FastDispatchEntry[]>(A32EmitX64::fast_dispatch_table_size))
++            , block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state}, conf.code_cache_size, GenRCP(conf))
++            , emitter(block_of_code, WithFastDispatchTable(conf, fast_dispatch_table_storage.get()), jit)
              , polyfill_options(GenPolyfillOptions(block_of_code))
              , conf(std::move(conf))
 -            , jit_interface(jit) {}
@@ -600,7 +672,7 @@ index 13f3a60..369310d 100644
  
      ~Impl() = default;
  
-@@ -86,7 +132,8 @@ struct Jit::Impl {
+@@ -86,7 +138,8 @@ struct Jit::Impl {
          const CodePtr current_codeptr = [this] {
              // RSB optimization
              const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & A32JitState::RSBPtrMask;
@@ -610,7 +682,7 @@ index 13f3a60..369310d 100644
                  jit_state.rsb_ptr = new_rsb_ptr;
                  return reinterpret_cast<CodePtr>(jit_state.rsb_codeptrs[new_rsb_ptr]);
              }
-@@ -124,6 +171,37 @@ struct Jit::Impl {
+@@ -124,6 +177,37 @@ struct Jit::Impl {
                  IR::LocationDescriptor{location_descriptor}));
      }
  
@@ -648,7 +720,7 @@ index 13f3a60..369310d 100644
      void ClearCache() {
          std::unique_lock lock{invalidation_mutex};
          invalidate_entire_cache = true;
-@@ -139,6 +217,7 @@ struct Jit::Impl {
+@@ -139,6 +223,7 @@ struct Jit::Impl {
      void Reset() {
          ASSERT(!jit_interface->is_executing);
          jit_state = {};
@@ -656,7 +728,7 @@ index 13f3a60..369310d 100644
      }
  
      void HaltExecution(HaltReason hr) {
-@@ -201,6 +280,23 @@ struct Jit::Impl {
+@@ -201,6 +286,23 @@ struct Jit::Impl {
      }
  
  private:
@@ -680,7 +752,7 @@ index 13f3a60..369310d 100644
      static CodePtr GetCurrentBlockThunk(void* this_voidptr) {
          Jit::Impl& this_ = *static_cast<Jit::Impl*>(this_voidptr);
          return this_.GetCurrentBlock();
-@@ -232,6 +328,18 @@ private:
+@@ -232,6 +334,18 @@ private:
          }
          block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
  
@@ -699,7 +771,7 @@ index 13f3a60..369310d 100644
          IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
          Optimization::PolyfillPass(ir_block, polyfill_options);
          Optimization::NamingPass(ir_block);
-@@ -246,14 +354,7 @@ private:
+@@ -246,14 +360,7 @@ private:
          }
          Optimization::IdentityRemovalPass(ir_block);
          Optimization::VerificationPass(ir_block);
@@ -715,7 +787,15 @@ index 13f3a60..369310d 100644
      }
  
      void PerformRequestedCacheInvalidation(HaltReason hr) {
-@@ -310,6 +411,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
+@@ -279,6 +386,7 @@ private:
+     }
+ 
+     A32JitState jit_state;
++    std::unique_ptr<A32EmitX64::FastDispatchEntry[]> fast_dispatch_table_storage;
+     BlockOfCode block_of_code;
+     A32EmitX64 emitter;
+     Optimization::PolyfillOptions polyfill_options;
+@@ -310,6 +418,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
      impl->Precompile(location_descriptor);
  }
  
@@ -782,7 +862,7 @@ index cc13abf..937081d 100644
          return (static_cast<u64>(upper_location_descriptor) << 32) | (static_cast<u64>(Reg[15]));
      }
 diff --git a/src/dynarmic/backend/x64/a64_emit_x64.cpp b/src/dynarmic/backend/x64/a64_emit_x64.cpp
-index bf296dc..08dc39b 100644
+index bf296dc..a0eaa7d 100644
 --- a/src/dynarmic/backend/x64/a64_emit_x64.cpp
 +++ b/src/dynarmic/backend/x64/a64_emit_x64.cpp
 @@ -37,6 +37,13 @@ namespace Dynarmic::Backend::X64 {
@@ -799,19 +879,34 @@ index bf296dc..08dc39b 100644
  A64EmitContext::A64EmitContext(const A64::UserConfig& conf, RegAlloc& reg_alloc, IR::Block& block)
          : EmitContext(reg_alloc, block), conf(conf) {}
  
-@@ -54,6 +61,11 @@ FP::FPCR A64EmitContext::FPCR(bool fpcr_controlled) const {
+@@ -54,6 +61,17 @@ FP::FPCR A64EmitContext::FPCR(bool fpcr_controlled) const {
  
  A64EmitX64::A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_interface)
          : EmitX64(code), conf(conf), jit_interface{jit_interface} {
++    if (this->conf.fast_dispatch_table_storage) {
++        fast_dispatch_table = static_cast<FastDispatchEntry*>(this->conf.fast_dispatch_table_storage);
++    } else {
++        owned_fast_dispatch_table = std::make_unique<FastDispatchEntry[]>(fast_dispatch_table_size);
++        fast_dispatch_table = owned_fast_dispatch_table.get();
++    }
 +    if (this->conf.fast_dispatch_table_link) {
 +        this->conf.fast_dispatch_table_link->store(
-+                reinterpret_cast<u64>(fast_dispatch_table.data()),
++                reinterpret_cast<u64>(fast_dispatch_table),
 +                std::memory_order_release);
 +    }
      GenMemory128Accessors();
      GenFastmemFallbacks();
      GenTerminalHandlers();
-@@ -203,6 +215,13 @@ void A64EmitX64::GenTerminalHandlers() {
+@@ -169,7 +187,7 @@ void A64EmitX64::InvalidateCacheRanges(const boost::icl::interval_set<u64>& rang
+ 
+ void A64EmitX64::ClearFastDispatchTable() {
+     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+-        fast_dispatch_table.fill({});
++        std::fill_n(fast_dispatch_table, fast_dispatch_table_size, FastDispatchEntry{});
+     }
+ }
+ 
+@@ -203,6 +221,13 @@ void A64EmitX64::GenTerminalHandlers() {
          code.jne(code.GetReturnFromRunCodeAddress());
      }
      code.mov(rax, qword[r15 + offsetof(A64JitState, rsb_codeptrs) + rax * sizeof(u64)]);
@@ -825,7 +920,7 @@ index bf296dc..08dc39b 100644
      code.jmp(rax);
      PerfMapRegister(terminal_handler_pop_rsb_hint, code.getCurr(), "a64_terminal_handler_pop_rsb_hint");
  
-@@ -211,7 +230,15 @@ void A64EmitX64::GenTerminalHandlers() {
+@@ -211,7 +236,15 @@ void A64EmitX64::GenTerminalHandlers() {
          terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
          calculate_location_descriptor();
          code.L(rsb_cache_miss);
@@ -837,12 +932,12 @@ index bf296dc..08dc39b 100644
 +                          offsetof(A64JitState, fast_dispatch_table_link)]);
 +            code.mov(r12, qword[r12]);
 +        } else {
-+            code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table.data()));
++            code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table));
 +        }
          code.mov(rbp, rbx);
          if (code.HasHostFeature(HostFeature::SSE42)) {
              code.crc32(rbp, r12);
-@@ -229,8 +256,8 @@ void A64EmitX64::GenTerminalHandlers() {
+@@ -229,8 +262,8 @@ void A64EmitX64::GenTerminalHandlers() {
          PerfMapRegister(terminal_handler_fast_dispatch_hint, code.getCurr(), "a64_terminal_handler_fast_dispatch_hint");
  
          code.align();
@@ -853,7 +948,7 @@ index bf296dc..08dc39b 100644
          if (code.HasHostFeature(HostFeature::SSE42)) {
              code.crc32(code.ABI_PARAM1, code.ABI_PARAM2);
          }
-@@ -488,7 +515,7 @@ void A64EmitX64::EmitA64CallSupervisor(A64EmitContext& ctx, IR::Inst* inst) {
+@@ -488,7 +521,7 @@ void A64EmitX64::EmitA64CallSupervisor(A64EmitContext& ctx, IR::Inst* inst) {
      auto args = ctx.reg_alloc.GetArgumentInfo(inst);
      ASSERT(args[0].IsImmediate());
      const u32 imm = args[0].GetImmediateU32();
@@ -862,7 +957,7 @@ index bf296dc..08dc39b 100644
          code.mov(param[0], imm);
      });
      // The kernel would have to execute ERET to get here, which would clear exclusive state.
-@@ -501,7 +528,7 @@ void A64EmitX64::EmitA64ExceptionRaised(A64EmitContext& ctx, IR::Inst* inst) {
+@@ -501,7 +534,7 @@ void A64EmitX64::EmitA64ExceptionRaised(A64EmitContext& ctx, IR::Inst* inst) {
      ASSERT(args[0].IsImmediate() && args[1].IsImmediate());
      const u64 pc = args[0].GetImmediateU64();
      const u64 exception = args[1].GetImmediateU64();
@@ -871,7 +966,7 @@ index bf296dc..08dc39b 100644
          code.mov(param[0], pc);
          code.mov(param[1], exception);
      });
-@@ -510,13 +537,13 @@ void A64EmitX64::EmitA64ExceptionRaised(A64EmitContext& ctx, IR::Inst* inst) {
+@@ -510,13 +543,13 @@ void A64EmitX64::EmitA64ExceptionRaised(A64EmitContext& ctx, IR::Inst* inst) {
  void A64EmitX64::EmitA64DataCacheOperationRaised(A64EmitContext& ctx, IR::Inst* inst) {
      auto args = ctx.reg_alloc.GetArgumentInfo(inst);
      ctx.reg_alloc.HostCall(nullptr, {}, args[1], args[2]);
@@ -887,7 +982,7 @@ index bf296dc..08dc39b 100644
  }
  
  void A64EmitX64::EmitA64DataSynchronizationBarrier(A64EmitContext&, IR::Inst*) {
-@@ -534,7 +561,7 @@ void A64EmitX64::EmitA64InstructionSynchronizationBarrier(A64EmitContext& ctx, I
+@@ -534,7 +567,7 @@ void A64EmitX64::EmitA64InstructionSynchronizationBarrier(A64EmitContext& ctx, I
      }
  
      ctx.reg_alloc.HostCall(nullptr);
@@ -896,7 +991,7 @@ index bf296dc..08dc39b 100644
  }
  
  void A64EmitX64::EmitA64GetCNTFRQ(A64EmitContext& ctx, IR::Inst* inst) {
-@@ -548,7 +575,7 @@ void A64EmitX64::EmitA64GetCNTPCT(A64EmitContext& ctx, IR::Inst* inst) {
+@@ -548,7 +581,7 @@ void A64EmitX64::EmitA64GetCNTPCT(A64EmitContext& ctx, IR::Inst* inst) {
      if (!conf.wall_clock_cntpct) {
          code.UpdateTicks();
      }
@@ -905,7 +1000,7 @@ index bf296dc..08dc39b 100644
  }
  
  void A64EmitX64::EmitA64GetCTR(A64EmitContext& ctx, IR::Inst* inst) {
-@@ -604,7 +631,7 @@ std::string A64EmitX64::LocationDescriptorToFriendlyName(const IR::LocationDescr
+@@ -604,7 +637,7 @@ std::string A64EmitX64::LocationDescriptorToFriendlyName(const IR::LocationDescr
  
  void A64EmitX64::EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDescriptor, bool) {
      code.SwitchMxcsrOnExit();
@@ -914,7 +1009,7 @@ index bf296dc..08dc39b 100644
          code.mov(param[0], A64::LocationDescriptor{terminal.next}.PC());
          code.mov(qword[r15 + offsetof(A64JitState, pc)], param[0]);
          code.mov(param[1].cvt32(), terminal.num_instructions);
-@@ -617,6 +644,11 @@ void A64EmitX64::EmitTerminalImpl(IR::Term::ReturnToDispatch, IR::LocationDescri
+@@ -617,6 +650,11 @@ void A64EmitX64::EmitTerminalImpl(IR::Term::ReturnToDispatch, IR::LocationDescri
  }
  
  void A64EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDescriptor, bool is_single_step) {
@@ -926,7 +1021,7 @@ index bf296dc..08dc39b 100644
      if (!conf.HasOptimization(OptimizationFlag::BlockLinking) || is_single_step) {
          code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
          code.mov(qword[r15 + offsetof(A64JitState, pc)], rax);
-@@ -650,6 +682,11 @@ void A64EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
+@@ -650,6 +688,11 @@ void A64EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
  }
  
  void A64EmitX64::EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::LocationDescriptor, bool is_single_step) {
@@ -938,7 +1033,7 @@ index bf296dc..08dc39b 100644
      if (!conf.HasOptimization(OptimizationFlag::BlockLinking) || is_single_step) {
          code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
          code.mov(qword[r15 + offsetof(A64JitState, pc)], rax);
-@@ -715,7 +752,9 @@ void A64EmitX64::EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDesc
+@@ -715,7 +758,9 @@ void A64EmitX64::EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDesc
  
  void A64EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
      const CodePtr patch_location = code.getCurr();
@@ -949,7 +1044,7 @@ index bf296dc..08dc39b 100644
          code.jg(target_code_ptr);
      } else {
          code.mov(rax, A64::LocationDescriptor{target_desc}.PC());
-@@ -727,7 +766,9 @@ void A64EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr
+@@ -727,7 +772,9 @@ void A64EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr
  
  void A64EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
      const CodePtr patch_location = code.getCurr();
@@ -960,7 +1055,7 @@ index bf296dc..08dc39b 100644
          code.jz(target_code_ptr);
      } else {
          code.mov(rax, A64::LocationDescriptor{target_desc}.PC());
-@@ -739,7 +780,9 @@ void A64EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr
+@@ -739,7 +786,9 @@ void A64EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr
  
  void A64EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
      const CodePtr patch_location = code.getCurr();
@@ -971,7 +1066,7 @@ index bf296dc..08dc39b 100644
          code.jmp(target_code_ptr);
      } else {
          code.mov(rax, A64::LocationDescriptor{target_desc}.PC());
-@@ -750,6 +793,12 @@ void A64EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr
+@@ -750,6 +799,12 @@ void A64EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr
  }
  
  void A64EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
@@ -984,15 +1079,67 @@ index bf296dc..08dc39b 100644
      if (!target_code_ptr) {
          target_code_ptr = code.GetReturnFromRunCodeAddress();
      }
-@@ -762,7 +811,7 @@ void A64EmitX64::Unpatch(const IR::LocationDescriptor& location) {
+@@ -762,7 +817,7 @@ void A64EmitX64::Unpatch(const IR::LocationDescriptor& location) {
      EmitX64::Unpatch(location);
      if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
          code.DisableWriting();
 -        (*fast_dispatch_table_lookup)(location.Value()) = {};
-+        (*fast_dispatch_table_lookup)(location.Value(), fast_dispatch_table.data()) = {};
++        (*fast_dispatch_table_lookup)(location.Value(), fast_dispatch_table) = {};
          code.EnableWriting();
      }
  }
+diff --git a/src/dynarmic/backend/x64/a64_emit_x64.h b/src/dynarmic/backend/x64/a64_emit_x64.h
+index ed49315..12e88f5 100644
+--- a/src/dynarmic/backend/x64/a64_emit_x64.h
++++ b/src/dynarmic/backend/x64/a64_emit_x64.h
+@@ -6,6 +6,7 @@
+ #pragma once
+ 
+ #include <array>
++#include <memory>
+ #include <map>
+ #include <optional>
+ #include <tuple>
+@@ -51,11 +52,9 @@ public:
+ 
+     void InvalidateCacheRanges(const boost::icl::interval_set<u64>& ranges);
+ 
+-protected:
+-    const A64::UserConfig conf;
+-    A64::Jit* jit_interface;
+-    BlockRangeInformation<u64> block_ranges;
+-
++    // The dispatch table is mutable executor state. Keep its representation
++    // public so a Jit implementation can own it independently of generated
++    // code and emitter metadata.
+     struct FastDispatchEntry {
+         u64 location_descriptor = 0xFFFF'FFFF'FFFF'FFFFull;
+         const void* code_ptr = nullptr;
+@@ -63,7 +62,14 @@ protected:
+     static_assert(sizeof(FastDispatchEntry) == 0x10);
+     static constexpr u64 fast_dispatch_table_mask = 0xFFFFF0;
+     static constexpr size_t fast_dispatch_table_size = 0x100000;
+-    std::array<FastDispatchEntry, fast_dispatch_table_size> fast_dispatch_table;
++
++protected:
++    const A64::UserConfig conf;
++    A64::Jit* jit_interface;
++    BlockRangeInformation<u64> block_ranges;
++
++    std::unique_ptr<FastDispatchEntry[]> owned_fast_dispatch_table;
++    FastDispatchEntry* fast_dispatch_table = nullptr;
+     void ClearFastDispatchTable();
+ 
+     void (*memory_read_128)();
+@@ -78,7 +84,7 @@ protected:
+ 
+     const void* terminal_handler_pop_rsb_hint;
+     const void* terminal_handler_fast_dispatch_hint = nullptr;
+-    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64) = nullptr;
++    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64, FastDispatchEntry*) = nullptr;
+     void GenTerminalHandlers();
+ 
+     // Microinstruction emitters
 diff --git a/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp b/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp
 index 450b16d..f8aabb8 100644
 --- a/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp
@@ -1233,7 +1380,7 @@ index 450b16d..f8aabb8 100644
      } else {
          EmitExclusiveWriteMemory<128, &A64::UserCallbacks::MemoryWriteExclusive128>(ctx, inst);
 diff --git a/src/dynarmic/backend/x64/a64_interface.cpp b/src/dynarmic/backend/x64/a64_interface.cpp
-index 7c0fa8d..cb56a94 100644
+index 7c0fa8d..5be1e10 100644
 --- a/src/dynarmic/backend/x64/a64_interface.cpp
 +++ b/src/dynarmic/backend/x64/a64_interface.cpp
 @@ -6,6 +6,7 @@
@@ -1277,8 +1424,23 @@ index 7c0fa8d..cb56a94 100644
          conf.enable_cycle_counting,
      };
  }
-@@ -63,6 +82,17 @@ public:
-             , emitter(block_of_code, conf, jit)
+@@ -55,14 +74,31 @@ static Optimization::PolyfillOptions GenPolyfillOptions(const BlockOfCode& code)
+     };
+ }
+ 
++static A64::UserConfig WithFastDispatchTable(A64::UserConfig conf, void* storage) {
++    conf.fast_dispatch_table_storage = storage;
++    return conf;
++}
++
+ struct Jit::Impl final {
+ public:
+     Impl(Jit* jit, UserConfig conf)
+             : conf(conf)
++            , fast_dispatch_table_storage(std::make_unique<A64EmitX64::FastDispatchEntry[]>(A64EmitX64::fast_dispatch_table_size))
+             , block_of_code(GenRunCodeCallbacks(conf.callbacks, &GetCurrentBlockThunk, this, conf), JitStateInfo{jit_state}, conf.code_cache_size, GenRCP(conf))
+-            , emitter(block_of_code, conf, jit)
++            , emitter(block_of_code, WithFastDispatchTable(conf, fast_dispatch_table_storage.get()), jit)
              , polyfill_options(GenPolyfillOptions(block_of_code)) {
          ASSERT(conf.page_table_address_space_bits >= 12 && conf.page_table_address_space_bits <= 64);
 +        if (this->conf.lookup_link) {
@@ -1295,7 +1457,7 @@ index 7c0fa8d..cb56a94 100644
      }
  
      ~Impl() = default;
-@@ -81,7 +111,8 @@ public:
+@@ -81,7 +117,8 @@ public:
          const CodePtr current_code_ptr = [this] {
              // RSB optimization
              const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & A64JitState::RSBPtrMask;
@@ -1305,7 +1467,7 @@ index 7c0fa8d..cb56a94 100644
                  jit_state.rsb_ptr = new_rsb_ptr;
                  return reinterpret_cast<CodePtr>(jit_state.rsb_codeptrs[new_rsb_ptr]);
              }
-@@ -129,6 +160,7 @@ public:
+@@ -129,6 +166,7 @@ public:
      void Reset() {
          ASSERT(!is_executing);
          jit_state = {};
@@ -1313,7 +1475,7 @@ index 7c0fa8d..cb56a94 100644
      }
  
      void HaltExecution(HaltReason hr) {
-@@ -239,6 +271,19 @@ public:
+@@ -239,6 +277,19 @@ public:
      }
  
  private:
@@ -1333,6 +1495,14 @@ index 7c0fa8d..cb56a94 100644
      static CodePtr GetCurrentBlockThunk(void* thisptr) {
          Jit::Impl* this_ = static_cast<Jit::Impl*>(thisptr);
          return this_->GetCurrentBlock();
+@@ -315,6 +366,7 @@ private:
+     bool is_executing = false;
+ 
+     const UserConfig conf;
++    std::unique_ptr<A64EmitX64::FastDispatchEntry[]> fast_dispatch_table_storage;
+     A64JitState jit_state;
+     BlockOfCode block_of_code;
+     A64EmitX64 emitter;
 diff --git a/src/dynarmic/backend/x64/a64_jitstate.h b/src/dynarmic/backend/x64/a64_jitstate.h
 index 0929e81..a655515 100644
 --- a/src/dynarmic/backend/x64/a64_jitstate.h
@@ -1866,7 +2036,7 @@ index 776471a..1e45aad 100644
       * Clears the code cache of all compiled code.
       * Can be called at any time. Halts execution if called within a callback.
 diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
-index 093cb57..e91aeb8 100644
+index 093cb57..314362b 100644
 --- a/src/dynarmic/interface/A32/config.h
 +++ b/src/dynarmic/interface/A32/config.h
 @@ -5,6 +5,7 @@
@@ -1927,7 +2097,7 @@ index 093cb57..e91aeb8 100644
      // Writes through these callbacks may not be aligned.
      virtual void MemoryWrite8(VAddr vaddr, std::uint8_t value) = 0;
      virtual void MemoryWrite16(VAddr vaddr, std::uint16_t value) = 0;
-@@ -132,6 +162,49 @@ struct UserCallbacks : public TranslateCallbacks {
+@@ -132,6 +162,56 @@ struct UserCallbacks : public TranslateCallbacks {
  struct UserConfig {
      UserCallbacks* callbacks;
  
@@ -1951,6 +2121,13 @@ index 093cb57..e91aeb8 100644
 +    // used by terminal handlers. The backend publishes its table address into
 +    // this cell after constructing the emitter.
 +    std::atomic<std::uint64_t>* fast_dispatch_table_link = nullptr;
++
++    // Optional backend-owned storage for the mutable fast-dispatch table.
++    // When supplied, the x64 backend uses this address instead of embedding
++    // the table in its emitter object. The caller must keep the storage alive
++    // for the Jit lifetime and provide fast_dispatch_table_size entries in
++    // the backend's FastDispatchEntry layout.
++    void* fast_dispatch_table_storage = nullptr;
 +
 +    // Optional executor-owned indirection for the write page-table base loaded
 +    // by the generated run prelude. The pointed-to cell contains the same
@@ -1978,7 +2155,7 @@ index 093cb57..e91aeb8 100644
      ExclusiveMonitor* global_monitor = nullptr;
  
 diff --git a/src/dynarmic/interface/A64/config.h b/src/dynarmic/interface/A64/config.h
-index f160df1..0826e7d 100644
+index f160df1..c7073a5 100644
 --- a/src/dynarmic/interface/A64/config.h
 +++ b/src/dynarmic/interface/A64/config.h
 @@ -5,6 +5,7 @@
@@ -2001,7 +2178,7 @@ index f160df1..0826e7d 100644
      // Writes through these callbacks may not be aligned.
      virtual void MemoryWrite8(VAddr vaddr, std::uint8_t value) = 0;
      virtual void MemoryWrite16(VAddr vaddr, std::uint16_t value) = 0;
-@@ -138,6 +144,34 @@ struct UserCallbacks {
+@@ -138,6 +144,41 @@ struct UserCallbacks {
  struct UserConfig {
      UserCallbacks* callbacks;
  
@@ -2025,6 +2202,13 @@ index f160df1..0826e7d 100644
 +    // used by terminal handlers. The backend publishes its table address into
 +    // this cell after constructing the emitter.
 +    std::atomic<std::uint64_t>* fast_dispatch_table_link = nullptr;
++
++    // Optional backend-owned storage for the mutable fast-dispatch table.
++    // When supplied, the x64 backend uses this address instead of embedding
++    // the table in its emitter object. The caller must keep the storage alive
++    // for the Jit lifetime and provide fast_dispatch_table_size entries in
++    // the backend's FastDispatchEntry layout.
++    void* fast_dispatch_table_storage = nullptr;
 +
 +    // Optional executor-owned indirection for the global exclusive monitor's
 +    // lock and reservation arrays. Fast exclusive-memory code loads these
