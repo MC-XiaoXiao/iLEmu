@@ -2176,7 +2176,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
   HostFileWatcher host_file_watcher{
       catalog_root_error ? std::filesystem::path{*rootfs} : catalog_root};
   output.line(std::string{"[host-watch] enabled="} +
-              (host_file_watcher.enabled() ? "true" : "false"));
+              (host_file_watcher.enabled() ? "true" : "false") +
+              " startup-watches=" +
+              std::to_string(host_file_watcher.watch_count()));
+  bool host_watch_registration_reported =
+      !host_file_watcher.registration_pending();
   bool catalog_refresh_pending = false;
   std::vector<std::filesystem::path> catalog_refresh_paths;
   std::uint64_t catalog_refresh_events{};
@@ -2184,6 +2188,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const auto refresh_catalog_after_file_mutations =
       [&](bool refresh_when_idle) {
         constexpr std::size_t maximum_mutations_per_poll = 128;
+        if (refresh_when_idle &&
+            initial_runtime->kernel->display_submitted_frames() != 0U) {
+          host_file_watcher.advance_registration(256);
+          if (!host_watch_registration_reported &&
+              !host_file_watcher.registration_pending()) {
+            output.line("[host-watch] registration=complete watches=" +
+                        std::to_string(host_file_watcher.watch_count()));
+            host_watch_registration_reported = true;
+          }
+        }
         const auto queue_catalog_path =
             [&](const std::filesystem::path &path) {
               if (std::find(catalog_refresh_paths.begin(),

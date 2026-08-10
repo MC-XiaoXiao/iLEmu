@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #if defined(__linux__)
@@ -85,7 +86,23 @@ HostFileWatcher::HostFileWatcher(std::filesystem::path root,
   if (!std::filesystem::is_directory(root_, error) || error) return;
   notification_descriptor_ = ::inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
   if (notification_descriptor_ < 0) return;
-  add_watch_tree(root_);
+  add_watch(root_);
+  // Cover the high-value mutable roots immediately without walking them.
+  // Descriptor-generation validation remains the correctness fallback until
+  // idle registration reaches their descendants.
+  constexpr std::array<std::string_view, 4> mutable_roots{
+      "Applications", "private/var", "private/var/mobile/Applications",
+      "private/var/staging"};
+  for (const auto relative : mutable_roots) {
+    const auto directory = root_ / relative;
+    std::error_code directory_error;
+    if (std::filesystem::is_directory(directory, directory_error) &&
+        !directory_error) {
+      add_watch(directory);
+      queue_watch_tree(directory);
+    }
+  }
+  queue_watch_tree(root_);
 #else
   static_cast<void>(root);
 #endif
@@ -108,46 +125,99 @@ std::size_t HostFileWatcher::pending_count() const noexcept {
   return pending_.size();
 }
 
-void HostFileWatcher::add_watch_tree(const std::filesystem::path &directory) {
+std::size_t HostFileWatcher::watch_count() const noexcept {
+  return watches_.size();
+}
+
+bool HostFileWatcher::registration_pending() const noexcept {
+  return active_registration_.has_value() || !registration_queue_.empty();
+}
+
+void HostFileWatcher::queue_watch_tree(
+    const std::filesystem::path &directory) {
 #if defined(__linux__)
-  if (notification_descriptor_ < 0 || watches_.size() >= maximum_watches) {
-    queue_dirty_subtree(directory);
+  if (notification_descriptor_ < 0) return;
+  const auto normalized = directory.lexically_normal();
+  if (active_registration_ &&
+      active_registration_->directory == normalized) {
     return;
   }
-  add_watch(directory);
-  std::error_code iterator_error;
-  std::filesystem::recursive_directory_iterator iterator{
-      directory, std::filesystem::directory_options::skip_permission_denied,
-      iterator_error};
-  const std::filesystem::recursive_directory_iterator end;
-  while (iterator != end) {
-    if (iterator_error) {
-      queue_dirty_subtree(directory);
-      iterator_error.clear();
-      iterator.increment(iterator_error);
-      continue;
-    }
-    if (watches_.size() >= maximum_watches) {
-      queue_dirty_subtree(directory);
-      return;
-    }
-    std::error_code status_error;
-    const auto status = iterator->symlink_status(status_error);
-    if (!status_error && std::filesystem::is_directory(status)) {
-      add_watch(iterator->path());
-    } else if (status_error) {
-      queue_dirty_subtree(directory);
-    }
-    iterator.increment(iterator_error);
+  if (completed_registrations_.contains(normalized) ||
+      !queued_registrations_.insert(normalized).second) {
+    return;
   }
-  if (iterator_error) queue_dirty_subtree(directory);
+  registration_queue_.push_back(normalized);
 #else
   static_cast<void>(directory);
 #endif
 }
 
+void HostFileWatcher::advance_registration(std::size_t maximum_entries) {
+#if defined(__linux__)
+  if (notification_descriptor_ < 0 || maximum_entries == 0U) return;
+  std::size_t inspected{};
+  while (inspected < maximum_entries) {
+    if (!active_registration_) {
+      while (!registration_queue_.empty() && !active_registration_) {
+        auto directory = std::move(registration_queue_.front());
+        registration_queue_.pop_front();
+        queued_registrations_.erase(directory);
+        if (completed_registrations_.contains(directory)) continue;
+        if (watches_.size() >= maximum_watches) {
+          queue_dirty_subtree(directory);
+          return;
+        }
+        add_watch(directory);
+        ++inspected;
+        std::error_code iterator_error;
+        std::filesystem::directory_iterator iterator{
+            directory,
+            std::filesystem::directory_options::skip_permission_denied,
+            iterator_error};
+        if (iterator_error) {
+          queue_dirty_subtree(directory);
+          completed_registrations_.insert(std::move(directory));
+          continue;
+        }
+        active_registration_.emplace(ActiveRegistration{
+            std::move(directory), std::move(iterator), {}});
+        if (inspected >= maximum_entries) return;
+      }
+      if (!active_registration_) return;
+    }
+
+    auto &registration = *active_registration_;
+    if (registration.iterator == registration.end) {
+      completed_registrations_.insert(registration.directory);
+      active_registration_.reset();
+      continue;
+    }
+    const auto entry = *registration.iterator;
+    std::error_code status_error;
+    const auto status = entry.symlink_status(status_error);
+    if (!status_error && std::filesystem::is_directory(status)) {
+      queue_watch_tree(entry.path());
+    } else if (status_error) {
+      queue_dirty_subtree(registration.directory);
+    }
+    std::error_code increment_error;
+    registration.iterator.increment(increment_error);
+    if (increment_error) {
+      queue_dirty_subtree(registration.directory);
+      completed_registrations_.insert(registration.directory);
+      active_registration_.reset();
+    }
+    ++inspected;
+  }
+#else
+  static_cast<void>(maximum_entries);
+#endif
+}
+
 void HostFileWatcher::add_watch(const std::filesystem::path &directory) {
 #if defined(__linux__)
+  const auto normalized = directory.lexically_normal();
+  if (watched_directories_.contains(normalized)) return;
   if (notification_descriptor_ < 0 || watches_.size() >= maximum_watches) {
     queue_dirty_subtree(directory);
     return;
@@ -156,7 +226,7 @@ void HostFileWatcher::add_watch(const std::filesystem::path &directory) {
                         IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF |
                         IN_MOVE_SELF;
   const auto watch_descriptor =
-      ::inotify_add_watch(notification_descriptor_, directory.c_str(), mask);
+      ::inotify_add_watch(notification_descriptor_, normalized.c_str(), mask);
   if (watch_descriptor < 0) {
     queue_dirty_subtree(directory);
     return;
@@ -165,7 +235,8 @@ void HostFileWatcher::add_watch(const std::filesystem::path &directory) {
   // canonicalizing every directory here would turn watcher setup into a
   // second tree walk. New directories discovered from inotify are normalized
   // before they reach this function.
-  watches_[watch_descriptor] = directory.lexically_normal();
+  watches_[watch_descriptor] = normalized;
+  watched_directories_.insert(normalized);
 #else
   static_cast<void>(directory);
 #endif
@@ -180,7 +251,11 @@ void HostFileWatcher::remove_watch(int watch_descriptor) {
 #else
   static_cast<void>(watch_descriptor);
 #endif
-  watches_.erase(watch_descriptor);
+  if (const auto watch = watches_.find(watch_descriptor);
+      watch != watches_.end()) {
+    watched_directories_.erase(watch->second);
+    watches_.erase(watch);
+  }
 }
 
 void HostFileWatcher::queue_dirty_subtree(const std::filesystem::path &path) {
@@ -269,6 +344,7 @@ void HostFileWatcher::handle_event(const void *event_data,
   if (watch == watches_.end()) return;
   const auto watched_directory = watch->second;
   if (event.mask & IN_IGNORED) {
+    watched_directories_.erase(watch->second);
     watches_.erase(watch);
     return;
   }
@@ -297,7 +373,8 @@ void HostFileWatcher::handle_event(const void *event_data,
     mutation = GuestFileMutationKind::InstallReplace;
   }
   if (is_directory && (event.mask & (IN_CREATE | IN_MOVED_TO))) {
-    add_watch_tree(path);
+    add_watch(path);
+    queue_watch_tree(path);
   }
   if (is_directory && (event.mask & (IN_DELETE | IN_MOVED_FROM))) {
     queue_dirty_subtree(watched_directory);

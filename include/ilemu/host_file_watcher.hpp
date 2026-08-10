@@ -2,9 +2,11 @@
 
 #include <chrono>
 #include <cstddef>
+#include <deque>
 #include <filesystem>
 #include <map>
 #include <optional>
+#include <set>
 #include <vector>
 
 #include "ilemu/content_identity.hpp"
@@ -34,6 +36,11 @@ public:
   // Polls the non-blocking notification queue and returns immediately.
   void poll();
 
+  // Installs recursive watches incrementally. The caller supplies an entry
+  // budget and should run this only after the first frame in idle/background
+  // maintenance windows.
+  void advance_registration(std::size_t maximum_entries = 256);
+
   // Publishes only stable paths. Dirty subtrees from an overflow are drained
   // only when requested by an idle/background caller.
   [[nodiscard]] HostFileWatchDrain publish_stable(
@@ -43,6 +50,8 @@ public:
 
   [[nodiscard]] bool enabled() const noexcept;
   [[nodiscard]] std::size_t pending_count() const noexcept;
+  [[nodiscard]] std::size_t watch_count() const noexcept;
+  [[nodiscard]] bool registration_pending() const noexcept;
 
 private:
   struct StableSample {
@@ -59,7 +68,13 @@ private:
     std::optional<StableSample> sample;
   };
 
-  void add_watch_tree(const std::filesystem::path &directory);
+  struct ActiveRegistration {
+    std::filesystem::path directory;
+    std::filesystem::directory_iterator iterator;
+    std::filesystem::directory_iterator end;
+  };
+
+  void queue_watch_tree(const std::filesystem::path &directory);
   void add_watch(const std::filesystem::path &directory);
   void remove_watch(int watch_descriptor);
   void queue_path(const std::filesystem::path &path,
@@ -71,6 +86,11 @@ private:
   std::size_t maximum_pending_{};
   int notification_descriptor_{-1};
   std::map<int, std::filesystem::path> watches_;
+  std::set<std::filesystem::path> watched_directories_;
+  std::deque<std::filesystem::path> registration_queue_;
+  std::set<std::filesystem::path> queued_registrations_;
+  std::set<std::filesystem::path> completed_registrations_;
+  std::optional<ActiveRegistration> active_registration_;
   std::map<std::filesystem::path, PendingPath> pending_;
   std::vector<std::filesystem::path> dirty_subtrees_;
   bool overflow_{false};
