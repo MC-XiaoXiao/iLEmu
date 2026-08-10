@@ -70,6 +70,11 @@ struct GlobalIdentityRecord {
 std::mutex global_identity_mutex;
 std::map<std::string, GlobalIdentityRecord> global_identities;
 
+void invalidate_global_identity(const std::string &normalized_path) {
+  const std::scoped_lock lock{global_identity_mutex};
+  global_identities.erase(normalized_path);
+}
+
 [[nodiscard]] unsigned mutation_priority(GuestFileMutationKind mutation) {
   switch (mutation) {
   case GuestFileMutationKind::Observation:
@@ -121,6 +126,7 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record(
   }
   entry.snapshot = GuestFileGenerationSnapshot{
       next_revision_++, std::move(generation), mutation};
+  invalidate_global_identity(key);
   enqueue_mutation_locked(key, mutation);
   return entry.snapshot;
 }
@@ -155,6 +161,7 @@ void GuestFileGenerationRegistry::enqueue_mutation_locked(
 
 GuestFileGenerationSnapshot GuestFileGenerationRegistry::observe_normalized(
     std::string normalized_path, const GuestFileGeneration &generation) {
+  const auto key = normalized_path;
   std::lock_guard lock{mutex_};
   auto &entry = entries_[std::move(normalized_path)];
   if (entry.snapshot.revision != 0 &&
@@ -163,6 +170,7 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::observe_normalized(
   }
   entry.snapshot = GuestFileGenerationSnapshot{
       next_revision_++, generation, GuestFileMutationKind::Observation};
+  invalidate_global_identity(key);
   return entry.snapshot;
 }
 
@@ -182,13 +190,21 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record_descriptor(
     matched_inode = true;
     entry.snapshot = GuestFileGenerationSnapshot{
         next_revision_++, generation, mutation};
+    invalidate_global_identity(entry_path);
     enqueue_mutation_locked(entry_path, mutation);
     if (entry_path == key || !result) result = entry.snapshot;
   }
   if (!matched_inode) {
+    // A descriptor can outlive an atomic rename/unlink. If the pathname is
+    // already known with another vnode (or no vnode), this write belongs to
+    // the detached old generation and must not resurrect it at the pathname.
+    if (const auto current = entries_.find(key); current != entries_.end()) {
+      return current->second.snapshot;
+    }
     auto &entry = entries_[key];
     entry.snapshot = GuestFileGenerationSnapshot{
         next_revision_++, generation, mutation};
+    invalidate_global_identity(key);
     enqueue_mutation_locked(key, mutation);
     result = entry.snapshot;
   }
