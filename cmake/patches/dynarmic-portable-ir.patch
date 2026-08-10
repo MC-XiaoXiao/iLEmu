@@ -1,3 +1,160 @@
+diff --git a/src/dynarmic/backend/x64/a32_emit_x64.cpp b/src/dynarmic/backend/x64/a32_emit_x64.cpp
+index aa07357..992b35b 100644
+--- a/src/dynarmic/backend/x64/a32_emit_x64.cpp
++++ b/src/dynarmic/backend/x64/a32_emit_x64.cpp
+@@ -693,7 +693,9 @@ void A32EmitX64::EmitA32InstructionSynchronizationBarrier(A32EmitContext& ctx, I
+     }
+ 
+     ctx.reg_alloc.HostCall(nullptr);
+-    Devirtualize<&A32::UserCallbacks::InstructionSynchronizationBarrierRaised>(conf.callbacks).EmitCall(code);
++    DevirtualizeFromLink<&A32::UserCallbacks::InstructionSynchronizationBarrierRaised>(
++            conf.callbacks, conf.callbacks_link,
++            offsetof(A32JitState, callbacks_link)).EmitCall(code);
+ }
+ 
+ void A32EmitX64::EmitA32BXWritePC(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -750,16 +752,22 @@ void A32EmitX64::EmitA32CallSupervisor(A32EmitContext& ctx, IR::Inst* inst) {
+         ctx.reg_alloc.HostCall(nullptr);
+         code.mov(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)]);
+         code.sub(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)]);
+-        Devirtualize<&A32::UserCallbacks::AddTicks>(conf.callbacks).EmitCall(code);
++        DevirtualizeFromLink<&A32::UserCallbacks::AddTicks>(
++                conf.callbacks, conf.callbacks_link,
++                offsetof(A32JitState, callbacks_link)).EmitCall(code);
+         ctx.reg_alloc.EndOfAllocScope();
+     }
+ 
+     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+     ctx.reg_alloc.HostCall(nullptr, {}, args[0]);
+-    Devirtualize<&A32::UserCallbacks::CallSVC>(conf.callbacks).EmitCall(code);
++    DevirtualizeFromLink<&A32::UserCallbacks::CallSVC>(
++            conf.callbacks, conf.callbacks_link,
++            offsetof(A32JitState, callbacks_link)).EmitCall(code);
+ 
+     if (conf.enable_cycle_counting) {
+-        Devirtualize<&A32::UserCallbacks::GetTicksRemaining>(conf.callbacks).EmitCall(code);
++        DevirtualizeFromLink<&A32::UserCallbacks::GetTicksRemaining>(
++                conf.callbacks, conf.callbacks_link,
++                offsetof(A32JitState, callbacks_link)).EmitCall(code);
+         code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], code.ABI_RETURN);
+         code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], code.ABI_RETURN);
+         code.SwitchMxcsrOnEntry();
+@@ -773,7 +781,9 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
+     if (conf.enable_cycle_counting) {
+         code.mov(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)]);
+         code.sub(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)]);
+-        Devirtualize<&A32::UserCallbacks::AddTicks>(conf.callbacks).EmitCall(code);
++        DevirtualizeFromLink<&A32::UserCallbacks::AddTicks>(
++                conf.callbacks, conf.callbacks_link,
++                offsetof(A32JitState, callbacks_link)).EmitCall(code);
+     }
+     ctx.reg_alloc.EndOfAllocScope();
+ 
+@@ -781,13 +791,17 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
+     ASSERT(args[0].IsImmediate() && args[1].IsImmediate());
+     const u32 pc = args[0].GetImmediateU32();
+     const u64 exception = args[1].GetImmediateU64();
+-    Devirtualize<&A32::UserCallbacks::ExceptionRaised>(conf.callbacks).EmitCall(code, [&](RegList param) {
++    DevirtualizeFromLink<&A32::UserCallbacks::ExceptionRaised>(
++            conf.callbacks, conf.callbacks_link,
++            offsetof(A32JitState, callbacks_link)).EmitCall(code, [&](RegList param) {
+         code.mov(param[0], pc);
+         code.mov(param[1], exception);
+     });
+ 
+     if (conf.enable_cycle_counting) {
+-        Devirtualize<&A32::UserCallbacks::GetTicksRemaining>(conf.callbacks).EmitCall(code);
++        DevirtualizeFromLink<&A32::UserCallbacks::GetTicksRemaining>(
++                conf.callbacks, conf.callbacks_link,
++                offsetof(A32JitState, callbacks_link)).EmitCall(code);
+         code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], code.ABI_RETURN);
+         code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], code.ABI_RETURN);
+         code.SwitchMxcsrOnEntry();
+@@ -1137,7 +1151,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDesc
+     code.mov(code.ABI_PARAM3.cvt32(), 1);
+     code.mov(MJitStateReg(A32::Reg::PC), code.ABI_PARAM2.cvt32());
+     code.SwitchMxcsrOnExit();
+-    Devirtualize<&A32::UserCallbacks::InterpreterFallback>(conf.callbacks).EmitCall(code);
++    DevirtualizeFromLink<&A32::UserCallbacks::InterpreterFallback>(
++            conf.callbacks, conf.callbacks_link,
++            offsetof(A32JitState, callbacks_link)).EmitCall(code);
+     code.ReturnFromRunCode(true);  // TODO: Check cycles
+ }
+ 
+diff --git a/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp b/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
+index 851fe0b..1c77ae8 100644
+--- a/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
++++ b/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
+@@ -29,22 +29,46 @@ using namespace Xbyak::util;
+ void A32EmitX64::GenFastmemFallbacks() {
+     const std::initializer_list<int> idxes{0, 1, 2, 3, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14};
+     const std::array<std::pair<size_t, ArgCallback>, 4> read_callbacks{{
+-        {8, Devirtualize<&A32::UserCallbacks::MemoryRead8>(conf.callbacks)},
+-        {16, Devirtualize<&A32::UserCallbacks::MemoryRead16>(conf.callbacks)},
+-        {32, Devirtualize<&A32::UserCallbacks::MemoryRead32>(conf.callbacks)},
+-        {64, Devirtualize<&A32::UserCallbacks::MemoryRead64>(conf.callbacks)},
++        {8, DevirtualizeFromLink<&A32::UserCallbacks::MemoryRead8>(
++                 conf.callbacks, conf.callbacks_link,
++                 offsetof(A32JitState, callbacks_link))},
++        {16, DevirtualizeFromLink<&A32::UserCallbacks::MemoryRead16>(
++                  conf.callbacks, conf.callbacks_link,
++                  offsetof(A32JitState, callbacks_link))},
++        {32, DevirtualizeFromLink<&A32::UserCallbacks::MemoryRead32>(
++                  conf.callbacks, conf.callbacks_link,
++                  offsetof(A32JitState, callbacks_link))},
++        {64, DevirtualizeFromLink<&A32::UserCallbacks::MemoryRead64>(
++                  conf.callbacks, conf.callbacks_link,
++                  offsetof(A32JitState, callbacks_link))},
+     }};
+     const std::array<std::pair<size_t, ArgCallback>, 4> write_callbacks{{
+-        {8, Devirtualize<&A32::UserCallbacks::MemoryWrite8>(conf.callbacks)},
+-        {16, Devirtualize<&A32::UserCallbacks::MemoryWrite16>(conf.callbacks)},
+-        {32, Devirtualize<&A32::UserCallbacks::MemoryWrite32>(conf.callbacks)},
+-        {64, Devirtualize<&A32::UserCallbacks::MemoryWrite64>(conf.callbacks)},
++        {8, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWrite8>(
++                 conf.callbacks, conf.callbacks_link,
++                 offsetof(A32JitState, callbacks_link))},
++        {16, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWrite16>(
++                  conf.callbacks, conf.callbacks_link,
++                  offsetof(A32JitState, callbacks_link))},
++        {32, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWrite32>(
++                  conf.callbacks, conf.callbacks_link,
++                  offsetof(A32JitState, callbacks_link))},
++        {64, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWrite64>(
++                  conf.callbacks, conf.callbacks_link,
++                  offsetof(A32JitState, callbacks_link))},
+     }};
+     const std::array<std::pair<size_t, ArgCallback>, 4> exclusive_write_callbacks{{
+-        {8, Devirtualize<&A32::UserCallbacks::MemoryWriteExclusive8>(conf.callbacks)},
+-        {16, Devirtualize<&A32::UserCallbacks::MemoryWriteExclusive16>(conf.callbacks)},
+-        {32, Devirtualize<&A32::UserCallbacks::MemoryWriteExclusive32>(conf.callbacks)},
+-        {64, Devirtualize<&A32::UserCallbacks::MemoryWriteExclusive64>(conf.callbacks)},
++        {8, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWriteExclusive8>(
++                 conf.callbacks, conf.callbacks_link,
++                 offsetof(A32JitState, callbacks_link))},
++        {16, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWriteExclusive16>(
++                  conf.callbacks, conf.callbacks_link,
++                  offsetof(A32JitState, callbacks_link))},
++        {32, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWriteExclusive32>(
++                  conf.callbacks, conf.callbacks_link,
++                  offsetof(A32JitState, callbacks_link))},
++        {64, DevirtualizeFromLink<&A32::UserCallbacks::MemoryWriteExclusive64>(
++                  conf.callbacks, conf.callbacks_link,
++                  offsetof(A32JitState, callbacks_link))},
+     }};
+ 
+     for (bool ordered : {false, true}) {
+@@ -171,7 +195,9 @@ template<std::size_t bitsize, auto callback>
+ void A32EmitX64::EmitMemorySwap(A32EmitContext& ctx, IR::Inst* inst) {
+     auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+     ctx.reg_alloc.HostCall(inst, {}, args[1], args[2]);
+-    Devirtualize<callback>(conf.callbacks).EmitCall(code);
++    DevirtualizeFromLink<callback>(
++            conf.callbacks, conf.callbacks_link,
++            offsetof(A32JitState, callbacks_link)).EmitCall(code);
+     code.ZeroExtendFrom(bitsize, code.ABI_RETURN);
+     EmitCheckMemoryAbort(ctx, inst);
+ }
 diff --git a/src/dynarmic/backend/x64/a32_interface.cpp b/src/dynarmic/backend/x64/a32_interface.cpp
 index 13f3a60..0d3a3d3 100644
 --- a/src/dynarmic/backend/x64/a32_interface.cpp
@@ -196,7 +353,7 @@ index cc13abf..ab02c0c 100644
          return (static_cast<u64>(upper_location_descriptor) << 32) | (static_cast<u64>(Reg[15]));
      }
 diff --git a/src/dynarmic/backend/x64/callback.cpp b/src/dynarmic/backend/x64/callback.cpp
-index 1ecd830..b69aa01 100644
+index 1ecd830..c2cac26 100644
 --- a/src/dynarmic/backend/x64/callback.cpp
 +++ b/src/dynarmic/backend/x64/callback.cpp
 @@ -5,6 +5,8 @@
@@ -208,10 +365,37 @@ index 1ecd830..b69aa01 100644
  #include "dynarmic/backend/x64/block_of_code.h"
  
  namespace Dynarmic::Backend::X64 {
-@@ -38,4 +40,30 @@ void ArgCallback::EmitCallWithReturnPointer(BlockOfCode& code, std::function<voi
+@@ -23,19 +25,54 @@ void SimpleCallback::EmitCallWithReturnPointer(BlockOfCode& code, std::function<
+ 
+ void ArgCallback::EmitCall(BlockOfCode& code, std::function<void(RegList)> l) const {
+     l({code.ABI_PARAM2, code.ABI_PARAM3, code.ABI_PARAM4});
+-    code.mov(code.ABI_PARAM1, arg);
++    LoadArg(code, code.ABI_PARAM1);
      code.CallFunction(fn);
  }
  
+ void ArgCallback::EmitCallWithReturnPointer(BlockOfCode& code, std::function<void(Xbyak::Reg64, RegList)> l) const {
+ #if defined(WIN32) && !defined(__MINGW64__)
+     l(code.ABI_PARAM2, {code.ABI_PARAM3, code.ABI_PARAM4});
+-    code.mov(code.ABI_PARAM1, arg);
++    LoadArg(code, code.ABI_PARAM1);
+ #else
+     l(code.ABI_PARAM1, {code.ABI_PARAM3, code.ABI_PARAM4});
+-    code.mov(code.ABI_PARAM2, arg);
++    LoadArg(code, code.ABI_PARAM2);
+ #endif
+     code.CallFunction(fn);
+ }
+ 
++void ArgCallback::LoadArg(BlockOfCode& code, const Xbyak::Reg64& destination) const {
++    if (link_offset == direct_link_offset) {
++        code.mov(destination, arg);
++        return;
++    }
++    code.mov(destination, code.qword[code.r15 + link_offset]);
++    code.mov(destination, code.qword[destination]);
++}
++
 +ArgCallbackFromLink::ArgCallbackFromLink(ArgCallback callback_, std::size_t link_offset_)
 +        : callback(std::move(callback_))
 +        , link_offset(link_offset_) {}
@@ -240,18 +424,44 @@ index 1ecd830..b69aa01 100644
 +
  }  // namespace Dynarmic::Backend::X64
 diff --git a/src/dynarmic/backend/x64/callback.h b/src/dynarmic/backend/x64/callback.h
-index 716555d..81e43ca 100644
+index 716555d..905621b 100644
 --- a/src/dynarmic/backend/x64/callback.h
 +++ b/src/dynarmic/backend/x64/callback.h
-@@ -56,8 +56,28 @@ public:
+@@ -5,7 +5,9 @@
+ 
+ #pragma once
+ 
++#include <cstddef>
+ #include <functional>
++#include <limits>
+ #include <vector>
+ 
+ #include <mcl/stdint.hpp>
+@@ -50,14 +52,44 @@ public:
+     ArgCallback(Function fn, u64 arg)
+             : fn(reinterpret_cast<void (*)()>(fn)), arg(arg) {}
+ 
++    static ArgCallback FromLink(ArgCallback callback, std::size_t link_offset) {
++        callback.link_offset = link_offset;
++        return callback;
++    }
++
+     using Callback::EmitCall;
+ 
+     void EmitCall(BlockOfCode& code, std::function<void(RegList)> fn) const override;
      void EmitCallWithReturnPointer(BlockOfCode& code, std::function<void(Xbyak::Reg64, RegList)> fn) const override;
  
  private:
 +    friend class ArgCallbackFromLink;
++    void LoadArg(BlockOfCode& code, const Xbyak::Reg64& destination) const;
++
++    static constexpr std::size_t direct_link_offset =
++            std::numeric_limits<std::size_t>::max();
      void (*fn)();
      u64 arg;
- };
- 
++    std::size_t link_offset = direct_link_offset;
++};
++
 +// Callback whose first argument is loaded through a pointer stored in the
 +// active JitState. The emitted load sequence is context-independent: only the
 +// mutable JitState chooses the executor-owned link cell.
@@ -269,9 +479,64 @@ index 716555d..81e43ca 100644
 +
 +    ArgCallback callback;
 +    std::size_t link_offset;
-+};
-+
+ };
+ 
  }  // namespace Dynarmic::Backend::X64
+diff --git a/src/dynarmic/backend/x64/devirtualize.h b/src/dynarmic/backend/x64/devirtualize.h
+index 778536a..45f04bd 100644
+--- a/src/dynarmic/backend/x64/devirtualize.h
++++ b/src/dynarmic/backend/x64/devirtualize.h
+@@ -5,6 +5,8 @@
+ 
+ #pragma once
+ 
++#include <atomic>
++#include <cstddef>
+ #include <cstring>
+ #include <utility>
+ 
+@@ -77,5 +79,15 @@ ArgCallback Devirtualize(mcl::class_type<decltype(mfp)>* this_) {
+ #endif
+ }
+ 
++template<auto mfp, typename CallbackObject>
++ArgCallback DevirtualizeFromLink(
++        CallbackObject* object,
++        const std::atomic<u64>* link,
++        std::size_t link_offset) {
++    auto callback = Devirtualize<mfp>(object);
++    return link ? ArgCallback::FromLink(std::move(callback), link_offset)
++                : callback;
++}
++
+ }  // namespace Backend::X64
+ }  // namespace Dynarmic
+diff --git a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+index 3ed2745..0f360e5 100644
+--- a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
++++ b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
+@@ -74,7 +74,9 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
+             if (ordered) {
+                 code.mfence();
+             }
+-            Devirtualize<callback>(conf.callbacks).EmitCall(code);
++            DevirtualizeFromLink<callback>(
++                    conf.callbacks, conf.callbacks_link,
++                    offsetof(AxxJitState, callbacks_link)).EmitCall(code);
+             code.ZeroExtendFrom(bitsize, code.ABI_RETURN);
+         }
+         EmitCheckMemoryAbort(ctx, inst);
+@@ -158,7 +160,9 @@ void AxxEmitX64::EmitMemoryWrite(AxxEmitContext& ctx, IR::Inst* inst) {
+             code.CallFunction(memory_write_128);
+         } else {
+             ctx.reg_alloc.HostCall(nullptr, {}, args[1], args[2]);
+-            Devirtualize<callback>(conf.callbacks).EmitCall(code);
++            DevirtualizeFromLink<callback>(
++                    conf.callbacks, conf.callbacks_link,
++                    offsetof(AxxJitState, callbacks_link)).EmitCall(code);
+         }
+         if (ordered) {
+             code.mfence();
 diff --git a/src/dynarmic/interface/A32/a32.h b/src/dynarmic/interface/A32/a32.h
 index 776471a..1e45aad 100644
 --- a/src/dynarmic/interface/A32/a32.h
