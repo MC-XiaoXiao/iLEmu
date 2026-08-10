@@ -901,11 +901,21 @@ public:
         execution_context_->link(lookup_link_cell_, 0);
         lookup_link_cell_address_ =
             execution_context_->link_cell_address(lookup_link_cell_);
+        page_table_link_cell_ = execution_context_->create_link_cell();
+        execution_context_->link(page_table_link_cell_, 0);
+        page_table_link_cell_address_ =
+            execution_context_->link_cell_address(page_table_link_cell_);
+        read_page_table_link_cell_ = execution_context_->create_link_cell();
+        execution_context_->link(read_page_table_link_cell_, 0);
+        read_page_table_link_cell_address_ =
+            execution_context_->link_cell_address(read_page_table_link_cell_);
     }
 
     ~JitExecutor() {
         execution_context_->unlink(runtime_link_cell_);
         execution_context_->unlink(lookup_link_cell_);
+        execution_context_->unlink(page_table_link_cell_);
+        execution_context_->unlink(read_page_table_link_cell_);
         performance_counters().record_jit_code_cache_usage(
             process_id_, static_cast<std::uint32_t>(execution_slot_),
             recorded_jit_code_cache_bytes_, 0);
@@ -1232,6 +1242,8 @@ private:
         Dynarmic::A32::UserConfig config{callbacks_.get()};
         config.callbacks_link = runtime_link_cell_address_;
         config.lookup_link = lookup_link_cell_address_;
+        config.page_table_link = page_table_link_cell_address_;
+        config.read_page_table_link = read_page_table_link_cell_address_;
         config.processor_id = processor_id_;
         config.global_monitor = &monitor_;
         config.arch_version = dynarmic_architecture_version(
@@ -1250,6 +1262,14 @@ private:
         auto** read_table = callbacks_->jit_read_page_table();
         auto** write_table = callbacks_->jit_write_page_table();
         if (read_table || write_table) {
+            execution_context_->link(
+                read_page_table_link_cell_,
+                static_cast<std::uint64_t>(
+                    reinterpret_cast<std::uintptr_t>(read_table)));
+            execution_context_->link(
+                page_table_link_cell_,
+                static_cast<std::uint64_t>(
+                    reinterpret_cast<std::uintptr_t>(write_table)));
             config.read_page_table =
                 reinterpret_cast<DynarmicPageTable*>(read_table);
             config.page_table =
@@ -1397,6 +1417,10 @@ private:
     const std::atomic<std::uint64_t> *runtime_link_cell_address_{};
     std::size_t lookup_link_cell_{};
     std::atomic<std::uint64_t> *lookup_link_cell_address_{};
+    std::size_t page_table_link_cell_{};
+    std::atomic<std::uint64_t> *page_table_link_cell_address_{};
+    std::size_t read_page_table_link_cell_{};
+    std::atomic<std::uint64_t> *read_page_table_link_cell_address_{};
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
     std::size_t code_cache_size_{64U * 1024U * 1024U};
     std::uint64_t recorded_jit_code_cache_bytes_{};
