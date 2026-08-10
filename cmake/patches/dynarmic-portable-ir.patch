@@ -15,7 +15,7 @@ index d57a29c..ffa977d 100644
          Unlock();
          return false;
 diff --git a/src/dynarmic/backend/x64/a32_emit_x64.cpp b/src/dynarmic/backend/x64/a32_emit_x64.cpp
-index aa07357..64b2f37 100644
+index aa07357..bbb6860 100644
 --- a/src/dynarmic/backend/x64/a32_emit_x64.cpp
 +++ b/src/dynarmic/backend/x64/a32_emit_x64.cpp
 @@ -82,6 +82,17 @@ FP::FPCR A32EmitContext::FPCR(bool fpcr_controlled) const {
@@ -331,7 +331,19 @@ index aa07357..64b2f37 100644
      if (!target_code_ptr) {
          target_code_ptr = code.GetReturnFromRunCodeAddress();
      }
-@@ -1298,7 +1380,7 @@ void A32EmitX64::Unpatch(const IR::LocationDescriptor& location) {
+@@ -1294,11 +1376,19 @@ void A32EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
+     code.EnsurePatchLocationSize(patch_location, 10);
+ }
+ 
++bool A32EmitX64::ShouldPatchExistingBlocks() const {
++    // Linked shared-slab terminals are emitted against the executor-local
++    // dispatcher from the start. Registering a later target must not rewrite
++    // instruction bytes that another executor may currently be running.
++    return !(conf.fast_dispatch_table_link &&
++             conf.HasOptimization(OptimizationFlag::FastDispatch));
++}
++
+ void A32EmitX64::Unpatch(const IR::LocationDescriptor& location) {
      EmitX64::Unpatch(location);
      if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
          code.DisableWriting();
@@ -341,7 +353,7 @@ index aa07357..64b2f37 100644
      }
  }
 diff --git a/src/dynarmic/backend/x64/a32_emit_x64.h b/src/dynarmic/backend/x64/a32_emit_x64.h
-index 335dd30..5bcc4b5 100644
+index 335dd30..9349159 100644
 --- a/src/dynarmic/backend/x64/a32_emit_x64.h
 +++ b/src/dynarmic/backend/x64/a32_emit_x64.h
 @@ -6,6 +6,7 @@
@@ -396,6 +408,14 @@ index 335dd30..5bcc4b5 100644
      void GenTerminalHandlers();
  
      // Microinstruction emitters
+@@ -139,6 +145,7 @@ protected:
+     void EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
+ 
+     // Patching
++    bool ShouldPatchExistingBlocks() const override;
+     void Unpatch(const IR::LocationDescriptor& target_desc) override;
+     void EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) override;
+     void EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr = nullptr) override;
 diff --git a/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp b/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
 index c353032..e1a2dac 100644
 --- a/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
@@ -563,15 +583,16 @@ index c353032..e1a2dac 100644
      } else {
          EmitExclusiveWriteMemory<64, &A32::UserCallbacks::MemoryWriteExclusive64>(ctx, inst);
 diff --git a/src/dynarmic/backend/x64/a32_interface.cpp b/src/dynarmic/backend/x64/a32_interface.cpp
-index 13f3a60..21bef38 100644
+index 13f3a60..c62335f 100644
 --- a/src/dynarmic/backend/x64/a32_interface.cpp
 +++ b/src/dynarmic/backend/x64/a32_interface.cpp
-@@ -3,10 +3,13 @@
+@@ -3,10 +3,14 @@
   * SPDX-License-Identifier: 0BSD
   */
  
 +#include <algorithm>
  #include <chrono>
++#include <condition_variable>
  #include <functional>
  #include <memory>
  #include <mutex>
@@ -580,7 +601,7 @@ index 13f3a60..21bef38 100644
  
  #include <boost/icl/interval_set.hpp>
  #include <fmt/format.h>
-@@ -33,11 +36,29 @@ namespace Dynarmic::A32 {
+@@ -33,11 +37,29 @@ namespace Dynarmic::A32 {
  
  using namespace Backend::X64;
  
@@ -613,7 +634,7 @@ index 13f3a60..21bef38 100644
          conf.enable_cycle_counting,
      };
  }
-@@ -45,48 +66,423 @@ static RunCodeCallbacks GenRunCodeCallbacks(A32::UserCallbacks* cb, CodePtr (*Lo
+@@ -45,56 +67,520 @@ static RunCodeCallbacks GenRunCodeCallbacks(A32::UserCallbacks* cb, CodePtr (*Lo
  static std::function<void(BlockOfCode&)> GenRCP(const A32::UserConfig& conf) {
      return [conf](BlockOfCode& code) {
          if (conf.page_table) {
@@ -730,24 +751,41 @@ index 13f3a60..21bef38 100644
 +        initialized = true;
 +    }
 +
++    [[nodiscard]] std::uint64_t generation() const {
++        std::unique_lock lock{mutex};
++        generation_changed.wait(lock, [this] { return !clear_pending; });
++        return current_generation;
++    }
++
 +    [[nodiscard]] bool find_block(std::uint64_t location_descriptor,
++                                  std::uint64_t expected_generation,
 +                                  BlockDescriptor& result) const {
 +        std::lock_guard lock{mutex};
-+        if (!initialized) return false;
++        if (!initialized || clear_pending ||
++            expected_generation != current_generation) {
++            return false;
++        }
 +        const auto block = emitter->GetBasicBlock(
 +            IR::LocationDescriptor{location_descriptor});
 +        if (!block) return false;
-+        result = BlockDescriptor{block->entrypoint, block->size};
++        result = BlockDescriptor{
++            block->entrypoint, block->size, current_generation};
 +        return true;
 +    }
 +
-+    [[nodiscard]] BlockDescriptor emit(IR::Block& block) {
++    [[nodiscard]] BlockDescriptor emit(
++            IR::Block& block, std::uint64_t expected_generation) {
 +        std::lock_guard lock{mutex};
++        if (clear_pending || expected_generation != current_generation) {
++            return {};
++        }
 +        if (const auto existing = emitter->GetBasicBlock(block.Location())) {
-+            return BlockDescriptor{existing->entrypoint, existing->size};
++            return BlockDescriptor{
++                existing->entrypoint, existing->size, current_generation};
 +        }
 +        const auto result = emitter->Emit(block);
-+        return BlockDescriptor{result.entrypoint, result.size};
++        return BlockDescriptor{
++            result.entrypoint, result.size, current_generation};
 +    }
 +
 +    [[nodiscard]] std::size_t space_remaining() const {
@@ -760,60 +798,86 @@ index 13f3a60..21bef38 100644
 +        block_of_code->EnsureMemoryCommitted(codesize);
 +    }
 +
-+    void register_fast_dispatch_table(void* storage) {
-+        if (storage == nullptr) return;
++    void register_executor(void* storage, void* jit_state) {
++        if (storage == nullptr || jit_state == nullptr) return;
 +        std::lock_guard lock{mutex};
 +        auto* const table = static_cast<A32EmitX64::FastDispatchEntry*>(
 +            storage);
-+        if (std::find(executor_fast_dispatch_tables.begin(),
-+                      executor_fast_dispatch_tables.end(),
-+                      table) == executor_fast_dispatch_tables.end()) {
-+            executor_fast_dispatch_tables.push_back(table);
++        auto* const state = static_cast<A32JitState*>(jit_state);
++        const auto existing = std::find_if(
++            executors.begin(), executors.end(),
++            [table, state](const Executor& executor) {
++                return executor.table == table || executor.state == state;
++            });
++        if (existing == executors.end()) {
++            executors.push_back(Executor{table, state});
 +        }
 +    }
 +
-+    void unregister_fast_dispatch_table(void* storage) {
-+        if (storage == nullptr) return;
++    void unregister_executor(void* storage, void* jit_state) {
++        if (storage == nullptr || jit_state == nullptr) return;
 +        std::lock_guard lock{mutex};
 +        auto* const table = static_cast<A32EmitX64::FastDispatchEntry*>(
 +            storage);
-+        executor_fast_dispatch_tables.erase(
-+            std::remove(executor_fast_dispatch_tables.begin(),
-+                        executor_fast_dispatch_tables.end(), table),
-+            executor_fast_dispatch_tables.end());
++        auto* const state = static_cast<A32JitState*>(jit_state);
++        const auto existing = std::find_if(
++            executors.begin(), executors.end(),
++            [table, state](const Executor& executor) {
++                return executor.table == table && executor.state == state;
++            });
++        if (existing == executors.end()) return;
++        if (existing->active) {
++            throw std::logic_error{
++                "cannot unregister an active native code slab executor"};
++        }
++        executors.erase(existing);
 +    }
 +
 +    void clear_executor_fast_dispatch_tables() {
-+        for (auto* const table : executor_fast_dispatch_tables) {
-+            std::fill_n(table, A32EmitX64::fast_dispatch_table_size,
++        for (const auto& executor : executors) {
++            std::fill_n(executor.table, A32EmitX64::fast_dispatch_table_size,
 +                        A32EmitX64::FastDispatchEntry{});
 +        }
++    }
++
++    void finish_generation_transition() {
++        if (!clear_pending || active_executions != 0) return;
++        clear_executor_fast_dispatch_tables();
++        emitter->ClearCache();
++        block_of_code->ClearCache();
++        current_generation = pending_generation;
++        clear_pending = false;
++        generation_changed.notify_all();
++    }
++
++    void request_generation_transition() {
++        if (!clear_pending) {
++            clear_pending = true;
++            pending_generation = current_generation + 1;
++        }
++        for (const auto& executor : executors) {
++            if (executor.active) {
++                Atomic::Or(&executor.state->halt_reason,
++                           static_cast<u32>(HaltReason::CacheInvalidation));
++            }
++        }
++        finish_generation_transition();
 +    }
 +
 +    void clear_cache() {
 +        std::lock_guard lock{mutex};
 +        if (!initialized) return;
-+        clear_executor_fast_dispatch_tables();
-+        emitter->ClearCache();
-+        if (active_executions == 0) {
-+            block_of_code->ClearCache();
-+            clear_pending = false;
-+        } else {
-+            clear_pending = true;
-+        }
++        request_generation_transition();
 +    }
 +
-+    void invalidate_cache_range(std::uint32_t start_address,
-+                                std::size_t length) {
++    void invalidate_cache_range(std::uint32_t, std::size_t length) {
 +        if (length == 0) return;
 +        std::lock_guard lock{mutex};
 +        if (!initialized) return;
-+        clear_executor_fast_dispatch_tables();
-+        boost::icl::interval_set<u32> ranges;
-+        ranges.add(boost::icl::discrete_interval<u32>::closed(
-+            start_address,
-+            static_cast<u32>(start_address + length - 1U)));
-+        emitter->InvalidateCacheRanges(ranges);
++        // Until range-local immutable generations exist, switch the complete
++        // slab. This preserves correctness without patching or retiring code
++        // that another execution slot can still observe.
++        request_generation_transition();
 +    }
 +
 +    [[nodiscard]] HaltReason run_code(void* jit_state,
@@ -855,22 +919,49 @@ index 13f3a60..21bef38 100644
 +        return block_of_code->HasHostFeature(HostFeature::SHA);
 +    }
 +
-+    void enter_execution() {
-+        std::lock_guard lock{mutex};
++    [[nodiscard]] std::uint64_t enter_execution(void* jit_state) {
++        std::unique_lock lock{mutex};
++        generation_changed.wait(lock, [this] { return !clear_pending; });
++        auto* const state = static_cast<A32JitState*>(jit_state);
++        const auto executor = std::find_if(
++            executors.begin(), executors.end(),
++            [state](const Executor& candidate) {
++                return candidate.state == state;
++            });
++        if (executor == executors.end() || executor->active) {
++            throw std::logic_error{
++                "native code slab executor registration mismatch"};
++        }
++        executor->active = true;
++        executor->generation = current_generation;
 +        ++active_executions;
++        return current_generation;
 +    }
 +
-+    void leave_execution() {
++    void leave_execution(void* jit_state, std::uint64_t generation) {
 +        std::lock_guard lock{mutex};
-+        if (active_executions == 0) {
++        auto* const state = static_cast<A32JitState*>(jit_state);
++        const auto executor = std::find_if(
++            executors.begin(), executors.end(),
++            [state](const Executor& candidate) {
++                return candidate.state == state;
++            });
++        if (executor == executors.end() || !executor->active ||
++            executor->generation != generation ||
++            generation != current_generation || active_executions == 0) {
 +            throw std::logic_error{"native code slab execution underflow"};
 +        }
++        executor->active = false;
 +        --active_executions;
-+        if (active_executions == 0 && clear_pending) {
-+            block_of_code->ClearCache();
-+            clear_pending = false;
-+        }
++        finish_generation_transition();
 +    }
++
++    struct Executor {
++        A32EmitX64::FastDispatchEntry* table{};
++        A32JitState* state{};
++        std::uint64_t generation{};
++        bool active{};
++    };
 +
 +    mutable std::recursive_mutex mutex;
 +    std::optional<A32::UserConfig> conf;
@@ -878,14 +969,16 @@ index 13f3a60..21bef38 100644
 +        owned_fast_dispatch_table;
 +    std::unique_ptr<BlockOfCode> block_of_code;
 +    std::unique_ptr<A32EmitX64> emitter;
-+    std::vector<A32EmitX64::FastDispatchEntry*>
-+        executor_fast_dispatch_tables;
++    std::vector<Executor> executors;
 +    Optimization::PolyfillOptions polyfill_options{};
 +    std::size_t code_cache_size{};
 +    std::size_t active_executions{};
++    std::uint64_t current_generation{1};
++    std::uint64_t pending_generation{1};
 +    bool initialized{};
 +    bool shared_mode{};
 +    bool clear_pending{};
++    mutable std::condition_variable_any generation_changed;
 +};
 +
 +NativeCodeSlab::NativeCodeSlab() : impl{std::make_unique<Impl>()} {}
@@ -899,13 +992,20 @@ index 13f3a60..21bef38 100644
 +                     lookup_arg, shared_mode);
 +}
 +
-+bool NativeCodeSlab::find_block(
-+    std::uint64_t location_descriptor, BlockDescriptor& result) const {
-+    return impl->find_block(location_descriptor, result);
++std::uint64_t NativeCodeSlab::generation() const {
++    return impl->generation();
 +}
 +
-+NativeCodeSlab::BlockDescriptor NativeCodeSlab::emit(IR::Block& block) {
-+    return impl->emit(block);
++bool NativeCodeSlab::find_block(
++    std::uint64_t location_descriptor, std::uint64_t expected_generation,
++    BlockDescriptor& result) const {
++    return impl->find_block(
++        location_descriptor, expected_generation, result);
++}
++
++NativeCodeSlab::BlockDescriptor NativeCodeSlab::emit(
++        IR::Block& block, std::uint64_t expected_generation) {
++    return impl->emit(block, expected_generation);
 +}
 +
 +std::size_t NativeCodeSlab::space_remaining() const {
@@ -916,12 +1016,12 @@ index 13f3a60..21bef38 100644
 +    impl->ensure_memory_committed(codesize);
 +}
 +
-+void NativeCodeSlab::register_fast_dispatch_table(void* storage) {
-+    impl->register_fast_dispatch_table(storage);
++void NativeCodeSlab::register_executor(void* storage, void* jit_state) {
++    impl->register_executor(storage, jit_state);
 +}
 +
-+void NativeCodeSlab::unregister_fast_dispatch_table(void* storage) {
-+    impl->unregister_fast_dispatch_table(storage);
++void NativeCodeSlab::unregister_executor(void* storage, void* jit_state) {
++    impl->unregister_executor(storage, jit_state);
 +}
 +
 +void NativeCodeSlab::clear_cache() {
@@ -963,12 +1063,13 @@ index 13f3a60..21bef38 100644
 +    return impl->has_host_feature_sha();
 +}
 +
-+void NativeCodeSlab::enter_execution() {
-+    impl->enter_execution();
++std::uint64_t NativeCodeSlab::enter_execution(void* jit_state) {
++    return impl->enter_execution(jit_state);
 +}
 +
-+void NativeCodeSlab::leave_execution() {
-+    impl->leave_execution();
++void NativeCodeSlab::leave_execution(
++        void* jit_state, std::uint64_t generation) {
++    impl->leave_execution(jit_state, generation);
 +}
 +
  struct Jit::Impl {
@@ -1015,15 +1116,15 @@ index 13f3a60..21bef38 100644
 +                std::memory_order_release);
 +        }
 +        BindExecutionContext();
-+        native_code_slab->register_fast_dispatch_table(
-+            fast_dispatch_table_storage.get());
++        native_code_slab->register_executor(
++            fast_dispatch_table_storage.get(), &jit_state);
 +    }
  
 -    ~Impl() = default;
 +    ~Impl() {
 +        if (native_code_slab != nullptr) {
-+            native_code_slab->unregister_fast_dispatch_table(
-+                fast_dispatch_table_storage.get());
++            native_code_slab->unregister_executor(
++                fast_dispatch_table_storage.get(), &jit_state);
 +        }
 +    }
  
@@ -1031,14 +1132,23 @@ index 13f3a60..21bef38 100644
          ASSERT(!jit_interface->is_executing);
          PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
  
-+        native_code_slab->enter_execution();
++        const auto execution_generation =
++            native_code_slab->enter_execution(&jit_state);
++        if (observed_generation != execution_generation) {
++            jit_state.ResetRSB();
++            observed_generation = execution_generation;
++        }
++        active_generation = execution_generation;
          jit_interface->is_executing = true;
          SCOPE_EXIT {
              jit_interface->is_executing = false;
-+            native_code_slab->leave_execution();
++            active_generation = 0;
++            native_code_slab->leave_execution(
++                &jit_state, execution_generation);
          };
  
-         const CodePtr current_codeptr = [this] {
+-        const CodePtr current_codeptr = [this] {
++        const CodePtr current_codeptr = [this, execution_generation] {
              // RSB optimization
              const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & A32JitState::RSBPtrMask;
 -            if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr]) {
@@ -1047,8 +1157,9 @@ index 13f3a60..21bef38 100644
                  jit_state.rsb_ptr = new_rsb_ptr;
                  return reinterpret_cast<CodePtr>(jit_state.rsb_codeptrs[new_rsb_ptr]);
              }
-@@ -94,7 +490,8 @@ struct Jit::Impl {
-             return GetCurrentBlock();
+ 
+-            return GetCurrentBlock();
++            return GetCurrentBlock(execution_generation);
          }();
  
 -        const HaltReason hr = block_of_code.RunCode(&jit_state, current_codeptr);
@@ -1057,27 +1168,41 @@ index 13f3a60..21bef38 100644
  
          PerformRequestedCacheInvalidation(hr);
  
-@@ -105,12 +502,15 @@ struct Jit::Impl {
+@@ -105,12 +591,23 @@ struct Jit::Impl {
          ASSERT(!jit_interface->is_executing);
          PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
  
-+        native_code_slab->enter_execution();
++        const auto execution_generation =
++            native_code_slab->enter_execution(&jit_state);
++        if (observed_generation != execution_generation) {
++            jit_state.ResetRSB();
++            observed_generation = execution_generation;
++        }
++        active_generation = execution_generation;
          jit_interface->is_executing = true;
          SCOPE_EXIT {
              jit_interface->is_executing = false;
-+            native_code_slab->leave_execution();
++            active_generation = 0;
++            native_code_slab->leave_execution(
++                &jit_state, execution_generation);
          };
  
 -        const HaltReason hr = block_of_code.StepCode(&jit_state, GetCurrentSingleStep());
 +        const HaltReason hr = native_code_slab->step_code(
-+            &jit_state, GetCurrentSingleStep());
++            &jit_state, GetCurrentSingleStep(execution_generation));
  
          PerformRequestedCacheInvalidation(hr);
  
-@@ -124,6 +524,40 @@ struct Jit::Impl {
-                 IR::LocationDescriptor{location_descriptor}));
-     }
- 
+@@ -120,8 +617,44 @@ struct Jit::Impl {
+     void Precompile(u64 location_descriptor) {
+         ASSERT(!jit_interface->is_executing);
+         PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
++        const auto generation = native_code_slab->generation();
+         static_cast<void>(GetBasicBlock(
+-                IR::LocationDescriptor{location_descriptor}));
++            IR::LocationDescriptor{location_descriptor}, generation));
++    }
++
 +    void GeneratePortableIR(u64 location_descriptor) {
 +        ASSERT(!jit_interface->is_executing);
 +        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
@@ -1096,7 +1221,9 @@ index 13f3a60..21bef38 100644
 +        ASSERT(!jit_interface->is_executing);
 +        PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
 +        NativeCodeSlab::BlockDescriptor existing;
-+        if (native_code_slab->find_block(block.Location().Value(), existing)) {
++        const auto generation = native_code_slab->generation();
++        if (native_code_slab->find_block(
++                block.Location().Value(), generation, existing)) {
 +            return false;
 +        }
 +
@@ -1108,14 +1235,11 @@ index 13f3a60..21bef38 100644
 +        }
 +        native_code_slab->ensure_memory_committed(
 +            MINIMUM_REMAINING_CODESIZE);
-+        static_cast<void>(native_code_slab->emit(block));
-+        return true;
-+    }
-+
++        return native_code_slab->emit(block, generation).entrypoint != nullptr;
+     }
+ 
      void ClearCache() {
-         std::unique_lock lock{invalidation_mutex};
-         invalidate_entire_cache = true;
-@@ -139,6 +573,7 @@ struct Jit::Impl {
+@@ -139,6 +672,7 @@ struct Jit::Impl {
      void Reset() {
          ASSERT(!jit_interface->is_executing);
          jit_state = {};
@@ -1123,7 +1247,7 @@ index 13f3a60..21bef38 100644
      }
  
      void HaltExecution(HaltReason hr) {
-@@ -186,21 +621,35 @@ struct Jit::Impl {
+@@ -186,52 +720,100 @@ struct Jit::Impl {
      }
  
      void DumpDisassembly() const {
@@ -1164,9 +1288,27 @@ index 13f3a60..21bef38 100644
 +
      static CodePtr GetCurrentBlockThunk(void* this_voidptr) {
          Jit::Impl& this_ = *static_cast<Jit::Impl*>(this_voidptr);
-         return this_.GetCurrentBlock();
-@@ -218,20 +667,45 @@ private:
-         return GetBasicBlock(A32::LocationDescriptor{GetCurrentLocation()}.SetSingleStepping(true)).entrypoint;
+-        return this_.GetCurrentBlock();
++        return this_.GetCurrentBlock(this_.active_generation);
+     }
+ 
+     IR::LocationDescriptor GetCurrentLocation() const {
+         return IR::LocationDescriptor{jit_state.GetUniqueHash()};
+     }
+ 
+-    CodePtr GetCurrentBlock() {
+-        return GetBasicBlock(GetCurrentLocation()).entrypoint;
++    CodePtr GetCurrentBlock(std::uint64_t generation) {
++        return GetBasicBlock(GetCurrentLocation(), generation).entrypoint;
+     }
+ 
+-    CodePtr GetCurrentSingleStep() {
+-        return GetBasicBlock(A32::LocationDescriptor{GetCurrentLocation()}.SetSingleStepping(true)).entrypoint;
++    CodePtr GetCurrentSingleStep(std::uint64_t generation) {
++        return GetBasicBlock(
++            A32::LocationDescriptor{GetCurrentLocation()}
++                .SetSingleStepping(true),
++            generation).entrypoint;
      }
  
 -    A32EmitX64::BlockDescriptor GetBasicBlock(IR::LocationDescriptor descriptor) {
@@ -1174,9 +1316,10 @@ index 13f3a60..21bef38 100644
 -        if (block)
 -            return *block;
 +    NativeCodeSlab::BlockDescriptor GetBasicBlock(
-+        IR::LocationDescriptor descriptor) {
++        IR::LocationDescriptor descriptor, std::uint64_t generation) {
 +        NativeCodeSlab::BlockDescriptor block;
-+        if (native_code_slab->find_block(descriptor.Value(), block)) {
++        if (native_code_slab->find_block(
++                descriptor.Value(), generation, block)) {
 +            return block;
 +        }
  
@@ -1197,13 +1340,18 @@ index 13f3a60..21bef38 100644
 +                    native_code_slab->return_from_run_code(), 0};
 +            }
              PerformRequestedCacheInvalidation(HaltReason::CacheInvalidation);
-         }
--        block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
++            generation = native_code_slab->generation();
++        }
 +        native_code_slab->ensure_memory_committed(
 +            MINIMUM_REMAINING_CODESIZE);
- 
++
 +        IR::Block ir_block = TranslateBlock(descriptor);
-+        auto emitted = native_code_slab->emit(ir_block);
++        auto emitted = native_code_slab->emit(ir_block, generation);
++        if (emitted.entrypoint == nullptr) {
++            return NativeCodeSlab::BlockDescriptor{
++                native_code_slab->return_from_run_code(), 0, generation};
+         }
+-        block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
 +        const auto translation_nanoseconds = static_cast<u64>(
 +                std::chrono::duration_cast<std::chrono::nanoseconds>(
 +                        std::chrono::steady_clock::now() - translation_started)
@@ -1212,12 +1360,12 @@ index 13f3a60..21bef38 100644
 +                descriptor.Value(), translation_nanoseconds, ir_block);
 +        return emitted;
 +    }
-+
+ 
 +    IR::Block TranslateBlock(IR::LocationDescriptor descriptor) {
          IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
          Optimization::PolyfillPass(ir_block, polyfill_options);
          Optimization::NamingPass(ir_block);
-@@ -246,14 +720,7 @@ private:
+@@ -246,14 +828,7 @@ private:
          }
          Optimization::IdentityRemovalPass(ir_block);
          Optimization::VerificationPass(ir_block);
@@ -1233,7 +1381,7 @@ index 13f3a60..21bef38 100644
      }
  
      void PerformRequestedCacheInvalidation(HaltReason hr) {
-@@ -267,11 +734,26 @@ private:
+@@ -267,23 +842,47 @@ private:
              }
  
              jit_state.ResetRSB();
@@ -1263,7 +1411,12 @@ index 13f3a60..21bef38 100644
              }
              invalid_cache_ranges.clear();
              invalidate_entire_cache = false;
-@@ -279,11 +761,13 @@ private:
++            // A transition requested after RunCode exchanged halt_reason can
++            // set the requesting executor's bit again. It is already at the
++            // host boundary, so do not carry that zero-progress halt into the
++            // next scheduler slice.
++            ClearHalt(HaltReason::CacheInvalidation);
+         }
      }
  
      A32JitState jit_state;
@@ -1273,6 +1426,8 @@ index 13f3a60..21bef38 100644
 +    std::unique_ptr<NativeCodeSlab> owned_native_code_slab;
 +    NativeCodeSlab* native_code_slab{};
 +    bool native_code_slab_shared{};
++    std::uint64_t observed_generation{};
++    std::uint64_t active_generation{};
      Optimization::PolyfillOptions polyfill_options;
  
 -    const A32::UserConfig conf;
@@ -1280,7 +1435,7 @@ index 13f3a60..21bef38 100644
  
      Jit* jit_interface;
  
-@@ -310,6 +794,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
+@@ -310,6 +909,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
      impl->Precompile(location_descriptor);
  }
  
@@ -2187,6 +2342,43 @@ index 778536a..45f04bd 100644
 +
  }  // namespace Backend::X64
  }  // namespace Dynarmic
+diff --git a/src/dynarmic/backend/x64/emit_x64.cpp b/src/dynarmic/backend/x64/emit_x64.cpp
+index 902ddef..785ebe3 100644
+--- a/src/dynarmic/backend/x64/emit_x64.cpp
++++ b/src/dynarmic/backend/x64/emit_x64.cpp
+@@ -336,13 +336,19 @@ Xbyak::Label EmitX64::EmitCond(IR::Cond cond) {
+ 
+ EmitX64::BlockDescriptor EmitX64::RegisterBlock(const IR::LocationDescriptor& descriptor, CodePtr entrypoint, size_t size) {
+     PerfMapRegister(entrypoint, code.getCurr(), LocationDescriptorToFriendlyName(descriptor));
+-    Patch(descriptor, entrypoint);
++    if (ShouldPatchExistingBlocks()) {
++        Patch(descriptor, entrypoint);
++    }
+ 
+     BlockDescriptor block_desc{entrypoint, size};
+     block_descriptors.insert({IR::LocationDescriptor{descriptor.Value()}, block_desc});
+     return block_desc;
+ }
+ 
++bool EmitX64::ShouldPatchExistingBlocks() const {
++    return true;
++}
++
+ void EmitX64::EmitTerminal(IR::Terminal terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
+     Common::VisitVariant<void>(terminal, [this, initial_location, is_single_step](auto x) {
+         using T = std::decay_t<decltype(x)>;
+diff --git a/src/dynarmic/backend/x64/emit_x64.h b/src/dynarmic/backend/x64/emit_x64.h
+index 5a46f04..6cf0a22 100644
+--- a/src/dynarmic/backend/x64/emit_x64.h
++++ b/src/dynarmic/backend/x64/emit_x64.h
+@@ -102,6 +102,7 @@ protected:
+ 
+     // Helpers
+     virtual std::string LocationDescriptorToFriendlyName(const IR::LocationDescriptor&) const = 0;
++    virtual bool ShouldPatchExistingBlocks() const;
+     void EmitAddCycles(size_t cycles);
+     Xbyak::Label EmitCond(IR::Cond cond);
+     BlockDescriptor RegisterBlock(const IR::LocationDescriptor& location_descriptor, CodePtr entrypoint, size_t size);
 diff --git a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
 index 1683fe4..d60533e 100644
 --- a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
@@ -2484,7 +2676,7 @@ index 984b67b..abd4d44 100644
          Unlock();
          return false;
 diff --git a/src/dynarmic/interface/A32/a32.h b/src/dynarmic/interface/A32/a32.h
-index 776471a..c74057c 100644
+index 776471a..f5590ef 100644
 --- a/src/dynarmic/interface/A32/a32.h
 +++ b/src/dynarmic/interface/A32/a32.h
 @@ -8,6 +8,7 @@
@@ -2495,7 +2687,7 @@ index 776471a..c74057c 100644
  #include <string>
  #include <vector>
  
-@@ -15,8 +16,62 @@
+@@ -15,8 +16,66 @@
  #include "dynarmic/interface/halt_reason.h"
  
  namespace Dynarmic {
@@ -2512,6 +2704,7 @@ index 776471a..c74057c 100644
 +    struct BlockDescriptor {
 +        const void* entrypoint{};
 +        std::size_t size{};
++        std::uint64_t generation{};
 +    };
 +
 +    NativeCodeSlab();
@@ -2526,13 +2719,16 @@ index 776471a..c74057c 100644
 +    void initialize(UserConfig conf, Jit* jit_interface, void* jit_state,
 +                    const void* (*lookup)(void*), void* lookup_arg,
 +                    bool shared_mode);
++    [[nodiscard]] std::uint64_t generation() const;
 +    [[nodiscard]] bool find_block(std::uint64_t location_descriptor,
++                                  std::uint64_t expected_generation,
 +                                  BlockDescriptor& result) const;
-+    [[nodiscard]] BlockDescriptor emit(IR::Block& block);
++    [[nodiscard]] BlockDescriptor emit(IR::Block& block,
++                                       std::uint64_t expected_generation);
 +    [[nodiscard]] std::size_t space_remaining() const;
 +    void ensure_memory_committed(std::size_t codesize);
-+    void register_fast_dispatch_table(void* storage);
-+    void unregister_fast_dispatch_table(void* storage);
++    void register_executor(void* storage, void* jit_state);
++    void unregister_executor(void* storage, void* jit_state);
 +    void clear_cache();
 +    void invalidate_cache_range(std::uint32_t start_address,
 +                                std::size_t length);
@@ -2545,8 +2741,8 @@ index 776471a..c74057c 100644
 +    void dump_disassembly() const;
 +    [[nodiscard]] std::vector<std::string> disassemble() const;
 +    [[nodiscard]] bool has_host_feature_sha() const;
-+    void enter_execution();
-+    void leave_execution();
++    [[nodiscard]] std::uint64_t enter_execution(void* jit_state);
++    void leave_execution(void* jit_state, std::uint64_t generation);
 +
 +private:
 +    struct Impl;
@@ -2558,7 +2754,7 @@ index 776471a..c74057c 100644
  class Jit final {
  public:
      explicit Jit(UserConfig conf);
-@@ -40,6 +95,21 @@ public:
+@@ -40,6 +99,21 @@ public:
       */
      void Precompile(std::uint64_t location_descriptor);
  

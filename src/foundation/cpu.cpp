@@ -943,6 +943,10 @@ public:
     }
 
     ~JitExecutor() {
+        // Deregister the executor from the shared slab before invalidating
+        // link cells that retired native code could otherwise still read.
+        const bool had_jit = static_cast<bool>(jit_);
+        jit_.reset();
         execution_context_->unlink(runtime_link_cell_);
         execution_context_->unlink(lookup_link_cell_);
         execution_context_->unlink(runtime_config_link_cell_);
@@ -955,7 +959,7 @@ public:
         performance_counters().record_jit_code_cache_usage(
             process_id_, static_cast<std::uint32_t>(execution_slot_),
             recorded_jit_code_cache_bytes_, 0);
-        if (jit_) {
+        if (had_jit) {
             performance_counters().record_jit_destroyed();
         }
     }

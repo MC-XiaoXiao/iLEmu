@@ -59,13 +59,28 @@ set(DYNARMIC_USE_PRECOMPILED_HEADERS OFF CACHE BOOL "" FORCE)
 # makes repeated CMake reconfiguration idempotent.
 set(ILEMU_DYNARMIC_RESOLVER_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-exclusive-resolver.patch")
+set(ILEMU_DYNARMIC_PORTABLE_IR_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-portable-ir.patch")
 execute_process(
-    COMMAND git apply --check "${ILEMU_DYNARMIC_RESOLVER_PATCH}"
+    COMMAND git apply --check "${ILEMU_DYNARMIC_PORTABLE_IR_PATCH}"
     WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
-    RESULT_VARIABLE ILEMU_DYNARMIC_PATCH_CHECK
-    OUTPUT_VARIABLE ILEMU_DYNARMIC_PATCH_OUTPUT
-    ERROR_VARIABLE ILEMU_DYNARMIC_PATCH_ERROR)
-if(ILEMU_DYNARMIC_PATCH_CHECK EQUAL 0)
+    RESULT_VARIABLE ILEMU_DYNARMIC_COMPLETE_PATCH_CHECK
+    OUTPUT_QUIET
+    ERROR_QUIET)
+if(ILEMU_DYNARMIC_COMPLETE_PATCH_CHECK EQUAL 0)
+    # The complete portable-IR patch contains the resolver changes. Leave a
+    # pristine checkout untouched here so the complete patch can be applied
+    # atomically below instead of making both patches partially applicable.
+    message(STATUS
+        "Deferring the Dynarmic resolver to the complete portable-IR patch")
+else()
+    execute_process(
+        COMMAND git apply --check "${ILEMU_DYNARMIC_RESOLVER_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_PATCH_CHECK
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_PATCH_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_PATCH_ERROR)
+    if(ILEMU_DYNARMIC_PATCH_CHECK EQUAL 0)
     execute_process(
         COMMAND git apply "${ILEMU_DYNARMIC_RESOLVER_PATCH}"
         WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
@@ -77,7 +92,7 @@ if(ILEMU_DYNARMIC_PATCH_CHECK EQUAL 0)
             "Failed to apply the Dynarmic reservation resolver patch: "
             "${ILEMU_DYNARMIC_PATCH_APPLY_ERROR}")
     endif()
-else()
+    else()
     execute_process(
         COMMAND git apply --reverse --check "${ILEMU_DYNARMIC_RESOLVER_PATCH}"
         WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
@@ -107,13 +122,12 @@ else()
             "Dynarmic evolved checkout already provides the reservation "
             "resolver API; skipping the older tracked patch")
     endif()
+    endif()
 endif()
 
 # Expose only the narrow Dynarmic boundary needed by the project-owned
 # portable-IR serializer. The dependency checkout remains ignored; this
 # tracked patch keeps clean configurations reproducible and idempotent.
-set(ILEMU_DYNARMIC_PORTABLE_IR_PATCH
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-portable-ir.patch")
 execute_process(
     COMMAND git apply --check "${ILEMU_DYNARMIC_PORTABLE_IR_PATCH}"
     WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
