@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cctype>
 #include <deque>
+#include <limits>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -990,6 +991,11 @@ public:
         }
     }
 
+    [[nodiscard]] std::uint64_t code_cache_used() {
+        const std::lock_guard lock{execution_mutex_};
+        return jit_ ? jit_code_cache_used(*jit_) : 0U;
+    }
+
     void invalidate_cache_range(std::uint32_t address, std::size_t length) {
         if (jit_ && length != 0) {
             artifact_probes_.clear();
@@ -1538,6 +1544,17 @@ public:
             executor->set_code_cache_size(bytes);
     }
 
+    [[nodiscard]] std::uint64_t code_cache_used() {
+        std::uint64_t total{};
+        for (auto& executor : executors_) {
+            const auto used = executor->code_cache_used();
+            total = used > std::numeric_limits<std::uint64_t>::max() - total
+                        ? std::numeric_limits<std::uint64_t>::max()
+                        : total + used;
+        }
+        return total;
+    }
+
     void clear_cache() {
         for (auto& executor : executors_) {
             executor->clear_cache();
@@ -1890,6 +1907,10 @@ void CpuCluster::set_process_id(std::uint32_t process_id) {
 
 void CpuCluster::set_jit_code_cache_size(std::size_t bytes) {
     execution_pool_->set_code_cache_size(bytes);
+}
+
+std::uint64_t CpuCluster::jit_code_cache_bytes() {
+    return execution_pool_ ? execution_pool_->code_cache_used() : 0U;
 }
 
 void CpuCluster::clear_cache() {

@@ -186,6 +186,7 @@ public:
     [[nodiscard]] std::optional<std::size_t> add_cpu();
     void set_process_id(std::uint32_t process_id);
     void set_jit_code_cache_size(std::size_t bytes);
+    [[nodiscard]] std::uint64_t jit_code_cache_bytes();
     void clear_cache();
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
     void set_translation_profile(

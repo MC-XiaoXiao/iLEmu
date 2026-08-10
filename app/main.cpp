@@ -292,14 +292,26 @@ struct PendingExec {
 
 class JitCodeCacheGovernor;
 
+enum class JitCodeCacheClass : std::uint8_t {
+  BootCritical,
+  Foreground,
+  Background,
+};
+
 class JitCodeCacheReservation {
 public:
   JitCodeCacheReservation(JitCodeCacheGovernor &governor,
                           std::size_t per_executor_bytes,
-                          std::size_t reserved_bytes, bool emergency)
+                          std::size_t reserved_bytes,
+                          std::size_t maximum_bytes,
+                          std::size_t processor_count,
+                          JitCodeCacheClass cache_class, bool emergency)
       : governor_{&governor},
         per_executor_bytes_{per_executor_bytes},
         reserved_bytes_{reserved_bytes},
+        maximum_bytes_{maximum_bytes},
+        processor_count_{processor_count},
+        cache_class_{cache_class},
         emergency_{emergency} {}
   ~JitCodeCacheReservation();
 
@@ -312,9 +324,15 @@ public:
   }
 
 private:
+  friend class JitCodeCacheGovernor;
+
   JitCodeCacheGovernor *governor_{};
   std::size_t per_executor_bytes_{};
   std::size_t reserved_bytes_{};
+  std::size_t maximum_bytes_{};
+  std::size_t processor_count_{};
+  JitCodeCacheClass cache_class_{JitCodeCacheClass::Background};
+  std::uint64_t actual_bytes_{};
   bool emergency_{};
 };
 
@@ -334,19 +352,22 @@ public:
   JitCodeCacheGovernor &operator=(const JitCodeCacheGovernor &) = delete;
 
   [[nodiscard]] std::shared_ptr<JitCodeCacheReservation> reserve(
-      std::size_t processor_count) {
+      std::size_t processor_count,
+      JitCodeCacheClass cache_class = JitCodeCacheClass::Background) {
     if (processor_count == 0U) return {};
     std::lock_guard lock{mutex_};
+    const auto class_cap = per_executor_cap_for(cache_class);
     const auto normal_available = normal_reserved_bytes_ < normal_budget_
                                       ? normal_budget_ - normal_reserved_bytes_
                                       : 0U;
-    if (per_executor_cap_ >= minimum_per_executor_bytes &&
+    if (class_cap >= minimum_per_executor_bytes &&
         processor_count <= normal_available / minimum_per_executor_bytes) {
       const auto per_executor =
-          std::min(per_executor_cap_, normal_available / processor_count);
+          std::min(class_cap, normal_available / processor_count);
       const auto reserved = per_executor * processor_count;
       auto reservation = std::make_shared<JitCodeCacheReservation>(
-          *this, per_executor, reserved, false);
+          *this, per_executor, reserved, class_cap * processor_count,
+          processor_count, cache_class, false);
       normal_reserved_bytes_ += reserved;
       return reservation;
     }
@@ -358,23 +379,168 @@ public:
         emergency_reserved_bytes_ < emergency_budget_bytes
             ? emergency_budget_bytes - emergency_reserved_bytes_
             : 0U;
-    if (per_executor_cap_ < minimum_per_executor_bytes ||
+    if (class_cap < minimum_per_executor_bytes ||
         processor_count > emergency_available / minimum_per_executor_bytes) {
       return {};
     }
     const auto per_executor = minimum_per_executor_bytes;
     const auto reserved = per_executor * processor_count;
     auto reservation = std::make_shared<JitCodeCacheReservation>(
-        *this, per_executor, reserved, true);
+        *this, per_executor, reserved, class_cap * processor_count,
+        processor_count, cache_class, true);
     emergency_reserved_bytes_ += reserved;
     return reservation;
   }
 
-  void release(std::size_t reserved_bytes, bool emergency) noexcept {
+  [[nodiscard]] std::size_t per_executor_cap_for(
+      JitCodeCacheClass cache_class) const noexcept {
+    switch (cache_class) {
+    case JitCodeCacheClass::BootCritical:
+      return per_executor_cap_;
+    case JitCodeCacheClass::Foreground:
+      return std::max(minimum_per_executor_bytes,
+                      per_executor_cap_ * 3U / 4U);
+    case JitCodeCacheClass::Background:
+      return std::max(minimum_per_executor_bytes,
+                      per_executor_cap_ / 2U);
+    }
+    return minimum_per_executor_bytes;
+  }
+
+  [[nodiscard]] std::optional<std::size_t> reclassify(
+      JitCodeCacheReservation &reservation,
+      JitCodeCacheClass cache_class) noexcept {
+    std::lock_guard lock{mutex_};
+    const auto class_cap = per_executor_cap_for(cache_class);
+    const auto requested_maximum = class_cap * reservation.processor_count_;
+    if (reservation.emergency_) {
+      reservation.cache_class_ = cache_class;
+      reservation.maximum_bytes_ = requested_maximum;
+      return reservation.per_executor_bytes_;
+    }
+
+    const auto current_maximum = reservation.per_executor_bytes_ *
+                                 reservation.processor_count_;
+    const auto actual_floor = reservation.actual_bytes_ >
+                                      std::numeric_limits<std::size_t>::max()
+                                  ? std::numeric_limits<std::size_t>::max()
+                                  : static_cast<std::size_t>(
+                                        reservation.actual_bytes_);
+    const auto effective_maximum = std::max(requested_maximum, actual_floor);
+    if (effective_maximum < current_maximum) {
+      const auto release_bytes = current_maximum - effective_maximum;
+      const auto released =
+          std::min(release_bytes, reservation.reserved_bytes_);
+      reservation.reserved_bytes_ -= released;
+      normal_reserved_bytes_ = released > normal_reserved_bytes_
+                                   ? 0U
+                                   : normal_reserved_bytes_ - released;
+      reservation.per_executor_bytes_ =
+          std::max(minimum_per_executor_bytes,
+                   (effective_maximum + reservation.processor_count_ - 1U) /
+                       reservation.processor_count_);
+    } else if (effective_maximum > current_maximum) {
+      const auto growth = effective_maximum - current_maximum;
+      const auto available = normal_reserved_bytes_ < normal_budget_
+                                 ? normal_budget_ - normal_reserved_bytes_
+                                 : 0U;
+      if (growth <= available) {
+        reservation.reserved_bytes_ += growth;
+        normal_reserved_bytes_ += growth;
+        reservation.per_executor_bytes_ =
+            std::max(class_cap,
+                     (effective_maximum + reservation.processor_count_ - 1U) /
+                         reservation.processor_count_);
+      }
+    }
+    reservation.cache_class_ = cache_class;
+    reservation.maximum_bytes_ =
+        reservation.per_executor_bytes_ * reservation.processor_count_;
+    return reservation.per_executor_bytes_;
+  }
+
+  // A reservation is a bounded growth allowance, not a claim that every byte
+  // has already been emitted. Reconcile it with Dynarmic's measured
+  // CodeCacheUsed and current host pressure while the guest is idle.
+  [[nodiscard]] bool refresh_actual(
+      JitCodeCacheReservation &reservation, std::uint64_t actual_bytes,
+      const HostMemoryBudgetSnapshot &memory) noexcept {
+    std::lock_guard lock{mutex_};
+    const auto previous_actual = reservation.actual_bytes_;
+    reservation.actual_bytes_ = actual_bytes;
+    const auto minimum =
+        minimum_per_executor_bytes * reservation.processor_count_;
+    auto growth = std::max(minimum, reservation.maximum_bytes_ / 4U);
+    auto effective_limit = memory.physical_bytes;
+    if (memory.cgroup_limit_bytes != 0U) {
+      effective_limit = effective_limit == 0U
+                            ? memory.cgroup_limit_bytes
+                            : std::min(effective_limit,
+                                       memory.cgroup_limit_bytes);
+    }
+    auto pressure_headroom = memory.available_bytes;
+    if (effective_limit != 0U && memory.rss_bytes < effective_limit) {
+      pressure_headroom =
+          pressure_headroom == 0U
+              ? effective_limit - memory.rss_bytes
+              : std::min(pressure_headroom,
+                         effective_limit - memory.rss_bytes);
+    }
+    if (pressure_headroom != 0U && pressure_headroom < growth * 2U) {
+      growth = std::max(minimum, pressure_headroom / 4U);
+    }
+    auto target = actual_bytes > std::numeric_limits<std::size_t>::max() - growth
+                     ? std::numeric_limits<std::size_t>::max()
+                     : static_cast<std::size_t>(actual_bytes) + growth;
+    target = std::max(target, minimum);
+    target = std::min(target, reservation.maximum_bytes_);
+    if (actual_bytes > target) {
+      target = actual_bytes > std::numeric_limits<std::size_t>::max()
+                   ? std::numeric_limits<std::size_t>::max()
+                   : static_cast<std::size_t>(actual_bytes);
+    }
+
+    if (target < reservation.reserved_bytes_) {
+      const auto release_bytes = reservation.reserved_bytes_ - target;
+      reservation.reserved_bytes_ = target;
+      auto &pool = reservation.emergency_ ? emergency_reserved_bytes_
+                                          : normal_reserved_bytes_;
+      pool = release_bytes > pool ? 0U : pool - release_bytes;
+    } else if (target > reservation.reserved_bytes_) {
+      const auto growth_bytes = target - reservation.reserved_bytes_;
+      auto &pool = reservation.emergency_ ? emergency_reserved_bytes_
+                                          : normal_reserved_bytes_;
+      const auto limit = reservation.emergency_ ? emergency_budget_bytes
+                                                : normal_budget_;
+      const auto available = pool < limit ? limit - pool : 0U;
+      const auto granted = std::min(growth_bytes, available);
+      reservation.reserved_bytes_ += granted;
+      pool += granted;
+    }
+    if (actual_bytes > previous_actual) {
+      const auto delta = actual_bytes - previous_actual;
+      actual_bytes_total_ =
+          delta > std::numeric_limits<std::size_t>::max() - actual_bytes_total_
+              ? std::numeric_limits<std::size_t>::max()
+              : actual_bytes_total_ + static_cast<std::size_t>(delta);
+    } else {
+      const auto delta = previous_actual - actual_bytes;
+      actual_bytes_total_ =
+          delta > actual_bytes_total_ ? 0U : actual_bytes_total_ - delta;
+    }
+    return previous_actual != actual_bytes;
+  }
+
+  void release(std::size_t reserved_bytes, bool emergency,
+               std::uint64_t actual_bytes) noexcept {
     std::lock_guard lock{mutex_};
     auto &reserved = emergency ? emergency_reserved_bytes_
                                : normal_reserved_bytes_;
     reserved = reserved_bytes > reserved ? 0U : reserved - reserved_bytes;
+    actual_bytes_total_ = actual_bytes > actual_bytes_total_
+                              ? 0U
+                              : actual_bytes_total_ -
+                                    static_cast<std::size_t>(actual_bytes);
   }
 
   [[nodiscard]] std::size_t total_budget() const noexcept {
@@ -384,6 +550,16 @@ public:
   [[nodiscard]] std::size_t total_reserved() const noexcept {
     std::lock_guard lock{mutex_};
     return normal_reserved_bytes_ + emergency_reserved_bytes_;
+  }
+
+  [[nodiscard]] std::size_t total_actual() const noexcept {
+    std::lock_guard lock{mutex_};
+    return actual_bytes_total_;
+  }
+
+  [[nodiscard]] std::size_t per_executor_cap(
+      JitCodeCacheClass cache_class) const noexcept {
+    return per_executor_cap_for(cache_class);
   }
 
   [[nodiscard]] std::size_t emergency_budget() const noexcept {
@@ -404,16 +580,20 @@ private:
   mutable std::mutex mutex_;
   std::size_t normal_reserved_bytes_{};
   std::size_t emergency_reserved_bytes_{};
+  std::size_t actual_bytes_total_{};
 };
 
 JitCodeCacheReservation::~JitCodeCacheReservation() {
-  if (governor_ != nullptr) governor_->release(reserved_bytes_, emergency_);
+  if (governor_ != nullptr) {
+    governor_->release(reserved_bytes_, emergency_, actual_bytes_);
+  }
 }
 
 struct Runtime {
   // Keep the reservation before the native runtime fields so its destructor
   // releases the budget only after Dynarmic's code cache has been destroyed.
   std::shared_ptr<JitCodeCacheReservation> jit_cache_reservation;
+  JitCodeCacheClass jit_cache_class{JitCodeCacheClass::Background};
   std::unique_ptr<AddressSpace> memory;
   std::unique_ptr<CpuCluster> cpus;
   std::unique_ptr<CompatibilityKernel> kernel;
@@ -1738,6 +1918,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
       "[jit] emergency-code-cache-budget-mib=" +
       std::to_string(jit_code_cache_governor.emergency_budget() /
                      1024U / 1024U));
+  output.line(
+      "[jit] class-cache-mib=boot-critical:" +
+      std::to_string(jit_code_cache_governor.per_executor_cap(
+                         JitCodeCacheClass::BootCritical) /
+                     1024U / 1024U) +
+      " foreground:" +
+      std::to_string(jit_code_cache_governor.per_executor_cap(
+                         JitCodeCacheClass::Foreground) /
+                     1024U / 1024U) +
+      " background:" +
+      std::to_string(jit_code_cache_governor.per_executor_cap(
+                         JitCodeCacheClass::Background) /
+                     1024U / 1024U));
   RuntimeReaper runtime_reaper;
   std::vector<std::unique_ptr<Runtime>> runtimes;
   RuntimeIndex runtime_index;
@@ -1826,8 +2019,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const auto assign_jit_process_profile =
       [&translation_profiles, &catalog_index, &boot_image_identities,
        &pending_catalog_compiles, &output,
-       springboard_boot_path](Runtime &runtime, const LoadedProcess &loaded,
-                              JitPrecompilePhase phase) {
+       &jit_code_cache_governor, springboard_boot_path](
+          Runtime &runtime, const LoadedProcess &loaded,
+          JitPrecompilePhase phase) {
         runtime.precompile_phase = phase;
         const auto retention =
             boot_image_identities.contains(
@@ -1835,6 +2029,24 @@ void boot(const std::vector<std::string> &args, Output &output) {
                     loaded.executable_path == springboard_boot_path
                 ? JitArtifactRetention::BootWorkingSet
                 : JitArtifactRetention::Normal;
+        const auto cache_class =
+            retention == JitArtifactRetention::BootWorkingSet
+                ? JitCodeCacheClass::BootCritical
+                : phase == JitPrecompilePhase::ForegroundApplication
+                    ? JitCodeCacheClass::Foreground
+                    : JitCodeCacheClass::Background;
+        runtime.jit_cache_class = cache_class;
+        if (runtime.jit_cache_reservation) {
+          const auto per_executor = jit_code_cache_governor.reclassify(
+              *runtime.jit_cache_reservation, cache_class);
+          // A freshly-created spawn has not instantiated Dynarmic yet, so
+          // its role-specific quota can still resize the configured cache.
+          // An ordinary exec may already own a live emitter; its reservation
+          // is still reclassified, while Dynarmic keeps its immutable size.
+          if (per_executor && runtime.fresh_spawn_address_space) {
+            runtime.cpus->set_jit_code_cache_size(*per_executor);
+          }
+        }
         if (retention == JitArtifactRetention::BootWorkingSet) {
           boot_image_identities.insert(
               loaded.executable.content_identity());
@@ -1888,7 +2100,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
   auto initial = std::make_unique<Runtime>();
   initial->memory = std::move(initial_memory);
   initial->jit_cache_reservation =
-      jit_code_cache_governor.reserve(guest_processor_count);
+      jit_code_cache_governor.reserve(
+          guest_processor_count, JitCodeCacheClass::BootCritical);
+  initial->jit_cache_class = JitCodeCacheClass::BootCritical;
   if (!initial->jit_cache_reservation) {
     throw std::runtime_error{"failed to reserve initial JIT code cache"};
   }
@@ -2279,11 +2493,17 @@ void boot(const std::vector<std::string> &args, Output &output) {
         -> std::optional<std::uint32_t> {
           const auto child_pid = next_pid++;
           auto child = std::make_unique<Runtime>();
+          const auto child_cache_class =
+              inheritance == CompatibilityKernel::ProcessInheritance::Fork
+                  ? runtime_ptr->jit_cache_class
+                  : JitCodeCacheClass::Foreground;
           child->jit_cache_reservation =
-              jit_code_cache_governor.reserve(guest_processor_count);
+              jit_code_cache_governor.reserve(guest_processor_count,
+                                               child_cache_class);
           if (!child->jit_cache_reservation) {
             return std::nullopt;
           }
+          child->jit_cache_class = child_cache_class;
           if (inheritance ==
               CompatibilityKernel::ProcessInheritance::SpawnExec) {
             PerformanceLatencyScope latency{
@@ -2683,6 +2903,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   auto observed_display_submissions =
       initial_runtime->kernel->display_submitted_frames();
   auto last_display_submission = std::chrono::steady_clock::now();
+  auto last_jit_quota_refresh = last_display_submission;
   std::optional<std::chrono::steady_clock::time_point> guest_idle_since;
   DeadlineQueue<std::uint32_t, std::uint64_t> guest_deadlines;
   if (!bounded_execution) {
@@ -3438,6 +3659,21 @@ void boot(const std::vector<std::string> &args, Output &output) {
       guest_idle_since = std::chrono::steady_clock::now();
     }
     if (!ran_thread) {
+      constexpr auto jit_quota_refresh_period = std::chrono::milliseconds{250};
+      const auto quota_now = std::chrono::steady_clock::now();
+      if (quota_now - last_jit_quota_refresh >= jit_quota_refresh_period) {
+        last_jit_quota_refresh = quota_now;
+        const auto memory = host_memory_budget_snapshot();
+        for (auto &runtime : runtimes) {
+          if (!runtime->jit_cache_reservation ||
+              !runtime->cpus->has_execution_resources()) {
+            continue;
+          }
+          const auto actual = runtime->cpus->jit_code_cache_bytes();
+          static_cast<void>(jit_code_cache_governor.refresh_actual(
+              *runtime->jit_cache_reservation, actual, memory));
+        }
+      }
       if (gdb_server && gdb_server->poll_interrupt()) {
         const auto stopped_thread =
             debug_target.current_thread().value_or(GdbThreadId{1, 1});
