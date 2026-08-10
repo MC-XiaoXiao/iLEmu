@@ -573,6 +573,140 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_tree(
   return scan_tree(root, architecture, &previous);
 }
 
+ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
+    const std::filesystem::path &root,
+    const std::vector<std::filesystem::path> &paths,
+    ArmArchitectureVersion architecture) {
+  std::error_code root_error;
+  const auto normalized_root = normalize_path(root);
+  if (!std::filesystem::is_directory(normalized_root, root_error) ||
+      root_error) {
+    throw std::runtime_error{"catalog root is not a directory: " +
+                             normalized_root.string()};
+  }
+
+  const auto is_in_scope = [&normalized_root](
+                               const std::filesystem::path &path) {
+    if (path == normalized_root) return true;
+    const auto relative = path.lexically_relative(normalized_root);
+    return !relative.empty() && relative != "." &&
+           relative.begin() != relative.end() &&
+           *relative.begin() != "..";
+  };
+  const auto is_in_subtree = [](const std::filesystem::path &path,
+                                const std::filesystem::path &subtree) {
+    if (path == subtree) return true;
+    const auto relative = path.lexically_relative(subtree);
+    return !relative.empty() && relative != "." &&
+           relative.begin() != relative.end() &&
+           *relative.begin() != "..";
+  };
+
+  std::set<std::filesystem::path> requested_files;
+  std::set<std::filesystem::path> requested_subtrees;
+  for (const auto &path : paths) {
+    const auto normalized = normalize_path(path);
+    if (!is_in_scope(normalized)) continue;
+    std::error_code status_error;
+    const auto status = std::filesystem::symlink_status(normalized, status_error);
+    if (!status_error && std::filesystem::is_directory(status)) {
+      requested_subtrees.insert(normalized);
+    } else {
+      requested_files.insert(normalized);
+    }
+  }
+
+  ExecutableCatalogScanSummary summary;
+  std::set<std::filesystem::path> files = requested_files;
+  for (const auto &subtree : requested_subtrees) {
+    std::error_code iterator_error;
+    std::filesystem::recursive_directory_iterator iterator{
+        subtree, std::filesystem::directory_options::skip_permission_denied,
+        iterator_error};
+    const std::filesystem::recursive_directory_iterator end;
+    while (iterator != end) {
+      if (iterator_error) {
+        ++summary.failed_files;
+        iterator_error.clear();
+        iterator.increment(iterator_error);
+        continue;
+      }
+      std::error_code status_error;
+      const auto status = iterator->symlink_status(status_error);
+      if (!status_error && std::filesystem::is_regular_file(status)) {
+        files.insert(normalize_path(iterator->path()));
+      } else if (status_error) {
+        ++summary.failed_files;
+      }
+      iterator.increment(iterator_error);
+    }
+    if (iterator_error) ++summary.failed_files;
+  }
+
+  std::set<std::filesystem::path> old_paths;
+  for (const auto &entry : entries_) {
+    for (const auto &alias : entry.aliases) {
+      if (requested_files.contains(alias) ||
+          std::any_of(requested_subtrees.begin(), requested_subtrees.end(),
+                      [&alias, &is_in_subtree](const auto &subtree) {
+                        return is_in_subtree(alias, subtree);
+                      })) {
+        old_paths.insert(alias);
+      }
+    }
+  }
+  for (const auto &old_path : old_paths) {
+    if (!files.contains(old_path)) remove_path(old_path);
+  }
+
+  for (const auto &path : files) {
+    std::error_code status_error;
+    const auto status = std::filesystem::symlink_status(path, status_error);
+    if (status_error || !std::filesystem::is_regular_file(status)) {
+      remove_path(path);
+      if (status_error) ++summary.failed_files;
+      continue;
+    }
+    ++summary.regular_files;
+    const auto generation = read_file_generation(path);
+    if (!generation) {
+      remove_path(path);
+      ++summary.failed_files;
+      continue;
+    }
+    const auto *old_entry = find_path(path);
+    bool unchanged = false;
+    if (old_entry != nullptr) {
+      unchanged = std::any_of(
+          old_entry->file_generations.begin(),
+          old_entry->file_generations.end(),
+          [&path, &generation](const ExecutableCatalogPathGeneration &record) {
+            return record.path == path && record.generation == *generation;
+          });
+    }
+    if (unchanged) continue;
+
+    remove_path(path);
+    const auto prefix = read_file_prefix(path);
+    if (!prefix) {
+      ++summary.failed_files;
+    } else if (has_dyld_cache_magic(*prefix)) {
+      // Shared-cache generations remain outside this incremental path. The
+      // ordinary firmware catalog command is still the explicit full rebuild
+      // for those inputs; do not synchronously rescan the whole root here.
+    } else if (has_macho_magic(*prefix)) {
+      try {
+        static_cast<void>(register_path(path, architecture));
+        ++summary.mach_o_images;
+      } catch (const std::exception &) {
+        ++summary.failed_files;
+      }
+    }
+  }
+  reliable_entry_points_current_ = true;
+  return summary;
+}
+
 ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
     const std::filesystem::path &root, ArmArchitectureVersion architecture,
     const ExecutableCatalog *previous) {

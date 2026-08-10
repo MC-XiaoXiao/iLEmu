@@ -1777,11 +1777,20 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const auto catalog_root =
       std::filesystem::weakly_canonical(*rootfs, catalog_root_error);
   bool catalog_refresh_pending = false;
+  std::vector<std::filesystem::path> catalog_refresh_paths;
   std::uint64_t catalog_refresh_events{};
   std::uint64_t catalog_refresh_count{};
   const auto refresh_catalog_after_file_mutations =
       [&](bool refresh_when_idle) {
         constexpr std::size_t maximum_mutations_per_poll = 128;
+        const auto queue_catalog_path =
+            [&](const std::filesystem::path &path) {
+              if (std::find(catalog_refresh_paths.begin(),
+                            catalog_refresh_paths.end(), path) ==
+                  catalog_refresh_paths.end()) {
+                catalog_refresh_paths.push_back(path);
+              }
+            };
         const auto mutations = initial_runtime->kernel->take_guest_file_mutations(
             maximum_mutations_per_poll);
         bool structural_boundary = false;
@@ -1804,7 +1813,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
           case GuestFileMutationKind::InstallReplace:
           case GuestFileMutationKind::Rename:
           case GuestFileMutationKind::Unlink:
-            if (known_executable || application_path) {
+            if (known_executable || application_path || catalog_index == nullptr) {
+              queue_catalog_path(mutation.path);
               catalog_refresh_pending = true;
               structural_boundary = true;
             }
@@ -1812,13 +1822,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
           case GuestFileMutationKind::Truncate:
           case GuestFileMutationKind::Write:
           case GuestFileMutationKind::SharedWriteback:
-            catalog_refresh_pending |= known_executable || application_path;
+            if (known_executable || application_path) {
+              queue_catalog_path(mutation.path);
+              catalog_refresh_pending = true;
+            }
             break;
           case GuestFileMutationKind::Observation:
             break;
           }
         }
-        if (!catalog_refresh_pending ||
+        if (!catalog_refresh_pending || catalog_refresh_paths.empty() ||
             (!refresh_when_idle && !structural_boundary)) {
           return;
         }
@@ -1830,10 +1843,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
           }
         }
         try {
-          const auto summary =
-              catalog_index == nullptr
-                  ? executable_catalog.register_tree(*rootfs, guest_architecture)
-                  : executable_catalog.refresh_tree(*rootfs, guest_architecture);
+          const auto summary = executable_catalog.refresh_paths(
+              *rootfs, catalog_refresh_paths, guest_architecture);
           catalog_loaded = true;
           catalog_index = &executable_catalog;
           for (const auto &identity : executable_catalog.content_identities()) {
@@ -1857,10 +1868,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
               std::to_string(summary.regular_files) +
               " macho-images=" + std::to_string(summary.mach_o_images) +
               " failed-files=" + std::to_string(summary.failed_files) +
+              " paths=" + std::to_string(catalog_refresh_paths.size()) +
               " new-offline-queue=" +
               std::to_string(pending_catalog_compiles.size()));
           ++catalog_refresh_count;
           catalog_refresh_pending = false;
+          catalog_refresh_paths.clear();
         } catch (const std::exception &error) {
           output.line("[catalog] mutation-refresh failed error=" +
                       std::string{error.what()});

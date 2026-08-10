@@ -104,6 +104,13 @@ public:
   [[nodiscard]] ExecutableCatalogScanSummary refresh_tree(
       const std::filesystem::path &root,
       ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
+  // Refreshes only the supplied files and subtrees. Missing paths are removed
+  // from the index; unchanged paths are retained without rereading their
+  // contents. This is the bounded path for host/VFS dirty notifications.
+  [[nodiscard]] ExecutableCatalogScanSummary refresh_paths(
+      const std::filesystem::path &root,
+      const std::vector<std::filesystem::path> &paths,
+      ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
 
   // The manifest is versioned and written through a temporary file followed
   // by rename. Malformed input is rejected without changing the live index so
