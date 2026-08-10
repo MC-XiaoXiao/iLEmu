@@ -905,6 +905,10 @@ public:
         execution_context_->link(runtime_config_link_cell_, 0);
         runtime_config_link_cell_address_ =
             execution_context_->link_cell_address(runtime_config_link_cell_);
+        fast_dispatch_table_link_cell_ = execution_context_->create_link_cell();
+        execution_context_->link(fast_dispatch_table_link_cell_, 0);
+        fast_dispatch_table_link_cell_address_ =
+            execution_context_->link_cell_address(fast_dispatch_table_link_cell_);
         page_table_link_cell_ = execution_context_->create_link_cell();
         execution_context_->link(page_table_link_cell_, 0);
         page_table_link_cell_address_ =
@@ -919,6 +923,7 @@ public:
         execution_context_->unlink(runtime_link_cell_);
         execution_context_->unlink(lookup_link_cell_);
         execution_context_->unlink(runtime_config_link_cell_);
+        execution_context_->unlink(fast_dispatch_table_link_cell_);
         execution_context_->unlink(page_table_link_cell_);
         execution_context_->unlink(read_page_table_link_cell_);
         performance_counters().record_jit_code_cache_usage(
@@ -1248,6 +1253,7 @@ private:
         config.callbacks_link = runtime_link_cell_address_;
         config.lookup_link = lookup_link_cell_address_;
         config.runtime_config_link = runtime_config_link_cell_address_;
+        config.fast_dispatch_table_link = fast_dispatch_table_link_cell_address_;
         config.page_table_link = page_table_link_cell_address_;
         config.read_page_table_link = read_page_table_link_cell_address_;
         config.coprocessor_user_arg_link = runtime_link_cell_address_;
@@ -1426,6 +1432,8 @@ private:
     std::atomic<std::uint64_t> *lookup_link_cell_address_{};
     std::size_t runtime_config_link_cell_{};
     std::atomic<std::uint64_t> *runtime_config_link_cell_address_{};
+    std::size_t fast_dispatch_table_link_cell_{};
+    std::atomic<std::uint64_t> *fast_dispatch_table_link_cell_address_{};
     std::size_t page_table_link_cell_{};
     std::atomic<std::uint64_t> *page_table_link_cell_address_{};
     std::size_t read_page_table_link_cell_{};

@@ -1,8 +1,48 @@
 diff --git a/src/dynarmic/backend/x64/a32_emit_x64.cpp b/src/dynarmic/backend/x64/a32_emit_x64.cpp
-index aa07357..7adf047 100644
+index aa07357..7b5b61c 100644
 --- a/src/dynarmic/backend/x64/a32_emit_x64.cpp
 +++ b/src/dynarmic/backend/x64/a32_emit_x64.cpp
-@@ -693,7 +693,9 @@ void A32EmitX64::EmitA32InstructionSynchronizationBarrier(A32EmitContext& ctx, I
+@@ -82,6 +82,11 @@ FP::FPCR A32EmitContext::FPCR(bool fpcr_controlled) const {
+ 
+ A32EmitX64::A32EmitX64(BlockOfCode& code, A32::UserConfig conf, A32::Jit* jit_interface)
+         : EmitX64(code), conf(std::move(conf)), jit_interface(jit_interface) {
++    if (this->conf.fast_dispatch_table_link) {
++        this->conf.fast_dispatch_table_link->store(
++                reinterpret_cast<u64>(fast_dispatch_table.data()),
++                std::memory_order_release);
++    }
+     GenFastmemFallbacks();
+     GenTerminalHandlers();
+     code.PreludeComplete();
+@@ -253,7 +258,15 @@ void A32EmitX64::GenTerminalHandlers() {
+         terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
+         calculate_location_descriptor();
+         code.L(rsb_cache_miss);
+-        code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table.data()));
++        if (conf.fast_dispatch_table_link) {
++            code.mov(
++                    r12,
++                    qword[r15 +
++                          offsetof(A32JitState, fast_dispatch_table_link)]);
++            code.mov(r12, qword[r12]);
++        } else {
++            code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table.data()));
++        }
+         code.mov(rbp, rbx);
+         if (code.HasHostFeature(HostFeature::SSE42)) {
+             code.crc32(rbp, r12);
+@@ -271,8 +284,8 @@ void A32EmitX64::GenTerminalHandlers() {
+         PerfMapRegister(terminal_handler_fast_dispatch_hint, code.getCurr(), "a32_terminal_handler_fast_dispatch_hint");
+ 
+         code.align();
+-        fast_dispatch_table_lookup = code.getCurr<FastDispatchEntry& (*)(u64)>();
+-        code.mov(code.ABI_PARAM2, reinterpret_cast<u64>(fast_dispatch_table.data()));
++        fast_dispatch_table_lookup =
++                code.getCurr<FastDispatchEntry& (*)(u64, FastDispatchEntry*)>();
+         if (code.HasHostFeature(HostFeature::SSE42)) {
+             code.crc32(code.ABI_PARAM1, code.ABI_PARAM2);
+         }
+@@ -693,7 +706,9 @@ void A32EmitX64::EmitA32InstructionSynchronizationBarrier(A32EmitContext& ctx, I
      }
  
      ctx.reg_alloc.HostCall(nullptr);
@@ -13,7 +53,7 @@ index aa07357..7adf047 100644
  }
  
  void A32EmitX64::EmitA32BXWritePC(A32EmitContext& ctx, IR::Inst* inst) {
-@@ -750,16 +752,22 @@ void A32EmitX64::EmitA32CallSupervisor(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -750,16 +765,22 @@ void A32EmitX64::EmitA32CallSupervisor(A32EmitContext& ctx, IR::Inst* inst) {
          ctx.reg_alloc.HostCall(nullptr);
          code.mov(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)]);
          code.sub(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)]);
@@ -39,7 +79,7 @@ index aa07357..7adf047 100644
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], code.ABI_RETURN);
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], code.ABI_RETURN);
          code.SwitchMxcsrOnEntry();
-@@ -773,7 +781,9 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -773,7 +794,9 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
      if (conf.enable_cycle_counting) {
          code.mov(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)]);
          code.sub(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)]);
@@ -50,7 +90,7 @@ index aa07357..7adf047 100644
      }
      ctx.reg_alloc.EndOfAllocScope();
  
-@@ -781,13 +791,17 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -781,13 +804,17 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
      ASSERT(args[0].IsImmediate() && args[1].IsImmediate());
      const u32 pc = args[0].GetImmediateU32();
      const u64 exception = args[1].GetImmediateU64();
@@ -70,7 +110,7 @@ index aa07357..7adf047 100644
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], code.ABI_RETURN);
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], code.ABI_RETURN);
          code.SwitchMxcsrOnEntry();
-@@ -852,11 +866,25 @@ static void EmitCoprocessorException() {
+@@ -852,11 +879,25 @@ static void EmitCoprocessorException() {
      ASSERT_FALSE("Should raise coproc exception here");
  }
  
@@ -98,7 +138,7 @@ index aa07357..7adf047 100644
      }
  
      code.CallFunction(callback.function);
-@@ -884,7 +912,7 @@ void A32EmitX64::EmitA32CoprocInternalOperation(A32EmitContext& ctx, IR::Inst* i
+@@ -884,7 +925,7 @@ void A32EmitX64::EmitA32CoprocInternalOperation(A32EmitContext& ctx, IR::Inst* i
          return;
      }
  
@@ -107,7 +147,7 @@ index aa07357..7adf047 100644
  }
  
  void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
-@@ -911,7 +939,7 @@ void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -911,7 +952,7 @@ void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
      }
  
      if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
@@ -116,7 +156,7 @@ index aa07357..7adf047 100644
          return;
      }
  
-@@ -951,7 +979,8 @@ void A32EmitX64::EmitA32CoprocSendTwoWords(A32EmitContext& ctx, IR::Inst* inst)
+@@ -951,7 +992,8 @@ void A32EmitX64::EmitA32CoprocSendTwoWords(A32EmitContext& ctx, IR::Inst* inst)
      }
  
      if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
@@ -126,7 +166,7 @@ index aa07357..7adf047 100644
          return;
      }
  
-@@ -995,7 +1024,7 @@ void A32EmitX64::EmitA32CoprocGetOneWord(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -995,7 +1037,7 @@ void A32EmitX64::EmitA32CoprocGetOneWord(A32EmitContext& ctx, IR::Inst* inst) {
      }
  
      if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
@@ -135,7 +175,7 @@ index aa07357..7adf047 100644
          return;
      }
  
-@@ -1035,7 +1064,7 @@ void A32EmitX64::EmitA32CoprocGetTwoWords(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -1035,7 +1077,7 @@ void A32EmitX64::EmitA32CoprocGetTwoWords(A32EmitContext& ctx, IR::Inst* inst) {
      }
  
      if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
@@ -144,7 +184,7 @@ index aa07357..7adf047 100644
          return;
      }
  
-@@ -1086,7 +1115,7 @@ void A32EmitX64::EmitA32CoprocLoadWords(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -1086,7 +1128,7 @@ void A32EmitX64::EmitA32CoprocLoadWords(A32EmitContext& ctx, IR::Inst* inst) {
          return;
      }
  
@@ -153,7 +193,7 @@ index aa07357..7adf047 100644
  }
  
  void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
-@@ -1116,7 +1145,7 @@ void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -1116,7 +1158,7 @@ void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
          return;
      }
  
@@ -162,7 +202,7 @@ index aa07357..7adf047 100644
  }
  
  std::string A32EmitX64::LocationDescriptorToFriendlyName(const IR::LocationDescriptor& ir_descriptor) const {
-@@ -1137,7 +1166,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDesc
+@@ -1137,7 +1179,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDesc
      code.mov(code.ABI_PARAM3.cvt32(), 1);
      code.mov(MJitStateReg(A32::Reg::PC), code.ABI_PARAM2.cvt32());
      code.SwitchMxcsrOnExit();
@@ -173,6 +213,28 @@ index aa07357..7adf047 100644
      code.ReturnFromRunCode(true);  // TODO: Check cycles
  }
  
+@@ -1298,7 +1342,7 @@ void A32EmitX64::Unpatch(const IR::LocationDescriptor& location) {
+     EmitX64::Unpatch(location);
+     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+         code.DisableWriting();
+-        (*fast_dispatch_table_lookup)(location.Value()) = {};
++        (*fast_dispatch_table_lookup)(location.Value(), fast_dispatch_table.data()) = {};
+         code.EnableWriting();
+     }
+ }
+diff --git a/src/dynarmic/backend/x64/a32_emit_x64.h b/src/dynarmic/backend/x64/a32_emit_x64.h
+index 335dd30..33e76f1 100644
+--- a/src/dynarmic/backend/x64/a32_emit_x64.h
++++ b/src/dynarmic/backend/x64/a32_emit_x64.h
+@@ -81,7 +81,7 @@ protected:
+ 
+     const void* terminal_handler_pop_rsb_hint;
+     const void* terminal_handler_fast_dispatch_hint = nullptr;
+-    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64) = nullptr;
++    FastDispatchEntry& (*fast_dispatch_table_lookup)(u64, FastDispatchEntry*) = nullptr;
+     void GenTerminalHandlers();
+ 
+     // Microinstruction emitters
 diff --git a/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp b/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
 index 851fe0b..e1a2dac 100644
 --- a/src/dynarmic/backend/x64/a32_emit_x64_memory.cpp
@@ -268,7 +330,7 @@ index 851fe0b..e1a2dac 100644
      EmitCheckMemoryAbort(ctx, inst);
  }
 diff --git a/src/dynarmic/backend/x64/a32_interface.cpp b/src/dynarmic/backend/x64/a32_interface.cpp
-index 13f3a60..eba5708 100644
+index 13f3a60..5e6259b 100644
 --- a/src/dynarmic/backend/x64/a32_interface.cpp
 +++ b/src/dynarmic/backend/x64/a32_interface.cpp
 @@ -7,6 +7,7 @@
@@ -409,7 +471,7 @@ index 13f3a60..eba5708 100644
      }
  
      void HaltExecution(HaltReason hr) {
-@@ -201,6 +279,16 @@ struct Jit::Impl {
+@@ -201,6 +279,17 @@ struct Jit::Impl {
      }
  
  private:
@@ -417,6 +479,7 @@ index 13f3a60..eba5708 100644
 +        jit_state.callbacks_link = conf.callbacks_link;
 +        jit_state.lookup_link = conf.lookup_link;
 +        jit_state.runtime_config_link = conf.runtime_config_link;
++        jit_state.fast_dispatch_table_link = conf.fast_dispatch_table_link;
 +        jit_state.page_table_link = conf.page_table_link;
 +        jit_state.read_page_table_link = conf.read_page_table_link;
 +        jit_state.coprocessor_user_arg_link =
@@ -426,7 +489,7 @@ index 13f3a60..eba5708 100644
      static CodePtr GetCurrentBlockThunk(void* this_voidptr) {
          Jit::Impl& this_ = *static_cast<Jit::Impl*>(this_voidptr);
          return this_.GetCurrentBlock();
-@@ -232,6 +320,18 @@ private:
+@@ -232,6 +321,18 @@ private:
          }
          block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
  
@@ -445,7 +508,7 @@ index 13f3a60..eba5708 100644
          IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
          Optimization::PolyfillPass(ir_block, polyfill_options);
          Optimization::NamingPass(ir_block);
-@@ -246,14 +346,7 @@ private:
+@@ -246,14 +347,7 @@ private:
          }
          Optimization::IdentityRemovalPass(ir_block);
          Optimization::VerificationPass(ir_block);
@@ -461,7 +524,7 @@ index 13f3a60..eba5708 100644
      }
  
      void PerformRequestedCacheInvalidation(HaltReason hr) {
-@@ -310,6 +403,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
+@@ -310,6 +404,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
      impl->Precompile(location_descriptor);
  }
  
@@ -477,7 +540,7 @@ index 13f3a60..eba5708 100644
      impl->ClearCache();
  }
 diff --git a/src/dynarmic/backend/x64/a32_jitstate.h b/src/dynarmic/backend/x64/a32_jitstate.h
-index cc13abf..51155b4 100644
+index cc13abf..e54c207 100644
 --- a/src/dynarmic/backend/x64/a32_jitstate.h
 +++ b/src/dynarmic/backend/x64/a32_jitstate.h
 @@ -5,6 +5,7 @@
@@ -488,7 +551,7 @@ index cc13abf..51155b4 100644
  #include <array>
  
  #include <mcl/stdint.hpp>
-@@ -58,6 +59,27 @@ struct A32JitState {
+@@ -58,6 +59,31 @@ struct A32JitState {
      u32 Fpscr() const;
      void SetFpscr(u32 FPSCR);
  
@@ -504,6 +567,10 @@ index cc13abf..51155b4 100644
 +    // Runtime-owned indirection for the backend-owned UserConfig used by
 +    // generated helper calls.
 +    const std::atomic<u64>* runtime_config_link = nullptr;
++
++    // Runtime-owned indirection for the mutable fast-dispatch table used by
++    // terminal handlers.
++    const std::atomic<u64>* fast_dispatch_table_link = nullptr;
 +
 +    // Runtime-owned page-table bases loaded by the run prelude. These links
 +    // keep generated code independent of an executor's AddressSpace object.
@@ -799,7 +866,7 @@ index 776471a..1e45aad 100644
       * Clears the code cache of all compiled code.
       * Can be called at any time. Halts execution if called within a callback.
 diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
-index 176bac1..2116409 100644
+index 176bac1..0ea78cd 100644
 --- a/src/dynarmic/interface/A32/config.h
 +++ b/src/dynarmic/interface/A32/config.h
 @@ -5,6 +5,7 @@
@@ -848,7 +915,7 @@ index 176bac1..2116409 100644
      // Reads through these callbacks may not be aligned.
      // Memory must be interpreted as if ENDIANSTATE == 0, endianness will be corrected by the JIT.
      virtual std::uint8_t MemoryRead8(VAddr vaddr) = 0;
-@@ -137,6 +162,37 @@ struct UserCallbacks : public TranslateCallbacks {
+@@ -137,6 +162,42 @@ struct UserCallbacks : public TranslateCallbacks {
  struct UserConfig {
      UserCallbacks* callbacks;
  
@@ -867,6 +934,11 @@ index 176bac1..2116409 100644
 +    // configuration. The backend publishes its stable UserConfig address into
 +    // this cell, allowing generated helpers to avoid embedding that address.
 +    std::atomic<std::uint64_t>* runtime_config_link = nullptr;
++
++    // Optional executor-owned indirection for the mutable fast-dispatch table
++    // used by terminal handlers. The backend publishes its table address into
++    // this cell after constructing the emitter.
++    std::atomic<std::uint64_t>* fast_dispatch_table_link = nullptr;
 +
 +    // Optional executor-owned indirection for the write page-table base loaded
 +    // by the generated run prelude. The pointed-to cell contains the same
