@@ -1275,6 +1275,7 @@ private:
                 "JIT runtime callback link is not bound"};
         }
         Dynarmic::A32::UserConfig config{callbacks_.get()};
+        config.native_code_slab = execution_context_->native_code_slab();
         config.callbacks_link = runtime_link_cell_address_;
         config.lookup_link = lookup_link_cell_address_;
         config.runtime_config_link = runtime_config_link_cell_address_;

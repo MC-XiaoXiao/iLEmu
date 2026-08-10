@@ -16,6 +16,8 @@
 #include <unistd.h>
 #include <utility>
 
+#include <dynarmic/interface/A32/a32.h>
+
 namespace ilemu {
 namespace {
 
@@ -3432,12 +3434,15 @@ bool JitArtifactStore::save_full(
 }
 
 ExecutionContext::ExecutionContext()
-    : context_id_{next_context_id.fetch_add(1, std::memory_order_relaxed)} {}
+    : context_id_{next_context_id.fetch_add(1, std::memory_order_relaxed)},
+      native_code_slab_{std::make_shared<Dynarmic::A32::NativeCodeSlab>()} {}
 
 ExecutionContext::ExecutionContext(std::uint32_t process_id)
     : ExecutionContext{} {
   bind_process_id(process_id);
 }
+
+ExecutionContext::~ExecutionContext() = default;
 
 void ExecutionContext::bind_process_id(std::uint32_t process_id) {
   const std::lock_guard lock{mutex_};
@@ -3475,6 +3480,11 @@ std::atomic<std::uint64_t> *
 ExecutionContext::link_cell_address(std::size_t cell) const {
   const std::lock_guard lock{mutex_};
   return &link_cells_.at(cell)->target_token;
+}
+
+Dynarmic::A32::NativeCodeSlab *ExecutionContext::native_code_slab() const
+    noexcept {
+  return native_code_slab_.get();
 }
 
 } // namespace ilemu

@@ -16,6 +16,10 @@
 #include "ilemu/arm_cpu_model.hpp"
 #include "ilemu/content_identity.hpp"
 
+namespace Dynarmic::A32 {
+class NativeCodeSlab;
+}
+
 namespace ilemu {
 
 enum class JitHostIsa : std::uint8_t {
@@ -329,6 +333,10 @@ class ExecutionContext {
 public:
   ExecutionContext();
   explicit ExecutionContext(std::uint32_t process_id);
+  ~ExecutionContext();
+
+  ExecutionContext(const ExecutionContext &) = delete;
+  ExecutionContext &operator=(const ExecutionContext &) = delete;
 
   [[nodiscard]] std::uint64_t context_id() const noexcept {
     return context_id_;
@@ -347,6 +355,7 @@ public:
   [[nodiscard]] std::uint64_t linked_target(std::size_t cell) const;
   [[nodiscard]] std::atomic<std::uint64_t> *
   link_cell_address(std::size_t cell) const;
+  [[nodiscard]] Dynarmic::A32::NativeCodeSlab *native_code_slab() const noexcept;
 
 private:
   struct LinkCell {
@@ -355,6 +364,7 @@ private:
 
   std::uint64_t context_id_{};
   std::atomic<std::uint32_t> process_id_{};
+  std::shared_ptr<Dynarmic::A32::NativeCodeSlab> native_code_slab_;
   mutable std::mutex mutex_;
   bool process_id_bound_{};
   std::vector<std::unique_ptr<LinkCell>> link_cells_;
