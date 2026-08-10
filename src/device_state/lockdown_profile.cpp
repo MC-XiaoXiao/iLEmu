@@ -182,9 +182,21 @@ LockdownFirmwareProfile detect_lockdown_firmware_profile(
     const std::filesystem::path& rootfs,
     ArmArchitectureVersion architecture) {
   LockdownFirmwareProfile profile;
-  const auto image = MachOImage::parse(rootfs / springboard_path, architecture);
-    profile.brick_state = image.find_symbol(brick_state_symbol) != nullptr;
+  // Early prototype firmware can own a different UI process and legitimately
+  // omit SpringBoard altogether.  The profile fields below are optional
+  // capabilities discovered from the image; absence of that capability must
+  // not make an otherwise bootable root filesystem fail before its loader has
+  // started.  Keep the default profile (registration state only) for such
+  // firmware, while retaining strict Mach-O parsing when the image exists.
+  const auto image_path = rootfs / springboard_path;
+  std::error_code status_error;
+  if (!std::filesystem::is_regular_file(image_path, status_error) ||
+      status_error) {
     return profile;
+  }
+  const auto image = MachOImage::parse(image_path, architecture);
+  profile.brick_state = image.find_symbol(brick_state_symbol) != nullptr;
+  return profile;
 }
 
 LockdownProfileResult apply_lockdown_profile(
