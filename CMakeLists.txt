@@ -84,12 +84,28 @@ else()
         RESULT_VARIABLE ILEMU_DYNARMIC_PATCH_REVERSE_CHECK
         OUTPUT_VARIABLE ILEMU_DYNARMIC_PATCH_REVERSE_OUTPUT
         ERROR_VARIABLE ILEMU_DYNARMIC_PATCH_REVERSE_ERROR)
-    if(NOT ILEMU_DYNARMIC_PATCH_REVERSE_CHECK EQUAL 0)
+    execute_process(
+        COMMAND git grep -q "HasAddressResolver"
+            -- src/dynarmic/interface/exclusive_monitor.h
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_RESOLVER_API_CHECK)
+    execute_process(
+        COMMAND git grep -q "ResolveAddress"
+            -- src/dynarmic/backend/x64/exclusive_monitor.cpp
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_RESOLVER_BACKEND_CHECK)
+    if(NOT ILEMU_DYNARMIC_PATCH_REVERSE_CHECK EQUAL 0 AND
+       NOT (ILEMU_DYNARMIC_RESOLVER_API_CHECK EQUAL 0 AND
+            ILEMU_DYNARMIC_RESOLVER_BACKEND_CHECK EQUAL 0))
         message(FATAL_ERROR
             "Dynarmic reservation resolver patch is neither applicable nor "
             "already applied. Apply it to the checkout or use a compatible "
             "Dynarmic revision. git apply reported: "
             "${ILEMU_DYNARMIC_PATCH_ERROR}")
+    elseif(NOT ILEMU_DYNARMIC_PATCH_REVERSE_CHECK EQUAL 0)
+        message(STATUS
+            "Dynarmic evolved checkout already provides the reservation "
+            "resolver API; skipping the older tracked patch")
     endif()
 endif()
 
@@ -123,11 +139,33 @@ else()
         RESULT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_CHECK
         OUTPUT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_OUTPUT
         ERROR_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_ERROR)
-    if(NOT ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_CHECK EQUAL 0)
+    execute_process(
+        COMMAND git grep -q "GeneratePortableIR"
+            -- src/dynarmic/interface/A32/a32.h
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_API_CHECK)
+    execute_process(
+        COMMAND git grep -q "PortableIRGenerated"
+            -- src/dynarmic/interface/A32/config.h
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_CALLBACK_CHECK)
+    execute_process(
+        COMMAND git grep -q "bool Precompile"
+            -- src/dynarmic/interface/A32/a32.h
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_PRECOMPILE_CHECK)
+    if(NOT ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_CHECK EQUAL 0 AND
+       NOT (ILEMU_DYNARMIC_PORTABLE_IR_API_CHECK EQUAL 0 AND
+            ILEMU_DYNARMIC_PORTABLE_IR_CALLBACK_CHECK EQUAL 0 AND
+            ILEMU_DYNARMIC_PRECOMPILE_CHECK EQUAL 0))
         message(FATAL_ERROR
             "Dynarmic portable-IR patch is neither applicable nor already "
             "applied. git apply reported: "
             "${ILEMU_DYNARMIC_PORTABLE_IR_ERROR}")
+    elseif(NOT ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_CHECK EQUAL 0)
+        message(STATUS
+            "Dynarmic evolved checkout already provides the portable-IR "
+            "API; skipping the older tracked patch")
     endif()
 endif()
 
