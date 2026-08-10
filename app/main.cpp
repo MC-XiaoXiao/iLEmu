@@ -42,6 +42,7 @@
 #include "ilemu/gdb_rsp.hpp"
 #include "ilemu/gles_renderer.hpp"
 #include "ilemu/guest_parallelism_policy.hpp"
+#include "ilemu/host_file_watcher.hpp"
 #include "ilemu/host_resource_controller.hpp"
 #include "ilemu/iokit_abi.hpp"
 #include "ilemu/jit_artifact.hpp"
@@ -1776,6 +1777,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::error_code catalog_root_error;
   const auto catalog_root =
       std::filesystem::weakly_canonical(*rootfs, catalog_root_error);
+  HostFileWatcher host_file_watcher{
+      catalog_root_error ? std::filesystem::path{*rootfs} : catalog_root};
+  output.line(std::string{"[host-watch] enabled="} +
+              (host_file_watcher.enabled() ? "true" : "false"));
   bool catalog_refresh_pending = false;
   std::vector<std::filesystem::path> catalog_refresh_paths;
   std::uint64_t catalog_refresh_events{};
@@ -1791,9 +1796,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 catalog_refresh_paths.push_back(path);
               }
             };
+        host_file_watcher.poll();
+        const auto host_changes = host_file_watcher.publish_stable(
+            *initial_runtime->kernel->guest_file_generation_registry(), 64,
+            refresh_when_idle);
+        for (const auto &path : host_changes.changed_paths) {
+          queue_catalog_path(path);
+          catalog_refresh_pending = true;
+        }
+        for (const auto &subtree : host_changes.dirty_subtrees) {
+          queue_catalog_path(subtree);
+          catalog_refresh_pending = true;
+        }
+        const bool host_change_boundary = !host_changes.changed_paths.empty();
         const auto mutations = initial_runtime->kernel->take_guest_file_mutations(
             maximum_mutations_per_poll);
-        bool structural_boundary = false;
+        bool structural_boundary = host_change_boundary;
         for (const auto &mutation : mutations) {
           ++catalog_refresh_events;
           const auto relative = mutation.path.lexically_relative(catalog_root);

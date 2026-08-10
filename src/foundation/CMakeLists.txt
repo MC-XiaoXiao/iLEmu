@@ -14,6 +14,7 @@ add_library(ilemu_foundation STATIC
     guest_cpu_topology.cpp
     guest_exclusive_address_resolver.cpp
     host_resource_controller.cpp
+    host_file_watcher.cpp
     jit_artifact.cpp
     jit_translation_profile.cpp
     macho.cpp

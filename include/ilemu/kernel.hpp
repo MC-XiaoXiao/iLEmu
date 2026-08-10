@@ -130,6 +130,10 @@ public:
 
   [[nodiscard]] ProcessContext &process() { return process_; }
   [[nodiscard]] const ProcessContext &process() const { return process_; }
+  [[nodiscard]] std::shared_ptr<GuestFileGenerationRegistry>
+  guest_file_generation_registry() const {
+    return shared_state_->guest_file_generation_registry;
+  }
   [[nodiscard]] std::vector<GuestFileMutationEvent>
   take_guest_file_mutations(std::size_t maximum_events);
   void clear_thread_io_policy(std::size_t processor_id);
