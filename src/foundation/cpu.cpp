@@ -897,10 +897,15 @@ public:
                 reinterpret_cast<std::uintptr_t>(callbacks_.get())));
         runtime_link_cell_address_ =
             execution_context_->link_cell_address(runtime_link_cell_);
+        lookup_link_cell_ = execution_context_->create_link_cell();
+        execution_context_->link(lookup_link_cell_, 0);
+        lookup_link_cell_address_ =
+            execution_context_->link_cell_address(lookup_link_cell_);
     }
 
     ~JitExecutor() {
         execution_context_->unlink(runtime_link_cell_);
+        execution_context_->unlink(lookup_link_cell_);
         performance_counters().record_jit_code_cache_usage(
             process_id_, static_cast<std::uint32_t>(execution_slot_),
             recorded_jit_code_cache_bytes_, 0);
@@ -1226,6 +1231,7 @@ private:
         }
         Dynarmic::A32::UserConfig config{callbacks_.get()};
         config.callbacks_link = runtime_link_cell_address_;
+        config.lookup_link = lookup_link_cell_address_;
         config.processor_id = processor_id_;
         config.global_monitor = &monitor_;
         config.arch_version = dynarmic_architecture_version(
@@ -1389,6 +1395,8 @@ private:
     std::shared_ptr<ExecutionContext> execution_context_;
     std::size_t runtime_link_cell_{};
     const std::atomic<std::uint64_t> *runtime_link_cell_address_{};
+    std::size_t lookup_link_cell_{};
+    std::atomic<std::uint64_t> *lookup_link_cell_address_{};
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
     std::size_t code_cache_size_{64U * 1024U * 1024U};
     std::uint64_t recorded_jit_code_cache_bytes_{};

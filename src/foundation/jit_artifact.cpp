@@ -3471,7 +3471,7 @@ std::uint64_t ExecutionContext::linked_target(std::size_t cell) const {
   return link_cells_.at(cell)->target_token.load(std::memory_order_acquire);
 }
 
-const std::atomic<std::uint64_t> *
+std::atomic<std::uint64_t> *
 ExecutionContext::link_cell_address(std::size_t cell) const {
   const std::lock_guard lock{mutex_};
   return &link_cells_.at(cell)->target_token;

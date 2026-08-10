@@ -345,7 +345,7 @@ public:
   void link(std::size_t cell, std::uint64_t target_token);
   void unlink(std::size_t cell);
   [[nodiscard]] std::uint64_t linked_target(std::size_t cell) const;
-  [[nodiscard]] const std::atomic<std::uint64_t> *
+  [[nodiscard]] std::atomic<std::uint64_t> *
   link_cell_address(std::size_t cell) const;
 
 private:
