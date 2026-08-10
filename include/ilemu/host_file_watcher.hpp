@@ -2,9 +2,12 @@
 
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <deque>
 #include <filesystem>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <vector>
@@ -14,10 +17,21 @@
 
 namespace ilemu {
 
+class HostResourceController;
+
 struct HostFileWatchDrain {
   std::vector<std::filesystem::path> changed_paths;
   std::vector<std::filesystem::path> dirty_subtrees;
   bool overflow{};
+};
+
+struct HostFileWatchStats {
+  std::uint64_t scheduled{};
+  std::uint64_t rejected{};
+  std::uint64_t completed{};
+  std::uint64_t sha_computations{};
+  std::uint64_t sha_bytes{};
+  std::uint64_t confirmed_changes{};
 };
 
 // A bounded, serialized host filesystem watcher. Notifications are only dirty
@@ -44,6 +58,7 @@ public:
   // Publishes only stable paths. Dirty subtrees from an overflow are drained
   // only when requested by an idle/background caller.
   [[nodiscard]] HostFileWatchDrain publish_stable(
+      HostResourceController &host_resources,
       GuestFileGenerationRegistry &registry,
       std::size_t maximum_events = 64,
       bool include_dirty_subtrees = true);
@@ -52,6 +67,7 @@ public:
   [[nodiscard]] std::size_t pending_count() const noexcept;
   [[nodiscard]] std::size_t watch_count() const noexcept;
   [[nodiscard]] bool registration_pending() const noexcept;
+  [[nodiscard]] HostFileWatchStats stats() const noexcept;
 
 private:
   struct StableSample {
@@ -66,6 +82,29 @@ private:
     GuestFileMutationKind mutation{GuestFileMutationKind::Write};
     std::chrono::steady_clock::time_point last_event{};
     std::optional<StableSample> sample;
+    std::uint64_t event_sequence{};
+    bool in_flight{};
+  };
+
+  enum class AsyncCompletionKind : std::uint8_t {
+    Sample,
+    Changed,
+    Discarded,
+    Retry,
+  };
+
+  struct AsyncCompletion {
+    std::filesystem::path path;
+    std::uint64_t event_sequence{};
+    AsyncCompletionKind kind{AsyncCompletionKind::Retry};
+    std::optional<StableSample> sample;
+    bool sha_computed{};
+    std::uint64_t sha_bytes{};
+  };
+
+  struct AsyncState {
+    std::mutex mutex;
+    std::deque<AsyncCompletion> completions;
   };
 
   struct ActiveRegistration {
@@ -81,6 +120,11 @@ private:
                   GuestFileMutationKind mutation);
   void queue_dirty_subtree(const std::filesystem::path &path);
   void handle_event(const void *event, std::size_t available_bytes);
+  [[nodiscard]] static AsyncCompletion inspect_path(
+      const std::filesystem::path &path, GuestFileMutationKind mutation,
+      std::uint64_t event_sequence,
+      const std::optional<StableSample> &expected_sample,
+      GuestFileGenerationRegistry &registry);
 
   std::filesystem::path root_;
   std::size_t maximum_pending_{};
@@ -92,6 +136,11 @@ private:
   std::set<std::filesystem::path> completed_registrations_;
   std::optional<ActiveRegistration> active_registration_;
   std::map<std::filesystem::path, PendingPath> pending_;
+  std::shared_ptr<AsyncState> async_state_{std::make_shared<AsyncState>()};
+  std::deque<std::filesystem::path> confirmed_paths_;
+  std::uint64_t next_event_sequence_{1};
+  std::chrono::steady_clock::time_point next_hash_submission_{};
+  HostFileWatchStats stats_;
   std::vector<std::filesystem::path> dirty_subtrees_;
   bool overflow_{false};
 };

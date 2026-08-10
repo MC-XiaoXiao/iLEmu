@@ -2208,6 +2208,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
             };
         host_file_watcher.poll();
         const auto host_changes = host_file_watcher.publish_stable(
+            host_resources,
             *initial_runtime->kernel->guest_file_generation_registry(), 64,
             refresh_when_idle);
         for (const auto &path : host_changes.changed_paths) {
@@ -4103,6 +4104,20 @@ void boot(const std::vector<std::string> &args, Output &output) {
       static_cast<std::uint64_t>(initial_runtime->memory->cached_file_page_count()) *
       AddressSpace::page_size;
   host_resources.wait_idle();
+  static_cast<void>(host_file_watcher.publish_stable(
+      host_resources,
+      *initial_runtime->kernel->guest_file_generation_registry(), 0, false));
+  const auto host_watch_stats = host_file_watcher.stats();
+  output.line(
+      "[host-watch] async-scheduled=" +
+      std::to_string(host_watch_stats.scheduled) +
+      " rejected=" + std::to_string(host_watch_stats.rejected) +
+      " completed=" + std::to_string(host_watch_stats.completed) +
+      " sha-computations=" +
+      std::to_string(host_watch_stats.sha_computations) +
+      " sha-bytes=" + std::to_string(host_watch_stats.sha_bytes) +
+      " confirmed-changes=" +
+      std::to_string(host_watch_stats.confirmed_changes));
   output.line(
       "[precompile] loader=" +
       std::to_string(precompile_tasks_by_phase[0]) + "/" +

@@ -1,5 +1,7 @@
 #include "ilemu/host_file_watcher.hpp"
 
+#include "ilemu/host_resource_controller.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -73,6 +75,22 @@ constexpr std::size_t maximum_dirty_subtrees = 64;
       static_cast<std::int64_t>(file_stat.st_ctim.tv_sec),
       static_cast<std::int64_t>(file_stat.st_ctim.tv_nsec)};
 }
+
+class OwnedFileDescriptor {
+public:
+  explicit OwnedFileDescriptor(int descriptor) : descriptor_{descriptor} {}
+  ~OwnedFileDescriptor() {
+    if (descriptor_ >= 0) static_cast<void>(::close(descriptor_));
+  }
+
+  OwnedFileDescriptor(const OwnedFileDescriptor &) = delete;
+  OwnedFileDescriptor &operator=(const OwnedFileDescriptor &) = delete;
+
+  [[nodiscard]] int get() const noexcept { return descriptor_; }
+
+private:
+  int descriptor_{};
+};
 #endif
 
 } // namespace
@@ -132,6 +150,8 @@ std::size_t HostFileWatcher::watch_count() const noexcept {
 bool HostFileWatcher::registration_pending() const noexcept {
   return active_registration_.has_value() || !registration_queue_.empty();
 }
+
+HostFileWatchStats HostFileWatcher::stats() const noexcept { return stats_; }
 
 void HostFileWatcher::queue_watch_tree(
     const std::filesystem::path &directory) {
@@ -290,13 +310,16 @@ void HostFileWatcher::queue_path(const std::filesystem::path &path,
     }
     existing->second.last_event = now;
     existing->second.sample.reset();
+    existing->second.event_sequence = next_event_sequence_++;
     return;
   }
   if (pending_.size() >= maximum_pending_) {
     queue_dirty_subtree(normalized.parent_path());
     return;
   }
-  pending_.emplace(normalized, PendingPath{mutation, now, std::nullopt});
+  pending_.emplace(normalized,
+                   PendingPath{mutation, now, std::nullopt,
+                               next_event_sequence_++, false});
 }
 
 void HostFileWatcher::poll() {
@@ -386,98 +409,180 @@ void HostFileWatcher::handle_event(const void *event_data,
 #endif
 }
 
+HostFileWatcher::AsyncCompletion HostFileWatcher::inspect_path(
+    const std::filesystem::path &path, GuestFileMutationKind mutation,
+    std::uint64_t event_sequence,
+    const std::optional<StableSample> &expected_sample,
+    GuestFileGenerationRegistry &registry) {
+  AsyncCompletion completion{path, event_sequence,
+                             AsyncCompletionKind::Retry, std::nullopt, false,
+                             0};
+#if defined(__linux__)
+  struct stat path_stat {};
+  if (::stat(path.c_str(), &path_stat) != 0) {
+    static_cast<void>(registry.publish(path, GuestFileMutationKind::Unlink));
+    completion.kind = AsyncCompletionKind::Changed;
+    return completion;
+  }
+  const auto observed_generation = generation_from_stat(path_stat);
+  const auto current_generation = registry.current(path);
+  // Guest VFS writes already publish this exact generation through the shared
+  // registry. Inotify also reports those host writes; discard the duplicate
+  // on the maintenance worker before opening and hashing the file again.
+  if (current_generation && current_generation->generation &&
+      *current_generation->generation == observed_generation &&
+      current_generation->last_mutation !=
+          GuestFileMutationKind::Observation) {
+    completion.kind = AsyncCompletionKind::Discarded;
+    return completion;
+  }
+  if (!S_ISREG(path_stat.st_mode)) {
+    static_cast<void>(registry.publish(path, mutation));
+    completion.kind = AsyncCompletionKind::Changed;
+    return completion;
+  }
+
+  const OwnedFileDescriptor descriptor{
+      ::open(path.c_str(), O_RDONLY | O_CLOEXEC)};
+  if (descriptor.get() < 0) return completion;
+  struct stat before {};
+  struct stat after {};
+  const auto opened = ::fstat(descriptor.get(), &before) == 0;
+  const auto identity = opened ? sha256_file(descriptor.get()) : std::nullopt;
+  if (opened && identity) {
+    completion.sha_computed = true;
+    if (before.st_size > 0) {
+      completion.sha_bytes = static_cast<std::uint64_t>(before.st_size);
+    }
+  }
+  const auto stable = opened && identity &&
+                      ::fstat(descriptor.get(), &after) == 0 &&
+                      generation_from_stat(before) ==
+                          generation_from_stat(after);
+  if (!stable) return completion;
+  const StableSample sample{generation_from_stat(after), *identity};
+  completion.sample = sample;
+  if (!expected_sample || *expected_sample != sample) {
+    completion.kind = AsyncCompletionKind::Sample;
+    return completion;
+  }
+  const auto current = registry.current(path);
+  const auto already_published =
+      current && current->generation &&
+      *current->generation == sample.generation &&
+      current->last_mutation != GuestFileMutationKind::Observation;
+  if (already_published) {
+    completion.kind = AsyncCompletionKind::Discarded;
+  } else {
+    static_cast<void>(
+        registry.publish_descriptor(path, descriptor.get(), mutation));
+    completion.kind = AsyncCompletionKind::Changed;
+  }
+#else
+  static_cast<void>(expected_sample);
+  static_cast<void>(registry.publish(path, mutation));
+  completion.kind = AsyncCompletionKind::Changed;
+#endif
+  return completion;
+}
+
 HostFileWatchDrain HostFileWatcher::publish_stable(
+    HostResourceController &host_resources,
     GuestFileGenerationRegistry &registry, std::size_t maximum_events,
     bool include_dirty_subtrees) {
   HostFileWatchDrain drain;
   drain.overflow = overflow_;
-  if (maximum_events != 0U) {
-    const auto now = std::chrono::steady_clock::now();
-    for (auto iterator = pending_.begin();
-         iterator != pending_.end() &&
-         drain.changed_paths.size() < maximum_events;) {
-      const auto path = iterator->first;
-      auto &pending = iterator->second;
-      if (now - pending.last_event < stable_delay) {
-        ++iterator;
-        continue;
-      }
 
-#if defined(__linux__)
-      struct stat path_stat {};
-      if (::stat(path.c_str(), &path_stat) != 0) {
-        static_cast<void>(
-            registry.publish(path, GuestFileMutationKind::Unlink));
-        drain.changed_paths.push_back(path);
-        iterator = pending_.erase(iterator);
-        continue;
-      }
-      const auto observed_generation = generation_from_stat(path_stat);
-      const auto current_generation = registry.current(path);
-      // Guest VFS writes already publish this exact generation through the
-      // shared registry. Inotify also reports those host writes; discard the
-      // duplicate before opening and hashing the file again. A changed
-      // generation (the normal external-edit case) still takes the stable
-      // descriptor path below.
-      if (current_generation && current_generation->generation &&
-          *current_generation->generation == observed_generation &&
-          current_generation->last_mutation !=
-              GuestFileMutationKind::Observation) {
-        iterator = pending_.erase(iterator);
-        continue;
-      }
-      if (!S_ISREG(path_stat.st_mode)) {
-        static_cast<void>(registry.publish(path, pending.mutation));
-        drain.changed_paths.push_back(path);
-        iterator = pending_.erase(iterator);
-        continue;
-      }
+  std::deque<AsyncCompletion> completions;
+  {
+    const std::lock_guard lock{async_state_->mutex};
+    completions.swap(async_state_->completions);
+  }
+  const auto now = std::chrono::steady_clock::now();
+  for (auto &completion : completions) {
+    ++stats_.completed;
+    if (completion.sha_computed) {
+      ++stats_.sha_computations;
+      stats_.sha_bytes += completion.sha_bytes;
+    }
+    const auto pending = pending_.find(completion.path);
+    if (pending == pending_.end()) continue;
+    pending->second.in_flight = false;
+    if (pending->second.event_sequence != completion.event_sequence) continue;
+    switch (completion.kind) {
+    case AsyncCompletionKind::Sample:
+      pending->second.sample = std::move(completion.sample);
+      pending->second.last_event = now;
+      break;
+    case AsyncCompletionKind::Retry:
+      pending->second.sample.reset();
+      pending->second.last_event = now;
+      break;
+    case AsyncCompletionKind::Changed:
+      confirmed_paths_.push_back(completion.path);
+      ++stats_.confirmed_changes;
+      pending_.erase(pending);
+      break;
+    case AsyncCompletionKind::Discarded:
+      pending_.erase(pending);
+      break;
+    }
+  }
 
-      const auto descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-      if (descriptor < 0) {
-        pending.last_event = now;
-        pending.sample.reset();
-        ++iterator;
-        continue;
-      }
-      struct stat before {};
-      struct stat after {};
-      const auto opened = ::fstat(descriptor, &before) == 0;
-      const auto identity = opened ? sha256_file(descriptor) : std::nullopt;
-      const auto stable = opened && identity && ::fstat(descriptor, &after) == 0 &&
-                          generation_from_stat(before) ==
-                              generation_from_stat(after);
-      if (!stable) {
-        static_cast<void>(::close(descriptor));
-        pending.last_event = now;
-        pending.sample.reset();
-        ++iterator;
-        continue;
-      }
-      const StableSample sample{generation_from_stat(after), *identity};
-      if (!pending.sample || *pending.sample != sample) {
-        pending.sample = sample;
-        pending.last_event = now;
-        static_cast<void>(::close(descriptor));
-        ++iterator;
-        continue;
-      }
-      const auto current = registry.current(path);
-      const auto already_published =
-          current && current->generation &&
-          *current->generation == sample.generation &&
-          current->last_mutation != GuestFileMutationKind::Observation;
-      if (!already_published) {
-        static_cast<void>(
-            registry.publish_descriptor(path, descriptor, pending.mutation));
-        drain.changed_paths.push_back(path);
-      }
-      static_cast<void>(::close(descriptor));
-#else
-      static_cast<void>(registry.publish(path, pending.mutation));
-      drain.changed_paths.push_back(path);
-#endif
-      iterator = pending_.erase(iterator);
+  while (drain.changed_paths.size() < maximum_events &&
+         !confirmed_paths_.empty()) {
+    drain.changed_paths.push_back(std::move(confirmed_paths_.front()));
+    confirmed_paths_.pop_front();
+  }
+
+  constexpr std::size_t maximum_concurrent_hashes = 2;
+  const auto in_flight = static_cast<std::size_t>(std::count_if(
+      pending_.begin(), pending_.end(), [](const auto &entry) {
+        return entry.second.in_flight;
+      }));
+  const auto available_hash_slots =
+      now >= next_hash_submission_ && in_flight < maximum_concurrent_hashes
+          ? maximum_concurrent_hashes - in_flight
+          : 0U;
+  std::size_t scheduled{};
+  std::size_t attempted{};
+  for (auto &[path, pending] : pending_) {
+    if (scheduled >= maximum_events || attempted >= available_hash_slots)
+      break;
+    if (pending.in_flight || now - pending.last_event < stable_delay) continue;
+    const auto event_sequence = pending.event_sequence;
+    const auto mutation = pending.mutation;
+    const auto expected_sample = pending.sample;
+    const auto state = async_state_;
+    auto *registry_pointer = &registry;
+    ++attempted;
+    const auto token = host_resources.submit(
+        HostWorkKind::Maintenance, std::nullopt,
+        [state, path, mutation, event_sequence, expected_sample,
+         registry_pointer] {
+          AsyncCompletion completion{
+              path, event_sequence, AsyncCompletionKind::Retry, std::nullopt,
+              false, 0};
+          try {
+            completion = inspect_path(path, mutation, event_sequence,
+                                      expected_sample, *registry_pointer);
+          } catch (...) {
+            // A failed maintenance observation remains pending for a later
+            // bounded retry; it must never strand the path as in-flight.
+          }
+          const std::lock_guard lock{state->mutex};
+          state->completions.push_back(std::move(completion));
+        },
+        std::chrono::milliseconds{5});
+    if (token) {
+      pending.in_flight = true;
+      ++stats_.scheduled;
+      ++scheduled;
+    } else {
+      ++stats_.rejected;
+      pending.last_event = now;
+      next_hash_submission_ = now + stable_delay;
+      break;
     }
   }
 
