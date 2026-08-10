@@ -974,6 +974,15 @@ std::size_t ExecutableCatalog::reliable_entry_point_count() const noexcept {
   return count;
 }
 
+std::vector<ContentIdentity> ExecutableCatalog::content_identities() const {
+  std::vector<ContentIdentity> identities;
+  identities.reserve(entries_.size());
+  for (const auto &entry : entries_) {
+    identities.push_back(entry.content_identity);
+  }
+  return identities;
+}
+
 std::filesystem::path ExecutableCatalog::normalize_path(
     const std::filesystem::path &path) {
   std::error_code error;

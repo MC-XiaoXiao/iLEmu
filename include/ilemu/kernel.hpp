@@ -130,6 +130,8 @@ public:
 
   [[nodiscard]] ProcessContext &process() { return process_; }
   [[nodiscard]] const ProcessContext &process() const { return process_; }
+  [[nodiscard]] std::vector<GuestFileMutationEvent>
+  take_guest_file_mutations(std::size_t maximum_events);
   void clear_thread_io_policy(std::size_t processor_id);
   void exit_process(std::uint32_t status, std::uint32_t signal = 0);
   [[nodiscard]] WaitChildResult wait_child(std::int32_t target_pid, bool reap);

@@ -70,6 +70,24 @@ struct GlobalIdentityRecord {
 std::mutex global_identity_mutex;
 std::map<std::string, GlobalIdentityRecord> global_identities;
 
+[[nodiscard]] unsigned mutation_priority(GuestFileMutationKind mutation) {
+  switch (mutation) {
+  case GuestFileMutationKind::Observation:
+    return 0;
+  case GuestFileMutationKind::SharedWriteback:
+  case GuestFileMutationKind::Write:
+    return 1;
+  case GuestFileMutationKind::Truncate:
+    return 2;
+  case GuestFileMutationKind::InstallReplace:
+    return 3;
+  case GuestFileMutationKind::Rename:
+  case GuestFileMutationKind::Unlink:
+    return 4;
+  }
+  return 0;
+}
+
 } // namespace
 
 std::string GuestFileGenerationRegistry::normalize_path(
@@ -103,7 +121,36 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record(
   }
   entry.snapshot = GuestFileGenerationSnapshot{
       next_revision_++, std::move(generation), mutation};
+  enqueue_mutation_locked(key, mutation);
   return entry.snapshot;
+}
+
+void GuestFileGenerationRegistry::enqueue_mutation_locked(
+    const std::string &normalized_path, GuestFileMutationKind mutation) {
+  if (mutation == GuestFileMutationKind::Observation) return;
+  for (auto event = pending_mutations_.rbegin();
+       event != pending_mutations_.rend(); ++event) {
+    if (event->path.string() != normalized_path) continue;
+    if (mutation_priority(mutation) > mutation_priority(event->mutation)) {
+      event->mutation = mutation;
+    }
+    return;
+  }
+  if (pending_mutations_.size() >= maximum_pending_mutations) {
+    const auto removable = std::find_if(
+        pending_mutations_.begin(), pending_mutations_.end(), [](const auto &event) {
+          return mutation_priority(event.mutation) <=
+                 mutation_priority(GuestFileMutationKind::Write);
+        });
+    if (removable != pending_mutations_.end()) {
+      pending_mutations_.erase(removable);
+    } else {
+      pending_mutations_.pop_front();
+    }
+  }
+  pending_mutations_.push_back(GuestFileMutationEvent{
+      next_mutation_sequence_++, std::filesystem::path{normalized_path},
+      mutation});
 }
 
 GuestFileGenerationSnapshot GuestFileGenerationRegistry::observe_normalized(
@@ -135,12 +182,14 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record_descriptor(
     matched_inode = true;
     entry.snapshot = GuestFileGenerationSnapshot{
         next_revision_++, generation, mutation};
+    enqueue_mutation_locked(entry_path, mutation);
     if (entry_path == key || !result) result = entry.snapshot;
   }
   if (!matched_inode) {
     auto &entry = entries_[key];
     entry.snapshot = GuestFileGenerationSnapshot{
         next_revision_++, generation, mutation};
+    enqueue_mutation_locked(key, mutation);
     result = entry.snapshot;
   }
   return *result;
@@ -172,6 +221,25 @@ void GuestFileGenerationRegistry::publish_rename(
     const std::filesystem::path &destination) {
   static_cast<void>(publish(source, GuestFileMutationKind::Rename));
   static_cast<void>(publish(destination, GuestFileMutationKind::Rename));
+}
+
+std::vector<GuestFileMutationEvent>
+GuestFileGenerationRegistry::take_mutations(std::size_t maximum_events) {
+  std::vector<GuestFileMutationEvent> result;
+  if (maximum_events == 0) return result;
+  std::lock_guard lock{mutex_};
+  const auto count = std::min(maximum_events, pending_mutations_.size());
+  result.reserve(count);
+  for (std::size_t index = 0; index < count; ++index) {
+    result.push_back(std::move(pending_mutations_.front()));
+    pending_mutations_.pop_front();
+  }
+  return result;
+}
+
+std::size_t GuestFileGenerationRegistry::pending_mutation_count() const {
+  std::lock_guard lock{mutex_};
+  return pending_mutations_.size();
 }
 
 std::optional<GuestFileGenerationSnapshot>

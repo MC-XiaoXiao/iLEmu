@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <compare>
+#include <deque>
 #include <filesystem>
 #include <list>
 #include <map>
@@ -58,6 +59,12 @@ struct GuestFileGenerationSnapshot {
   GuestFileMutationKind last_mutation{GuestFileMutationKind::Observation};
 };
 
+struct GuestFileMutationEvent {
+  std::uint64_t sequence{};
+  std::filesystem::path path;
+  GuestFileMutationKind mutation{GuestFileMutationKind::Observation};
+};
+
 // One emulator-wide view of pathname generations. A pathname is only a lookup
 // key: mappings retain their own GuestFileBacking and therefore keep an old
 // vnode/generation alive after replacement or unlink. Mutations advance the
@@ -73,6 +80,13 @@ public:
       GuestFileMutationKind mutation);
   void publish_rename(const std::filesystem::path &source,
                      const std::filesystem::path &destination);
+  // Mutation notifications are deliberately bounded and coalesced by path.
+  // Consumers may drain them from the emulator's serialized control loop;
+  // pathname generations remain authoritative even if a non-critical event
+  // is evicted under sustained write load.
+  [[nodiscard]] std::vector<GuestFileMutationEvent> take_mutations(
+      std::size_t maximum_events);
+  [[nodiscard]] std::size_t pending_mutation_count() const;
   [[nodiscard]] std::optional<GuestFileGenerationSnapshot> current(
       const std::filesystem::path &path) const;
   [[nodiscard]] std::size_t tracked_path_count() const;
@@ -98,10 +112,15 @@ private:
       const std::filesystem::path &path,
       const GuestFileGeneration &generation,
       GuestFileMutationKind mutation);
+  void enqueue_mutation_locked(const std::string &normalized_path,
+                               GuestFileMutationKind mutation);
 
   mutable std::mutex mutex_;
   std::uint64_t next_revision_{1};
+  std::uint64_t next_mutation_sequence_{1};
   std::map<std::string, Entry> entries_;
+  static constexpr std::size_t maximum_pending_mutations = 512;
+  std::deque<GuestFileMutationEvent> pending_mutations_;
 };
 
 struct GuestFileIoState {

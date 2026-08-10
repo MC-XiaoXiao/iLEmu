@@ -1286,7 +1286,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const auto catalog_manifest = option(args, "--catalog").value_or(
       (host_cache / "executable-catalog.bin").string());
   ExecutableCatalog executable_catalog;
-  const auto catalog_loaded = executable_catalog.load(catalog_manifest);
+  bool catalog_loaded = executable_catalog.load(catalog_manifest);
   output.line("[catalog] manifest=" + catalog_manifest +
               " status=" + (catalog_loaded ? "loaded" : "fallback") +
               " entries=" + std::to_string(executable_catalog.size()));
@@ -1636,8 +1636,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
         return JitPrecompilePhase::StartupService;
       };
+  constexpr std::size_t maximum_catalog_offline_compile_queue = 64;
+  std::deque<ContentIdentity> pending_catalog_compiles;
   const auto assign_jit_process_profile =
-      [&translation_profiles, catalog_index, &boot_image_identities,
+      [&translation_profiles, &catalog_index, &boot_image_identities,
+       &pending_catalog_compiles, &output,
        springboard_boot_path](Runtime &runtime, const LoadedProcess &loaded,
                               JitPrecompilePhase phase) {
         runtime.precompile_phase = phase;
@@ -1668,6 +1671,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
         append_entry_points(loaded.executable);
         append_entry_points(loaded.dynamic_linker);
         runtime.cpus->add_precompile_entries(entry_points, phase);
+        const auto consume_pending_identity = [&](const ContentIdentity &identity) {
+          const auto pending = std::find(pending_catalog_compiles.begin(),
+                                         pending_catalog_compiles.end(), identity);
+          if (pending == pending_catalog_compiles.end()) return false;
+          pending_catalog_compiles.erase(pending);
+          return true;
+        };
+        const auto executable_pending =
+            consume_pending_identity(loaded.executable.content_identity());
+        const auto linker_pending =
+            consume_pending_identity(loaded.dynamic_linker.content_identity());
+        if (executable_pending || linker_pending) {
+          output.line("[catalog] offline-compile-queue consumed executable=" +
+                      loaded.executable_path + " pending=" +
+                      std::to_string(pending_catalog_compiles.size()));
+        }
       };
   auto initial = std::make_unique<Runtime>();
   initial->memory = std::move(initial_memory);
@@ -1740,6 +1759,99 @@ void boot(const std::vector<std::string> &args, Output &output) {
   }
   initial->allocated.assign(initial_guest_thread_slots, false);
   Runtime *initial_runtime = initial.get();
+  std::error_code catalog_root_error;
+  const auto catalog_root =
+      std::filesystem::weakly_canonical(*rootfs, catalog_root_error);
+  bool catalog_refresh_pending = false;
+  std::uint64_t catalog_refresh_events{};
+  std::uint64_t catalog_refresh_count{};
+  const auto refresh_catalog_after_file_mutations =
+      [&](bool refresh_when_idle) {
+        constexpr std::size_t maximum_mutations_per_poll = 128;
+        const auto mutations = initial_runtime->kernel->take_guest_file_mutations(
+            maximum_mutations_per_poll);
+        bool structural_boundary = false;
+        for (const auto &mutation : mutations) {
+          ++catalog_refresh_events;
+          const auto relative = mutation.path.lexically_relative(catalog_root);
+          if (catalog_root_error || relative.empty() || relative == "." ||
+              relative.begin() == relative.end() ||
+              *relative.begin() == "..") {
+            continue;
+          }
+          const auto guest_path =
+              "/" + relative.generic_string();
+          const auto application_path =
+              is_application_executable_path(guest_path);
+          const auto known_executable =
+              catalog_index != nullptr &&
+              catalog_index->find_path(mutation.path) != nullptr;
+          switch (mutation.mutation) {
+          case GuestFileMutationKind::InstallReplace:
+          case GuestFileMutationKind::Rename:
+          case GuestFileMutationKind::Unlink:
+            if (known_executable || application_path) {
+              catalog_refresh_pending = true;
+              structural_boundary = true;
+            }
+            break;
+          case GuestFileMutationKind::Truncate:
+          case GuestFileMutationKind::Write:
+          case GuestFileMutationKind::SharedWriteback:
+            catalog_refresh_pending |= known_executable || application_path;
+            break;
+          case GuestFileMutationKind::Observation:
+            break;
+          }
+        }
+        if (!catalog_refresh_pending ||
+            (!refresh_when_idle && !structural_boundary)) {
+          return;
+        }
+
+        std::unordered_set<ContentIdentity, ContentIdentityHash> previous;
+        if (catalog_index != nullptr) {
+          for (const auto &identity : executable_catalog.content_identities()) {
+            previous.insert(identity);
+          }
+        }
+        try {
+          const auto summary =
+              catalog_index == nullptr
+                  ? executable_catalog.register_tree(*rootfs, guest_architecture)
+                  : executable_catalog.refresh_tree(*rootfs, guest_architecture);
+          catalog_loaded = true;
+          catalog_index = &executable_catalog;
+          for (const auto &identity : executable_catalog.content_identities()) {
+            if (previous.contains(identity) ||
+                std::find(pending_catalog_compiles.begin(),
+                          pending_catalog_compiles.end(), identity) !=
+                    pending_catalog_compiles.end()) {
+              continue;
+            }
+            if (pending_catalog_compiles.size() >=
+                maximum_catalog_offline_compile_queue) {
+              pending_catalog_compiles.pop_front();
+            }
+            pending_catalog_compiles.push_back(identity);
+          }
+          if (!executable_catalog.save(catalog_manifest)) {
+            output.line("[catalog] mutation-refresh manifest-save=failed");
+          }
+          output.line(
+              "[catalog] mutation-refresh regular-files=" +
+              std::to_string(summary.regular_files) +
+              " macho-images=" + std::to_string(summary.mach_o_images) +
+              " failed-files=" + std::to_string(summary.failed_files) +
+              " new-offline-queue=" +
+              std::to_string(pending_catalog_compiles.size()));
+          ++catalog_refresh_count;
+          catalog_refresh_pending = false;
+        } catch (const std::exception &error) {
+          output.line("[catalog] mutation-refresh failed error=" +
+                      std::string{error.what()});
+        }
+      };
   runtimes.push_back(std::move(initial));
   runtime_index.insert(*initial_runtime);
   initial_runtime->kernel->set_preferred_wifi_networks(
@@ -1773,26 +1885,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
   configure_runtime = [&](Runtime &runtime) {
     auto *runtime_ptr = &runtime;
     runtime.kernel->set_host_network_policy(*network_policy);
-    if (catalog_index != nullptr) {
-      runtime.kernel->set_mapped_executable_handler(
-           [runtime_ptr, catalog_index,
-           &catalog_mapped_executable_ranges,
-           &catalog_mapped_entry_hints,
-           &catalog_mapped_entry_hints_by_phase](
-              const std::filesystem::path &path,
-              std::uint32_t mapping_address, std::uint32_t mapping_size,
-              std::uint64_t file_offset) {
-            auto entry_points = catalog_index->fixed_mapping_entry_points(
-                path, mapping_address, mapping_size, file_offset);
-            if (entry_points.empty()) return;
-            ++catalog_mapped_executable_ranges;
-            catalog_mapped_entry_hints += entry_points.size();
-            catalog_mapped_entry_hints_by_phase[static_cast<std::size_t>(
-                runtime_ptr->precompile_phase)] += entry_points.size();
-            runtime_ptr->cpus->add_precompile_entries(
-                entry_points, runtime_ptr->precompile_phase);
-          });
-    }
+    runtime.kernel->set_mapped_executable_handler(
+        [runtime_ptr, &catalog_index, &catalog_mapped_executable_ranges,
+         &catalog_mapped_entry_hints, &catalog_mapped_entry_hints_by_phase](
+            const std::filesystem::path &path, std::uint32_t mapping_address,
+            std::uint32_t mapping_size, std::uint64_t file_offset) {
+          if (catalog_index == nullptr) return;
+          auto entry_points = catalog_index->fixed_mapping_entry_points(
+              path, mapping_address, mapping_size, file_offset);
+          if (entry_points.empty()) return;
+          ++catalog_mapped_executable_ranges;
+          catalog_mapped_entry_hints += entry_points.size();
+          catalog_mapped_entry_hints_by_phase[static_cast<std::size_t>(
+              runtime_ptr->precompile_phase)] += entry_points.size();
+          runtime_ptr->cpus->add_precompile_entries(
+              entry_points, runtime_ptr->precompile_phase);
+        });
     if (!runtime.kernel->set_virtual_processor_count(guest_processor_count)) {
       throw std::runtime_error{"invalid virtual processor topology"};
     }
@@ -2032,6 +2140,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         [&, runtime_ptr](Cpu &source, std::string path,
                          std::vector<std::string> arguments,
                          std::vector<std::string> environment) {
+          refresh_catalog_after_file_mutations(true);
           ProcessLoader validator{*rootfs, *runtime_ptr->memory,
                                   guest_architecture, catalog_index};
           if (!validator.validate(path)) {
@@ -2057,6 +2166,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
             return false;
 
           try {
+            refresh_catalog_after_file_mutations(true);
             debug_target.notify_exec(child_pid);
             if (!child_runtime->fresh_spawn_address_space) {
               PerformanceLatencyScope latency{
@@ -2359,6 +2469,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   }
   while ((!bounded_execution || remaining_ticks != 0) &&
          !initial_runtime->kernel->process().exited && !hard_stop) {
+    refresh_catalog_after_file_mutations(scheduler.runnable_count() == 0);
     if (sdl_display && !sdl_display->poll_events()) {
       hard_stop = true;
       break;
@@ -2910,6 +3021,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         auto pending = std::move(*runtime.pending_exec);
         runtime.pending_exec.reset();
         try {
+          refresh_catalog_after_file_mutations(true);
           debug_target.notify_exec(runtime.kernel->process().pid);
           runtime.memory->clear();
           ProcessLoader exec_loader{*rootfs, *runtime.memory,
@@ -3525,6 +3637,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
       std::to_string(precompile_tasks_by_target[1]) + "/" +
       std::to_string(precompile_blocks_by_target[1].load(
           std::memory_order_relaxed)));
+  if (catalog_refresh_events != 0 || catalog_refresh_count != 0) {
+    output.line(
+        "[catalog] mutation-events=" +
+        std::to_string(catalog_refresh_events) + " refreshes=" +
+        std::to_string(catalog_refresh_count) + " offline-queue-pending=" +
+        std::to_string(pending_catalog_compiles.size()));
+  }
   if (catalog_loaded) {
     output.line(
         "[catalog] mapped-executable-ranges=" +

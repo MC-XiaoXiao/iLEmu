@@ -124,6 +124,7 @@ public:
       const std::filesystem::path &path, std::uint32_t mapping_address,
       std::uint32_t mapping_size, std::uint64_t file_offset) const;
   [[nodiscard]] std::size_t reliable_entry_point_count() const noexcept;
+  [[nodiscard]] std::vector<ContentIdentity> content_identities() const;
   [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
 
 private:

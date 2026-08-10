@@ -1695,6 +1695,12 @@ void CompatibilityKernel::clear_thread_io_policy(std::size_t processor_id) {
   }
 }
 
+std::vector<GuestFileMutationEvent>
+CompatibilityKernel::take_guest_file_mutations(std::size_t maximum_events) {
+  return shared_state_->guest_file_generation_registry->take_mutations(
+      maximum_events);
+}
+
 void CompatibilityKernel::inherit_process_state(
     const CompatibilityKernel &parent, std::uint32_t child_pid,
     ProcessInheritance inheritance) {
