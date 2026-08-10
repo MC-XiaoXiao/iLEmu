@@ -15,7 +15,7 @@ index d57a29c..ffa977d 100644
          Unlock();
          return false;
 diff --git a/src/dynarmic/backend/x64/a32_emit_x64.cpp b/src/dynarmic/backend/x64/a32_emit_x64.cpp
-index aa07357..4bf11be 100644
+index aa07357..0c8fbb5 100644
 --- a/src/dynarmic/backend/x64/a32_emit_x64.cpp
 +++ b/src/dynarmic/backend/x64/a32_emit_x64.cpp
 @@ -82,6 +82,11 @@ FP::FPCR A32EmitContext::FPCR(bool fpcr_controlled) const {
@@ -30,7 +30,21 @@ index aa07357..4bf11be 100644
      GenFastmemFallbacks();
      GenTerminalHandlers();
      code.PreludeComplete();
-@@ -253,7 +258,15 @@ void A32EmitX64::GenTerminalHandlers() {
+@@ -245,6 +250,13 @@ void A32EmitX64::GenTerminalHandlers() {
+         code.jne(code.GetReturnFromRunCodeAddress());
+     }
+     code.mov(rax, qword[r15 + offsetof(A32JitState, rsb_codeptrs) + rax * sizeof(u64)]);
++    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
++        // Linked executors do not embed per-emitter native return addresses
++        // in the RSB. Resolve the descriptor through the executor-owned fast
++        // dispatch table instead.
++        code.test(rax, rax);
++        code.jz(rsb_cache_miss);
++    }
+     code.jmp(rax);
+     PerfMapRegister(terminal_handler_pop_rsb_hint, code.getCurr(), "a32_terminal_handler_pop_rsb_hint");
+ 
+@@ -253,7 +265,15 @@ void A32EmitX64::GenTerminalHandlers() {
          terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
          calculate_location_descriptor();
          code.L(rsb_cache_miss);
@@ -47,7 +61,7 @@ index aa07357..4bf11be 100644
          code.mov(rbp, rbx);
          if (code.HasHostFeature(HostFeature::SSE42)) {
              code.crc32(rbp, r12);
-@@ -271,8 +284,8 @@ void A32EmitX64::GenTerminalHandlers() {
+@@ -271,8 +291,8 @@ void A32EmitX64::GenTerminalHandlers() {
          PerfMapRegister(terminal_handler_fast_dispatch_hint, code.getCurr(), "a32_terminal_handler_fast_dispatch_hint");
  
          code.align();
@@ -58,7 +72,7 @@ index aa07357..4bf11be 100644
          if (code.HasHostFeature(HostFeature::SSE42)) {
              code.crc32(code.ABI_PARAM1, code.ABI_PARAM2);
          }
-@@ -693,7 +706,9 @@ void A32EmitX64::EmitA32InstructionSynchronizationBarrier(A32EmitContext& ctx, I
+@@ -693,7 +713,9 @@ void A32EmitX64::EmitA32InstructionSynchronizationBarrier(A32EmitContext& ctx, I
      }
  
      ctx.reg_alloc.HostCall(nullptr);
@@ -69,7 +83,7 @@ index aa07357..4bf11be 100644
  }
  
  void A32EmitX64::EmitA32BXWritePC(A32EmitContext& ctx, IR::Inst* inst) {
-@@ -750,16 +765,22 @@ void A32EmitX64::EmitA32CallSupervisor(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -750,16 +772,22 @@ void A32EmitX64::EmitA32CallSupervisor(A32EmitContext& ctx, IR::Inst* inst) {
          ctx.reg_alloc.HostCall(nullptr);
          code.mov(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)]);
          code.sub(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)]);
@@ -95,7 +109,7 @@ index aa07357..4bf11be 100644
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], code.ABI_RETURN);
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], code.ABI_RETURN);
          code.SwitchMxcsrOnEntry();
-@@ -773,7 +794,9 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -773,7 +801,9 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
      if (conf.enable_cycle_counting) {
          code.mov(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)]);
          code.sub(code.ABI_PARAM2, qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)]);
@@ -106,7 +120,7 @@ index aa07357..4bf11be 100644
      }
      ctx.reg_alloc.EndOfAllocScope();
  
-@@ -781,13 +804,17 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -781,13 +811,17 @@ void A32EmitX64::EmitA32ExceptionRaised(A32EmitContext& ctx, IR::Inst* inst) {
      ASSERT(args[0].IsImmediate() && args[1].IsImmediate());
      const u32 pc = args[0].GetImmediateU32();
      const u64 exception = args[1].GetImmediateU64();
@@ -126,7 +140,7 @@ index aa07357..4bf11be 100644
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], code.ABI_RETURN);
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], code.ABI_RETURN);
          code.SwitchMxcsrOnEntry();
-@@ -852,11 +879,25 @@ static void EmitCoprocessorException() {
+@@ -852,11 +886,25 @@ static void EmitCoprocessorException() {
      ASSERT_FALSE("Should raise coproc exception here");
  }
  
@@ -154,7 +168,7 @@ index aa07357..4bf11be 100644
      }
  
      code.CallFunction(callback.function);
-@@ -884,7 +925,7 @@ void A32EmitX64::EmitA32CoprocInternalOperation(A32EmitContext& ctx, IR::Inst* i
+@@ -884,7 +932,7 @@ void A32EmitX64::EmitA32CoprocInternalOperation(A32EmitContext& ctx, IR::Inst* i
          return;
      }
  
@@ -163,7 +177,7 @@ index aa07357..4bf11be 100644
  }
  
  void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
-@@ -911,7 +952,7 @@ void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -911,7 +959,7 @@ void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
      }
  
      if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
@@ -172,7 +186,7 @@ index aa07357..4bf11be 100644
          return;
      }
  
-@@ -951,7 +992,8 @@ void A32EmitX64::EmitA32CoprocSendTwoWords(A32EmitContext& ctx, IR::Inst* inst)
+@@ -951,7 +999,8 @@ void A32EmitX64::EmitA32CoprocSendTwoWords(A32EmitContext& ctx, IR::Inst* inst)
      }
  
      if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
@@ -182,7 +196,7 @@ index aa07357..4bf11be 100644
          return;
      }
  
-@@ -995,7 +1037,7 @@ void A32EmitX64::EmitA32CoprocGetOneWord(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -995,7 +1044,7 @@ void A32EmitX64::EmitA32CoprocGetOneWord(A32EmitContext& ctx, IR::Inst* inst) {
      }
  
      if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
@@ -191,7 +205,7 @@ index aa07357..4bf11be 100644
          return;
      }
  
-@@ -1035,7 +1077,7 @@ void A32EmitX64::EmitA32CoprocGetTwoWords(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -1035,7 +1084,7 @@ void A32EmitX64::EmitA32CoprocGetTwoWords(A32EmitContext& ctx, IR::Inst* inst) {
      }
  
      if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
@@ -200,7 +214,7 @@ index aa07357..4bf11be 100644
          return;
      }
  
-@@ -1086,7 +1128,7 @@ void A32EmitX64::EmitA32CoprocLoadWords(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -1086,7 +1135,7 @@ void A32EmitX64::EmitA32CoprocLoadWords(A32EmitContext& ctx, IR::Inst* inst) {
          return;
      }
  
@@ -209,7 +223,7 @@ index aa07357..4bf11be 100644
  }
  
  void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
-@@ -1116,7 +1158,7 @@ void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -1116,7 +1165,7 @@ void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
          return;
      }
  
@@ -218,7 +232,7 @@ index aa07357..4bf11be 100644
  }
  
  std::string A32EmitX64::LocationDescriptorToFriendlyName(const IR::LocationDescriptor& ir_descriptor) const {
-@@ -1137,7 +1179,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDesc
+@@ -1137,7 +1186,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDesc
      code.mov(code.ABI_PARAM3.cvt32(), 1);
      code.mov(MJitStateReg(A32::Reg::PC), code.ABI_PARAM2.cvt32());
      code.SwitchMxcsrOnExit();
@@ -229,7 +243,7 @@ index aa07357..4bf11be 100644
      code.ReturnFromRunCode(true);  // TODO: Check cycles
  }
  
-@@ -1164,6 +1208,15 @@ void A32EmitX64::EmitSetUpperLocationDescriptor(IR::LocationDescriptor new_locat
+@@ -1164,6 +1215,15 @@ void A32EmitX64::EmitSetUpperLocationDescriptor(IR::LocationDescriptor new_locat
  void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
      EmitSetUpperLocationDescriptor(terminal.next, initial_location);
  
@@ -245,7 +259,7 @@ index aa07357..4bf11be 100644
      if (!conf.HasOptimization(OptimizationFlag::BlockLinking) || is_single_step) {
          code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{terminal.next}.PC());
          code.ReturnFromRunCode();
-@@ -1198,6 +1251,10 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
+@@ -1198,6 +1258,10 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
  void A32EmitX64::EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::LocationDescriptor initial_location, bool is_single_step) {
      EmitSetUpperLocationDescriptor(terminal.next, initial_location);
  
@@ -256,7 +270,7 @@ index aa07357..4bf11be 100644
      if (!conf.HasOptimization(OptimizationFlag::BlockLinking) || is_single_step) {
          code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{terminal.next}.PC());
          code.ReturnFromRunCode();
-@@ -1254,7 +1311,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDesc
+@@ -1254,7 +1318,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDesc
  
  void A32EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
      const CodePtr patch_location = code.getCurr();
@@ -267,7 +281,7 @@ index aa07357..4bf11be 100644
          code.jg(target_code_ptr);
      } else {
          code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{target_desc}.PC());
-@@ -1265,7 +1324,9 @@ void A32EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr
+@@ -1265,7 +1331,9 @@ void A32EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr
  
  void A32EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
      const CodePtr patch_location = code.getCurr();
@@ -278,7 +292,7 @@ index aa07357..4bf11be 100644
          code.jz(target_code_ptr);
      } else {
          code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{target_desc}.PC());
-@@ -1276,7 +1337,9 @@ void A32EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr
+@@ -1276,7 +1344,9 @@ void A32EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr
  
  void A32EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
      const CodePtr patch_location = code.getCurr();
@@ -289,7 +303,20 @@ index aa07357..4bf11be 100644
          code.jmp(target_code_ptr);
      } else {
          code.mov(MJitStateReg(A32::Reg::PC), A32::LocationDescriptor{target_desc}.PC());
-@@ -1298,7 +1361,7 @@ void A32EmitX64::Unpatch(const IR::LocationDescriptor& location) {
+@@ -1286,6 +1356,12 @@ void A32EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr
+ }
+ 
+ void A32EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
++    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
++        const CodePtr patch_location = code.getCurr();
++        code.xor_(code.ecx, code.ecx);
++        code.EnsurePatchLocationSize(patch_location, 10);
++        return;
++    }
+     if (!target_code_ptr) {
+         target_code_ptr = code.GetReturnFromRunCodeAddress();
+     }
+@@ -1298,7 +1374,7 @@ void A32EmitX64::Unpatch(const IR::LocationDescriptor& location) {
      EmitX64::Unpatch(location);
      if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
          code.DisableWriting();
@@ -478,7 +505,7 @@ index c353032..e1a2dac 100644
      } else {
          EmitExclusiveWriteMemory<64, &A32::UserCallbacks::MemoryWriteExclusive64>(ctx, inst);
 diff --git a/src/dynarmic/backend/x64/a32_interface.cpp b/src/dynarmic/backend/x64/a32_interface.cpp
-index 13f3a60..5e6259b 100644
+index 13f3a60..170678d 100644
 --- a/src/dynarmic/backend/x64/a32_interface.cpp
 +++ b/src/dynarmic/backend/x64/a32_interface.cpp
 @@ -7,6 +7,7 @@
@@ -573,7 +600,17 @@ index 13f3a60..5e6259b 100644
  
      ~Impl() = default;
  
-@@ -124,6 +170,37 @@ struct Jit::Impl {
+@@ -86,7 +132,8 @@ struct Jit::Impl {
+         const CodePtr current_codeptr = [this] {
+             // RSB optimization
+             const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & A32JitState::RSBPtrMask;
+-            if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr]) {
++            if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr] &&
++                jit_state.rsb_codeptrs[new_rsb_ptr] != 0) {
+                 jit_state.rsb_ptr = new_rsb_ptr;
+                 return reinterpret_cast<CodePtr>(jit_state.rsb_codeptrs[new_rsb_ptr]);
+             }
+@@ -124,6 +171,37 @@ struct Jit::Impl {
                  IR::LocationDescriptor{location_descriptor}));
      }
  
@@ -611,7 +648,7 @@ index 13f3a60..5e6259b 100644
      void ClearCache() {
          std::unique_lock lock{invalidation_mutex};
          invalidate_entire_cache = true;
-@@ -139,6 +216,7 @@ struct Jit::Impl {
+@@ -139,6 +217,7 @@ struct Jit::Impl {
      void Reset() {
          ASSERT(!jit_interface->is_executing);
          jit_state = {};
@@ -619,7 +656,7 @@ index 13f3a60..5e6259b 100644
      }
  
      void HaltExecution(HaltReason hr) {
-@@ -201,6 +279,17 @@ struct Jit::Impl {
+@@ -201,6 +280,17 @@ struct Jit::Impl {
      }
  
  private:
@@ -637,7 +674,7 @@ index 13f3a60..5e6259b 100644
      static CodePtr GetCurrentBlockThunk(void* this_voidptr) {
          Jit::Impl& this_ = *static_cast<Jit::Impl*>(this_voidptr);
          return this_.GetCurrentBlock();
-@@ -232,6 +321,18 @@ private:
+@@ -232,6 +322,18 @@ private:
          }
          block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
  
@@ -656,7 +693,7 @@ index 13f3a60..5e6259b 100644
          IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
          Optimization::PolyfillPass(ir_block, polyfill_options);
          Optimization::NamingPass(ir_block);
-@@ -246,14 +347,7 @@ private:
+@@ -246,14 +348,7 @@ private:
          }
          Optimization::IdentityRemovalPass(ir_block);
          Optimization::VerificationPass(ir_block);
@@ -672,7 +709,7 @@ index 13f3a60..5e6259b 100644
      }
  
      void PerformRequestedCacheInvalidation(HaltReason hr) {
-@@ -310,6 +404,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
+@@ -310,6 +405,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
      impl->Precompile(location_descriptor);
  }
  
