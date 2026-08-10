@@ -1567,9 +1567,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const auto spare_host_workers =
       host_concurrency > reserved_guest_workers
           ? static_cast<std::size_t>(host_concurrency) - reserved_guest_workers
-          : 1U;
+          : 0U;
   host_resource_budget.worker_count = std::clamp(
-      spare_host_workers, std::size_t{1}, maximum_background_workers);
+      spare_host_workers, std::size_t{0}, maximum_background_workers);
   output.line("[host] background-workers=" +
               std::to_string(host_resource_budget.worker_count) +
               " host-concurrency=" + std::to_string(host_concurrency) +
