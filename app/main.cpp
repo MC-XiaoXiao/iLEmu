@@ -1637,6 +1637,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         return JitPrecompilePhase::StartupService;
       };
   constexpr std::size_t maximum_catalog_offline_compile_queue = 64;
+  constexpr std::size_t maximum_catalog_preexec_blocks = 64;
+  constexpr std::uint64_t catalog_preexec_budget_nanoseconds = 4'000'000;
   std::deque<ContentIdentity> pending_catalog_compiles;
   const auto assign_jit_process_profile =
       [&translation_profiles, &catalog_index, &boot_image_identities,
@@ -1659,7 +1661,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
             translation_profiles.profile_for(
                 loaded.executable.content_identity()),
             phase);
-        if (catalog_index == nullptr) return;
+        if (catalog_index == nullptr) return false;
         std::vector<std::uint64_t> entry_points;
         const auto append_entry_points = [&](const MachOImage &image) {
           const auto *entry = catalog_index->find(image.content_identity());
@@ -1687,6 +1689,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
                       loaded.executable_path + " pending=" +
                       std::to_string(pending_catalog_compiles.size()));
         }
+        return executable_pending || linker_pending;
+      };
+  const auto precompile_catalog_generation =
+      [&output](Runtime &runtime, bool pending, std::string_view executable_path) {
+        if (!pending) return;
+        const auto compiled = runtime.cpus->precompile_pending(
+            maximum_catalog_preexec_blocks,
+            catalog_preexec_budget_nanoseconds,
+            JitPrecompileTarget::NativeCode);
+        output.line("[catalog] exec-precompile executable=" +
+                    std::string{executable_path} +
+                    " blocks=" + std::to_string(compiled));
       };
   auto initial = std::make_unique<Runtime>();
   initial->memory = std::move(initial_memory);
@@ -2187,9 +2201,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                                            environment);
               child_runtime->kernel->set_process_image(
                   path, loaded.executable.code_signature_entitlements());
-              assign_jit_process_profile(
-                  *child_runtime, loaded,
-                  precompile_phase_for_process(loaded.executable_path));
+              const auto catalog_generation_pending =
+                  assign_jit_process_profile(
+                      *child_runtime, loaded,
+                      precompile_phase_for_process(loaded.executable_path));
               child_runtime->kernel->prepare_exec(0);
               auto &child_cpu = child_runtime->cpus->cpu(0);
               child_cpu.reset();
@@ -2200,6 +2215,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
               child_cpu.set_cpsr(0x10);
               child_runtime->kernel->install_main_image_hle(
                   child_cpu, loaded.executable_path);
+              precompile_catalog_generation(
+                  *child_runtime, catalog_generation_pending,
+                  loaded.executable_path);
             }
             child_runtime->fresh_spawn_address_space = false;
             if (start_suspended) {
@@ -3033,7 +3051,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                                 pending.environment);
           runtime.kernel->set_process_image(
               pending.path, loaded.executable.code_signature_entitlements());
-          assign_jit_process_profile(
+          const auto catalog_generation_pending = assign_jit_process_profile(
               runtime, loaded,
               precompile_phase_for_process(loaded.executable_path));
           runtime.kernel->prepare_exec(pending.processor);
@@ -3046,6 +3064,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
           exec_cpu.set_cpsr(0x10);
           runtime.kernel->install_main_image_hle(exec_cpu,
                                                  loaded.executable_path);
+          precompile_catalog_generation(runtime, catalog_generation_pending,
+                                        loaded.executable_path);
           static_cast<void>(scheduler.complete_slice(
               scheduled->thread, result.ticks_consumed,
               XnuSliceCompletion::Terminate, XnuTimeAccounting::Deferred));
