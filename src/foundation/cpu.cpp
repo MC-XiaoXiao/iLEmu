@@ -22,6 +22,7 @@
 #include <dynarmic/frontend/A32/a32_ir_emitter.h>
 #include <dynarmic/ir/basic_block.h>
 #include <dynarmic/interface/A32/coprocessor.h>
+#include <dynarmic/backend/x64/exclusive_monitor_friend.h>
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
@@ -917,6 +918,27 @@ public:
         execution_context_->link(read_page_table_link_cell_, 0);
         read_page_table_link_cell_address_ =
             execution_context_->link_cell_address(read_page_table_link_cell_);
+        exclusive_monitor_lock_link_cell_ = execution_context_->create_link_cell();
+        execution_context_->link(
+            exclusive_monitor_lock_link_cell_,
+            static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(
+                Dynarmic::GetExclusiveMonitorLockPointer(&monitor_))));
+        exclusive_monitor_lock_link_cell_address_ =
+            execution_context_->link_cell_address(exclusive_monitor_lock_link_cell_);
+        exclusive_monitor_addresses_link_cell_ = execution_context_->create_link_cell();
+        execution_context_->link(
+            exclusive_monitor_addresses_link_cell_,
+            static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(
+                Dynarmic::GetExclusiveMonitorAddressPointer(&monitor_, 0))));
+        exclusive_monitor_addresses_link_cell_address_ =
+            execution_context_->link_cell_address(exclusive_monitor_addresses_link_cell_);
+        exclusive_monitor_values_link_cell_ = execution_context_->create_link_cell();
+        execution_context_->link(
+            exclusive_monitor_values_link_cell_,
+            static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(
+                Dynarmic::GetExclusiveMonitorValuePointer(&monitor_, 0))));
+        exclusive_monitor_values_link_cell_address_ =
+            execution_context_->link_cell_address(exclusive_monitor_values_link_cell_);
     }
 
     ~JitExecutor() {
@@ -926,6 +948,9 @@ public:
         execution_context_->unlink(fast_dispatch_table_link_cell_);
         execution_context_->unlink(page_table_link_cell_);
         execution_context_->unlink(read_page_table_link_cell_);
+        execution_context_->unlink(exclusive_monitor_lock_link_cell_);
+        execution_context_->unlink(exclusive_monitor_addresses_link_cell_);
+        execution_context_->unlink(exclusive_monitor_values_link_cell_);
         performance_counters().record_jit_code_cache_usage(
             process_id_, static_cast<std::uint32_t>(execution_slot_),
             recorded_jit_code_cache_bytes_, 0);
@@ -1257,6 +1282,12 @@ private:
         config.page_table_link = page_table_link_cell_address_;
         config.read_page_table_link = read_page_table_link_cell_address_;
         config.coprocessor_user_arg_link = runtime_link_cell_address_;
+        config.exclusive_monitor_lock_link =
+            exclusive_monitor_lock_link_cell_address_;
+        config.exclusive_monitor_addresses_link =
+            exclusive_monitor_addresses_link_cell_address_;
+        config.exclusive_monitor_values_link =
+            exclusive_monitor_values_link_cell_address_;
         config.processor_id = processor_id_;
         config.global_monitor = &monitor_;
         config.arch_version = dynarmic_architecture_version(
@@ -1438,6 +1469,12 @@ private:
     std::atomic<std::uint64_t> *page_table_link_cell_address_{};
     std::size_t read_page_table_link_cell_{};
     std::atomic<std::uint64_t> *read_page_table_link_cell_address_{};
+    std::size_t exclusive_monitor_lock_link_cell_{};
+    const std::atomic<std::uint64_t> *exclusive_monitor_lock_link_cell_address_{};
+    std::size_t exclusive_monitor_addresses_link_cell_{};
+    const std::atomic<std::uint64_t> *exclusive_monitor_addresses_link_cell_address_{};
+    std::size_t exclusive_monitor_values_link_cell_{};
+    const std::atomic<std::uint64_t> *exclusive_monitor_values_link_cell_address_{};
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
     std::size_t code_cache_size_{64U * 1024U * 1024U};
     std::uint64_t recorded_jit_code_cache_bytes_{};

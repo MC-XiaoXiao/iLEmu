@@ -505,7 +505,7 @@ index c353032..e1a2dac 100644
      } else {
          EmitExclusiveWriteMemory<64, &A32::UserCallbacks::MemoryWriteExclusive64>(ctx, inst);
 diff --git a/src/dynarmic/backend/x64/a32_interface.cpp b/src/dynarmic/backend/x64/a32_interface.cpp
-index 13f3a60..170678d 100644
+index 13f3a60..369310d 100644
 --- a/src/dynarmic/backend/x64/a32_interface.cpp
 +++ b/src/dynarmic/backend/x64/a32_interface.cpp
 @@ -7,6 +7,7 @@
@@ -656,7 +656,7 @@ index 13f3a60..170678d 100644
      }
  
      void HaltExecution(HaltReason hr) {
-@@ -201,6 +280,17 @@ struct Jit::Impl {
+@@ -201,6 +280,23 @@ struct Jit::Impl {
      }
  
  private:
@@ -669,12 +669,18 @@ index 13f3a60..170678d 100644
 +        jit_state.read_page_table_link = conf.read_page_table_link;
 +        jit_state.coprocessor_user_arg_link =
 +                conf.coprocessor_user_arg_link;
++        jit_state.exclusive_monitor_lock_link =
++                conf.exclusive_monitor_lock_link;
++        jit_state.exclusive_monitor_addresses_link =
++                conf.exclusive_monitor_addresses_link;
++        jit_state.exclusive_monitor_values_link =
++                conf.exclusive_monitor_values_link;
 +    }
 +
      static CodePtr GetCurrentBlockThunk(void* this_voidptr) {
          Jit::Impl& this_ = *static_cast<Jit::Impl*>(this_voidptr);
          return this_.GetCurrentBlock();
-@@ -232,6 +322,18 @@ private:
+@@ -232,6 +328,18 @@ private:
          }
          block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
  
@@ -693,7 +699,7 @@ index 13f3a60..170678d 100644
          IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
          Optimization::PolyfillPass(ir_block, polyfill_options);
          Optimization::NamingPass(ir_block);
-@@ -246,14 +348,7 @@ private:
+@@ -246,14 +354,7 @@ private:
          }
          Optimization::IdentityRemovalPass(ir_block);
          Optimization::VerificationPass(ir_block);
@@ -709,7 +715,7 @@ index 13f3a60..170678d 100644
      }
  
      void PerformRequestedCacheInvalidation(HaltReason hr) {
-@@ -310,6 +405,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
+@@ -310,6 +411,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
      impl->Precompile(location_descriptor);
  }
  
@@ -725,7 +731,7 @@ index 13f3a60..170678d 100644
      impl->ClearCache();
  }
 diff --git a/src/dynarmic/backend/x64/a32_jitstate.h b/src/dynarmic/backend/x64/a32_jitstate.h
-index cc13abf..e54c207 100644
+index cc13abf..937081d 100644
 --- a/src/dynarmic/backend/x64/a32_jitstate.h
 +++ b/src/dynarmic/backend/x64/a32_jitstate.h
 @@ -5,6 +5,7 @@
@@ -736,7 +742,7 @@ index cc13abf..e54c207 100644
  #include <array>
  
  #include <mcl/stdint.hpp>
-@@ -58,6 +59,31 @@ struct A32JitState {
+@@ -58,6 +59,38 @@ struct A32JitState {
      u32 Fpscr() const;
      void SetFpscr(u32 FPSCR);
  
@@ -764,6 +770,13 @@ index cc13abf..e54c207 100644
 +
 +    // Optional runtime owner for Coprocessor::Callback user arguments.
 +    const std::atomic<u64>* coprocessor_user_arg_link = nullptr;
++
++    // Runtime-owned exclusive monitor bases used by fast exclusive-memory
++    // sequences. Keeping these in link cells makes emitted code independent of
++    // the executor's monitor allocation.
++    const std::atomic<u64>* exclusive_monitor_lock_link = nullptr;
++    const std::atomic<u64>* exclusive_monitor_addresses_link = nullptr;
++    const std::atomic<u64>* exclusive_monitor_values_link = nullptr;
 +
      u64 GetUniqueHash() const noexcept {
          return (static_cast<u64>(upper_location_descriptor) << 32) | (static_cast<u64>(Reg[15]));
@@ -1212,7 +1225,7 @@ index 450b16d..aa1f27b 100644
      } else {
          EmitExclusiveWriteMemory<128, &A64::UserCallbacks::MemoryWriteExclusive128>(ctx, inst);
 diff --git a/src/dynarmic/backend/x64/a64_interface.cpp b/src/dynarmic/backend/x64/a64_interface.cpp
-index 7c0fa8d..71f1709 100644
+index 7c0fa8d..72a10e4 100644
 --- a/src/dynarmic/backend/x64/a64_interface.cpp
 +++ b/src/dynarmic/backend/x64/a64_interface.cpp
 @@ -6,6 +6,7 @@
@@ -1287,7 +1300,7 @@ index 7c0fa8d..71f1709 100644
      }
  
      void HaltExecution(HaltReason hr) {
-@@ -239,6 +266,12 @@ public:
+@@ -239,6 +266,18 @@ public:
      }
  
  private:
@@ -1295,13 +1308,19 @@ index 7c0fa8d..71f1709 100644
 +        jit_state.callbacks_link = conf.callbacks_link;
 +        jit_state.lookup_link = conf.lookup_link;
 +        jit_state.fast_dispatch_table_link = conf.fast_dispatch_table_link;
++        jit_state.exclusive_monitor_lock_link =
++                conf.exclusive_monitor_lock_link;
++        jit_state.exclusive_monitor_addresses_link =
++                conf.exclusive_monitor_addresses_link;
++        jit_state.exclusive_monitor_values_link =
++                conf.exclusive_monitor_values_link;
 +    }
 +
      static CodePtr GetCurrentBlockThunk(void* thisptr) {
          Jit::Impl* this_ = static_cast<Jit::Impl*>(thisptr);
          return this_->GetCurrentBlock();
 diff --git a/src/dynarmic/backend/x64/a64_jitstate.h b/src/dynarmic/backend/x64/a64_jitstate.h
-index 0929e81..e479c38 100644
+index 0929e81..0840acd 100644
 --- a/src/dynarmic/backend/x64/a64_jitstate.h
 +++ b/src/dynarmic/backend/x64/a64_jitstate.h
 @@ -5,6 +5,7 @@
@@ -1312,7 +1331,7 @@ index 0929e81..e479c38 100644
  #include <array>
  
  #include <mcl/stdint.hpp>
-@@ -68,6 +69,16 @@ struct A64JitState {
+@@ -68,6 +69,23 @@ struct A64JitState {
      void SetFpcr(u32 value);
      void SetFpsr(u32 value);
  
@@ -1325,6 +1344,13 @@ index 0929e81..e479c38 100644
 +    // Runtime-owned indirection for the mutable fast-dispatch table used by
 +    // terminal handlers.
 +    const std::atomic<u64>* fast_dispatch_table_link = nullptr;
++
++    // Runtime-owned exclusive monitor bases used by fast exclusive-memory
++    // sequences. Keeping these in link cells makes emitted code independent of
++    // the executor's monitor allocation.
++    const std::atomic<u64>* exclusive_monitor_lock_link = nullptr;
++    const std::atomic<u64>* exclusive_monitor_addresses_link = nullptr;
++    const std::atomic<u64>* exclusive_monitor_values_link = nullptr;
 +
      u64 GetUniqueHash() const noexcept {
          const u64 fpcr_u64 = static_cast<u64>(fpcr & A64::LocationDescriptor::fpcr_mask) << A64::LocationDescriptor::fpcr_shift;
@@ -1489,7 +1515,7 @@ index 778536a..45f04bd 100644
  }  // namespace Backend::X64
  }  // namespace Dynarmic
 diff --git a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
-index 1683fe4..91e9f46 100644
+index 1683fe4..d60533e 100644
 --- a/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
 +++ b/src/dynarmic/backend/x64/emit_x64_memory.cpp.inc
 @@ -74,7 +74,9 @@ void AxxEmitX64::EmitMemoryRead(AxxEmitContext& ctx, IR::Inst* inst) {
@@ -1557,6 +1583,217 @@ index 1683fe4..91e9f46 100644
      if constexpr (bitsize != 128) {
          using T = mcl::unsigned_integer_of_size<bitsize>;
  
+@@ -361,10 +379,16 @@ void AxxEmitX64::EmitExclusiveReadMemoryInline(AxxEmitContext& ctx, IR::Inst* in
+ 
+     const auto wrapped_fn = read_fallbacks[std::make_tuple(ordered, bitsize, vaddr.getIdx(), value_idx)];
+ 
+-    EmitExclusiveLock(code, conf, tmp, tmp2.cvt32());
++    EmitExclusiveLock(
++            code, conf, tmp, tmp2.cvt32(),
++            offsetof(AxxJitState, exclusive_monitor_lock_link));
+ 
+     code.mov(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(1));
+-    code.mov(tmp, mcl::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id)));
++    EmitExclusiveMonitorElement(
++            code, conf.exclusive_monitor_addresses_link != nullptr,
++            offsetof(AxxJitState, exclusive_monitor_addresses_link), tmp,
++            GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id),
++            conf.processor_id, sizeof(Dynarmic::VAddr));
+     code.mov(qword[tmp], vaddr);
+ 
+     const auto fastmem_marker = ShouldFastmem(ctx, inst);
+@@ -398,10 +422,16 @@ void AxxEmitX64::EmitExclusiveReadMemoryInline(AxxEmitContext& ctx, IR::Inst* in
+         code.call(wrapped_fn);
+     }
+ 
+-    code.mov(tmp, mcl::bit_cast<u64>(GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id)));
++    EmitExclusiveMonitorElement(
++            code, conf.exclusive_monitor_values_link != nullptr,
++            offsetof(AxxJitState, exclusive_monitor_values_link), tmp,
++            GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id),
++            conf.processor_id, sizeof(Vector));
+     EmitWriteMemoryMov<bitsize>(code, tmp, value_idx, false);
+ 
+-    EmitExclusiveUnlock(code, conf, tmp, tmp2.cvt32());
++    EmitExclusiveUnlock(
++            code, conf, tmp, tmp2.cvt32(),
++            offsetof(AxxJitState, exclusive_monitor_lock_link));
+ 
+     if constexpr (bitsize == 128) {
+         ctx.reg_alloc.DefineValue(inst, Xbyak::Xmm{value_idx});
+@@ -441,21 +471,34 @@ void AxxEmitX64::EmitExclusiveWriteMemoryInline(AxxEmitContext& ctx, IR::Inst* i
+ 
+     const auto wrapped_fn = exclusive_write_fallbacks[std::make_tuple(ordered, bitsize, vaddr.getIdx(), value.getIdx())];
+ 
+-    EmitExclusiveLock(code, conf, tmp, eax);
++    EmitExclusiveLock(
++            code, conf, tmp, eax,
++            offsetof(AxxJitState, exclusive_monitor_lock_link));
+ 
+     SharedLabel end = GenSharedLabel();
+ 
+-    code.mov(tmp, mcl::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id)));
++    EmitExclusiveMonitorElement(
++            code, conf.exclusive_monitor_addresses_link != nullptr,
++            offsetof(AxxJitState, exclusive_monitor_addresses_link), tmp,
++            GetExclusiveMonitorAddressPointer(conf.global_monitor, conf.processor_id),
++            conf.processor_id, sizeof(Dynarmic::VAddr));
+     code.mov(status, u32(1));
+     code.cmp(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(0));
+     code.je(*end, code.T_NEAR);
+     code.cmp(qword[tmp], vaddr);
+     code.jne(*end, code.T_NEAR);
+ 
+-    EmitExclusiveTestAndClear(code, conf, vaddr, tmp, rax);
++    EmitExclusiveTestAndClear(
++            code, conf, vaddr, tmp, rax,
++            offsetof(AxxJitState, exclusive_monitor_addresses_link),
++            sizeof(Dynarmic::VAddr));
+ 
+     code.mov(code.byte[r15 + offsetof(AxxJitState, exclusive_state)], u8(0));
+-    code.mov(tmp, mcl::bit_cast<u64>(GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id)));
++    EmitExclusiveMonitorElement(
++            code, conf.exclusive_monitor_values_link != nullptr,
++            offsetof(AxxJitState, exclusive_monitor_values_link), tmp,
++            GetExclusiveMonitorValuePointer(conf.global_monitor, conf.processor_id),
++            conf.processor_id, sizeof(Vector));
+ 
+     if constexpr (bitsize == 128) {
+         code.mov(rax, qword[tmp + 0]);
+@@ -537,7 +580,9 @@ void AxxEmitX64::EmitExclusiveWriteMemoryInline(AxxEmitContext& ctx, IR::Inst* i
+ 
+     code.L(*end);
+ 
+-    EmitExclusiveUnlock(code, conf, tmp, eax);
++    EmitExclusiveUnlock(
++            code, conf, tmp, eax,
++            offsetof(AxxJitState, exclusive_monitor_lock_link));
+ 
+     ctx.reg_alloc.DefineValue(inst, status);
+ 
+diff --git a/src/dynarmic/backend/x64/emit_x64_memory.h b/src/dynarmic/backend/x64/emit_x64_memory.h
+index d8d6ddd..f84afa9 100644
+--- a/src/dynarmic/backend/x64/emit_x64_memory.h
++++ b/src/dynarmic/backend/x64/emit_x64_memory.h
+@@ -351,44 +351,104 @@ const void* EmitWriteMemoryMov(BlockOfCode& code, const Xbyak::RegExp& addr, int
+     return fastmem_location;
+ }
+ 
++template<typename Pointer>
++void EmitExclusiveMonitorBase(
++        BlockOfCode& code, bool use_link, std::size_t link_offset,
++        Xbyak::Reg64 pointer, Pointer direct_pointer) {
++    if (use_link) {
++        code.mov(pointer, qword[r15 + link_offset]);
++        code.mov(pointer, qword[pointer]);
++    } else {
++        code.mov(pointer, mcl::bit_cast<u64>(direct_pointer));
++    }
++}
++
++template<typename Pointer>
++void EmitExclusiveMonitorElement(
++        BlockOfCode& code, bool use_link, std::size_t link_offset,
++        Xbyak::Reg64 pointer, Pointer direct_pointer, std::size_t index,
++        std::size_t element_size) {
++    if (use_link) {
++        EmitExclusiveMonitorBase(
++                code, true, link_offset, pointer, direct_pointer);
++        if (index != 0) {
++            code.add(pointer, static_cast<u32>(index * element_size));
++        }
++    } else {
++        code.mov(pointer, mcl::bit_cast<u64>(direct_pointer));
++    }
++}
++
+ template<typename UserConfig>
+-void EmitExclusiveLock(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 pointer, Xbyak::Reg32 tmp) {
++void EmitExclusiveLock(
++        BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 pointer,
++        Xbyak::Reg32 tmp, std::size_t lock_link_offset) {
+     if (conf.HasOptimization(OptimizationFlag::Unsafe_IgnoreGlobalMonitor)) {
+         return;
+     }
+ 
+-    code.mov(pointer, mcl::bit_cast<u64>(GetExclusiveMonitorLockPointer(conf.global_monitor)));
++    EmitExclusiveMonitorBase(
++            code, conf.exclusive_monitor_lock_link != nullptr,
++            lock_link_offset, pointer,
++            GetExclusiveMonitorLockPointer(conf.global_monitor));
+     EmitSpinLockLock(code, pointer, tmp);
+ }
+ 
+ template<typename UserConfig>
+-void EmitExclusiveUnlock(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 pointer, Xbyak::Reg32 tmp) {
++void EmitExclusiveUnlock(
++        BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 pointer,
++        Xbyak::Reg32 tmp, std::size_t lock_link_offset) {
+     if (conf.HasOptimization(OptimizationFlag::Unsafe_IgnoreGlobalMonitor)) {
+         return;
+     }
+ 
+-    code.mov(pointer, mcl::bit_cast<u64>(GetExclusiveMonitorLockPointer(conf.global_monitor)));
++    EmitExclusiveMonitorBase(
++            code, conf.exclusive_monitor_lock_link != nullptr,
++            lock_link_offset, pointer,
++            GetExclusiveMonitorLockPointer(conf.global_monitor));
+     EmitSpinLockUnlock(code, pointer, tmp);
+ }
+ 
+ template<typename UserConfig>
+-void EmitExclusiveTestAndClear(BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 vaddr, Xbyak::Reg64 pointer, Xbyak::Reg64 tmp) {
++void EmitExclusiveTestAndClear(
++        BlockOfCode& code, const UserConfig& conf, Xbyak::Reg64 vaddr,
++        Xbyak::Reg64 pointer, Xbyak::Reg64 tmp,
++        std::size_t addresses_link_offset, std::size_t address_element_size) {
+     if (conf.HasOptimization(OptimizationFlag::Unsafe_IgnoreGlobalMonitor)) {
+         return;
+     }
+ 
+     code.mov(tmp, 0xDEAD'DEAD'DEAD'DEAD);
+     const size_t processor_count = GetExclusiveMonitorProcessorCount(conf.global_monitor);
+-    for (size_t processor_index = 0; processor_index < processor_count; processor_index++) {
+-        if (processor_index == conf.processor_id) {
+-            continue;
++    if (conf.exclusive_monitor_addresses_link != nullptr) {
++        EmitExclusiveMonitorBase(
++                code, true, addresses_link_offset, pointer,
++                GetExclusiveMonitorAddressPointer(conf.global_monitor, 0));
++        for (size_t processor_index = 0; processor_index < processor_count;
++             processor_index++) {
++            if (processor_index == conf.processor_id) {
++                continue;
++            }
++            Xbyak::Label ok;
++            const auto offset = static_cast<u32>(processor_index * address_element_size);
++            code.cmp(qword[pointer + offset], vaddr);
++            code.jne(ok);
++            code.mov(qword[pointer + offset], tmp);
++            code.L(ok);
++        }
++    } else {
++        for (size_t processor_index = 0; processor_index < processor_count;
++             processor_index++) {
++            if (processor_index == conf.processor_id) {
++                continue;
++            }
++            Xbyak::Label ok;
++            code.mov(pointer, mcl::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, processor_index)));
++            code.cmp(qword[pointer], vaddr);
++            code.jne(ok);
++            code.mov(qword[pointer], tmp);
++            code.L(ok);
+         }
+-        Xbyak::Label ok;
+-        code.mov(pointer, mcl::bit_cast<u64>(GetExclusiveMonitorAddressPointer(conf.global_monitor, processor_index)));
+-        code.cmp(qword[pointer], vaddr);
+-        code.jne(ok);
+-        code.mov(qword[pointer], tmp);
+-        code.L(ok);
+     }
+ }
+ 
 diff --git a/src/dynarmic/backend/x64/exclusive_monitor.cpp b/src/dynarmic/backend/x64/exclusive_monitor.cpp
 index 984b67b..abd4d44 100644
 --- a/src/dynarmic/backend/x64/exclusive_monitor.cpp
@@ -1611,7 +1848,7 @@ index 776471a..1e45aad 100644
       * Clears the code cache of all compiled code.
       * Can be called at any time. Halts execution if called within a callback.
 diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
-index 093cb57..0ea78cd 100644
+index 093cb57..e91aeb8 100644
 --- a/src/dynarmic/interface/A32/config.h
 +++ b/src/dynarmic/interface/A32/config.h
 @@ -5,6 +5,7 @@
@@ -1672,7 +1909,7 @@ index 093cb57..0ea78cd 100644
      // Writes through these callbacks may not be aligned.
      virtual void MemoryWrite8(VAddr vaddr, std::uint8_t value) = 0;
      virtual void MemoryWrite16(VAddr vaddr, std::uint16_t value) = 0;
-@@ -132,6 +162,42 @@ struct UserCallbacks : public TranslateCallbacks {
+@@ -132,6 +162,49 @@ struct UserCallbacks : public TranslateCallbacks {
  struct UserConfig {
      UserCallbacks* callbacks;
  
@@ -1712,11 +1949,18 @@ index 093cb57..0ea78cd 100644
 +    // intentionally bound to the same linked object.
 +    const std::atomic<std::uint64_t>* coprocessor_user_arg_link = nullptr;
 +
++    // Optional executor-owned indirection for the global exclusive monitor's
++    // lock and reservation arrays. Fast exclusive-memory code loads these
++    // bases through the active JitState instead of embedding host pointers.
++    const std::atomic<std::uint64_t>* exclusive_monitor_lock_link = nullptr;
++    const std::atomic<std::uint64_t>* exclusive_monitor_addresses_link = nullptr;
++    const std::atomic<std::uint64_t>* exclusive_monitor_values_link = nullptr;
++
      size_t processor_id = 0;
      ExclusiveMonitor* global_monitor = nullptr;
  
 diff --git a/src/dynarmic/interface/A64/config.h b/src/dynarmic/interface/A64/config.h
-index f160df1..5773223 100644
+index f160df1..d8d88d8 100644
 --- a/src/dynarmic/interface/A64/config.h
 +++ b/src/dynarmic/interface/A64/config.h
 @@ -5,6 +5,7 @@
@@ -1739,7 +1983,7 @@ index f160df1..5773223 100644
      // Writes through these callbacks may not be aligned.
      virtual void MemoryWrite8(VAddr vaddr, std::uint8_t value) = 0;
      virtual void MemoryWrite16(VAddr vaddr, std::uint16_t value) = 0;
-@@ -138,6 +144,22 @@ struct UserCallbacks {
+@@ -138,6 +144,29 @@ struct UserCallbacks {
  struct UserConfig {
      UserCallbacks* callbacks;
  
@@ -1758,6 +2002,13 @@ index f160df1..5773223 100644
 +    // used by terminal handlers. The backend publishes its table address into
 +    // this cell after constructing the emitter.
 +    std::atomic<std::uint64_t>* fast_dispatch_table_link = nullptr;
++
++    // Optional executor-owned indirection for the global exclusive monitor's
++    // lock and reservation arrays. Fast exclusive-memory code loads these
++    // bases through the active JitState instead of embedding host pointers.
++    const std::atomic<std::uint64_t>* exclusive_monitor_lock_link = nullptr;
++    const std::atomic<std::uint64_t>* exclusive_monitor_addresses_link = nullptr;
++    const std::atomic<std::uint64_t>* exclusive_monitor_values_link = nullptr;
 +
      size_t processor_id = 0;
      ExclusiveMonitor* global_monitor = nullptr;
