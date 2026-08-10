@@ -82,6 +82,12 @@ class GlesRenderer : public HostGraphicsDevice {
     [[nodiscard]] virtual bool accelerated() const = 0;
     [[nodiscard]] virtual bool software_fallback_allowed() const = 0;
     [[nodiscard]] virtual PerfFallbackReason failure_reason() const = 0;
+    // Approximate live host allocation footprint owned by this renderer. The
+    // value is for the unified host-resource view; zero is valid for software
+    // backends that do not retain a separate allocation pool.
+    [[nodiscard]] virtual std::uint64_t resource_bytes() const noexcept {
+        return 0;
+    }
 };
 
 struct VulkanPresenterConfiguration {

@@ -478,6 +478,7 @@ class VulkanGlesRenderer final : public GlesRenderer {
     [[nodiscard]] PerfFallbackReason failure_reason() const override {
         return last_failure_reason_.load(std::memory_order_relaxed);
     }
+    [[nodiscard]] std::uint64_t resource_bytes() const noexcept override;
     [[nodiscard]] HostNativeImage
     native_image(const HostSurface& surface) const override;
     [[nodiscard]] std::unique_ptr<CommandEncoder>
@@ -2016,6 +2017,29 @@ VkDeviceSize VulkanGlesRenderer::target_allocation_size(
     return images > maximum - target.download.size
                ? maximum
                : images + target.download.size;
+}
+
+std::uint64_t VulkanGlesRenderer::resource_bytes() const noexcept {
+    std::lock_guard lock{mutex_};
+    std::uint64_t total{};
+    const auto add = [&total](VkDeviceSize bytes) {
+        const auto value = static_cast<std::uint64_t>(bytes);
+        total = value > std::numeric_limits<std::uint64_t>::max() - total
+                    ? std::numeric_limits<std::uint64_t>::max()
+                    : total + value;
+    };
+    add(texture_cache_bytes_);
+    add(target_pool_bytes_);
+    for (const auto& [key, target] : targets_) {
+        static_cast<void>(key);
+        add(target_allocation_size(target));
+    }
+    for (const auto& slot : command_slots_) {
+        add(slot.staging.size);
+        add(slot.vertex.size);
+        add(slot.uniform.size);
+    }
+    return total;
 }
 
 void VulkanGlesRenderer::ensure_stencil_framebuffer(Target& target) {

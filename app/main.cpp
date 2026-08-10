@@ -3843,6 +3843,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const auto file_cache_stats = report_performance
                                     ? initial_runtime->memory->file_page_cache_stats()
                                     : FilePageCacheStats{};
+  const auto file_page_cache_bytes =
+      static_cast<std::uint64_t>(initial_runtime->memory->cached_file_page_count()) *
+      AddressSpace::page_size;
   host_resources.wait_idle();
   output.line(
       "[precompile] loader=" +
@@ -3943,6 +3946,31 @@ void boot(const std::vector<std::string> &args, Output &output) {
         " writeback-pending-bytes=" +
         std::to_string(artifact_stats.writeback_pending_bytes) +
         " disk-bytes=" + std::to_string(artifact_stats.disk_bytes));
+    const auto graphics_resource_bytes =
+        gles_renderer ? gles_renderer->resource_bytes() : 0U;
+    std::uint64_t host_resource_total = stopped_guest.jit_code_cache_bytes;
+    const auto add_host_resource = [&host_resource_total](std::uint64_t bytes) {
+      host_resource_total =
+          bytes > std::numeric_limits<std::uint64_t>::max() -
+                  host_resource_total
+              ? std::numeric_limits<std::uint64_t>::max()
+              : host_resource_total + bytes;
+    };
+    add_host_resource(artifact_stats.resident_bytes);
+    add_host_resource(artifact_stats.writeback_pending_bytes);
+    add_host_resource(file_page_cache_bytes);
+    add_host_resource(graphics_resource_bytes);
+    output.line(
+        "[perf-host-resources] jit-native-bytes=" +
+        std::to_string(stopped_guest.jit_code_cache_bytes) +
+        " artifact-resident-bytes=" +
+        std::to_string(artifact_stats.resident_bytes) +
+        " artifact-writeback-bytes=" +
+        std::to_string(artifact_stats.writeback_pending_bytes) +
+        " file-page-cache-bytes=" +
+        std::to_string(file_page_cache_bytes) + " graphics-bytes=" +
+        std::to_string(graphics_resource_bytes) + " total-bytes=" +
+        std::to_string(host_resource_total));
     const auto host_memory = host_memory_snapshot();
     output.line(
         "[perf-host-memory] rss-bytes=" +

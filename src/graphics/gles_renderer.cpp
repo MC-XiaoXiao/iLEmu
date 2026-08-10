@@ -6,6 +6,7 @@
 #include <memory>
 #include <mutex>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -183,6 +184,13 @@ class FallbackGlesRenderer final : public GlesRenderer {
     }
     [[nodiscard]] PerfFallbackReason failure_reason() const override {
         return primary_->failure_reason();
+    }
+    [[nodiscard]] std::uint64_t resource_bytes() const noexcept override {
+        const auto primary = primary_->resource_bytes();
+        const auto fallback = fallback_->resource_bytes();
+        return primary > std::numeric_limits<std::uint64_t>::max() - fallback
+                   ? std::numeric_limits<std::uint64_t>::max()
+                   : primary + fallback;
     }
     [[nodiscard]] HostNativeImage
     native_image(const HostSurface& surface) const override {
