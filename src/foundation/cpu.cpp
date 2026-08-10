@@ -871,6 +871,13 @@ private:
 
 class JitExecutor {
 public:
+    enum class PrecompileDisposition : std::uint8_t {
+        Completed,
+        Progress,
+        Requeue,
+        CacheFull,
+    };
+
     JitExecutor(
         std::size_t processor_id,
         std::size_t execution_slot,
@@ -1027,23 +1034,9 @@ public:
     }
 
     void set_translation_profile(
-        std::shared_ptr<JitTranslationProfile> profile,
-        JitPrecompilePhase phase) {
-        const auto locations =
-            profile ? profile->snapshot() : std::vector<std::uint64_t>{};
-        {
-            const std::lock_guard execution_lock{execution_mutex_};
-            callbacks_->set_translation_profile(profile);
-        }
-        const std::lock_guard queue_lock{precompile_queue_mutex_};
-        for (auto &queue : pending_precompile_entries_) queue.clear();
-        pending_precompile_phases_.clear();
-        inflight_precompile_entries_.clear();
-        completed_precompile_entries_.clear();
-        for (auto location = locations.rbegin(); location != locations.rend();
-             ++location) {
-            if (!enqueue_precompile_entry_locked(*location, phase)) break;
-        }
+        std::shared_ptr<JitTranslationProfile> profile) {
+        const std::lock_guard execution_lock{execution_mutex_};
+        callbacks_->set_translation_profile(std::move(profile));
     }
 
     void set_artifact_retention(JitArtifactRetention retention) {
@@ -1051,147 +1044,62 @@ public:
         callbacks_->set_artifact_retention(retention);
     }
 
-    void add_precompile_entries(
-        const std::vector<std::uint64_t> &location_descriptors,
-        JitPrecompilePhase phase) {
-        const std::lock_guard queue_lock{precompile_queue_mutex_};
-        for (const auto entry : location_descriptors) {
-            if (!enqueue_precompile_entry_locked(entry, phase)) break;
-        }
-    }
-
-    [[nodiscard]] std::optional<JitPrecompilePhase>
-    next_precompile_phase() {
-        const std::lock_guard queue_lock{precompile_queue_mutex_};
-        return next_precompile_phase_locked();
-    }
-
-    std::size_t precompile_pending(
-        std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
-        JitPrecompileTarget target) {
-        if (maximum_blocks == 0 || budget_nanoseconds == 0) {
-            return 0;
-        }
-        std::size_t candidates_remaining = 0;
-        {
-            const std::lock_guard queue_lock{precompile_queue_mutex_};
-            if (pending_precompile_phases_.empty()) {
-                return 0;
-            }
-            candidates_remaining = pending_precompile_phases_.size();
-        }
+    PrecompileDisposition precompile_descriptor(
+        std::uint64_t descriptor, JitPrecompileTarget target) {
         const std::lock_guard execution_lock{execution_mutex_};
         memory_.synchronize_shared_write_tracking();
         ensure_jit();
         constexpr std::size_t cache_reserve = 8U * 1024U * 1024U;
-        const auto started = std::chrono::steady_clock::now();
-        std::size_t compiled = 0;
-        while (compiled < maximum_blocks && candidates_remaining != 0) {
-            if (target == JitPrecompileTarget::NativeCode &&
-                jit_code_cache_used(*jit_) + cache_reserve >= code_cache_size_) {
-                break;
+        if (target == JitPrecompileTarget::NativeCode &&
+            jit_code_cache_used(*jit_) + cache_reserve >= code_cache_size_) {
+            return PrecompileDisposition::CacheFull;
+        }
+        const auto pc = static_cast<std::uint32_t>(descriptor);
+        const auto code_address = pc & ~std::uint32_t{3};
+        if (!memory_.accessible(code_address, sizeof(std::uint32_t),
+                                MemoryPermission::Execute)) {
+            return PrecompileDisposition::Requeue;
+        }
+        if (!memory_.translation_profile_stable(
+                code_address, sizeof(std::uint32_t))) {
+            callbacks_->discard_translation_location(descriptor);
+            return PrecompileDisposition::Completed;
+        }
+        const auto key = callbacks_->artifact_key(descriptor);
+        const auto probe = key ? artifact_probes_.find(descriptor)
+                               : artifact_probes_.end();
+        if (target == JitPrecompileTarget::NativeCode && key &&
+            probe != artifact_probes_.end() && probe->second.matches(*key)) {
+            return PrecompileDisposition::Progress;
+        }
+        if (target == JitPrecompileTarget::PortableIr) {
+            auto available = callbacks_->artifact_available(descriptor);
+            if (!available) {
+                callbacks_->begin(0);
+                available = callbacks_->generate_portable_artifact(
+                    *jit_, descriptor);
             }
-            std::optional<std::pair<std::uint64_t, JitPrecompilePhase>> entry;
-            {
-                const std::lock_guard queue_lock{precompile_queue_mutex_};
-                entry = take_precompile_entry_locked();
-            }
-            if (!entry) break;
-            --candidates_remaining;
-            const auto descriptor = entry->first;
-            const auto pc = static_cast<std::uint32_t>(descriptor);
-            const auto code_address = pc & ~std::uint32_t{3};
-            if (!memory_.accessible(
-                    code_address, sizeof(std::uint32_t),
-                    MemoryPermission::Execute)) {
-                // A persisted profile can name a dylib before Guest dyld maps
-                // it. Dynarmic would otherwise cache a NoExecute block which
-                // remains stale after the mapping appears. Defer the hint
-                // until its code page is executable instead.
-                const std::lock_guard queue_lock{precompile_queue_mutex_};
-                inflight_precompile_entries_.erase(descriptor);
-                static_cast<void>(enqueue_precompile_entry_locked(
-                    descriptor, JitPrecompilePhase::Remaining));
-            } else if (!memory_.translation_profile_stable(
-                           code_address, sizeof(std::uint32_t))) {
-                // Runtime slides can reuse a previously executable address for
-                // a different image section. Never let such an advisory hint
-                // turn unrelated data into a translated block.
-                callbacks_->discard_translation_location(descriptor);
-                const std::lock_guard queue_lock{precompile_queue_mutex_};
-                inflight_precompile_entries_.erase(descriptor);
-                completed_precompile_entries_.insert(descriptor);
-            } else {
-                const auto key = callbacks_->artifact_key(descriptor);
-                const auto probe = key ? artifact_probes_.find(descriptor)
-                                       : artifact_probes_.end();
-                if (target == JitPrecompileTarget::NativeCode && key &&
-                    probe != artifact_probes_.end() &&
-                    probe->second.matches(*key)) {
-                    const std::lock_guard queue_lock{precompile_queue_mutex_};
-                    inflight_precompile_entries_.erase(descriptor);
-                    completed_precompile_entries_.insert(descriptor);
-                    ++compiled;
-                    continue;
-                }
-                if (target == JitPrecompileTarget::PortableIr) {
-                    auto available = callbacks_->artifact_available(descriptor);
-                    if (!available) {
-                        // The global offline worker fills the reusable IR
-                        // store without consuming this process's native code
-                        // cache. Generated bytes are round-trip validated by
-                        // JitCallbacks before publication.
-                        callbacks_->begin(0);
-                        available = callbacks_->generate_portable_artifact(
-                            *jit_, descriptor);
-                    }
-                    {
-                        const std::lock_guard queue_lock{
-                            precompile_queue_mutex_};
-                        inflight_precompile_entries_.erase(descriptor);
-                        completed_precompile_entries_.insert(descriptor);
-                    }
-                    if (available) ++compiled;
-                } else {
-                    const auto imported =
-                        callbacks_->import_artifact(*jit_, descriptor);
-                    if (!imported) {
-                        const auto block_started =
-                            std::chrono::steady_clock::now();
-                        callbacks_->begin(0);
-                        jit_->Precompile(descriptor);
-                        performance_counters().record_jit_block_compile(
-                            static_cast<std::uint64_t>(
-                                std::chrono::duration_cast<
-                                    std::chrono::nanoseconds>(
-                                    std::chrono::steady_clock::now() -
-                                    block_started)
-                                    .count()));
-                    }
-                    if (key) {
-                        artifact_probes_[descriptor] = ArtifactProbe{
-                            key->content_identity, key->layout_identity,
-                            imported};
-                    }
-                    {
-                        const std::lock_guard queue_lock{
-                            precompile_queue_mutex_};
-                        inflight_precompile_entries_.erase(descriptor);
-                        completed_precompile_entries_.insert(descriptor);
-                    }
-                    ++compiled;
-                }
-            }
-            const auto elapsed =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - started);
-            if (static_cast<std::uint64_t>(elapsed.count()) >=
-                budget_nanoseconds) {
-                break;
-            }
+            record_code_cache_usage();
+            return available ? PrecompileDisposition::Progress
+                             : PrecompileDisposition::Completed;
+        }
+        const auto imported = callbacks_->import_artifact(*jit_, descriptor);
+        if (!imported) {
+            const auto block_started = std::chrono::steady_clock::now();
+            callbacks_->begin(0);
+            jit_->Precompile(descriptor);
+            performance_counters().record_jit_block_compile(
+                static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now() - block_started)
+                        .count()));
+        }
+        if (key) {
+            artifact_probes_[descriptor] = ArtifactProbe{
+                key->content_identity, key->layout_identity, imported};
         }
         record_code_cache_usage();
-        return compiled;
+        return PrecompileDisposition::Progress;
     }
 
     void reset_live_state() {
@@ -1384,67 +1292,6 @@ private:
         recorded_jit_code_cache_bytes_ = current;
     }
 
-    static constexpr std::size_t phase_index(JitPrecompilePhase phase) {
-        return static_cast<std::size_t>(phase);
-    }
-
-    [[nodiscard]] bool enqueue_precompile_entry_locked(
-        std::uint64_t entry, JitPrecompilePhase phase) {
-        if (entry == 0 || completed_precompile_entries_.contains(entry) ||
-            inflight_precompile_entries_.contains(entry)) {
-            return true;
-        }
-        if (const auto pending = pending_precompile_phases_.find(entry);
-            pending != pending_precompile_phases_.end()) {
-            if (phase_index(phase) < phase_index(pending->second)) {
-                pending->second = phase;
-                pending_precompile_entries_[phase_index(phase)].push_back(
-                    entry);
-            }
-            return true;
-        }
-        if (pending_precompile_phases_.size() +
-                inflight_precompile_entries_.size() +
-                completed_precompile_entries_.size() >=
-            jit_translation_profile_maximum_locations) {
-            return false;
-        }
-        pending_precompile_phases_.emplace(entry, phase);
-        pending_precompile_entries_[phase_index(phase)].push_back(entry);
-        return true;
-    }
-
-    [[nodiscard]] std::optional<JitPrecompilePhase>
-    next_precompile_phase_locked() {
-        for (std::size_t index = 0; index < pending_precompile_entries_.size();
-             ++index) {
-            auto &queue = pending_precompile_entries_[index];
-            while (!queue.empty()) {
-                const auto entry = queue.front();
-                const auto pending = pending_precompile_phases_.find(entry);
-                if (pending != pending_precompile_phases_.end() &&
-                    phase_index(pending->second) == index) {
-                    return pending->second;
-                }
-                queue.pop_front();
-            }
-        }
-        return std::nullopt;
-    }
-
-    [[nodiscard]] std::optional<std::pair<std::uint64_t,
-                                          JitPrecompilePhase>>
-    take_precompile_entry_locked() {
-        const auto phase = next_precompile_phase_locked();
-        if (!phase) return std::nullopt;
-        auto &queue = pending_precompile_entries_[phase_index(*phase)];
-        const auto entry = queue.front();
-        queue.pop_front();
-        pending_precompile_phases_.erase(entry);
-        inflight_precompile_entries_.insert(entry);
-        return std::pair{entry, *phase};
-    }
-
   public:
     void set_process_id(std::uint32_t process_id) {
         process_id_ = process_id;
@@ -1489,14 +1336,7 @@ private:
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
     std::size_t code_cache_size_{64U * 1024U * 1024U};
     std::uint64_t recorded_jit_code_cache_bytes_{};
-    std::array<std::deque<std::uint64_t>, jit_precompile_phase_count>
-        pending_precompile_entries_;
-    std::unordered_map<std::uint64_t, JitPrecompilePhase>
-        pending_precompile_phases_;
-    std::unordered_set<std::uint64_t> inflight_precompile_entries_;
-    std::unordered_set<std::uint64_t> completed_precompile_entries_;
     std::unordered_map<std::uint64_t, ArtifactProbe> artifact_probes_;
-    std::mutex precompile_queue_mutex_;
     std::mutex execution_mutex_;
 };
 
@@ -1578,8 +1418,21 @@ public:
     void set_translation_profile(
         std::shared_ptr<JitTranslationProfile> profile,
         JitPrecompilePhase phase) {
+        const auto locations =
+            profile ? profile->snapshot() : std::vector<std::uint64_t>{};
         for (auto& executor : executors_) {
-            executor->set_translation_profile(profile, phase);
+            executor->set_translation_profile(profile);
+        }
+        const std::lock_guard queue_lock{precompile_queue_mutex_};
+        for (auto &queue : pending_precompile_entries_) queue.clear();
+        pending_precompile_phases_.clear();
+        inflight_precompile_entries_.clear();
+        completed_precompile_entries_.clear();
+        deferred_precompile_entries_.clear();
+        next_precompile_executor_ = 0;
+        for (auto location = locations.rbegin(); location != locations.rend();
+             ++location) {
+            if (!enqueue_precompile_entry_locked(*location, phase)) break;
         }
     }
 
@@ -1592,47 +1445,163 @@ public:
     void add_precompile_entries(
         const std::vector<std::uint64_t> &location_descriptors,
         JitPrecompilePhase phase) {
-        for (auto& executor : executors_) {
-            executor->add_precompile_entries(location_descriptors, phase);
+        const std::lock_guard queue_lock{precompile_queue_mutex_};
+        for (const auto entry : location_descriptors) {
+            if (!enqueue_precompile_entry_locked(entry, phase)) break;
         }
     }
 
     [[nodiscard]] std::optional<JitPrecompilePhase>
     next_precompile_phase() {
-        std::optional<JitPrecompilePhase> result;
-        for (auto &executor : executors_) {
-            const auto phase = executor->next_precompile_phase();
-            if (phase &&
-                (!result || static_cast<std::uint8_t>(*phase) <
-                                static_cast<std::uint8_t>(*result))) {
-                result = phase;
-            }
-        }
-        return result;
+        const std::lock_guard queue_lock{precompile_queue_mutex_};
+        return next_precompile_phase_locked();
     }
 
     std::size_t precompile_pending(
         std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
         JitPrecompileTarget target) {
-        if (executors_.empty()) {
+        if (executors_.empty() || maximum_blocks == 0 ||
+            budget_nanoseconds == 0) {
             return 0;
         }
-        const auto blocks_per_executor =
-            std::max<std::size_t>(1, maximum_blocks / executors_.size());
-        const auto budget_per_executor =
-            std::max<std::uint64_t>(1, budget_nanoseconds / executors_.size());
+        const auto started = std::chrono::steady_clock::now();
+        const auto bounded_budget = std::min<std::uint64_t>(
+            budget_nanoseconds,
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::chrono::nanoseconds::rep>::max()));
+        const auto deadline =
+            started + std::chrono::nanoseconds{
+                          static_cast<std::chrono::nanoseconds::rep>(
+                              bounded_budget)};
         std::size_t compiled = 0;
-        for (auto& executor : executors_) {
-            compiled += executor->precompile_pending(
-                blocks_per_executor, budget_per_executor, target);
+        std::size_t processed = 0;
+        while (processed < maximum_blocks) {
+            if (std::chrono::steady_clock::now() >= deadline) break;
+            std::optional<std::pair<std::uint64_t, JitPrecompilePhase>> entry;
+            std::size_t executor_index{};
+            {
+                const std::lock_guard queue_lock{precompile_queue_mutex_};
+                entry = take_precompile_entry_locked();
+                if (!entry) break;
+                executor_index = next_precompile_executor_++ % executors_.size();
+            }
+            ++processed;
+            const auto descriptor = entry->first;
+            JitExecutor::PrecompileDisposition disposition;
+            try {
+                disposition = executors_[executor_index]->precompile_descriptor(
+                    descriptor, target);
+            } catch (...) {
+                const std::lock_guard queue_lock{precompile_queue_mutex_};
+                inflight_precompile_entries_.erase(descriptor);
+                deferred_precompile_entries_[descriptor] =
+                    JitPrecompilePhase::Remaining;
+                break;
+            }
+            {
+                const std::lock_guard queue_lock{precompile_queue_mutex_};
+                inflight_precompile_entries_.erase(descriptor);
+                if (disposition ==
+                        JitExecutor::PrecompileDisposition::Requeue) {
+                    deferred_precompile_entries_[descriptor] =
+                        JitPrecompilePhase::Remaining;
+                } else {
+                    completed_precompile_entries_.insert(descriptor);
+                }
+            }
+            if (disposition == JitExecutor::PrecompileDisposition::Progress) {
+                ++compiled;
+            }
+            if (disposition == JitExecutor::PrecompileDisposition::CacheFull) {
+                break;
+            }
         }
         return compiled;
     }
 
 private:
+    static constexpr std::size_t phase_index(JitPrecompilePhase phase) {
+        return static_cast<std::size_t>(phase);
+    }
+
+    [[nodiscard]] bool enqueue_precompile_entry_locked(
+        std::uint64_t entry, JitPrecompilePhase phase) {
+        if (const auto deferred = deferred_precompile_entries_.find(entry);
+            deferred != deferred_precompile_entries_.end()) {
+            if (phase_index(deferred->second) < phase_index(phase)) {
+                phase = deferred->second;
+            }
+            deferred_precompile_entries_.erase(deferred);
+        }
+        if (entry == 0 || completed_precompile_entries_.contains(entry) ||
+            inflight_precompile_entries_.contains(entry)) {
+            return true;
+        }
+        if (const auto pending = pending_precompile_phases_.find(entry);
+            pending != pending_precompile_phases_.end()) {
+            if (phase_index(phase) < phase_index(pending->second)) {
+                pending->second = phase;
+                pending_precompile_entries_[phase_index(phase)].push_back(
+                    entry);
+            }
+            return true;
+        }
+        if (pending_precompile_phases_.size() +
+                inflight_precompile_entries_.size() +
+                deferred_precompile_entries_.size() +
+                completed_precompile_entries_.size() >=
+            jit_translation_profile_maximum_locations) {
+            return false;
+        }
+        pending_precompile_phases_.emplace(entry, phase);
+        pending_precompile_entries_[phase_index(phase)].push_back(entry);
+        return true;
+    }
+
+    [[nodiscard]] std::optional<JitPrecompilePhase>
+    next_precompile_phase_locked() {
+        for (std::size_t index = 0; index < pending_precompile_entries_.size();
+             ++index) {
+            auto &queue = pending_precompile_entries_[index];
+            while (!queue.empty()) {
+                const auto entry = queue.front();
+                const auto pending = pending_precompile_phases_.find(entry);
+                if (pending != pending_precompile_phases_.end() &&
+                    phase_index(pending->second) == index) {
+                    return pending->second;
+                }
+                queue.pop_front();
+            }
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] std::optional<std::pair<std::uint64_t,
+                                          JitPrecompilePhase>>
+    take_precompile_entry_locked() {
+        const auto phase = next_precompile_phase_locked();
+        if (!phase) return std::nullopt;
+        auto &queue = pending_precompile_entries_[phase_index(*phase)];
+        const auto entry = queue.front();
+        queue.pop_front();
+        pending_precompile_phases_.erase(entry);
+        inflight_precompile_entries_.insert(entry);
+        return std::pair{entry, *phase};
+    }
+
     AddressSpace& memory_;
     std::shared_ptr<ExecutionContext> execution_context_;
     std::vector<std::unique_ptr<JitExecutor>> executors_;
+    std::array<std::deque<std::uint64_t>, jit_precompile_phase_count>
+        pending_precompile_entries_;
+    std::unordered_map<std::uint64_t, JitPrecompilePhase>
+        pending_precompile_phases_;
+    std::unordered_set<std::uint64_t> inflight_precompile_entries_;
+    std::unordered_map<std::uint64_t, JitPrecompilePhase>
+        deferred_precompile_entries_;
+    std::unordered_set<std::uint64_t> completed_precompile_entries_;
+    std::size_t next_precompile_executor_{};
+    std::mutex precompile_queue_mutex_;
 };
 
 Cpu::Cpu(
