@@ -3521,6 +3521,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
             idle_precompile_time_budget_ns,
             static_cast<std::uint64_t>(budget.count()));
       };
+      const auto next_host_deadline = next_host_control_deadline();
       std::optional<HostResourceController::Clock::time_point>
           host_compile_deadline;
       if (realtime_pacer && next_deadline) {
@@ -3528,6 +3529,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
         if (delay > std::chrono::nanoseconds::zero()) {
           host_compile_deadline = HostResourceController::Clock::now() + delay;
         }
+      }
+      if (next_host_deadline &&
+          (!host_compile_deadline ||
+           *next_host_deadline < *host_compile_deadline)) {
+        host_compile_deadline = *next_host_deadline;
       }
       host_resources.set_next_deadline(host_compile_deadline);
       const auto schedule_precompile_runtime =
