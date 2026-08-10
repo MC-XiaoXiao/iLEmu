@@ -133,6 +133,9 @@ public:
   [[nodiscard]] std::size_t reliable_entry_point_count() const noexcept;
   [[nodiscard]] std::vector<ContentIdentity> content_identities() const;
   [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
+  [[nodiscard]] std::uint64_t revision() const noexcept {
+    return mutation_revision_;
+  }
 
 private:
   [[nodiscard]] static std::filesystem::path normalize_path(
@@ -155,6 +158,7 @@ private:
   // generation migration, but their entry lists must never be consumed or
   // reused as trusted metadata.
   bool reliable_entry_points_current_{true};
+  std::uint64_t mutation_revision_{};
 };
 
 } // namespace ilemu

@@ -2185,8 +2185,30 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::vector<std::filesystem::path> catalog_refresh_paths;
   std::uint64_t catalog_refresh_events{};
   std::uint64_t catalog_refresh_count{};
+  struct CatalogRefreshCompletion {
+    std::uint64_t base_revision{};
+    std::vector<std::filesystem::path> paths;
+    std::shared_ptr<ExecutableCatalog> catalog;
+    ExecutableCatalogScanSummary summary;
+    std::filesystem::path staged_manifest;
+    bool manifest_staged{};
+    std::string error;
+  };
+  struct CatalogRefreshState {
+    std::mutex mutex;
+    std::optional<CatalogRefreshCompletion> completion;
+  };
+  const auto catalog_refresh_state =
+      std::make_shared<CatalogRefreshState>();
+  std::shared_ptr<HostWorkToken> catalog_refresh_task;
+  auto next_catalog_refresh_submission =
+      HostResourceController::Clock::time_point{};
+  std::uint64_t catalog_refresh_sequence{};
+  std::uint64_t catalog_refresh_scheduled{};
+  std::uint64_t catalog_refresh_rejected{};
+  std::uint64_t catalog_refresh_stale{};
   const auto refresh_catalog_after_file_mutations =
-      [&](bool refresh_when_idle) {
+      [&](bool refresh_when_idle, bool allow_schedule = true) {
         constexpr std::size_t maximum_mutations_per_poll = 128;
         if (refresh_when_idle &&
             initial_runtime->kernel->display_submitted_frames() != 0U) {
@@ -2206,6 +2228,91 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 catalog_refresh_paths.push_back(path);
               }
             };
+        std::optional<CatalogRefreshCompletion> catalog_completion;
+        {
+          const std::lock_guard lock{catalog_refresh_state->mutex};
+          if (catalog_refresh_state->completion) {
+            catalog_completion =
+                std::move(catalog_refresh_state->completion);
+            catalog_refresh_state->completion.reset();
+          }
+        }
+        if (catalog_completion) {
+          catalog_refresh_task.reset();
+          const auto requeue_completion_paths = [&] {
+            for (const auto &path : catalog_completion->paths) {
+              queue_catalog_path(path);
+            }
+            catalog_refresh_pending = !catalog_refresh_paths.empty();
+          };
+          if (!catalog_completion->error.empty()) {
+            requeue_completion_paths();
+            output.line("[catalog] mutation-refresh failed error=" +
+                        catalog_completion->error);
+          } else if (executable_catalog.revision() !=
+                     catalog_completion->base_revision) {
+            ++catalog_refresh_stale;
+            requeue_completion_paths();
+            std::error_code remove_error;
+            std::filesystem::remove(catalog_completion->staged_manifest,
+                                    remove_error);
+          } else {
+            std::unordered_set<ContentIdentity, ContentIdentityHash> previous;
+            if (catalog_index != nullptr) {
+              for (const auto &identity :
+                   executable_catalog.content_identities()) {
+                previous.insert(identity);
+              }
+            }
+            executable_catalog = std::move(*catalog_completion->catalog);
+            catalog_loaded = true;
+            catalog_index = &executable_catalog;
+            for (const auto &identity :
+                 executable_catalog.content_identities()) {
+              if (previous.contains(identity) ||
+                  std::find(pending_catalog_compiles.begin(),
+                            pending_catalog_compiles.end(), identity) !=
+                      pending_catalog_compiles.end()) {
+                continue;
+              }
+              if (pending_catalog_compiles.size() >=
+                  maximum_catalog_offline_compile_queue) {
+                pending_catalog_compiles.pop_front();
+              }
+              pending_catalog_compiles.push_back(identity);
+            }
+            bool manifest_published = false;
+            if (catalog_completion->manifest_staged) {
+              std::error_code rename_error;
+              std::filesystem::rename(catalog_completion->staged_manifest,
+                                      catalog_manifest, rename_error);
+              manifest_published = !rename_error;
+              if (rename_error) {
+                std::error_code remove_error;
+                std::filesystem::remove(
+                    catalog_completion->staged_manifest, remove_error);
+              }
+            }
+            if (!manifest_published) {
+              output.line("[catalog] mutation-refresh manifest-save=failed");
+            }
+            output.line(
+                "[catalog] mutation-refresh regular-files=" +
+                std::to_string(
+                    catalog_completion->summary.regular_files) +
+                " macho-images=" +
+                std::to_string(catalog_completion->summary.mach_o_images) +
+                " failed-files=" +
+                std::to_string(catalog_completion->summary.failed_files) +
+                " paths=" +
+                std::to_string(catalog_completion->paths.size()) +
+                " new-offline-queue=" +
+                std::to_string(pending_catalog_compiles.size()) +
+                " async=true");
+            ++catalog_refresh_count;
+          }
+        }
+        if (!allow_schedule) return;
         host_file_watcher.poll();
         const auto host_changes = host_file_watcher.publish_stable(
             host_resources,
@@ -2265,47 +2372,57 @@ void boot(const std::vector<std::string> &args, Output &output) {
           return;
         }
 
-        std::unordered_set<ContentIdentity, ContentIdentityHash> previous;
-        if (catalog_index != nullptr) {
-          for (const auto &identity : executable_catalog.content_identities()) {
-            previous.insert(identity);
-          }
+        if (catalog_refresh_task ||
+            HostResourceController::Clock::now() <
+                next_catalog_refresh_submission) {
+          return;
         }
-        try {
-          const auto summary = executable_catalog.refresh_paths(
-              *rootfs, catalog_refresh_paths, guest_architecture);
-          catalog_loaded = true;
-          catalog_index = &executable_catalog;
-          for (const auto &identity : executable_catalog.content_identities()) {
-            if (previous.contains(identity) ||
-                std::find(pending_catalog_compiles.begin(),
-                          pending_catalog_compiles.end(), identity) !=
-                    pending_catalog_compiles.end()) {
-              continue;
-            }
-            if (pending_catalog_compiles.size() >=
-                maximum_catalog_offline_compile_queue) {
-              pending_catalog_compiles.pop_front();
-            }
-            pending_catalog_compiles.push_back(identity);
-          }
-          if (!executable_catalog.save(catalog_manifest)) {
-            output.line("[catalog] mutation-refresh manifest-save=failed");
-          }
-          output.line(
-              "[catalog] mutation-refresh regular-files=" +
-              std::to_string(summary.regular_files) +
-              " macho-images=" + std::to_string(summary.mach_o_images) +
-              " failed-files=" + std::to_string(summary.failed_files) +
-              " paths=" + std::to_string(catalog_refresh_paths.size()) +
-              " new-offline-queue=" +
-              std::to_string(pending_catalog_compiles.size()));
-          ++catalog_refresh_count;
-          catalog_refresh_pending = false;
-          catalog_refresh_paths.clear();
-        } catch (const std::exception &error) {
-          output.line("[catalog] mutation-refresh failed error=" +
-                      std::string{error.what()});
+        auto refresh_paths = std::make_shared<
+            std::vector<std::filesystem::path>>(
+            std::move(catalog_refresh_paths));
+        catalog_refresh_paths.clear();
+        catalog_refresh_pending = false;
+        auto catalog_snapshot =
+            std::make_shared<ExecutableCatalog>(executable_catalog);
+        const auto base_revision = executable_catalog.revision();
+        const auto sequence = ++catalog_refresh_sequence;
+        const auto staged_manifest = std::filesystem::path{
+            catalog_manifest + ".refresh-" + std::to_string(sequence)};
+        catalog_refresh_task = host_resources.submit(
+            HostWorkKind::Maintenance, std::nullopt,
+            [state = catalog_refresh_state,
+             catalog = std::move(catalog_snapshot),
+             paths = refresh_paths, root = *rootfs,
+             architecture = guest_architecture, base_revision,
+             staged_manifest]() mutable {
+              CatalogRefreshCompletion completion;
+              completion.base_revision = base_revision;
+              completion.paths = std::move(*paths);
+              completion.catalog = std::move(catalog);
+              completion.staged_manifest = staged_manifest;
+              try {
+                completion.summary = completion.catalog->refresh_paths(
+                    root, completion.paths, architecture);
+                completion.manifest_staged =
+                    completion.catalog->save(staged_manifest);
+              } catch (const std::exception &error) {
+                completion.error = error.what();
+              } catch (...) {
+                completion.error = "unknown background refresh failure";
+              }
+              const std::lock_guard lock{state->mutex};
+              state->completion = std::move(completion);
+            },
+            std::chrono::milliseconds{50});
+        if (catalog_refresh_task) {
+          ++catalog_refresh_scheduled;
+        } else {
+          ++catalog_refresh_rejected;
+          next_catalog_refresh_submission =
+              HostResourceController::Clock::now() +
+              std::chrono::milliseconds{50};
+          for (const auto &path : *refresh_paths) queue_catalog_path(path);
+          catalog_refresh_pending = !catalog_refresh_paths.empty();
         }
       };
   runtimes.push_back(std::move(initial));
@@ -4104,6 +4221,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       static_cast<std::uint64_t>(initial_runtime->memory->cached_file_page_count()) *
       AddressSpace::page_size;
   host_resources.wait_idle();
+  refresh_catalog_after_file_mutations(true, false);
   static_cast<void>(host_file_watcher.publish_stable(
       host_resources,
       *initial_runtime->kernel->guest_file_generation_registry(), 0, false));
@@ -4144,12 +4262,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
       std::to_string(precompile_tasks_by_target[1]) + "/" +
       std::to_string(precompile_blocks_by_target[1].load(
           std::memory_order_relaxed)));
-  if (catalog_refresh_events != 0 || catalog_refresh_count != 0) {
+  if (catalog_refresh_events != 0 || catalog_refresh_count != 0 ||
+      catalog_refresh_scheduled != 0 || catalog_refresh_rejected != 0) {
     output.line(
         "[catalog] mutation-events=" +
         std::to_string(catalog_refresh_events) + " refreshes=" +
         std::to_string(catalog_refresh_count) + " offline-queue-pending=" +
-        std::to_string(pending_catalog_compiles.size()));
+        std::to_string(pending_catalog_compiles.size()) +
+        " async-scheduled=" +
+        std::to_string(catalog_refresh_scheduled) +
+        " async-rejected=" +
+        std::to_string(catalog_refresh_rejected) + " async-stale=" +
+        std::to_string(catalog_refresh_stale));
   }
   if (catalog_loaded) {
     output.line(

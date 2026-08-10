@@ -886,6 +886,7 @@ bool ExecutableCatalog::load(const std::filesystem::path &path) noexcept {
     entries_ = std::move(entries);
     identity_index_ = std::move(identity_index);
     reliable_entry_points_current_ = reliable_entry_points_current;
+    ++mutation_revision_;
     return true;
   } catch (...) {
     return false;
@@ -1145,6 +1146,7 @@ ExecutableCatalogKind ExecutableCatalog::classify(
 ExecutableCatalogEntry &ExecutableCatalog::upsert(
     ContentIdentity identity, const std::filesystem::path &path,
     ExecutableCatalogKind kind) {
+  ++mutation_revision_;
   const auto existing = identity_index_.find(identity);
   if (existing == identity_index_.end()) {
     const auto index = entries_.size();
@@ -1176,6 +1178,7 @@ ExecutableCatalogEntry &ExecutableCatalog::upsert(
 }
 
 void ExecutableCatalog::remove_path(const std::filesystem::path &path) {
+  ++mutation_revision_;
   for (auto entry = entries_.begin(); entry != entries_.end();) {
     entry->aliases.erase(
         std::remove(entry->aliases.begin(), entry->aliases.end(), path),
