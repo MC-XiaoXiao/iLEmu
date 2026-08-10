@@ -768,6 +768,143 @@ index cc13abf..e54c207 100644
      u64 GetUniqueHash() const noexcept {
          return (static_cast<u64>(upper_location_descriptor) << 32) | (static_cast<u64>(Reg[15]));
      }
+diff --git a/src/dynarmic/backend/x64/a64_emit_x64.cpp b/src/dynarmic/backend/x64/a64_emit_x64.cpp
+index bf296dc..f70a7c8 100644
+--- a/src/dynarmic/backend/x64/a64_emit_x64.cpp
++++ b/src/dynarmic/backend/x64/a64_emit_x64.cpp
+@@ -54,6 +54,11 @@ FP::FPCR A64EmitContext::FPCR(bool fpcr_controlled) const {
+ 
+ A64EmitX64::A64EmitX64(BlockOfCode& code, A64::UserConfig conf, A64::Jit* jit_interface)
+         : EmitX64(code), conf(conf), jit_interface{jit_interface} {
++    if (this->conf.fast_dispatch_table_link) {
++        this->conf.fast_dispatch_table_link->store(
++                reinterpret_cast<u64>(fast_dispatch_table.data()),
++                std::memory_order_release);
++    }
+     GenMemory128Accessors();
+     GenFastmemFallbacks();
+     GenTerminalHandlers();
+@@ -203,6 +208,13 @@ void A64EmitX64::GenTerminalHandlers() {
+         code.jne(code.GetReturnFromRunCodeAddress());
+     }
+     code.mov(rax, qword[r15 + offsetof(A64JitState, rsb_codeptrs) + rax * sizeof(u64)]);
++    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
++        // Linked executors do not embed per-emitter native return addresses
++        // in the RSB. Resolve the descriptor through the executor-owned fast
++        // dispatch table instead.
++        code.test(rax, rax);
++        code.jz(rsb_cache_miss);
++    }
+     code.jmp(rax);
+     PerfMapRegister(terminal_handler_pop_rsb_hint, code.getCurr(), "a64_terminal_handler_pop_rsb_hint");
+ 
+@@ -211,7 +223,15 @@ void A64EmitX64::GenTerminalHandlers() {
+         terminal_handler_fast_dispatch_hint = code.getCurr<const void*>();
+         calculate_location_descriptor();
+         code.L(rsb_cache_miss);
+-        code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table.data()));
++        if (conf.fast_dispatch_table_link) {
++            code.mov(
++                    r12,
++                    qword[r15 +
++                          offsetof(A64JitState, fast_dispatch_table_link)]);
++            code.mov(r12, qword[r12]);
++        } else {
++            code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table.data()));
++        }
+         code.mov(rbp, rbx);
+         if (code.HasHostFeature(HostFeature::SSE42)) {
+             code.crc32(rbp, r12);
+@@ -229,8 +249,8 @@ void A64EmitX64::GenTerminalHandlers() {
+         PerfMapRegister(terminal_handler_fast_dispatch_hint, code.getCurr(), "a64_terminal_handler_fast_dispatch_hint");
+ 
+         code.align();
+-        fast_dispatch_table_lookup = code.getCurr<FastDispatchEntry& (*)(u64)>();
+-        code.mov(code.ABI_PARAM2, reinterpret_cast<u64>(fast_dispatch_table.data()));
++        fast_dispatch_table_lookup =
++                code.getCurr<FastDispatchEntry& (*)(u64, FastDispatchEntry*)>();
+         if (code.HasHostFeature(HostFeature::SSE42)) {
+             code.crc32(code.ABI_PARAM1, code.ABI_PARAM2);
+         }
+@@ -617,6 +637,11 @@ void A64EmitX64::EmitTerminalImpl(IR::Term::ReturnToDispatch, IR::LocationDescri
+ }
+ 
+ void A64EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDescriptor, bool is_single_step) {
++    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
++        code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
++        code.mov(qword[r15 + offsetof(A64JitState, pc)], rax);
++    }
++
+     if (!conf.HasOptimization(OptimizationFlag::BlockLinking) || is_single_step) {
+         code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
+         code.mov(qword[r15 + offsetof(A64JitState, pc)], rax);
+@@ -650,6 +675,11 @@ void A64EmitX64::EmitTerminalImpl(IR::Term::LinkBlock terminal, IR::LocationDesc
+ }
+ 
+ void A64EmitX64::EmitTerminalImpl(IR::Term::LinkBlockFast terminal, IR::LocationDescriptor, bool is_single_step) {
++    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
++        code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
++        code.mov(qword[r15 + offsetof(A64JitState, pc)], rax);
++    }
++
+     if (!conf.HasOptimization(OptimizationFlag::BlockLinking) || is_single_step) {
+         code.mov(rax, A64::LocationDescriptor{terminal.next}.PC());
+         code.mov(qword[r15 + offsetof(A64JitState, pc)], rax);
+@@ -715,7 +745,9 @@ void A64EmitX64::EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDesc
+ 
+ void A64EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
+     const CodePtr patch_location = code.getCurr();
+-    if (target_code_ptr) {
++    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
++        code.jg(terminal_handler_fast_dispatch_hint);
++    } else if (target_code_ptr) {
+         code.jg(target_code_ptr);
+     } else {
+         code.mov(rax, A64::LocationDescriptor{target_desc}.PC());
+@@ -727,7 +759,9 @@ void A64EmitX64::EmitPatchJg(const IR::LocationDescriptor& target_desc, CodePtr
+ 
+ void A64EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
+     const CodePtr patch_location = code.getCurr();
+-    if (target_code_ptr) {
++    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
++        code.jz(terminal_handler_fast_dispatch_hint);
++    } else if (target_code_ptr) {
+         code.jz(target_code_ptr);
+     } else {
+         code.mov(rax, A64::LocationDescriptor{target_desc}.PC());
+@@ -739,7 +773,9 @@ void A64EmitX64::EmitPatchJz(const IR::LocationDescriptor& target_desc, CodePtr
+ 
+ void A64EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr target_code_ptr) {
+     const CodePtr patch_location = code.getCurr();
+-    if (target_code_ptr) {
++    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
++        code.jmp(terminal_handler_fast_dispatch_hint);
++    } else if (target_code_ptr) {
+         code.jmp(target_code_ptr);
+     } else {
+         code.mov(rax, A64::LocationDescriptor{target_desc}.PC());
+@@ -750,6 +786,12 @@ void A64EmitX64::EmitPatchJmp(const IR::LocationDescriptor& target_desc, CodePtr
+ }
+ 
+ void A64EmitX64::EmitPatchMovRcx(CodePtr target_code_ptr) {
++    if (conf.fast_dispatch_table_link && conf.HasOptimization(OptimizationFlag::FastDispatch)) {
++        const CodePtr patch_location = code.getCurr();
++        code.xor_(code.ecx, code.ecx);
++        code.EnsurePatchLocationSize(patch_location, 10);
++        return;
++    }
+     if (!target_code_ptr) {
+         target_code_ptr = code.GetReturnFromRunCodeAddress();
+     }
+@@ -762,7 +804,7 @@ void A64EmitX64::Unpatch(const IR::LocationDescriptor& location) {
+     EmitX64::Unpatch(location);
+     if (conf.HasOptimization(OptimizationFlag::FastDispatch)) {
+         code.DisableWriting();
+-        (*fast_dispatch_table_lookup)(location.Value()) = {};
++        (*fast_dispatch_table_lookup)(location.Value(), fast_dispatch_table.data()) = {};
+         code.EnableWriting();
+     }
+ }
 diff --git a/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp b/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp
 index 450b16d..8864ce4 100644
 --- a/src/dynarmic/backend/x64/a64_emit_x64_memory.cpp
@@ -874,6 +1011,70 @@ index 450b16d..8864ce4 100644
          EmitExclusiveWriteMemoryInline<128, &A64::UserCallbacks::MemoryWriteExclusive128>(ctx, inst);
      } else {
          EmitExclusiveWriteMemory<128, &A64::UserCallbacks::MemoryWriteExclusive128>(ctx, inst);
+diff --git a/src/dynarmic/backend/x64/a64_interface.cpp b/src/dynarmic/backend/x64/a64_interface.cpp
+index 7c0fa8d..5b5397a 100644
+--- a/src/dynarmic/backend/x64/a64_interface.cpp
++++ b/src/dynarmic/backend/x64/a64_interface.cpp
+@@ -63,6 +63,7 @@ public:
+             , emitter(block_of_code, conf, jit)
+             , polyfill_options(GenPolyfillOptions(block_of_code)) {
+         ASSERT(conf.page_table_address_space_bits >= 12 && conf.page_table_address_space_bits <= 64);
++        BindExecutionContext();
+     }
+ 
+     ~Impl() = default;
+@@ -81,7 +82,8 @@ public:
+         const CodePtr current_code_ptr = [this] {
+             // RSB optimization
+             const u32 new_rsb_ptr = (jit_state.rsb_ptr - 1) & A64JitState::RSBPtrMask;
+-            if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr]) {
++            if (jit_state.GetUniqueHash() == jit_state.rsb_location_descriptors[new_rsb_ptr] &&
++                jit_state.rsb_codeptrs[new_rsb_ptr] != 0) {
+                 jit_state.rsb_ptr = new_rsb_ptr;
+                 return reinterpret_cast<CodePtr>(jit_state.rsb_codeptrs[new_rsb_ptr]);
+             }
+@@ -129,6 +131,7 @@ public:
+     void Reset() {
+         ASSERT(!is_executing);
+         jit_state = {};
++        BindExecutionContext();
+     }
+ 
+     void HaltExecution(HaltReason hr) {
+@@ -239,6 +242,10 @@ public:
+     }
+ 
+ private:
++    void BindExecutionContext() {
++        jit_state.fast_dispatch_table_link = conf.fast_dispatch_table_link;
++    }
++
+     static CodePtr GetCurrentBlockThunk(void* thisptr) {
+         Jit::Impl* this_ = static_cast<Jit::Impl*>(thisptr);
+         return this_->GetCurrentBlock();
+diff --git a/src/dynarmic/backend/x64/a64_jitstate.h b/src/dynarmic/backend/x64/a64_jitstate.h
+index 0929e81..1dc6605 100644
+--- a/src/dynarmic/backend/x64/a64_jitstate.h
++++ b/src/dynarmic/backend/x64/a64_jitstate.h
+@@ -5,6 +5,7 @@
+ 
+ #pragma once
+ 
++#include <atomic>
+ #include <array>
+ 
+ #include <mcl/stdint.hpp>
+@@ -68,6 +69,10 @@ struct A64JitState {
+     void SetFpcr(u32 value);
+     void SetFpsr(u32 value);
+ 
++    // Runtime-owned indirection for the mutable fast-dispatch table used by
++    // terminal handlers.
++    const std::atomic<u64>* fast_dispatch_table_link = nullptr;
++
+     u64 GetUniqueHash() const noexcept {
+         const u64 fpcr_u64 = static_cast<u64>(fpcr & A64::LocationDescriptor::fpcr_mask) << A64::LocationDescriptor::fpcr_shift;
+         const u64 pc_u64 = pc & A64::LocationDescriptor::pc_mask;
 diff --git a/src/dynarmic/backend/x64/callback.cpp b/src/dynarmic/backend/x64/callback.cpp
 index 1ecd830..c2cac26 100644
 --- a/src/dynarmic/backend/x64/callback.cpp
@@ -1261,10 +1462,18 @@ index 093cb57..0ea78cd 100644
      ExclusiveMonitor* global_monitor = nullptr;
  
 diff --git a/src/dynarmic/interface/A64/config.h b/src/dynarmic/interface/A64/config.h
-index f160df1..fbe7386 100644
+index f160df1..a819c25 100644
 --- a/src/dynarmic/interface/A64/config.h
 +++ b/src/dynarmic/interface/A64/config.h
-@@ -95,6 +95,11 @@ struct UserCallbacks {
+@@ -5,6 +5,7 @@
+ 
+ #pragma once
+ 
++#include <atomic>
+ #include <array>
+ #include <cstddef>
+ #include <cstdint>
+@@ -95,6 +96,11 @@ struct UserCallbacks {
      virtual std::uint64_t MemoryRead64(VAddr vaddr) = 0;
      virtual Vector MemoryRead128(VAddr vaddr) = 0;
  
@@ -1276,6 +1485,18 @@ index f160df1..fbe7386 100644
      // Writes through these callbacks may not be aligned.
      virtual void MemoryWrite8(VAddr vaddr, std::uint8_t value) = 0;
      virtual void MemoryWrite16(VAddr vaddr, std::uint16_t value) = 0;
+@@ -138,6 +144,11 @@ struct UserCallbacks {
+ struct UserConfig {
+     UserCallbacks* callbacks;
+ 
++    // Optional executor-owned indirection for the mutable fast-dispatch table
++    // used by terminal handlers. The backend publishes its table address into
++    // this cell after constructing the emitter.
++    std::atomic<std::uint64_t>* fast_dispatch_table_link = nullptr;
++
+     size_t processor_id = 0;
+     ExclusiveMonitor* global_monitor = nullptr;
+ 
 diff --git a/src/dynarmic/interface/exclusive_monitor.h b/src/dynarmic/interface/exclusive_monitor.h
 index 4813675..896abb0 100644
 --- a/src/dynarmic/interface/exclusive_monitor.h
