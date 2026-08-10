@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -80,6 +81,13 @@ constexpr std::size_t maximum_shared_monitor_processes = 1024;
 constexpr std::size_t maximum_shared_monitor_slots =
     maximum_virtual_processors * maximum_shared_monitor_processes;
 constexpr std::size_t maximum_background_workers = 8;
+constexpr std::size_t bytes_per_mebibyte = 1024U * 1024U;
+constexpr std::size_t jit_minimum_per_executor_bytes =
+    8U * bytes_per_mebibyte;
+constexpr std::size_t jit_emergency_budget_bytes =
+    256U * bytes_per_mebibyte;
+constexpr std::size_t jit_maximum_adaptive_budget_bytes =
+    1024U * bytes_per_mebibyte;
 constexpr std::size_t arm_thumb_breakpoint_size = 2;
 constexpr std::size_t arm_breakpoint_size = 4;
 // GDB and mixed SDL/control sessions still use this bounded fallback because
@@ -113,6 +121,107 @@ struct HostMemorySnapshot {
     if (label == "VmHWM:") snapshot.peak_rss_bytes = bytes;
     if (label == "VmSize:") snapshot.virtual_bytes = bytes;
     if (label == "RssFile:") snapshot.file_mapped_bytes = bytes;
+  }
+#endif
+  return snapshot;
+}
+
+struct HostMemoryBudgetSnapshot {
+  std::uint64_t physical_bytes{};
+  std::uint64_t available_bytes{};
+  std::uint64_t rss_bytes{};
+  // Zero means that no finite cgroup limit/current value was available.
+  std::uint64_t cgroup_limit_bytes{};
+  std::uint64_t cgroup_current_bytes{};
+};
+
+[[nodiscard]] std::optional<std::uint64_t> read_decimal_file(
+    const std::filesystem::path& path) {
+  std::ifstream input{path};
+  std::string value;
+  input >> value;
+  if (!input || value.empty() || value == "max") return std::nullopt;
+  std::size_t consumed{};
+  try {
+    const auto parsed = std::stoull(value, &consumed, 10);
+    if (consumed != value.size()) return std::nullopt;
+    return static_cast<std::uint64_t>(parsed);
+  } catch (const std::exception&) {
+    return std::nullopt;
+  }
+}
+
+[[nodiscard]] HostMemoryBudgetSnapshot host_memory_budget_snapshot() {
+  HostMemoryBudgetSnapshot snapshot;
+  snapshot.rss_bytes = host_memory_snapshot().rss_bytes;
+#if defined(__linux__)
+  {
+    std::ifstream meminfo{"/proc/meminfo"};
+    std::string line;
+    while (std::getline(meminfo, line)) {
+      std::istringstream fields{line};
+      std::string label;
+      std::uint64_t value{};
+      std::string unit;
+      fields >> label >> value >> unit;
+      if (!fields || unit != "kB" ||
+          value > std::numeric_limits<std::uint64_t>::max() / 1024U) {
+        continue;
+      }
+      const auto bytes = value * 1024U;
+      if (label == "MemTotal:") snapshot.physical_bytes = bytes;
+      if (label == "MemAvailable:") snapshot.available_bytes = bytes;
+    }
+  }
+
+  std::filesystem::path cgroup_path;
+  {
+    std::ifstream groups{"/proc/self/cgroup"};
+    std::string line;
+    while (std::getline(groups, line)) {
+      constexpr std::string_view unified_prefix = "0::";
+      if (!line.starts_with(unified_prefix)) continue;
+      auto relative = line.substr(unified_prefix.size());
+      while (!relative.empty() && relative.front() == '/')
+        relative.erase(relative.begin());
+      cgroup_path = std::filesystem::path{"/sys/fs/cgroup"};
+      if (!relative.empty()) cgroup_path /= relative;
+      break;
+    }
+  }
+
+  const auto read_first = [](const std::array<std::filesystem::path, 3>& paths)
+      -> std::optional<std::uint64_t> {
+    for (const auto& path : paths) {
+      if (path.empty()) continue;
+      if (const auto value = read_decimal_file(path)) return value;
+    }
+    return std::nullopt;
+  };
+  const std::array<std::filesystem::path, 3> limit_paths{
+      cgroup_path.empty() ? std::filesystem::path{}
+                          : cgroup_path / "memory.max",
+      cgroup_path.empty() ? std::filesystem::path{}
+                          : cgroup_path / "memory.limit_in_bytes",
+      std::filesystem::path{"/sys/fs/cgroup/memory.max"},
+  };
+  const std::array<std::filesystem::path, 3> current_paths{
+      cgroup_path.empty() ? std::filesystem::path{}
+                          : cgroup_path / "memory.current",
+      cgroup_path.empty() ? std::filesystem::path{}
+                          : cgroup_path / "memory.usage_in_bytes",
+      std::filesystem::path{"/sys/fs/cgroup/memory.current"},
+  };
+  snapshot.cgroup_limit_bytes = read_first(limit_paths).value_or(0U);
+  snapshot.cgroup_current_bytes = read_first(current_paths).value_or(0U);
+  // cgroup-v1 uses a very large sentinel for "unlimited". Treat any limit
+  // many times larger than physical memory as equivalent to no finite limit.
+  if (snapshot.cgroup_limit_bytes != 0U && snapshot.physical_bytes != 0U &&
+      snapshot.physical_bytes <=
+          std::numeric_limits<std::uint64_t>::max() / 2U &&
+      snapshot.cgroup_limit_bytes >
+          snapshot.physical_bytes * std::uint64_t{2U}) {
+    snapshot.cgroup_limit_bytes = 0U;
   }
 #endif
   return snapshot;
@@ -212,12 +321,13 @@ private:
 class JitCodeCacheGovernor {
 public:
   JitCodeCacheGovernor(std::size_t per_executor_cap,
-                       std::size_t guest_processor_count)
+                       std::size_t guest_processor_count,
+                       std::size_t total_budget)
       : per_executor_cap_{per_executor_cap},
-        total_budget_{std::max<std::size_t>(
-            std::size_t{640U} * 1024U * 1024U,
-            std::size_t{1U} * 1024U * 1024U *
-                std::max<std::size_t>(1U, guest_processor_count))},
+        total_budget_{std::max(
+            {total_budget, emergency_budget_bytes,
+             minimum_per_executor_bytes *
+                 std::max<std::size_t>(1U, guest_processor_count)})},
         normal_budget_{total_budget_ - emergency_budget_bytes} {}
 
   JitCodeCacheGovernor(const JitCodeCacheGovernor &) = delete;
@@ -282,16 +392,9 @@ public:
 
 private:
   static constexpr std::size_t minimum_per_executor_bytes =
-      // Dynarmic allocates a 2 MiB constant pool while constructing each
-      // backend. Keep emergency admissions large enough to construct a JIT;
-      // a smaller reservation turns process creation into an avoidable host
-      // exception instead of a bounded cache admission.
-      8U * 1024U * 1024U;
+      jit_minimum_per_executor_bytes;
   static constexpr std::size_t emergency_budget_bytes =
-      // Keep enough bounded minimum-cache admissions for SpringBoard's
-      // service fan-out and one foreground application without increasing
-      // the global 640 MiB reservation ceiling.
-      256U * 1024U * 1024U;
+      jit_emergency_budget_bytes;
 
   friend class JitCodeCacheReservation;
 
@@ -747,6 +850,7 @@ std::string usage() {
          "  ilemu boot --rootfs DIR [--device iPhone1,1|iPhone1,2|iPhone2,1] "
          "[--binary /sbin/launchd] [--ticks N] "
          "[--cores N] [--jit-cache-mib 8..128] "
+         "[--jit-cache-budget-mib 256..4096] "
          "[--watch-address ADDR] [--gdb PORT] "
          "[--display headless|sdl] [--network isolated|loopback|host] "
          "[--gles-backend auto|software|vulkan] [--gpu] "
@@ -847,6 +951,60 @@ std::uintmax_t parse_mib_value(std::string_view value, std::string_view name,
                              std::to_string(maximum) + " MiB"};
   }
   return static_cast<std::uintmax_t>(mebibytes) * 1024U * 1024U;
+}
+
+struct JitCodeCacheBudget {
+  std::size_t total_bytes{};
+  HostMemoryBudgetSnapshot memory;
+  bool explicit_override{};
+};
+
+[[nodiscard]] JitCodeCacheBudget jit_code_cache_budget(
+    const std::vector<std::string>& args, std::size_t guest_processor_count) {
+  const auto memory = host_memory_budget_snapshot();
+  const auto processor_count = std::max<std::size_t>(1U, guest_processor_count);
+  const auto minimum_total = jit_emergency_budget_bytes +
+                             jit_minimum_per_executor_bytes * processor_count;
+  if (const auto configured = option(args, "--jit-cache-budget-mib")) {
+    return JitCodeCacheBudget{
+        static_cast<std::size_t>(parse_mib_value(
+            *configured, "--jit-cache-budget-mib", 256U, 4096U)),
+        memory,
+        true,
+    };
+  }
+
+  auto effective_limit = memory.physical_bytes;
+  if (memory.cgroup_limit_bytes != 0U) {
+    effective_limit = effective_limit == 0U
+                          ? memory.cgroup_limit_bytes
+                          : std::min(effective_limit,
+                                     memory.cgroup_limit_bytes);
+  }
+  if (effective_limit == 0U) {
+    effective_limit = jit_maximum_adaptive_budget_bytes;
+  }
+
+  auto headroom = memory.available_bytes;
+  if (memory.cgroup_limit_bytes != 0U &&
+      memory.cgroup_current_bytes < memory.cgroup_limit_bytes) {
+    headroom = std::min(
+        headroom, memory.cgroup_limit_bytes - memory.cgroup_current_bytes);
+  }
+  if (memory.rss_bytes < effective_limit) {
+    headroom = std::min(headroom, effective_limit - memory.rss_bytes);
+  }
+  // Keep code-cache reservations below both a fraction of total capacity and
+  // a fraction of current headroom. The hard ceiling remains a safety bound;
+  // unlike the old fixed floor, low-memory/cgroup pressure can lower it.
+  const auto capacity_target = effective_limit / 8U;
+  const auto pressure_target = headroom / 2U;
+  auto target = std::min(capacity_target, pressure_target);
+  if (target == 0U) target = std::size_t{640U} * bytes_per_mebibyte;
+  target = std::clamp<std::uint64_t>(
+      target, static_cast<std::uint64_t>(minimum_total),
+      static_cast<std::uint64_t>(jit_maximum_adaptive_budget_bytes));
+  return JitCodeCacheBudget{static_cast<std::size_t>(target), memory, false};
 }
 
 std::size_t jit_artifact_memory_limit(
@@ -1378,9 +1536,32 @@ void boot(const std::vector<std::string> &args, Output &output) {
   }
   const auto configured_jit_code_cache_size =
       jit_code_cache_size(args);
+  const auto jit_cache_budget =
+      jit_code_cache_budget(args, guest_processor_count);
   output.line("[jit] code-cache-mib=" +
               std::to_string(configured_jit_code_cache_size /
                              1024U / 1024U));
+  output.line(
+      "[jit] host-memory physical-mib=" +
+      std::to_string(jit_cache_budget.memory.physical_bytes /
+                     bytes_per_mebibyte) +
+      " available-mib=" +
+      std::to_string(jit_cache_budget.memory.available_bytes /
+                     bytes_per_mebibyte) +
+      " rss-mib=" +
+      std::to_string(jit_cache_budget.memory.rss_bytes / bytes_per_mebibyte) +
+      " cgroup-limit-mib=" +
+      (jit_cache_budget.memory.cgroup_limit_bytes == 0U
+           ? std::string{"unlimited"}
+           : std::to_string(jit_cache_budget.memory.cgroup_limit_bytes /
+                            bytes_per_mebibyte)) +
+      " cgroup-current-mib=" +
+      std::to_string(jit_cache_budget.memory.cgroup_current_bytes /
+                     bytes_per_mebibyte) +
+      " budget-source=" +
+      (jit_cache_budget.explicit_override ? "explicit" : "adaptive") +
+      " total-budget-mib=" +
+      std::to_string(jit_cache_budget.total_bytes / bytes_per_mebibyte));
   std::unique_ptr<GuestSliceWorkerPool> guest_slice_workers;
   if (guest_processor_count > 1) {
     guest_slice_workers =
@@ -1548,7 +1729,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
     return base;
   };
   JitCodeCacheGovernor jit_code_cache_governor{
-      configured_jit_code_cache_size, guest_processor_count};
+      configured_jit_code_cache_size, guest_processor_count,
+      jit_cache_budget.total_bytes};
   output.line(
       "[jit] global-code-cache-budget-mib=" +
       std::to_string(jit_code_cache_governor.total_budget() / 1024U / 1024U));
