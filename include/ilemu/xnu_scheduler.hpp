@@ -214,6 +214,7 @@ private:
         std::uint64_t realtime_deadline{};
         std::uint64_t enqueue_sequence{};
         bool realtime{};
+        bool front_continuation{};
         bool local{};
     };
 
@@ -222,6 +223,9 @@ private:
         bool queued{};
         std::int32_t queued_priority{};
         std::uint64_t enqueue_sequence{};
+        // A partially used quantum stays at the queue head. Preserve that
+        // continuation priority when local and global queues are compared.
+        bool front_continuation{};
         std::optional<ReadyQueue::iterator> queue_position;
         std::optional<RealtimeQueueKey> realtime_queue_key;
         std::optional<std::uint32_t> priority_usage_shift;

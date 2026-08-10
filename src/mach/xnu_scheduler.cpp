@@ -550,6 +550,7 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position) {
     }
     record.queued = true;
     record.queued_priority = priority;
+    record.front_continuation = position == QueuePosition::Front;
     record.queued_processor = record.info.bound_processor;
     record.enqueue_sequence = next_enqueue_sequence_++;
     ++runnable_count_;
@@ -576,6 +577,7 @@ XnuScheduler::candidate_for_queue(const RunQueue& run_queue,
                           record.info.realtime_deadline,
                           record.enqueue_sequence,
                           record.info.realtime,
+                          record.front_continuation,
                           local};
 }
 
@@ -589,6 +591,12 @@ bool XnuScheduler::candidate_is_better(const QueueCandidate& left,
         left.realtime_deadline != right.realtime_deadline) {
         return left.realtime_deadline < right.realtime_deadline;
     }
+    // QueuePosition::Front is the scheduler's continuation contract.  The
+    // local and processor-set queues are selected as one ordered set, so a
+    // plain enqueue age comparison would let an older global thread displace
+    // a thread that still owns the remainder of its current quantum.
+    if (left.front_continuation != right.front_continuation)
+        return left.front_continuation;
     if (left.enqueue_sequence != right.enqueue_sequence)
         return left.enqueue_sequence < right.enqueue_sequence;
     if (left.local != right.local) return left.local;
