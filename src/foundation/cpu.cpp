@@ -1244,6 +1244,7 @@ private:
         config.lookup_link = lookup_link_cell_address_;
         config.page_table_link = page_table_link_cell_address_;
         config.read_page_table_link = read_page_table_link_cell_address_;
+        config.coprocessor_user_arg_link = runtime_link_cell_address_;
         config.processor_id = processor_id_;
         config.global_monitor = &monitor_;
         config.arch_version = dynarmic_architecture_version(

@@ -1,5 +1,5 @@
 diff --git a/src/dynarmic/backend/x64/a32_emit_x64.cpp b/src/dynarmic/backend/x64/a32_emit_x64.cpp
-index aa07357..992b35b 100644
+index aa07357..7adf047 100644
 --- a/src/dynarmic/backend/x64/a32_emit_x64.cpp
 +++ b/src/dynarmic/backend/x64/a32_emit_x64.cpp
 @@ -693,7 +693,9 @@ void A32EmitX64::EmitA32InstructionSynchronizationBarrier(A32EmitContext& ctx, I
@@ -70,7 +70,99 @@ index aa07357..992b35b 100644
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_to_run)], code.ABI_RETURN);
          code.mov(qword[rsp + ABI_SHADOW_SPACE + offsetof(StackLayout, cycles_remaining)], code.ABI_RETURN);
          code.SwitchMxcsrOnEntry();
-@@ -1137,7 +1151,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDesc
+@@ -852,11 +866,25 @@ static void EmitCoprocessorException() {
+     ASSERT_FALSE("Should raise coproc exception here");
+ }
+ 
+-static void CallCoprocCallback(BlockOfCode& code, RegAlloc& reg_alloc, A32::Coprocessor::Callback callback, IR::Inst* inst = nullptr, std::optional<Argument::copyable_reference> arg0 = {}, std::optional<Argument::copyable_reference> arg1 = {}) {
++static void CallCoprocCallback(BlockOfCode& code, RegAlloc& reg_alloc,
++                               const A32::UserConfig& conf,
++                               A32::Coprocessor::Callback callback,
++                               IR::Inst* inst = nullptr,
++                               std::optional<Argument::copyable_reference> arg0 = {},
++                               std::optional<Argument::copyable_reference> arg1 = {}) {
+     reg_alloc.HostCall(inst, {}, arg0, arg1);
+ 
+     if (callback.user_arg) {
+-        code.mov(code.ABI_PARAM1, reinterpret_cast<u64>(*callback.user_arg));
++        if (conf.coprocessor_user_arg_link) {
++            code.mov(
++                    code.ABI_PARAM1,
++                    code.qword[code.r15 + offsetof(
++                            A32JitState, coprocessor_user_arg_link)]);
++            code.mov(code.ABI_PARAM1, code.qword[code.ABI_PARAM1]);
++        } else {
++            code.mov(code.ABI_PARAM1,
++                     reinterpret_cast<u64>(*callback.user_arg));
++        }
+     }
+ 
+     code.CallFunction(callback.function);
+@@ -884,7 +912,7 @@ void A32EmitX64::EmitA32CoprocInternalOperation(A32EmitContext& ctx, IR::Inst* i
+         return;
+     }
+ 
+-    CallCoprocCallback(code, ctx.reg_alloc, *action);
++    CallCoprocCallback(code, ctx.reg_alloc, conf, *action);
+ }
+ 
+ void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -911,7 +939,7 @@ void A32EmitX64::EmitA32CoprocSendOneWord(A32EmitContext& ctx, IR::Inst* inst) {
+     }
+ 
+     if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
+-        CallCoprocCallback(code, ctx.reg_alloc, *cb, nullptr, args[1]);
++        CallCoprocCallback(code, ctx.reg_alloc, conf, *cb, nullptr, args[1]);
+         return;
+     }
+ 
+@@ -951,7 +979,8 @@ void A32EmitX64::EmitA32CoprocSendTwoWords(A32EmitContext& ctx, IR::Inst* inst)
+     }
+ 
+     if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
+-        CallCoprocCallback(code, ctx.reg_alloc, *cb, nullptr, args[1], args[2]);
++        CallCoprocCallback(
++                code, ctx.reg_alloc, conf, *cb, nullptr, args[1], args[2]);
+         return;
+     }
+ 
+@@ -995,7 +1024,7 @@ void A32EmitX64::EmitA32CoprocGetOneWord(A32EmitContext& ctx, IR::Inst* inst) {
+     }
+ 
+     if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
+-        CallCoprocCallback(code, ctx.reg_alloc, *cb, inst);
++        CallCoprocCallback(code, ctx.reg_alloc, conf, *cb, inst);
+         return;
+     }
+ 
+@@ -1035,7 +1064,7 @@ void A32EmitX64::EmitA32CoprocGetTwoWords(A32EmitContext& ctx, IR::Inst* inst) {
+     }
+ 
+     if (const auto cb = std::get_if<A32::Coprocessor::Callback>(&action)) {
+-        CallCoprocCallback(code, ctx.reg_alloc, *cb, inst);
++        CallCoprocCallback(code, ctx.reg_alloc, conf, *cb, inst);
+         return;
+     }
+ 
+@@ -1086,7 +1115,7 @@ void A32EmitX64::EmitA32CoprocLoadWords(A32EmitContext& ctx, IR::Inst* inst) {
+         return;
+     }
+ 
+-    CallCoprocCallback(code, ctx.reg_alloc, *action, nullptr, args[1]);
++    CallCoprocCallback(code, ctx.reg_alloc, conf, *action, nullptr, args[1]);
+ }
+ 
+ void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
+@@ -1116,7 +1145,7 @@ void A32EmitX64::EmitA32CoprocStoreWords(A32EmitContext& ctx, IR::Inst* inst) {
+         return;
+     }
+ 
+-    CallCoprocCallback(code, ctx.reg_alloc, *action, nullptr, args[1]);
++    CallCoprocCallback(code, ctx.reg_alloc, conf, *action, nullptr, args[1]);
+ }
+ 
+ std::string A32EmitX64::LocationDescriptorToFriendlyName(const IR::LocationDescriptor& ir_descriptor) const {
+@@ -1137,7 +1166,9 @@ void A32EmitX64::EmitTerminalImpl(IR::Term::Interpret terminal, IR::LocationDesc
      code.mov(code.ABI_PARAM3.cvt32(), 1);
      code.mov(MJitStateReg(A32::Reg::PC), code.ABI_PARAM2.cvt32());
      code.SwitchMxcsrOnExit();
@@ -156,7 +248,7 @@ index 851fe0b..1c77ae8 100644
      EmitCheckMemoryAbort(ctx, inst);
  }
 diff --git a/src/dynarmic/backend/x64/a32_interface.cpp b/src/dynarmic/backend/x64/a32_interface.cpp
-index 13f3a60..0303e26 100644
+index 13f3a60..ff01de2 100644
 --- a/src/dynarmic/backend/x64/a32_interface.cpp
 +++ b/src/dynarmic/backend/x64/a32_interface.cpp
 @@ -7,6 +7,7 @@
@@ -292,7 +384,7 @@ index 13f3a60..0303e26 100644
      }
  
      void HaltExecution(HaltReason hr) {
-@@ -201,6 +274,13 @@ struct Jit::Impl {
+@@ -201,6 +274,15 @@ struct Jit::Impl {
      }
  
  private:
@@ -301,12 +393,14 @@ index 13f3a60..0303e26 100644
 +        jit_state.lookup_link = conf.lookup_link;
 +        jit_state.page_table_link = conf.page_table_link;
 +        jit_state.read_page_table_link = conf.read_page_table_link;
++        jit_state.coprocessor_user_arg_link =
++                conf.coprocessor_user_arg_link;
 +    }
 +
      static CodePtr GetCurrentBlockThunk(void* this_voidptr) {
          Jit::Impl& this_ = *static_cast<Jit::Impl*>(this_voidptr);
          return this_.GetCurrentBlock();
-@@ -232,6 +312,18 @@ private:
+@@ -232,6 +314,18 @@ private:
          }
          block_of_code.EnsureMemoryCommitted(MINIMUM_REMAINING_CODESIZE);
  
@@ -325,7 +419,7 @@ index 13f3a60..0303e26 100644
          IR::Block ir_block = A32::Translate(A32::LocationDescriptor{descriptor}, conf.callbacks, {conf.arch_version, conf.define_unpredictable_behaviour, conf.hook_hint_instructions});
          Optimization::PolyfillPass(ir_block, polyfill_options);
          Optimization::NamingPass(ir_block);
-@@ -246,14 +338,7 @@ private:
+@@ -246,14 +340,7 @@ private:
          }
          Optimization::IdentityRemovalPass(ir_block);
          Optimization::VerificationPass(ir_block);
@@ -341,7 +435,7 @@ index 13f3a60..0303e26 100644
      }
  
      void PerformRequestedCacheInvalidation(HaltReason hr) {
-@@ -310,6 +395,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
+@@ -310,6 +397,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
      impl->Precompile(location_descriptor);
  }
  
@@ -357,7 +451,7 @@ index 13f3a60..0303e26 100644
      impl->ClearCache();
  }
 diff --git a/src/dynarmic/backend/x64/a32_jitstate.h b/src/dynarmic/backend/x64/a32_jitstate.h
-index cc13abf..7b3a375 100644
+index cc13abf..aed2966 100644
 --- a/src/dynarmic/backend/x64/a32_jitstate.h
 +++ b/src/dynarmic/backend/x64/a32_jitstate.h
 @@ -5,6 +5,7 @@
@@ -368,7 +462,7 @@ index cc13abf..7b3a375 100644
  #include <array>
  
  #include <mcl/stdint.hpp>
-@@ -58,6 +59,20 @@ struct A32JitState {
+@@ -58,6 +59,23 @@ struct A32JitState {
      u32 Fpscr() const;
      void SetFpscr(u32 FPSCR);
  
@@ -385,6 +479,9 @@ index cc13abf..7b3a375 100644
 +    // keep generated code independent of an executor's AddressSpace object.
 +    const std::atomic<u64>* page_table_link = nullptr;
 +    const std::atomic<u64>* read_page_table_link = nullptr;
++
++    // Optional runtime owner for Coprocessor::Callback user arguments.
++    const std::atomic<u64>* coprocessor_user_arg_link = nullptr;
 +
      u64 GetUniqueHash() const noexcept {
          return (static_cast<u64>(upper_location_descriptor) << 32) | (static_cast<u64>(Reg[15]));
@@ -612,7 +709,7 @@ index 776471a..1e45aad 100644
       * Clears the code cache of all compiled code.
       * Can be called at any time. Halts execution if called within a callback.
 diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
-index 176bac1..f949afd 100644
+index 176bac1..4065aa7 100644
 --- a/src/dynarmic/interface/A32/config.h
 +++ b/src/dynarmic/interface/A32/config.h
 @@ -5,6 +5,7 @@
@@ -661,7 +758,7 @@ index 176bac1..f949afd 100644
      // Reads through these callbacks may not be aligned.
      // Memory must be interpreted as if ENDIANSTATE == 0, endianness will be corrected by the JIT.
      virtual std::uint8_t MemoryRead8(VAddr vaddr) = 0;
-@@ -137,6 +162,27 @@ struct UserCallbacks : public TranslateCallbacks {
+@@ -137,6 +162,32 @@ struct UserCallbacks : public TranslateCallbacks {
  struct UserConfig {
      UserCallbacks* callbacks;
  
@@ -685,6 +782,11 @@ index 176bac1..f949afd 100644
 +    // by the generated run prelude. The pointed-to cell contains the same
 +    // table address as read_page_table and remains valid for the Jit lifetime.
 +    const std::atomic<std::uint64_t>* read_page_table_link = nullptr;
++
++    // Optional executor-owned indirection for non-null Coprocessor::Callback
++    // user arguments. Clients must set this only when every such callback is
++    // intentionally bound to the same linked object.
++    const std::atomic<std::uint64_t>* coprocessor_user_arg_link = nullptr;
 +
      size_t processor_id = 0;
      ExclusiveMonitor* global_monitor = nullptr;
