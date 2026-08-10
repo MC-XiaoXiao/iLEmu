@@ -62,6 +62,7 @@ std::atomic<std::uint64_t> next_reservation_identity{1};
 
 struct GlobalIdentityRecord {
   GuestFileGeneration generation;
+  std::uint64_t generation_revision{};
   ContentIdentity content_identity;
   std::weak_ptr<GuestFileIoState> io_state;
 };
@@ -70,6 +71,122 @@ std::mutex global_identity_mutex;
 std::map<std::string, GlobalIdentityRecord> global_identities;
 
 } // namespace
+
+std::string GuestFileGenerationRegistry::normalize_path(
+    const std::filesystem::path &path) {
+  std::error_code error;
+  auto absolute = std::filesystem::absolute(path, error);
+  if (error) absolute = path;
+  error.clear();
+  const auto canonical = std::filesystem::weakly_canonical(absolute, error);
+  return (error ? absolute.lexically_normal() : canonical).string();
+}
+
+std::optional<GuestFileGeneration>
+GuestFileGenerationRegistry::read_generation(
+    const std::filesystem::path &path) {
+  struct stat file_stat {};
+  if (::stat(path.c_str(), &file_stat) != 0) return std::nullopt;
+  return generation_from_stat(file_stat);
+}
+
+GuestFileGenerationSnapshot GuestFileGenerationRegistry::record(
+    const std::filesystem::path &path,
+    std::optional<GuestFileGeneration> generation,
+    GuestFileMutationKind mutation, bool force_revision) {
+  const auto key = normalize_path(path);
+  std::lock_guard lock{mutex_};
+  auto &entry = entries_[key];
+  if (!force_revision && entry.snapshot.revision != 0 &&
+      entry.snapshot.generation == generation) {
+    return entry.snapshot;
+  }
+  entry.snapshot = GuestFileGenerationSnapshot{
+      next_revision_++, std::move(generation), mutation};
+  return entry.snapshot;
+}
+
+GuestFileGenerationSnapshot GuestFileGenerationRegistry::observe_normalized(
+    std::string normalized_path, const GuestFileGeneration &generation) {
+  std::lock_guard lock{mutex_};
+  auto &entry = entries_[std::move(normalized_path)];
+  if (entry.snapshot.revision != 0 &&
+      entry.snapshot.generation == generation) {
+    return entry.snapshot;
+  }
+  entry.snapshot = GuestFileGenerationSnapshot{
+      next_revision_++, generation, GuestFileMutationKind::Observation};
+  return entry.snapshot;
+}
+
+GuestFileGenerationSnapshot GuestFileGenerationRegistry::record_descriptor(
+    const std::filesystem::path &path, const GuestFileGeneration &generation,
+    GuestFileMutationKind mutation) {
+  const auto key = normalize_path(path);
+  std::lock_guard lock{mutex_};
+  std::optional<GuestFileGenerationSnapshot> result;
+  bool matched_inode = false;
+  for (auto &[entry_path, entry] : entries_) {
+    if (!entry.snapshot.generation ||
+        entry.snapshot.generation->device != generation.device ||
+        entry.snapshot.generation->inode != generation.inode) {
+      continue;
+    }
+    matched_inode = true;
+    entry.snapshot = GuestFileGenerationSnapshot{
+        next_revision_++, generation, mutation};
+    if (entry_path == key || !result) result = entry.snapshot;
+  }
+  if (!matched_inode) {
+    auto &entry = entries_[key];
+    entry.snapshot = GuestFileGenerationSnapshot{
+        next_revision_++, generation, mutation};
+    result = entry.snapshot;
+  }
+  return *result;
+}
+
+GuestFileGenerationSnapshot GuestFileGenerationRegistry::observe(
+    const std::filesystem::path &path) {
+  return record(path, read_generation(path),
+                GuestFileMutationKind::Observation, false);
+}
+
+GuestFileGenerationSnapshot GuestFileGenerationRegistry::publish(
+    const std::filesystem::path &path, GuestFileMutationKind mutation) {
+  return record(path, read_generation(path), mutation, true);
+}
+
+GuestFileGenerationSnapshot GuestFileGenerationRegistry::publish_descriptor(
+    const std::filesystem::path &path, int file_descriptor,
+    GuestFileMutationKind mutation) {
+  struct stat file_stat {};
+  if (file_descriptor < 0 || ::fstat(file_descriptor, &file_stat) != 0) {
+    return publish(path, mutation);
+  }
+  return record_descriptor(path, generation_from_stat(file_stat), mutation);
+}
+
+void GuestFileGenerationRegistry::publish_rename(
+    const std::filesystem::path &source,
+    const std::filesystem::path &destination) {
+  static_cast<void>(publish(source, GuestFileMutationKind::Rename));
+  static_cast<void>(publish(destination, GuestFileMutationKind::Rename));
+}
+
+std::optional<GuestFileGenerationSnapshot>
+GuestFileGenerationRegistry::current(const std::filesystem::path &path) const {
+  const auto key = normalize_path(path);
+  std::lock_guard lock{mutex_};
+  const auto entry = entries_.find(key);
+  if (entry == entries_.end()) return std::nullopt;
+  return entry->second.snapshot;
+}
+
+std::size_t GuestFileGenerationRegistry::tracked_path_count() const {
+  std::lock_guard lock{mutex_};
+  return entries_.size();
+}
 
 GuestFileIoState::~GuestFileIoState() {
   if (file_descriptor >= 0) {
@@ -233,14 +350,21 @@ bool GuestPageBacking::flush_file() {
       break;
     written += static_cast<std::size_t>(result);
   }
-  return written == file_byte_count_;
+  const bool complete = written == file_byte_count_;
+  if (complete) {
+    if (const auto registry = file->generation_registry.lock()) {
+      static_cast<void>(registry->publish_descriptor(
+          file->path, descriptor, GuestFileMutationKind::SharedWriteback));
+    }
+  }
+  return complete;
 }
 
 bool FilePageCache::Key::operator<(const Key &other) const {
-  return std::tie(path, generation, content_identity, file_offset, byte_count,
-                  immutable_snapshot) <
-         std::tie(other.path, other.generation, other.content_identity,
-                  other.file_offset, other.byte_count,
+  return std::tie(path, generation, generation_revision, content_identity,
+                  file_offset, byte_count, immutable_snapshot) <
+         std::tie(other.path, other.generation, other.generation_revision,
+                  other.content_identity, other.file_offset, other.byte_count,
                   other.immutable_snapshot);
 }
 
@@ -269,6 +393,23 @@ void FilePageCache::evict_locked() {
     const auto page = pages_.find(key);
     if (page != pages_.end()) pages_.erase(page);
   }
+}
+
+FilePageCache::FilePageCache(
+    FilePageCacheLimits limits,
+    std::shared_ptr<GuestFileGenerationRegistry> generation_registry)
+    : limits_{limits},
+      generation_registry_{generation_registry
+                               ? std::move(generation_registry)
+                               : std::make_shared<GuestFileGenerationRegistry>()} {}
+
+void FilePageCache::set_generation_registry(
+    std::shared_ptr<GuestFileGenerationRegistry> generation_registry) {
+  if (!generation_registry) {
+    generation_registry = std::make_shared<GuestFileGenerationRegistry>();
+  }
+  std::lock_guard lock{mutex_};
+  generation_registry_ = std::move(generation_registry);
 }
 
 std::optional<std::shared_ptr<GuestFileBacking>>
@@ -324,13 +465,26 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   }
   const auto modified = file_time_from_stat(file_stat);
   const auto normalized_path = stable_path(path);
+  std::shared_ptr<GuestFileGenerationRegistry> generation_registry;
+  std::uint64_t generation_revision = 0;
+  {
+    const std::scoped_lock lock{mutex_};
+    generation_registry = generation_registry_;
+  }
+  if (generation_registry) {
+    generation_revision =
+        generation_registry
+            ->observe_normalized(normalized_path, generation)
+            .revision;
+  }
   std::optional<ContentIdentity> content_identity;
   {
     const std::scoped_lock lock{mutex_};
     ++stats_.identity_queries;
     const auto identity = identities_.find(normalized_path);
     if (identity != identities_.end() &&
-        identity->second.generation == generation) {
+        identity->second.generation == generation &&
+        identity->second.generation_revision == generation_revision) {
       content_identity = identity->second.content_identity;
       ++stats_.identity_hits;
     } else {
@@ -346,15 +500,17 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
       const std::scoped_lock lock{global_identity_mutex};
       const auto identity = global_identities.find(normalized_path);
       if (identity != global_identities.end() &&
-          identity->second.generation == generation) {
+          identity->second.generation == generation &&
+          identity->second.generation_revision == generation_revision) {
         content_identity = identity->second.content_identity;
       } else {
         computed = true;
-          content_identity = sha256_file(descriptor);
-          if (content_identity) {
-            global_identities[normalized_path] =
-              GlobalIdentityRecord{generation, *content_identity, {}};
-          }
+        content_identity = sha256_file(descriptor);
+        if (content_identity) {
+          global_identities[normalized_path] =
+              GlobalIdentityRecord{generation, generation_revision,
+                                   *content_identity, {}};
+        }
       }
     }
     if (!content_identity) {
@@ -368,7 +524,8 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     } else {
       ++stats_.identity_hits;
     }
-    identities_[normalized_path] = Identity{generation, *content_identity};
+    identities_[normalized_path] =
+        Identity{generation, generation_revision, *content_identity};
   }
   struct stat final_file_stat {};
   if (::fstat(descriptor, &final_file_stat) != 0 ||
@@ -395,6 +552,7 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     const auto identity = global_identities.find(normalized_path);
     if (identity != global_identities.end() &&
         identity->second.generation == generation &&
+        identity->second.generation_revision == generation_revision &&
         identity->second.content_identity == *content_identity) {
       io_state = identity->second.io_state.lock();
       if (!io_state) {
@@ -419,8 +577,10 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   mapping->file_size = file_size;
   mapping->modified = modified;
   mapping->generation = generation;
+  mapping->generation_revision = generation_revision;
   mapping->content_identity = *content_identity;
   mapping->immutable_snapshot = std::move(immutable_snapshot);
+  mapping->generation_registry = generation_registry;
   mapping->io_state = std::move(io_state);
   return mapping;
 }
@@ -428,8 +588,12 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
 std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
   const std::shared_ptr<GuestFileBacking> &mapping,
     std::uint64_t file_offset, std::uint32_t byte_count) {
-  const Key key{mapping->cache_path, mapping->generation,
-                mapping->content_identity, file_offset, byte_count,
+  const Key key{mapping->cache_path,
+                mapping->generation,
+                mapping->generation_revision,
+                mapping->content_identity,
+                file_offset,
+                byte_count,
                 static_cast<bool>(mapping->immutable_snapshot)};
   {
     const std::scoped_lock lock{mutex_};

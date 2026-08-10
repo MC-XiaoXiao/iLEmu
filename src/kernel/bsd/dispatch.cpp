@@ -240,6 +240,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case 159:
   case 167:
   case 158:
+  case 200:
   case 201:
   case 196:
   case 199:

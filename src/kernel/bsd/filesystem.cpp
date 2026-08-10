@@ -211,6 +211,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
             metadata->permanent_id);
       }
     }
+    static_cast<void>(shared_state_->guest_file_generation_registry->publish(
+        host, GuestFileMutationKind::Unlink));
     output_.write("[vfs] unlink " + *path + "\n");
     bsd_success(cpu, 0);
     return;
@@ -384,6 +386,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
         }
         exists = true;
         created = true;
+        static_cast<void>(
+            shared_state_->guest_file_generation_registry->publish(
+                host, GuestFileMutationKind::InstallReplace));
         output_.write("[vfs] create " + *path +
                       " mode=" + std::to_string(registers[2] & 07777U) + "\n");
       }
@@ -409,6 +414,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
           bsd_error(cpu, darwin::error::io);
           return;
         }
+        static_cast<void>(
+            shared_state_->guest_file_generation_registry->publish(
+                host, GuestFileMutationKind::Truncate));
       }
     }
     if (created) {
@@ -704,10 +712,12 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       return;
     }
     std::error_code error;
+    bool renamed = false;
     {
       const std::lock_guard filesystem_lock{shared_state_->filesystem_mutex};
       std::filesystem::rename(source, destination, error);
       if (!error) {
+        renamed = true;
         const auto source_resource =
             hfs::MetadataProvider::resource_sidecar(source);
         const auto destination_resource =
@@ -735,6 +745,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
               replaced_metadata->permanent_id);
         }
       }
+    }
+    if (renamed) {
+      shared_state_->guest_file_generation_registry->publish_rename(source,
+                                                                     destination);
     }
     if (error) {
       bsd_error(cpu, bsd_support::darwin_filesystem_error(error));
@@ -945,6 +959,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
                          std::error_code{errno, std::generic_category()}));
       return;
     }
+    static_cast<void>(
+        shared_state_->guest_file_generation_registry->publish_descriptor(
+            file->second, description->host_descriptor(),
+            GuestFileMutationKind::Write));
     bsd_success(cpu, static_cast<std::uint32_t>(result));
     return;
   }
@@ -1110,6 +1128,34 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     bsd_success(cpu, count);
     return;
   }
+  case 200: { // truncate
+    const auto path = memory_.read_c_string(registers[0]);
+    if (!path) {
+      bsd_error(cpu, bsd_support::bad_address);
+      return;
+    }
+    const auto length = static_cast<std::uint64_t>(registers[1]) |
+                        (static_cast<std::uint64_t>(registers[2]) << 32U);
+    if (length > 128ULL * 1024ULL * 1024ULL) {
+      bsd_error(cpu, bsd_support::invalid_argument);
+      return;
+    }
+    const auto host = resolve_guest_path(*path);
+    std::error_code error;
+    {
+      const std::lock_guard filesystem_lock{shared_state_->filesystem_mutex};
+      std::filesystem::resize_file(host, static_cast<std::uintmax_t>(length),
+                                   error);
+    }
+    if (error) {
+      bsd_error(cpu, bsd_support::darwin_filesystem_error(error));
+      return;
+    }
+    static_cast<void>(shared_state_->guest_file_generation_registry->publish(
+        host, GuestFileMutationKind::Truncate));
+    bsd_success(cpu, 0);
+    return;
+  }
   case 201: { // ftruncate
     auto fd = registers[0];
     if (const auto duplicate = duplicated_descriptors_.find(fd);
@@ -1138,6 +1184,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
                          std::error_code{errno, std::generic_category()}));
       return;
     }
+    static_cast<void>(
+        shared_state_->guest_file_generation_registry->publish_descriptor(
+            file->second, description->host_descriptor(),
+            GuestFileMutationKind::Truncate));
     bsd_success(cpu, 0);
     return;
   }

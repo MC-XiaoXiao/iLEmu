@@ -112,6 +112,11 @@ AddressSpace::~AddressSpace() {
              1U);
 }
 
+void AddressSpace::set_file_generation_registry(
+    std::shared_ptr<GuestFileGenerationRegistry> generation_registry) {
+  file_page_cache_->set_generation_registry(std::move(generation_registry));
+}
+
 std::uint64_t AddressSpace::exclusive_reservation_key(
     std::uint32_t address) const noexcept {
   try {
@@ -827,8 +832,10 @@ void AddressSpace::unmap_file_mappings_locked(std::uint32_t address,
     backing->file_size = source.file_size;
     backing->modified = source.modified;
     backing->generation = source.generation;
+    backing->generation_revision = source.generation_revision;
     backing->content_identity = source.content_identity;
     backing->immutable_snapshot = source.immutable_snapshot;
+    backing->generation_registry = source.generation_registry;
     backing->io_state = source.io_state;
     return backing;
   };

@@ -583,6 +583,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
         return;
       }
       file_offsets_[fd] = position + static_cast<std::size_t>(result);
+      static_cast<void>(
+          shared_state_->guest_file_generation_registry->publish_descriptor(
+              file->second, description->host_descriptor(),
+              GuestFileMutationKind::Write));
       bsd_success(cpu, static_cast<std::uint32_t>(result));
       return;
     }

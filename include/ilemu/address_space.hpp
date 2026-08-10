@@ -48,6 +48,12 @@ public:
   AddressSpace();
   ~AddressSpace();
 
+  // VFS and lazy file-backed mappings share one generation registry so a
+  // writeback or pathname mutation cannot leave another mapping on a stale
+  // file-generation view.
+  void set_file_generation_registry(
+      std::shared_ptr<GuestFileGenerationRegistry> generation_registry);
+
   // Selects the synchronization policy before guest execution starts. The
   // physical single-core device runs all memory access on the scheduler
   // thread; optional multi-core sessions retain shared/exclusive locking.

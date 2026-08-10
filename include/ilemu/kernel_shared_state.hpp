@@ -1238,8 +1238,11 @@ struct KernelSharedState {
   // File-backed MAP_SHARED mappings use one physical page cache across tasks.
   // Guest stores become immediately visible through every mapping of the same
   // file identity, and dirty pages are persisted when mappings are released.
+  std::shared_ptr<GuestFileGenerationRegistry> guest_file_generation_registry{
+      std::make_shared<GuestFileGenerationRegistry>()};
   std::shared_ptr<FilePageCache> shared_mapping_page_cache{
-      std::make_shared<FilePageCache>()};
+      std::make_shared<FilePageCache>(
+          FilePageCacheLimits{}, guest_file_generation_registry)};
   // Hard links have distinct catalog IDs but share one HFS file record.
   // Metadata mutations therefore follow the permanent inode identity.
   std::map<std::uint32_t, hfs::MetadataOverride> hfs_metadata_overrides;

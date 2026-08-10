@@ -121,6 +121,10 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
                  presentation_tracker_},
       mobile_framebuffer_hle_{userland_hle_, display_state_, surface_store_,
                               presentation_tracker_} {
+  memory_.set_file_generation_registry(
+      shared_state_->guest_file_generation_registry);
+  shared_state_->shared_mapping_page_cache->set_generation_registry(
+      shared_state_->guest_file_generation_registry);
   opengles_hle_.set_guest_profile(
       open_gles_profile_for_device(device_profile_.graphics_accelerator));
   display_state_->set_orientation_resolver(

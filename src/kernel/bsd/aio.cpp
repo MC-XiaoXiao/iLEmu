@@ -197,6 +197,12 @@ void CompatibilityKernel::dispatch_bsd_aio(Cpu &cpu, std::uint32_t number) {
                 std::error_code{errno, std::generic_category()});
           } else {
             completion.result = static_cast<std::int32_t>(result);
+            static_cast<void>(
+                shared_state_->guest_file_generation_registry
+                    ->publish_descriptor(
+                        file_descriptors_.at(descriptor),
+                        description->host_descriptor(),
+                        GuestFileMutationKind::Write));
           }
         }
       }

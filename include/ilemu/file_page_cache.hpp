@@ -39,7 +39,69 @@ struct GuestFileGeneration {
   friend constexpr bool operator==(const GuestFileGeneration &,
                                    const GuestFileGeneration &) = default;
   friend constexpr auto operator<=>(const GuestFileGeneration &,
-                                    const GuestFileGeneration &) = default;
+                                   const GuestFileGeneration &) = default;
+};
+
+enum class GuestFileMutationKind : std::uint8_t {
+  Observation,
+  Write,
+  Truncate,
+  Rename,
+  Unlink,
+  SharedWriteback,
+  InstallReplace,
+};
+
+struct GuestFileGenerationSnapshot {
+  std::uint64_t revision{};
+  std::optional<GuestFileGeneration> generation;
+  GuestFileMutationKind last_mutation{GuestFileMutationKind::Observation};
+};
+
+// One emulator-wide view of pathname generations. A pathname is only a lookup
+// key: mappings retain their own GuestFileBacking and therefore keep an old
+// vnode/generation alive after replacement or unlink. Mutations advance the
+// revision even when coarse host timestamps do not change.
+class GuestFileGenerationRegistry {
+public:
+  [[nodiscard]] GuestFileGenerationSnapshot observe(
+      const std::filesystem::path &path);
+  [[nodiscard]] GuestFileGenerationSnapshot publish(
+      const std::filesystem::path &path, GuestFileMutationKind mutation);
+  [[nodiscard]] GuestFileGenerationSnapshot publish_descriptor(
+      const std::filesystem::path &path, int file_descriptor,
+      GuestFileMutationKind mutation);
+  void publish_rename(const std::filesystem::path &source,
+                     const std::filesystem::path &destination);
+  [[nodiscard]] std::optional<GuestFileGenerationSnapshot> current(
+      const std::filesystem::path &path) const;
+  [[nodiscard]] std::size_t tracked_path_count() const;
+
+private:
+  friend class FilePageCache;
+
+  struct Entry {
+    GuestFileGenerationSnapshot snapshot;
+  };
+
+  [[nodiscard]] static std::string normalize_path(
+      const std::filesystem::path &path);
+  [[nodiscard]] static std::optional<GuestFileGeneration>
+  read_generation(const std::filesystem::path &path);
+  [[nodiscard]] GuestFileGenerationSnapshot record(
+      const std::filesystem::path &path,
+      std::optional<GuestFileGeneration> generation,
+      GuestFileMutationKind mutation, bool force_revision);
+  [[nodiscard]] GuestFileGenerationSnapshot observe_normalized(
+      std::string normalized_path, const GuestFileGeneration &generation);
+  [[nodiscard]] GuestFileGenerationSnapshot record_descriptor(
+      const std::filesystem::path &path,
+      const GuestFileGeneration &generation,
+      GuestFileMutationKind mutation);
+
+  mutable std::mutex mutex_;
+  std::uint64_t next_revision_{1};
+  std::map<std::string, Entry> entries_;
 };
 
 struct GuestFileIoState {
@@ -65,11 +127,13 @@ struct GuestFileBacking {
   std::uintmax_t file_size{};
   std::filesystem::file_time_type modified;
   GuestFileGeneration generation;
+  std::uint64_t generation_revision{};
   ContentIdentity content_identity;
   // Executable loaders that already captured a validated file generation can
   // retain that immutable image for byte-lazy faults. Ordinary mmap keeps the
   // descriptor-backed path and its normal live-file semantics.
   std::shared_ptr<const std::vector<std::byte>> immutable_snapshot;
+  std::weak_ptr<GuestFileGenerationRegistry> generation_registry;
   // The descriptor is opened when the mapping is created and shared by range
   // splits. This preserves the old vnode/file object across atomic rename.
   std::shared_ptr<GuestFileIoState> io_state;
@@ -142,8 +206,12 @@ struct FilePageCacheStats {
 
 class FilePageCache {
 public:
-  explicit FilePageCache(FilePageCacheLimits limits = {})
-      : limits_{limits} {}
+  explicit FilePageCache(
+      FilePageCacheLimits limits = {},
+      std::shared_ptr<GuestFileGenerationRegistry> generation_registry = {});
+
+  void set_generation_registry(
+      std::shared_ptr<GuestFileGenerationRegistry> generation_registry);
 
   // Validates a file-backed range and records the immutable identity used by
   // later page faults. No per-page objects or file contents are created here.
@@ -173,12 +241,14 @@ public:
 private:
   struct Identity {
     GuestFileGeneration generation;
+    std::uint64_t generation_revision{};
     ContentIdentity content_identity;
   };
 
   struct Key {
     std::string path;
     GuestFileGeneration generation;
+    std::uint64_t generation_revision{};
     ContentIdentity content_identity;
     std::uint64_t file_offset{};
     std::uint32_t byte_count{};
@@ -198,6 +268,7 @@ private:
 
   mutable std::mutex mutex_;
   FilePageCacheLimits limits_;
+  std::shared_ptr<GuestFileGenerationRegistry> generation_registry_;
   std::map<std::string, Identity> identities_;
   std::map<Key, PageRecord> pages_;
   std::list<Key> lru_;
