@@ -67,6 +67,7 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal) {
 void CompatibilityKernel::dispatch_bsd_signal(Cpu &cpu, std::uint32_t number) {
   if (number != darwin::syscall::kill) {
     trace_unknown(cpu, "BSD signal syscall", number);
+    bsd_error(cpu, bsd_support::not_implemented);
     return;
   }
 

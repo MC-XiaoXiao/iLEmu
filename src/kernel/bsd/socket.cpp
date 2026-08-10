@@ -1300,6 +1300,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu &cpu, std::uint32_t number) {
   }
   default:
     trace_unknown(cpu, "BSD syscall", number);
+    bsd_error(cpu, bsd_support::not_implemented);
     return;
   }
 }

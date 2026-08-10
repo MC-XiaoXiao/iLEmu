@@ -2138,6 +2138,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
   }
   default:
     trace_unknown(cpu, "BSD syscall", number);
+    bsd_error(cpu, bsd_support::not_implemented);
     return;
   }
 }
