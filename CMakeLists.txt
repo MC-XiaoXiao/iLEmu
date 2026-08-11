@@ -61,6 +61,8 @@ set(ILEMU_DYNARMIC_RESOLVER_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-exclusive-resolver.patch")
 set(ILEMU_DYNARMIC_PORTABLE_IR_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-portable-ir.patch")
+set(ILEMU_DYNARMIC_A32_STABLE_LINK_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-a32-stable-links.patch")
 execute_process(
     COMMAND git apply --check "${ILEMU_DYNARMIC_PORTABLE_IR_PATCH}"
     WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
@@ -180,6 +182,43 @@ else()
         message(STATUS
             "Dynarmic evolved checkout already provides the portable-IR "
             "API; skipping the older tracked patch")
+    endif()
+endif()
+
+# Keep shared A32 generated blocks immutable while allowing a generation-local
+# executor slot to resolve stable links directly. The patch is incremental to
+# the portable-IR patch above and is deliberately strict on clean checkouts.
+execute_process(
+    COMMAND git apply --check "${ILEMU_DYNARMIC_A32_STABLE_LINK_PATCH}"
+    WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+    RESULT_VARIABLE ILEMU_DYNARMIC_A32_STABLE_LINK_CHECK
+    OUTPUT_VARIABLE ILEMU_DYNARMIC_A32_STABLE_LINK_OUTPUT
+    ERROR_VARIABLE ILEMU_DYNARMIC_A32_STABLE_LINK_ERROR)
+if(ILEMU_DYNARMIC_A32_STABLE_LINK_CHECK EQUAL 0)
+    execute_process(
+        COMMAND git apply "${ILEMU_DYNARMIC_A32_STABLE_LINK_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_A32_STABLE_LINK_APPLY
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_A32_STABLE_LINK_APPLY_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_A32_STABLE_LINK_APPLY_ERROR)
+    if(NOT ILEMU_DYNARMIC_A32_STABLE_LINK_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Failed to apply the Dynarmic A32 stable-link patch: "
+            "${ILEMU_DYNARMIC_A32_STABLE_LINK_APPLY_ERROR}")
+    endif()
+else()
+    execute_process(
+        COMMAND git apply --reverse --check
+            "${ILEMU_DYNARMIC_A32_STABLE_LINK_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_A32_STABLE_LINK_REVERSE_CHECK
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_A32_STABLE_LINK_REVERSE_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_A32_STABLE_LINK_REVERSE_ERROR)
+    if(NOT ILEMU_DYNARMIC_A32_STABLE_LINK_REVERSE_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Dynarmic A32 stable-link patch is neither applicable nor "
+            "already applied. git apply reported: "
+            "${ILEMU_DYNARMIC_A32_STABLE_LINK_ERROR}")
     endif()
 endif()
 

@@ -1,0 +1,116 @@
+--- a/src/dynarmic/backend/x64/a32_emit_x64.cpp
++++ b/src/dynarmic/backend/x64/a32_emit_x64.cpp
+@@ -281,9 +281,8 @@
+             code.mov(r12, reinterpret_cast<u64>(fast_dispatch_table));
+         }
+         code.mov(rbp, rbx);
+-        if (code.HasHostFeature(HostFeature::SSE42)) {
+-            code.crc32(rbp, r12);
+-        }
++        code.shr(rbp, 32);
++        code.xor_(rbp, rbx);
+         code.and_(ebp, fast_dispatch_table_mask);
+         code.lea(rbp, ptr[r12 + rbp]);
+         code.cmp(rbx, qword[rbp + offsetof(FastDispatchEntry, location_descriptor)]);
+@@ -299,11 +298,12 @@
+         code.align();
+         fast_dispatch_table_lookup =
+                 code.getCurr<FastDispatchEntry& (*)(u64, FastDispatchEntry*)>();
+-        if (code.HasHostFeature(HostFeature::SSE42)) {
+-            code.crc32(code.ABI_PARAM1, code.ABI_PARAM2);
+-        }
+-        code.and_(code.ABI_PARAM1.cvt32(), fast_dispatch_table_mask);
+-        code.lea(code.ABI_RETURN, code.ptr[code.ABI_PARAM1 + code.ABI_PARAM2]);
++        code.mov(code.ABI_RETURN, code.ABI_PARAM1);
++        code.shr(code.ABI_RETURN, 32);
++        code.xor_(code.ABI_RETURN, code.ABI_PARAM1);
++        code.and_(code.ABI_RETURN.cvt32(), fast_dispatch_table_mask);
++        code.lea(code.ABI_RETURN,
++                 code.ptr[code.ABI_RETURN + code.ABI_PARAM2]);
+         code.ret();
+         PerfMapRegister(fast_dispatch_table_lookup, code.getCurr(), "a32_fast_dispatch_table_lookup");
+     }
+@@ -1274,6 +1274,15 @@
+         return;
+     }
+ 
++    if (conf.fast_dispatch_table_link &&
++        conf.HasOptimization(OptimizationFlag::FastDispatch)) {
++        // Shared generated blocks remain immutable. Probe the executor-local
++        // generation slot directly; a miss enters the existing dispatcher,
++        // which compiles or publishes the target and fills the same slot.
++        EmitStableLink(terminal.next);
++        return;
++    }
++
+     patch_information[terminal.next].jmp.push_back(code.getCurr());
+     if (const auto next_bb = GetBasicBlock(terminal.next)) {
+         EmitPatchJmp(terminal.next, next_bb->entrypoint);
+@@ -1282,6 +1291,41 @@
+     }
+ }
+ 
++void A32EmitX64::EmitStableLink(
++        const IR::LocationDescriptor& target_desc) {
++    using namespace Xbyak::util;
++
++    Xbyak::Label miss, no_rsb;
++    const auto target = target_desc.Value();
++    code.mov(rbx, target);
++    code.mov(r12, qword[r15 + offsetof(A32JitState, fast_dispatch_table_link)]);
++    code.mov(r12, qword[r12]);
++    code.lea(rbp, ptr[r12 + fast_dispatch_table_index(target)]);
++    code.cmp(rbx, qword[rbp + offsetof(FastDispatchEntry, location_descriptor)]);
++    code.jne(miss);
++    code.mov(rax, qword[rbp + offsetof(FastDispatchEntry, code_ptr)]);
++    code.test(rax, rax);
++    code.jz(miss);
++
++    // PushRSB records the descriptor before this terminal runs. Once the
++    // stable slot is validated, publish its generation-local target into the
++    // matching executor-local RSB entry so returns can jump directly next
++    // time. A generation transition resets both structures before reuse.
++    code.mov(ecx, dword[r15 + offsetof(A32JitState, rsb_ptr)]);
++    code.sub(ecx, 1);
++    code.and_(ecx, u32(A32JitState::RSBPtrMask));
++    code.cmp(rbx, qword[r15 + offsetof(A32JitState, rsb_location_descriptors) +
++                         rcx * sizeof(u64)]);
++    code.jne(no_rsb);
++    code.mov(qword[r15 + offsetof(A32JitState, rsb_codeptrs) +
++                     rcx * sizeof(u64)], rax);
++    code.L(no_rsb);
++    code.jmp(rax);
++
++    code.L(miss);
++    code.jmp(terminal_handler_fast_dispatch_hint);
++}
++
+ void A32EmitX64::EmitTerminalImpl(IR::Term::PopRSBHint, IR::LocationDescriptor, bool is_single_step) {
+     if (!conf.HasOptimization(OptimizationFlag::ReturnStackBuffer) || is_single_step) {
+         code.ReturnFromRunCode();
+--- a/src/dynarmic/backend/x64/a32_emit_x64.h
++++ b/src/dynarmic/backend/x64/a32_emit_x64.h
+@@ -65,6 +65,14 @@
+     static_assert(sizeof(FastDispatchEntry) == 0x10);
+     static constexpr u64 fast_dispatch_table_mask = 0xFFFF0;
+     static constexpr size_t fast_dispatch_table_size = 0x10000;
++    // Keep the slot selection deterministic and independent of the
++    // executor-local table address. Shared generated blocks can therefore
++    // embed this slot offset and probe it without entering the full handler.
++    [[nodiscard]] static constexpr u64 fast_dispatch_table_index(
++        u64 location_descriptor) noexcept {
++        return (location_descriptor ^ (location_descriptor >> 32U)) &
++               fast_dispatch_table_mask;
++    }
+ 
+ protected:
+     const A32::UserConfig conf;
+@@ -144,6 +152,8 @@
+     void EmitTerminalImpl(IR::Term::CheckBit terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
+     void EmitTerminalImpl(IR::Term::CheckHalt terminal, IR::LocationDescriptor initial_location, bool is_single_step) override;
+ 
++    void EmitStableLink(const IR::LocationDescriptor& target_desc);
++
+     // Patching
+     bool ShouldPatchExistingBlocks() const override;
+     void Unpatch(const IR::LocationDescriptor& target_desc) override;
