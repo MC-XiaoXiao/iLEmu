@@ -1,0 +1,23 @@
+diff --git a/src/dynarmic/interface/A32/a32.h b/src/dynarmic/interface/A32/a32.h
+--- a/src/dynarmic/interface/A32/a32.h
++++ b/src/dynarmic/interface/A32/a32.h
+@@ -117,6 +117,7 @@ public:
+      * UserCallbacks::PortableIRGenerated. The caller must guarantee that
+      * execution is stopped.
+      */
+     void GeneratePortableIR(std::uint64_t location_descriptor);
++    // iLEMU portable-IR patch state: GeneratePortableIR-v1.
+ 
+     /**
+      * Emits a previously optimized IR block without translating guest code.
+diff --git a/src/dynarmic/interface/A32/config.h b/src/dynarmic/interface/A32/config.h
+--- a/src/dynarmic/interface/A32/config.h
++++ b/src/dynarmic/interface/A32/config.h
+@@ -99,6 +99,7 @@ struct UserCallbacks : public TranslateCallbacks {
+     // IR that a backend would otherwise emit. The default lets existing
+     // portable-IR consumers share their completed-translation handler.
+     virtual void PortableIRGenerated(
++            // iLEMU portable-IR patch state: PortableIRGenerated-v1.
+             std::uint64_t location_descriptor,
+             std::uint64_t translation_nanoseconds,
+             const Dynarmic::IR::Block& block) noexcept {

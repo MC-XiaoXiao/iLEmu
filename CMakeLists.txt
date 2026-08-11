@@ -61,6 +61,8 @@ set(ILEMU_DYNARMIC_RESOLVER_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-exclusive-resolver.patch")
 set(ILEMU_DYNARMIC_PORTABLE_IR_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-portable-ir.patch")
+set(ILEMU_DYNARMIC_PORTABLE_IR_STATE_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-portable-ir-state.patch")
 set(ILEMU_DYNARMIC_A32_STABLE_LINK_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-a32-stable-links.patch")
 set(ILEMU_DYNARMIC_NORMAL_STABLE_LINK_PATCH
@@ -132,8 +134,9 @@ else()
 endif()
 
 # Expose only the narrow Dynarmic boundary needed by the project-owned
-# portable-IR serializer. The dependency checkout remains ignored; this
-# tracked patch keeps clean configurations reproducible and idempotent.
+# portable-IR serializer. The dependency checkout remains ignored; the
+# forward/reverse checks below require an explicit tracked patch state.
+set(ILEMU_DYNARMIC_PORTABLE_IR_CONFIRMED FALSE)
 execute_process(
     COMMAND git apply --check "${ILEMU_DYNARMIC_PORTABLE_IR_PATCH}"
     WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
@@ -152,6 +155,7 @@ if(ILEMU_DYNARMIC_PORTABLE_IR_CHECK EQUAL 0)
             "Failed to apply the Dynarmic portable-IR patch: "
             "${ILEMU_DYNARMIC_PORTABLE_IR_APPLY_ERROR}")
     endif()
+    set(ILEMU_DYNARMIC_PORTABLE_IR_CONFIRMED TRUE)
 else()
     execute_process(
         COMMAND git apply --reverse --check "${ILEMU_DYNARMIC_PORTABLE_IR_PATCH}"
@@ -159,34 +163,59 @@ else()
         RESULT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_CHECK
         OUTPUT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_OUTPUT
         ERROR_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_ERROR)
-    execute_process(
-        COMMAND git grep -q "GeneratePortableIR"
-            -- src/dynarmic/interface/A32/a32.h
-        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
-        RESULT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_API_CHECK)
-    execute_process(
-        COMMAND git grep -q "PortableIRGenerated"
-            -- src/dynarmic/interface/A32/config.h
-        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
-        RESULT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_CALLBACK_CHECK)
-    execute_process(
-        COMMAND git grep -q "bool Precompile"
-            -- src/dynarmic/interface/A32/a32.h
-        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
-        RESULT_VARIABLE ILEMU_DYNARMIC_PRECOMPILE_CHECK)
-    if(NOT ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_CHECK EQUAL 0 AND
-       NOT (ILEMU_DYNARMIC_PORTABLE_IR_API_CHECK EQUAL 0 AND
-            ILEMU_DYNARMIC_PORTABLE_IR_CALLBACK_CHECK EQUAL 0 AND
-            ILEMU_DYNARMIC_PRECOMPILE_CHECK EQUAL 0))
-        message(FATAL_ERROR
-            "Dynarmic portable-IR patch is neither applicable nor already "
-            "applied. git apply reported: "
-            "${ILEMU_DYNARMIC_PORTABLE_IR_ERROR}")
-    elseif(NOT ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_CHECK EQUAL 0)
+    if(NOT ILEMU_DYNARMIC_PORTABLE_IR_REVERSE_CHECK EQUAL 0)
+        # Later compatible checkouts may have rebased the large portable-IR
+        # patch. Require the project-owned state patch to apply or to be
+        # reverse-applicable; symbol presence alone is not proof of parity.
+        execute_process(
+            COMMAND git apply --check
+                "${ILEMU_DYNARMIC_PORTABLE_IR_STATE_PATCH}"
+            WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+            RESULT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_STATE_CHECK
+            OUTPUT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_STATE_OUTPUT
+            ERROR_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_STATE_ERROR)
+        if(ILEMU_DYNARMIC_PORTABLE_IR_STATE_CHECK EQUAL 0)
+            execute_process(
+                COMMAND git apply
+                    "${ILEMU_DYNARMIC_PORTABLE_IR_STATE_PATCH}"
+                WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+                RESULT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_STATE_APPLY
+                OUTPUT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_STATE_APPLY_OUTPUT
+                ERROR_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_STATE_APPLY_ERROR)
+            if(NOT ILEMU_DYNARMIC_PORTABLE_IR_STATE_APPLY EQUAL 0)
+                message(FATAL_ERROR
+                    "Failed to apply the Dynarmic portable-IR state patch: "
+                    "${ILEMU_DYNARMIC_PORTABLE_IR_STATE_APPLY_ERROR}")
+            endif()
+            set(ILEMU_DYNARMIC_PORTABLE_IR_CONFIRMED TRUE)
+            message(STATUS
+                "Dynarmic portable-IR state patch applied to evolved checkout")
+        else()
+            execute_process(
+                COMMAND git apply --reverse --check
+                    "${ILEMU_DYNARMIC_PORTABLE_IR_STATE_PATCH}"
+                WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+                RESULT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_STATE_REVERSE_CHECK
+                OUTPUT_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_STATE_REVERSE_OUTPUT
+                ERROR_VARIABLE ILEMU_DYNARMIC_PORTABLE_IR_STATE_REVERSE_ERROR)
+            if(NOT ILEMU_DYNARMIC_PORTABLE_IR_STATE_REVERSE_CHECK EQUAL 0)
+                message(FATAL_ERROR
+                    "Dynarmic portable-IR patches are neither applicable "
+                    "nor proven applied. git apply reported: "
+                    "${ILEMU_DYNARMIC_PORTABLE_IR_ERROR}")
+            endif()
+            set(ILEMU_DYNARMIC_PORTABLE_IR_CONFIRMED TRUE)
+            message(STATUS
+                "Dynarmic portable-IR state patch is already applied")
+        endif()
+    else()
+        set(ILEMU_DYNARMIC_PORTABLE_IR_CONFIRMED TRUE)
         message(STATUS
-            "Dynarmic evolved checkout already provides the portable-IR "
-            "API; skipping the older tracked patch")
+            "Dynarmic portable-IR patch is already applied; skipping it")
     endif()
+endif()
+if(NOT ILEMU_DYNARMIC_PORTABLE_IR_CONFIRMED)
+    message(FATAL_ERROR "Dynarmic portable-IR patch state could not be proven")
 endif()
 
 # Keep shared A32 generated blocks immutable while allowing a generation-local
