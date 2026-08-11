@@ -4509,6 +4509,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(file_cache_stats.identity_hits) +
         " generation-invalidations=" +
         std::to_string(file_cache_stats.generation_invalidations));
+    const auto snapshot_stats = immutable_snapshot_stats();
+    output.line(
+        "[perf-snapshots] entries=" + std::to_string(snapshot_stats.entries) +
+        " bytes=" + std::to_string(snapshot_stats.bytes) +
+        " hits=" + std::to_string(snapshot_stats.hits) +
+        " evictions=" + std::to_string(snapshot_stats.evictions));
     // Preserve stopped-guest live/current values, then include Runtime
     // destructor latency measured by the reaper in the final snapshot.
     auto final_snapshot = performance_counters().snapshot();

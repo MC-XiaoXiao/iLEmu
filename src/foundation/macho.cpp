@@ -360,6 +360,9 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     const std::span<const std::byte> bytes{*image_bytes};
     image.content_identity_ = known_identity ? *known_identity : sha256(bytes);
     if (!image.fat_container_ && image.file_generation_) {
+        image.bytes_ = share_immutable_snapshot(
+            *image.file_generation_, image.content_identity_, image.bytes_,
+            static_cast<std::uint64_t>(architecture));
         seed_shared_file_identity(path, *image.file_generation_,
                                   image.content_identity_);
     }

@@ -249,6 +249,26 @@ void seed_shared_file_identity(
     const ContentIdentity &content_identity,
     std::optional<std::uint64_t> generation_revision = std::nullopt);
 
+// Interns immutable Mach-O byte snapshots by content identity, host file
+// generation, and parser layout tag. The bounded LRU only drops its own
+// reference: mappings and page-cache entries retain the old generation until
+// their shared_ptr references are gone, so a replacement can never retarget
+// an existing mapping to newer bytes.
+[[nodiscard]] std::shared_ptr<const std::vector<std::byte>>
+share_immutable_snapshot(
+    const GuestFileGeneration &generation, const ContentIdentity &identity,
+    std::shared_ptr<const std::vector<std::byte>> snapshot,
+    std::uint64_t layout_tag = 0);
+
+struct ImmutableSnapshotStats {
+  std::uint64_t entries{};
+  std::uint64_t bytes{};
+  std::uint64_t hits{};
+  std::uint64_t evictions{};
+};
+
+[[nodiscard]] ImmutableSnapshotStats immutable_snapshot_stats();
+
 class FilePageCache {
 public:
   explicit FilePageCache(

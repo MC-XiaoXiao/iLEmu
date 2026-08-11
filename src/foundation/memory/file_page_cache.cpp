@@ -83,6 +83,32 @@ std::map<std::string, GlobalIdentityRecord> global_identities;
 std::map<std::string, std::shared_ptr<GlobalIdentityFlight>>
     global_identity_flights;
 
+struct ImmutableSnapshotKey {
+  GuestFileGeneration generation;
+  ContentIdentity content_identity;
+  std::uint64_t byte_size{};
+  std::uint64_t layout_tag{};
+
+  friend constexpr auto operator<=>(const ImmutableSnapshotKey &,
+                                    const ImmutableSnapshotKey &) = default;
+};
+
+struct ImmutableSnapshotRecord {
+  std::shared_ptr<const std::vector<std::byte>> snapshot;
+  std::uint64_t byte_size{};
+  std::list<ImmutableSnapshotKey>::iterator lru_position;
+};
+
+constexpr std::uint64_t maximum_immutable_snapshot_bytes =
+    256U * 1024U * 1024U;
+constexpr std::size_t maximum_immutable_snapshot_entries = 4096U;
+std::mutex immutable_snapshot_mutex;
+std::map<ImmutableSnapshotKey, ImmutableSnapshotRecord> immutable_snapshots;
+std::list<ImmutableSnapshotKey> immutable_snapshot_lru;
+std::uint64_t immutable_snapshot_bytes{};
+std::uint64_t immutable_snapshot_hits{};
+std::uint64_t immutable_snapshot_evictions{};
+
 [[nodiscard]] bool identity_revision_matches(
     const std::optional<std::uint64_t> &published_revision,
     const std::optional<std::uint64_t> &requested_revision) {
@@ -262,6 +288,52 @@ void seed_shared_file_identity(
     std::optional<std::uint64_t> generation_revision) {
   publish_global_identity(stable_path(path), generation,
                           std::move(generation_revision), content_identity);
+}
+
+std::shared_ptr<const std::vector<std::byte>> share_immutable_snapshot(
+    const GuestFileGeneration &generation, const ContentIdentity &identity,
+    std::shared_ptr<const std::vector<std::byte>> snapshot,
+    std::uint64_t layout_tag) {
+  if (!snapshot) return {};
+  const auto byte_size = static_cast<std::uint64_t>(snapshot->size());
+  const ImmutableSnapshotKey key{generation, identity, byte_size, layout_tag};
+  std::lock_guard lock{immutable_snapshot_mutex};
+  if (const auto existing = immutable_snapshots.find(key);
+      existing != immutable_snapshots.end()) {
+    ++immutable_snapshot_hits;
+    immutable_snapshot_lru.splice(immutable_snapshot_lru.end(),
+                                  immutable_snapshot_lru,
+                                  existing->second.lru_position);
+    existing->second.lru_position =
+        std::prev(immutable_snapshot_lru.end());
+    return existing->second.snapshot;
+  }
+
+  immutable_snapshot_lru.push_back(key);
+  const auto lru_position = std::prev(immutable_snapshot_lru.end());
+  immutable_snapshots.emplace(
+      key, ImmutableSnapshotRecord{snapshot, byte_size, lru_position});
+  immutable_snapshot_bytes += byte_size;
+  while ((immutable_snapshot_bytes > maximum_immutable_snapshot_bytes ||
+          immutable_snapshots.size() > maximum_immutable_snapshot_entries) &&
+         !immutable_snapshot_lru.empty()) {
+    const auto evict_key = immutable_snapshot_lru.front();
+    immutable_snapshot_lru.pop_front();
+    const auto evicted = immutable_snapshots.find(evict_key);
+    if (evicted == immutable_snapshots.end()) continue;
+    immutable_snapshot_bytes -= evicted->second.byte_size;
+    ++immutable_snapshot_evictions;
+    immutable_snapshots.erase(evicted);
+  }
+  return snapshot;
+}
+
+ImmutableSnapshotStats immutable_snapshot_stats() {
+  std::lock_guard lock{immutable_snapshot_mutex};
+  return ImmutableSnapshotStats{
+      static_cast<std::uint64_t>(immutable_snapshots.size()),
+      immutable_snapshot_bytes, immutable_snapshot_hits,
+      immutable_snapshot_evictions};
 }
 
 std::string GuestFileGenerationRegistry::normalize_path(
