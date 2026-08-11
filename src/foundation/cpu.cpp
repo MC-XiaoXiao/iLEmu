@@ -23,6 +23,7 @@
 #include <dynarmic/frontend/A32/a32_ir_emitter.h>
 #include <dynarmic/ir/basic_block.h>
 #include <dynarmic/interface/A32/coprocessor.h>
+#include <dynarmic/backend/x64/a32_jitstate.h>
 #include <dynarmic/backend/x64/exclusive_monitor_friend.h>
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
@@ -53,6 +54,24 @@ std::uint64_t jit_code_cache_used(const Jit& jit) {
         return static_cast<std::uint64_t>(jit.CodeCacheUsed());
     }
     return 0;
+}
+
+constexpr std::size_t jit_link_cell_count = 9U;
+constexpr std::size_t fast_dispatch_table_size = 0x10000U;
+constexpr std::size_t fast_dispatch_entry_bytes = sizeof(std::uint64_t) * 2U;
+constexpr std::size_t host_code_page_size = 4096U;
+static_assert(sizeof(void *) == sizeof(std::uint64_t));
+
+[[nodiscard]] std::uint64_t logical_committed_code_bytes(
+    std::uint64_t used_bytes) noexcept {
+    // Linux Dynarmic maps the complete slab in one anonymous mapping and does
+    // not expose a page-commit counter.  Count the emitted code range rounded
+    // to host pages as logical committed code; physical residency remains the
+    // separately sampled process RSS.
+    if (used_bytes == 0U) return 0U;
+    const auto remainder = used_bytes % host_code_page_size;
+    return used_bytes +
+           (remainder == 0U ? 0U : host_code_page_size - remainder);
 }
 
 constexpr std::uint32_t jit_artifact_hle_abi_version = 1U;
@@ -982,9 +1001,9 @@ public:
         execution_context_->unlink(exclusive_monitor_lock_link_cell_);
         execution_context_->unlink(exclusive_monitor_addresses_link_cell_);
         execution_context_->unlink(exclusive_monitor_values_link_cell_);
-        performance_counters().record_jit_code_cache_usage(
-            process_id_, static_cast<std::uint32_t>(execution_slot_),
-            recorded_jit_code_cache_bytes_, 0);
+        performance_counters().record_jit_executor_memory_usage(
+            execution_context_->context_id(), process_id_,
+            static_cast<std::uint32_t>(execution_slot_), 0);
         if (had_jit) {
             performance_counters().record_jit_destroyed();
         }
@@ -1347,10 +1366,37 @@ private:
             return;
         }
         const auto current = jit_code_cache_used(*jit_);
-        performance_counters().record_jit_code_cache_usage(
-            process_id_, static_cast<std::uint32_t>(execution_slot_),
-            recorded_jit_code_cache_bytes_, current);
-        recorded_jit_code_cache_bytes_ = current;
+        const auto committed = logical_committed_code_bytes(current);
+        if (!recorded_shared_memory_ ||
+            recorded_shared_used_bytes_ != current ||
+            recorded_shared_committed_bytes_ != committed) {
+            performance_counters().record_jit_shared_slab_usage(
+                execution_context_->context_id(), code_cache_size_, committed,
+                current);
+            recorded_shared_memory_ = true;
+            recorded_shared_used_bytes_ = current;
+            recorded_shared_committed_bytes_ = committed;
+        }
+        const auto executor_local = executor_local_memory_bytes();
+        if (executor_local != recorded_executor_local_bytes_) {
+            performance_counters().record_jit_executor_memory_usage(
+                execution_context_->context_id(), process_id_,
+                static_cast<std::uint32_t>(execution_slot_), executor_local);
+            recorded_executor_local_bytes_ = executor_local;
+        }
+    }
+
+    [[nodiscard]] std::uint64_t executor_local_memory_bytes() const noexcept {
+        constexpr auto link_cell_bytes =
+            jit_link_cell_count * sizeof(std::atomic<std::uint64_t>);
+        if (!jit_) return link_cell_bytes;
+        constexpr auto fast_dispatch_table_bytes =
+            fast_dispatch_table_size * fast_dispatch_entry_bytes;
+        // A32JitState includes the executor's RSB arrays.  The link cells are
+        // allocated by the shared ExecutionContext but their payload is still
+        // executor-local mutable state and is counted here exactly once.
+        return link_cell_bytes + sizeof(Dynarmic::Backend::X64::A32JitState) +
+               fast_dispatch_table_bytes;
     }
 
   public:
@@ -1396,7 +1442,10 @@ private:
     const std::atomic<std::uint64_t> *exclusive_monitor_values_link_cell_address_{};
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
     std::size_t code_cache_size_{64U * 1024U * 1024U};
-    std::uint64_t recorded_jit_code_cache_bytes_{};
+    bool recorded_shared_memory_{};
+    std::uint64_t recorded_shared_used_bytes_{};
+    std::uint64_t recorded_shared_committed_bytes_{};
+    std::uint64_t recorded_executor_local_bytes_{};
     std::uint64_t observed_invalidation_epoch_{};
     std::uint64_t observed_slab_generation_{};
     std::unordered_map<std::uint64_t, ArtifactProbe> artifact_probes_;
@@ -1459,6 +1508,16 @@ public:
                 first_processor_id + slot, slot, memory, monitor, cpu_model,
                 artifact_store, execution_context_));
         }
+    }
+
+    ~CpuExecutionPool() {
+        // Clear the executors before dropping the shared accounting record.
+        // Their destructors publish zero for their local slots; the final
+        // release then removes the one shared slab entry without leaving a
+        // stale reservation behind.
+        executors_.clear();
+        performance_counters().release_jit_memory_context(
+            execution_context_->context_id());
     }
 
     [[nodiscard]] std::size_t size() const {

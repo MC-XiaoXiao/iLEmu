@@ -295,6 +295,11 @@ void PerformanceCounters::reset(bool enabled) {
     jit_block_compile_p99_nanoseconds_.store(0, std::memory_order_relaxed);
     jit_code_cache_current_bytes_.store(0, std::memory_order_relaxed);
     jit_code_cache_peak_bytes_.store(0, std::memory_order_relaxed);
+    jit_shared_reserved_bytes_.store(0, std::memory_order_relaxed);
+    jit_shared_committed_bytes_.store(0, std::memory_order_relaxed);
+    jit_shared_used_bytes_.store(0, std::memory_order_relaxed);
+    jit_executor_local_bytes_.store(0, std::memory_order_relaxed);
+    jit_executor_local_peak_bytes_.store(0, std::memory_order_relaxed);
     jit_shared_invalidation_requests_.store(0, std::memory_order_relaxed);
     translation_blocks_.store(0, std::memory_order_relaxed);
     cpu_executions_.store(0, std::memory_order_relaxed);
@@ -360,6 +365,11 @@ void PerformanceCounters::reset(bool enabled) {
     {
         std::lock_guard lock{jit_cache_slots_mutex_};
         jit_cache_slots_.clear();
+    }
+    {
+        std::lock_guard lock{jit_memory_mutex_};
+        jit_shared_slabs_.clear();
+        jit_executor_memory_.clear();
     }
     {
         std::lock_guard lock{hle_mutex_};
@@ -655,31 +665,67 @@ void PerformanceCounters::record_jit_destroyed() {
     }
 }
 
-void PerformanceCounters::record_jit_code_cache_usage(
-    std::uint32_t process_id, std::uint32_t slot,
-    std::uint64_t previous_bytes, std::uint64_t current_bytes) {
-    if (!enabled() || previous_bytes == current_bytes)
-        return;
-    std::uint64_t aggregate{};
-    if (current_bytes > previous_bytes) {
-        aggregate = jit_code_cache_current_bytes_.fetch_add(
-                        current_bytes - previous_bytes,
-                        std::memory_order_relaxed) +
-                    current_bytes - previous_bytes;
-    } else {
-        aggregate = jit_code_cache_current_bytes_.fetch_sub(
-                        previous_bytes - current_bytes,
-                        std::memory_order_relaxed) -
-                    (previous_bytes - current_bytes);
+void PerformanceCounters::record_jit_shared_slab_usage(
+    std::uint64_t slab_id, std::uint64_t reserved_bytes,
+    std::uint64_t committed_bytes, std::uint64_t used_bytes) {
+    if (!enabled()) return;
+    std::lock_guard lock{jit_memory_mutex_};
+    jit_shared_slabs_[slab_id] =
+        SharedSlabUsage{reserved_bytes, committed_bytes, used_bytes};
+    std::uint64_t reserved{};
+    std::uint64_t committed{};
+    std::uint64_t used{};
+    for (const auto &[id, usage] : jit_shared_slabs_) {
+        static_cast<void>(id);
+        reserved = std::min(
+            std::numeric_limits<std::uint64_t>::max() - reserved,
+            usage.reserved_bytes) + reserved;
+        committed = std::min(
+            std::numeric_limits<std::uint64_t>::max() - committed,
+            usage.committed_bytes) + committed;
+        used = std::min(std::numeric_limits<std::uint64_t>::max() - used,
+                        usage.used_bytes) +
+               used;
     }
-    auto peak =
-        jit_code_cache_peak_bytes_.load(std::memory_order_relaxed);
-    while (aggregate > peak &&
+    jit_shared_reserved_bytes_.store(reserved, std::memory_order_relaxed);
+    jit_shared_committed_bytes_.store(committed, std::memory_order_relaxed);
+    jit_shared_used_bytes_.store(used, std::memory_order_relaxed);
+    // Keep the legacy field as the aggregate shared-slab used count.  It is
+    // deliberately not updated by executor-local samples.
+    jit_code_cache_current_bytes_.store(used, std::memory_order_relaxed);
+    auto peak = jit_code_cache_peak_bytes_.load(std::memory_order_relaxed);
+    while (used > peak &&
            !jit_code_cache_peak_bytes_.compare_exchange_weak(
+               peak, used, std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+    }
+}
+
+void PerformanceCounters::record_jit_executor_memory_usage(
+    std::uint64_t slab_id, std::uint32_t process_id, std::uint32_t slot,
+    std::uint64_t current_bytes) {
+    if (!enabled()) return;
+    std::unique_lock memory_lock{jit_memory_mutex_};
+    jit_executor_memory_[{slab_id, process_id, slot}] = current_bytes;
+    std::uint64_t aggregate{};
+    for (const auto &[key, bytes] : jit_executor_memory_) {
+        static_cast<void>(key);
+        aggregate = std::min(
+                        std::numeric_limits<std::uint64_t>::max() - aggregate,
+                        bytes) +
+                    aggregate;
+    }
+    jit_executor_local_bytes_.store(aggregate, std::memory_order_relaxed);
+    auto peak =
+        jit_executor_local_peak_bytes_.load(std::memory_order_relaxed);
+    while (aggregate > peak &&
+           !jit_executor_local_peak_bytes_.compare_exchange_weak(
                peak, aggregate, std::memory_order_relaxed,
                std::memory_order_relaxed)) {
     }
-    std::lock_guard lock{jit_cache_slots_mutex_};
+    memory_lock.unlock();
+
+    std::lock_guard slot_lock{jit_cache_slots_mutex_};
     auto [found, inserted] =
         jit_cache_slots_.try_emplace({process_id, slot});
     auto& usage = found->second;
@@ -689,6 +735,48 @@ void PerformanceCounters::record_jit_code_cache_usage(
     }
     usage.current_bytes = current_bytes;
     usage.peak_bytes = std::max(usage.peak_bytes, current_bytes);
+}
+
+void PerformanceCounters::release_jit_memory_context(
+    std::uint64_t slab_id) {
+    if (!enabled()) return;
+    std::lock_guard lock{jit_memory_mutex_};
+    jit_shared_slabs_.erase(slab_id);
+    for (auto iterator = jit_executor_memory_.begin();
+         iterator != jit_executor_memory_.end();) {
+        if (std::get<0>(iterator->first) == slab_id) {
+            iterator = jit_executor_memory_.erase(iterator);
+        } else {
+            ++iterator;
+        }
+    }
+    std::uint64_t reserved{};
+    std::uint64_t committed{};
+    std::uint64_t used{};
+    for (const auto &[id, usage] : jit_shared_slabs_) {
+        static_cast<void>(id);
+        reserved = std::min(
+            std::numeric_limits<std::uint64_t>::max() - reserved,
+            usage.reserved_bytes) + reserved;
+        committed = std::min(
+            std::numeric_limits<std::uint64_t>::max() - committed,
+            usage.committed_bytes) + committed;
+        used = std::min(std::numeric_limits<std::uint64_t>::max() - used,
+                        usage.used_bytes) +
+               used;
+    }
+    std::uint64_t local{};
+    for (const auto &[key, bytes] : jit_executor_memory_) {
+        static_cast<void>(key);
+        local = std::min(std::numeric_limits<std::uint64_t>::max() - local,
+                         bytes) +
+                local;
+    }
+    jit_shared_reserved_bytes_.store(reserved, std::memory_order_relaxed);
+    jit_shared_committed_bytes_.store(committed, std::memory_order_relaxed);
+    jit_shared_used_bytes_.store(used, std::memory_order_relaxed);
+    jit_code_cache_current_bytes_.store(used, std::memory_order_relaxed);
+    jit_executor_local_bytes_.store(local, std::memory_order_relaxed);
 }
 
 void PerformanceCounters::record_jit_shared_invalidation() {
@@ -1382,6 +1470,16 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
         jit_code_cache_current_bytes_.load(std::memory_order_relaxed);
     result.jit_code_cache_peak_bytes =
         jit_code_cache_peak_bytes_.load(std::memory_order_relaxed);
+    result.jit_shared_reserved_bytes =
+        jit_shared_reserved_bytes_.load(std::memory_order_relaxed);
+    result.jit_shared_committed_bytes =
+        jit_shared_committed_bytes_.load(std::memory_order_relaxed);
+    result.jit_shared_used_bytes =
+        jit_shared_used_bytes_.load(std::memory_order_relaxed);
+    result.jit_executor_local_bytes =
+        jit_executor_local_bytes_.load(std::memory_order_relaxed);
+    result.jit_executor_local_peak_bytes =
+        jit_executor_local_peak_bytes_.load(std::memory_order_relaxed);
     result.jit_shared_invalidation_requests =
         jit_shared_invalidation_requests_.load(std::memory_order_relaxed);
     result.translation_blocks =
@@ -1632,6 +1730,12 @@ std::string format_performance_summary(
          << " jit-live=" << snapshot.jit_live_instances
          << " jit-live-peak=" << snapshot.jit_live_peak_instances
          << " jit-create-ns=" << snapshot.jit_creation_nanoseconds
+         << " jit-shared-reserved=" << snapshot.jit_shared_reserved_bytes
+         << " jit-shared-committed=" << snapshot.jit_shared_committed_bytes
+         << " jit-shared-used=" << snapshot.jit_shared_used_bytes
+         << " jit-executor-local=" << snapshot.jit_executor_local_bytes
+         << " jit-executor-local-peak="
+         << snapshot.jit_executor_local_peak_bytes
          << " jit-cache-bytes=" << snapshot.jit_code_cache_bytes
          << " jit-cache-peak-bytes="
          << snapshot.jit_code_cache_peak_bytes

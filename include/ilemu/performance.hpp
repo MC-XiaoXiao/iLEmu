@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 namespace ilemu {
@@ -161,6 +162,11 @@ struct PerformanceSnapshot {
     std::uint64_t jit_creation_nanoseconds{};
     std::uint64_t jit_code_cache_bytes{};
     std::uint64_t jit_code_cache_peak_bytes{};
+    std::uint64_t jit_shared_reserved_bytes{};
+    std::uint64_t jit_shared_committed_bytes{};
+    std::uint64_t jit_shared_used_bytes{};
+    std::uint64_t jit_executor_local_bytes{};
+    std::uint64_t jit_executor_local_peak_bytes{};
     std::uint64_t jit_shared_invalidation_requests{};
     std::uint64_t translation_blocks{};
     std::uint64_t cpu_executions{};
@@ -234,10 +240,15 @@ class PerformanceCounters {
             std::memory_order_relaxed);
     }
     void record_jit_destroyed();
-    void record_jit_code_cache_usage(std::uint32_t process_id,
-                                     std::uint32_t slot,
-                                     std::uint64_t previous_bytes,
-                                     std::uint64_t current_bytes);
+    void record_jit_shared_slab_usage(std::uint64_t slab_id,
+                                      std::uint64_t reserved_bytes,
+                                      std::uint64_t committed_bytes,
+                                      std::uint64_t used_bytes);
+    void record_jit_executor_memory_usage(std::uint64_t slab_id,
+                                          std::uint32_t process_id,
+                                          std::uint32_t slot,
+                                          std::uint64_t current_bytes);
+    void release_jit_memory_context(std::uint64_t slab_id);
     void record_jit_shared_invalidation();
     void record_translation_block();
     void record_cpu_execution(std::uint64_t ticks);
@@ -353,6 +364,11 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> jit_block_compile_p99_nanoseconds_{};
     std::atomic<std::uint64_t> jit_code_cache_current_bytes_{};
     std::atomic<std::uint64_t> jit_code_cache_peak_bytes_{};
+    std::atomic<std::uint64_t> jit_shared_reserved_bytes_{};
+    std::atomic<std::uint64_t> jit_shared_committed_bytes_{};
+    std::atomic<std::uint64_t> jit_shared_used_bytes_{};
+    std::atomic<std::uint64_t> jit_executor_local_bytes_{};
+    std::atomic<std::uint64_t> jit_executor_local_peak_bytes_{};
     std::atomic<std::uint64_t> jit_shared_invalidation_requests_{};
     std::atomic<std::uint64_t> translation_blocks_{};
     std::atomic<std::uint64_t> cpu_executions_{};
@@ -420,6 +436,16 @@ class PerformanceCounters {
     mutable std::mutex jit_cache_slots_mutex_;
     std::map<std::pair<std::uint32_t, std::uint32_t>, JitCacheSlotSnapshot>
         jit_cache_slots_;
+    struct SharedSlabUsage {
+        std::uint64_t reserved_bytes{};
+        std::uint64_t committed_bytes{};
+        std::uint64_t used_bytes{};
+    };
+    mutable std::mutex jit_memory_mutex_;
+    std::map<std::uint64_t, SharedSlabUsage> jit_shared_slabs_;
+    std::map<std::tuple<std::uint64_t, std::uint32_t, std::uint32_t>,
+             std::uint64_t>
+        jit_executor_memory_;
     mutable std::mutex hle_mutex_;
     std::map<std::string, HlePerformanceSnapshot, std::less<>>
         hle_subsystems_;

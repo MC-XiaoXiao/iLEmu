@@ -4538,6 +4538,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
     auto final_snapshot = performance_counters().snapshot();
     final_snapshot.jit_live_instances = stopped_guest.jit_live_instances;
     final_snapshot.jit_code_cache_bytes = stopped_guest.jit_code_cache_bytes;
+    final_snapshot.jit_shared_reserved_bytes =
+        stopped_guest.jit_shared_reserved_bytes;
+    final_snapshot.jit_shared_committed_bytes =
+        stopped_guest.jit_shared_committed_bytes;
+    final_snapshot.jit_shared_used_bytes =
+        stopped_guest.jit_shared_used_bytes;
+    final_snapshot.jit_executor_local_bytes =
+        stopped_guest.jit_executor_local_bytes;
+    final_snapshot.jit_executor_local_peak_bytes =
+        stopped_guest.jit_executor_local_peak_bytes;
     final_snapshot.jit_cache_slots = stopped_guest.jit_cache_slots;
     output.line(format_performance_summary(final_snapshot));
   }
