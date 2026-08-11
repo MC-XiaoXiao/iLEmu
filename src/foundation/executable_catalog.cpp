@@ -407,6 +407,28 @@ bool executable_address(const ilemu::MachOImage &image, std::uint32_t address) {
   return false;
 }
 
+bool executable_instruction_address(const ilemu::MachOImage &image,
+                                    std::uint32_t address) {
+  constexpr std::uint32_t pure_instructions = 0x80000000U;
+  constexpr std::uint32_t some_instructions = 0x00000400U;
+  for (const auto &segment : image.segments()) {
+    if ((segment.initial_protection & 4) == 0 ||
+        address < segment.vm_address ||
+        address - segment.vm_address >= segment.vm_size) {
+      continue;
+    }
+    for (const auto &section : segment.sections) {
+      if ((section.flags & (pure_instructions | some_instructions)) == 0U ||
+          section.size == 0U || address < section.address ||
+          address - section.address >= section.size) {
+        continue;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
 bool instruction_symbol(const ilemu::MachOImage &image,
                         const ilemu::MachSymbol &symbol) {
   // n_sect is a one-based ordinal over every section in load-command order.
@@ -435,8 +457,11 @@ void collect_reliable_entry_points(
     std::vector<std::uint64_t> &entry_points) {
   constexpr std::uint64_t thumb_descriptor_bit = std::uint64_t{1} << 32U;
   constexpr std::size_t maximum_entry_points = 65'536U;
-  const auto add = [&](std::uint32_t address, bool thumb) {
-    if (address == 0 || !executable_address(image, address) ||
+  const auto add = [&](std::uint32_t address, bool thumb,
+                       bool instruction_range = false) {
+    if (address == 0 ||
+        !(instruction_range ? executable_instruction_address(image, address)
+                            : executable_address(image, address)) ||
         entry_points.size() >= maximum_entry_points) {
       return;
     }
@@ -458,10 +483,12 @@ void collect_reliable_entry_points(
     }
   }
   for (const auto address : image.function_starts()) {
-    // LC_FUNCTION_STARTS does not carry ARM/Thumb state. Keep these starts
-    // as ARM descriptors; symbol metadata, when present, supplies the more
-    // precise Thumb form for the same address.
-    add(address, false);
+    // On 32-bit ARM, LC_FUNCTION_STARTS stores the Thumb state in bit zero
+    // of the cumulative address. Normalize the address before checking the
+    // instruction range and retain the mode in the descriptor; otherwise an
+    // odd Thumb start becomes an invalid ARM entry one byte into the code.
+    const auto thumb = (address & 1U) != 0U;
+    add(address & ~1U, thumb, true);
   }
   for (const auto &stub : image.stubs()) add(stub.address, false);
 }
