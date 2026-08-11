@@ -109,6 +109,7 @@ private:
 
   struct Entry {
     GuestFileGenerationSnapshot snapshot;
+    std::list<std::string>::iterator lru_position;
   };
 
   [[nodiscard]] static std::string normalize_path(
@@ -125,6 +126,14 @@ private:
       const std::filesystem::path &path,
       const GuestFileGeneration &generation,
       GuestFileMutationKind mutation);
+  [[nodiscard]] std::map<std::string, Entry>::iterator
+  ensure_entry_locked(const std::string &normalized_path);
+  void touch_entry_locked(
+      std::map<std::string, Entry>::iterator iterator);
+  void erase_entry_locked(
+      std::map<std::string, Entry>::iterator iterator);
+  void erase_subtree_entries_locked(const std::string &normalized_path);
+  void evict_entries_locked();
   void enqueue_mutation_locked(const std::string &normalized_path,
                                GuestFileMutationKind mutation);
 
@@ -132,6 +141,8 @@ private:
   std::uint64_t next_revision_{1};
   std::uint64_t next_mutation_sequence_{1};
   std::map<std::string, Entry> entries_;
+  std::list<std::string> entry_lru_;
+  static constexpr std::size_t maximum_tracked_paths = 32U * 1024U;
   static constexpr std::size_t maximum_pending_mutations = 512;
   std::deque<GuestFileMutationEvent> pending_mutations_;
 };
@@ -226,6 +237,10 @@ struct FilePageCacheLimits {
   // Zero means unbounded. Eviction only drops the cache's reference; an
   // AddressSpace that still maps a page keeps the backing alive.
   std::size_t maximum_pages{32U * 1024U};
+  // The identity index is metadata-only. A mapping retains its immutable
+  // generation and content identity independently after this entry is
+  // evicted.
+  std::size_t maximum_identity_entries{32U * 1024U};
 };
 
 struct FilePageCacheStats {
@@ -317,6 +332,7 @@ private:
     GuestFileGeneration generation;
     std::uint64_t generation_revision{};
     ContentIdentity content_identity;
+    std::list<std::string>::iterator lru_position;
   };
 
   struct Key {
@@ -338,12 +354,19 @@ private:
 
   void touch_locked(std::map<Key, PageRecord>::iterator iterator);
   void erase_path_locked(const std::string &path);
+  void touch_identity_locked(
+      std::map<std::string, Identity>::iterator iterator);
+  void store_identity_locked(const std::string &path, Identity identity);
+  void erase_identity_locked(
+      std::map<std::string, Identity>::iterator iterator);
+  void evict_identity_locked();
   void evict_locked();
 
   mutable std::mutex mutex_;
   FilePageCacheLimits limits_;
   std::shared_ptr<GuestFileGenerationRegistry> generation_registry_;
   std::map<std::string, Identity> identities_;
+  std::list<std::string> identity_lru_;
   std::map<Key, PageRecord> pages_;
   std::list<Key> lru_;
   FilePageCacheStats stats_;

@@ -66,6 +66,7 @@ struct GlobalIdentityRecord {
   std::optional<std::uint64_t> generation_revision;
   ContentIdentity content_identity;
   std::weak_ptr<GuestFileIoState> io_state;
+  std::list<std::string>::iterator lru_position;
 };
 
 struct GlobalIdentityFlight {
@@ -80,8 +81,11 @@ struct GlobalIdentityFlight {
 
 std::mutex global_identity_mutex;
 std::map<std::string, GlobalIdentityRecord> global_identities;
+std::list<std::string> global_identity_lru;
 std::map<std::string, std::shared_ptr<GlobalIdentityFlight>>
     global_identity_flights;
+
+constexpr std::size_t maximum_global_identity_entries = 32U * 1024U;
 
 struct ImmutableSnapshotKey {
   GuestFileGeneration generation;
@@ -116,6 +120,47 @@ std::uint64_t immutable_snapshot_evictions{};
          *published_revision == *requested_revision;
 }
 
+void touch_global_identity_locked(
+    std::map<std::string, GlobalIdentityRecord>::iterator iterator) {
+  global_identity_lru.splice(global_identity_lru.end(), global_identity_lru,
+                             iterator->second.lru_position);
+  iterator->second.lru_position = std::prev(global_identity_lru.end());
+}
+
+void evict_global_identities_locked() {
+  while (global_identities.size() > maximum_global_identity_entries &&
+         !global_identity_lru.empty()) {
+    const auto key = std::move(global_identity_lru.front());
+    global_identity_lru.pop_front();
+    const auto identity = global_identities.find(key);
+    if (identity != global_identities.end()) {
+      global_identities.erase(identity);
+    }
+  }
+}
+
+void store_global_identity_locked(const std::string &normalized_path,
+                                  GlobalIdentityRecord record) {
+  const auto existing = global_identities.find(normalized_path);
+  if (existing == global_identities.end()) {
+    global_identity_lru.push_back(normalized_path);
+    record.lru_position = std::prev(global_identity_lru.end());
+    global_identities.emplace(normalized_path, std::move(record));
+  } else {
+    record.lru_position = existing->second.lru_position;
+    existing->second = std::move(record);
+    touch_global_identity_locked(existing);
+  }
+  evict_global_identities_locked();
+}
+
+void erase_global_identity_locked(const std::string &normalized_path) {
+  const auto identity = global_identities.find(normalized_path);
+  if (identity == global_identities.end()) return;
+  global_identity_lru.erase(identity->second.lru_position);
+  global_identities.erase(identity);
+}
+
 void publish_global_identity(const std::string &normalized_path,
                              const GuestFileGeneration &generation,
                              std::optional<std::uint64_t> generation_revision,
@@ -132,15 +177,17 @@ void publish_global_identity(const std::string &normalized_path,
         existing_identity->second.content_identity == content_identity) {
       io_state = existing_identity->second.io_state;
     }
-    global_identities[normalized_path] =
+    store_global_identity_locked(
+        normalized_path,
         GlobalIdentityRecord{generation, std::move(generation_revision),
-                             content_identity, std::move(io_state)};
+                             content_identity, std::move(io_state), {}});
     const auto existing = global_identity_flights.find(normalized_path);
+    const auto published = global_identities.find(normalized_path);
     if (existing != global_identity_flights.end() &&
+        published != global_identities.end() &&
         existing->second->generation == generation &&
         identity_revision_matches(existing->second->generation_revision,
-                                  global_identities[normalized_path]
-                                      .generation_revision)) {
+                                  published->second.generation_revision)) {
       flight = existing->second;
       global_identity_flights.erase(existing);
     }
@@ -158,7 +205,7 @@ void publish_global_identity(const std::string &normalized_path,
 
 void invalidate_global_identity(const std::string &normalized_path) {
   const std::scoped_lock lock{global_identity_mutex};
-  global_identities.erase(normalized_path);
+  erase_global_identity_locked(normalized_path);
   global_identity_flights.erase(normalized_path);
 }
 
@@ -201,6 +248,7 @@ SharedFileIdentityResult shared_file_identity(
         identity->second.generation == generation &&
         identity_revision_matches(identity->second.generation_revision,
                                   generation_revision)) {
+      touch_global_identity_locked(identity);
       content_identity = identity->second.content_identity;
     } else {
       const auto existing_flight = global_identity_flights.find(normalized_path);
@@ -231,12 +279,13 @@ SharedFileIdentityResult shared_file_identity(
       if (existing_flight != global_identity_flights.end() &&
           existing_flight->second == flight &&
           existing_flight->second->generation == generation &&
-          identity_revision_matches(existing_flight->second->generation_revision,
+        identity_revision_matches(existing_flight->second->generation_revision,
                                     generation_revision)) {
         if (computed_identity) {
-          global_identities[normalized_path] =
+          store_global_identity_locked(
+              normalized_path,
               GlobalIdentityRecord{generation, generation_revision,
-                                   *computed_identity, {}};
+                                   *computed_identity, {}, {}});
         }
         global_identity_flights.erase(existing_flight);
       }
@@ -357,13 +406,68 @@ GuestFileGenerationRegistry::read_generation(
   return generation_from_stat(file_stat);
 }
 
+std::map<std::string, GuestFileGenerationRegistry::Entry>::iterator
+GuestFileGenerationRegistry::ensure_entry_locked(
+    const std::string &normalized_path) {
+  const auto [iterator, inserted] = entries_.try_emplace(normalized_path);
+  if (inserted) {
+    entry_lru_.push_back(normalized_path);
+    iterator->second.lru_position = std::prev(entry_lru_.end());
+  } else {
+    touch_entry_locked(iterator);
+  }
+  return iterator;
+}
+
+void GuestFileGenerationRegistry::touch_entry_locked(
+    std::map<std::string, Entry>::iterator iterator) {
+  entry_lru_.splice(entry_lru_.end(), entry_lru_,
+                    iterator->second.lru_position);
+  iterator->second.lru_position = std::prev(entry_lru_.end());
+}
+
+void GuestFileGenerationRegistry::erase_entry_locked(
+    std::map<std::string, Entry>::iterator iterator) {
+  entry_lru_.erase(iterator->second.lru_position);
+  entries_.erase(iterator);
+}
+
+void GuestFileGenerationRegistry::erase_subtree_entries_locked(
+    const std::string &normalized_path) {
+  const std::filesystem::path subtree{normalized_path};
+  for (auto iterator = entries_.begin(); iterator != entries_.end();) {
+    const std::filesystem::path candidate{iterator->first};
+    const auto relative = candidate.lexically_relative(subtree);
+    const bool inside = candidate == subtree ||
+                        (!relative.empty() && relative != "." &&
+                         relative.begin() != relative.end() &&
+                         *relative.begin() != "..");
+    if (!inside) {
+      ++iterator;
+      continue;
+    }
+    const auto path = iterator->first;
+    erase_entry_locked(iterator++);
+    invalidate_global_identity(path);
+  }
+}
+
+void GuestFileGenerationRegistry::evict_entries_locked() {
+  while (entries_.size() > maximum_tracked_paths && !entry_lru_.empty()) {
+    const auto key = std::move(entry_lru_.front());
+    entry_lru_.pop_front();
+    const auto entry = entries_.find(key);
+    if (entry != entries_.end()) entries_.erase(entry);
+  }
+}
+
 GuestFileGenerationSnapshot GuestFileGenerationRegistry::record(
     const std::filesystem::path &path,
     std::optional<GuestFileGeneration> generation,
     GuestFileMutationKind mutation, bool force_revision) {
   const auto key = normalize_path(path);
   std::lock_guard lock{mutex_};
-  auto &entry = entries_[key];
+  auto &entry = ensure_entry_locked(key)->second;
   if (!force_revision && entry.snapshot.revision != 0 &&
       entry.snapshot.generation == generation) {
     return entry.snapshot;
@@ -372,6 +476,7 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record(
       next_revision_++, std::move(generation), mutation};
   invalidate_global_identity(key);
   enqueue_mutation_locked(key, mutation);
+  evict_entries_locked();
   return entry.snapshot;
 }
 
@@ -406,7 +511,7 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::observe_normalized(
     std::string normalized_path, const GuestFileGeneration &generation) {
   const auto key = normalized_path;
   std::lock_guard lock{mutex_};
-  auto &entry = entries_[std::move(normalized_path)];
+  auto &entry = ensure_entry_locked(normalized_path)->second;
   if (entry.snapshot.revision != 0 &&
       entry.snapshot.generation == generation) {
     return entry.snapshot;
@@ -414,6 +519,7 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::observe_normalized(
   entry.snapshot = GuestFileGenerationSnapshot{
       next_revision_++, generation, GuestFileMutationKind::Observation};
   invalidate_global_identity(key);
+  evict_entries_locked();
   return entry.snapshot;
 }
 
@@ -424,13 +530,16 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record_descriptor(
   std::lock_guard lock{mutex_};
   std::optional<GuestFileGenerationSnapshot> result;
   bool matched_inode = false;
-  for (auto &[entry_path, entry] : entries_) {
+  for (auto iterator = entries_.begin(); iterator != entries_.end();
+       ++iterator) {
+    auto &[entry_path, entry] = *iterator;
     if (!entry.snapshot.generation ||
         entry.snapshot.generation->device != generation.device ||
         entry.snapshot.generation->inode != generation.inode) {
       continue;
     }
     matched_inode = true;
+    touch_entry_locked(iterator);
     entry.snapshot = GuestFileGenerationSnapshot{
         next_revision_++, generation, mutation};
     invalidate_global_identity(entry_path);
@@ -442,15 +551,17 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record_descriptor(
     // already known with another vnode (or no vnode), this write belongs to
     // the detached old generation and must not resurrect it at the pathname.
     if (const auto current = entries_.find(key); current != entries_.end()) {
+      evict_entries_locked();
       return current->second.snapshot;
     }
-    auto &entry = entries_[key];
+    auto &entry = ensure_entry_locked(key)->second;
     entry.snapshot = GuestFileGenerationSnapshot{
         next_revision_++, generation, mutation};
     invalidate_global_identity(key);
     enqueue_mutation_locked(key, mutation);
     result = entry.snapshot;
   }
+  evict_entries_locked();
   return *result;
 }
 
@@ -484,11 +595,21 @@ void GuestFileGenerationRegistry::publish_rename(
 
 void GuestFileGenerationRegistry::publish_subtree_create(
     const std::filesystem::path &path) {
+  const auto normalized = normalize_path(path);
+  {
+    std::lock_guard lock{mutex_};
+    erase_subtree_entries_locked(normalized);
+  }
   static_cast<void>(publish(path, GuestFileMutationKind::SubtreeCreate));
 }
 
 void GuestFileGenerationRegistry::publish_subtree_remove(
     const std::filesystem::path &path) {
+  const auto normalized = normalize_path(path);
+  {
+    std::lock_guard lock{mutex_};
+    erase_subtree_entries_locked(normalized);
+  }
   static_cast<void>(publish(path, GuestFileMutationKind::SubtreeRemove));
 }
 
@@ -718,7 +839,50 @@ void FilePageCache::touch_locked(
   iterator->second.lru_position = std::prev(lru_.end());
 }
 
+void FilePageCache::touch_identity_locked(
+    std::map<std::string, Identity>::iterator iterator) {
+  identity_lru_.splice(identity_lru_.end(), identity_lru_,
+                       iterator->second.lru_position);
+  iterator->second.lru_position = std::prev(identity_lru_.end());
+}
+
+void FilePageCache::store_identity_locked(const std::string &path,
+                                          Identity identity) {
+  const auto existing = identities_.find(path);
+  if (existing == identities_.end()) {
+    identity_lru_.push_back(path);
+    identity.lru_position = std::prev(identity_lru_.end());
+    identities_.emplace(path, std::move(identity));
+  } else {
+    identity.lru_position = existing->second.lru_position;
+    existing->second = std::move(identity);
+    touch_identity_locked(existing);
+  }
+  evict_identity_locked();
+}
+
+void FilePageCache::erase_identity_locked(
+    std::map<std::string, Identity>::iterator iterator) {
+  identity_lru_.erase(iterator->second.lru_position);
+  identities_.erase(iterator);
+}
+
+void FilePageCache::evict_identity_locked() {
+  if (limits_.maximum_identity_entries == 0U) return;
+  while (identities_.size() > limits_.maximum_identity_entries &&
+         !identity_lru_.empty()) {
+    const auto key = std::move(identity_lru_.front());
+    identity_lru_.pop_front();
+    const auto identity = identities_.find(key);
+    if (identity != identities_.end()) identities_.erase(identity);
+  }
+}
+
 void FilePageCache::erase_path_locked(const std::string &path) {
+  if (const auto identity = identities_.find(path);
+      identity != identities_.end()) {
+    erase_identity_locked(identity);
+  }
   for (auto page = pages_.begin(); page != pages_.end();) {
     if (page->first.path != path) {
       ++page;
@@ -829,6 +993,7 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     if (identity != identities_.end() &&
         identity->second.generation == generation &&
         identity->second.generation_revision == generation_revision) {
+      touch_identity_locked(identity);
       content_identity = identity->second.content_identity;
       ++stats_.identity_hits;
     } else {
@@ -846,8 +1011,9 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     seed_shared_file_identity(normalized_path, generation, *content_identity,
                               generation_revision);
     const std::scoped_lock lock{mutex_};
-    identities_[normalized_path] =
-        Identity{generation, generation_revision, *content_identity};
+    store_identity_locked(
+        normalized_path,
+        Identity{generation, generation_revision, *content_identity, {}});
     ++stats_.identity_hits;
   }
   if (!content_identity) {
@@ -865,8 +1031,9 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     } else {
       ++stats_.identity_hits;
     }
-    identities_[normalized_path] =
-        Identity{generation, generation_revision, *content_identity};
+    store_identity_locked(
+        normalized_path,
+        Identity{generation, generation_revision, *content_identity, {}});
   }
   struct stat final_file_stat {};
   if (::fstat(descriptor, &final_file_stat) != 0 ||
@@ -896,6 +1063,7 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
         identity_revision_matches(identity->second.generation_revision,
                                   generation_revision) &&
         identity->second.content_identity == *content_identity) {
+      touch_global_identity_locked(identity);
       io_state = identity->second.io_state.lock();
       if (!io_state) {
         io_state = std::make_shared<GuestFileIoState>();
