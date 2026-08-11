@@ -365,6 +365,16 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     // the guest architecture instead of making each caller know how to unpack
     // it; ARMv7 remains compatible with an ARMv6 slice when no v7 slice exists.
     const std::span<const std::byte> container{*image_bytes};
+    // ContentIdentity names the bytes on disk, not the architecture-specific
+    // view selected below.  The watcher and file identity cache hash the
+    // complete container, so using the same identity here is required for
+    // cold catalog scans, loader lookups, and hot refreshes to agree.  FAT
+    // images always compute this value locally because a caller-provided
+    // identity from an older catalog may have named only a selected slice.
+    const ContentIdentity container_identity =
+        known_identity && read_be_u32(container, 0U) != fat_magic
+            ? *known_identity
+            : sha256(container);
     if (read_be_u32(container, 0U) == fat_magic) {
         image.fat_container_ = true;
         const auto architecture_count = read_be_u32(container, 4U);
@@ -420,11 +430,13 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     }
 
     const std::span<const std::byte> bytes{*image_bytes};
-    image.content_identity_ = known_identity ? *known_identity : sha256(bytes);
-    if (!image.fat_container_ && image.file_generation_) {
-        image.bytes_ = share_immutable_snapshot(
-            *image.file_generation_, image.content_identity_, image.bytes_,
-            static_cast<std::uint64_t>(architecture));
+    image.content_identity_ = container_identity;
+    if (image.file_generation_) {
+        if (!image.fat_container_) {
+            image.bytes_ = share_immutable_snapshot(
+                *image.file_generation_, image.content_identity_, image.bytes_,
+                static_cast<std::uint64_t>(architecture));
+        }
         seed_shared_file_identity(path, *image.file_generation_,
                                   image.content_identity_);
     }
