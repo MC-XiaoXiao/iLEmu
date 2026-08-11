@@ -82,6 +82,43 @@ std::map<std::string, GlobalIdentityRecord> global_identities;
 std::map<std::string, std::shared_ptr<GlobalIdentityFlight>>
     global_identity_flights;
 
+void publish_global_identity(const std::string &normalized_path,
+                             const GuestFileGeneration &generation,
+                             std::uint64_t generation_revision,
+                             const ContentIdentity &content_identity) {
+  std::shared_ptr<GlobalIdentityFlight> flight;
+  {
+    const std::scoped_lock lock{global_identity_mutex};
+    std::weak_ptr<GuestFileIoState> io_state;
+    const auto existing_identity = global_identities.find(normalized_path);
+    if (existing_identity != global_identities.end() &&
+        existing_identity->second.generation == generation &&
+        existing_identity->second.generation_revision == generation_revision &&
+        existing_identity->second.content_identity == content_identity) {
+      io_state = existing_identity->second.io_state;
+    }
+    global_identities[normalized_path] =
+        GlobalIdentityRecord{generation, generation_revision,
+                             content_identity, std::move(io_state)};
+    const auto existing = global_identity_flights.find(normalized_path);
+    if (existing != global_identity_flights.end() &&
+        existing->second->generation == generation &&
+        existing->second->generation_revision == generation_revision) {
+      flight = existing->second;
+      global_identity_flights.erase(existing);
+    }
+  }
+  if (!flight) return;
+  {
+    const std::scoped_lock flight_lock{flight->mutex};
+    if (!flight->complete) {
+      flight->content_identity = content_identity;
+      flight->complete = true;
+    }
+  }
+  flight->condition.notify_all();
+}
+
 void invalidate_global_identity(const std::string &normalized_path) {
   const std::scoped_lock lock{global_identity_mutex};
   global_identities.erase(normalized_path);
@@ -590,6 +627,18 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
       }
     }
   }
+  if (!content_identity && expected_content_identity && immutable_snapshot) {
+    // MachOImage has already read and generation-validated this immutable
+    // snapshot. Reuse its identity directly so mapping the parsed image does
+    // not hash the same bytes a second time.
+    content_identity = *expected_content_identity;
+    publish_global_identity(normalized_path, generation, generation_revision,
+                            *content_identity);
+    const std::scoped_lock lock{mutex_};
+    identities_[normalized_path] =
+        Identity{generation, generation_revision, *content_identity};
+    ++stats_.identity_hits;
+  }
   if (!content_identity) {
     bool computed = false;
     std::shared_ptr<GlobalIdentityFlight> flight;
@@ -643,11 +692,13 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
       }
       {
         const std::scoped_lock flight_lock{flight->mutex};
-        flight->content_identity = computed_identity;
-        flight->complete = true;
+        if (!flight->complete) {
+          flight->content_identity = computed_identity;
+          flight->complete = true;
+        }
+        content_identity = flight->content_identity;
       }
       flight->condition.notify_all();
-      content_identity = computed_identity;
     } else if (flight) {
       std::unique_lock flight_lock{flight->mutex};
       flight->condition.wait(flight_lock,
