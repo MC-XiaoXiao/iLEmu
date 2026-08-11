@@ -98,6 +98,11 @@ public:
     Cpu& operator=(const Cpu&) = delete;
 
     CpuRunResult run(std::uint64_t ticks, std::size_t execution_slot = 0);
+    // The guest scheduler uses a bounded host slice so a non-preemptible JIT
+    // run returns often enough to service other runnable threads and display
+    // deadlines. Direct callers retain the ordinary run-to-budget contract.
+    CpuRunResult run_cooperatively(
+        std::uint64_t ticks, std::size_t execution_slot = 0);
     CpuRunResult step(std::size_t execution_slot = 0);
     void reset();
     void clear_cache();

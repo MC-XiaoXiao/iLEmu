@@ -60,6 +60,8 @@ constexpr std::size_t jit_link_cell_count = 9U;
 constexpr std::size_t fast_dispatch_table_size = 0x10000U;
 constexpr std::size_t fast_dispatch_entry_bytes = sizeof(std::uint64_t) * 2U;
 constexpr std::size_t host_code_page_size = 4096U;
+constexpr std::uint32_t host_yield_check_interval = 16U;
+constexpr auto host_cooperative_slice_budget = std::chrono::milliseconds{2};
 static_assert(sizeof(void *) == sizeof(std::uint64_t));
 
 [[nodiscard]] std::uint64_t logical_committed_code_bytes(
@@ -402,6 +404,10 @@ private:
                 pc, sizeof(std::uint32_t))) {
             translation_profile_->record(location_descriptor);
         }
+        if (cooperative_execution_ && !host_yield_requested_ &&
+            std::chrono::steady_clock::now() >= host_slice_deadline_) {
+            request_host_yield();
+        }
         // Ordinary guest execution is latency-sensitive. Artifact production
         // is reserved for an explicit precompile request, while the
         // translation profile remains a cheap metadata-only hint for runtime
@@ -570,6 +576,17 @@ public:
     void AddTicks(std::uint64_t ticks) override {
         consumed_ += ticks;
         ticks_remaining_ = ticks >= ticks_remaining_ ? 0 : ticks_remaining_ - ticks;
+        if (!cooperative_execution_ || host_yield_requested_ ||
+            ticks_remaining_ == 0U) {
+            return;
+        }
+        if (++host_yield_check_count_ < host_yield_check_interval) {
+            return;
+        }
+        host_yield_check_count_ = 0;
+        if (std::chrono::steady_clock::now() >= host_slice_deadline_) {
+            request_host_yield();
+        }
     }
     std::uint64_t GetTicksRemaining() override { return ticks_remaining_; }
     std::uint64_t GetTicksForCode(
@@ -579,7 +596,7 @@ public:
             is_thumb, address, instruction);
     }
 
-    void begin(std::uint64_t ticks) {
+    void begin(std::uint64_t ticks, bool cooperative_execution = false) {
         ticks_remaining_ = ticks;
         consumed_ = 0;
         svc_.reset();
@@ -587,6 +604,12 @@ public:
         fault_.reset();
         breakpoint_.reset();
         exception_.clear();
+        cooperative_execution_ = cooperative_execution && ticks != 0U;
+        host_yield_requested_ = false;
+        host_yield_check_count_ = 0;
+        host_slice_deadline_ = cooperative_execution_
+            ? std::chrono::steady_clock::now() + host_cooperative_slice_budget
+            : std::chrono::steady_clock::time_point{};
     }
 
     CpuRunResult result(Dynarmic::HaltReason reason) const {
@@ -786,6 +809,17 @@ private:
         }
     }
 
+    void request_host_yield() noexcept {
+        host_yield_requested_ = true;
+        ticks_remaining_ = 0;
+        if (jit_ != nullptr) {
+            // UserDefined2 is the existing scheduler AST boundary. It keeps
+            // the current XNU quantum and therefore does not model a guest
+            // yield or alter any kernel-visible ABI state.
+            jit_->HaltExecution(Dynarmic::HaltReason::UserDefined2);
+        }
+    }
+
     AddressSpace& memory_;
     const ArmCpuModel& cpu_model_;
     Cpu* owner_{};
@@ -807,6 +841,10 @@ private:
     std::vector<std::uint32_t> translation_code_pages_;
     std::vector<JitConstantDependency> translation_constant_dependencies_;
     bool constant_dependency_failed_{};
+    bool cooperative_execution_{};
+    bool host_yield_requested_{};
+    std::uint32_t host_yield_check_count_{};
+    std::chrono::steady_clock::time_point host_slice_deadline_{};
 };
 
 // The iPhone ARM user ABI uses CP15 thread-pointer registers in addition to
@@ -1022,14 +1060,18 @@ public:
         }
     }
 
-    CpuRunResult run(Cpu& cpu, std::uint64_t ticks, bool single_step) {
+    CpuRunResult run(
+        Cpu& cpu, std::uint64_t ticks, bool single_step,
+        bool cooperative_execution) {
         const std::scoped_lock lock{execution_mutex_};
         memory_.synchronize_shared_write_tracking();
         ensure_jit();
         service_pending_shared_invalidation();
         observe_shared_invalidation_epoch();
         load_state(cpu);
-        callbacks_->begin(single_step ? 1 : ticks);
+        callbacks_->begin(
+            single_step ? 1 : ticks,
+            cooperative_execution && !single_step);
         try {
             if (!single_step) {
                 preload_current_artifact();
@@ -1931,14 +1973,25 @@ CpuRunResult Cpu::run(std::uint64_t ticks, std::size_t execution_slot) {
     if (!execution_pool_) {
         throw std::logic_error{"CPU execution resources have been released"};
     }
-    return execution_pool_->executor(execution_slot).run(*this, ticks, false);
+    return execution_pool_->executor(execution_slot).run(
+        *this, ticks, false, false);
+}
+
+CpuRunResult Cpu::run_cooperatively(
+    std::uint64_t ticks, std::size_t execution_slot) {
+    if (!execution_pool_) {
+        throw std::logic_error{"CPU execution resources have been released"};
+    }
+    return execution_pool_->executor(execution_slot).run(
+        *this, ticks, false, true);
 }
 
 CpuRunResult Cpu::step(std::size_t execution_slot) {
     if (!execution_pool_) {
         throw std::logic_error{"CPU execution resources have been released"};
     }
-    return execution_pool_->executor(execution_slot).run(*this, 1, true);
+    return execution_pool_->executor(execution_slot).run(
+        *this, 1, true, false);
 }
 
 void Cpu::reset() {

@@ -739,8 +739,8 @@ public:
       prepared.result =
           prepared.single_step
               ? prepared.cpu->step(prepared.scheduled.processor)
-              : prepared.cpu->run(prepared.tick_budget,
-                                  prepared.scheduled.processor);
+              : prepared.cpu->run_cooperatively(
+                    prepared.tick_budget, prepared.scheduled.processor);
     } catch (...) {
       prepared.error = std::current_exception();
     }
