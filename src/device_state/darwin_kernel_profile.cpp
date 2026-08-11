@@ -148,9 +148,11 @@ DarwinKernelIdentityProfile
 make_darwin_kernel_identity_profile(const std::filesystem::path &rootfs) {
   const auto system_version = read_system_version(rootfs);
   DarwinKernelIdentityProfile profile;
-  if (!system_version.build_version.empty())
+  if (!system_version.build_version.empty()) {
     profile.build_version = system_version.build_version;
-  const auto contract = contract_for_build(profile.build_version);
+    profile.abi_build_version = system_version.build_version;
+  }
+  const auto contract = contract_for_build(profile.abi_build_version);
   profile.abi_epoch = contract.abi_epoch;
   profile.capabilities = contract.capabilities;
   return profile;

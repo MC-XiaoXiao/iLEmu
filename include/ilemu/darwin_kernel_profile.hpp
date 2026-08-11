@@ -28,17 +28,19 @@ struct DarwinKernelIdentityProfile {
   std::string version{
       "Darwin Kernel Version 9.4.0: iLEmu compatibility kernel; "
       "darwin9.4/RELEASE_ARM"};
+  // Compatibility value exposed through kern.osversion/sysctl when the
+  // firmware does not provide a trustworthy ProductBuildVersion.
   std::string build_version{"1A543a"};
-  // The firmware build is the identity we read from SystemVersion.plist;
-  // this independently names the audited Darwin/XNU ABI epoch. Keeping it
-  // outside capabilities prevents a new capability from accidentally
-  // changing version-sensitive route selection.
+  // Empty means that SystemVersion.plist was missing, malformed, or did not
+  // contain ProductBuildVersion. This is the only build string eligible for
+  // version-sensitive ABI routing; it must not inherit the display default.
+  std::string abi_build_version;
   DarwinAbiEpoch abi_epoch{DarwinAbiEpoch::Unknown};
   DarwinGuestCapabilities capabilities;
 };
 
 // Reports the compatibility kernel's highest supported Darwin contract. The
-// firmware build is also available to explicitly audited ABI dispatch points;
+// detected ABI build is available to explicitly audited dispatch points;
 // unknown builds retain the conservative compatibility behavior.
 [[nodiscard]] DarwinKernelIdentityProfile
 make_darwin_kernel_identity_profile(const std::filesystem::path &rootfs);
