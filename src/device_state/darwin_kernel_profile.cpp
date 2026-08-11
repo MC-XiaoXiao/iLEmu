@@ -46,7 +46,7 @@ struct SystemVersion {
   std::string build_version;
 };
 
-enum class BuildMatchKind : std::uint8_t { FamilyPrefix, NumericPrefix };
+enum class BuildMatchKind : std::uint8_t { FamilyPrefix };
 
 struct BuildProfileRule {
   std::string_view matcher;
@@ -57,9 +57,9 @@ struct BuildProfileRule {
 
 // Keep build recognition data-driven at the ABI-family boundary. Individual
 // firmware releases within an audited family share the same contract; the
-// dispatchers consume only the resulting epoch and capabilities. The numeric
-// rule covers the later XNU build family (for example 11A465 from xnu-4903)
-// without treating an arbitrary unknown string as a newer ABI.
+// dispatchers consume only the resulting epoch and capabilities. The final
+// rule is an audited build-series prefix from the later XNU source set (for
+// example 11A465 from xnu-4903), not a catch-all for arbitrary numeric builds.
 constexpr std::array build_profile_rules{
     BuildProfileRule{"1A", BuildMatchKind::FamilyPrefix,
                      DarwinAbiEpoch::IphoneOs1, {true, true, true}},
@@ -71,22 +71,15 @@ constexpr std::array build_profile_rules{
                      DarwinAbiEpoch::IphoneOs2, {true, false, false}},
     BuildProfileRule{"7A", BuildMatchKind::FamilyPrefix,
                      DarwinAbiEpoch::IphoneOs3, {true, false, false}},
-    BuildProfileRule{"NN", BuildMatchKind::NumericPrefix,
+    BuildProfileRule{"11", BuildMatchKind::FamilyPrefix,
                      DarwinAbiEpoch::Later, {true, false, false}},
 };
-
-[[nodiscard]] bool is_numeric_later_build(std::string_view build) {
-  return build.size() >= 2 && build[0] >= '1' && build[0] <= '9' &&
-         build[1] >= '0' && build[1] <= '9';
-}
 
 [[nodiscard]] bool matches_build(const BuildProfileRule &rule,
                                  std::string_view build) {
   switch (rule.match_kind) {
   case BuildMatchKind::FamilyPrefix:
     return build.starts_with(rule.matcher);
-  case BuildMatchKind::NumericPrefix:
-    return is_numeric_later_build(build);
   }
   return false;
 }
