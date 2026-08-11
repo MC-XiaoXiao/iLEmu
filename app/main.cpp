@@ -3104,6 +3104,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       initial_runtime->kernel->display_submitted_frames();
   auto last_display_submission = std::chrono::steady_clock::now();
   auto last_jit_quota_refresh = last_display_submission;
+  auto latest_host_memory_budget = jit_cache_budget.memory;
   std::optional<std::chrono::steady_clock::time_point> guest_idle_since;
   DeadlineQueue<std::uint32_t, std::uint64_t> guest_deadlines;
   if (!bounded_execution) {
@@ -3864,6 +3865,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       if (quota_now - last_jit_quota_refresh >= jit_quota_refresh_period) {
         last_jit_quota_refresh = quota_now;
         const auto memory = host_memory_budget_snapshot();
+        latest_host_memory_budget = memory;
         for (auto &runtime : runtimes) {
           if (!runtime->jit_cache_reservation ||
               !runtime->cpus->has_execution_resources()) {
@@ -3931,9 +3933,46 @@ void boot(const std::vector<std::string> &args, Output &output) {
           std::chrono::milliseconds{100};
       constexpr auto idle_precompile_no_deadline_quiet_period =
           std::chrono::milliseconds{20};
-      const auto available_precompile_budget = [&]() {
+      const auto host_memory_pressure = [&]() {
+        auto effective_limit = latest_host_memory_budget.physical_bytes;
+        if (latest_host_memory_budget.cgroup_limit_bytes != 0U) {
+          effective_limit = effective_limit == 0U
+                                ? latest_host_memory_budget.cgroup_limit_bytes
+                                : std::min(
+                                      effective_limit,
+                                      latest_host_memory_budget.cgroup_limit_bytes);
+        }
+        auto headroom = latest_host_memory_budget.available_bytes;
+        if (latest_host_memory_budget.cgroup_limit_bytes != 0U &&
+            latest_host_memory_budget.cgroup_current_bytes <
+                latest_host_memory_budget.cgroup_limit_bytes) {
+          headroom = std::min(
+              headroom, latest_host_memory_budget.cgroup_limit_bytes -
+                            latest_host_memory_budget.cgroup_current_bytes);
+        }
+        if (effective_limit != 0U && headroom != 0U &&
+            headroom < effective_limit / 8U) {
+          return true;
+        }
+        if (effective_limit != 0U &&
+            latest_host_memory_budget.rss_bytes >
+                effective_limit - effective_limit / 4U) {
+          return true;
+        }
+        return false;
+      };
+      const auto available_precompile_budget =
+          [&](HostWorkKind work_kind) {
+        const auto memory_pressure = host_memory_pressure();
+        // Portable IR is the first work to yield under host pressure. It is
+        // reusable but not latency-critical; foreground native code remains
+        // available on demand and its idle warming is merely throttled.
+        if (memory_pressure && work_kind == HostWorkKind::OfflineCompile)
+          return std::uint64_t{0};
         if (!realtime_pacer)
-          return idle_precompile_time_budget_ns;
+          return memory_pressure
+                     ? idle_precompile_time_budget_ns / 4U
+                     : idle_precompile_time_budget_ns;
         const auto now = std::chrono::steady_clock::now();
         if (now - last_display_submission <
             idle_precompile_display_quiet_period) {
@@ -3953,9 +3992,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
           return std::uint64_t{0};
         const auto budget = std::chrono::duration_cast<std::chrono::nanoseconds>(
             available - idle_precompile_deadline_reserve);
-        return std::min(
+        const auto paced_budget = std::min(
             idle_precompile_time_budget_ns,
             static_cast<std::uint64_t>(budget.count()));
+        return memory_pressure ? paced_budget / 4U : paced_budget;
       };
       const auto next_host_deadline = next_host_control_deadline();
       std::optional<HostResourceController::Clock::time_point>
@@ -3984,7 +4024,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         const auto next_phase = runtime->cpus->next_precompile_phase(target);
         if (!next_phase) return;
         const auto phase = *next_phase;
-        const auto budget = available_precompile_budget();
+        const auto budget = available_precompile_budget(work_kind);
         if (budget == 0)
           return;
         runtime->precompile_task = host_resources.submit(
