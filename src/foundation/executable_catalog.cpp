@@ -604,12 +604,28 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
 
   std::set<std::filesystem::path> requested_files;
   std::set<std::filesystem::path> requested_subtrees;
+  const auto has_catalog_descendant = [this, &is_in_subtree](
+                                          const std::filesystem::path &subtree) {
+    for (const auto &entry : entries_) {
+      for (const auto &alias : entry.aliases) {
+        if (alias != subtree && is_in_subtree(alias, subtree)) return true;
+      }
+    }
+    return false;
+  };
   for (const auto &path : paths) {
     const auto normalized = normalize_path(path);
     if (!is_in_scope(normalized)) continue;
     std::error_code status_error;
     const auto status = std::filesystem::symlink_status(normalized, status_error);
-    if (!status_error && std::filesystem::is_directory(status)) {
+    // A removed directory has no status to inspect.  Existing catalog aliases
+    // are the authoritative shape of that old subtree, so retain the
+    // directory scope even after the host path has disappeared.  This also
+    // covers the source side of an atomic directory rename.
+    if ((!status_error && std::filesystem::is_directory(status)) ||
+        ((status_error ||
+          status.type() == std::filesystem::file_type::not_found) &&
+         has_catalog_descendant(normalized))) {
       requested_subtrees.insert(normalized);
     } else {
       requested_files.insert(normalized);
