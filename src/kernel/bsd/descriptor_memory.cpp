@@ -980,10 +980,18 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
     const auto address = registers[0];
     const auto size = registers[1];
     const auto protection = registers[2];
-    if ((address & (AddressSpace::page_size - 1U)) != 0 || size == 0 ||
-        size - 1U > std::numeric_limits<std::uint32_t>::max() - address ||
+    if ((address & (AddressSpace::page_size - 1U)) != 0 ||
+        (size != 0 &&
+         size - 1U > std::numeric_limits<std::uint32_t>::max() - address) ||
         (protection & ~7U) != 0) {
       bsd_error(cpu, darwin::error::invalid_argument);
+      return;
+    }
+    if (size == 0) {
+      // xnu-792.24.17, xnu-1228.15.4, and xnu-4903.241.1 all pass a
+      // zero-length request through mach_vm_protect, whose contract returns
+      // KERN_SUCCESS without touching the address space.
+      bsd_success(cpu, 0);
       return;
     }
     MemoryPermission permissions = MemoryPermission::None;
