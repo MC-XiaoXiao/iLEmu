@@ -63,6 +63,8 @@ set(ILEMU_DYNARMIC_PORTABLE_IR_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-portable-ir.patch")
 set(ILEMU_DYNARMIC_A32_STABLE_LINK_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-a32-stable-links.patch")
+set(ILEMU_DYNARMIC_NORMAL_STABLE_LINK_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-normal-stable-links.patch")
 execute_process(
     COMMAND git apply --check "${ILEMU_DYNARMIC_PORTABLE_IR_PATCH}"
     WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
@@ -219,6 +221,42 @@ else()
             "Dynarmic A32 stable-link patch is neither applicable nor "
             "already applied. git apply reported: "
             "${ILEMU_DYNARMIC_A32_STABLE_LINK_ERROR}")
+    endif()
+endif()
+
+# Extend the same executor-local stable-slot probe to ordinary LinkBlock
+# success branches while preserving their cycle/halt guards and patch sites.
+execute_process(
+    COMMAND git apply --unidiff-zero --check "${ILEMU_DYNARMIC_NORMAL_STABLE_LINK_PATCH}"
+    WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+    RESULT_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_CHECK
+    OUTPUT_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_OUTPUT
+    ERROR_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_ERROR)
+if(ILEMU_DYNARMIC_NORMAL_STABLE_LINK_CHECK EQUAL 0)
+    execute_process(
+        COMMAND git apply --unidiff-zero "${ILEMU_DYNARMIC_NORMAL_STABLE_LINK_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_APPLY
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_APPLY_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_APPLY_ERROR)
+    if(NOT ILEMU_DYNARMIC_NORMAL_STABLE_LINK_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Failed to apply the Dynarmic ordinary stable-link patch: "
+            "${ILEMU_DYNARMIC_NORMAL_STABLE_LINK_APPLY_ERROR}")
+    endif()
+else()
+    execute_process(
+        COMMAND git apply --unidiff-zero --reverse --check
+            "${ILEMU_DYNARMIC_NORMAL_STABLE_LINK_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_REVERSE_CHECK
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_REVERSE_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_REVERSE_ERROR)
+    if(NOT ILEMU_DYNARMIC_NORMAL_STABLE_LINK_REVERSE_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Dynarmic ordinary stable-link patch is neither applicable nor "
+            "already applied. git apply reported: "
+            "${ILEMU_DYNARMIC_NORMAL_STABLE_LINK_ERROR}")
     endif()
 endif()
 

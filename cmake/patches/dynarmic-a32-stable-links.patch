@@ -61,10 +61,10 @@
 +    code.mov(r12, qword[r12]);
 +    code.lea(rbp, ptr[r12 + fast_dispatch_table_index(target)]);
 +    code.cmp(rbx, qword[rbp + offsetof(FastDispatchEntry, location_descriptor)]);
-+    code.jne(miss);
++    code.jne(miss, code.T_NEAR);
 +    code.mov(rax, qword[rbp + offsetof(FastDispatchEntry, code_ptr)]);
 +    code.test(rax, rax);
-+    code.jz(miss);
++    code.jz(miss, code.T_NEAR);
 +
 +    // PushRSB records the descriptor before this terminal runs. Once the
 +    // stable slot is validated, publish its generation-local target into the
@@ -75,7 +75,7 @@
 +    code.and_(ecx, u32(A32JitState::RSBPtrMask));
 +    code.cmp(rbx, qword[r15 + offsetof(A32JitState, rsb_location_descriptors) +
 +                         rcx * sizeof(u64)]);
-+    code.jne(no_rsb);
++    code.jne(no_rsb, code.T_NEAR);
 +    code.mov(qword[r15 + offsetof(A32JitState, rsb_codeptrs) +
 +                     rcx * sizeof(u64)], rax);
 +    code.L(no_rsb);
