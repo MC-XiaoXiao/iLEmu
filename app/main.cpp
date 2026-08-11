@@ -3998,7 +3998,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           if (!runtime->precompile_task->finished()) return;
           runtime->precompile_task.reset();
         }
-        const auto next_phase = runtime->cpus->next_precompile_phase();
+        const auto next_phase = runtime->cpus->next_precompile_phase(target);
         if (!next_phase) return;
         const auto phase = *next_phase;
         const auto budget = available_precompile_budget();
@@ -4074,7 +4074,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
              !runtime->precompile_task->finished())) {
           continue;
         }
-        const auto phase = runtime->cpus->next_precompile_phase();
+        const auto phase = runtime->cpus->next_precompile_phase(
+            JitPrecompileTarget::PortableIr);
         if (phase &&
             (!offline_precompile_phase ||
              static_cast<std::uint8_t>(*phase) <

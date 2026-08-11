@@ -1404,6 +1404,35 @@ private:
 };
 
 class CpuExecutionPool {
+    struct PrecompileEntry {
+        std::uint64_t descriptor{};
+        JitPrecompileTarget target{JitPrecompileTarget::NativeCode};
+
+        friend constexpr bool operator==(const PrecompileEntry &,
+                                         const PrecompileEntry &) = default;
+    };
+
+    struct PrecompileEntryHash {
+        [[nodiscard]] std::size_t operator()(
+            const PrecompileEntry &entry) const noexcept {
+            const auto descriptor_hash = std::hash<std::uint64_t>{}(
+                entry.descriptor);
+            const auto target_hash = std::hash<std::uint8_t>{}(
+                static_cast<std::uint8_t>(entry.target));
+            return descriptor_hash ^
+                   (target_hash + static_cast<std::size_t>(0x9e3779b9U) +
+                    (descriptor_hash << 6U) + (descriptor_hash >> 2U));
+        }
+    };
+
+    struct DeferredPrecompileEntry {
+        JitPrecompilePhase phase{JitPrecompilePhase::Remaining};
+        // CacheFull is retryable only after the shared slab advances to a new
+        // generation. Ordinary Deferred entries leave this empty and are
+        // retried when the profile is refreshed or the mapping is re-added.
+        std::optional<std::uint64_t> cache_full_generation;
+    };
+
 public:
     CpuExecutionPool(
         AddressSpace& memory,
@@ -1495,10 +1524,18 @@ public:
         inflight_precompile_entries_.clear();
         completed_precompile_entries_.clear();
         deferred_precompile_entries_.clear();
+        cache_full_generation_observed_.reset();
         next_precompile_executor_ = 0;
         for (auto location = locations.rbegin(); location != locations.rend();
              ++location) {
-            if (!enqueue_precompile_entry_locked(*location, phase)) break;
+            if (!enqueue_precompile_entry_locked(
+                    PrecompileEntry{*location, JitPrecompileTarget::NativeCode},
+                    phase) ||
+                !enqueue_precompile_entry_locked(
+                    PrecompileEntry{*location, JitPrecompileTarget::PortableIr},
+                    phase)) {
+                break;
+            }
         }
     }
 
@@ -1513,14 +1550,21 @@ public:
         JitPrecompilePhase phase) {
         const std::lock_guard queue_lock{precompile_queue_mutex_};
         for (const auto entry : location_descriptors) {
-            if (!enqueue_precompile_entry_locked(entry, phase)) break;
+            if (!enqueue_precompile_entry_locked(
+                    PrecompileEntry{entry, JitPrecompileTarget::NativeCode},
+                    phase) ||
+                !enqueue_precompile_entry_locked(
+                    PrecompileEntry{entry, JitPrecompileTarget::PortableIr},
+                    phase)) {
+                break;
+            }
         }
     }
 
     [[nodiscard]] std::optional<JitPrecompilePhase>
-    next_precompile_phase() {
+    next_precompile_phase(JitPrecompileTarget target) {
         const std::lock_guard queue_lock{precompile_queue_mutex_};
-        return next_precompile_phase_locked();
+        return next_precompile_phase_locked(target);
     }
 
     JitPrecompileBatchResult precompile_pending(
@@ -1546,38 +1590,45 @@ public:
                 ++result.deadline_stops;
                 break;
             }
-            std::optional<std::pair<std::uint64_t, JitPrecompilePhase>> entry;
+            std::optional<std::pair<PrecompileEntry, JitPrecompilePhase>> entry;
             std::size_t executor_index{};
             {
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
-                entry = take_precompile_entry_locked();
+                entry = take_precompile_entry_locked(target);
                 if (!entry) break;
                 executor_index = next_precompile_executor_++ % executors_.size();
             }
             ++processed;
             ++result.attempted;
-            const auto descriptor = entry->first;
+            const auto precompile_entry = entry->first;
+            const auto descriptor = precompile_entry.descriptor;
             JitExecutor::PrecompileDisposition disposition;
             try {
                 disposition = executors_[executor_index]->precompile_descriptor(
                     descriptor, target);
             } catch (...) {
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
-                inflight_precompile_entries_.erase(descriptor);
-                deferred_precompile_entries_[descriptor] =
-                    JitPrecompilePhase::Remaining;
+                inflight_precompile_entries_.erase(precompile_entry);
+                deferred_precompile_entries_[precompile_entry] =
+                    DeferredPrecompileEntry{entry->second, std::nullopt};
                 ++result.failed;
                 break;
             }
             {
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
-                inflight_precompile_entries_.erase(descriptor);
+                inflight_precompile_entries_.erase(precompile_entry);
                 if (disposition ==
                         JitExecutor::PrecompileDisposition::Deferred) {
-                    deferred_precompile_entries_[descriptor] =
-                        JitPrecompilePhase::Remaining;
+                    deferred_precompile_entries_[precompile_entry] =
+                        DeferredPrecompileEntry{entry->second, std::nullopt};
+                } else if (disposition ==
+                           JitExecutor::PrecompileDisposition::CacheFull) {
+                    deferred_precompile_entries_[precompile_entry] =
+                        DeferredPrecompileEntry{
+                            entry->second,
+                            execution_context_->native_code_slab()->generation()};
                 } else {
-                    completed_precompile_entries_.insert(descriptor);
+                    completed_precompile_entries_.insert(precompile_entry);
                 }
             }
             switch (disposition) {
@@ -1625,15 +1676,16 @@ private:
     }
 
     [[nodiscard]] bool enqueue_precompile_entry_locked(
-        std::uint64_t entry, JitPrecompilePhase phase) {
+        PrecompileEntry entry, JitPrecompilePhase phase) {
         if (const auto deferred = deferred_precompile_entries_.find(entry);
             deferred != deferred_precompile_entries_.end()) {
-            if (phase_index(deferred->second) < phase_index(phase)) {
-                phase = deferred->second;
+            if (phase_index(deferred->second.phase) < phase_index(phase)) {
+                phase = deferred->second.phase;
             }
             deferred_precompile_entries_.erase(deferred);
         }
-        if (entry == 0 || completed_precompile_entries_.contains(entry) ||
+        if (entry.descriptor == 0 ||
+            completed_precompile_entries_.contains(entry) ||
             inflight_precompile_entries_.contains(entry)) {
             return true;
         }
@@ -1650,7 +1702,8 @@ private:
                 inflight_precompile_entries_.size() +
                 deferred_precompile_entries_.size() +
                 completed_precompile_entries_.size() >=
-            jit_translation_profile_maximum_locations) {
+            jit_translation_profile_maximum_locations *
+                jit_precompile_target_count) {
             return false;
         }
         pending_precompile_phases_.emplace(entry, phase);
@@ -1658,48 +1711,95 @@ private:
         return true;
     }
 
+    void promote_cache_full_entries_locked() {
+        if (deferred_precompile_entries_.empty()) return;
+        const auto current_generation =
+            execution_context_->native_code_slab()->generation();
+        if (cache_full_generation_observed_ &&
+            *cache_full_generation_observed_ == current_generation) {
+            return;
+        }
+        cache_full_generation_observed_ = current_generation;
+        for (auto iterator = deferred_precompile_entries_.begin();
+             iterator != deferred_precompile_entries_.end();) {
+            if (!iterator->second.cache_full_generation ||
+                *iterator->second.cache_full_generation == current_generation) {
+                ++iterator;
+                continue;
+            }
+            const auto entry = iterator->first;
+            const auto phase = iterator->second.phase;
+            pending_precompile_phases_.emplace(entry, phase);
+            pending_precompile_entries_[phase_index(phase)].push_back(entry);
+            iterator = deferred_precompile_entries_.erase(iterator);
+        }
+    }
+
     [[nodiscard]] std::optional<JitPrecompilePhase>
-    next_precompile_phase_locked() {
+    next_precompile_phase_locked(JitPrecompileTarget target) {
+        promote_cache_full_entries_locked();
         for (std::size_t index = 0; index < pending_precompile_entries_.size();
              ++index) {
             auto &queue = pending_precompile_entries_[index];
-            while (!queue.empty()) {
-                const auto entry = queue.front();
+            for (auto iterator = queue.begin(); iterator != queue.end();) {
+                const auto entry = *iterator;
                 const auto pending = pending_precompile_phases_.find(entry);
-                if (pending != pending_precompile_phases_.end() &&
-                    phase_index(pending->second) == index) {
+                if (pending == pending_precompile_phases_.end() ||
+                    phase_index(pending->second) != index) {
+                    iterator = queue.erase(iterator);
+                    continue;
+                }
+                if (entry.target == target) {
                     return pending->second;
                 }
-                queue.pop_front();
+                ++iterator;
             }
         }
         return std::nullopt;
     }
 
-    [[nodiscard]] std::optional<std::pair<std::uint64_t,
+    [[nodiscard]] std::optional<std::pair<PrecompileEntry,
                                           JitPrecompilePhase>>
-    take_precompile_entry_locked() {
-        const auto phase = next_precompile_phase_locked();
+    take_precompile_entry_locked(JitPrecompileTarget target) {
+        const auto phase = next_precompile_phase_locked(target);
         if (!phase) return std::nullopt;
         auto &queue = pending_precompile_entries_[phase_index(*phase)];
-        const auto entry = queue.front();
-        queue.pop_front();
-        pending_precompile_phases_.erase(entry);
-        inflight_precompile_entries_.insert(entry);
-        return std::pair{entry, *phase};
+        for (auto iterator = queue.begin(); iterator != queue.end();) {
+            const auto entry = *iterator;
+            const auto pending = pending_precompile_phases_.find(entry);
+            if (pending == pending_precompile_phases_.end() ||
+                phase_index(pending->second) != phase_index(*phase)) {
+                iterator = queue.erase(iterator);
+                continue;
+            }
+            if (entry.target != target) {
+                ++iterator;
+                continue;
+            }
+            queue.erase(iterator);
+            pending_precompile_phases_.erase(entry);
+            inflight_precompile_entries_.insert(entry);
+            return std::pair{entry, *phase};
+        }
+        return std::nullopt;
     }
 
     AddressSpace& memory_;
     std::shared_ptr<ExecutionContext> execution_context_;
     std::vector<std::unique_ptr<JitExecutor>> executors_;
-    std::array<std::deque<std::uint64_t>, jit_precompile_phase_count>
+    std::array<std::deque<PrecompileEntry>, jit_precompile_phase_count>
         pending_precompile_entries_;
-    std::unordered_map<std::uint64_t, JitPrecompilePhase>
+    std::unordered_map<PrecompileEntry, JitPrecompilePhase,
+                       PrecompileEntryHash>
         pending_precompile_phases_;
-    std::unordered_set<std::uint64_t> inflight_precompile_entries_;
-    std::unordered_map<std::uint64_t, JitPrecompilePhase>
+    std::unordered_set<PrecompileEntry, PrecompileEntryHash>
+        inflight_precompile_entries_;
+    std::unordered_map<PrecompileEntry, DeferredPrecompileEntry,
+                       PrecompileEntryHash>
         deferred_precompile_entries_;
-    std::unordered_set<std::uint64_t> completed_precompile_entries_;
+    std::unordered_set<PrecompileEntry, PrecompileEntryHash>
+        completed_precompile_entries_;
+    std::optional<std::uint64_t> cache_full_generation_observed_;
     std::size_t next_precompile_executor_{};
     std::mutex precompile_queue_mutex_;
 };
@@ -2025,9 +2125,10 @@ void CpuCluster::add_precompile_entries(
     }
 }
 
-std::optional<JitPrecompilePhase> CpuCluster::next_precompile_phase() {
+std::optional<JitPrecompilePhase> CpuCluster::next_precompile_phase(
+    JitPrecompileTarget target) {
     if (!execution_pool_) return std::nullopt;
-    return execution_pool_->next_precompile_phase();
+    return execution_pool_->next_precompile_phase(target);
 }
 
 JitPrecompileBatchResult CpuCluster::precompile_pending(

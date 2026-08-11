@@ -221,7 +221,8 @@ public:
         const std::vector<std::uint64_t> &location_descriptors,
         JitPrecompilePhase phase = JitPrecompilePhase::Remaining);
     [[nodiscard]] std::optional<JitPrecompilePhase>
-    next_precompile_phase();
+    next_precompile_phase(
+        JitPrecompileTarget target = JitPrecompileTarget::NativeCode);
     JitPrecompileBatchResult precompile_pending(
         std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
         JitPrecompileTarget target = JitPrecompileTarget::NativeCode);
