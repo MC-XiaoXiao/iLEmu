@@ -2016,6 +2016,47 @@ void boot(const std::vector<std::string> &args, Output &output) {
   constexpr std::size_t maximum_catalog_preexec_blocks = 64;
   constexpr std::uint64_t catalog_preexec_budget_nanoseconds = 4'000'000;
   std::deque<ContentIdentity> pending_catalog_compiles;
+  struct PrecompileOutcomeCounters {
+    std::atomic<std::uint64_t> attempted{};
+    std::atomic<std::uint64_t> native_compiled{};
+    std::atomic<std::uint64_t> portable_generated{};
+    std::atomic<std::uint64_t> portable_artifact_hits{};
+    std::atomic<std::uint64_t> artifact_imported{};
+    std::atomic<std::uint64_t> artifact_probe_hits{};
+    std::atomic<std::uint64_t> shared_slab_hits{};
+    std::atomic<std::uint64_t> deferred{};
+    std::atomic<std::uint64_t> unstable{};
+    std::atomic<std::uint64_t> cache_full{};
+    std::atomic<std::uint64_t> failed{};
+    std::atomic<std::uint64_t> deadline_stops{};
+  } precompile_outcomes;
+  const auto record_precompile_outcomes =
+      [&precompile_outcomes](const JitPrecompileBatchResult &result) {
+        precompile_outcomes.attempted.fetch_add(result.attempted,
+                                                 std::memory_order_relaxed);
+        precompile_outcomes.native_compiled.fetch_add(
+            result.native_compiled, std::memory_order_relaxed);
+        precompile_outcomes.portable_generated.fetch_add(
+            result.portable_generated, std::memory_order_relaxed);
+        precompile_outcomes.portable_artifact_hits.fetch_add(
+            result.portable_artifact_hits, std::memory_order_relaxed);
+        precompile_outcomes.artifact_imported.fetch_add(
+            result.artifact_imported, std::memory_order_relaxed);
+        precompile_outcomes.artifact_probe_hits.fetch_add(
+            result.artifact_probe_hits, std::memory_order_relaxed);
+        precompile_outcomes.shared_slab_hits.fetch_add(
+            result.shared_slab_hits, std::memory_order_relaxed);
+        precompile_outcomes.deferred.fetch_add(result.deferred,
+                                               std::memory_order_relaxed);
+        precompile_outcomes.unstable.fetch_add(result.unstable,
+                                                std::memory_order_relaxed);
+        precompile_outcomes.cache_full.fetch_add(result.cache_full,
+                                                  std::memory_order_relaxed);
+        precompile_outcomes.failed.fetch_add(result.failed,
+                                              std::memory_order_relaxed);
+        precompile_outcomes.deadline_stops.fetch_add(
+            result.deadline_stops, std::memory_order_relaxed);
+      };
   const auto assign_jit_process_profile =
       [&translation_profiles, &catalog_index, &boot_image_identities,
        &pending_catalog_compiles, &output,
@@ -2087,15 +2128,24 @@ void boot(const std::vector<std::string> &args, Output &output) {
         return executable_pending || linker_pending;
       };
   const auto precompile_catalog_generation =
-      [&output](Runtime &runtime, bool pending, std::string_view executable_path) {
+      [&output, &record_precompile_outcomes](
+          Runtime &runtime, bool pending, std::string_view executable_path) {
         if (!pending) return;
-        const auto compiled = runtime.cpus->precompile_pending(
+        const auto result = runtime.cpus->precompile_pending(
             maximum_catalog_preexec_blocks,
             catalog_preexec_budget_nanoseconds,
             JitPrecompileTarget::NativeCode);
+        record_precompile_outcomes(result);
         output.line("[catalog] exec-precompile executable=" +
                     std::string{executable_path} +
-                    " blocks=" + std::to_string(compiled));
+                    " blocks=" + std::to_string(result.native_compiled) +
+                    " attempted=" + std::to_string(result.attempted) +
+                    " shared-slab=" +
+                    std::to_string(result.shared_slab_hits) +
+                    " artifact-imported=" +
+                    std::to_string(result.artifact_imported) +
+                    " deferred=" + std::to_string(result.deferred) +
+                    " failed=" + std::to_string(result.failed));
       };
   auto initial = std::make_unique<Runtime>();
   initial->memory = std::move(initial_memory);
@@ -3922,9 +3972,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
         runtime->precompile_task = host_resources.submit(
             work_kind, host_compile_deadline,
             [runtime, budget, idle_precompile_block_budget, phase, target,
-             &precompile_blocks_by_phase, &precompile_blocks_by_target] {
-              const auto compiled = runtime->cpus->precompile_pending(
+             &precompile_blocks_by_phase, &precompile_blocks_by_target,
+             &record_precompile_outcomes] {
+              const auto result = runtime->cpus->precompile_pending(
                   idle_precompile_block_budget, budget, target);
+              record_precompile_outcomes(result);
+              const auto compiled = target == JitPrecompileTarget::NativeCode
+                                        ? result.native_compiled
+                                        : result.portable_generated;
               precompile_blocks_by_phase[static_cast<std::size_t>(phase)]
                   .fetch_add(compiled, std::memory_order_relaxed);
               precompile_blocks_by_target[static_cast<std::size_t>(target)]
@@ -4261,6 +4316,43 @@ void boot(const std::vector<std::string> &args, Output &output) {
       " portable-ir=" +
       std::to_string(precompile_tasks_by_target[1]) + "/" +
       std::to_string(precompile_blocks_by_target[1].load(
+          std::memory_order_relaxed)));
+  output.line(
+      "[precompile-outcomes] attempted=" +
+      std::to_string(precompile_outcomes.attempted.load(
+          std::memory_order_relaxed)) +
+      " native-compiled=" +
+      std::to_string(precompile_outcomes.native_compiled.load(
+          std::memory_order_relaxed)) +
+      " portable-generated=" +
+      std::to_string(precompile_outcomes.portable_generated.load(
+          std::memory_order_relaxed)) +
+      " portable-artifact-hits=" +
+      std::to_string(precompile_outcomes.portable_artifact_hits.load(
+          std::memory_order_relaxed)) +
+      " artifact-imported=" +
+      std::to_string(precompile_outcomes.artifact_imported.load(
+          std::memory_order_relaxed)) +
+      " artifact-probe-hits=" +
+      std::to_string(precompile_outcomes.artifact_probe_hits.load(
+          std::memory_order_relaxed)) +
+      " shared-slab-hits=" +
+      std::to_string(precompile_outcomes.shared_slab_hits.load(
+          std::memory_order_relaxed)) +
+      " deferred=" +
+      std::to_string(precompile_outcomes.deferred.load(
+          std::memory_order_relaxed)) +
+      " unstable=" +
+      std::to_string(precompile_outcomes.unstable.load(
+          std::memory_order_relaxed)) +
+      " cache-full=" +
+      std::to_string(precompile_outcomes.cache_full.load(
+          std::memory_order_relaxed)) +
+      " failed=" +
+      std::to_string(precompile_outcomes.failed.load(
+          std::memory_order_relaxed)) +
+      " deadline-stops=" +
+      std::to_string(precompile_outcomes.deadline_stops.load(
           std::memory_order_relaxed)));
   if (catalog_refresh_events != 0 || catalog_refresh_count != 0 ||
       catalog_refresh_scheduled != 0 || catalog_refresh_rejected != 0) {

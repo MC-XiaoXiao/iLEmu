@@ -40,6 +40,21 @@ enum class JitPrecompileTarget : std::uint8_t {
 inline constexpr std::size_t jit_precompile_target_count =
     static_cast<std::size_t>(JitPrecompileTarget::PortableIr) + 1U;
 
+struct JitPrecompileBatchResult {
+    std::uint64_t attempted{};
+    std::uint64_t native_compiled{};
+    std::uint64_t portable_generated{};
+    std::uint64_t portable_artifact_hits{};
+    std::uint64_t artifact_imported{};
+    std::uint64_t artifact_probe_hits{};
+    std::uint64_t shared_slab_hits{};
+    std::uint64_t deferred{};
+    std::uint64_t unstable{};
+    std::uint64_t cache_full{};
+    std::uint64_t failed{};
+    std::uint64_t deadline_stops{};
+};
+
 class JitTranslationProfile;
 class JitArtifactStore;
 enum class JitArtifactRetention : std::uint8_t;
@@ -201,7 +216,7 @@ public:
         JitPrecompilePhase phase = JitPrecompilePhase::Remaining);
     [[nodiscard]] std::optional<JitPrecompilePhase>
     next_precompile_phase();
-    std::size_t precompile_pending(
+    JitPrecompileBatchResult precompile_pending(
         std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
         JitPrecompileTarget target = JitPrecompileTarget::NativeCode);
     // A dead guest task keeps its small register context until the parent

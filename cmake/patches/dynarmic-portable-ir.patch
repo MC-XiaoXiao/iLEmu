@@ -634,7 +634,7 @@ index 13f3a60..c62335f 100644
          conf.enable_cycle_counting,
      };
  }
-@@ -45,56 +67,520 @@ static RunCodeCallbacks GenRunCodeCallbacks(A32::UserCallbacks* cb, CodePtr (*Lo
+@@ -45,56 +67,522 @@ static RunCodeCallbacks GenRunCodeCallbacks(A32::UserCallbacks* cb, CodePtr (*Lo
  static std::function<void(BlockOfCode&)> GenRCP(const A32::UserConfig& conf) {
      return [conf](BlockOfCode& code) {
          if (conf.page_table) {
@@ -781,11 +781,13 @@ index 13f3a60..c62335f 100644
 +        }
 +        if (const auto existing = emitter->GetBasicBlock(block.Location())) {
 +            return BlockDescriptor{
-+                existing->entrypoint, existing->size, current_generation};
++                existing->entrypoint, existing->size, current_generation,
++                false};
 +        }
 +        const auto result = emitter->Emit(block);
 +        return BlockDescriptor{
-+            result.entrypoint, result.size, current_generation};
++            result.entrypoint, result.size, current_generation,
++            result.entrypoint != nullptr};
 +    }
 +
 +    [[nodiscard]] std::size_t space_remaining() const {
@@ -1193,14 +1195,17 @@ index 13f3a60..c62335f 100644
  
          PerformRequestedCacheInvalidation(hr);
  
-@@ -120,8 +617,44 @@ struct Jit::Impl {
-     void Precompile(u64 location_descriptor) {
+@@ -120,8 +617,45 @@ struct Jit::Impl {
+-    void Precompile(u64 location_descriptor) {
++    bool Precompile(u64 location_descriptor) {
          ASSERT(!jit_interface->is_executing);
          PerformRequestedCacheInvalidation(static_cast<HaltReason>(Atomic::Load(&jit_state.halt_reason)));
 +        const auto generation = native_code_slab->generation();
-         static_cast<void>(GetBasicBlock(
+-        static_cast<void>(GetBasicBlock(
 -                IR::LocationDescriptor{location_descriptor}));
-+            IR::LocationDescriptor{location_descriptor}, generation));
++        return GetBasicBlock(
++            IR::LocationDescriptor{location_descriptor}, generation)
++            .newly_emitted;
 +    }
 +
 +    void GeneratePortableIR(u64 location_descriptor) {
@@ -1235,7 +1240,7 @@ index 13f3a60..c62335f 100644
 +        }
 +        native_code_slab->ensure_memory_committed(
 +            MINIMUM_REMAINING_CODESIZE);
-+        return native_code_slab->emit(block, generation).entrypoint != nullptr;
++        return native_code_slab->emit(block, generation).newly_emitted;
      }
  
      void ClearCache() {
@@ -1247,7 +1252,7 @@ index 13f3a60..c62335f 100644
      }
  
      void HaltExecution(HaltReason hr) {
-@@ -186,52 +720,100 @@ struct Jit::Impl {
+@@ -186,52 +720,102 @@ struct Jit::Impl {
      }
  
      void DumpDisassembly() const {
@@ -1356,8 +1361,10 @@ index 13f3a60..c62335f 100644
 +                std::chrono::duration_cast<std::chrono::nanoseconds>(
 +                        std::chrono::steady_clock::now() - translation_started)
 +                        .count());
-+        conf.callbacks->CodeTranslationCompleted(
-+                descriptor.Value(), translation_nanoseconds, ir_block);
++        if (emitted.newly_emitted) {
++            conf.callbacks->CodeTranslationCompleted(
++                    descriptor.Value(), translation_nanoseconds, ir_block);
++        }
 +        return emitted;
 +    }
  
@@ -1436,7 +1443,10 @@ index 13f3a60..c62335f 100644
      Jit* jit_interface;
  
 @@ -310,6 +909,14 @@ void Jit::Precompile(std::uint64_t location_descriptor) {
-     impl->Precompile(location_descriptor);
+-void Jit::Precompile(std::uint64_t location_descriptor) {
+-    impl->Precompile(location_descriptor);
++bool Jit::Precompile(std::uint64_t location_descriptor) {
++    return impl->Precompile(location_descriptor);
  }
  
 +void Jit::GeneratePortableIR(std::uint64_t location_descriptor) {
@@ -2687,7 +2697,7 @@ index 776471a..f5590ef 100644
  #include <string>
  #include <vector>
  
-@@ -15,8 +16,66 @@
+@@ -15,8 +16,67 @@
  #include "dynarmic/interface/halt_reason.h"
  
  namespace Dynarmic {
@@ -2705,6 +2715,7 @@ index 776471a..f5590ef 100644
 +        const void* entrypoint{};
 +        std::size_t size{};
 +        std::uint64_t generation{};
++        bool newly_emitted{};
 +    };
 +
 +    NativeCodeSlab();
@@ -2756,7 +2767,8 @@ index 776471a..f5590ef 100644
      explicit Jit(UserConfig conf);
 @@ -40,6 +99,21 @@ public:
       */
-     void Precompile(std::uint64_t location_descriptor);
+-    void Precompile(std::uint64_t location_descriptor);
++    bool Precompile(std::uint64_t location_descriptor);
  
 +    /**
 +     * Translates and optimizes a previously observed A32 location without

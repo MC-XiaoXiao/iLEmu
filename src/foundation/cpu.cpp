@@ -143,6 +143,13 @@ constexpr bool jit_artifact_producer_fingerprint_available =
 
 class JitCallbacks final : public Dynarmic::A32::UserCallbacks {
 public:
+    enum class ArtifactImportOutcome : std::uint8_t {
+        Unavailable,
+        Imported,
+        AlreadyPresent,
+        Failed,
+    };
+
     JitCallbacks(
         AddressSpace& memory,
         const ArmCpuModel& cpu_model,
@@ -195,16 +202,17 @@ public:
                               &block);
     }
 
-    [[nodiscard]] bool import_artifact(
+    [[nodiscard]] ArtifactImportOutcome import_artifact(
         Dynarmic::A32::Jit& jit,
         std::uint64_t location_descriptor) const noexcept {
         auto block = validated_artifact_block(location_descriptor);
-        if (!block) return false;
+        if (!block) return ArtifactImportOutcome::Unavailable;
         try {
-            static_cast<void>(jit.Precompile(std::move(*block)));
-            return true;
+            return jit.Precompile(std::move(*block))
+                       ? ArtifactImportOutcome::Imported
+                       : ArtifactImportOutcome::AlreadyPresent;
         } catch (...) {
-            return false;
+            return ArtifactImportOutcome::Failed;
         }
     }
 
@@ -872,10 +880,16 @@ private:
 class JitExecutor {
 public:
     enum class PrecompileDisposition : std::uint8_t {
-        Completed,
-        Progress,
-        Requeue,
+        NativeCompiled,
+        PortableGenerated,
+        PortableArtifactHit,
+        ArtifactImported,
+        ArtifactProbeHit,
+        SharedSlabHit,
+        Deferred,
+        Unstable,
         CacheFull,
+        Failed,
     };
 
     JitExecutor(
@@ -1058,48 +1072,64 @@ public:
         const auto code_address = pc & ~std::uint32_t{3};
         if (!memory_.accessible(code_address, sizeof(std::uint32_t),
                                 MemoryPermission::Execute)) {
-            return PrecompileDisposition::Requeue;
+            return PrecompileDisposition::Deferred;
         }
         if (!memory_.translation_profile_stable(
                 code_address, sizeof(std::uint32_t))) {
             callbacks_->discard_translation_location(descriptor);
-            return PrecompileDisposition::Completed;
+            return PrecompileDisposition::Unstable;
         }
         const auto key = callbacks_->artifact_key(descriptor);
         const auto probe = key ? artifact_probes_.find(descriptor)
                                : artifact_probes_.end();
         if (target == JitPrecompileTarget::NativeCode && key &&
             probe != artifact_probes_.end() && probe->second.matches(*key)) {
-            return PrecompileDisposition::Progress;
+            return PrecompileDisposition::ArtifactProbeHit;
         }
         if (target == JitPrecompileTarget::PortableIr) {
             auto available = callbacks_->artifact_available(descriptor);
+            if (available) return PrecompileDisposition::PortableArtifactHit;
             if (!available) {
                 callbacks_->begin(0);
                 available = callbacks_->generate_portable_artifact(
                     *jit_, descriptor);
             }
             record_code_cache_usage();
-            return available ? PrecompileDisposition::Progress
-                             : PrecompileDisposition::Completed;
+            return available ? PrecompileDisposition::PortableGenerated
+                             : PrecompileDisposition::Failed;
         }
         const auto imported = callbacks_->import_artifact(*jit_, descriptor);
-        if (!imported) {
+        if (imported == JitCallbacks::ArtifactImportOutcome::Imported) {
+            record_code_cache_usage();
+            return PrecompileDisposition::ArtifactImported;
+        }
+        if (imported == JitCallbacks::ArtifactImportOutcome::AlreadyPresent) {
+            record_code_cache_usage();
+            return PrecompileDisposition::SharedSlabHit;
+        }
+        bool newly_emitted{};
+        try {
             const auto block_started = std::chrono::steady_clock::now();
             callbacks_->begin(0);
-            jit_->Precompile(descriptor);
+            newly_emitted = jit_->Precompile(descriptor);
             performance_counters().record_jit_block_compile(
                 static_cast<std::uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - block_started)
                         .count()));
+        } catch (...) {
+            return PrecompileDisposition::Failed;
         }
         if (key) {
             artifact_probes_[descriptor] = ArtifactProbe{
-                key->content_identity, key->layout_identity, imported};
+                key->content_identity, key->layout_identity,
+                imported == JitCallbacks::ArtifactImportOutcome::Imported ||
+                    imported ==
+                        JitCallbacks::ArtifactImportOutcome::AlreadyPresent};
         }
         record_code_cache_usage();
-        return PrecompileDisposition::Progress;
+        return newly_emitted ? PrecompileDisposition::NativeCompiled
+                             : PrecompileDisposition::SharedSlabHit;
     }
 
     void reset_live_state() {
@@ -1167,7 +1197,10 @@ private:
         artifact_probes_.emplace(
             location,
             ArtifactProbe{key->content_identity, key->layout_identity,
-                          imported});
+                          imported !=
+                              JitCallbacks::ArtifactImportOutcome::Unavailable &&
+                          imported !=
+                              JitCallbacks::ArtifactImportOutcome::Failed});
     }
 
     [[nodiscard]] static constexpr Dynarmic::HaltReason all_halt_reasons() {
@@ -1457,12 +1490,13 @@ public:
         return next_precompile_phase_locked();
     }
 
-    std::size_t precompile_pending(
+    JitPrecompileBatchResult precompile_pending(
         std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
         JitPrecompileTarget target) {
+        JitPrecompileBatchResult result;
         if (executors_.empty() || maximum_blocks == 0 ||
             budget_nanoseconds == 0) {
-            return 0;
+            return result;
         }
         const auto started = std::chrono::steady_clock::now();
         const auto bounded_budget = std::min<std::uint64_t>(
@@ -1473,10 +1507,12 @@ public:
             started + std::chrono::nanoseconds{
                           static_cast<std::chrono::nanoseconds::rep>(
                               bounded_budget)};
-        std::size_t compiled = 0;
         std::size_t processed = 0;
         while (processed < maximum_blocks) {
-            if (std::chrono::steady_clock::now() >= deadline) break;
+            if (std::chrono::steady_clock::now() >= deadline) {
+                ++result.deadline_stops;
+                break;
+            }
             std::optional<std::pair<std::uint64_t, JitPrecompilePhase>> entry;
             std::size_t executor_index{};
             {
@@ -1486,6 +1522,7 @@ public:
                 executor_index = next_precompile_executor_++ % executors_.size();
             }
             ++processed;
+            ++result.attempted;
             const auto descriptor = entry->first;
             JitExecutor::PrecompileDisposition disposition;
             try {
@@ -1496,27 +1533,57 @@ public:
                 inflight_precompile_entries_.erase(descriptor);
                 deferred_precompile_entries_[descriptor] =
                     JitPrecompilePhase::Remaining;
+                ++result.failed;
                 break;
             }
             {
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
                 inflight_precompile_entries_.erase(descriptor);
                 if (disposition ==
-                        JitExecutor::PrecompileDisposition::Requeue) {
+                        JitExecutor::PrecompileDisposition::Deferred) {
                     deferred_precompile_entries_[descriptor] =
                         JitPrecompilePhase::Remaining;
                 } else {
                     completed_precompile_entries_.insert(descriptor);
                 }
             }
-            if (disposition == JitExecutor::PrecompileDisposition::Progress) {
-                ++compiled;
+            switch (disposition) {
+            case JitExecutor::PrecompileDisposition::NativeCompiled:
+                ++result.native_compiled;
+                break;
+            case JitExecutor::PrecompileDisposition::PortableGenerated:
+                ++result.portable_generated;
+                break;
+            case JitExecutor::PrecompileDisposition::PortableArtifactHit:
+                ++result.portable_artifact_hits;
+                break;
+            case JitExecutor::PrecompileDisposition::ArtifactImported:
+                ++result.artifact_imported;
+                break;
+            case JitExecutor::PrecompileDisposition::ArtifactProbeHit:
+                ++result.artifact_probe_hits;
+                break;
+            case JitExecutor::PrecompileDisposition::SharedSlabHit:
+                ++result.shared_slab_hits;
+                break;
+            case JitExecutor::PrecompileDisposition::Deferred:
+                ++result.deferred;
+                break;
+            case JitExecutor::PrecompileDisposition::Unstable:
+                ++result.unstable;
+                break;
+            case JitExecutor::PrecompileDisposition::CacheFull:
+                ++result.cache_full;
+                break;
+            case JitExecutor::PrecompileDisposition::Failed:
+                ++result.failed;
+                break;
             }
             if (disposition == JitExecutor::PrecompileDisposition::CacheFull) {
                 break;
             }
         }
-        return compiled;
+        return result;
     }
 
 private:
@@ -1919,11 +1986,11 @@ std::optional<JitPrecompilePhase> CpuCluster::next_precompile_phase() {
     return execution_pool_->next_precompile_phase();
 }
 
-std::size_t CpuCluster::precompile_pending(
+JitPrecompileBatchResult CpuCluster::precompile_pending(
     std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
     JitPrecompileTarget target) {
     if (!execution_pool_) {
-        return 0;
+        return {};
     }
     return execution_pool_->precompile_pending(
         maximum_blocks, budget_nanoseconds, target);
