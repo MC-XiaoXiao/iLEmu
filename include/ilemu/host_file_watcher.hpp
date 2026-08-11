@@ -61,9 +61,12 @@ public:
   void poll();
 
   // Installs recursive watches incrementally. The caller supplies an entry
-  // budget and should run this only after the first frame in idle/background
-  // maintenance windows.
-  void advance_registration(std::size_t maximum_entries = 256);
+  // budget and a strict wall-clock budget. The caller should run this only
+  // after the first frame in idle/background maintenance windows.
+  void advance_registration(
+      std::size_t maximum_entries = 256,
+      std::chrono::steady_clock::duration budget =
+          std::chrono::milliseconds{1});
 
   // Publishes only stable paths. Dirty subtrees from an overflow are drained
   // only when requested by an idle/background caller.

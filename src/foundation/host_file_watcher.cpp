@@ -175,11 +175,17 @@ void HostFileWatcher::queue_watch_tree(
 #endif
 }
 
-void HostFileWatcher::advance_registration(std::size_t maximum_entries) {
+void HostFileWatcher::advance_registration(
+    std::size_t maximum_entries, std::chrono::steady_clock::duration budget) {
 #if defined(__linux__)
-  if (notification_descriptor_ < 0 || maximum_entries == 0U) return;
+  if (notification_descriptor_ < 0 || maximum_entries == 0U ||
+      budget <= std::chrono::steady_clock::duration::zero()) {
+    return;
+  }
+  const auto deadline = std::chrono::steady_clock::now() + budget;
   std::size_t inspected{};
-  while (inspected < maximum_entries) {
+  while (inspected < maximum_entries &&
+         std::chrono::steady_clock::now() < deadline) {
     if (!active_registration_) {
       while (!registration_queue_.empty() && !active_registration_) {
         auto directory = std::move(registration_queue_.front());
@@ -231,9 +237,14 @@ void HostFileWatcher::advance_registration(std::size_t maximum_entries) {
       active_registration_.reset();
     }
     ++inspected;
+    if ((inspected & 0x1FU) == 0U &&
+        std::chrono::steady_clock::now() >= deadline) {
+      return;
+    }
   }
 #else
   static_cast<void>(maximum_entries);
+  static_cast<void>(budget);
 #endif
 }
 
