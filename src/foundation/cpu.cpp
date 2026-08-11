@@ -260,6 +260,10 @@ public:
         }
     }
 
+    void set_explicit_artifact_publication(bool enabled) noexcept {
+        explicit_artifact_publication_ = enabled;
+    }
+
     [[nodiscard]] std::shared_ptr<const BlockArtifact> find_artifact(
         std::uint64_t location_descriptor) const noexcept {
         if (!artifact_store_) return nullptr;
@@ -397,6 +401,14 @@ private:
             memory_.translation_profile_stable(
                 pc, sizeof(std::uint32_t))) {
             translation_profile_->record(location_descriptor);
+        }
+        // Ordinary guest execution is latency-sensitive. Artifact production
+        // is reserved for an explicit precompile request, while the
+        // translation profile remains a cheap metadata-only hint for runtime
+        // code that was actually reached.
+        if (!portable_generation_location_ &&
+            !explicit_artifact_publication_) {
+            return;
         }
         const auto published = publish_artifact(
             location_descriptor, translation_nanoseconds, optimized_block);
@@ -788,6 +800,7 @@ private:
     std::shared_ptr<JitTranslationProfile> translation_profile_;
     std::shared_ptr<JitArtifactStore> artifact_store_;
     JitArtifactRetention artifact_retention_{JitArtifactRetention::Normal};
+    bool explicit_artifact_publication_{};
     std::optional<std::uint64_t> portable_generation_location_;
     bool portable_generation_published_{};
     Dynarmic::IR::Block *translation_block_{};
@@ -1131,14 +1144,17 @@ public:
         bool newly_emitted{};
         try {
             const auto block_started = std::chrono::steady_clock::now();
+            callbacks_->set_explicit_artifact_publication(true);
             callbacks_->begin(0);
             newly_emitted = jit_->Precompile(descriptor);
+            callbacks_->set_explicit_artifact_publication(false);
             performance_counters().record_jit_block_compile(
                 static_cast<std::uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
                         std::chrono::steady_clock::now() - block_started)
                         .count()));
         } catch (...) {
+            callbacks_->set_explicit_artifact_publication(false);
             return PrecompileDisposition::Failed;
         }
         if (key) {
