@@ -16,6 +16,10 @@
 namespace ilemu::bsd::baseband_device {
 
 inline constexpr std::string_view path{"/dev/h5.baseband"};
+// Darwin 9/early iPhoneOS CommCenter probes the legacy serial node before
+// selecting the H5 transport. It is the same emulated baseband endpoint, not
+// a second transport or a firmware-specific success result.
+inline constexpr std::string_view legacy_path{"/dev/cu.baseband"};
 inline constexpr std::string_view spi_mux_path{"/dev/mux.spi-baseband"};
 inline constexpr std::string_view h5_mux_path{"/dev/mux.h5.baseband"};
 inline constexpr std::string_view directory_name{"h5.baseband"};

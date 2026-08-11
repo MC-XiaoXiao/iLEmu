@@ -1296,6 +1296,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       add_virtual("random", 2);
       add_virtual("urandom", 2);
       add_virtual("bpf0", 2);
+      add_virtual(std::string{bsd::baseband_device::legacy_path.substr(5)},
+                  2);
       add_virtual(std::string{bsd::baseband_device::directory_name}, 2);
       add_virtual(std::string{bsd::baseband_device::spi_mux_directory_name},
                   2);
