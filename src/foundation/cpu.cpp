@@ -1422,14 +1422,17 @@ public:
     }
 
     [[nodiscard]] std::uint64_t code_cache_used() {
-        std::uint64_t total{};
+        // All executors in this pool publish into one NativeCodeSlab.  Jit's
+        // CodeCacheUsed therefore reports the same process-wide byte count
+        // from every slot; summing it would multiply one allocation by the
+        // number of guest CPUs.  Read each slot only until an initialized
+        // shared slab reports a non-zero value, without creating a JIT merely
+        // to obtain the accounting sample.
         for (auto& executor : executors_) {
             const auto used = executor->code_cache_used();
-            total = used > std::numeric_limits<std::uint64_t>::max() - total
-                        ? std::numeric_limits<std::uint64_t>::max()
-                        : total + used;
+            if (used != 0U) return used;
         }
-        return total;
+        return 0U;
     }
 
     void clear_cache() {
