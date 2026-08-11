@@ -1955,11 +1955,22 @@ bool CompatibilityKernel::protect_memory(Cpu &cpu, std::uint32_t address,
                                           MemoryPermission permissions) {
   if (!memory_.protect(address, size, permissions))
     return false;
-  // Permission changes invalidate both execute checks and translated blocks.
-  // Cpu::clear_cache() is process-wide, so every executor sharing the native
-  // slab reaches the same generation boundary instead of only the caller.
-  if (size != 0)
-    cpu.clear_cache();
+  // AddressSpace::protect() applies permissions to the page-rounded range.
+  // Retire only translated blocks intersecting that same range; a protection
+  // change must not turn into a process-wide slab generation transition.
+  if (size != 0) {
+    constexpr std::uint64_t page_mask =
+        static_cast<std::uint64_t>(AddressSpace::page_size - 1U);
+    const auto first = static_cast<std::uint64_t>(address) & ~page_mask;
+    const auto requested_end = static_cast<std::uint64_t>(address) + size;
+    const auto rounded_end = (requested_end + page_mask) & ~page_mask;
+    const auto end = std::min<std::uint64_t>(rounded_end,
+                                             std::uint64_t{1} << 32U);
+    if (end > first) {
+      cpu.invalidate_cache_range(static_cast<std::uint32_t>(first),
+                                 static_cast<std::size_t>(end - first));
+    }
+  }
   return true;
 }
 
