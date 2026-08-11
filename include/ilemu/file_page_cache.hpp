@@ -51,6 +51,11 @@ enum class GuestFileMutationKind : std::uint8_t {
   Unlink,
   SharedWriteback,
   InstallReplace,
+  // Structural notifications describe a directory entry namespace change.
+  // They are consumed by the executable catalog as subtree boundaries and
+  // must not be filtered by the old executable-path index.
+  SubtreeCreate,
+  SubtreeRemove,
 };
 
 struct GuestFileGenerationSnapshot {
@@ -84,6 +89,10 @@ public:
       GuestFileMutationKind mutation);
   void publish_rename(const std::filesystem::path &source,
                      const std::filesystem::path &destination);
+  void publish_subtree_create(const std::filesystem::path &path);
+  void publish_subtree_remove(const std::filesystem::path &path);
+  void publish_subtree_rename(const std::filesystem::path &source,
+                              const std::filesystem::path &destination);
   // Mutation notifications are deliberately bounded and coalesced by path.
   // Consumers may drain them from the emulator's serialized control loop;
   // pathname generations remain authoritative even if a non-critical event

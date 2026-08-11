@@ -701,6 +701,11 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       bsd_error(cpu, 16U); // EBUSY
       return;
     }
+    std::error_code source_status_error;
+    const auto source_status =
+        std::filesystem::symlink_status(source, source_status_error);
+    const bool source_is_directory =
+        !source_status_error && std::filesystem::is_directory(source_status);
     const auto source_metadata = query_hfs_metadata(source, false);
     const auto replaced_metadata = query_hfs_metadata(destination, false);
     // POSIX specifies rename(old, new) as a successful no-op when both
@@ -747,8 +752,13 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       }
     }
     if (renamed) {
-      shared_state_->guest_file_generation_registry->publish_rename(source,
-                                                                     destination);
+      if (source_is_directory) {
+        shared_state_->guest_file_generation_registry->publish_subtree_rename(
+            source, destination);
+      } else {
+        shared_state_->guest_file_generation_registry->publish_rename(
+            source, destination);
+      }
     }
     if (error) {
       bsd_error(cpu, bsd_support::darwin_filesystem_error(error));
@@ -820,6 +830,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       metadata_override.modification_time = timestamp;
       metadata_override.change_time = timestamp;
     }
+    shared_state_->guest_file_generation_registry->publish_subtree_create(
+        host);
     output_.write("[vfs] mkdir " + *path +
                   " mode=" + std::to_string(registers[1] & 07777U) + "\n");
     bsd_success(cpu, 0);
@@ -854,6 +866,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
               metadata->permanent_id);
         }
       }
+      shared_state_->guest_file_generation_registry->publish_subtree_remove(
+          host);
       output_.write("[vfs] rmdir " + *path + "\n");
       bsd_success(cpu, 0);
     }

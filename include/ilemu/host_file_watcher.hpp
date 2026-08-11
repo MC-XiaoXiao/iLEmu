@@ -21,6 +21,11 @@ class HostResourceController;
 
 struct HostFileWatchDrain {
   std::vector<std::filesystem::path> changed_paths;
+  struct StructuralEvent {
+    std::filesystem::path path;
+    GuestFileMutationKind mutation{GuestFileMutationKind::SubtreeCreate};
+  };
+  std::vector<StructuralEvent> structural_events;
   struct StableIdentity {
     GuestFileGeneration generation;
     ContentIdentity content_identity;
@@ -123,6 +128,8 @@ private:
   void remove_watch(int watch_descriptor);
   void queue_path(const std::filesystem::path &path,
                   GuestFileMutationKind mutation);
+  void queue_structural_event(const std::filesystem::path &path,
+                              GuestFileMutationKind mutation);
   void queue_dirty_subtree(const std::filesystem::path &path);
   void handle_event(const void *event, std::size_t available_bytes);
   [[nodiscard]] static AsyncCompletion inspect_path(
@@ -145,6 +152,7 @@ private:
   std::deque<std::filesystem::path> confirmed_paths_;
   std::map<std::filesystem::path, HostFileWatchDrain::StableIdentity>
       confirmed_identities_;
+  std::deque<HostFileWatchDrain::StructuralEvent> structural_events_;
   std::uint64_t next_event_sequence_{1};
   std::chrono::steady_clock::time_point next_hash_submission_{};
   HostFileWatchStats stats_;

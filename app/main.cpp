@@ -2383,14 +2383,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
           }
           catalog_refresh_pending = true;
         }
+        bool structural_boundary = !host_changes.changed_paths.empty() ||
+                                   !host_changes.structural_events.empty() ||
+                                   !host_changes.dirty_subtrees.empty();
+        for (const auto &event : host_changes.structural_events) {
+          // Directory structure events are authoritative subtree boundaries.
+          // They must reach the catalog even when the directory did not
+          // previously contain a known executable.
+          queue_catalog_path(event.path);
+          catalog_refresh_pending = true;
+        }
         for (const auto &subtree : host_changes.dirty_subtrees) {
           queue_catalog_path(subtree);
           catalog_refresh_pending = true;
         }
-        const bool host_change_boundary = !host_changes.changed_paths.empty();
         const auto mutations = initial_runtime->kernel->take_guest_file_mutations(
             maximum_mutations_per_poll);
-        bool structural_boundary = host_change_boundary;
         for (const auto &mutation : mutations) {
           ++catalog_refresh_events;
           if (mutation.dirty_subtree) {
@@ -2419,6 +2427,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
               catalog_index != nullptr &&
               catalog_index->find_path(mutation.path) != nullptr;
           switch (mutation.mutation) {
+          case GuestFileMutationKind::SubtreeCreate:
+          case GuestFileMutationKind::SubtreeRemove:
+            // Namespace changes are already subtree-scoped.  Do not consult
+            // the old catalog index: this is how a newly installed bundle
+            // becomes visible to the next exec/mmap refresh.
+            queue_catalog_path(mutation.path);
+            catalog_refresh_pending = true;
+            structural_boundary = true;
+            break;
           case GuestFileMutationKind::InstallReplace:
           case GuestFileMutationKind::Rename:
           case GuestFileMutationKind::Unlink:

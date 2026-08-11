@@ -33,6 +33,9 @@ constexpr std::size_t maximum_dirty_subtrees = 64;
   case GuestFileMutationKind::Rename:
   case GuestFileMutationKind::Unlink:
     return 3;
+  case GuestFileMutationKind::SubtreeCreate:
+  case GuestFileMutationKind::SubtreeRemove:
+    return 4;
   case GuestFileMutationKind::Truncate:
   case GuestFileMutationKind::SharedWriteback:
     return 2;
@@ -140,7 +143,7 @@ bool HostFileWatcher::enabled() const noexcept {
 }
 
 std::size_t HostFileWatcher::pending_count() const noexcept {
-  return pending_.size();
+  return pending_.size() + structural_events_.size();
 }
 
 std::size_t HostFileWatcher::watch_count() const noexcept {
@@ -322,6 +325,23 @@ void HostFileWatcher::queue_path(const std::filesystem::path &path,
                                next_event_sequence_++, false});
 }
 
+void HostFileWatcher::queue_structural_event(
+    const std::filesystem::path &path, GuestFileMutationKind mutation) {
+  if (root_.empty()) return;
+  const auto normalized = normalize_path(path);
+  if (!is_in_subtree(normalized, root_)) return;
+  for (const auto &event : structural_events_) {
+    if (event.path == normalized && event.mutation == mutation) return;
+  }
+  if (structural_events_.size() >= maximum_pending_) {
+    structural_events_.clear();
+    queue_dirty_subtree(root_);
+    return;
+  }
+  structural_events_.push_back(
+      HostFileWatchDrain::StructuralEvent{normalized, mutation});
+}
+
 void HostFileWatcher::poll() {
 #if defined(__linux__)
   if (notification_descriptor_ < 0) return;
@@ -383,9 +403,12 @@ void HostFileWatcher::handle_event(const void *event_data,
 
   const auto is_directory = (event.mask & IN_ISDIR) != 0U;
   if (event.mask & (IN_DELETE_SELF | IN_MOVE_SELF)) {
-    queue_dirty_subtree(watched_directory.parent_path());
+    // The watch itself was a directory.  IN_DELETE_SELF/IN_MOVE_SELF has no
+    // name payload, so retain the watched directory as an explicit subtree
+    // removal instead of manufacturing a file mutation for its parent.
+    queue_structural_event(watched_directory,
+                           GuestFileMutationKind::SubtreeRemove);
     remove_watch(event.wd);
-    if (!is_directory) queue_path(path, GuestFileMutationKind::Unlink);
     return;
   }
 
@@ -398,9 +421,12 @@ void HostFileWatcher::handle_event(const void *event_data,
   if (is_directory && (event.mask & (IN_CREATE | IN_MOVED_TO))) {
     add_watch(path);
     queue_watch_tree(path);
+    queue_structural_event(path, GuestFileMutationKind::SubtreeCreate);
+    return;
   }
   if (is_directory && (event.mask & (IN_DELETE | IN_MOVED_FROM))) {
-    queue_dirty_subtree(watched_directory);
+    queue_structural_event(path, GuestFileMutationKind::SubtreeRemove);
+    return;
   }
   queue_path(path, mutation);
 #else
@@ -554,6 +580,12 @@ HostFileWatchDrain HostFileWatcher::publish_stable(
       confirmed_identities_.erase(identity);
     }
     drain.changed_paths.push_back(std::move(path));
+  }
+
+  while (drain.structural_events.size() < maximum_events &&
+         !structural_events_.empty()) {
+    drain.structural_events.push_back(std::move(structural_events_.front()));
+    structural_events_.pop_front();
   }
 
   constexpr std::size_t maximum_concurrent_hashes = 2;

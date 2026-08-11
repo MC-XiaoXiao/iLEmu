@@ -176,6 +176,9 @@ void invalidate_global_identity(const std::string &normalized_path) {
   case GuestFileMutationKind::Rename:
   case GuestFileMutationKind::Unlink:
     return 4;
+  case GuestFileMutationKind::SubtreeCreate:
+  case GuestFileMutationKind::SubtreeRemove:
+    return 5;
   }
   return 0;
 }
@@ -477,6 +480,23 @@ void GuestFileGenerationRegistry::publish_rename(
     const std::filesystem::path &destination) {
   static_cast<void>(publish(source, GuestFileMutationKind::Rename));
   static_cast<void>(publish(destination, GuestFileMutationKind::Rename));
+}
+
+void GuestFileGenerationRegistry::publish_subtree_create(
+    const std::filesystem::path &path) {
+  static_cast<void>(publish(path, GuestFileMutationKind::SubtreeCreate));
+}
+
+void GuestFileGenerationRegistry::publish_subtree_remove(
+    const std::filesystem::path &path) {
+  static_cast<void>(publish(path, GuestFileMutationKind::SubtreeRemove));
+}
+
+void GuestFileGenerationRegistry::publish_subtree_rename(
+    const std::filesystem::path &source,
+    const std::filesystem::path &destination) {
+  publish_subtree_remove(source);
+  publish_subtree_create(destination);
 }
 
 std::vector<GuestFileMutationEvent>
