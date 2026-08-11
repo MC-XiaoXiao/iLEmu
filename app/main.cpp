@@ -4497,6 +4497,17 @@ void boot(const std::vector<std::string> &args, Output &output) {
     output.line(
         "[perf-snapshots] entries=" + std::to_string(snapshot_stats.entries) +
         " bytes=" + std::to_string(snapshot_stats.bytes) +
+        " runtime-hot-entries=" +
+        std::to_string(snapshot_stats.runtime_hot_entries) +
+        " runtime-hot-bytes=" +
+        std::to_string(snapshot_stats.runtime_hot_bytes) +
+        " catalog-scan-entries=" +
+        std::to_string(snapshot_stats.catalog_scan_entries) +
+        " catalog-scan-bytes=" +
+        std::to_string(snapshot_stats.catalog_scan_bytes) +
+        " budget-bytes=" + std::to_string(snapshot_stats.budget_bytes) +
+        " catalog-scan-budget-bytes=" +
+        std::to_string(snapshot_stats.catalog_scan_budget_bytes) +
         " hits=" + std::to_string(snapshot_stats.hits) +
         " evictions=" + std::to_string(snapshot_stats.evictions));
     // Preserve stopped-guest live/current values, then include Runtime

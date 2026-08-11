@@ -278,15 +278,27 @@ void seed_shared_file_identity(
 // reference: mappings and page-cache entries retain the old generation until
 // their shared_ptr references are gone, so a replacement can never retarget
 // an existing mapping to newer bytes.
+enum class ImmutableSnapshotKind : std::uint8_t {
+  RuntimeHot,
+  CatalogScan,
+};
+
 [[nodiscard]] std::shared_ptr<const std::vector<std::byte>>
 share_immutable_snapshot(
     const GuestFileGeneration &generation, const ContentIdentity &identity,
     std::shared_ptr<const std::vector<std::byte>> snapshot,
-    std::uint64_t layout_tag = 0);
+    std::uint64_t layout_tag = 0,
+    ImmutableSnapshotKind kind = ImmutableSnapshotKind::RuntimeHot);
 
 struct ImmutableSnapshotStats {
   std::uint64_t entries{};
   std::uint64_t bytes{};
+  std::uint64_t runtime_hot_entries{};
+  std::uint64_t runtime_hot_bytes{};
+  std::uint64_t catalog_scan_entries{};
+  std::uint64_t catalog_scan_bytes{};
+  std::uint64_t budget_bytes{};
+  std::uint64_t catalog_scan_budget_bytes{};
   std::uint64_t hits{};
   std::uint64_t evictions{};
 };

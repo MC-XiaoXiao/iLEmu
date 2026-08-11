@@ -69,7 +69,9 @@ public:
     static MachOImage parse(
         const std::filesystem::path& path,
         ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
-        std::optional<ContentIdentity> known_identity = std::nullopt);
+        std::optional<ContentIdentity> known_identity = std::nullopt,
+        ImmutableSnapshotKind snapshot_kind =
+            ImmutableSnapshotKind::RuntimeHot);
 
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
     [[nodiscard]] std::uint32_t cpu_type() const { return cpu_type_; }

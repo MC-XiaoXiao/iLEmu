@@ -317,7 +317,8 @@ GuestFileGeneration file_generation_from_stat(const struct stat& file_stat) {
 
 MachOImage MachOImage::parse(const std::filesystem::path& path,
                              ArmArchitectureVersion architecture,
-                             std::optional<ContentIdentity> known_identity) {
+                             std::optional<ContentIdentity> known_identity,
+                             ImmutableSnapshotKind snapshot_kind) {
     ScopedFileDescriptor input;
     do {
         input.value = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
@@ -435,7 +436,7 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
         if (!image.fat_container_) {
             image.bytes_ = share_immutable_snapshot(
                 *image.file_generation_, image.content_identity_, image.bytes_,
-                static_cast<std::uint64_t>(architecture));
+                static_cast<std::uint64_t>(architecture), snapshot_kind);
         }
         seed_shared_file_identity(path, *image.file_generation_,
                                   image.content_identity_);

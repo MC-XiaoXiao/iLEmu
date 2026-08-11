@@ -549,7 +549,8 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_path(
     const std::filesystem::path &path, ArmArchitectureVersion architecture,
     std::optional<ContentIdentity> known_identity) {
   return register_image(MachOImage::parse(path, architecture,
-                                           std::move(known_identity)));
+                                           std::move(known_identity),
+                                           ImmutableSnapshotKind::CatalogScan));
 }
 
 const ExecutableCatalogEntry &ExecutableCatalog::register_path_alias(
@@ -557,7 +558,8 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_path_alias(
     ArmArchitectureVersion architecture,
     std::optional<ContentIdentity> known_identity) {
   const auto image = MachOImage::parse(target, architecture,
-                                       std::move(known_identity));
+                                       std::move(known_identity),
+                                       ImmutableSnapshotKind::CatalogScan);
   const auto target_path = normalize_path(target);
   const auto alias_path = normalize_path(alias);
   const auto &target_entry = register_image(image);

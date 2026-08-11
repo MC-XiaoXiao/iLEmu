@@ -1,15 +1,19 @@
 #include "ilemu/file_page_cache.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <cerrno>
 #include <condition_variable>
+#include <fstream>
 #include <iterator>
 #include <limits>
+#include <string_view>
 #include <tuple>
 
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/sysinfo.h>
 #include <unistd.h>
 
 namespace ilemu {
@@ -92,6 +96,7 @@ struct ImmutableSnapshotKey {
   ContentIdentity content_identity;
   std::uint64_t byte_size{};
   std::uint64_t layout_tag{};
+  ImmutableSnapshotKind kind{ImmutableSnapshotKind::RuntimeHot};
 
   friend constexpr auto operator<=>(const ImmutableSnapshotKey &,
                                     const ImmutableSnapshotKey &) = default;
@@ -104,14 +109,125 @@ struct ImmutableSnapshotRecord {
 };
 
 constexpr std::uint64_t maximum_immutable_snapshot_bytes =
-    256U * 1024U * 1024U;
+    std::uint64_t{256} * 1024U * 1024U;
+constexpr std::uint64_t minimum_immutable_snapshot_bytes =
+    std::uint64_t{8} * 1024U * 1024U;
+constexpr std::uint64_t immutable_snapshot_budget_divisor = 32U;
+constexpr std::uint64_t immutable_snapshot_available_divisor = 8U;
+constexpr std::uint64_t immutable_snapshot_scan_fraction = 4U;
+constexpr std::uint64_t immutable_snapshot_entry_granularity =
+    std::uint64_t{64} * 1024U;
+constexpr std::size_t minimum_immutable_snapshot_entries = 128U;
 constexpr std::size_t maximum_immutable_snapshot_entries = 4096U;
 std::mutex immutable_snapshot_mutex;
 std::map<ImmutableSnapshotKey, ImmutableSnapshotRecord> immutable_snapshots;
 std::list<ImmutableSnapshotKey> immutable_snapshot_lru;
 std::uint64_t immutable_snapshot_bytes{};
+std::uint64_t immutable_snapshot_runtime_hot_entries{};
+std::uint64_t immutable_snapshot_runtime_hot_bytes{};
+std::uint64_t immutable_snapshot_catalog_scan_entries{};
+std::uint64_t immutable_snapshot_catalog_scan_bytes{};
 std::uint64_t immutable_snapshot_hits{};
 std::uint64_t immutable_snapshot_evictions{};
+
+struct ImmutableSnapshotLimits {
+  std::uint64_t bytes{};
+  std::uint64_t catalog_scan_bytes{};
+  std::size_t entries{};
+};
+
+[[nodiscard]] std::optional<std::uint64_t> read_uint64_file(
+    const char *path) {
+  std::ifstream input{path};
+  std::string value;
+  if (!(input >> value) || value == "max") return std::nullopt;
+  std::uint64_t result{};
+  const auto [end, error] = std::from_chars(
+      value.data(), value.data() + value.size(), result);
+  if (error != std::errc{} || end != value.data() + value.size())
+    return std::nullopt;
+  return result;
+}
+
+[[nodiscard]] std::optional<std::uint64_t> proc_meminfo_bytes(
+    std::string_view wanted_key) {
+  std::ifstream input{"/proc/meminfo"};
+  std::string key;
+  std::uint64_t value{};
+  std::string unit;
+  while (input >> key >> value >> unit) {
+    if (key != wanted_key) continue;
+    if (unit == "kB" && value <= std::numeric_limits<std::uint64_t>::max() /
+                                  1024U)
+      return value * 1024U;
+    return value;
+  }
+  return std::nullopt;
+}
+
+struct HostMemoryAvailability {
+  std::uint64_t total_bytes{};
+  std::uint64_t available_bytes{};
+};
+
+[[nodiscard]] HostMemoryAvailability host_memory_availability() {
+  HostMemoryAvailability result;
+  struct sysinfo information {};
+  if (::sysinfo(&information) == 0) {
+    result.total_bytes = static_cast<std::uint64_t>(information.totalram) *
+                         static_cast<std::uint64_t>(information.mem_unit);
+  }
+  result.available_bytes = proc_meminfo_bytes("MemAvailable:").value_or(
+      result.total_bytes);
+
+  // Use the cgroup limit when the emulator runs in a memory-constrained
+  // container. The /proc value describes the host and can otherwise make the
+  // snapshot cache claim far more memory than this process can actually use.
+  const auto cgroup_limit =
+      read_uint64_file("/sys/fs/cgroup/memory.max").value_or(
+          read_uint64_file("/sys/fs/cgroup/memory/memory.limit_in_bytes")
+              .value_or(0));
+  const auto cgroup_current =
+      read_uint64_file("/sys/fs/cgroup/memory.current").value_or(
+          read_uint64_file("/sys/fs/cgroup/memory/memory.usage_in_bytes")
+              .value_or(0));
+  if (cgroup_limit &&
+      (!result.total_bytes || cgroup_limit < result.total_bytes))
+    result.total_bytes = cgroup_limit;
+  if (cgroup_limit && cgroup_current < cgroup_limit) {
+    const auto cgroup_available = cgroup_limit - cgroup_current;
+    if (!result.available_bytes || cgroup_available < result.available_bytes)
+      result.available_bytes = cgroup_available;
+  }
+  return result;
+}
+
+[[nodiscard]] ImmutableSnapshotLimits immutable_snapshot_limits() {
+  const auto memory = host_memory_availability();
+  const auto total_based = memory.total_bytes
+                               ? memory.total_bytes /
+                                     immutable_snapshot_budget_divisor
+                               : maximum_immutable_snapshot_bytes;
+  const auto available_based = memory.available_bytes
+                                   ? memory.available_bytes /
+                                         immutable_snapshot_available_divisor
+                                   : maximum_immutable_snapshot_bytes;
+  const auto bytes = std::clamp(
+      std::min({maximum_immutable_snapshot_bytes, total_based,
+                available_based}),
+      minimum_immutable_snapshot_bytes, maximum_immutable_snapshot_bytes);
+  const auto entries = std::clamp<std::size_t>(
+      static_cast<std::size_t>(bytes / immutable_snapshot_entry_granularity),
+      minimum_immutable_snapshot_entries, maximum_immutable_snapshot_entries);
+  return ImmutableSnapshotLimits{
+      bytes, std::max<std::uint64_t>(1U,
+                                     bytes / immutable_snapshot_scan_fraction),
+      entries};
+}
+
+[[nodiscard]] bool is_catalog_scan(const ImmutableSnapshotKey &key) {
+  return key.kind == ImmutableSnapshotKind::CatalogScan;
+}
 
 [[nodiscard]] bool identity_revision_matches(
     const std::optional<std::uint64_t> &published_revision,
@@ -345,10 +461,12 @@ void seed_shared_file_identity(
 std::shared_ptr<const std::vector<std::byte>> share_immutable_snapshot(
     const GuestFileGeneration &generation, const ContentIdentity &identity,
     std::shared_ptr<const std::vector<std::byte>> snapshot,
-    std::uint64_t layout_tag) {
+    std::uint64_t layout_tag, ImmutableSnapshotKind kind) {
   if (!snapshot) return {};
   const auto byte_size = static_cast<std::uint64_t>(snapshot->size());
-  const ImmutableSnapshotKey key{generation, identity, byte_size, layout_tag};
+  const ImmutableSnapshotKey key{generation, identity, byte_size, layout_tag,
+                                 kind};
+  const auto limits = immutable_snapshot_limits();
   std::lock_guard lock{immutable_snapshot_mutex};
   if (const auto existing = immutable_snapshots.find(key);
       existing != immutable_snapshots.end()) {
@@ -366,14 +484,40 @@ std::shared_ptr<const std::vector<std::byte>> share_immutable_snapshot(
   immutable_snapshots.emplace(
       key, ImmutableSnapshotRecord{snapshot, byte_size, lru_position});
   immutable_snapshot_bytes += byte_size;
-  while ((immutable_snapshot_bytes > maximum_immutable_snapshot_bytes ||
-          immutable_snapshots.size() > maximum_immutable_snapshot_entries) &&
+  if (is_catalog_scan(key)) {
+    ++immutable_snapshot_catalog_scan_entries;
+    immutable_snapshot_catalog_scan_bytes += byte_size;
+  } else {
+    ++immutable_snapshot_runtime_hot_entries;
+    immutable_snapshot_runtime_hot_bytes += byte_size;
+  }
+  while ((immutable_snapshot_bytes > limits.bytes ||
+          immutable_snapshot_catalog_scan_bytes > limits.catalog_scan_bytes ||
+          immutable_snapshots.size() > limits.entries) &&
          !immutable_snapshot_lru.empty()) {
-    const auto evict_key = immutable_snapshot_lru.front();
-    immutable_snapshot_lru.pop_front();
+    // Catalog scans are disposable metadata work. Prefer evicting them while
+    // the combined cache is full so runtime mappings retain their hot bytes.
+    auto eviction_position = immutable_snapshot_lru.begin();
+    if (const auto catalog_scan = std::find_if(
+            immutable_snapshot_lru.begin(), immutable_snapshot_lru.end(),
+            [](const ImmutableSnapshotKey &candidate) {
+              return is_catalog_scan(candidate);
+            });
+        catalog_scan != immutable_snapshot_lru.end()) {
+      eviction_position = catalog_scan;
+    }
+    const auto evict_key = *eviction_position;
+    immutable_snapshot_lru.erase(eviction_position);
     const auto evicted = immutable_snapshots.find(evict_key);
     if (evicted == immutable_snapshots.end()) continue;
     immutable_snapshot_bytes -= evicted->second.byte_size;
+    if (is_catalog_scan(evicted->first)) {
+      --immutable_snapshot_catalog_scan_entries;
+      immutable_snapshot_catalog_scan_bytes -= evicted->second.byte_size;
+    } else {
+      --immutable_snapshot_runtime_hot_entries;
+      immutable_snapshot_runtime_hot_bytes -= evicted->second.byte_size;
+    }
     ++immutable_snapshot_evictions;
     immutable_snapshots.erase(evicted);
   }
@@ -382,9 +526,14 @@ std::shared_ptr<const std::vector<std::byte>> share_immutable_snapshot(
 
 ImmutableSnapshotStats immutable_snapshot_stats() {
   std::lock_guard lock{immutable_snapshot_mutex};
+  const auto limits = immutable_snapshot_limits();
   return ImmutableSnapshotStats{
       static_cast<std::uint64_t>(immutable_snapshots.size()),
-      immutable_snapshot_bytes, immutable_snapshot_hits,
+      immutable_snapshot_bytes, immutable_snapshot_runtime_hot_entries,
+      immutable_snapshot_runtime_hot_bytes,
+      immutable_snapshot_catalog_scan_entries,
+      immutable_snapshot_catalog_scan_bytes, limits.bytes,
+      limits.catalog_scan_bytes, immutable_snapshot_hits,
       immutable_snapshot_evictions};
 }
 
