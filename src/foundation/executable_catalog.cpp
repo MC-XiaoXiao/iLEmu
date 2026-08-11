@@ -457,6 +457,12 @@ void collect_reliable_entry_points(
       add(symbol.value, symbol.thumb_definition());
     }
   }
+  for (const auto address : image.function_starts()) {
+    // LC_FUNCTION_STARTS does not carry ARM/Thumb state. Keep these starts
+    // as ARM descriptors; symbol metadata, when present, supplies the more
+    // precise Thumb form for the same address.
+    add(address, false);
+  }
   for (const auto &stub : image.stubs()) add(stub.address, false);
 }
 

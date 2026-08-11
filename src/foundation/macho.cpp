@@ -38,6 +38,7 @@ constexpr std::uint32_t lc_lazy_load_dylib = 0x20;
 constexpr std::uint32_t lc_load_upward_dylib = 0x80000023U;
 constexpr std::uint32_t lc_code_signature = 0x1d;
 constexpr std::uint32_t lc_uuid = 0x1b;
+constexpr std::uint32_t lc_function_starts = 0x26;
 constexpr std::uint32_t arm_thread_state = 1;
 constexpr std::uint32_t section_type_mask = 0xff;
 constexpr std::uint32_t s_symbol_stubs = 0x8;
@@ -46,6 +47,7 @@ constexpr std::uint32_t indirect_symbol_abs = 0x40000000U;
 constexpr std::uint32_t code_signature_super_blob_magic = 0xfade0cc0U;
 constexpr std::uint32_t code_signature_entitlements_magic = 0xfade7171U;
 constexpr std::uint32_t code_signature_entitlements_slot = 5U;
+constexpr std::size_t maximum_function_starts = 65'536U;
 
 std::uint32_t read_u32(std::span<const std::byte> bytes, std::size_t offset) {
     if (offset > bytes.size() || bytes.size() - offset < 4) {
@@ -227,6 +229,66 @@ std::uint32_t align_up(std::uint64_t value) {
     return static_cast<std::uint32_t>(aligned);
 }
 
+void decode_function_starts(
+    std::span<const std::byte> bytes, std::uint32_t data_offset,
+    std::uint32_t data_size, std::span<const MachSegment> segments,
+    std::vector<std::uint32_t>& starts) {
+    if (data_offset > bytes.size() ||
+        data_size > bytes.size() - data_offset) {
+        return;
+    }
+
+    std::optional<std::uint32_t> text_address;
+    for (const auto& segment : segments) {
+        if (segment.name == "__TEXT") {
+            text_address = segment.vm_address;
+            break;
+        }
+    }
+    if (!text_address && !segments.empty()) {
+        text_address = segments.front().vm_address;
+    }
+    if (!text_address) return;
+
+    const auto data_end = static_cast<std::size_t>(data_offset) + data_size;
+    std::size_t cursor = data_offset;
+    std::uint64_t address = *text_address;
+    std::vector<std::uint32_t> decoded;
+    decoded.reserve(std::min<std::size_t>(data_size, maximum_function_starts));
+    bool terminated = false;
+    while (cursor < data_end && decoded.size() < maximum_function_starts) {
+        std::uint64_t delta = 0;
+        bool complete = false;
+        for (unsigned byte_index = 0; byte_index < 10U && cursor < data_end;
+             ++byte_index) {
+            const auto value = std::to_integer<std::uint8_t>(bytes[cursor++]);
+            const auto payload = static_cast<std::uint64_t>(value & 0x7fU);
+            if (byte_index == 9U && payload > 1U) return;
+            delta |= payload << (byte_index * 7U);
+            if ((value & 0x80U) == 0U) {
+                complete = true;
+                break;
+            }
+            if (byte_index == 9U) return;
+        }
+        if (!complete) return;
+        if (delta == 0U) {
+            terminated = true;
+            break;
+        }
+        if (address > std::numeric_limits<std::uint32_t>::max() - delta) {
+            return;
+        }
+        address += delta;
+        decoded.push_back(static_cast<std::uint32_t>(address));
+    }
+    // The cap itself is a valid bounded result: once the maximum trusted
+    // starts are decoded, do not scan an untrusted tail merely to find its
+    // terminator.
+    if (!terminated && decoded.size() != maximum_function_starts) return;
+    starts = std::move(decoded);
+}
+
 struct ScopedFileDescriptor {
     int value{-1};
 
@@ -386,6 +448,7 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     const auto commands_end = offset + command_bytes;
     std::optional<std::pair<std::uint32_t, std::uint32_t>> indirect_symbols;
     std::optional<std::pair<std::uint32_t, std::uint32_t>> code_signature;
+    std::optional<std::pair<std::uint32_t, std::uint32_t>> function_starts;
     std::set<std::uint32_t> known_generic{
         0x2, 0x3, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0x11, 0x12, 0x13, 0x14,
         0x15, 0x16, 0x17, 0x19, 0x1a, 0x1b, 0x1d, 0x1e, 0x21, 0x80000022U,
@@ -514,6 +577,13 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
             code_signature =
                 std::pair{read_u32(bytes, offset + 8U),
                           read_u32(bytes, offset + 12U)};
+        } else if (command == lc_function_starts) {
+            if (command_size < 16U) {
+                throw std::runtime_error{"truncated LC_FUNCTION_STARTS"};
+            }
+            function_starts =
+                std::pair{read_u32(bytes, offset + 8U),
+                          read_u32(bytes, offset + 12U)};
         } else if (command == lc_uuid) {
             if (command_size < 24U) {
                 throw std::runtime_error{"truncated LC_UUID"};
@@ -529,6 +599,11 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     }
     if (offset != commands_end) {
         throw std::runtime_error{"Mach-O load command sizes do not match sizeofcmds"};
+    }
+    if (function_starts) {
+        decode_function_starts(bytes, function_starts->first,
+                               function_starts->second, image.segments_,
+                               image.function_starts_);
     }
     if (indirect_symbols) {
         const auto [table_offset, table_count] = *indirect_symbols;

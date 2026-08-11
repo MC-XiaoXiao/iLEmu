@@ -91,6 +91,13 @@ public:
     [[nodiscard]] const std::vector<MachDylib>& dylibs() const { return dylibs_; }
     [[nodiscard]] const std::vector<MachSymbol>& symbols() const { return symbols_; }
     [[nodiscard]] const std::vector<MachStub>& stubs() const { return stubs_; }
+    // Linkers emit a compact, content-addressed function boundary table for
+    // stripped images. The parser keeps only bounded, image-local starts so
+    // callers can seed cold translation without treating every text byte as
+    // an entry point.
+    [[nodiscard]] const std::vector<std::uint32_t>& function_starts() const {
+        return function_starts_;
+    }
     [[nodiscard]] const std::optional<std::string>& dynamic_linker() const { return dynamic_linker_; }
     [[nodiscard]] const std::optional<std::uint32_t>& entry_point() const { return entry_point_; }
     [[nodiscard]] std::span<const std::byte> code_signature_entitlements() const {
@@ -137,6 +144,7 @@ private:
     std::vector<MachDylib> dylibs_;
     std::vector<MachSymbol> symbols_;
     std::vector<MachStub> stubs_;
+    std::vector<std::uint32_t> function_starts_;
     std::optional<std::string> dynamic_linker_;
     std::optional<std::uint32_t> entry_point_;
     std::vector<std::byte> code_signature_entitlements_;
