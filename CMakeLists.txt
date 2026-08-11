@@ -65,8 +65,8 @@ set(ILEMU_DYNARMIC_PORTABLE_IR_STATE_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-portable-ir-state.patch")
 set(ILEMU_DYNARMIC_A32_STABLE_LINK_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-a32-stable-links.patch")
-set(ILEMU_DYNARMIC_NORMAL_STABLE_LINK_PATCH
-    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-normal-stable-links.patch")
+set(ILEMU_DYNARMIC_NEAR_CONDITIONAL_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-near-conditional-links.patch")
 set(ILEMU_DYNARMIC_SHARED_RSB_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-shared-rsb.patch")
 execute_process(
@@ -267,39 +267,39 @@ else()
     endif()
 endif()
 
-# Extend the same executor-local stable-slot probe to ordinary LinkBlock
-# success branches while preserving their cycle/halt guards and patch sites.
+# Keep conditional branch labels near the expanded shared-RSB helper without
+# changing ordinary LinkBlock patching or its dispatch semantics.
 execute_process(
-    COMMAND git apply --unidiff-zero --check "${ILEMU_DYNARMIC_NORMAL_STABLE_LINK_PATCH}"
+    COMMAND git apply --unidiff-zero --check "${ILEMU_DYNARMIC_NEAR_CONDITIONAL_PATCH}"
     WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
-    RESULT_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_CHECK
-    OUTPUT_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_OUTPUT
-    ERROR_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_ERROR)
-if(ILEMU_DYNARMIC_NORMAL_STABLE_LINK_CHECK EQUAL 0)
+    RESULT_VARIABLE ILEMU_DYNARMIC_NEAR_CONDITIONAL_CHECK
+    OUTPUT_VARIABLE ILEMU_DYNARMIC_NEAR_CONDITIONAL_OUTPUT
+    ERROR_VARIABLE ILEMU_DYNARMIC_NEAR_CONDITIONAL_ERROR)
+if(ILEMU_DYNARMIC_NEAR_CONDITIONAL_CHECK EQUAL 0)
     execute_process(
-        COMMAND git apply --unidiff-zero "${ILEMU_DYNARMIC_NORMAL_STABLE_LINK_PATCH}"
+        COMMAND git apply --unidiff-zero "${ILEMU_DYNARMIC_NEAR_CONDITIONAL_PATCH}"
         WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
-        RESULT_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_APPLY
-        OUTPUT_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_APPLY_OUTPUT
-        ERROR_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_APPLY_ERROR)
-    if(NOT ILEMU_DYNARMIC_NORMAL_STABLE_LINK_APPLY EQUAL 0)
+        RESULT_VARIABLE ILEMU_DYNARMIC_NEAR_CONDITIONAL_APPLY
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_NEAR_CONDITIONAL_APPLY_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_NEAR_CONDITIONAL_APPLY_ERROR)
+    if(NOT ILEMU_DYNARMIC_NEAR_CONDITIONAL_APPLY EQUAL 0)
         message(FATAL_ERROR
-            "Failed to apply the Dynarmic ordinary stable-link patch: "
-            "${ILEMU_DYNARMIC_NORMAL_STABLE_LINK_APPLY_ERROR}")
+            "Failed to apply the Dynarmic near-conditional patch: "
+            "${ILEMU_DYNARMIC_NEAR_CONDITIONAL_APPLY_ERROR}")
     endif()
 else()
     execute_process(
         COMMAND git apply --unidiff-zero --reverse --check
-            "${ILEMU_DYNARMIC_NORMAL_STABLE_LINK_PATCH}"
+            "${ILEMU_DYNARMIC_NEAR_CONDITIONAL_PATCH}"
         WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
-        RESULT_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_REVERSE_CHECK
-        OUTPUT_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_REVERSE_OUTPUT
-        ERROR_VARIABLE ILEMU_DYNARMIC_NORMAL_STABLE_LINK_REVERSE_ERROR)
-    if(NOT ILEMU_DYNARMIC_NORMAL_STABLE_LINK_REVERSE_CHECK EQUAL 0)
+        RESULT_VARIABLE ILEMU_DYNARMIC_NEAR_CONDITIONAL_REVERSE_CHECK
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_NEAR_CONDITIONAL_REVERSE_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_NEAR_CONDITIONAL_REVERSE_ERROR)
+    if(NOT ILEMU_DYNARMIC_NEAR_CONDITIONAL_REVERSE_CHECK EQUAL 0)
         message(FATAL_ERROR
-            "Dynarmic ordinary stable-link patch is neither applicable nor "
+            "Dynarmic near-conditional patch is neither applicable nor "
             "already applied. git apply reported: "
-            "${ILEMU_DYNARMIC_NORMAL_STABLE_LINK_ERROR}")
+            "${ILEMU_DYNARMIC_NEAR_CONDITIONAL_ERROR}")
     endif()
 endif()
 
