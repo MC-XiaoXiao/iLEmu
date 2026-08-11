@@ -65,6 +65,8 @@ set(ILEMU_DYNARMIC_A32_STABLE_LINK_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-a32-stable-links.patch")
 set(ILEMU_DYNARMIC_NORMAL_STABLE_LINK_PATCH
     "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-normal-stable-links.patch")
+set(ILEMU_DYNARMIC_SHARED_RSB_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-shared-rsb.patch")
 execute_process(
     COMMAND git apply --check "${ILEMU_DYNARMIC_PORTABLE_IR_PATCH}"
     WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
@@ -217,10 +219,22 @@ else()
         OUTPUT_VARIABLE ILEMU_DYNARMIC_A32_STABLE_LINK_REVERSE_OUTPUT
         ERROR_VARIABLE ILEMU_DYNARMIC_A32_STABLE_LINK_REVERSE_ERROR)
     if(NOT ILEMU_DYNARMIC_A32_STABLE_LINK_REVERSE_CHECK EQUAL 0)
-        message(FATAL_ERROR
-            "Dynarmic A32 stable-link patch is neither applicable nor "
-            "already applied. git apply reported: "
-            "${ILEMU_DYNARMIC_A32_STABLE_LINK_ERROR}")
+        # The shared-RSB patch intentionally replaces the old stable-link
+        # body, so the older patch's reverse hunk is no longer exact after
+        # the complete tracked stack has been applied.
+        execute_process(
+            COMMAND git apply --reverse --check
+                "${ILEMU_DYNARMIC_SHARED_RSB_PATCH}"
+            WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+            RESULT_VARIABLE ILEMU_DYNARMIC_SHARED_RSB_ALREADY_APPLIED
+            OUTPUT_VARIABLE ILEMU_DYNARMIC_SHARED_RSB_ALREADY_OUTPUT
+            ERROR_VARIABLE ILEMU_DYNARMIC_SHARED_RSB_ALREADY_ERROR)
+        if(NOT ILEMU_DYNARMIC_SHARED_RSB_ALREADY_APPLIED EQUAL 0)
+            message(FATAL_ERROR
+                "Dynarmic A32 stable-link patch is neither applicable nor "
+                "already applied. git apply reported: "
+                "${ILEMU_DYNARMIC_A32_STABLE_LINK_ERROR}")
+        endif()
     endif()
 endif()
 
@@ -257,6 +271,42 @@ else()
             "Dynarmic ordinary stable-link patch is neither applicable nor "
             "already applied. git apply reported: "
             "${ILEMU_DYNARMIC_NORMAL_STABLE_LINK_ERROR}")
+    endif()
+endif()
+
+# Keep RSB entries generation-local in the shared A32/x64 backend. The
+# executor-owned stable table is the only source of native return pointers.
+execute_process(
+    COMMAND git apply --check "${ILEMU_DYNARMIC_SHARED_RSB_PATCH}"
+    WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+    RESULT_VARIABLE ILEMU_DYNARMIC_SHARED_RSB_CHECK
+    OUTPUT_VARIABLE ILEMU_DYNARMIC_SHARED_RSB_OUTPUT
+    ERROR_VARIABLE ILEMU_DYNARMIC_SHARED_RSB_ERROR)
+if(ILEMU_DYNARMIC_SHARED_RSB_CHECK EQUAL 0)
+    execute_process(
+        COMMAND git apply "${ILEMU_DYNARMIC_SHARED_RSB_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_SHARED_RSB_APPLY
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_SHARED_RSB_APPLY_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_SHARED_RSB_APPLY_ERROR)
+    if(NOT ILEMU_DYNARMIC_SHARED_RSB_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Failed to apply the Dynarmic shared RSB patch: "
+            "${ILEMU_DYNARMIC_SHARED_RSB_APPLY_ERROR}")
+    endif()
+else()
+    execute_process(
+        COMMAND git apply --reverse --check
+            "${ILEMU_DYNARMIC_SHARED_RSB_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_SHARED_RSB_REVERSE_CHECK
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_SHARED_RSB_REVERSE_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_SHARED_RSB_REVERSE_ERROR)
+    if(NOT ILEMU_DYNARMIC_SHARED_RSB_REVERSE_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Dynarmic shared RSB patch is neither applicable nor already "
+            "applied. git apply reported: "
+            "${ILEMU_DYNARMIC_SHARED_RSB_ERROR}")
     endif()
 endif()
 

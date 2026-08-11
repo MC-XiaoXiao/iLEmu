@@ -1022,12 +1022,14 @@ public:
                 preload_current_artifact();
             }
             const auto reason = single_step ? jit_->Step() : jit_->Run();
+            record_dispatch_counters();
             auto result = callbacks_->result(reason);
             save_state(cpu);
             record_code_cache_usage();
             performance_counters().record_cpu_execution(result.ticks_consumed);
             return result;
         } catch (...) {
+            record_dispatch_counters();
             save_state(cpu);
             record_code_cache_usage();
             throw;
@@ -1327,6 +1329,7 @@ private:
                                  ? std::chrono::steady_clock::now()
                                  : std::chrono::steady_clock::time_point{};
         jit_ = std::make_unique<Dynarmic::A32::Jit>(config);
+        recorded_dispatch_counters_ = {};
         const auto elapsed =
             measure
                 ? static_cast<std::uint64_t>(
@@ -1384,6 +1387,30 @@ private:
                 static_cast<std::uint32_t>(execution_slot_), executor_local);
             recorded_executor_local_bytes_ = executor_local;
         }
+    }
+
+    void record_dispatch_counters() {
+        if (!jit_) return;
+        const auto current = jit_->GetDispatchCounters();
+        if (!performance_counters().enabled()) {
+            recorded_dispatch_counters_ = current;
+            return;
+        }
+        const auto delta = [](std::uint64_t current,
+                              std::uint64_t& recorded) {
+            const auto result = current >= recorded ? current - recorded
+                                                      : current;
+            recorded = current;
+            return result;
+        };
+        performance_counters().record_jit_dispatch(
+            delta(current.stable_link_hits,
+                  recorded_dispatch_counters_.stable_link_hits),
+            delta(current.stable_link_misses,
+                  recorded_dispatch_counters_.stable_link_misses),
+            delta(current.rsb_hits, recorded_dispatch_counters_.rsb_hits),
+            delta(current.rsb_misses,
+                  recorded_dispatch_counters_.rsb_misses));
     }
 
     [[nodiscard]] std::uint64_t executor_local_memory_bytes() const noexcept {
@@ -1446,6 +1473,7 @@ private:
     std::uint64_t recorded_shared_used_bytes_{};
     std::uint64_t recorded_shared_committed_bytes_{};
     std::uint64_t recorded_executor_local_bytes_{};
+    Dynarmic::A32::DispatchCounters recorded_dispatch_counters_{};
     std::uint64_t observed_invalidation_epoch_{};
     std::uint64_t observed_slab_generation_{};
     std::unordered_map<std::uint64_t, ArtifactProbe> artifact_probes_;
