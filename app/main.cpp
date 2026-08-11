@@ -3737,6 +3737,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
           hard_stop = true;
         }
       } else if (Dynarmic::Has(result.reason,
+                               Dynarmic::HaltReason::CacheInvalidation)) {
+        // Dynarmic may return after completing a shared code-cache
+        // invalidation at a safe host boundary. This is not a guest wait or
+        // scheduler state transition; resume the same runnable slice.
+        completion = XnuSliceCompletion::Continue;
+      } else if (Dynarmic::Has(result.reason,
                                Dynarmic::HaltReason::UserDefined1)) {
         completion = XnuSliceCompletion::Terminate;
       } else if (Dynarmic::Has(result.reason,

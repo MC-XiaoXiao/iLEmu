@@ -1316,7 +1316,8 @@ private:
     }
 
     [[nodiscard]] static constexpr Dynarmic::HaltReason all_halt_reasons() {
-        return Dynarmic::HaltReason::MemoryAbort |
+        return Dynarmic::HaltReason::CacheInvalidation |
+               Dynarmic::HaltReason::MemoryAbort |
                Dynarmic::HaltReason::UserDefined1 |
                Dynarmic::HaltReason::UserDefined2 |
                Dynarmic::HaltReason::UserDefined3 |
