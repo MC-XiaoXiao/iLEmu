@@ -222,6 +222,45 @@ else()
     endif()
 endif()
 
+# Publish shared-slab invalidation requests without forcing a generation
+# transition on the caller's thread. Keep the ignored Dynarmic checkout
+# reproducible and make reconfiguration idempotent when the patch is present.
+set(ILEMU_DYNARMIC_SHARED_INVALIDATION_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-shared-invalidation.patch")
+execute_process(
+    COMMAND git apply --check "${ILEMU_DYNARMIC_SHARED_INVALIDATION_PATCH}"
+    WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+    RESULT_VARIABLE ILEMU_DYNARMIC_SHARED_INVALIDATION_CHECK
+    OUTPUT_VARIABLE ILEMU_DYNARMIC_SHARED_INVALIDATION_OUTPUT
+    ERROR_VARIABLE ILEMU_DYNARMIC_SHARED_INVALIDATION_ERROR)
+if(ILEMU_DYNARMIC_SHARED_INVALIDATION_CHECK EQUAL 0)
+    execute_process(
+        COMMAND git apply "${ILEMU_DYNARMIC_SHARED_INVALIDATION_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_SHARED_INVALIDATION_APPLY
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_SHARED_INVALIDATION_APPLY_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_SHARED_INVALIDATION_APPLY_ERROR)
+    if(NOT ILEMU_DYNARMIC_SHARED_INVALIDATION_APPLY EQUAL 0)
+        message(FATAL_ERROR
+            "Failed to apply the Dynarmic shared invalidation patch: "
+            "${ILEMU_DYNARMIC_SHARED_INVALIDATION_APPLY_ERROR}")
+    endif()
+else()
+    execute_process(
+        COMMAND git apply --reverse --check
+            "${ILEMU_DYNARMIC_SHARED_INVALIDATION_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_SHARED_INVALIDATION_REVERSE_CHECK
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_SHARED_INVALIDATION_REVERSE_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_SHARED_INVALIDATION_REVERSE_ERROR)
+    if(NOT ILEMU_DYNARMIC_SHARED_INVALIDATION_REVERSE_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Dynarmic shared invalidation patch is neither applicable nor "
+            "already applied. git apply reported: "
+            "${ILEMU_DYNARMIC_SHARED_INVALIDATION_ERROR}")
+    endif()
+endif()
+
 # Persistent portable-IR artifacts must not cross a different Dynarmic build.
 # Include the pinned revision and any applied working-tree patches so a
 # locally modified dependency cannot silently reuse an older artifact key.

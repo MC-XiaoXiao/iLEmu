@@ -994,6 +994,8 @@ public:
         const std::scoped_lock lock{execution_mutex_};
         memory_.synchronize_shared_write_tracking();
         ensure_jit();
+        service_pending_shared_invalidation();
+        observe_shared_invalidation_epoch();
         load_state(cpu);
         callbacks_->begin(single_step ? 1 : ticks);
         try {
@@ -1013,25 +1015,9 @@ public:
         }
     }
 
-    void clear_cache() {
-        artifact_probes_.clear();
-        if (jit_) {
-            jit_->ClearCache();
-            record_code_cache_usage();
-        }
-    }
-
     [[nodiscard]] std::uint64_t code_cache_used() {
         const std::lock_guard lock{execution_mutex_};
         return jit_ ? jit_code_cache_used(*jit_) : 0U;
-    }
-
-    void invalidate_cache_range(std::uint32_t address, std::size_t length) {
-        if (jit_ && length != 0) {
-            artifact_probes_.clear();
-            jit_->InvalidateCacheRange(address, length);
-            record_code_cache_usage();
-        }
     }
 
     void clear_halt() {
@@ -1075,6 +1061,8 @@ public:
         const std::lock_guard execution_lock{execution_mutex_};
         memory_.synchronize_shared_write_tracking();
         ensure_jit();
+        service_pending_shared_invalidation();
+        observe_shared_cache_state();
         constexpr std::size_t cache_reserve = 8U * 1024U * 1024U;
         if (target == JitPrecompileTarget::NativeCode &&
             jit_code_cache_used(*jit_) + cache_reserve >= code_cache_size_) {
@@ -1213,6 +1201,34 @@ private:
                               JitCallbacks::ArtifactImportOutcome::Unavailable &&
                           imported !=
                               JitCallbacks::ArtifactImportOutcome::Failed});
+    }
+
+    void observe_shared_invalidation_epoch() {
+        const auto invalidation_epoch =
+            execution_context_->cache_invalidation_epoch();
+        if (invalidation_epoch == observed_invalidation_epoch_) return;
+        artifact_probes_.clear();
+        observed_invalidation_epoch_ = invalidation_epoch;
+    }
+
+    void service_pending_shared_invalidation() {
+        if (execution_context_->cache_invalidation_epoch() ==
+            observed_invalidation_epoch_) {
+            return;
+        }
+        execution_context_->native_code_slab()->service_pending_invalidation();
+    }
+
+    void observe_shared_cache_state() {
+        observe_shared_invalidation_epoch();
+        const auto slab_generation =
+            execution_context_->native_code_slab()->generation();
+        if (slab_generation == observed_slab_generation_) return;
+        // Capacity transitions are internal to the shared slab and do not
+        // publish a guest invalidation epoch. Retire probes when a
+        // precompile operation reaches this slower, serialized boundary.
+        artifact_probes_.clear();
+        observed_slab_generation_ = slab_generation;
     }
 
     [[nodiscard]] static constexpr Dynarmic::HaltReason all_halt_reasons() {
@@ -1381,6 +1397,8 @@ private:
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
     std::size_t code_cache_size_{64U * 1024U * 1024U};
     std::uint64_t recorded_jit_code_cache_bytes_{};
+    std::uint64_t observed_invalidation_epoch_{};
+    std::uint64_t observed_slab_generation_{};
     std::unordered_map<std::uint64_t, ArtifactProbe> artifact_probes_;
     std::mutex execution_mutex_;
 };
@@ -1448,15 +1466,15 @@ public:
     }
 
     void clear_cache() {
-        for (auto& executor : executors_) {
-            executor->clear_cache();
-        }
+        static_cast<void>(execution_context_->request_cache_clear());
+        performance_counters().record_jit_shared_invalidation();
     }
 
     void invalidate_cache_range(std::uint32_t address, std::size_t length) {
-        for (auto& executor : executors_) {
-            executor->invalidate_cache_range(address, length);
-        }
+        if (length == 0U) return;
+        static_cast<void>(
+            execution_context_->request_cache_range(address, length));
+        performance_counters().record_jit_shared_invalidation();
     }
 
     void disable_jit_page_table() {

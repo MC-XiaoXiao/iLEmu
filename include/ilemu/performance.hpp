@@ -161,6 +161,7 @@ struct PerformanceSnapshot {
     std::uint64_t jit_creation_nanoseconds{};
     std::uint64_t jit_code_cache_bytes{};
     std::uint64_t jit_code_cache_peak_bytes{};
+    std::uint64_t jit_shared_invalidation_requests{};
     std::uint64_t translation_blocks{};
     std::uint64_t cpu_executions{};
     std::uint64_t cpu_ticks{};
@@ -237,6 +238,7 @@ class PerformanceCounters {
                                      std::uint32_t slot,
                                      std::uint64_t previous_bytes,
                                      std::uint64_t current_bytes);
+    void record_jit_shared_invalidation();
     void record_translation_block();
     void record_cpu_execution(std::uint64_t ticks);
     void record_svc();
@@ -351,6 +353,7 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> jit_block_compile_p99_nanoseconds_{};
     std::atomic<std::uint64_t> jit_code_cache_current_bytes_{};
     std::atomic<std::uint64_t> jit_code_cache_peak_bytes_{};
+    std::atomic<std::uint64_t> jit_shared_invalidation_requests_{};
     std::atomic<std::uint64_t> translation_blocks_{};
     std::atomic<std::uint64_t> cpu_executions_{};
     std::atomic<std::uint64_t> cpu_ticks_{};

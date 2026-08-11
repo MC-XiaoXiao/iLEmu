@@ -1,0 +1,81 @@
+diff --git a/src/dynarmic/interface/A32/a32.h b/src/dynarmic/interface/A32/a32.h
+--- a/src/dynarmic/interface/A32/a32.h
++++ b/src/dynarmic/interface/A32/a32.h
+@@ -58,6 +58,10 @@
+     void clear_cache();
+     void invalidate_cache_range(std::uint32_t start_address,
+                                 std::size_t length);
++    void request_cache_clear();
++    void request_cache_range(std::uint32_t start_address,
++                             std::size_t length);
++    void service_pending_invalidation();
+     [[nodiscard]] HaltReason run_code(void* jit_state,
+                                       const void* code_ptr) const;
+     [[nodiscard]] HaltReason step_code(void* jit_state,
+diff --git a/src/dynarmic/backend/x64/a32_interface.cpp b/src/dynarmic/backend/x64/a32_interface.cpp
+--- a/src/dynarmic/backend/x64/a32_interface.cpp
++++ b/src/dynarmic/backend/x64/a32_interface.cpp
+@@ -277,7 +277,7 @@
+         generation_changed.notify_all();
+     }
+ 
+-    void request_generation_transition() {
++    void request_generation_transition(bool finish = true) {
+         if (!clear_pending) {
+             clear_pending = true;
+             pending_generation = current_generation + 1;
+@@ -288,7 +288,7 @@
+                            static_cast<u32>(HaltReason::CacheInvalidation));
+             }
+         }
+-        finish_generation_transition();
++        if (finish) finish_generation_transition();
+     }
+ 
+     void clear_cache() {
+@@ -307,6 +307,25 @@
+         request_generation_transition();
+     }
+ 
++    void request_cache_clear() {
++        std::lock_guard lock{mutex};
++        if (!initialized) return;
++        request_generation_transition(false);
++    }
++
++    void request_cache_range(std::uint32_t, std::size_t length) {
++        if (length == 0) return;
++        std::lock_guard lock{mutex};
++        if (!initialized) return;
++        request_generation_transition(false);
++    }
++
++    void service_pending_invalidation() {
++        std::lock_guard lock{mutex};
++        if (!initialized) return;
++        finish_generation_transition();
++    }
++
+     [[nodiscard]] HaltReason run_code(void* jit_state,
+                                       const void* code_ptr) const {
+         return block_of_code->RunCode(jit_state, code_ptr);
+@@ -460,6 +479,19 @@
+     impl->invalidate_cache_range(start_address, length);
+ }
+ 
++void NativeCodeSlab::request_cache_clear() {
++    impl->request_cache_clear();
++}
++
++void NativeCodeSlab::request_cache_range(
++    std::uint32_t start_address, std::size_t length) {
++    impl->request_cache_range(start_address, length);
++}
++
++void NativeCodeSlab::service_pending_invalidation() {
++    impl->service_pending_invalidation();
++}
++
+ HaltReason NativeCodeSlab::run_code(void* jit_state,
+                                     const void* code_ptr) const {
+     return impl->run_code(jit_state, code_ptr);

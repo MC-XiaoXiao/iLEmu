@@ -295,6 +295,7 @@ void PerformanceCounters::reset(bool enabled) {
     jit_block_compile_p99_nanoseconds_.store(0, std::memory_order_relaxed);
     jit_code_cache_current_bytes_.store(0, std::memory_order_relaxed);
     jit_code_cache_peak_bytes_.store(0, std::memory_order_relaxed);
+    jit_shared_invalidation_requests_.store(0, std::memory_order_relaxed);
     translation_blocks_.store(0, std::memory_order_relaxed);
     cpu_executions_.store(0, std::memory_order_relaxed);
     cpu_ticks_.store(0, std::memory_order_relaxed);
@@ -688,6 +689,12 @@ void PerformanceCounters::record_jit_code_cache_usage(
     }
     usage.current_bytes = current_bytes;
     usage.peak_bytes = std::max(usage.peak_bytes, current_bytes);
+}
+
+void PerformanceCounters::record_jit_shared_invalidation() {
+    if (!enabled()) return;
+    jit_shared_invalidation_requests_.fetch_add(1,
+                                                std::memory_order_relaxed);
 }
 
 void PerformanceCounters::record_translation_block() {
@@ -1375,6 +1382,8 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
         jit_code_cache_current_bytes_.load(std::memory_order_relaxed);
     result.jit_code_cache_peak_bytes =
         jit_code_cache_peak_bytes_.load(std::memory_order_relaxed);
+    result.jit_shared_invalidation_requests =
+        jit_shared_invalidation_requests_.load(std::memory_order_relaxed);
     result.translation_blocks =
         translation_blocks_.load(std::memory_order_relaxed);
     result.cpu_executions = cpu_executions_.load(std::memory_order_relaxed);
@@ -1626,6 +1635,8 @@ std::string format_performance_summary(
          << " jit-cache-bytes=" << snapshot.jit_code_cache_bytes
          << " jit-cache-peak-bytes="
          << snapshot.jit_code_cache_peak_bytes
+         << " jit-shared-invalidations="
+         << snapshot.jit_shared_invalidation_requests
          << " translation-blocks=" << snapshot.translation_blocks
          << " cpu-exec=" << snapshot.cpu_executions
          << " cpu-ticks=" << snapshot.cpu_ticks

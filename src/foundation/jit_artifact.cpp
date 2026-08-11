@@ -3487,4 +3487,32 @@ Dynarmic::A32::NativeCodeSlab *ExecutionContext::native_code_slab() const
   return native_code_slab_.get();
 }
 
+std::uint64_t ExecutionContext::request_cache_clear() {
+  const std::lock_guard lock{invalidation_mutex_};
+  native_code_slab_->request_cache_clear();
+  auto epoch = cache_invalidation_epoch_.fetch_add(
+                   1U, std::memory_order_acq_rel) +
+               1U;
+  if (epoch == 0U) {
+    cache_invalidation_epoch_.store(1U, std::memory_order_release);
+    epoch = 1U;
+  }
+  return epoch;
+}
+
+std::uint64_t ExecutionContext::request_cache_range(std::uint32_t address,
+                                                    std::size_t length) {
+  if (length == 0U) return cache_invalidation_epoch();
+  const std::lock_guard lock{invalidation_mutex_};
+  native_code_slab_->request_cache_range(address, length);
+  auto epoch = cache_invalidation_epoch_.fetch_add(
+                   1U, std::memory_order_acq_rel) +
+               1U;
+  if (epoch == 0U) {
+    cache_invalidation_epoch_.store(1U, std::memory_order_release);
+    epoch = 1U;
+  }
+  return epoch;
+}
+
 } // namespace ilemu

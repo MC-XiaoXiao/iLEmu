@@ -357,6 +357,16 @@ public:
   link_cell_address(std::size_t cell) const;
   [[nodiscard]] Dynarmic::A32::NativeCodeSlab *native_code_slab() const noexcept;
 
+  // Guest address-space changes are published once per process context. The
+  // slab owns the actual generation transition; this epoch lets each
+  // executor retire its private artifact probes at its next safe boundary.
+  [[nodiscard]] std::uint64_t request_cache_clear();
+  [[nodiscard]] std::uint64_t request_cache_range(std::uint32_t address,
+                                                   std::size_t length);
+  [[nodiscard]] std::uint64_t cache_invalidation_epoch() const noexcept {
+    return cache_invalidation_epoch_.load(std::memory_order_acquire);
+  }
+
 private:
   struct LinkCell {
     std::atomic<std::uint64_t> target_token{};
@@ -367,6 +377,8 @@ private:
   std::shared_ptr<Dynarmic::A32::NativeCodeSlab> native_code_slab_;
   mutable std::mutex mutex_;
   bool process_id_bound_{};
+  std::atomic<std::uint64_t> cache_invalidation_epoch_{};
+  mutable std::mutex invalidation_mutex_;
   std::vector<std::unique_ptr<LinkCell>> link_cells_;
 };
 
