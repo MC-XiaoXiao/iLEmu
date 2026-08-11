@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <set>
 #include <string>
@@ -53,6 +54,11 @@ struct ExecutableCatalogPathGeneration {
   ExecutableCatalogFileGeneration generation;
 };
 
+struct ExecutableCatalogKnownIdentity {
+  ExecutableCatalogFileGeneration generation;
+  ContentIdentity content_identity;
+};
+
 struct ExecutableCatalogEntry {
   ContentIdentity content_identity;
   std::vector<std::filesystem::path> aliases;
@@ -86,7 +92,8 @@ public:
       const MachOImage &image);
   [[nodiscard]] const ExecutableCatalogEntry &register_path(
       const std::filesystem::path &path,
-      ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
+      ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
+      std::optional<ContentIdentity> known_identity = std::nullopt);
   [[nodiscard]] const ExecutableCatalogEntry &register_mapping(
       const std::filesystem::path &path, std::uint64_t file_offset,
       std::uint64_t byte_count);
@@ -110,7 +117,9 @@ public:
   [[nodiscard]] ExecutableCatalogScanSummary refresh_paths(
       const std::filesystem::path &root,
       const std::vector<std::filesystem::path> &paths,
-      ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
+      ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
+      const std::map<std::filesystem::path, ExecutableCatalogKnownIdentity>
+          &known_identities = {});
 
   // The manifest is versioned and written through a temporary file followed
   // by rename. Malformed input is rejected without changing the live index so
@@ -148,7 +157,8 @@ private:
   [[nodiscard]] const ExecutableCatalogEntry &register_path_alias(
       const std::filesystem::path &alias,
       const std::filesystem::path &target,
-      ArmArchitectureVersion architecture);
+      ArmArchitectureVersion architecture,
+      std::optional<ContentIdentity> known_identity = std::nullopt);
   void remove_path(const std::filesystem::path &path);
   [[nodiscard]] ExecutableCatalogScanSummary scan_tree(
       const std::filesystem::path &root, ArmArchitectureVersion architecture,

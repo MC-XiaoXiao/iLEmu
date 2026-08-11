@@ -513,14 +513,18 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_image(
 }
 
 const ExecutableCatalogEntry &ExecutableCatalog::register_path(
-    const std::filesystem::path &path, ArmArchitectureVersion architecture) {
-  return register_image(MachOImage::parse(path, architecture));
+    const std::filesystem::path &path, ArmArchitectureVersion architecture,
+    std::optional<ContentIdentity> known_identity) {
+  return register_image(MachOImage::parse(path, architecture,
+                                           std::move(known_identity)));
 }
 
 const ExecutableCatalogEntry &ExecutableCatalog::register_path_alias(
     const std::filesystem::path &alias, const std::filesystem::path &target,
-    ArmArchitectureVersion architecture) {
-  const auto image = MachOImage::parse(target, architecture);
+    ArmArchitectureVersion architecture,
+    std::optional<ContentIdentity> known_identity) {
+  const auto image = MachOImage::parse(target, architecture,
+                                       std::move(known_identity));
   const auto target_path = normalize_path(target);
   const auto alias_path = normalize_path(alias);
   const auto &target_entry = register_image(image);
@@ -634,7 +638,9 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_tree(
 ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
     const std::filesystem::path &root,
     const std::vector<std::filesystem::path> &paths,
-    ArmArchitectureVersion architecture) {
+    ArmArchitectureVersion architecture,
+    const std::map<std::filesystem::path, ExecutableCatalogKnownIdentity>
+        &known_identities) {
   std::error_code root_error;
   const auto normalized_root = normalize_path(root);
   if (!std::filesystem::is_directory(normalized_root, root_error) ||
@@ -781,11 +787,19 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
       // for those inputs; do not synchronously rescan the whole root here.
     } else if (has_macho_magic(*prefix)) {
       try {
+        std::optional<ContentIdentity> known_identity;
+        if (const auto known = known_identities.find(path);
+            known != known_identities.end() &&
+            known->second.generation == *generation) {
+          known_identity = known->second.content_identity;
+        }
         if (symlink_target) {
           static_cast<void>(
-              register_path_alias(path, target, architecture));
+              register_path_alias(path, target, architecture,
+                                  std::move(known_identity)));
         } else {
-          static_cast<void>(register_path(path, architecture));
+          static_cast<void>(register_path(path, architecture,
+                                          std::move(known_identity)));
         }
         ++summary.mach_o_images;
       } catch (const std::exception &) {

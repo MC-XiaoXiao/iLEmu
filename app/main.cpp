@@ -2214,11 +2214,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
       !host_file_watcher.registration_pending();
   bool catalog_refresh_pending = false;
   std::vector<std::filesystem::path> catalog_refresh_paths;
+  std::map<std::filesystem::path, ExecutableCatalogKnownIdentity>
+      catalog_refresh_identities;
   std::uint64_t catalog_refresh_events{};
   std::uint64_t catalog_refresh_count{};
   struct CatalogRefreshCompletion {
     std::uint64_t base_revision{};
     std::vector<std::filesystem::path> paths;
+    std::map<std::filesystem::path, ExecutableCatalogKnownIdentity>
+        known_identities;
     std::shared_ptr<ExecutableCatalog> catalog;
     ExecutableCatalogScanSummary summary;
     std::filesystem::path staged_manifest;
@@ -2252,11 +2256,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
           }
         }
         const auto queue_catalog_path =
-            [&](const std::filesystem::path &path) {
+            [&](const std::filesystem::path &path,
+                std::optional<ExecutableCatalogKnownIdentity> known_identity =
+                    std::nullopt) {
               if (std::find(catalog_refresh_paths.begin(),
                             catalog_refresh_paths.end(), path) ==
                   catalog_refresh_paths.end()) {
                 catalog_refresh_paths.push_back(path);
+              }
+              if (known_identity) {
+                catalog_refresh_identities[path] = std::move(*known_identity);
               }
             };
         std::optional<CatalogRefreshCompletion> catalog_completion;
@@ -2272,7 +2281,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
           catalog_refresh_task.reset();
           const auto requeue_completion_paths = [&] {
             for (const auto &path : catalog_completion->paths) {
-              queue_catalog_path(path);
+              if (const auto known =
+                      catalog_completion->known_identities.find(path);
+                  known != catalog_completion->known_identities.end()) {
+                queue_catalog_path(path, known->second);
+              } else {
+                queue_catalog_path(path);
+              }
             }
             catalog_refresh_pending = !catalog_refresh_paths.empty();
           };
@@ -2350,7 +2365,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
             *initial_runtime->kernel->guest_file_generation_registry(), 64,
             refresh_when_idle);
         for (const auto &path : host_changes.changed_paths) {
-          queue_catalog_path(path);
+          if (const auto known = host_changes.stable_identities.find(path);
+              known != host_changes.stable_identities.end()) {
+            const auto &generation = known->second.generation;
+            queue_catalog_path(
+                path,
+                ExecutableCatalogKnownIdentity{
+                    ExecutableCatalogFileGeneration{
+                        generation.device, generation.inode,
+                        generation.file_size, generation.modified_seconds,
+                        generation.modified_nanoseconds,
+                        generation.changed_seconds,
+                        generation.changed_nanoseconds},
+                    known->second.content_identity});
+          } else {
+            queue_catalog_path(path);
+          }
           catalog_refresh_pending = true;
         }
         for (const auto &subtree : host_changes.dirty_subtrees) {
@@ -2424,6 +2454,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
             std::vector<std::filesystem::path>>(
             std::move(catalog_refresh_paths));
         catalog_refresh_paths.clear();
+        auto refresh_identities = std::make_shared<
+            std::map<std::filesystem::path, ExecutableCatalogKnownIdentity>>(
+                std::move(catalog_refresh_identities));
+        catalog_refresh_identities.clear();
         catalog_refresh_pending = false;
         auto catalog_snapshot =
             std::make_shared<ExecutableCatalog>(executable_catalog);
@@ -2437,15 +2471,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
              catalog = std::move(catalog_snapshot),
              paths = refresh_paths, root = *rootfs,
              architecture = guest_architecture, base_revision,
-             staged_manifest]() mutable {
+             staged_manifest, known_identities = refresh_identities]() mutable {
               CatalogRefreshCompletion completion;
               completion.base_revision = base_revision;
               completion.paths = std::move(*paths);
+              completion.known_identities = *known_identities;
               completion.catalog = std::move(catalog);
               completion.staged_manifest = staged_manifest;
               try {
                 completion.summary = completion.catalog->refresh_paths(
-                    root, completion.paths, architecture);
+                    root, completion.paths, architecture, *known_identities);
                 completion.manifest_staged =
                     completion.catalog->save(staged_manifest);
               } catch (const std::exception &error) {
@@ -2464,7 +2499,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
           next_catalog_refresh_submission =
               HostResourceController::Clock::now() +
               std::chrono::milliseconds{50};
-          for (const auto &path : *refresh_paths) queue_catalog_path(path);
+          for (const auto &path : *refresh_paths) {
+            if (const auto known = refresh_identities->find(path);
+                known != refresh_identities->end()) {
+              queue_catalog_path(path, known->second);
+            } else {
+              queue_catalog_path(path);
+            }
+          }
           catalog_refresh_pending = !catalog_refresh_paths.empty();
         }
       };

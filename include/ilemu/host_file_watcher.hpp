@@ -21,6 +21,11 @@ class HostResourceController;
 
 struct HostFileWatchDrain {
   std::vector<std::filesystem::path> changed_paths;
+  struct StableIdentity {
+    GuestFileGeneration generation;
+    ContentIdentity content_identity;
+  };
+  std::map<std::filesystem::path, StableIdentity> stable_identities;
   std::vector<std::filesystem::path> dirty_subtrees;
   bool overflow{};
 };
@@ -138,6 +143,8 @@ private:
   std::map<std::filesystem::path, PendingPath> pending_;
   std::shared_ptr<AsyncState> async_state_{std::make_shared<AsyncState>()};
   std::deque<std::filesystem::path> confirmed_paths_;
+  std::map<std::filesystem::path, HostFileWatchDrain::StableIdentity>
+      confirmed_identities_;
   std::uint64_t next_event_sequence_{1};
   std::chrono::steady_clock::time_point next_hash_submission_{};
   HostFileWatchStats stats_;

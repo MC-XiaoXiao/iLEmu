@@ -520,6 +520,12 @@ HostFileWatchDrain HostFileWatcher::publish_stable(
       break;
     case AsyncCompletionKind::Changed:
       confirmed_paths_.push_back(completion.path);
+      if (completion.sample) {
+        confirmed_identities_[completion.path] =
+            HostFileWatchDrain::StableIdentity{
+                completion.sample->generation,
+                completion.sample->content_identity};
+      }
       ++stats_.confirmed_changes;
       pending_.erase(pending);
       break;
@@ -531,8 +537,14 @@ HostFileWatchDrain HostFileWatcher::publish_stable(
 
   while (drain.changed_paths.size() < maximum_events &&
          !confirmed_paths_.empty()) {
-    drain.changed_paths.push_back(std::move(confirmed_paths_.front()));
+    auto path = std::move(confirmed_paths_.front());
     confirmed_paths_.pop_front();
+    if (const auto identity = confirmed_identities_.find(path);
+        identity != confirmed_identities_.end()) {
+      drain.stable_identities.emplace(path, std::move(identity->second));
+      confirmed_identities_.erase(identity);
+    }
+    drain.changed_paths.push_back(std::move(path));
   }
 
   constexpr std::size_t maximum_concurrent_hashes = 2;
