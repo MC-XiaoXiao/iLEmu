@@ -57,7 +57,8 @@ index 99c7695..235257e 100644
 +            for (const auto& location : locations) {
 +                const auto value = location.Value();
 +                auto& entry = executor.table[
-+                    A32EmitX64::fast_dispatch_table_index(value)];
++                    A32EmitX64::fast_dispatch_table_index(value) /
++                    sizeof(A32EmitX64::FastDispatchEntry)];
 +                if (entry.location_descriptor == value) {
 +                    entry = {};
 +                }
