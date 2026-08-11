@@ -143,16 +143,15 @@ void GuestFileGenerationRegistry::enqueue_mutation_locked(
     return;
   }
   if (pending_mutations_.size() >= maximum_pending_mutations) {
-    const auto removable = std::find_if(
-        pending_mutations_.begin(), pending_mutations_.end(), [](const auto &event) {
-          return mutation_priority(event.mutation) <=
-                 mutation_priority(GuestFileMutationKind::Write);
-        });
-    if (removable != pending_mutations_.end()) {
-      pending_mutations_.erase(removable);
-    } else {
-      pending_mutations_.pop_front();
-    }
+    // Once an event is evicted, retaining the remaining path-level queue is
+    // no longer a complete description of the tree.  Publish one structural
+    // marker instead; the catalog consumer will rescan its bounded root and
+    // recover every lost create, rename, and unlink deterministically.
+    pending_mutations_.clear();
+    pending_mutations_.push_back(GuestFileMutationEvent{
+        next_mutation_sequence_++, std::filesystem::path{"/"},
+        GuestFileMutationKind::Rename, true});
+    return;
   }
   pending_mutations_.push_back(GuestFileMutationEvent{
       next_mutation_sequence_++, std::filesystem::path{normalized_path},

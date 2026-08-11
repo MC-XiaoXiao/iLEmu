@@ -2363,6 +2363,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
         bool structural_boundary = host_change_boundary;
         for (const auto &mutation : mutations) {
           ++catalog_refresh_events;
+          if (mutation.dirty_subtree) {
+            // The registry deliberately coalesces an overflow into a
+            // structural marker.  Individual paths before this marker were
+            // evicted, so refresh the catalog root instead of pretending the
+            // remaining event list is complete.
+            if (!catalog_root_error) {
+              queue_catalog_path(catalog_root);
+              catalog_refresh_pending = true;
+              structural_boundary = true;
+            }
+            continue;
+          }
           const auto relative = mutation.path.lexically_relative(catalog_root);
           if (catalog_root_error || relative.empty() || relative == "." ||
               relative.begin() == relative.end() ||

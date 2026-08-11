@@ -63,6 +63,10 @@ struct GuestFileMutationEvent {
   std::uint64_t sequence{};
   std::filesystem::path path;
   GuestFileMutationKind mutation{GuestFileMutationKind::Observation};
+  // The bounded event queue overflowed.  The path is advisory; consumers
+  // must rescan their own authoritative root rather than trust individual
+  // events that were evicted before this marker was published.
+  bool dirty_subtree{};
 };
 
 // One emulator-wide view of pathname generations. A pathname is only a lookup
