@@ -223,6 +223,13 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       bsd_error(cpu, bsd_support::bad_address);
       return;
     }
+    if (path->empty()) {
+      // POSIX open(2) does not treat an empty pathname as the process
+      // working directory.  Resolving it to rootfs would hand the guest a
+      // directory descriptor and change ENOENT into a later EISDIR failure.
+      bsd_error(cpu, darwin::error::no_entry);
+      return;
+    }
     if (rootfs_.empty()) {
       bsd_error(cpu, 2); // ENOENT
       return;
