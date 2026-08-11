@@ -426,6 +426,9 @@ private:
   void bsd_success(Cpu &cpu, std::uint32_t value,
                    std::uint32_t second_value = 0);
   void bsd_error(Cpu &cpu, std::uint32_t error);
+  [[nodiscard]] bool protect_memory(Cpu &cpu, std::uint32_t address,
+                                     std::uint32_t size,
+                                     MemoryPermission permissions);
   void trace_unknown(Cpu &cpu, std::string kind, std::uint32_t number);
   [[nodiscard]] std::filesystem::path
   resolve_guest_path(const std::string &path,

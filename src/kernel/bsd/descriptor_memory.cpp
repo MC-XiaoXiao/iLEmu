@@ -993,13 +993,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
       permissions |= MemoryPermission::Write;
     if ((protection & 4U) != 0)
       permissions |= MemoryPermission::Execute;
-    if (!memory_.protect(address, size, permissions)) {
+    if (!protect_memory(cpu, address, size, permissions)) {
       bsd_error(cpu, darwin::error::no_memory);
       return;
     }
-    // Discard translations on the calling virtual CPU that may have been
-    // compiled with the old execute permission.
-    cpu.clear_cache();
     bsd_success(cpu, 0);
     return;
   }

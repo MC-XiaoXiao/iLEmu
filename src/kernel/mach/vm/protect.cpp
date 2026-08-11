@@ -60,7 +60,7 @@ bool CompatibilityKernel::dispatch_mach_vm_protect_message(
     return fail_transport();
 
   const auto result =
-      memory_.protect(*address, *size, memory_permissions(*protection))
+      protect_memory(cpu, *address, *size, memory_permissions(*protection))
           ? kern_success
           : kern_invalid_address;
   if (!write_simple_reply(memory_, request.address, request.local_port,

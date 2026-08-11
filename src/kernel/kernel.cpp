@@ -1911,6 +1911,19 @@ void CompatibilityKernel::bsd_error(Cpu &cpu, std::uint32_t error) {
   cpu.set_cpsr(cpu.cpsr() | carry_flag);
 }
 
+bool CompatibilityKernel::protect_memory(Cpu &cpu, std::uint32_t address,
+                                          std::uint32_t size,
+                                          MemoryPermission permissions) {
+  if (!memory_.protect(address, size, permissions))
+    return false;
+  // Permission changes invalidate both execute checks and translated blocks.
+  // Cpu::clear_cache() is process-wide, so every executor sharing the native
+  // slab reaches the same generation boundary instead of only the caller.
+  if (size != 0)
+    cpu.clear_cache();
+  return true;
+}
+
 bool CompatibilityKernel::write_guest_stat(std::uint32_t address,
                                            const std::filesystem::path &path,
                                            bool follow_symlink,
