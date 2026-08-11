@@ -359,6 +359,10 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
 
     const std::span<const std::byte> bytes{*image_bytes};
     image.content_identity_ = known_identity ? *known_identity : sha256(bytes);
+    if (!image.fat_container_ && image.file_generation_) {
+        seed_shared_file_identity(path, *image.file_generation_,
+                                  image.content_identity_);
+    }
     if (bytes.size() < 28 || read_u32(bytes, 0) != mh_magic) {
         throw std::runtime_error{"expected a little-endian 32-bit Mach-O: " + path.string()};
     }

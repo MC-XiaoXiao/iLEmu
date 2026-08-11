@@ -552,14 +552,14 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_path_alias(
 const ExecutableCatalogEntry &ExecutableCatalog::register_mapping(
     const std::filesystem::path &path, std::uint64_t file_offset,
     std::uint64_t byte_count) {
-  const auto identity = sha256_file(path);
-  if (!identity) {
+  const auto identity_result = shared_file_identity(path);
+  if (!identity_result.content_identity) {
     throw std::runtime_error{"cannot hash dynamic executable mapping: " +
                              path.string()};
   }
   const auto normalized_path = normalize_path(path);
   remove_path(normalized_path);
-  auto &entry = upsert(*identity, normalized_path,
+  auto &entry = upsert(*identity_result.content_identity, normalized_path,
                        ExecutableCatalogKind::DynamicMapping);
   if (entry.file_size == 0) {
     std::error_code size_error;

@@ -448,8 +448,17 @@ HostFileWatcher::AsyncCompletion HostFileWatcher::inspect_path(
   struct stat before {};
   struct stat after {};
   const auto opened = ::fstat(descriptor.get(), &before) == 0;
-  const auto identity = opened ? sha256_file(descriptor.get()) : std::nullopt;
-  if (opened && identity) {
+  std::optional<std::uint64_t> generation_revision;
+  if (opened && current_generation && current_generation->generation &&
+      *current_generation->generation == observed_generation) {
+    generation_revision = current_generation->revision;
+  }
+  const auto identity_result =
+      opened ? shared_file_identity(path, descriptor.get(), observed_generation,
+                                    generation_revision)
+             : SharedFileIdentityResult{};
+  const auto &identity = identity_result.content_identity;
+  if (opened && identity && identity_result.computed) {
     completion.sha_computed = true;
     if (before.st_size > 0) {
       completion.sha_bytes = static_cast<std::uint64_t>(before.st_size);

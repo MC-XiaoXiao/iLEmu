@@ -63,17 +63,18 @@ std::atomic<std::uint64_t> next_reservation_identity{1};
 
 struct GlobalIdentityRecord {
   GuestFileGeneration generation;
-  std::uint64_t generation_revision{};
+  std::optional<std::uint64_t> generation_revision;
   ContentIdentity content_identity;
   std::weak_ptr<GuestFileIoState> io_state;
 };
 
 struct GlobalIdentityFlight {
   GuestFileGeneration generation;
-  std::uint64_t generation_revision{};
+  std::optional<std::uint64_t> generation_revision;
   std::mutex mutex;
   std::condition_variable condition;
   bool complete{};
+  bool computed{};
   std::optional<ContentIdentity> content_identity;
 };
 
@@ -82,9 +83,16 @@ std::map<std::string, GlobalIdentityRecord> global_identities;
 std::map<std::string, std::shared_ptr<GlobalIdentityFlight>>
     global_identity_flights;
 
+[[nodiscard]] bool identity_revision_matches(
+    const std::optional<std::uint64_t> &published_revision,
+    const std::optional<std::uint64_t> &requested_revision) {
+  return !requested_revision || !published_revision ||
+         *published_revision == *requested_revision;
+}
+
 void publish_global_identity(const std::string &normalized_path,
                              const GuestFileGeneration &generation,
-                             std::uint64_t generation_revision,
+                             std::optional<std::uint64_t> generation_revision,
                              const ContentIdentity &content_identity) {
   std::shared_ptr<GlobalIdentityFlight> flight;
   {
@@ -93,17 +101,20 @@ void publish_global_identity(const std::string &normalized_path,
     const auto existing_identity = global_identities.find(normalized_path);
     if (existing_identity != global_identities.end() &&
         existing_identity->second.generation == generation &&
-        existing_identity->second.generation_revision == generation_revision &&
+        identity_revision_matches(existing_identity->second.generation_revision,
+                                  generation_revision) &&
         existing_identity->second.content_identity == content_identity) {
       io_state = existing_identity->second.io_state;
     }
     global_identities[normalized_path] =
-        GlobalIdentityRecord{generation, generation_revision,
+        GlobalIdentityRecord{generation, std::move(generation_revision),
                              content_identity, std::move(io_state)};
     const auto existing = global_identity_flights.find(normalized_path);
     if (existing != global_identity_flights.end() &&
         existing->second->generation == generation &&
-        existing->second->generation_revision == generation_revision) {
+        identity_revision_matches(existing->second->generation_revision,
+                                  global_identities[normalized_path]
+                                      .generation_revision)) {
       flight = existing->second;
       global_identity_flights.erase(existing);
     }
@@ -144,6 +155,114 @@ void invalidate_global_identity(const std::string &normalized_path) {
 }
 
 } // namespace
+
+SharedFileIdentityResult shared_file_identity(
+    const std::filesystem::path &path, int descriptor,
+    const GuestFileGeneration &generation,
+    std::optional<std::uint64_t> generation_revision) {
+  if (descriptor < 0) return {};
+  const auto normalized_path = stable_path(path);
+  std::optional<ContentIdentity> content_identity;
+  std::shared_ptr<GlobalIdentityFlight> flight;
+  bool compute = false;
+  {
+    const std::scoped_lock lock{global_identity_mutex};
+    const auto identity = global_identities.find(normalized_path);
+    if (identity != global_identities.end() &&
+        identity->second.generation == generation &&
+        identity_revision_matches(identity->second.generation_revision,
+                                  generation_revision)) {
+      content_identity = identity->second.content_identity;
+    } else {
+      const auto existing_flight = global_identity_flights.find(normalized_path);
+      if (existing_flight != global_identity_flights.end() &&
+          existing_flight->second->generation == generation &&
+          identity_revision_matches(existing_flight->second->generation_revision,
+                                    generation_revision)) {
+        flight = existing_flight->second;
+      } else {
+        flight = std::make_shared<GlobalIdentityFlight>();
+        flight->generation = generation;
+        flight->generation_revision = generation_revision;
+        global_identity_flights[normalized_path] = flight;
+        compute = true;
+      }
+    }
+  }
+  if (content_identity) return {content_identity, false};
+
+  if (compute) {
+    // Full-file I/O deliberately stays outside global_identity_mutex. The
+    // second locked section only publishes if this flight still owns the
+    // same generation/revision key; replacement invalidation can discard it.
+    const auto computed_identity = sha256_file(descriptor);
+    {
+      const std::scoped_lock lock{global_identity_mutex};
+      const auto existing_flight = global_identity_flights.find(normalized_path);
+      if (existing_flight != global_identity_flights.end() &&
+          existing_flight->second == flight &&
+          existing_flight->second->generation == generation &&
+          identity_revision_matches(existing_flight->second->generation_revision,
+                                    generation_revision)) {
+        if (computed_identity) {
+          global_identities[normalized_path] =
+              GlobalIdentityRecord{generation, generation_revision,
+                                   *computed_identity, {}};
+        }
+        global_identity_flights.erase(existing_flight);
+      }
+    }
+    bool flight_computed = false;
+    {
+      const std::scoped_lock flight_lock{flight->mutex};
+      if (!flight->complete) {
+        flight->content_identity = computed_identity;
+        flight->computed = true;
+        flight->complete = true;
+      }
+      content_identity = flight->content_identity;
+      flight_computed = flight->computed;
+    }
+    flight->condition.notify_all();
+    return {content_identity, flight_computed};
+  }
+
+  if (!flight) return {};
+  bool flight_computed = false;
+  {
+    std::unique_lock flight_lock{flight->mutex};
+    flight->condition.wait(flight_lock,
+                           [&flight] { return flight->complete; });
+    content_identity = flight->content_identity;
+    flight_computed = flight->computed;
+  }
+  return {content_identity, flight_computed};
+}
+
+SharedFileIdentityResult shared_file_identity(
+    const std::filesystem::path &path,
+    std::optional<std::uint64_t> generation_revision) {
+  const auto descriptor = open_file_descriptor(path);
+  if (descriptor < 0) return {};
+  struct stat file_stat {};
+  if (::fstat(descriptor, &file_stat) != 0 || !S_ISREG(file_stat.st_mode) ||
+      file_stat.st_size < 0) {
+    static_cast<void>(::close(descriptor));
+    return {};
+  }
+  const auto result = shared_file_identity(
+      path, descriptor, generation_from_stat(file_stat), generation_revision);
+  static_cast<void>(::close(descriptor));
+  return result;
+}
+
+void seed_shared_file_identity(
+    const std::filesystem::path &path, const GuestFileGeneration &generation,
+    const ContentIdentity &content_identity,
+    std::optional<std::uint64_t> generation_revision) {
+  publish_global_identity(stable_path(path), generation,
+                          std::move(generation_revision), content_identity);
+}
 
 std::string GuestFileGenerationRegistry::normalize_path(
     const std::filesystem::path &path) {
@@ -632,89 +751,23 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     // snapshot. Reuse its identity directly so mapping the parsed image does
     // not hash the same bytes a second time.
     content_identity = *expected_content_identity;
-    publish_global_identity(normalized_path, generation, generation_revision,
-                            *content_identity);
+    seed_shared_file_identity(normalized_path, generation, *content_identity,
+                              generation_revision);
     const std::scoped_lock lock{mutex_};
     identities_[normalized_path] =
         Identity{generation, generation_revision, *content_identity};
     ++stats_.identity_hits;
   }
   if (!content_identity) {
-    bool computed = false;
-    std::shared_ptr<GlobalIdentityFlight> flight;
-    {
-      const std::scoped_lock lock{global_identity_mutex};
-      const auto identity = global_identities.find(normalized_path);
-      if (identity != global_identities.end() &&
-          identity->second.generation == generation &&
-          identity->second.generation_revision == generation_revision) {
-        content_identity = identity->second.content_identity;
-      } else {
-        const auto existing_flight = global_identity_flights.find(
-            normalized_path);
-        if (existing_flight != global_identity_flights.end() &&
-            existing_flight->second->generation == generation &&
-            existing_flight->second->generation_revision ==
-                generation_revision) {
-          flight = existing_flight->second;
-        } else {
-          flight = std::make_shared<GlobalIdentityFlight>();
-          flight->generation = generation;
-          flight->generation_revision = generation_revision;
-          global_identity_flights[normalized_path] = flight;
-          computed = true;
-        }
-      }
-    }
-    if (content_identity) {
-      // A completed process-wide identity was already available.
-    } else if (computed) {
-      // Never hold global_identity_mutex while reading and hashing the file.
-      // The generation is checked again below before the result is published;
-      // a concurrent replacement therefore cannot poison a later mapping.
-      const auto computed_identity = sha256_file(descriptor);
-      {
-        const std::scoped_lock lock{global_identity_mutex};
-        const auto existing_flight = global_identity_flights.find(
-            normalized_path);
-        if (existing_flight != global_identity_flights.end() &&
-            existing_flight->second == flight &&
-            existing_flight->second->generation == generation &&
-            existing_flight->second->generation_revision ==
-                generation_revision) {
-          if (computed_identity) {
-            global_identities[normalized_path] =
-                GlobalIdentityRecord{generation, generation_revision,
-                                     *computed_identity, {}};
-          }
-          global_identity_flights.erase(existing_flight);
-        }
-      }
-      {
-        const std::scoped_lock flight_lock{flight->mutex};
-        if (!flight->complete) {
-          flight->content_identity = computed_identity;
-          flight->complete = true;
-        }
-        content_identity = flight->content_identity;
-      }
-      flight->condition.notify_all();
-    } else if (flight) {
-      std::unique_lock flight_lock{flight->mutex};
-      flight->condition.wait(flight_lock,
-                             [&flight] { return flight->complete; });
-      content_identity = flight->content_identity;
-    } else {
-      // The completed record branch above is the only path without a flight.
-      // Keep this guard defensive if the cache representation changes.
-      content_identity = std::nullopt;
-    }
+    const auto identity_result = shared_file_identity(
+        normalized_path, descriptor, generation, generation_revision);
+    content_identity = identity_result.content_identity;
     if (!content_identity) {
       close_descriptor();
       return std::nullopt;
     }
     const std::scoped_lock lock{mutex_};
-    if (computed) {
+    if (identity_result.computed) {
       ++stats_.sha_computations;
       stats_.sha_bytes += static_cast<std::uint64_t>(file_size);
     } else {
@@ -748,7 +801,8 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     const auto identity = global_identities.find(normalized_path);
     if (identity != global_identities.end() &&
         identity->second.generation == generation &&
-        identity->second.generation_revision == generation_revision &&
+        identity_revision_matches(identity->second.generation_revision,
+                                  generation_revision) &&
         identity->second.content_identity == *content_identity) {
       io_state = identity->second.io_state.lock();
       if (!io_state) {

@@ -227,6 +227,28 @@ struct FilePageCacheStats {
   std::uint64_t generation_invalidations{};
 };
 
+struct SharedFileIdentityResult {
+  std::optional<ContentIdentity> content_identity;
+  bool computed{};
+};
+
+// Process-wide content identity lookup shared by the file page cache,
+// catalog, Mach-O parser, and host watcher. Hashing is single-flight per
+// canonical path/generation and never runs while the global cache mutex is
+// held. A missing revision means the caller has an independently stable file
+// generation and the published identity is revision-agnostic.
+[[nodiscard]] SharedFileIdentityResult shared_file_identity(
+    const std::filesystem::path &path, int descriptor,
+    const GuestFileGeneration &generation,
+    std::optional<std::uint64_t> generation_revision = std::nullopt);
+[[nodiscard]] SharedFileIdentityResult shared_file_identity(
+    const std::filesystem::path &path,
+    std::optional<std::uint64_t> generation_revision = std::nullopt);
+void seed_shared_file_identity(
+    const std::filesystem::path &path, const GuestFileGeneration &generation,
+    const ContentIdentity &content_identity,
+    std::optional<std::uint64_t> generation_revision = std::nullopt);
+
 class FilePageCache {
 public:
   explicit FilePageCache(
