@@ -40,7 +40,7 @@ index 99c7695..235257e 100644
              return {};
          }
          if (const auto existing = emitter->GetBasicBlock(block.Location())) {
-@@ -267,13 +271,52 @@ struct NativeCodeSlab::Impl {
+@@ -267,13 +271,53 @@ struct NativeCodeSlab::Impl {
          }
      }
  
