@@ -324,6 +324,36 @@ bool has_macho_magic(const FilePrefix &prefix) {
   return little_endian_word == mh_magic || big_endian_word == fat_magic;
 }
 
+[[nodiscard]] bool path_is_within(const std::filesystem::path &path,
+                                  const std::filesystem::path &root) {
+  const auto relative = path.lexically_relative(root);
+  return path == root ||
+         (!relative.empty() && relative != "." &&
+          relative.begin() != relative.end() &&
+          *relative.begin() != "..");
+}
+
+[[nodiscard]] std::optional<std::filesystem::path>
+resolve_catalog_symlink(const std::filesystem::path &alias,
+                        const std::filesystem::path &root) {
+  std::error_code error;
+  const auto status = std::filesystem::symlink_status(alias, error);
+  if (error || !std::filesystem::is_symlink(status)) return std::nullopt;
+  const auto resolved_root = std::filesystem::weakly_canonical(root, error);
+  if (error) return std::nullopt;
+  error.clear();
+  const auto resolved = std::filesystem::weakly_canonical(alias, error);
+  if (error || !path_is_within(resolved, resolved_root)) {
+    return std::nullopt;
+  }
+  error.clear();
+  if (!std::filesystem::is_regular_file(
+          std::filesystem::symlink_status(resolved, error)) || error) {
+    return std::nullopt;
+  }
+  return resolved;
+}
+
 ContentIdentity shared_cache_image_identity(const DyldSharedCache &cache,
                                             const DyldCacheImage &image) {
   std::vector<std::byte> key;
@@ -485,6 +515,34 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_image(
 const ExecutableCatalogEntry &ExecutableCatalog::register_path(
     const std::filesystem::path &path, ArmArchitectureVersion architecture) {
   return register_image(MachOImage::parse(path, architecture));
+}
+
+const ExecutableCatalogEntry &ExecutableCatalog::register_path_alias(
+    const std::filesystem::path &alias, const std::filesystem::path &target,
+    ArmArchitectureVersion architecture) {
+  const auto image = MachOImage::parse(target, architecture);
+  const auto target_path = normalize_path(target);
+  const auto alias_path = normalize_path(alias);
+  const auto &target_entry = register_image(image);
+  if (alias_path == target_path) return target_entry;
+
+  const auto identity = target_entry.content_identity;
+  remove_path(alias_path);
+  auto &entry = upsert(identity, alias_path, classify(image, alias_path));
+  if (const auto generation = read_file_generation(alias_path)) {
+    const auto existing = std::find_if(
+        entry.file_generations.begin(), entry.file_generations.end(),
+        [&alias_path](const ExecutableCatalogPathGeneration &record) {
+          return record.path == alias_path;
+        });
+    if (existing == entry.file_generations.end()) {
+      entry.file_generations.push_back(
+          ExecutableCatalogPathGeneration{alias_path, *generation});
+    } else {
+      existing->generation = *generation;
+    }
+  }
+  return entry;
 }
 
 const ExecutableCatalogEntry &ExecutableCatalog::register_mapping(
@@ -651,6 +709,11 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
       const auto status = iterator->symlink_status(status_error);
       if (!status_error && std::filesystem::is_regular_file(status)) {
         files.insert(normalize_path(iterator->path()));
+      } else if (!status_error && std::filesystem::is_symlink(status)) {
+        if (const auto target =
+                resolve_catalog_symlink(iterator->path(), normalized_root)) {
+          files.insert(normalize_path(iterator->path()));
+        }
       } else if (status_error) {
         ++summary.failed_files;
       }
@@ -678,7 +741,13 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
   for (const auto &path : files) {
     std::error_code status_error;
     const auto status = std::filesystem::symlink_status(path, status_error);
-    if (status_error || !std::filesystem::is_regular_file(status)) {
+    const auto symlink_target =
+        !status_error && std::filesystem::is_symlink(status)
+            ? resolve_catalog_symlink(path, normalized_root)
+            : std::nullopt;
+    const auto target = symlink_target.value_or(path);
+    if (status_error ||
+        (!std::filesystem::is_regular_file(status) && !symlink_target)) {
       remove_path(path);
       if (status_error) ++summary.failed_files;
       continue;
@@ -703,7 +772,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
     if (unchanged) continue;
 
     remove_path(path);
-    const auto prefix = read_file_prefix(path);
+    const auto prefix = read_file_prefix(target);
     if (!prefix) {
       ++summary.failed_files;
     } else if (has_dyld_cache_magic(*prefix)) {
@@ -712,7 +781,12 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
       // for those inputs; do not synchronously rescan the whole root here.
     } else if (has_macho_magic(*prefix)) {
       try {
-        static_cast<void>(register_path(path, architecture));
+        if (symlink_target) {
+          static_cast<void>(
+              register_path_alias(path, target, architecture));
+        } else {
+          static_cast<void>(register_path(path, architecture));
+        }
         ++summary.mach_o_images;
       } catch (const std::exception &) {
         ++summary.failed_files;
@@ -734,7 +808,13 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
 
   ExecutableCatalogScanSummary summary;
   std::set<std::filesystem::path> cache_files;
-  std::vector<std::filesystem::path> regular_files;
+  struct ScanCandidate {
+    std::filesystem::path alias;
+    std::filesystem::path target;
+    bool symlink{};
+  };
+  std::vector<ScanCandidate> regular_files;
+  const auto normalized_root = normalize_path(root);
   std::filesystem::recursive_directory_iterator iterator{
       root, std::filesystem::directory_options::skip_permission_denied, error};
   const std::filesystem::recursive_directory_iterator end;
@@ -753,7 +833,13 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
       ++summary.failed_files;
     } else if (std::filesystem::is_regular_file(status)) {
       ++summary.regular_files;
-      regular_files.push_back(path);
+      regular_files.push_back(ScanCandidate{path, path, false});
+    } else if (std::filesystem::is_symlink(status)) {
+      const auto target = resolve_catalog_symlink(path, normalized_root);
+      if (target) {
+        ++summary.regular_files;
+        regular_files.push_back(ScanCandidate{path, *target, true});
+      }
     }
     iterator.increment(error);
   }
@@ -763,11 +849,16 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
   // iterator contract. Sort the candidates so a main shared cache (whose
   // subcache suffix is lexically appended to the main name) is discovered
   // before its subcaches and can claim the complete generation atomically.
-  std::sort(regular_files.begin(), regular_files.end());
-  for (const auto &path : regular_files) {
+  std::sort(regular_files.begin(), regular_files.end(),
+            [](const ScanCandidate &left, const ScanCandidate &right) {
+              return left.alias < right.alias;
+            });
+  for (const auto &candidate : regular_files) {
+    const auto &alias = candidate.alias;
+    const auto &path = candidate.target;
     if (cache_files.contains(path)) continue;
-    const auto normalized = normalize_path(path);
-    if (previous != nullptr) {
+    const auto normalized = alias;
+    if (previous != nullptr && !candidate.symlink) {
       const auto *old_entry = previous->find_path(normalized);
       const auto current_generation = read_file_generation(normalized);
       const ExecutableCatalogPathGeneration *old_generation = nullptr;
@@ -827,7 +918,12 @@ ExecutableCatalogScanSummary ExecutableCatalog::scan_tree(
       }
     } else if (has_macho_magic(*prefix)) {
       try {
-        static_cast<void>(register_path(path, architecture));
+        if (candidate.symlink) {
+          static_cast<void>(
+              register_path_alias(alias, path, architecture));
+        } else {
+          static_cast<void>(register_path(path, architecture));
+        }
         ++summary.mach_o_images;
       } catch (const std::exception &) {
         ++summary.failed_files;
@@ -1137,12 +1233,8 @@ std::vector<ContentIdentity> ExecutableCatalog::content_identities() const {
 std::filesystem::path ExecutableCatalog::normalize_path(
     const std::filesystem::path &path) {
   std::error_code error;
-  auto normalized = std::filesystem::weakly_canonical(path, error);
-  if (error) {
-    error.clear();
-    normalized = std::filesystem::absolute(path, error);
-  }
-  return (error ? path : normalized).lexically_normal();
+  const auto absolute = std::filesystem::absolute(path, error);
+  return (error ? path : absolute).lexically_normal();
 }
 
 ExecutableCatalogKind ExecutableCatalog::classify(
