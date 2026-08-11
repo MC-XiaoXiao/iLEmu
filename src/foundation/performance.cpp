@@ -301,6 +301,9 @@ void PerformanceCounters::reset(bool enabled) {
     jit_executor_local_bytes_.store(0, std::memory_order_relaxed);
     jit_executor_local_peak_bytes_.store(0, std::memory_order_relaxed);
     jit_shared_invalidation_requests_.store(0, std::memory_order_relaxed);
+    jit_full_invalidation_requests_.store(0, std::memory_order_relaxed);
+    jit_range_invalidation_requests_.store(0, std::memory_order_relaxed);
+    jit_slab_generation_transitions_.store(0, std::memory_order_relaxed);
     jit_stable_link_hits_.store(0, std::memory_order_relaxed);
     jit_stable_link_misses_.store(0, std::memory_order_relaxed);
     jit_rsb_hits_.store(0, std::memory_order_relaxed);
@@ -783,10 +786,19 @@ void PerformanceCounters::release_jit_memory_context(
     jit_executor_local_bytes_.store(local, std::memory_order_relaxed);
 }
 
-void PerformanceCounters::record_jit_shared_invalidation() {
+void PerformanceCounters::record_jit_shared_invalidation(bool full) {
     if (!enabled()) return;
     jit_shared_invalidation_requests_.fetch_add(1,
                                                 std::memory_order_relaxed);
+    auto& scoped_counter = full ? jit_full_invalidation_requests_
+                                : jit_range_invalidation_requests_;
+    scoped_counter.fetch_add(1, std::memory_order_relaxed);
+}
+
+void PerformanceCounters::record_jit_slab_generation_transition() {
+    if (!enabled()) return;
+    jit_slab_generation_transitions_.fetch_add(1,
+                                               std::memory_order_relaxed);
 }
 
 void PerformanceCounters::record_jit_dispatch(
@@ -1498,6 +1510,12 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
         jit_executor_local_peak_bytes_.load(std::memory_order_relaxed);
     result.jit_shared_invalidation_requests =
         jit_shared_invalidation_requests_.load(std::memory_order_relaxed);
+    result.jit_full_invalidation_requests =
+        jit_full_invalidation_requests_.load(std::memory_order_relaxed);
+    result.jit_range_invalidation_requests =
+        jit_range_invalidation_requests_.load(std::memory_order_relaxed);
+    result.jit_slab_generation_transitions =
+        jit_slab_generation_transitions_.load(std::memory_order_relaxed);
     result.jit_stable_link_hits =
         jit_stable_link_hits_.load(std::memory_order_relaxed);
     result.jit_stable_link_misses =
@@ -1764,6 +1782,12 @@ std::string format_performance_summary(
          << snapshot.jit_code_cache_peak_bytes
          << " jit-shared-invalidations="
          << snapshot.jit_shared_invalidation_requests
+         << " jit-full-invalidations="
+         << snapshot.jit_full_invalidation_requests
+         << " jit-range-invalidations="
+         << snapshot.jit_range_invalidation_requests
+         << " jit-slab-generations="
+         << snapshot.jit_slab_generation_transitions
          << " jit-stable-link=" << snapshot.jit_stable_link_hits << "/"
          << snapshot.jit_stable_link_misses
          << " jit-rsb=" << snapshot.jit_rsb_hits << "/"

@@ -168,6 +168,9 @@ struct PerformanceSnapshot {
     std::uint64_t jit_executor_local_bytes{};
     std::uint64_t jit_executor_local_peak_bytes{};
     std::uint64_t jit_shared_invalidation_requests{};
+    std::uint64_t jit_full_invalidation_requests{};
+    std::uint64_t jit_range_invalidation_requests{};
+    std::uint64_t jit_slab_generation_transitions{};
     std::uint64_t jit_stable_link_hits{};
     std::uint64_t jit_stable_link_misses{};
     std::uint64_t jit_rsb_hits{};
@@ -253,7 +256,8 @@ class PerformanceCounters {
                                           std::uint32_t slot,
                                           std::uint64_t current_bytes);
     void release_jit_memory_context(std::uint64_t slab_id);
-    void record_jit_shared_invalidation();
+    void record_jit_shared_invalidation(bool full);
+    void record_jit_slab_generation_transition();
     void record_jit_dispatch(std::uint64_t stable_link_hits,
                              std::uint64_t stable_link_misses,
                              std::uint64_t rsb_hits,
@@ -378,6 +382,9 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> jit_executor_local_bytes_{};
     std::atomic<std::uint64_t> jit_executor_local_peak_bytes_{};
     std::atomic<std::uint64_t> jit_shared_invalidation_requests_{};
+    std::atomic<std::uint64_t> jit_full_invalidation_requests_{};
+    std::atomic<std::uint64_t> jit_range_invalidation_requests_{};
+    std::atomic<std::uint64_t> jit_slab_generation_transitions_{};
     std::atomic<std::uint64_t> jit_stable_link_hits_{};
     std::atomic<std::uint64_t> jit_stable_link_misses_{};
     std::atomic<std::uint64_t> jit_rsb_hits_{};

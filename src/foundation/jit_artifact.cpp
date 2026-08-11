@@ -3515,4 +3515,26 @@ std::uint64_t ExecutionContext::request_cache_range(std::uint32_t address,
   return epoch;
 }
 
+bool ExecutionContext::observe_slab_generation(
+    std::uint64_t generation) noexcept {
+  if (generation == 0U) return false;
+  auto observed = observed_slab_generation_.load(std::memory_order_acquire);
+  for (;;) {
+    if (observed == generation) return false;
+    if (observed == 0U) {
+      if (observed_slab_generation_.compare_exchange_weak(
+              observed, generation, std::memory_order_acq_rel,
+              std::memory_order_acquire)) {
+        return false;
+      }
+      continue;
+    }
+    if (observed_slab_generation_.compare_exchange_weak(
+            observed, generation, std::memory_order_acq_rel,
+            std::memory_order_acquire)) {
+      return true;
+    }
+  }
+}
+
 } // namespace ilemu

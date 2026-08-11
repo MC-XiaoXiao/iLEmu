@@ -366,6 +366,11 @@ public:
   [[nodiscard]] std::uint64_t cache_invalidation_epoch() const noexcept {
     return cache_invalidation_epoch_.load(std::memory_order_acquire);
   }
+  // Returns true exactly once for each observed post-initial slab generation.
+  // Executors may call this concurrently; the shared context owns the
+  // observation so metrics are not multiplied by executor count.
+  [[nodiscard]] bool observe_slab_generation(
+      std::uint64_t generation) noexcept;
 
 private:
   struct LinkCell {
@@ -378,6 +383,7 @@ private:
   mutable std::mutex mutex_;
   bool process_id_bound_{};
   std::atomic<std::uint64_t> cache_invalidation_epoch_{};
+  std::atomic<std::uint64_t> observed_slab_generation_{};
   mutable std::mutex invalidation_mutex_;
   std::vector<std::unique_ptr<LinkCell>> link_cells_;
 };

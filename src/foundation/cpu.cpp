@@ -1238,6 +1238,11 @@ private:
             return;
         }
         execution_context_->native_code_slab()->service_pending_invalidation();
+        const auto slab_generation =
+            execution_context_->native_code_slab()->generation();
+        if (execution_context_->observe_slab_generation(slab_generation)) {
+            performance_counters().record_jit_slab_generation_transition();
+        }
     }
 
     void observe_shared_cache_state() {
@@ -1583,14 +1588,14 @@ public:
 
     void clear_cache() {
         static_cast<void>(execution_context_->request_cache_clear());
-        performance_counters().record_jit_shared_invalidation();
+        performance_counters().record_jit_shared_invalidation(true);
     }
 
     void invalidate_cache_range(std::uint32_t address, std::size_t length) {
         if (length == 0U) return;
         static_cast<void>(
             execution_context_->request_cache_range(address, length));
-        performance_counters().record_jit_shared_invalidation();
+        performance_counters().record_jit_shared_invalidation(false);
     }
 
     void disable_jit_page_table() {
