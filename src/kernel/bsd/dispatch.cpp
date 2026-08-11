@@ -119,6 +119,10 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
     constexpr std::uint32_t iopol_type_disk = 0;
     constexpr std::uint32_t iopol_scope_process = 0;
     constexpr std::uint32_t iopol_scope_thread = 1;
+    // xnu-1228.15.4's disk policy has DEFAULT/NORMAL/PASSIVE/THROTTLE
+    // (0..3). xnu-4903.241.1 adds UTILITY/STANDARD and additional iotypes;
+    // keep those newer values unimplemented instead of accidentally applying
+    // the old policy state to a different ABI.
     constexpr std::uint32_t iopol_policy_max = 3;
     constexpr std::uint32_t iopol_policy_offset =
         2U * sizeof(std::uint32_t);
