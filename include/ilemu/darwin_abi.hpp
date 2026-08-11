@@ -342,6 +342,7 @@ namespace signal {
 inline constexpr std::uint32_t count = 32;
 inline constexpr std::uint32_t abort = 6;
 inline constexpr std::uint32_t kill = 9;
+inline constexpr std::uint32_t bad_system_call = 12;
 inline constexpr std::uint32_t urgent = 16;
 inline constexpr std::uint32_t stop = 17;
 inline constexpr std::uint32_t terminal_stop = 18;

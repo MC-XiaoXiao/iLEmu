@@ -81,6 +81,19 @@ std::optional<std::uint32_t> canonical_no_cancel_syscall(
 
 } // namespace
 
+void CompatibilityKernel::dispatch_bsd_nosys(Cpu &cpu, bool send_sigsys) {
+  // xnu-792.24.17 and xnu-1228.15.4 call psignal(SIGSYS) before returning
+  // ENOSYS. xnu-4903 keeps the same path behind the send_sigsys policy knob.
+  // Set the ABI result first so a pending/default signal cannot leave stale
+  // r0 or the carry bit visible to the guest.
+  bsd_error(cpu, bsd_support::not_implemented);
+  if (!send_sigsys)
+    return;
+  static_cast<void>(deliver_signal(darwin::signal::bad_system_call));
+  if (process_.exited)
+    cpu.halt(Dynarmic::HaltReason::UserDefined1);
+}
+
 void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   if (const auto canonical = canonical_no_cancel_syscall(number)) {
     dispatch_bsd(cpu, *canonical);
@@ -96,7 +109,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
       // define syscall 322 as nosys. It must return ENOSYS without entering
       // trace_unknown(), because an expected nosys result is not a fatal ABI
       // violation.
-      bsd_error(cpu, bsd_support::not_implemented);
+      dispatch_bsd_nosys(
+          cpu, shared_state_->darwin_kernel_identity.capabilities.send_sigsys);
       return;
     }
 
@@ -334,7 +348,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
     return;
   default:
     trace_unknown(cpu, "BSD syscall", number);
-    bsd_error(cpu, bsd_support::not_implemented);
+    dispatch_bsd_nosys(
+        cpu, shared_state_->darwin_kernel_identity.capabilities.send_sigsys);
     return;
   }
 }

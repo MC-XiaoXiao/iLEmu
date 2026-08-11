@@ -315,6 +315,7 @@ private:
 
   void dispatch_arm_fast_trap(Cpu &cpu);
   void dispatch_bsd(Cpu &cpu, std::uint32_t number);
+  void dispatch_bsd_nosys(Cpu &cpu, bool send_sigsys);
   [[nodiscard]] std::optional<std::uint32_t>
   thread_object_for_processor(std::size_t processor) const;
   void dispatch_bsd_aio(Cpu &cpu, std::uint32_t number);

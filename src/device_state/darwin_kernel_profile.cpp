@@ -49,14 +49,22 @@ DarwinGuestCapabilities capabilities_for_build(std::string_view build) {
   // Local XNU 792 defines slot 322 as nosys. Public xnu-1228 keeps the old
   // disk-only iopolicysys contract, while later xnu-4903 adds policy types
   // and values that are intentionally not exposed through this profile.
-  if (build == "1A543a" || build == "3A109a") {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs1};
+  if (build == "1A420" || build == "1A543a" || build == "3A109a") {
+    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs1, true};
   }
-  if (build == "5A347") {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs2};
+  if (build == "5A347" || build == "5G77") {
+    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs2, true};
   }
   if (build == "7A341") {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs3};
+    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs3, true};
+  }
+  // iOS/XNU build identifiers after the early letter-prefixed releases use
+  // a numeric Darwin build prefix (for example 11A465 with xnu-4903). Keep
+  // the route conservative—no legacy syscall 322 contract—but retain XNU's
+  // production send_sigsys default until a boot-arg policy is supplied.
+  if (build.size() >= 2 && build[0] >= '1' && build[0] <= '9' &&
+      build[1] >= '0' && build[1] <= '9') {
+    return DarwinGuestCapabilities{DarwinAbiEpoch::Later, true};
   }
   return {};
 }

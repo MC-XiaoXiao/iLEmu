@@ -10,6 +10,10 @@ namespace ilemu {
 
 struct DarwinGuestCapabilities {
   DarwinAbiEpoch epoch{DarwinAbiEpoch::Unknown};
+  // XNU's nosys entry returns ENOSYS and raises SIGSYS on the audited
+  // production epochs. Unknown profiles conservatively suppress the signal
+  // until their kernel policy is identified.
+  bool send_sigsys{};
 };
 
 struct DarwinKernelIdentityProfile {
