@@ -651,18 +651,21 @@ ensure_platform_expert_service_locked(KernelSharedState &shared_state) {
       KernelSharedState::IOKitRegistryProperty{
           KernelSharedState::IOKitRegistryProperty::Kind::Data,
           bytes_from_string(shared_state.device_model_number)});
-  // Early Lockdown calls CFRetain on the result of the platform serial query
-  // without first handling kIOReturnNotFound. Keep the property present for
-  // every profile, while deriving it only from the stable emulated device
-  // identity rather than from a firmware path or host identity.
-  const auto serial = std::string{"iLEmu-"} +
-                      shared_state.device_product_type + "-" +
-                      shared_state.device_model_number;
-  service.properties.emplace(
-      std::string{platform_serial_number_property},
-      KernelSharedState::IOKitRegistryProperty{
-          KernelSharedState::IOKitRegistryProperty::Kind::String,
-          bytes_from_string(serial)});
+  // Darwin 8's early Lockdown path calls CFRetain on the result of the
+  // platform serial query without first handling kIOReturnNotFound. The
+  // audited ABI contract records whether that legacy property is present;
+  // unknown firmware remains conservative.
+  if (shared_state.darwin_kernel_identity.capabilities
+          .expose_legacy_platform_serial) {
+    const auto serial = std::string{"iLEmu-"} +
+                        shared_state.device_product_type + "-" +
+                        shared_state.device_model_number;
+    service.properties.emplace(
+        std::string{platform_serial_number_property},
+        KernelSharedState::IOKitRegistryProperty{
+            KernelSharedState::IOKitRegistryProperty::Kind::String,
+            bytes_from_string(serial)});
+  }
   shared_state.iokit_services.emplace(object, std::move(service));
   return object;
 }

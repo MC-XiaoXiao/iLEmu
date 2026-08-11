@@ -46,7 +46,7 @@ struct SystemVersion {
   std::string build_version;
 };
 
-enum class BuildMatchKind : std::uint8_t { Exact, NumericPrefix };
+enum class BuildMatchKind : std::uint8_t { FamilyPrefix, NumericPrefix };
 
 struct BuildProfileRule {
   std::string_view matcher;
@@ -55,26 +55,24 @@ struct BuildProfileRule {
   DarwinGuestCapabilities capabilities;
 };
 
-// Keep build recognition data-driven. Adding a firmware build should extend
-// this table, while the dispatchers consume only the resulting epoch and
-// capability contract. The numeric rule covers the later XNU build family
-// (for example 11A465 from xnu-4903) without treating an arbitrary unknown
-// string as a newer ABI.
+// Keep build recognition data-driven at the ABI-family boundary. Individual
+// firmware releases within an audited family share the same contract; the
+// dispatchers consume only the resulting epoch and capabilities. The numeric
+// rule covers the later XNU build family (for example 11A465 from xnu-4903)
+// without treating an arbitrary unknown string as a newer ABI.
 constexpr std::array build_profile_rules{
-    BuildProfileRule{"1A420", BuildMatchKind::Exact,
-                     DarwinAbiEpoch::IphoneOs1, {true, true}},
-    BuildProfileRule{"1A543a", BuildMatchKind::Exact,
-                     DarwinAbiEpoch::IphoneOs1, {true, true}},
-    BuildProfileRule{"3A109a", BuildMatchKind::Exact,
-                     DarwinAbiEpoch::IphoneOs1, {true, true}},
-    BuildProfileRule{"5A347", BuildMatchKind::Exact,
-                     DarwinAbiEpoch::IphoneOs2, {true, false}},
-    BuildProfileRule{"5G77", BuildMatchKind::Exact,
-                     DarwinAbiEpoch::IphoneOs2, {true, false}},
-    BuildProfileRule{"7A341", BuildMatchKind::Exact,
-                     DarwinAbiEpoch::IphoneOs3, {true, false}},
+    BuildProfileRule{"1A", BuildMatchKind::FamilyPrefix,
+                     DarwinAbiEpoch::IphoneOs1, {true, true, true}},
+    BuildProfileRule{"3A", BuildMatchKind::FamilyPrefix,
+                     DarwinAbiEpoch::IphoneOs1, {true, true, true}},
+    BuildProfileRule{"5A", BuildMatchKind::FamilyPrefix,
+                     DarwinAbiEpoch::IphoneOs2, {true, false, false}},
+    BuildProfileRule{"5G", BuildMatchKind::FamilyPrefix,
+                     DarwinAbiEpoch::IphoneOs2, {true, false, false}},
+    BuildProfileRule{"7A", BuildMatchKind::FamilyPrefix,
+                     DarwinAbiEpoch::IphoneOs3, {true, false, false}},
     BuildProfileRule{"NN", BuildMatchKind::NumericPrefix,
-                     DarwinAbiEpoch::Later, {true, false}},
+                     DarwinAbiEpoch::Later, {true, false, false}},
 };
 
 [[nodiscard]] bool is_numeric_later_build(std::string_view build) {
@@ -85,8 +83,8 @@ constexpr std::array build_profile_rules{
 [[nodiscard]] bool matches_build(const BuildProfileRule &rule,
                                  std::string_view build) {
   switch (rule.match_kind) {
-  case BuildMatchKind::Exact:
-    return build == rule.matcher;
+  case BuildMatchKind::FamilyPrefix:
+    return build.starts_with(rule.matcher);
   case BuildMatchKind::NumericPrefix:
     return is_numeric_later_build(build);
   }

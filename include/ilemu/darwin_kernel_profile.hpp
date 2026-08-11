@@ -18,6 +18,11 @@ struct DarwinGuestCapabilities {
   // This is a version-sensitive capability; later and unknown profiles keep
   // the XNU behavior of leaving VM permissions unchanged.
   bool arm_cache_trap_grants_execute{};
+  // The early Lockdown ABI retains the platform serial property without
+  // probing for its absence. Later audited families use the normal
+  // kIOReturnNotFound contract, so the IOKit implementation consumes this
+  // capability instead of matching firmware build strings.
+  bool expose_legacy_platform_serial{};
 };
 
 struct DarwinKernelIdentityProfile {
