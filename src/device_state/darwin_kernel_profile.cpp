@@ -50,13 +50,13 @@ DarwinGuestCapabilities capabilities_for_build(std::string_view build) {
   // disk-only iopolicysys contract, while later xnu-4903 adds policy types
   // and values that are intentionally not exposed through this profile.
   if (build == "1A420" || build == "1A543a" || build == "3A109a") {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs1, true};
+    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs1, true, true};
   }
   if (build == "5A347" || build == "5G77") {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs2, true};
+    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs2, true, false};
   }
   if (build == "7A341") {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs3, true};
+    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs3, true, false};
   }
   // iOS/XNU build identifiers after the early letter-prefixed releases use
   // a numeric Darwin build prefix (for example 11A465 with xnu-4903). Keep
@@ -64,7 +64,7 @@ DarwinGuestCapabilities capabilities_for_build(std::string_view build) {
   // production send_sigsys default until a boot-arg policy is supplied.
   if (build.size() >= 2 && build[0] >= '1' && build[0] <= '9' &&
       build[1] >= '0' && build[1] <= '9') {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::Later, true};
+    return DarwinGuestCapabilities{DarwinAbiEpoch::Later, true, false};
   }
   return {};
 }

@@ -15,6 +15,7 @@ enum class DarwinAbiEpoch {
 enum class DarwinAbiDomain {
   BsdSyscall,
   MachTrap,
+  ArmFastTrap,
   MigRoutine,
 };
 
@@ -42,6 +43,18 @@ inline constexpr DarwinAbiRoute legacy_iopolicysys_route{
     DarwinAbiCompatibility::VersionSensitive,
     DarwinAbiEpoch::IphoneOs2,
     DarwinAbiEpoch::IphoneOs3};
+
+// The compatibility kernel historically made writable ARM heap pages
+// executable after the i-cache fast trap so the first-generation UIKit
+// trampoline path could run without an explicit mprotect.  XNU's cache trap
+// itself does not change VM permissions, so keep this emulator-only behavior
+// as an explicit epoch-bounded route instead of exposing it to later guests.
+inline constexpr DarwinAbiRoute arm_cache_trap_execute_route{
+    DarwinAbiDomain::ArmFastTrap,
+    0U, // ARM fast-trap sub-operation: instruction_cache_invalidate
+    DarwinAbiCompatibility::VersionSensitive,
+    DarwinAbiEpoch::IphoneOs1,
+    DarwinAbiEpoch::IphoneOs1};
 
 [[nodiscard]] constexpr bool darwin_abi_route_supported(
     const DarwinAbiRoute &route, DarwinAbiEpoch epoch) {

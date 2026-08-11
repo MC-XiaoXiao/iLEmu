@@ -388,6 +388,11 @@ private:
 
 public:
 
+    void raise_memory_fault(std::uint32_t address, std::size_t size,
+                            MemoryPermission access) {
+        memory_fault(address, size, access);
+    }
+
     std::optional<std::uint32_t> MemoryReadCode(std::uint32_t address) override {
         const auto value = memory_.read32(address, MemoryPermission::Execute);
         if (!value) {
@@ -1038,6 +1043,13 @@ public:
     void halt(Dynarmic::HaltReason reason) {
         if (jit_) {
             jit_->HaltExecution(reason);
+        }
+    }
+
+    void raise_memory_fault(std::uint32_t address, std::size_t size,
+                            MemoryPermission access) {
+        if (jit_ != nullptr) {
+            callbacks_->raise_memory_fault(address, size, access);
         }
     }
 
@@ -1718,6 +1730,17 @@ void Cpu::invalidate_cache_range(std::uint32_t address, std::size_t length) {
     if (execution_pool_) {
         execution_pool_->invalidate_cache_range(address, length);
     }
+}
+void Cpu::raise_memory_fault(std::uint32_t address, std::size_t size,
+                             MemoryPermission access) {
+    if (active_executor_) {
+        active_executor_->raise_memory_fault(address, size, access);
+        return;
+    }
+    // A deferred SVC is dispatched after the executor has returned, so there
+    // is no Dynarmic callback object available to carry MemoryFault. Preserve
+    // the scheduler-visible fatal boundary in that case.
+    halt(Dynarmic::HaltReason::UserDefined4);
 }
 void Cpu::clear_halt() {
     requested_halt_reason_ = {};

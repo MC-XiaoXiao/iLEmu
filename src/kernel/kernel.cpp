@@ -78,6 +78,11 @@ constexpr std::uint32_t virtual_disk_major = 14;
 constexpr std::uint32_t root_disk_minor = 1;
 constexpr std::uint32_t root_disk_device =
     (virtual_disk_major << 24U) | root_disk_minor;
+// 32-bit ARM XNU's VM_MAX_ADDRESS is 0x80000000. Cache fast traps validate
+// the exclusive end of the range against that user/kernel boundary before
+// touching the cache; keep the check in 64-bit arithmetic so host-side
+// address overflow cannot turn an invalid range into a valid wrapped one.
+constexpr std::uint64_t arm_user_vm_max_address = 0x80000000ULL;
 
 OpenGlesGuestProfileKind open_gles_profile_for_device(
     GraphicsAcceleratorProfileKind accelerator) {
@@ -1862,18 +1867,42 @@ void CompatibilityKernel::dispatch(Cpu &cpu, std::uint32_t svc_immediate) {
 
 void CompatibilityKernel::dispatch_arm_fast_trap(Cpu &cpu) {
   auto &registers = cpu.registers();
+  const auto cache_range_valid = [](std::uint32_t address,
+                                    std::uint32_t length) {
+    return static_cast<std::uint64_t>(address) + length <=
+           arm_user_vm_max_address;
+  };
+  const auto fail_cache_trap = [&cpu](std::uint32_t address,
+                                      std::uint32_t length,
+                                      MemoryPermission access) {
+    // XNU's recovery path triages EXC_BAD_ACCESS. Feed the same fault through
+    // Dynarmic when this SVC is running inside an executor; a deferred SVC
+    // receives the scheduler-visible fatal halt boundary from Cpu instead.
+    cpu.raise_memory_fault(address, length, access);
+  };
   switch (registers[3]) {
   case darwin::arm_fast_trap::instruction_cache_invalidate: {
     const auto address = registers[0];
     const auto length = registers[1];
-    if (length != 0 &&
-        length - 1U <= std::numeric_limits<std::uint32_t>::max() - address) {
+    if (!cache_range_valid(address, length)) {
+      fail_cache_trap(address, length, MemoryPermission::Execute);
+      return;
+    }
+    if (length != 0) {
+      if (!memory_.mapped(address, length)) {
+        fail_cache_trap(address, length, MemoryPermission::Execute);
+        return;
+      }
       // iPhoneOS 1.0's UIKit emits ARM trampolines into writable heap
       // pages, calls this trap, and immediately branches to them without
       // a vm_protect/mprotect transition. Preserve that first-generation
       // ARM behavior by making an already-mapped invalidated range
       // executable; never create memory as a side effect of the trap.
-      if (memory_.mapped(address, length)) {
+      const auto &capabilities =
+          shared_state_->darwin_kernel_identity.capabilities;
+      if (capabilities.arm_cache_trap_grants_execute &&
+          darwin_abi_route_supported(arm_cache_trap_execute_route,
+                                     capabilities.epoch)) {
         static_cast<void>(
             memory_.map(address, length, MemoryPermission::Execute));
       }
@@ -1884,6 +1913,15 @@ void CompatibilityKernel::dispatch_arm_fast_trap(Cpu &cpu) {
     return;
   }
   case darwin::arm_fast_trap::data_cache_flush:
+    if (!cache_range_valid(registers[0], registers[1])) {
+      fail_cache_trap(registers[0], registers[1], MemoryPermission::Read);
+      return;
+    }
+    if (registers[1] != 0 &&
+        !memory_.mapped(registers[0], registers[1])) {
+      fail_cache_trap(registers[0], registers[1], MemoryPermission::Read);
+      return;
+    }
     // Guest writes already update the coherent AddressSpace immediately.
     // Preserve the saved registers just as the real trap return path does.
     return;

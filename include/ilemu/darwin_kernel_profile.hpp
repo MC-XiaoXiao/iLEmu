@@ -14,6 +14,11 @@ struct DarwinGuestCapabilities {
   // production epochs. Unknown profiles conservatively suppress the signal
   // until their kernel policy is identified.
   bool send_sigsys{};
+  // Early UIKit emits writable ARM trampolines and relies on the emulator's
+  // compatibility permission promotion after the instruction-cache trap.
+  // This is a version-sensitive capability; later and unknown profiles keep
+  // the XNU behavior of leaving VM permissions unchanged.
+  bool arm_cache_trap_grants_execute{};
 };
 
 struct DarwinKernelIdentityProfile {

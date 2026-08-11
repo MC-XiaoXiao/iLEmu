@@ -102,6 +102,12 @@ public:
     void reset();
     void clear_cache();
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
+    // Kernel-side traps that touch an invalid guest range use the same
+    // Dynarmic memory-abort result as an ordinary load/store fault. When the
+    // trap is dispatched outside a running executor, this also records the
+    // fatal halt boundary for the scheduler's deferred-SVC path.
+    void raise_memory_fault(std::uint32_t address, std::size_t size,
+                            MemoryPermission access);
     void clear_halt();
     void halt(Dynarmic::HaltReason reason = Dynarmic::HaltReason::UserDefined1);
     [[nodiscard]] Dynarmic::HaltReason consume_requested_halt_reason();
