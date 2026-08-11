@@ -399,11 +399,19 @@ public:
   }
 
   [[nodiscard]] std::optional<std::size_t> reclassify(
-      JitCodeCacheReservation &reservation,
-      JitCodeCacheClass cache_class) noexcept {
+      JitCodeCacheReservation &reservation, JitCodeCacheClass cache_class,
+      bool slab_can_resize) noexcept {
     std::lock_guard lock{mutex_};
     const auto class_cap = shared_slab_cap_for(cache_class);
     const auto requested_maximum = class_cap;
+    if (!slab_can_resize) {
+      // A live Dynarmic slab cannot be shrunk or grown by changing this
+      // bookkeeping object.  Retain its full existing allowance so another
+      // runtime cannot consume bytes that the live mapping may still use.
+      reservation.cache_class_ = cache_class;
+      reservation.maximum_bytes_ = reservation.shared_slab_bytes_;
+      return reservation.shared_slab_bytes_;
+    }
     if (reservation.emergency_) {
       reservation.cache_class_ = cache_class;
       reservation.maximum_bytes_ = requested_maximum;
@@ -451,56 +459,13 @@ public:
       JitCodeCacheReservation &reservation, std::uint64_t actual_bytes,
       const HostMemoryBudgetSnapshot &memory) noexcept {
     std::lock_guard lock{mutex_};
+    static_cast<void>(memory);
     const auto previous_actual = reservation.actual_bytes_;
     reservation.actual_bytes_ = actual_bytes;
-    const auto minimum = minimum_shared_slab_bytes;
-    auto growth = std::max(minimum, reservation.maximum_bytes_ / 4U);
-    auto effective_limit = memory.physical_bytes;
-    if (memory.cgroup_limit_bytes != 0U) {
-      effective_limit = effective_limit == 0U
-                            ? memory.cgroup_limit_bytes
-                            : std::min(effective_limit,
-                                       memory.cgroup_limit_bytes);
-    }
-    auto pressure_headroom = memory.available_bytes;
-    if (effective_limit != 0U && memory.rss_bytes < effective_limit) {
-      pressure_headroom =
-          pressure_headroom == 0U
-              ? effective_limit - memory.rss_bytes
-              : std::min(pressure_headroom,
-                         effective_limit - memory.rss_bytes);
-    }
-    if (pressure_headroom != 0U && pressure_headroom < growth * 2U) {
-      growth = std::max(minimum, pressure_headroom / 4U);
-    }
-    auto target = actual_bytes > std::numeric_limits<std::size_t>::max() - growth
-                     ? std::numeric_limits<std::size_t>::max()
-                     : static_cast<std::size_t>(actual_bytes) + growth;
-    target = std::max(target, minimum);
-    target = std::min(target, reservation.maximum_bytes_);
-    if (actual_bytes > target) {
-      target = actual_bytes > std::numeric_limits<std::size_t>::max()
-                   ? std::numeric_limits<std::size_t>::max()
-                   : static_cast<std::size_t>(actual_bytes);
-    }
-
-    if (target < reservation.reserved_bytes_) {
-      const auto release_bytes = reservation.reserved_bytes_ - target;
-      reservation.reserved_bytes_ = target;
-      auto &pool = reservation.emergency_ ? emergency_reserved_bytes_
-                                          : normal_reserved_bytes_;
-      pool = release_bytes > pool ? 0U : pool - release_bytes;
-    } else if (target > reservation.reserved_bytes_) {
-      const auto growth_bytes = target - reservation.reserved_bytes_;
-      auto &pool = reservation.emergency_ ? emergency_reserved_bytes_
-                                          : normal_reserved_bytes_;
-      const auto limit = reservation.emergency_ ? emergency_budget_bytes
-                                                : normal_budget_;
-      const auto available = pool < limit ? limit - pool : 0U;
-      const auto granted = std::min(growth_bytes, available);
-      reservation.reserved_bytes_ += granted;
-      pool += granted;
-    }
+    // The slab was created with shared_slab_bytes_ as its maximum.  Keep that
+    // reservation until the Runtime is destroyed; releasing an apparent
+    // unused tail here would let another runtime reserve memory that this
+    // still-live mapping can legally grow into.
     if (actual_bytes > previous_actual) {
       const auto delta = actual_bytes - previous_actual;
       actual_bytes_total_ =
@@ -2060,7 +2025,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         runtime.jit_cache_class = cache_class;
         if (runtime.jit_cache_reservation) {
           const auto shared_slab = jit_code_cache_governor.reclassify(
-              *runtime.jit_cache_reservation, cache_class);
+              *runtime.jit_cache_reservation, cache_class,
+              runtime.fresh_spawn_address_space);
           // A freshly-created spawn has not instantiated Dynarmic yet, so
           // its role-specific quota can still resize the configured cache.
           // An ordinary exec may already own a live emitter; its reservation
