@@ -254,10 +254,63 @@ else()
         OUTPUT_VARIABLE ILEMU_DYNARMIC_SHARED_INVALIDATION_REVERSE_OUTPUT
         ERROR_VARIABLE ILEMU_DYNARMIC_SHARED_INVALIDATION_REVERSE_ERROR)
     if(NOT ILEMU_DYNARMIC_SHARED_INVALIDATION_REVERSE_CHECK EQUAL 0)
+        # The range patch intentionally refines two shared-patch hunks. Once
+        # it is applied, the older patch's reverse check can no longer match
+        # those nearby lines; the range patch's reverse check proves that the
+        # complete shared invalidation stack is already present.
+        execute_process(
+            COMMAND git apply --reverse --check
+                "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-shared-range-invalidation.patch"
+            WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+            RESULT_VARIABLE ILEMU_DYNARMIC_SHARED_RANGE_ALREADY_APPLIED
+            OUTPUT_VARIABLE ILEMU_DYNARMIC_SHARED_RANGE_ALREADY_OUTPUT
+            ERROR_VARIABLE ILEMU_DYNARMIC_SHARED_RANGE_ALREADY_ERROR)
+        if(NOT ILEMU_DYNARMIC_SHARED_RANGE_ALREADY_APPLIED EQUAL 0)
+            message(FATAL_ERROR
+                "Dynarmic shared invalidation patch is neither applicable "
+                "nor already applied. git apply reported: "
+                "${ILEMU_DYNARMIC_SHARED_INVALIDATION_ERROR}")
+        endif()
+    endif()
+endif()
+
+# Retire only the guest blocks covered by a shared range invalidation. Keep
+# this A32/x64 change as a tracked, idempotently applied patch as well.
+set(ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_PATCH
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patches/dynarmic-shared-range-invalidation.patch")
+execute_process(
+    COMMAND git apply --check
+        "${ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_PATCH}"
+    WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+    RESULT_VARIABLE ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_CHECK
+    OUTPUT_VARIABLE ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_OUTPUT
+    ERROR_VARIABLE ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_ERROR)
+if(ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_CHECK EQUAL 0)
+    execute_process(
+        COMMAND git apply
+            "${ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_APPLY
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_APPLY_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_APPLY_ERROR)
+    if(NOT ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_APPLY EQUAL 0)
         message(FATAL_ERROR
-            "Dynarmic shared invalidation patch is neither applicable nor "
-            "already applied. git apply reported: "
-            "${ILEMU_DYNARMIC_SHARED_INVALIDATION_ERROR}")
+            "Failed to apply the Dynarmic shared range invalidation patch: "
+            "${ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_APPLY_ERROR}")
+    endif()
+else()
+    execute_process(
+        COMMAND git apply --reverse --check
+            "${ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_PATCH}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_REVERSE_CHECK
+        OUTPUT_VARIABLE ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_REVERSE_OUTPUT
+        ERROR_VARIABLE ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_REVERSE_ERROR)
+    if(NOT ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_REVERSE_CHECK EQUAL 0)
+        message(FATAL_ERROR
+            "Dynarmic shared range invalidation patch is neither applicable "
+            "nor already applied. git apply reported: "
+            "${ILEMU_DYNARMIC_SHARED_RANGE_INVALIDATION_ERROR}")
     endif()
 endif()
 
