@@ -60,9 +60,16 @@ inline constexpr DarwinAbiRoute arm_cache_trap_execute_route{
     const DarwinAbiRoute &route, DarwinAbiEpoch epoch) {
   switch (route.compatibility) {
   case DarwinAbiCompatibility::Additive:
+    return true;
   case DarwinAbiCompatibility::ShapeDispatched:
+    // The route is epoch-independent, but its caller must validate the
+    // argument shape before dispatching the implementation-specific ABI.
     return true;
   case DarwinAbiCompatibility::VersionSensitive:
+    // Unknown builds must never opt into an ambiguous version-sensitive
+    // collision, even if a future route happens to use Unknown as a bound.
+    if (epoch == DarwinAbiEpoch::Unknown)
+      return false;
     return static_cast<std::uint8_t>(epoch) >=
                static_cast<std::uint8_t>(route.minimum_epoch) &&
            static_cast<std::uint8_t>(epoch) <=

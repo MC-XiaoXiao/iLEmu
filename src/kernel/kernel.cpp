@@ -1902,7 +1902,8 @@ void CompatibilityKernel::dispatch_arm_fast_trap(Cpu &cpu) {
           shared_state_->darwin_kernel_identity.capabilities;
       if (capabilities.arm_cache_trap_grants_execute &&
           darwin_abi_route_supported(arm_cache_trap_execute_route,
-                                     capabilities.epoch)) {
+                                     shared_state_->darwin_kernel_identity
+                                         .abi_epoch)) {
         static_cast<void>(
             memory_.map(address, length, MemoryPermission::Execute));
       }

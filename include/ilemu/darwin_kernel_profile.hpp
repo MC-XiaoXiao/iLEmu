@@ -9,7 +9,6 @@
 namespace ilemu {
 
 struct DarwinGuestCapabilities {
-  DarwinAbiEpoch epoch{DarwinAbiEpoch::Unknown};
   // XNU's nosys entry returns ENOSYS and raises SIGSYS on the audited
   // production epochs. Unknown profiles conservatively suppress the signal
   // until their kernel policy is identified.
@@ -30,6 +29,11 @@ struct DarwinKernelIdentityProfile {
       "Darwin Kernel Version 9.4.0: iLEmu compatibility kernel; "
       "darwin9.4/RELEASE_ARM"};
   std::string build_version{"1A543a"};
+  // The firmware build is the identity we read from SystemVersion.plist;
+  // this independently names the audited Darwin/XNU ABI epoch. Keeping it
+  // outside capabilities prevents a new capability from accidentally
+  // changing version-sensitive route selection.
+  DarwinAbiEpoch abi_epoch{DarwinAbiEpoch::Unknown};
   DarwinGuestCapabilities capabilities;
 };
 

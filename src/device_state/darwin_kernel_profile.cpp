@@ -1,5 +1,6 @@
 #include "ilemu/darwin_kernel_profile.hpp"
 
+#include <array>
 #include <cstdint>
 #include <fstream>
 #include <iterator>
@@ -45,27 +46,66 @@ struct SystemVersion {
   std::string build_version;
 };
 
-DarwinGuestCapabilities capabilities_for_build(std::string_view build) {
-  // Local XNU 792 defines slot 322 as nosys. Public xnu-1228 keeps the old
-  // disk-only iopolicysys contract, while later xnu-4903 adds policy types
-  // and values that are intentionally not exposed through this profile.
-  if (build == "1A420" || build == "1A543a" || build == "3A109a") {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs1, true, true};
+enum class BuildMatchKind : std::uint8_t { Exact, NumericPrefix };
+
+struct BuildProfileRule {
+  std::string_view matcher;
+  BuildMatchKind match_kind;
+  DarwinAbiEpoch abi_epoch;
+  DarwinGuestCapabilities capabilities;
+};
+
+// Keep build recognition data-driven. Adding a firmware build should extend
+// this table, while the dispatchers consume only the resulting epoch and
+// capability contract. The numeric rule covers the later XNU build family
+// (for example 11A465 from xnu-4903) without treating an arbitrary unknown
+// string as a newer ABI.
+constexpr std::array build_profile_rules{
+    BuildProfileRule{"1A420", BuildMatchKind::Exact,
+                     DarwinAbiEpoch::IphoneOs1, {true, true}},
+    BuildProfileRule{"1A543a", BuildMatchKind::Exact,
+                     DarwinAbiEpoch::IphoneOs1, {true, true}},
+    BuildProfileRule{"3A109a", BuildMatchKind::Exact,
+                     DarwinAbiEpoch::IphoneOs1, {true, true}},
+    BuildProfileRule{"5A347", BuildMatchKind::Exact,
+                     DarwinAbiEpoch::IphoneOs2, {true, false}},
+    BuildProfileRule{"5G77", BuildMatchKind::Exact,
+                     DarwinAbiEpoch::IphoneOs2, {true, false}},
+    BuildProfileRule{"7A341", BuildMatchKind::Exact,
+                     DarwinAbiEpoch::IphoneOs3, {true, false}},
+    BuildProfileRule{"NN", BuildMatchKind::NumericPrefix,
+                     DarwinAbiEpoch::Later, {true, false}},
+};
+
+[[nodiscard]] bool is_numeric_later_build(std::string_view build) {
+  return build.size() >= 2 && build[0] >= '1' && build[0] <= '9' &&
+         build[1] >= '0' && build[1] <= '9';
+}
+
+[[nodiscard]] bool matches_build(const BuildProfileRule &rule,
+                                 std::string_view build) {
+  switch (rule.match_kind) {
+  case BuildMatchKind::Exact:
+    return build == rule.matcher;
+  case BuildMatchKind::NumericPrefix:
+    return is_numeric_later_build(build);
   }
-  if (build == "5A347" || build == "5G77") {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs2, true, false};
+  return false;
+}
+
+struct DarwinBuildContract {
+  DarwinAbiEpoch abi_epoch{DarwinAbiEpoch::Unknown};
+  DarwinGuestCapabilities capabilities{};
+};
+
+[[nodiscard]] DarwinBuildContract contract_for_build(std::string_view build) {
+  for (const auto &rule : build_profile_rules) {
+    if (matches_build(rule, build))
+      return {rule.abi_epoch, rule.capabilities};
   }
-  if (build == "7A341") {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::IphoneOs3, true, false};
-  }
-  // iOS/XNU build identifiers after the early letter-prefixed releases use
-  // a numeric Darwin build prefix (for example 11A465 with xnu-4903). Keep
-  // the route conservative—no legacy syscall 322 contract—but retain XNU's
-  // production send_sigsys default until a boot-arg policy is supplied.
-  if (build.size() >= 2 && build[0] >= '1' && build[0] <= '9' &&
-      build[1] >= '0' && build[1] <= '9') {
-    return DarwinGuestCapabilities{DarwinAbiEpoch::Later, true, false};
-  }
+  // Unknown epochs intentionally expose no version-sensitive capability.
+  // Additive and shape-dispatched routes remain available through their
+  // route metadata, while ambiguous calls receive deterministic safe errors.
   return {};
 }
 
@@ -110,7 +150,9 @@ make_darwin_kernel_identity_profile(const std::filesystem::path &rootfs) {
   DarwinKernelIdentityProfile profile;
   if (!system_version.build_version.empty())
     profile.build_version = system_version.build_version;
-  profile.capabilities = capabilities_for_build(profile.build_version);
+  const auto contract = contract_for_build(profile.build_version);
+  profile.abi_epoch = contract.abi_epoch;
+  profile.capabilities = contract.capabilities;
   return profile;
 }
 
