@@ -42,15 +42,19 @@ public:
   [[nodiscard]] bool finished() const noexcept {
     return finished_.load(std::memory_order_acquire);
   }
+  void wait_finished() const;
 
 private:
   friend class HostResourceController;
   void mark_finished() noexcept {
     finished_.store(true, std::memory_order_release);
+    finished_condition_.notify_all();
   }
 
   std::atomic<bool> cancelled_{};
   std::atomic<bool> finished_{};
+  mutable std::mutex finished_mutex_;
+  mutable std::condition_variable finished_condition_;
 };
 
 class HostResourceController {

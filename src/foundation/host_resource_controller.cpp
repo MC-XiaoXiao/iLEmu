@@ -41,6 +41,12 @@ namespace {
 
 } // namespace
 
+void HostWorkToken::wait_finished() const {
+  if (finished()) return;
+  std::unique_lock lock{finished_mutex_};
+  finished_condition_.wait(lock, [this] { return finished(); });
+}
+
 bool HostResourceController::task_precedes(const Task &left,
                                            const Task &right) {
   const auto left_priority = work_priority(left.kind);

@@ -592,9 +592,11 @@ struct Runtime {
   [[nodiscard]] std::uint64_t begin_image_transition(
       HostResourceController &host_resources) {
     const auto next_epoch = work_epoch.begin_transition();
-    if (precompile_task) precompile_task->cancel();
+    const auto task = precompile_task;
+    if (task) task->cancel();
     host_resources.wake();
     if (cpus) cpus->quiesce_precompilation();
+    if (task) task->wait_finished();
     return next_epoch;
   }
 
