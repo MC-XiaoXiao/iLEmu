@@ -57,6 +57,7 @@ class HostResourceController {
 public:
   using Clock = std::chrono::steady_clock;
   using Work = std::function<void()>;
+  using CancellableWork = std::function<void(const HostWorkToken &)>;
 
   explicit HostResourceController(HostResourceBudget budget = {});
   ~HostResourceController();
@@ -72,6 +73,15 @@ public:
   [[nodiscard]] std::shared_ptr<HostWorkToken> submit(
       HostWorkKind kind, std::optional<Clock::time_point> deadline,
       Work work,
+      std::chrono::nanoseconds estimated_cost =
+          std::chrono::nanoseconds::zero());
+  // The token is passed to the work body so a task that has already started
+  // can stop at its own safe points. Cancellation remains cooperative: the
+  // controller never interrupts a host function in the middle of an ABI or
+  // filesystem operation.
+  [[nodiscard]] std::shared_ptr<HostWorkToken> submit_cancellable(
+      HostWorkKind kind, std::optional<Clock::time_point> deadline,
+      CancellableWork work,
       std::chrono::nanoseconds estimated_cost =
           std::chrono::nanoseconds::zero());
   void set_next_deadline(std::optional<Clock::time_point> deadline);
@@ -98,6 +108,10 @@ private:
 
   [[nodiscard]] static bool task_precedes(const Task &left,
                                           const Task &right);
+  [[nodiscard]] std::shared_ptr<HostWorkToken> submit_impl(
+      HostWorkKind kind, std::optional<Clock::time_point> deadline,
+      Work work, CancellableWork cancellable_work,
+      std::chrono::nanoseconds estimated_cost);
   void worker_loop();
   void stop();
 

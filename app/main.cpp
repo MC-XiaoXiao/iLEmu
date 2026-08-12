@@ -4094,16 +4094,17 @@ void boot(const std::vector<std::string> &args, Output &output) {
         if (budget == 0)
           return;
         const auto expected_epoch = runtime->work_epoch.current();
-        runtime->precompile_task = host_resources.submit(
+        runtime->precompile_task = host_resources.submit_cancellable(
             work_kind, host_compile_deadline,
             [runtime, expected_epoch, budget, idle_precompile_block_budget,
              phase, target,
              &precompile_blocks_by_phase, &precompile_blocks_by_target,
-             &record_precompile_outcomes] {
+             &record_precompile_outcomes](const HostWorkToken &token) {
               const auto result = runtime->cpus->precompile_pending(
                   idle_precompile_block_budget, budget, target,
-                  [runtime, expected_epoch] {
-                    return runtime->precompile_stop_requested(expected_epoch);
+                  [runtime, expected_epoch, &token] {
+                    return token.cancelled() ||
+                           runtime->precompile_stop_requested(expected_epoch);
                   });
               record_precompile_outcomes(result);
               const auto compiled = target == JitPrecompileTarget::NativeCode

@@ -75,7 +75,20 @@ HostResourceController::~HostResourceController() { stop(); }
 std::shared_ptr<HostWorkToken> HostResourceController::submit(
     HostWorkKind kind, std::optional<Clock::time_point> deadline, Work work,
     std::chrono::nanoseconds estimated_cost) {
-  if (!work) return nullptr;
+  return submit_impl(kind, deadline, std::move(work), {}, estimated_cost);
+}
+
+std::shared_ptr<HostWorkToken> HostResourceController::submit_cancellable(
+    HostWorkKind kind, std::optional<Clock::time_point> deadline,
+    CancellableWork work, std::chrono::nanoseconds estimated_cost) {
+  return submit_impl(kind, deadline, {}, std::move(work), estimated_cost);
+}
+
+std::shared_ptr<HostWorkToken> HostResourceController::submit_impl(
+    HostWorkKind kind, std::optional<Clock::time_point> deadline, Work work,
+    CancellableWork cancellable_work,
+    std::chrono::nanoseconds estimated_cost) {
+  if (!work && !cancellable_work) return nullptr;
   const auto token = std::make_shared<HostWorkToken>();
   const auto now = Clock::now();
   const std::lock_guard lock{mutex_};
@@ -103,9 +116,17 @@ std::shared_ptr<HostWorkToken> HostResourceController::submit(
   } else {
     estimated_cost = std::chrono::nanoseconds::zero();
   }
+  Work task_work;
+  if (cancellable_work) {
+    task_work = [work = std::move(cancellable_work), token] {
+      work(*token);
+    };
+  } else {
+    task_work = std::move(work);
+  }
   const auto sequence = next_sequence_++;
   tasks_.emplace(sequence,
-                 Task{kind, deadline, sequence, token, std::move(work),
+                 Task{kind, deadline, sequence, token, std::move(task_work),
                       estimated_cost});
   work_available_.notify_one();
   return token;
