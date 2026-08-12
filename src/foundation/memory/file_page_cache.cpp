@@ -365,7 +365,8 @@ void invalidate_global_identity(const std::string &normalized_path) {
 SharedFileIdentityResult shared_file_identity(
     const std::filesystem::path &path, int descriptor,
     const GuestFileGeneration &generation,
-    std::optional<std::uint64_t> generation_revision) {
+    std::optional<std::uint64_t> generation_revision,
+    bool force_recompute) {
   if (descriptor < 0) return {};
   const auto normalized_path = stable_path(path);
   std::optional<ContentIdentity> content_identity;
@@ -374,7 +375,7 @@ SharedFileIdentityResult shared_file_identity(
   {
     const std::scoped_lock lock{global_identity_mutex};
     const auto identity = global_identities.find(normalized_path);
-    if (identity != global_identities.end() &&
+    if (!force_recompute && identity != global_identities.end() &&
         identity->second.generation == generation &&
         identity_revision_matches(identity->second.generation_revision,
                                   generation_revision)) {
@@ -624,7 +625,8 @@ void GuestFileGenerationRegistry::evict_entries_locked() {
 GuestFileGenerationSnapshot GuestFileGenerationRegistry::record(
     const std::filesystem::path &path,
     std::optional<GuestFileGeneration> generation,
-    GuestFileMutationKind mutation, bool force_revision) {
+    GuestFileMutationKind mutation, bool force_revision,
+    std::optional<ContentIdentity> content_identity) {
   const auto key = normalize_path(path);
   std::lock_guard lock{mutex_};
   auto &entry = ensure_entry_locked(key)->second;
@@ -633,7 +635,8 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record(
     return entry.snapshot;
   }
   entry.snapshot = GuestFileGenerationSnapshot{
-      next_revision_++, std::move(generation), mutation};
+      next_revision_++, std::move(generation), mutation,
+      std::move(content_identity)};
   invalidate_global_identity(key);
   enqueue_mutation_locked(key, mutation);
   evict_entries_locked();
@@ -677,7 +680,8 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::observe_normalized(
     return entry.snapshot;
   }
   entry.snapshot = GuestFileGenerationSnapshot{
-      next_revision_++, generation, GuestFileMutationKind::Observation};
+      next_revision_++, generation, GuestFileMutationKind::Observation,
+      std::nullopt};
   invalidate_global_identity(key);
   evict_entries_locked();
   return entry.snapshot;
@@ -685,7 +689,8 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::observe_normalized(
 
 GuestFileGenerationSnapshot GuestFileGenerationRegistry::record_descriptor(
     const std::filesystem::path &path, const GuestFileGeneration &generation,
-    GuestFileMutationKind mutation) {
+    GuestFileMutationKind mutation,
+    std::optional<ContentIdentity> content_identity) {
   const auto key = normalize_path(path);
   // The descriptor may have outlived an atomic replacement or unlink.  A
   // descriptor opened by the watcher is current only if the pathname still
@@ -711,7 +716,7 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record_descriptor(
     if (entry_path == key) matched_key = true;
     touch_entry_locked(iterator);
     entry.snapshot = GuestFileGenerationSnapshot{
-        next_revision_++, generation, mutation};
+        next_revision_++, generation, mutation, content_identity};
     invalidate_global_identity(entry_path);
     enqueue_mutation_locked(entry_path, mutation);
     if (entry_path == key || !result) result = entry.snapshot;
@@ -723,7 +728,7 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record_descriptor(
     // check above has already ruled out a detached old vnode.
     auto &entry = ensure_entry_locked(key)->second;
     entry.snapshot = GuestFileGenerationSnapshot{
-        next_revision_++, generation, mutation};
+        next_revision_++, generation, mutation, std::move(content_identity)};
     invalidate_global_identity(key);
     enqueue_mutation_locked(key, mutation);
     result = entry.snapshot;
@@ -745,12 +750,19 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::publish(
 
 GuestFileGenerationSnapshot GuestFileGenerationRegistry::publish_descriptor(
     const std::filesystem::path &path, int file_descriptor,
-    GuestFileMutationKind mutation) {
+    GuestFileMutationKind mutation,
+    std::optional<ContentIdentity> content_identity) {
   struct stat file_stat {};
   if (file_descriptor < 0 || ::fstat(file_descriptor, &file_stat) != 0) {
     return publish(path, mutation);
   }
-  return record_descriptor(path, generation_from_stat(file_stat), mutation);
+  auto result = record_descriptor(path, generation_from_stat(file_stat),
+                                  mutation, std::move(content_identity));
+  if (result.generation && result.content_identity) {
+    seed_shared_file_identity(path, *result.generation,
+                              *result.content_identity, result.revision);
+  }
+  return result;
 }
 
 void GuestFileGenerationRegistry::publish_rename(

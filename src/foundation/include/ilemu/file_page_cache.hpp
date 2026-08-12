@@ -62,6 +62,11 @@ struct GuestFileGenerationSnapshot {
   std::uint64_t revision{};
   std::optional<GuestFileGeneration> generation;
   GuestFileMutationKind last_mutation{GuestFileMutationKind::Observation};
+  // The watcher records the stable bytes observed for this namespace path.
+  // Guest writes clear this value until a subsequent stable observation; this
+  // lets a duplicate inotify event be merged without hiding a same-generation
+  // external content change.
+  std::optional<ContentIdentity> content_identity;
 };
 
 struct GuestFileMutationEvent {
@@ -86,7 +91,8 @@ public:
       const std::filesystem::path &path, GuestFileMutationKind mutation);
   [[nodiscard]] GuestFileGenerationSnapshot publish_descriptor(
       const std::filesystem::path &path, int file_descriptor,
-      GuestFileMutationKind mutation);
+      GuestFileMutationKind mutation,
+      std::optional<ContentIdentity> content_identity = std::nullopt);
   void publish_rename(const std::filesystem::path &source,
                      const std::filesystem::path &destination);
   void publish_subtree_create(const std::filesystem::path &path);
@@ -119,13 +125,15 @@ private:
   [[nodiscard]] GuestFileGenerationSnapshot record(
       const std::filesystem::path &path,
       std::optional<GuestFileGeneration> generation,
-      GuestFileMutationKind mutation, bool force_revision);
+      GuestFileMutationKind mutation, bool force_revision,
+      std::optional<ContentIdentity> content_identity = std::nullopt);
   [[nodiscard]] GuestFileGenerationSnapshot observe_normalized(
       std::string normalized_path, const GuestFileGeneration &generation);
   [[nodiscard]] GuestFileGenerationSnapshot record_descriptor(
       const std::filesystem::path &path,
       const GuestFileGeneration &generation,
-      GuestFileMutationKind mutation);
+      GuestFileMutationKind mutation,
+      std::optional<ContentIdentity> content_identity = std::nullopt);
   [[nodiscard]] std::map<std::string, Entry>::iterator
   ensure_entry_locked(const std::string &normalized_path);
   void touch_entry_locked(
@@ -264,7 +272,8 @@ struct SharedFileIdentityResult {
 [[nodiscard]] SharedFileIdentityResult shared_file_identity(
     const std::filesystem::path &path, int descriptor,
     const GuestFileGeneration &generation,
-    std::optional<std::uint64_t> generation_revision = std::nullopt);
+    std::optional<std::uint64_t> generation_revision = std::nullopt,
+    bool force_recompute = false);
 [[nodiscard]] SharedFileIdentityResult shared_file_identity(
     const std::filesystem::path &path,
     std::optional<std::uint64_t> generation_revision = std::nullopt);

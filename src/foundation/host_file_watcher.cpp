@@ -468,16 +468,6 @@ HostFileWatcher::AsyncCompletion HostFileWatcher::inspect_path(
   if (::fstat(descriptor.get(), &before) != 0) return completion;
   const auto observed_generation = generation_from_stat(before);
   const auto current_generation = registry.current(path);
-  // Guest VFS writes already publish this exact generation through the shared
-  // registry. Inotify also reports those host writes; discard the duplicate
-  // on the maintenance worker before opening and hashing the file again.
-  if (current_generation && current_generation->generation &&
-      *current_generation->generation == observed_generation &&
-      current_generation->last_mutation !=
-          GuestFileMutationKind::Observation) {
-    completion.kind = AsyncCompletionKind::Discarded;
-    return completion;
-  }
   if (!S_ISREG(before.st_mode)) {
     static_cast<void>(registry.publish(path, mutation));
     completion.kind = AsyncCompletionKind::Changed;
@@ -492,7 +482,7 @@ HostFileWatcher::AsyncCompletion HostFileWatcher::inspect_path(
   }
   const auto identity_result =
       shared_file_identity(path, descriptor.get(), observed_generation,
-                           generation_revision);
+                           generation_revision, true);
   const auto &identity = identity_result.content_identity;
   if (identity && identity_result.computed) {
     completion.sha_computed = true;
@@ -515,12 +505,15 @@ HostFileWatcher::AsyncCompletion HostFileWatcher::inspect_path(
   const auto already_published =
       current && current->generation &&
       *current->generation == sample.generation &&
+      current->content_identity &&
+      *current->content_identity == sample.content_identity &&
       current->last_mutation != GuestFileMutationKind::Observation;
   if (already_published) {
     completion.kind = AsyncCompletionKind::Discarded;
   } else {
     static_cast<void>(
-        registry.publish_descriptor(path, descriptor.get(), mutation));
+        registry.publish_descriptor(path, descriptor.get(), mutation,
+                                    sample.content_identity));
     completion.kind = AsyncCompletionKind::Changed;
   }
 #else
