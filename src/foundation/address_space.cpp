@@ -66,6 +66,19 @@ void append_identity(std::vector<std::byte> &bytes,
   bytes.insert(bytes.end(), identity.digest.begin(), identity.digest.end());
 }
 
+void append_generation(std::vector<std::byte> &bytes,
+                       const GuestFileGeneration &generation) {
+  append_u64(bytes, generation.device);
+  append_u64(bytes, generation.inode);
+  append_u64(bytes, generation.file_size);
+  append_u64(bytes, static_cast<std::uint64_t>(generation.modified_seconds));
+  append_u64(bytes,
+             static_cast<std::uint64_t>(generation.modified_nanoseconds));
+  append_u64(bytes, static_cast<std::uint64_t>(generation.changed_seconds));
+  append_u64(bytes,
+             static_cast<std::uint64_t>(generation.changed_nanoseconds));
+}
+
 } // namespace
 
 struct AddressSpace::JitPageTableStorage {
@@ -1413,6 +1426,10 @@ AddressSpace::executable_backing_identity(std::uint32_t address,
     append_u64(layout_material, mapping.end);
     append_u64(layout_material, file_offset);
     append_identity(layout_material, identity);
+    // ContentIdentity protects the bytes, while the file generation protects
+    // the file object that supplied them.  Atomic replacement with identical
+    // bytes must not let a runtime artifact cross the vnode/metadata epoch.
+    append_generation(layout_material, mapping.backing->generation);
   }
 
   if (source_identities.empty()) return std::nullopt;
