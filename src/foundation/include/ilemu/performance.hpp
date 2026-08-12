@@ -181,6 +181,10 @@ struct PerformanceSnapshot {
     std::uint64_t jit_stable_table_collisions{};
     std::uint64_t jit_rsb_hits{};
     std::uint64_t jit_rsb_misses{};
+    // Deprecated aliases retained for consumers of the former summary shape.
+    // New code must use the separate fast-link/table/RSB fields above.
+    std::uint64_t jit_stable_link_hits{};
+    std::uint64_t jit_stable_link_misses{};
     std::uint64_t jit_host_yield_checks{};
     std::uint64_t jit_host_yields{};
     std::uint64_t jit_host_slice_budget_samples{};
@@ -280,6 +284,12 @@ class PerformanceCounters {
         std::uint64_t stable_table_probes,
         std::uint64_t stable_table_collisions, std::uint64_t rsb_hits,
         std::uint64_t rsb_misses);
+    // Compatibility overload for callers built against the former mixed
+    // dispatch counter API. It does not affect the new separate counters.
+    void record_jit_dispatch(std::uint64_t stable_link_hits,
+                             std::uint64_t stable_link_misses,
+                             std::uint64_t rsb_hits,
+                             std::uint64_t rsb_misses);
     void record_jit_host_yield(std::uint64_t checks, bool yielded);
     void record_jit_host_slice_budget(std::uint64_t nanoseconds);
     void record_translation_block();

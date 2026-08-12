@@ -879,6 +879,14 @@ void PerformanceCounters::record_jit_dispatch(
     jit_rsb_misses_.fetch_add(rsb_misses, std::memory_order_relaxed);
 }
 
+void PerformanceCounters::record_jit_dispatch(
+    std::uint64_t stable_link_hits, std::uint64_t stable_link_misses,
+    std::uint64_t rsb_hits, std::uint64_t rsb_misses) {
+    record_jit_dispatch(stable_link_hits, stable_link_misses,
+                        stable_link_hits + stable_link_misses, 0,
+                        rsb_hits, rsb_misses);
+}
+
 void PerformanceCounters::record_jit_host_yield(
     std::uint64_t checks, bool yielded) {
     if (!enabled()) return;
@@ -1632,6 +1640,8 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
     result.jit_rsb_hits = jit_rsb_hits_.load(std::memory_order_relaxed);
     result.jit_rsb_misses =
         jit_rsb_misses_.load(std::memory_order_relaxed);
+    result.jit_stable_link_hits = result.jit_fast_link_hits;
+    result.jit_stable_link_misses = result.jit_fast_link_misses;
     result.jit_host_yield_checks =
         jit_host_yield_checks_.load(std::memory_order_relaxed);
     result.jit_host_yields =
