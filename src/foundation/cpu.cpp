@@ -1334,7 +1334,7 @@ private:
         bool imported{};
 
         [[nodiscard]] bool matches(const JitArtifactKey& key) const noexcept {
-            return content_identity == key.content_identity &&
+            return imported && content_identity == key.content_identity &&
                    layout_identity == key.layout_identity;
         }
     };
