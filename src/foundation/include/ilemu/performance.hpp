@@ -171,10 +171,22 @@ struct PerformanceSnapshot {
     std::uint64_t jit_full_invalidation_requests{};
     std::uint64_t jit_range_invalidation_requests{};
     std::uint64_t jit_slab_generation_transitions{};
-    std::uint64_t jit_stable_link_hits{};
-    std::uint64_t jit_stable_link_misses{};
+    std::uint64_t jit_shared_range_count{};
+    std::uint64_t jit_shared_descriptor_count{};
+    std::uint64_t jit_invalidated_descriptors{};
+    std::uint64_t jit_retired_code_bytes{};
+    std::uint64_t jit_fast_link_hits{};
+    std::uint64_t jit_fast_link_misses{};
+    std::uint64_t jit_stable_table_probes{};
+    std::uint64_t jit_stable_table_collisions{};
     std::uint64_t jit_rsb_hits{};
     std::uint64_t jit_rsb_misses{};
+    std::uint64_t jit_host_yield_checks{};
+    std::uint64_t jit_host_yields{};
+    std::uint64_t jit_host_slice_budget_samples{};
+    std::uint64_t jit_host_slice_budget_total_nanoseconds{};
+    std::uint64_t jit_host_slice_budget_min_nanoseconds{};
+    std::uint64_t jit_host_slice_budget_max_nanoseconds{};
     std::uint64_t translation_blocks{};
     std::uint64_t cpu_executions{};
     std::uint64_t cpu_ticks{};
@@ -251,6 +263,11 @@ class PerformanceCounters {
                                       std::uint64_t reserved_bytes,
                                       std::uint64_t committed_bytes,
                                       std::uint64_t used_bytes);
+    void record_jit_shared_cache_state(
+        std::uint64_t slab_id, std::uint64_t range_count,
+        std::uint64_t descriptor_count,
+        std::uint64_t invalidated_descriptors,
+        std::uint64_t retired_code_bytes);
     void record_jit_executor_memory_usage(std::uint64_t slab_id,
                                           std::uint32_t process_id,
                                           std::uint32_t slot,
@@ -258,10 +275,13 @@ class PerformanceCounters {
     void release_jit_memory_context(std::uint64_t slab_id);
     void record_jit_shared_invalidation(bool full);
     void record_jit_slab_generation_transition();
-    void record_jit_dispatch(std::uint64_t stable_link_hits,
-                             std::uint64_t stable_link_misses,
-                             std::uint64_t rsb_hits,
-                             std::uint64_t rsb_misses);
+    void record_jit_dispatch(
+        std::uint64_t fast_link_hits, std::uint64_t fast_link_misses,
+        std::uint64_t stable_table_probes,
+        std::uint64_t stable_table_collisions, std::uint64_t rsb_hits,
+        std::uint64_t rsb_misses);
+    void record_jit_host_yield(std::uint64_t checks, bool yielded);
+    void record_jit_host_slice_budget(std::uint64_t nanoseconds);
     void record_translation_block();
     void record_cpu_execution(std::uint64_t ticks);
     void record_svc();
@@ -353,6 +373,7 @@ class PerformanceCounters {
     };
 
     void reset_display_window_locked();
+    void refresh_jit_shared_cache_stats_locked();
     void add_display_window_counter(
         std::uint64_t PerformanceSnapshot::*counter,
         std::uint64_t value = 1);
@@ -385,10 +406,22 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> jit_full_invalidation_requests_{};
     std::atomic<std::uint64_t> jit_range_invalidation_requests_{};
     std::atomic<std::uint64_t> jit_slab_generation_transitions_{};
-    std::atomic<std::uint64_t> jit_stable_link_hits_{};
-    std::atomic<std::uint64_t> jit_stable_link_misses_{};
+    std::atomic<std::uint64_t> jit_shared_range_count_{};
+    std::atomic<std::uint64_t> jit_shared_descriptor_count_{};
+    std::atomic<std::uint64_t> jit_invalidated_descriptors_{};
+    std::atomic<std::uint64_t> jit_retired_code_bytes_{};
+    std::atomic<std::uint64_t> jit_fast_link_hits_{};
+    std::atomic<std::uint64_t> jit_fast_link_misses_{};
+    std::atomic<std::uint64_t> jit_stable_table_probes_{};
+    std::atomic<std::uint64_t> jit_stable_table_collisions_{};
     std::atomic<std::uint64_t> jit_rsb_hits_{};
     std::atomic<std::uint64_t> jit_rsb_misses_{};
+    std::atomic<std::uint64_t> jit_host_yield_checks_{};
+    std::atomic<std::uint64_t> jit_host_yields_{};
+    std::atomic<std::uint64_t> jit_host_slice_budget_samples_{};
+    std::atomic<std::uint64_t> jit_host_slice_budget_total_nanoseconds_{};
+    std::atomic<std::uint64_t> jit_host_slice_budget_min_nanoseconds_{};
+    std::atomic<std::uint64_t> jit_host_slice_budget_max_nanoseconds_{};
     std::atomic<std::uint64_t> translation_blocks_{};
     std::atomic<std::uint64_t> cpu_executions_{};
     std::atomic<std::uint64_t> cpu_ticks_{};
@@ -459,6 +492,10 @@ class PerformanceCounters {
         std::uint64_t reserved_bytes{};
         std::uint64_t committed_bytes{};
         std::uint64_t used_bytes{};
+        std::uint64_t range_count{};
+        std::uint64_t descriptor_count{};
+        std::uint64_t invalidated_descriptors{};
+        std::uint64_t retired_code_bytes{};
     };
     mutable std::mutex jit_memory_mutex_;
     std::map<std::uint64_t, SharedSlabUsage> jit_shared_slabs_;

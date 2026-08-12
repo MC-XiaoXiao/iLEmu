@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -67,6 +68,11 @@ struct CpuRunResult {
     std::optional<MemoryFault> fault;
     std::optional<std::uint32_t> debug_breakpoint;
     std::string exception;
+    // Host-only cooperative boundary marker. UserDefined2 remains the
+    // Dynarmic halt bit for compatibility, but this flag distinguishes a
+    // host slice boundary from a guest AST/deferred-SVC stop.
+    bool host_yielded{};
+    std::uint64_t host_yield_checks{};
 };
 
 enum class SvcDispatchMode : std::uint8_t {
@@ -103,6 +109,9 @@ public:
     // deadlines. Direct callers retain the ordinary run-to-budget contract.
     CpuRunResult run_cooperatively(
         std::uint64_t ticks, std::size_t execution_slot = 0);
+    CpuRunResult run_cooperatively(
+        std::uint64_t ticks, std::chrono::nanoseconds host_slice_budget,
+        std::size_t execution_slot = 0);
     CpuRunResult step(std::size_t execution_slot = 0);
     void reset();
     void clear_cache();

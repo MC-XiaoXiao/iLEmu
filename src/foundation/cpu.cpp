@@ -61,8 +61,17 @@ constexpr std::size_t jit_link_cell_count = 9U;
 constexpr std::size_t fast_dispatch_table_size = 0x10000U;
 constexpr std::size_t fast_dispatch_entry_bytes = sizeof(std::uint64_t) * 2U;
 constexpr std::size_t host_code_page_size = 4096U;
-constexpr std::uint32_t host_yield_check_interval = 16U;
-constexpr auto host_cooperative_slice_budget = std::chrono::milliseconds{2};
+constexpr auto default_host_cooperative_slice_budget =
+    std::chrono::milliseconds{2};
+constexpr std::uint32_t host_yield_initial_check_interval = 32U;
+constexpr std::uint32_t host_yield_min_check_interval = 4U;
+constexpr std::uint32_t host_yield_max_check_interval = 64U;
+constexpr std::uint64_t host_yield_initial_tick_budget = 2048U;
+constexpr std::uint64_t host_yield_min_tick_budget = 256U;
+constexpr std::uint64_t host_yield_max_tick_budget = 8192U;
+constexpr auto host_yield_urgent_window = std::chrono::microseconds{250};
+constexpr auto host_yield_slow_translation_threshold =
+    std::chrono::microseconds{250};
 static_assert(sizeof(void *) == sizeof(std::uint64_t));
 
 [[nodiscard]] std::uint64_t logical_committed_code_bytes(
@@ -408,10 +417,12 @@ private:
                 pc, sizeof(std::uint32_t))) {
             translation_profile_->record(location_descriptor);
         }
-        if (cooperative_execution_ && !host_yield_requested_ &&
-            std::chrono::steady_clock::now() >= host_slice_deadline_) {
-            request_host_yield();
-        }
+        maybe_check_host_yield(
+            0U, translation_nanoseconds >=
+                       static_cast<std::uint64_t>(
+                           std::chrono::duration_cast<std::chrono::nanoseconds>(
+                               host_yield_slow_translation_threshold)
+                               .count()));
         // Ordinary guest execution is latency-sensitive. Artifact production
         // is reserved for an explicit precompile request, while the
         // translation profile remains a cheap metadata-only hint for runtime
@@ -580,17 +591,10 @@ public:
     void AddTicks(std::uint64_t ticks) override {
         consumed_ += ticks;
         ticks_remaining_ = ticks >= ticks_remaining_ ? 0 : ticks_remaining_ - ticks;
-        if (!cooperative_execution_ || host_yield_requested_ ||
-            ticks_remaining_ == 0U) {
+        if (!cooperative_execution_ || host_yield_requested_) {
             return;
         }
-        if (++host_yield_check_count_ < host_yield_check_interval) {
-            return;
-        }
-        host_yield_check_count_ = 0;
-        if (std::chrono::steady_clock::now() >= host_slice_deadline_) {
-            request_host_yield();
-        }
+        maybe_check_host_yield(ticks, ticks_remaining_ == 0U);
     }
     std::uint64_t GetTicksRemaining() override { return ticks_remaining_; }
     std::uint64_t GetTicksForCode(
@@ -600,7 +604,10 @@ public:
             is_thumb, address, instruction);
     }
 
-    void begin(std::uint64_t ticks, bool cooperative_execution = false) {
+    void begin(
+        std::uint64_t ticks, bool cooperative_execution = false,
+        std::chrono::nanoseconds host_slice_budget =
+            default_host_cooperative_slice_budget) {
         ticks_remaining_ = ticks;
         consumed_ = 0;
         svc_.reset();
@@ -610,16 +617,21 @@ public:
         exception_.clear();
         cooperative_execution_ = cooperative_execution && ticks != 0U;
         host_yield_requested_ = false;
-        host_yield_check_count_ = 0;
+        host_yield_probe_count_ = 0;
+        host_yield_tick_accumulator_ = 0;
+        host_yield_checks_ = 0;
+        host_yield_check_interval_ = host_yield_initial_check_interval;
+        host_yield_tick_budget_ = host_yield_initial_tick_budget;
         host_slice_deadline_ = cooperative_execution_
-            ? std::chrono::steady_clock::now() + host_cooperative_slice_budget
+            ? std::chrono::steady_clock::now() +
+                  std::max(host_slice_budget, std::chrono::nanoseconds::zero())
             : std::chrono::steady_clock::time_point{};
     }
 
     CpuRunResult result(Dynarmic::HaltReason reason) const {
         return CpuRunResult{
             reason, consumed_, svc_, svc_calls_, fault_, breakpoint_,
-            exception_};
+            exception_, host_yield_requested_, host_yield_checks_};
     }
 
     [[nodiscard]] const ArmCpuModel& cpu_model() const {
@@ -642,6 +654,52 @@ public:
     }
 
 private:
+    void maybe_check_host_yield(
+        std::uint64_t ticks, bool force_clock_check) noexcept {
+        if (!cooperative_execution_ || host_yield_requested_ ||
+            (!force_clock_check && ticks_remaining_ == 0U)) {
+            return;
+        }
+        host_yield_tick_accumulator_ =
+            std::min(host_yield_max_tick_budget,
+                     host_yield_tick_accumulator_ + ticks);
+        const auto probe_count = ++host_yield_probe_count_;
+        if (!force_clock_check &&
+            probe_count < host_yield_check_interval_ &&
+            host_yield_tick_accumulator_ < host_yield_tick_budget_) {
+            return;
+        }
+        host_yield_probe_count_ = 0;
+        host_yield_tick_accumulator_ = 0;
+        ++host_yield_checks_;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= host_slice_deadline_) {
+            request_host_yield();
+            return;
+        }
+
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                host_slice_deadline_ - now);
+        if (remaining <= host_yield_urgent_window) {
+            host_yield_check_interval_ = host_yield_min_check_interval;
+            host_yield_tick_budget_ = host_yield_min_tick_budget;
+        } else if (remaining <= std::chrono::milliseconds{1}) {
+            host_yield_check_interval_ =
+                (host_yield_min_check_interval +
+                 host_yield_initial_check_interval) /
+                2U;
+            host_yield_tick_budget_ = host_yield_initial_tick_budget / 2U;
+        } else {
+            host_yield_check_interval_ = std::min(
+                host_yield_max_check_interval,
+                host_yield_check_interval_ + host_yield_min_check_interval);
+            host_yield_tick_budget_ = std::min(
+                host_yield_max_tick_budget,
+                host_yield_tick_budget_ * 2U);
+        }
+    }
+
     [[nodiscard]] std::optional<JitArtifactKey> make_artifact_key(
         std::uint64_t location_descriptor) const noexcept {
         try {
@@ -847,7 +905,11 @@ private:
     bool constant_dependency_failed_{};
     bool cooperative_execution_{};
     bool host_yield_requested_{};
-    std::uint32_t host_yield_check_count_{};
+    std::uint32_t host_yield_probe_count_{};
+    std::uint32_t host_yield_check_interval_{};
+    std::uint64_t host_yield_tick_accumulator_{};
+    std::uint64_t host_yield_tick_budget_{};
+    std::uint64_t host_yield_checks_{};
     std::chrono::steady_clock::time_point host_slice_deadline_{};
 };
 
@@ -1066,16 +1128,21 @@ public:
 
     CpuRunResult run(
         Cpu& cpu, std::uint64_t ticks, bool single_step,
-        bool cooperative_execution) {
+        bool cooperative_execution,
+        std::chrono::nanoseconds host_slice_budget =
+            default_host_cooperative_slice_budget) {
         const std::scoped_lock lock{execution_mutex_};
         memory_.synchronize_shared_write_tracking();
         ensure_jit();
         service_pending_shared_invalidation();
         observe_shared_invalidation_epoch();
         load_state(cpu);
+        const auto effective_host_slice_budget = std::max(
+            host_slice_budget, std::chrono::nanoseconds::zero());
         callbacks_->begin(
             single_step ? 1 : ticks,
-            cooperative_execution && !single_step);
+            cooperative_execution && !single_step,
+            effective_host_slice_budget);
         try {
             if (!single_step) {
                 preload_current_artifact();
@@ -1083,6 +1150,13 @@ public:
             const auto reason = single_step ? jit_->Step() : jit_->Run();
             record_dispatch_counters();
             auto result = callbacks_->result(reason);
+            performance_counters().record_jit_host_yield(
+                result.host_yield_checks, result.host_yielded);
+            if (cooperative_execution && !single_step) {
+                performance_counters().record_jit_host_slice_budget(
+                    static_cast<std::uint64_t>(
+                        effective_host_slice_budget.count()));
+            }
             save_state(cpu);
             record_code_cache_usage();
             performance_counters().record_cpu_execution(result.ticks_consumed);
@@ -1398,6 +1472,11 @@ private:
                                  : std::chrono::steady_clock::time_point{};
         jit_ = std::make_unique<Dynarmic::A32::Jit>(config);
         recorded_dispatch_counters_ = {};
+        recorded_shared_cache_state_ = false;
+        recorded_shared_range_count_ = 0;
+        recorded_shared_descriptor_count_ = 0;
+        recorded_invalidated_descriptors_ = 0;
+        recorded_retired_code_bytes_ = 0;
         const auto elapsed =
             measure
                 ? static_cast<std::uint64_t>(
@@ -1448,6 +1527,28 @@ private:
             recorded_shared_used_bytes_ = current;
             recorded_shared_committed_bytes_ = committed;
         }
+        const auto cache_stats =
+            execution_context_->native_code_slab()->GetCacheStats();
+        if (!recorded_shared_cache_state_ ||
+            recorded_shared_range_count_ != cache_stats.range_count ||
+            recorded_shared_descriptor_count_ !=
+                cache_stats.descriptor_count ||
+            recorded_invalidated_descriptors_ !=
+                cache_stats.invalidated_descriptors ||
+            recorded_retired_code_bytes_ != cache_stats.retired_code_bytes) {
+            performance_counters().record_jit_shared_cache_state(
+                execution_context_->context_id(),
+                static_cast<std::uint64_t>(cache_stats.range_count),
+                static_cast<std::uint64_t>(cache_stats.descriptor_count),
+                cache_stats.invalidated_descriptors,
+                cache_stats.retired_code_bytes);
+            recorded_shared_cache_state_ = true;
+            recorded_shared_range_count_ = cache_stats.range_count;
+            recorded_shared_descriptor_count_ = cache_stats.descriptor_count;
+            recorded_invalidated_descriptors_ =
+                cache_stats.invalidated_descriptors;
+            recorded_retired_code_bytes_ = cache_stats.retired_code_bytes;
+        }
         const auto executor_local = executor_local_memory_bytes();
         if (executor_local != recorded_executor_local_bytes_) {
             performance_counters().record_jit_executor_memory_usage(
@@ -1472,10 +1573,14 @@ private:
             return result;
         };
         performance_counters().record_jit_dispatch(
-            delta(current.stable_link_hits,
-                  recorded_dispatch_counters_.stable_link_hits),
-            delta(current.stable_link_misses,
-                  recorded_dispatch_counters_.stable_link_misses),
+            delta(current.fast_link_hits,
+                  recorded_dispatch_counters_.fast_link_hits),
+            delta(current.fast_link_misses,
+                  recorded_dispatch_counters_.fast_link_misses),
+            delta(current.stable_table_probes,
+                  recorded_dispatch_counters_.stable_table_probes),
+            delta(current.stable_table_collisions,
+                  recorded_dispatch_counters_.stable_table_collisions),
             delta(current.rsb_hits, recorded_dispatch_counters_.rsb_hits),
             delta(current.rsb_misses,
                   recorded_dispatch_counters_.rsb_misses));
@@ -1540,6 +1645,11 @@ private:
     bool recorded_shared_memory_{};
     std::uint64_t recorded_shared_used_bytes_{};
     std::uint64_t recorded_shared_committed_bytes_{};
+    bool recorded_shared_cache_state_{};
+    std::uint64_t recorded_shared_range_count_{};
+    std::uint64_t recorded_shared_descriptor_count_{};
+    std::uint64_t recorded_invalidated_descriptors_{};
+    std::uint64_t recorded_retired_code_bytes_{};
     std::uint64_t recorded_executor_local_bytes_{};
     Dynarmic::A32::DispatchCounters recorded_dispatch_counters_{};
     std::uint64_t observed_invalidation_epoch_{};
@@ -2061,7 +2171,17 @@ CpuRunResult Cpu::run_cooperatively(
         throw std::logic_error{"CPU execution resources have been released"};
     }
     return execution_pool_->executor(execution_slot).run(
-        *this, ticks, false, true);
+        *this, ticks, false, true, default_host_cooperative_slice_budget);
+}
+
+CpuRunResult Cpu::run_cooperatively(
+    std::uint64_t ticks, std::chrono::nanoseconds host_slice_budget,
+    std::size_t execution_slot) {
+    if (!execution_pool_) {
+        throw std::logic_error{"CPU execution resources have been released"};
+    }
+    return execution_pool_->executor(execution_slot).run(
+        *this, ticks, false, true, host_slice_budget);
 }
 
 CpuRunResult Cpu::step(std::size_t execution_slot) {

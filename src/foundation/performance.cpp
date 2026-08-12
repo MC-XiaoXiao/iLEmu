@@ -304,10 +304,25 @@ void PerformanceCounters::reset(bool enabled) {
     jit_full_invalidation_requests_.store(0, std::memory_order_relaxed);
     jit_range_invalidation_requests_.store(0, std::memory_order_relaxed);
     jit_slab_generation_transitions_.store(0, std::memory_order_relaxed);
-    jit_stable_link_hits_.store(0, std::memory_order_relaxed);
-    jit_stable_link_misses_.store(0, std::memory_order_relaxed);
+    jit_shared_range_count_.store(0, std::memory_order_relaxed);
+    jit_shared_descriptor_count_.store(0, std::memory_order_relaxed);
+    jit_invalidated_descriptors_.store(0, std::memory_order_relaxed);
+    jit_retired_code_bytes_.store(0, std::memory_order_relaxed);
+    jit_fast_link_hits_.store(0, std::memory_order_relaxed);
+    jit_fast_link_misses_.store(0, std::memory_order_relaxed);
+    jit_stable_table_probes_.store(0, std::memory_order_relaxed);
+    jit_stable_table_collisions_.store(0, std::memory_order_relaxed);
     jit_rsb_hits_.store(0, std::memory_order_relaxed);
     jit_rsb_misses_.store(0, std::memory_order_relaxed);
+    jit_host_yield_checks_.store(0, std::memory_order_relaxed);
+    jit_host_yields_.store(0, std::memory_order_relaxed);
+    jit_host_slice_budget_samples_.store(0, std::memory_order_relaxed);
+    jit_host_slice_budget_total_nanoseconds_.store(
+        0, std::memory_order_relaxed);
+    jit_host_slice_budget_min_nanoseconds_.store(
+        0, std::memory_order_relaxed);
+    jit_host_slice_budget_max_nanoseconds_.store(
+        0, std::memory_order_relaxed);
     translation_blocks_.store(0, std::memory_order_relaxed);
     cpu_executions_.store(0, std::memory_order_relaxed);
     cpu_ticks_.store(0, std::memory_order_relaxed);
@@ -677,8 +692,10 @@ void PerformanceCounters::record_jit_shared_slab_usage(
     std::uint64_t committed_bytes, std::uint64_t used_bytes) {
     if (!enabled()) return;
     std::lock_guard lock{jit_memory_mutex_};
-    jit_shared_slabs_[slab_id] =
-        SharedSlabUsage{reserved_bytes, committed_bytes, used_bytes};
+    auto& slab = jit_shared_slabs_[slab_id];
+    slab.reserved_bytes = reserved_bytes;
+    slab.committed_bytes = committed_bytes;
+    slab.used_bytes = used_bytes;
     std::uint64_t reserved{};
     std::uint64_t committed{};
     std::uint64_t used{};
@@ -706,6 +723,49 @@ void PerformanceCounters::record_jit_shared_slab_usage(
                peak, used, std::memory_order_relaxed,
                std::memory_order_relaxed)) {
     }
+    refresh_jit_shared_cache_stats_locked();
+}
+
+void PerformanceCounters::record_jit_shared_cache_state(
+    std::uint64_t slab_id, std::uint64_t range_count,
+    std::uint64_t descriptor_count, std::uint64_t invalidated_descriptors,
+    std::uint64_t retired_code_bytes) {
+    if (!enabled()) return;
+    std::lock_guard lock{jit_memory_mutex_};
+    auto& slab = jit_shared_slabs_[slab_id];
+    slab.range_count = range_count;
+    slab.descriptor_count = descriptor_count;
+    slab.invalidated_descriptors = invalidated_descriptors;
+    slab.retired_code_bytes = retired_code_bytes;
+    refresh_jit_shared_cache_stats_locked();
+}
+
+void PerformanceCounters::refresh_jit_shared_cache_stats_locked() {
+    std::uint64_t ranges{};
+    std::uint64_t descriptors{};
+    std::uint64_t invalidated{};
+    std::uint64_t retired{};
+    for (const auto& [id, usage] : jit_shared_slabs_) {
+        static_cast<void>(id);
+        ranges = std::min(std::numeric_limits<std::uint64_t>::max() - ranges,
+                          usage.range_count) +
+                 ranges;
+        descriptors =
+            std::min(std::numeric_limits<std::uint64_t>::max() - descriptors,
+                     usage.descriptor_count) +
+            descriptors;
+        invalidated =
+            std::min(std::numeric_limits<std::uint64_t>::max() - invalidated,
+                     usage.invalidated_descriptors) +
+            invalidated;
+        retired = std::min(std::numeric_limits<std::uint64_t>::max() - retired,
+                           usage.retired_code_bytes) +
+                  retired;
+    }
+    jit_shared_range_count_.store(ranges, std::memory_order_relaxed);
+    jit_shared_descriptor_count_.store(descriptors, std::memory_order_relaxed);
+    jit_invalidated_descriptors_.store(invalidated, std::memory_order_relaxed);
+    jit_retired_code_bytes_.store(retired, std::memory_order_relaxed);
 }
 
 void PerformanceCounters::record_jit_executor_memory_usage(
@@ -784,6 +844,7 @@ void PerformanceCounters::release_jit_memory_context(
     jit_shared_used_bytes_.store(used, std::memory_order_relaxed);
     jit_code_cache_current_bytes_.store(used, std::memory_order_relaxed);
     jit_executor_local_bytes_.store(local, std::memory_order_relaxed);
+    refresh_jit_shared_cache_stats_locked();
 }
 
 void PerformanceCounters::record_jit_shared_invalidation(bool full) {
@@ -802,15 +863,51 @@ void PerformanceCounters::record_jit_slab_generation_transition() {
 }
 
 void PerformanceCounters::record_jit_dispatch(
-    std::uint64_t stable_link_hits, std::uint64_t stable_link_misses,
-    std::uint64_t rsb_hits, std::uint64_t rsb_misses) {
+    std::uint64_t fast_link_hits, std::uint64_t fast_link_misses,
+    std::uint64_t stable_table_probes,
+    std::uint64_t stable_table_collisions, std::uint64_t rsb_hits,
+    std::uint64_t rsb_misses) {
     if (!enabled()) return;
-    jit_stable_link_hits_.fetch_add(stable_link_hits,
+    jit_fast_link_hits_.fetch_add(fast_link_hits, std::memory_order_relaxed);
+    jit_fast_link_misses_.fetch_add(fast_link_misses,
                                     std::memory_order_relaxed);
-    jit_stable_link_misses_.fetch_add(stable_link_misses,
-                                      std::memory_order_relaxed);
+    jit_stable_table_probes_.fetch_add(stable_table_probes,
+                                       std::memory_order_relaxed);
+    jit_stable_table_collisions_.fetch_add(stable_table_collisions,
+                                           std::memory_order_relaxed);
     jit_rsb_hits_.fetch_add(rsb_hits, std::memory_order_relaxed);
     jit_rsb_misses_.fetch_add(rsb_misses, std::memory_order_relaxed);
+}
+
+void PerformanceCounters::record_jit_host_yield(
+    std::uint64_t checks, bool yielded) {
+    if (!enabled()) return;
+    jit_host_yield_checks_.fetch_add(checks, std::memory_order_relaxed);
+    if (yielded) {
+        jit_host_yields_.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void PerformanceCounters::record_jit_host_slice_budget(
+    std::uint64_t nanoseconds) {
+    if (!enabled()) return;
+    jit_host_slice_budget_samples_.fetch_add(1, std::memory_order_relaxed);
+    jit_host_slice_budget_total_nanoseconds_.fetch_add(
+        nanoseconds, std::memory_order_relaxed);
+    auto minimum = jit_host_slice_budget_min_nanoseconds_.load(
+        std::memory_order_relaxed);
+    while ((minimum == 0 || nanoseconds < minimum) &&
+           !jit_host_slice_budget_min_nanoseconds_.compare_exchange_weak(
+               minimum, nanoseconds, std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+    }
+    auto maximum = jit_host_slice_budget_max_nanoseconds_.load(
+        std::memory_order_relaxed);
+    while (nanoseconds > maximum &&
+           !jit_host_slice_budget_max_nanoseconds_.compare_exchange_weak(
+               maximum, nanoseconds, std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+    }
 }
 
 void PerformanceCounters::record_translation_block() {
@@ -1516,13 +1613,40 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
         jit_range_invalidation_requests_.load(std::memory_order_relaxed);
     result.jit_slab_generation_transitions =
         jit_slab_generation_transitions_.load(std::memory_order_relaxed);
-    result.jit_stable_link_hits =
-        jit_stable_link_hits_.load(std::memory_order_relaxed);
-    result.jit_stable_link_misses =
-        jit_stable_link_misses_.load(std::memory_order_relaxed);
+    result.jit_shared_range_count =
+        jit_shared_range_count_.load(std::memory_order_relaxed);
+    result.jit_shared_descriptor_count =
+        jit_shared_descriptor_count_.load(std::memory_order_relaxed);
+    result.jit_invalidated_descriptors =
+        jit_invalidated_descriptors_.load(std::memory_order_relaxed);
+    result.jit_retired_code_bytes =
+        jit_retired_code_bytes_.load(std::memory_order_relaxed);
+    result.jit_fast_link_hits =
+        jit_fast_link_hits_.load(std::memory_order_relaxed);
+    result.jit_fast_link_misses =
+        jit_fast_link_misses_.load(std::memory_order_relaxed);
+    result.jit_stable_table_probes =
+        jit_stable_table_probes_.load(std::memory_order_relaxed);
+    result.jit_stable_table_collisions =
+        jit_stable_table_collisions_.load(std::memory_order_relaxed);
     result.jit_rsb_hits = jit_rsb_hits_.load(std::memory_order_relaxed);
     result.jit_rsb_misses =
         jit_rsb_misses_.load(std::memory_order_relaxed);
+    result.jit_host_yield_checks =
+        jit_host_yield_checks_.load(std::memory_order_relaxed);
+    result.jit_host_yields =
+        jit_host_yields_.load(std::memory_order_relaxed);
+    result.jit_host_slice_budget_samples =
+        jit_host_slice_budget_samples_.load(std::memory_order_relaxed);
+    result.jit_host_slice_budget_total_nanoseconds =
+        jit_host_slice_budget_total_nanoseconds_.load(
+            std::memory_order_relaxed);
+    result.jit_host_slice_budget_min_nanoseconds =
+        jit_host_slice_budget_min_nanoseconds_.load(
+            std::memory_order_relaxed);
+    result.jit_host_slice_budget_max_nanoseconds =
+        jit_host_slice_budget_max_nanoseconds_.load(
+            std::memory_order_relaxed);
     result.translation_blocks =
         translation_blocks_.load(std::memory_order_relaxed);
     result.cpu_executions = cpu_executions_.load(std::memory_order_relaxed);
@@ -1765,6 +1889,11 @@ std::string format_performance_summary(
     std::uint64_t fallback_total = 0;
     for (const auto count : snapshot.fallback_reasons)
         fallback_total += count;
+    const auto host_budget_average =
+        snapshot.jit_host_slice_budget_samples == 0
+            ? 0
+            : snapshot.jit_host_slice_budget_total_nanoseconds /
+                  snapshot.jit_host_slice_budget_samples;
 
     std::ostringstream text;
     text << "[perf] jit=" << snapshot.jit_instances
@@ -1788,10 +1917,24 @@ std::string format_performance_summary(
          << snapshot.jit_range_invalidation_requests
          << " jit-slab-generations="
          << snapshot.jit_slab_generation_transitions
-         << " jit-stable-link=" << snapshot.jit_stable_link_hits << "/"
-         << snapshot.jit_stable_link_misses
+         << " jit-cache-ranges=" << snapshot.jit_shared_range_count
+         << " jit-cache-descriptors=" << snapshot.jit_shared_descriptor_count
+         << " jit-invalidated-descriptors="
+         << snapshot.jit_invalidated_descriptors
+         << " jit-retired-code-bytes=" << snapshot.jit_retired_code_bytes
+         << " jit-fast-link=" << snapshot.jit_fast_link_hits << "/"
+         << snapshot.jit_fast_link_misses
+         << " jit-stable-table-collision-rate="
+         << snapshot.jit_stable_table_collisions << "/"
+         << snapshot.jit_stable_table_probes
          << " jit-rsb=" << snapshot.jit_rsb_hits << "/"
          << snapshot.jit_rsb_misses
+         << " jit-host-yield-checks=" << snapshot.jit_host_yield_checks
+         << " jit-host-yields=" << snapshot.jit_host_yields
+         << " jit-host-budget-ns="
+         << snapshot.jit_host_slice_budget_min_nanoseconds << "/"
+         << host_budget_average << "/"
+         << snapshot.jit_host_slice_budget_max_nanoseconds
          << " translation-blocks=" << snapshot.translation_blocks
          << " cpu-exec=" << snapshot.cpu_executions
          << " cpu-ticks=" << snapshot.cpu_ticks

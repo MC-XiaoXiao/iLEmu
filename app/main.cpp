@@ -743,6 +743,7 @@ struct PreparedGuestSlice {
   std::size_t thread_index{};
   Cpu *cpu{};
   std::uint64_t tick_budget{};
+  std::chrono::nanoseconds host_slice_budget{};
   bool single_step{};
   bool deferred_svc{};
   CpuRunResult result;
@@ -798,7 +799,8 @@ public:
           prepared.single_step
               ? prepared.cpu->step(prepared.scheduled.processor)
               : prepared.cpu->run_cooperatively(
-                    prepared.tick_budget, prepared.scheduled.processor);
+                    prepared.tick_budget, prepared.host_slice_budget,
+                    prepared.scheduled.processor);
     } catch (...) {
       prepared.error = std::current_exception();
     }
@@ -3589,6 +3591,47 @@ void boot(const std::vector<std::string> &args, Output &output) {
       }
     }
     auto batch_ticks = remaining_ticks;
+    const auto host_slice_now = std::chrono::steady_clock::now();
+    const auto host_control_deadline = next_host_control_deadline();
+    const auto host_slice_budget = [&]() {
+      constexpr auto minimum = std::chrono::duration_cast<
+          std::chrono::nanoseconds>(std::chrono::microseconds{250});
+      constexpr auto nominal = std::chrono::duration_cast<
+          std::chrono::nanoseconds>(std::chrono::milliseconds{2});
+      constexpr auto maximum = std::chrono::duration_cast<
+          std::chrono::nanoseconds>(std::chrono::milliseconds{4});
+      constexpr auto translation_safety = std::chrono::duration_cast<
+          std::chrono::nanoseconds>(std::chrono::microseconds{100});
+      auto budget = nominal;
+      const auto measured_block = std::chrono::nanoseconds{
+          static_cast<std::chrono::nanoseconds::rep>(
+              performance_counters().jit_block_compile_p99_nanoseconds())};
+      if (measured_block > std::chrono::nanoseconds::zero()) {
+        budget = std::min(
+            maximum,
+            std::max(budget, measured_block + translation_safety));
+      }
+      const auto limit_budget = [&](std::chrono::nanoseconds until) {
+        if (until <= std::chrono::nanoseconds::zero()) {
+          budget = minimum;
+          return;
+        }
+        budget = std::min(
+            budget,
+            std::max(minimum, until / 2));
+      };
+      if (host_control_deadline) {
+        limit_budget(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            *host_control_deadline - host_slice_now));
+      }
+      if (realtime_pacer) {
+        if (const auto display_deadline =
+                initial_runtime->kernel->next_display_vsync_deadline()) {
+          limit_budget(realtime_pacer->delay_until(*display_deadline));
+        }
+      }
+      return std::max(minimum, std::min(maximum, budget));
+    }();
     for (const auto &scheduled_value : scheduled_batch) {
       if (!scheduler.contains(scheduled_value.thread))
         continue;
@@ -3631,6 +3674,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           index,
           &cpu,
           slice,
+          host_slice_budget,
           debug_request && debug_request->kind == GdbResumeKind::Step,
           false,
       });
@@ -3689,9 +3733,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
           scheduled->thread, result.ticks_consumed, result.svc_calls);
       if (prepared.deferred_svc && result.svc) {
         runtime.kernel->dispatch(cpu, *result.svc);
-        // UserDefined2 stopped the Dynarmic worker at the SVC. Only
-        // the reason explicitly requested by the serial kernel
-        // dispatch represents the guest thread's scheduler state.
+        // UserDefined2 is shared by deferred SVC and host cooperation. The
+        // explicit host-only marker remains attached to the result; only the
+        // reason explicitly requested by the serial kernel dispatch represents
+        // the guest thread's scheduler state here.
         result.reason = cpu.consume_requested_halt_reason();
       }
       scheduler_round_ticks =
@@ -3820,6 +3865,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
               scheduler.depress(scheduled->thread, duration_ticks));
         }
         completion = XnuSliceCompletion::Yield;
+      } else if (result.host_yielded) {
+        // Host cooperation is not a Guest AST or a guest scheduler yield.
+        // Keep the runnable thread at the head of its current quantum.
+        completion = XnuSliceCompletion::Continue;
       } else if (Dynarmic::Has(result.reason,
                                Dynarmic::HaltReason::UserDefined2)) {
         // XNU AST preemption retains the current quantum. The
