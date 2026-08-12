@@ -10,37 +10,47 @@ namespace {
 [[nodiscard]] unsigned work_priority(HostWorkKind kind) {
   switch (kind) {
   case HostWorkKind::Maintenance:
-    return 3;
+    return 0;
   case HostWorkKind::BackgroundCompile:
     return 1;
   case HostWorkKind::OfflineCompile:
     return 2;
+  case HostWorkKind::ArtifactCompaction:
+    return 3;
   }
-  return 2;
+  return 3;
 }
 
-[[nodiscard]] bool is_deferred_work(HostWorkKind kind) {
+[[nodiscard]] bool is_budgeted_compile(HostWorkKind kind) {
   return kind == HostWorkKind::BackgroundCompile ||
-         kind == HostWorkKind::OfflineCompile ||
-         kind == HostWorkKind::Maintenance;
+         kind == HostWorkKind::OfflineCompile;
 }
 
 [[nodiscard]] bool is_interactive_work(HostWorkKind kind) {
   return kind == HostWorkKind::BackgroundCompile;
 }
 
+[[nodiscard]] bool is_offline_work(HostWorkKind kind) {
+  return kind == HostWorkKind::OfflineCompile;
+}
+
+[[nodiscard]] bool is_best_effort_work(HostWorkKind kind) {
+  return is_budgeted_compile(kind) ||
+         kind == HostWorkKind::ArtifactCompaction;
+}
+
 } // namespace
 
 bool HostResourceController::task_precedes(const Task &left,
                                            const Task &right) {
-  if (left.deadline && right.deadline && *left.deadline != *right.deadline)
-    return *left.deadline < *right.deadline;
-  if (left.deadline != right.deadline)
-    return left.deadline.has_value();
   const auto left_priority = work_priority(left.kind);
   const auto right_priority = work_priority(right.kind);
   if (left_priority != right_priority)
     return left_priority < right_priority;
+  if (left.deadline && right.deadline && *left.deadline != *right.deadline)
+    return *left.deadline < *right.deadline;
+  if (left.deadline != right.deadline)
+    return left.deadline.has_value();
   return left.sequence < right.sequence;
 }
 
@@ -70,12 +80,12 @@ std::shared_ptr<HostWorkToken> HostResourceController::submit(
   const auto now = Clock::now();
   const std::lock_guard lock{mutex_};
   if (stopping_ || workers_.empty() ||
-      (is_deferred_work(kind) && next_deadline_ &&
+      (is_best_effort_work(kind) && next_deadline_ &&
        *next_deadline_ <= now + budget_.deadline_reserve)) {
     ++rejected_;
     return nullptr;
   }
-  if (is_deferred_work(kind)) {
+  if (is_budgeted_compile(kind)) {
     const auto limit = is_interactive_work(kind)
                            ? budget_.interactive_compile_budget
                            : budget_.offline_compile_budget;
@@ -167,10 +177,12 @@ void HostResourceController::worker_loop() {
             iterator = candidate;
             break;
           }
-          const auto budgeted = is_deferred_work(candidate->second.kind);
-          if (!stopping_ && budgeted) {
+          const auto budgeted = is_budgeted_compile(candidate->second.kind);
+          if (!stopping_ && is_best_effort_work(candidate->second.kind)) {
             if (background_deadline_too_close)
               continue;
+          }
+          if (!stopping_ && budgeted) {
             const auto interactive =
                 is_interactive_work(candidate->second.kind);
             const auto limit = interactive
@@ -203,7 +215,7 @@ void HostResourceController::worker_loop() {
         if (is_interactive_work(task.kind)) {
           interactive_reserved_ += task.estimated_cost;
           task.budget_reserved = true;
-        } else if (is_deferred_work(task.kind)) {
+        } else if (is_offline_work(task.kind)) {
           offline_reserved_ += task.estimated_cost;
           task.budget_reserved = true;
         }
@@ -230,7 +242,7 @@ void HostResourceController::worker_loop() {
         if (is_interactive_work(task.kind)) {
           interactive_reserved_ -= task.estimated_cost;
           interactive_work_ += elapsed;
-        } else if (is_deferred_work(task.kind)) {
+        } else if (is_offline_work(task.kind)) {
           offline_reserved_ -= task.estimated_cost;
           offline_work_ += elapsed;
         }

@@ -19,6 +19,7 @@ enum class HostWorkKind : std::uint8_t {
   BackgroundCompile,
   OfflineCompile,
   Maintenance,
+  ArtifactCompaction,
 };
 
 struct HostResourceBudget {

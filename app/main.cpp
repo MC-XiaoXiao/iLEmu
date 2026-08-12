@@ -4140,7 +4140,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           return;
         }
         artifact_compaction_task = host_resources.submit(
-            HostWorkKind::Maintenance, host_compile_deadline,
+            HostWorkKind::ArtifactCompaction, host_compile_deadline,
             [jit_artifacts] { static_cast<void>(jit_artifacts->compact()); },
             std::chrono::milliseconds{100});
       };
