@@ -194,7 +194,8 @@ public:
             translation_constant_dependencies_.clear();
             constant_dependency_failed_ = false;
         }
-        if (translation_block_ == &ir.block) {
+        if (translation_block_ == &ir.block &&
+            (portable_generation_location_ || explicit_artifact_publication_)) {
             const auto page = address & ~(AddressSpace::page_size - 1U);
             if (std::find(translation_code_pages_.begin(),
                           translation_code_pages_.end(), page) ==
@@ -313,7 +314,9 @@ private:
     void record_constant_dependency(
         std::uint32_t address, std::uint32_t size,
         std::uint64_t value) {
-        if (translation_block_ == nullptr ||
+        if ((!portable_generation_location_ &&
+             !explicit_artifact_publication_) ||
+            translation_block_ == nullptr ||
             constant_dependency_failed_) {
             return;
         }
