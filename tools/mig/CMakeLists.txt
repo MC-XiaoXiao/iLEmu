@@ -7,11 +7,11 @@ target_compile_options(ilemu_mig_id_gen PRIVATE
     $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Wshadow>)
 
 set(ILEMU_XNU792_DIR
-    "${PROJECT_SOURCE_DIR}/sources/xnu-792.24.17")
+    "${ILEMU_SOURCES_DIR}/xnu-792.24.17")
 set(ILEMU_CONFIGD137_DIR
-    "${PROJECT_SOURCE_DIR}/sources/configd-137.3")
+    "${ILEMU_SOURCES_DIR}/configd-137.3")
 set(ILEMU_LAUNCHD257_DIR
-    "${PROJECT_SOURCE_DIR}/sources/launchd-257/launchd/src")
+    "${ILEMU_SOURCES_DIR}/launchd-257/launchd/src")
 set(ILEMU_MIG_GENERATED_DIR
     "${PROJECT_BINARY_DIR}/generated/ilemu")
 set(ILEMU_MIG_GENERATED_HEADERS)
@@ -26,14 +26,14 @@ function(ilemu_generate_mig_ids name definition)
                 --namespace "${name}"
                 --include-dir "${ILEMU_XNU792_DIR}/osfmk"
                 --include-dir "${ILEMU_LAUNCHD257_DIR}"
-                --type-def "${PROJECT_SOURCE_DIR}/sources/xnu/osfmk/mach/machine/machine_types.defs"
+                --type-def "${ILEMU_SOURCES_DIR}/xnu/osfmk/mach/machine/machine_types.defs"
                 # launchd-257's private header typedefs this as char*, while
                 # job_mig_spawn receives the generated vm_offset_t/count pair.
                 --type-alias "_internal_string_t=pointer_t"
         DEPENDS ilemu_mig_id_gen "${definition}"
                 "${ILEMU_XNU792_DIR}/osfmk/mach/std_types.defs"
                 "${ILEMU_XNU792_DIR}/osfmk/mach/mach_types.defs"
-                "${PROJECT_SOURCE_DIR}/sources/xnu/osfmk/mach/machine/machine_types.defs"
+                "${ILEMU_SOURCES_DIR}/xnu/osfmk/mach/machine/machine_types.defs"
                 "${ILEMU_LAUNCHD257_DIR}/launchd_mig_types.defs"
         VERBATIM
         COMMENT "Generating ${name} MIG metadata from source definitions")

@@ -4,7 +4,7 @@ add_library(ilemu_xnu_adapter STATIC
 add_library(iLEmu::xnu_adapter ALIAS ilemu_xnu_adapter)
 add_dependencies(ilemu_xnu_adapter ilemu_mig_metadata)
 target_include_directories(ilemu_xnu_adapter PUBLIC
-    $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
+    ${ILEMU_PROJECT_INCLUDE_DIRS}
     $<BUILD_INTERFACE:${PROJECT_BINARY_DIR}/generated>)
 target_compile_features(ilemu_xnu_adapter PUBLIC cxx_std_20)
 target_compile_options(ilemu_xnu_adapter PRIVATE

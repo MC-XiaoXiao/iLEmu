@@ -2,10 +2,10 @@
 # and calls the firmware libSystem resolver APIs. Modern ld64.lld no longer
 # supports ARM32, so this optional target uses the cctools-port linker produced
 # by tools/bootstrap_armv6_ld.sh (or a caller-supplied compatible ld64).
-set(ILEMU_ROOTFS "${PROJECT_SOURCE_DIR}/build/rootfs" CACHE PATH
+set(ILEMU_ROOTFS "${ILEMU_WORKSPACE_DIR}/build/rootfs" CACHE PATH
     "Extracted iPhoneOS root filesystem used by guest integration probes")
 set(ILEMU_ARMV6_LD
-    "${PROJECT_SOURCE_DIR}/build/toolchain/bin/arm-apple-darwin9-ld"
+    "${ILEMU_WORKSPACE_DIR}/build/toolchain/bin/arm-apple-darwin9-ld"
     CACHE FILEPATH "cctools ld64 with ARMv6 output support")
 find_program(ILEMU_GUEST_CLANG NAMES clang)
 set(ILEMU_GUEST_DNS_PROBE
