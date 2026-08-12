@@ -1,0 +1,7 @@
+[submodule "external/dynarmic"]
+	path = external/dynarmic
+	url = https://github.com/MC-XiaoXiao/dynarmic.git
+
+[submodule "external/ext-boost"]
+	path = external/ext-boost
+	url = https://github.com/MC-XiaoXiao/ext-boost.git
