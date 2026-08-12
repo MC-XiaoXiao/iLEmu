@@ -2229,7 +2229,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   Runtime *initial_runtime = initial.get();
   std::error_code catalog_root_error;
   const auto catalog_root =
-      std::filesystem::weakly_canonical(*rootfs, catalog_root_error);
+      std::filesystem::absolute(*rootfs, catalog_root_error).lexically_normal();
   HostFileWatcher host_file_watcher{
       catalog_root_error ? std::filesystem::path{*rootfs} : catalog_root};
   output.line(std::string{"[host-watch] enabled="} +

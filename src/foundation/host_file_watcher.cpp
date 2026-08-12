@@ -50,12 +50,8 @@ constexpr std::size_t maximum_dirty_subtrees = 64;
 [[nodiscard]] std::filesystem::path normalize_path(
     const std::filesystem::path &path) {
   std::error_code error;
-  auto normalized = std::filesystem::weakly_canonical(path, error);
-  if (error) {
-    error.clear();
-    normalized = std::filesystem::absolute(path, error);
-  }
-  return (error ? path : normalized).lexically_normal();
+  const auto absolute = std::filesystem::absolute(path, error);
+  return (error ? path : absolute).lexically_normal();
 }
 
 [[nodiscard]] bool is_in_subtree(const std::filesystem::path &path,
@@ -265,10 +261,9 @@ void HostFileWatcher::add_watch(const std::filesystem::path &directory) {
     queue_dirty_subtree(directory);
     return;
   }
-  // The initial recursive iterator is rooted at an already canonical path;
-  // canonicalizing every directory here would turn watcher setup into a
-  // second tree walk. New directories discovered from inotify are normalized
-  // before they reach this function.
+  // Keep the watched directory as a namespace path. Resolving a symlink here
+  // would make an inotify event for the alias indistinguishable from an event
+  // for its target before the catalog can update both records.
   watches_[watch_descriptor] = normalized;
   watched_directories_.insert(normalized);
 #else
@@ -455,13 +450,23 @@ HostFileWatcher::AsyncCompletion HostFileWatcher::inspect_path(
                              AsyncCompletionKind::Retry, std::nullopt, false,
                              0};
 #if defined(__linux__)
-  struct stat path_stat {};
-  if (::stat(path.c_str(), &path_stat) != 0) {
-    static_cast<void>(registry.publish(path, GuestFileMutationKind::Unlink));
-    completion.kind = AsyncCompletionKind::Changed;
+  int descriptor_value = -1;
+  do {
+    descriptor_value = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  } while (descriptor_value < 0 && errno == EINTR);
+  const OwnedFileDescriptor descriptor{descriptor_value};
+  if (descriptor.get() < 0) {
+    if (errno == ENOENT || errno == ENOTDIR) {
+      static_cast<void>(
+          registry.publish(path, GuestFileMutationKind::Unlink));
+      completion.kind = AsyncCompletionKind::Changed;
+    }
     return completion;
   }
-  const auto observed_generation = generation_from_stat(path_stat);
+
+  struct stat before {};
+  if (::fstat(descriptor.get(), &before) != 0) return completion;
+  const auto observed_generation = generation_from_stat(before);
   const auto current_generation = registry.current(path);
   // Guest VFS writes already publish this exact generation through the shared
   // registry. Inotify also reports those host writes; discard the duplicate
@@ -473,35 +478,29 @@ HostFileWatcher::AsyncCompletion HostFileWatcher::inspect_path(
     completion.kind = AsyncCompletionKind::Discarded;
     return completion;
   }
-  if (!S_ISREG(path_stat.st_mode)) {
+  if (!S_ISREG(before.st_mode)) {
     static_cast<void>(registry.publish(path, mutation));
     completion.kind = AsyncCompletionKind::Changed;
     return completion;
   }
 
-  const OwnedFileDescriptor descriptor{
-      ::open(path.c_str(), O_RDONLY | O_CLOEXEC)};
-  if (descriptor.get() < 0) return completion;
-  struct stat before {};
   struct stat after {};
-  const auto opened = ::fstat(descriptor.get(), &before) == 0;
   std::optional<std::uint64_t> generation_revision;
-  if (opened && current_generation && current_generation->generation &&
+  if (current_generation && current_generation->generation &&
       *current_generation->generation == observed_generation) {
     generation_revision = current_generation->revision;
   }
   const auto identity_result =
-      opened ? shared_file_identity(path, descriptor.get(), observed_generation,
-                                    generation_revision)
-             : SharedFileIdentityResult{};
+      shared_file_identity(path, descriptor.get(), observed_generation,
+                           generation_revision);
   const auto &identity = identity_result.content_identity;
-  if (opened && identity && identity_result.computed) {
+  if (identity && identity_result.computed) {
     completion.sha_computed = true;
     if (before.st_size > 0) {
       completion.sha_bytes = static_cast<std::uint64_t>(before.st_size);
     }
   }
-  const auto stable = opened && identity &&
+  const auto stable = identity &&
                       ::fstat(descriptor.get(), &after) == 0 &&
                       generation_from_stat(before) ==
                           generation_from_stat(after);

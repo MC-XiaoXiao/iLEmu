@@ -65,6 +65,12 @@ std::atomic<std::uint64_t> next_reservation_identity{1};
   return (error ? path.lexically_normal() : canonical).string();
 }
 
+[[nodiscard]] std::string namespace_path(const std::filesystem::path &path) {
+  std::error_code error;
+  const auto absolute = std::filesystem::absolute(path, error);
+  return (error ? path : absolute).lexically_normal().string();
+}
+
 struct GlobalIdentityRecord {
   GuestFileGeneration generation;
   std::optional<std::uint64_t> generation_revision;
@@ -323,6 +329,14 @@ void invalidate_global_identity(const std::string &normalized_path) {
   const std::scoped_lock lock{global_identity_mutex};
   erase_global_identity_locked(normalized_path);
   global_identity_flights.erase(normalized_path);
+  // Generation-registry keys intentionally retain the lexical namespace path,
+  // while the shared identity cache is keyed by the resolved file object.
+  // Invalidate both views for an existing path.  If the path is a symlink,
+  // this resolves the current target without changing the namespace key.
+  const auto object_path = stable_path(normalized_path);
+  if (object_path == normalized_path) return;
+  erase_global_identity_locked(object_path);
+  global_identity_flights.erase(object_path);
 }
 
 [[nodiscard]] unsigned mutation_priority(GuestFileMutationKind mutation) {
@@ -540,11 +554,8 @@ ImmutableSnapshotStats immutable_snapshot_stats() {
 std::string GuestFileGenerationRegistry::normalize_path(
     const std::filesystem::path &path) {
   std::error_code error;
-  auto absolute = std::filesystem::absolute(path, error);
-  if (error) absolute = path;
-  error.clear();
-  const auto canonical = std::filesystem::weakly_canonical(absolute, error);
-  return (error ? absolute.lexically_normal() : canonical).string();
+  const auto absolute = std::filesystem::absolute(path, error);
+  return (error ? path : absolute).lexically_normal().string();
 }
 
 std::optional<GuestFileGeneration>
@@ -676,9 +687,19 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record_descriptor(
     const std::filesystem::path &path, const GuestFileGeneration &generation,
     GuestFileMutationKind mutation) {
   const auto key = normalize_path(path);
+  // The descriptor may have outlived an atomic replacement or unlink.  A
+  // descriptor opened by the watcher is current only if the pathname still
+  // resolves to the same vnode when publication reaches this point; this
+  // check prevents detached Guest writeback from resurrecting an old path.
+  const auto current_path_generation = read_generation(path);
   std::lock_guard lock{mutex_};
+  const auto current_entry = entries_.find(key);
+  if (!current_path_generation || *current_path_generation != generation) {
+    if (current_entry != entries_.end()) return current_entry->second.snapshot;
+    return {};
+  }
   std::optional<GuestFileGenerationSnapshot> result;
-  bool matched_inode = false;
+  bool matched_key = false;
   for (auto iterator = entries_.begin(); iterator != entries_.end();
        ++iterator) {
     auto &[entry_path, entry] = *iterator;
@@ -687,7 +708,7 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record_descriptor(
         entry.snapshot.generation->inode != generation.inode) {
       continue;
     }
-    matched_inode = true;
+    if (entry_path == key) matched_key = true;
     touch_entry_locked(iterator);
     entry.snapshot = GuestFileGenerationSnapshot{
         next_revision_++, generation, mutation};
@@ -695,14 +716,11 @@ GuestFileGenerationSnapshot GuestFileGenerationRegistry::record_descriptor(
     enqueue_mutation_locked(entry_path, mutation);
     if (entry_path == key || !result) result = entry.snapshot;
   }
-  if (!matched_inode) {
-    // A descriptor can outlive an atomic rename/unlink. If the pathname is
-    // already known with another vnode (or no vnode), this write belongs to
-    // the detached old generation and must not resurrect it at the pathname.
-    if (const auto current = entries_.find(key); current != entries_.end()) {
-      evict_entries_locked();
-      return current->second.snapshot;
-    }
+  if (!matched_key) {
+    // Descriptor identity and namespace identity are separate. A descriptor
+    // may refer to an inode already known through another alias, but the
+    // event's pathname still needs its own generation record. The current-path
+    // check above has already ruled out a detached old vnode.
     auto &entry = ensure_entry_locked(key)->second;
     entry.snapshot = GuestFileGenerationSnapshot{
         next_revision_++, generation, mutation};
@@ -1121,6 +1139,9 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     return std::nullopt;
   }
   const auto modified = file_time_from_stat(file_stat);
+  // Keep the pathname used by the guest namespace separate from the
+  // canonical object-identity key used for shared hashes and descriptors.
+  const auto namespace_key = namespace_path(path);
   const auto normalized_path = stable_path(path);
   std::shared_ptr<GuestFileGenerationRegistry> generation_registry;
   std::uint64_t generation_revision = 0;
@@ -1131,7 +1152,7 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   if (generation_registry) {
     generation_revision =
         generation_registry
-            ->observe_normalized(normalized_path, generation)
+            ->observe_normalized(namespace_key, generation)
             .revision;
   }
   std::optional<ContentIdentity> content_identity;
