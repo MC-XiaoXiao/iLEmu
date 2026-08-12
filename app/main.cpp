@@ -2364,6 +2364,30 @@ void boot(const std::vector<std::string> &args, Output &output) {
     std::atomic<std::uint64_t> failed{};
     std::atomic<std::uint64_t> deadline_stops{};
   } precompile_outcomes;
+  enum class PrecompileScheduleSkip : std::uint8_t {
+    NoRuntime,
+    TaskBusy,
+    NoPhase,
+    MemoryPressure,
+    DisplayQuiet,
+    GuestNotIdle,
+    DeadlineReserve,
+    ZeroBudget,
+    HostRejected,
+    Count,
+  };
+  constexpr auto precompile_schedule_skip_count =
+      static_cast<std::size_t>(PrecompileScheduleSkip::Count);
+  struct PrecompileBudgetDecision {
+    std::uint64_t budget{};
+    PrecompileScheduleSkip zero_reason{PrecompileScheduleSkip::ZeroBudget};
+  };
+  std::array<std::uint64_t, precompile_schedule_skip_count>
+      precompile_schedule_skips{};
+  const auto record_precompile_schedule_skip =
+      [&precompile_schedule_skips](PrecompileScheduleSkip reason) {
+        ++precompile_schedule_skips[static_cast<std::size_t>(reason)];
+      };
   const auto record_precompile_outcomes =
       [&precompile_outcomes](const JitPrecompileBatchResult &result) {
         precompile_outcomes.attempted.fetch_add(result.attempted,
@@ -4418,15 +4442,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
         if (memory_pressure &&
             (work_kind == HostWorkKind::OfflineCompile ||
              work_kind == HostWorkKind::BackgroundCompile))
-          return std::uint64_t{0};
+          return PrecompileBudgetDecision{
+              0U, PrecompileScheduleSkip::MemoryPressure};
         if (!realtime_pacer)
-          return memory_pressure
-                     ? idle_precompile_time_budget_ns / 4U
-                     : idle_precompile_time_budget_ns;
+          return PrecompileBudgetDecision{
+              memory_pressure ? idle_precompile_time_budget_ns / 4U
+                               : idle_precompile_time_budget_ns,
+              PrecompileScheduleSkip::ZeroBudget};
         const auto now = std::chrono::steady_clock::now();
         if (now - last_display_submission <
             idle_precompile_display_quiet_period) {
-          return std::uint64_t{0};
+          return PrecompileBudgetDecision{
+              0U, PrecompileScheduleSkip::DisplayQuiet};
         }
         auto available = std::chrono::nanoseconds::max();
         if (next_deadline) {
@@ -4434,18 +4461,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
         } else if (!guest_idle_since ||
                    now - *guest_idle_since <
                        idle_precompile_no_deadline_quiet_period) {
-          return std::uint64_t{0};
+          return PrecompileBudgetDecision{
+              0U, PrecompileScheduleSkip::GuestNotIdle};
         }
         available = realtime_pacer->limit_delay(
             available, next_host_control_deadline());
         if (available <= idle_precompile_deadline_reserve)
-          return std::uint64_t{0};
+          return PrecompileBudgetDecision{
+              0U, PrecompileScheduleSkip::DeadlineReserve};
         const auto budget = std::chrono::duration_cast<std::chrono::nanoseconds>(
             available - idle_precompile_deadline_reserve);
         const auto paced_budget = std::min(
             idle_precompile_time_budget_ns,
             static_cast<std::uint64_t>(budget.count()));
-        return memory_pressure ? paced_budget / 4U : paced_budget;
+        return PrecompileBudgetDecision{
+            memory_pressure ? paced_budget / 4U : paced_budget,
+            PrecompileScheduleSkip::ZeroBudget};
       };
       const auto next_host_deadline = next_host_control_deadline();
       std::optional<HostResourceController::Clock::time_point>
@@ -4465,18 +4496,28 @@ void boot(const std::vector<std::string> &args, Output &output) {
       const auto schedule_precompile_runtime =
           [&](Runtime *runtime, HostWorkKind work_kind,
               JitPrecompileTarget target) {
-        if (runtime == nullptr || runtime->kernel->process().exited)
+        if (runtime == nullptr || runtime->kernel->process().exited) {
+          record_precompile_schedule_skip(PrecompileScheduleSkip::NoRuntime);
           return;
+        }
         if (runtime->precompile_task) {
-          if (!runtime->precompile_task->finished()) return;
+          if (!runtime->precompile_task->finished()) {
+            record_precompile_schedule_skip(PrecompileScheduleSkip::TaskBusy);
+            return;
+          }
           runtime->precompile_task.reset();
         }
         const auto next_phase = runtime->cpus->next_precompile_phase(target);
-        if (!next_phase) return;
+        if (!next_phase) {
+          record_precompile_schedule_skip(PrecompileScheduleSkip::NoPhase);
+          return;
+        }
         const auto phase = *next_phase;
         const auto budget = available_precompile_budget(work_kind);
-        if (budget == 0)
+        if (budget.budget == 0U) {
+          record_precompile_schedule_skip(budget.zero_reason);
           return;
+        }
         const auto expected_epoch = runtime->work_epoch.current();
         runtime->precompile_task = host_resources.submit_cancellable(
             work_kind, host_compile_deadline,
@@ -4485,7 +4526,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
              &precompile_blocks_by_phase, &precompile_blocks_by_target,
              &record_precompile_outcomes](const HostWorkToken &token) {
               const auto result = runtime->cpus->precompile_pending(
-                  idle_precompile_block_budget, budget, target,
+                  idle_precompile_block_budget, budget.budget, target,
                   [runtime, expected_epoch, &token] {
                     return token.cancelled() ||
                            runtime->precompile_stop_requested(expected_epoch);
@@ -4500,10 +4541,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   .fetch_add(compiled, std::memory_order_relaxed);
             },
             std::chrono::nanoseconds{
-                static_cast<std::chrono::nanoseconds::rep>(budget)});
+                static_cast<std::chrono::nanoseconds::rep>(budget.budget)});
         if (runtime->precompile_task) {
           ++precompile_tasks_by_phase[static_cast<std::size_t>(phase)];
           ++precompile_tasks_by_target[static_cast<std::size_t>(target)];
+        } else {
+          record_precompile_schedule_skip(
+              PrecompileScheduleSkip::HostRejected);
         }
       };
       schedule_precompile_runtime(active_runtime,
@@ -4869,6 +4913,27 @@ void boot(const std::vector<std::string> &args, Output &output) {
       " deadline-stops=" +
       std::to_string(precompile_outcomes.deadline_stops.load(
           std::memory_order_relaxed)));
+  const auto schedule_skip = [&precompile_schedule_skips](
+                                 PrecompileScheduleSkip reason) {
+    return std::to_string(
+        precompile_schedule_skips[static_cast<std::size_t>(reason)]);
+  };
+  output.line(
+      "[precompile-schedule] no-runtime=" +
+      schedule_skip(PrecompileScheduleSkip::NoRuntime) +
+      " task-busy=" + schedule_skip(PrecompileScheduleSkip::TaskBusy) +
+      " no-phase=" + schedule_skip(PrecompileScheduleSkip::NoPhase) +
+      " memory-pressure=" +
+      schedule_skip(PrecompileScheduleSkip::MemoryPressure) +
+      " display-quiet=" +
+      schedule_skip(PrecompileScheduleSkip::DisplayQuiet) +
+      " guest-not-idle=" +
+      schedule_skip(PrecompileScheduleSkip::GuestNotIdle) +
+      " deadline-reserve=" +
+      schedule_skip(PrecompileScheduleSkip::DeadlineReserve) +
+      " zero-budget=" + schedule_skip(PrecompileScheduleSkip::ZeroBudget) +
+      " host-rejected=" +
+      schedule_skip(PrecompileScheduleSkip::HostRejected));
   if (catalog_refresh_events != 0 || catalog_refresh_count != 0 ||
       catalog_refresh_scheduled != 0 || catalog_refresh_rejected != 0) {
     output.line(
