@@ -101,6 +101,10 @@ struct HostMemorySnapshot {
   std::uint64_t peak_rss_bytes{};
   std::uint64_t virtual_bytes{};
   std::uint64_t file_mapped_bytes{};
+  bool rss_known{};
+  bool peak_rss_known{};
+  bool virtual_known{};
+  bool file_mapped_known{};
 };
 
 [[nodiscard]] HostMemorySnapshot host_memory_snapshot() {
@@ -118,10 +122,22 @@ struct HostMemorySnapshot {
     if (value > std::numeric_limits<std::uint64_t>::max() / 1024U)
       continue;
     const auto bytes = value * 1024U;
-    if (label == "VmRSS:") snapshot.rss_bytes = bytes;
-    if (label == "VmHWM:") snapshot.peak_rss_bytes = bytes;
-    if (label == "VmSize:") snapshot.virtual_bytes = bytes;
-    if (label == "RssFile:") snapshot.file_mapped_bytes = bytes;
+    if (label == "VmRSS:") {
+      snapshot.rss_bytes = bytes;
+      snapshot.rss_known = true;
+    }
+    if (label == "VmHWM:") {
+      snapshot.peak_rss_bytes = bytes;
+      snapshot.peak_rss_known = true;
+    }
+    if (label == "VmSize:") {
+      snapshot.virtual_bytes = bytes;
+      snapshot.virtual_known = true;
+    }
+    if (label == "RssFile:") {
+      snapshot.file_mapped_bytes = bytes;
+      snapshot.file_mapped_known = true;
+    }
   }
 #endif
   return snapshot;
@@ -131,9 +147,13 @@ struct HostMemoryBudgetSnapshot {
   std::uint64_t physical_bytes{};
   std::uint64_t available_bytes{};
   std::uint64_t rss_bytes{};
-  // Zero means that no finite cgroup limit/current value was available.
   std::uint64_t cgroup_limit_bytes{};
   std::uint64_t cgroup_current_bytes{};
+  bool physical_known{};
+  bool available_known{};
+  bool rss_known{};
+  bool cgroup_limit_known{};
+  bool cgroup_current_known{};
 };
 
 [[nodiscard]] std::optional<std::uint64_t> read_decimal_file(
@@ -154,7 +174,9 @@ struct HostMemoryBudgetSnapshot {
 
 [[nodiscard]] HostMemoryBudgetSnapshot host_memory_budget_snapshot() {
   HostMemoryBudgetSnapshot snapshot;
-  snapshot.rss_bytes = host_memory_snapshot().rss_bytes;
+  const auto process_memory = host_memory_snapshot();
+  snapshot.rss_bytes = process_memory.rss_bytes;
+  snapshot.rss_known = process_memory.rss_known;
 #if defined(__linux__)
   {
     std::ifstream meminfo{"/proc/meminfo"};
@@ -170,8 +192,14 @@ struct HostMemoryBudgetSnapshot {
         continue;
       }
       const auto bytes = value * 1024U;
-      if (label == "MemTotal:") snapshot.physical_bytes = bytes;
-      if (label == "MemAvailable:") snapshot.available_bytes = bytes;
+      if (label == "MemTotal:") {
+        snapshot.physical_bytes = bytes;
+        snapshot.physical_known = true;
+      }
+      if (label == "MemAvailable:") {
+        snapshot.available_bytes = bytes;
+        snapshot.available_known = true;
+      }
     }
   }
 
@@ -213,19 +241,107 @@ struct HostMemoryBudgetSnapshot {
                           : cgroup_path / "memory.usage_in_bytes",
       std::filesystem::path{"/sys/fs/cgroup/memory.current"},
   };
-  snapshot.cgroup_limit_bytes = read_first(limit_paths).value_or(0U);
-  snapshot.cgroup_current_bytes = read_first(current_paths).value_or(0U);
+  if (const auto limit = read_first(limit_paths)) {
+    snapshot.cgroup_limit_bytes = *limit;
+    snapshot.cgroup_limit_known = true;
+  }
+  if (const auto current = read_first(current_paths)) {
+    snapshot.cgroup_current_bytes = *current;
+    snapshot.cgroup_current_known = true;
+  }
   // cgroup-v1 uses a very large sentinel for "unlimited". Treat any limit
   // many times larger than physical memory as equivalent to no finite limit.
-  if (snapshot.cgroup_limit_bytes != 0U && snapshot.physical_bytes != 0U &&
+  if (snapshot.cgroup_limit_known && snapshot.physical_known &&
+      snapshot.cgroup_limit_bytes != 0U && snapshot.physical_bytes != 0U &&
       snapshot.physical_bytes <=
           std::numeric_limits<std::uint64_t>::max() / 2U &&
       snapshot.cgroup_limit_bytes >
           snapshot.physical_bytes * std::uint64_t{2U}) {
     snapshot.cgroup_limit_bytes = 0U;
+    snapshot.cgroup_limit_known = false;
   }
 #endif
   return snapshot;
+}
+
+enum class HostMemoryPressureLevel : std::uint8_t {
+  Unknown,
+  Normal,
+  Constrained,
+  Critical,
+};
+
+[[nodiscard]] std::optional<std::uint64_t> effective_host_memory_limit(
+    const HostMemoryBudgetSnapshot &memory) {
+  std::optional<std::uint64_t> limit;
+  if (memory.physical_known) limit = memory.physical_bytes;
+  if (memory.cgroup_limit_known) {
+    limit = limit ? std::min(*limit, memory.cgroup_limit_bytes)
+                  : std::optional<std::uint64_t>{memory.cgroup_limit_bytes};
+  }
+  return limit;
+}
+
+[[nodiscard]] HostMemoryPressureLevel host_memory_pressure_level(
+    const HostMemoryBudgetSnapshot &memory) {
+  bool observed{};
+  bool constrained{};
+  bool critical{};
+  if (memory.available_known) {
+    observed = true;
+    critical = critical || memory.available_bytes == 0U;
+    if (memory.physical_known && memory.physical_bytes != 0U &&
+        memory.available_bytes < memory.physical_bytes / 8U) {
+      constrained = true;
+    }
+  }
+  if (memory.cgroup_limit_known && memory.cgroup_current_known) {
+    observed = true;
+    if (memory.cgroup_current_bytes >= memory.cgroup_limit_bytes) {
+      critical = true;
+    } else if (memory.cgroup_limit_bytes != 0U &&
+               memory.cgroup_limit_bytes - memory.cgroup_current_bytes <
+                   memory.cgroup_limit_bytes / 8U) {
+      constrained = true;
+    }
+  }
+  if (const auto limit = effective_host_memory_limit(memory);
+      limit && memory.rss_known) {
+    observed = true;
+    if (*limit == 0U ? memory.rss_bytes != 0U
+                     : memory.rss_bytes >= *limit) {
+      critical = true;
+    } else if (*limit != 0U &&
+               memory.rss_bytes > *limit - *limit / 4U) {
+      constrained = true;
+    }
+  }
+  if (critical) return HostMemoryPressureLevel::Critical;
+  if (constrained) return HostMemoryPressureLevel::Constrained;
+  return observed ? HostMemoryPressureLevel::Normal
+                  : HostMemoryPressureLevel::Unknown;
+}
+
+[[nodiscard]] bool host_memory_is_pressured(
+    const HostMemoryBudgetSnapshot &memory) {
+  const auto level = host_memory_pressure_level(memory);
+  return level == HostMemoryPressureLevel::Constrained ||
+         level == HostMemoryPressureLevel::Critical;
+}
+
+[[nodiscard]] std::string_view host_memory_pressure_name(
+    const HostMemoryBudgetSnapshot &memory) {
+  switch (host_memory_pressure_level(memory)) {
+  case HostMemoryPressureLevel::Unknown:
+    return "unknown";
+  case HostMemoryPressureLevel::Normal:
+    return "normal";
+  case HostMemoryPressureLevel::Constrained:
+    return "constrained";
+  case HostMemoryPressureLevel::Critical:
+    return "critical";
+  }
+  return "unknown";
 }
 
 class GuestTickClock {
@@ -351,7 +467,7 @@ public:
       JitCodeCacheClass cache_class = JitCodeCacheClass::Background) {
     if (processor_count == 0U) return {};
     std::lock_guard lock{mutex_};
-    const auto class_cap = shared_slab_cap_for(cache_class);
+    const auto class_cap = shared_slab_cap_for_locked(cache_class);
     const auto normal_available = normal_reserved_bytes_ < normal_budget_
                                       ? normal_budget_ - normal_reserved_bytes_
                                       : 0U;
@@ -386,24 +502,52 @@ public:
 
   [[nodiscard]] std::size_t shared_slab_cap_for(
       JitCodeCacheClass cache_class) const noexcept {
-    switch (cache_class) {
-    case JitCodeCacheClass::BootCritical:
-      return shared_slab_cap_;
-    case JitCodeCacheClass::Foreground:
-      return std::max(minimum_shared_slab_bytes,
-                      shared_slab_cap_ * 3U / 4U);
-    case JitCodeCacheClass::Background:
-      return std::max(minimum_shared_slab_bytes,
-                      shared_slab_cap_ / 2U);
-    }
-    return minimum_shared_slab_bytes;
+    std::lock_guard lock{mutex_};
+    return shared_slab_cap_for_locked(cache_class);
   }
 
+  void set_pressure_limited(bool limited) noexcept {
+    std::lock_guard lock{mutex_};
+    pressure_limited_ = limited;
+  }
+
+  [[nodiscard]] bool pressure_limited() const noexcept {
+    std::lock_guard lock{mutex_};
+    return pressure_limited_;
+  }
+
+private:
+  [[nodiscard]] std::size_t shared_slab_cap_for_locked(
+      JitCodeCacheClass cache_class) const noexcept {
+    std::size_t cap{};
+    switch (cache_class) {
+    case JitCodeCacheClass::BootCritical:
+      cap = shared_slab_cap_;
+      break;
+    case JitCodeCacheClass::Foreground:
+      cap = std::max(minimum_shared_slab_bytes,
+                     shared_slab_cap_ * 3U / 4U);
+      break;
+    case JitCodeCacheClass::Background:
+      cap = std::max(minimum_shared_slab_bytes,
+                     shared_slab_cap_ / 2U);
+      break;
+    default:
+      cap = minimum_shared_slab_bytes;
+      break;
+    }
+    if (pressure_limited_ && cache_class != JitCodeCacheClass::BootCritical) {
+      cap = std::max(minimum_shared_slab_bytes, cap / 2U);
+    }
+    return cap;
+  }
+
+public:
   [[nodiscard]] std::optional<std::size_t> reclassify(
       JitCodeCacheReservation &reservation, JitCodeCacheClass cache_class,
       bool slab_can_resize) noexcept {
     std::lock_guard lock{mutex_};
-    const auto class_cap = shared_slab_cap_for(cache_class);
+    const auto class_cap = shared_slab_cap_for_locked(cache_class);
     const auto requested_maximum = class_cap;
     if (!slab_can_resize) {
       // A live Dynarmic slab cannot be shrunk or grown by changing this
@@ -531,6 +675,7 @@ private:
   std::size_t normal_reserved_bytes_{};
   std::size_t emergency_reserved_bytes_{};
   std::size_t actual_bytes_total_{};
+  bool pressure_limited_{};
 };
 
 JitCodeCacheReservation::~JitCodeCacheReservation() {
@@ -1190,33 +1335,46 @@ struct JitCodeCacheBudget {
     };
   }
 
-  auto effective_limit = memory.physical_bytes;
-  if (memory.cgroup_limit_bytes != 0U) {
-    effective_limit = effective_limit == 0U
-                          ? memory.cgroup_limit_bytes
-                          : std::min(effective_limit,
-                                     memory.cgroup_limit_bytes);
-  }
-  if (effective_limit == 0U) {
-    effective_limit = jit_maximum_adaptive_budget_bytes;
-  }
-
+  const auto effective_limit_value = effective_host_memory_limit(memory);
+  const auto effective_limit = effective_limit_value.value_or(
+      static_cast<std::uint64_t>(jit_maximum_adaptive_budget_bytes));
+  bool headroom_known = memory.available_known;
   auto headroom = memory.available_bytes;
-  if (memory.cgroup_limit_bytes != 0U &&
-      memory.cgroup_current_bytes < memory.cgroup_limit_bytes) {
-    headroom = std::min(
-        headroom, memory.cgroup_limit_bytes - memory.cgroup_current_bytes);
+  if (memory.cgroup_limit_known && memory.cgroup_current_known) {
+    const auto cgroup_headroom =
+        memory.cgroup_current_bytes >= memory.cgroup_limit_bytes
+            ? std::uint64_t{0}
+            : memory.cgroup_limit_bytes - memory.cgroup_current_bytes;
+    if (!headroom_known) {
+      headroom = cgroup_headroom;
+      headroom_known = true;
+    } else {
+      headroom = std::min(headroom, cgroup_headroom);
+    }
   }
-  if (memory.rss_bytes < effective_limit) {
-    headroom = std::min(headroom, effective_limit - memory.rss_bytes);
+  if (effective_limit_value && memory.rss_known) {
+    const auto rss_headroom = memory.rss_bytes >= *effective_limit_value
+                                  ? std::uint64_t{0}
+                                  : *effective_limit_value - memory.rss_bytes;
+    if (!headroom_known) {
+      headroom = rss_headroom;
+      headroom_known = true;
+    } else {
+      headroom = std::min(headroom, rss_headroom);
+    }
   }
   // Keep code-cache reservations below both a fraction of total capacity and
   // a fraction of current headroom. The hard ceiling remains a safety bound;
   // unlike the old fixed floor, low-memory/cgroup pressure can lower it.
   const auto capacity_target = effective_limit / 8U;
   const auto pressure_target = headroom / 2U;
-  auto target = std::min(capacity_target, pressure_target);
-  if (target == 0U) target = std::size_t{640U} * bytes_per_mebibyte;
+  auto target = headroom_known ? std::min(capacity_target, pressure_target)
+                               : capacity_target;
+  // A known zero headroom is real pressure, not missing host information.
+  // Keep only the minimum safety pool in that case. When host information is
+  // unavailable, use the bounded capacity target; never invent a 640 MiB
+  // reservation from an unknown zero.
+  if (target == 0U) target = minimum_total;
   target = std::clamp<std::uint64_t>(
       target, static_cast<std::uint64_t>(minimum_total),
       static_cast<std::uint64_t>(jit_maximum_adaptive_budget_bytes));
@@ -1892,7 +2050,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       " rss-mib=" +
       std::to_string(jit_cache_budget.memory.rss_bytes / bytes_per_mebibyte) +
       " cgroup-limit-mib=" +
-      (jit_cache_budget.memory.cgroup_limit_bytes == 0U
+      (!jit_cache_budget.memory.cgroup_limit_known
            ? std::string{"unlimited"}
            : std::to_string(jit_cache_budget.memory.cgroup_limit_bytes /
                             bytes_per_mebibyte)) +
@@ -1901,6 +2059,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
                      bytes_per_mebibyte) +
       " budget-source=" +
       (jit_cache_budget.explicit_override ? "explicit" : "adaptive") +
+      " physical-state=" +
+      (jit_cache_budget.memory.physical_known ? "known" : "unavailable") +
+      " available-state=" +
+      (jit_cache_budget.memory.available_known ? "known" : "unavailable") +
+      " rss-state=" +
+      (jit_cache_budget.memory.rss_known ? "known" : "unavailable") +
+      " cgroup-limit-state=" +
+      (jit_cache_budget.memory.cgroup_limit_known ? "known" : "unavailable") +
+      " cgroup-current-state=" +
+      (jit_cache_budget.memory.cgroup_current_known ? "known" : "unavailable") +
+      " pressure=" +
+      std::string{host_memory_pressure_name(jit_cache_budget.memory)} +
       " total-budget-mib=" +
       std::to_string(jit_cache_budget.total_bytes / bytes_per_mebibyte));
   std::unique_ptr<GuestSliceWorkerPool> guest_slice_workers;
@@ -2071,6 +2241,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   };
   JitCodeCacheGovernor jit_code_cache_governor{
       configured_jit_code_cache_size, jit_cache_budget.total_bytes};
+  jit_code_cache_governor.set_pressure_limited(
+      host_memory_is_pressured(jit_cache_budget.memory));
   output.line(
       "[jit] global-code-cache-budget-mib=" +
       std::to_string(jit_code_cache_governor.total_budget() / 1024U / 1024U));
@@ -2090,7 +2262,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
       " background:" +
       std::to_string(jit_code_cache_governor.shared_slab_cap(
                          JitCodeCacheClass::Background) /
-                     1024U / 1024U));
+                     1024U / 1024U) +
+      " pressure-limited=" +
+      std::to_string(jit_code_cache_governor.pressure_limited() ? 1 : 0));
   RuntimeReaper runtime_reaper;
   std::vector<std::unique_ptr<Runtime>> runtimes;
   RuntimeIndex runtime_index;
@@ -3322,6 +3496,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   auto last_display_submission = std::chrono::steady_clock::now();
   auto last_jit_quota_refresh = last_display_submission;
   auto latest_host_memory_budget = jit_cache_budget.memory;
+  bool pressure_reclamation_applied{};
   std::optional<std::chrono::steady_clock::time_point> guest_idle_since;
   DeadlineQueue<std::uint32_t, std::uint64_t> guest_deadlines;
   if (!bounded_execution) {
@@ -4137,6 +4312,33 @@ void boot(const std::vector<std::string> &args, Output &output) {
         last_jit_quota_refresh = quota_now;
         const auto memory = host_memory_budget_snapshot();
         latest_host_memory_budget = memory;
+        const auto memory_pressured = host_memory_is_pressured(memory);
+        jit_code_cache_governor.set_pressure_limited(memory_pressured);
+        if (memory_pressured && !pressure_reclamation_applied) {
+          // Pressure handling is ordered: cancel optional compile work first,
+          // then stop artifact writeback, then reclaim unreferenced artifacts.
+          for (auto &runtime : runtimes) {
+            if (runtime->precompile_task &&
+                !runtime->precompile_task->finished()) {
+              runtime->precompile_task->cancel();
+              runtime->cpus->quiesce_precompilation();
+              runtime->precompile_task->wait_finished();
+            }
+          }
+          jit_artifacts->cancel_writeback();
+          const auto artifact_before = jit_artifacts->stats();
+          const auto target = artifact_before.resident_bytes / 2U;
+          const auto reclaimed = jit_artifacts->trim_resident_bytes(target);
+          output.line("[jit-pressure] level=" +
+                      std::string{host_memory_pressure_name(memory)} +
+                      " compile=stopped writeback=stopped "
+                      "artifact-reclaimed-bytes=" +
+                      std::to_string(reclaimed) + " target-resident-bytes=" +
+                      std::to_string(target));
+          pressure_reclamation_applied = true;
+        } else if (!memory_pressured) {
+          pressure_reclamation_applied = false;
+        }
         for (auto &runtime : runtimes) {
           if (!runtime->jit_cache_reservation ||
               !runtime->cpus->has_execution_resources()) {
@@ -4205,40 +4407,17 @@ void boot(const std::vector<std::string> &args, Output &output) {
       constexpr auto idle_precompile_no_deadline_quiet_period =
           std::chrono::milliseconds{20};
       const auto host_memory_pressure = [&]() {
-        auto effective_limit = latest_host_memory_budget.physical_bytes;
-        if (latest_host_memory_budget.cgroup_limit_bytes != 0U) {
-          effective_limit = effective_limit == 0U
-                                ? latest_host_memory_budget.cgroup_limit_bytes
-                                : std::min(
-                                      effective_limit,
-                                      latest_host_memory_budget.cgroup_limit_bytes);
-        }
-        auto headroom = latest_host_memory_budget.available_bytes;
-        if (latest_host_memory_budget.cgroup_limit_bytes != 0U &&
-            latest_host_memory_budget.cgroup_current_bytes <
-                latest_host_memory_budget.cgroup_limit_bytes) {
-          headroom = std::min(
-              headroom, latest_host_memory_budget.cgroup_limit_bytes -
-                            latest_host_memory_budget.cgroup_current_bytes);
-        }
-        if (effective_limit != 0U && headroom != 0U &&
-            headroom < effective_limit / 8U) {
-          return true;
-        }
-        if (effective_limit != 0U &&
-            latest_host_memory_budget.rss_bytes >
-                effective_limit - effective_limit / 4U) {
-          return true;
-        }
-        return false;
+        return host_memory_is_pressured(latest_host_memory_budget);
       };
       const auto available_precompile_budget =
           [&](HostWorkKind work_kind) {
         const auto memory_pressure = host_memory_pressure();
-        // Portable IR is the first work to yield under host pressure. It is
-        // reusable but not latency-critical; foreground native code remains
-        // available on demand and its idle warming is merely throttled.
-        if (memory_pressure && work_kind == HostWorkKind::OfflineCompile)
+        // Both optional compile streams yield under pressure. Demand JIT for
+        // a running foreground process remains available through the normal
+        // execution path and is never submitted as background work here.
+        if (memory_pressure &&
+            (work_kind == HostWorkKind::OfflineCompile ||
+             work_kind == HostWorkKind::BackgroundCompile))
           return std::uint64_t{0};
         if (!realtime_pacer)
           return memory_pressure

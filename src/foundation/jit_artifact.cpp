@@ -2123,6 +2123,33 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
   return result;
 }
 
+std::size_t JitArtifactStore::trim_resident_bytes(
+    std::size_t target_bytes) noexcept {
+  std::lock_guard lock{mutex_};
+  if (resident_bytes_ <= target_bytes) return 0U;
+  const auto before = resident_bytes_;
+  for (auto iterator = lru_.begin(); iterator != boot_lru_begin_ &&
+                                     resident_bytes_ > target_bytes;) {
+    const auto next = std::next(iterator);
+    const auto *key = *iterator;
+    const auto artifact = artifacts_.find(key);
+    if (artifact != artifacts_.end() &&
+        !artifact->second.boot_working_set &&
+        artifact->second.artifact.use_count() == 1U) {
+      const auto was_boot_begin = boot_lru_begin_ == iterator;
+      resident_bytes_ -= artifact->second.serialized_bytes;
+      retire_writeback_locked(*key);
+      ++stats_.evictions;
+      ++stats_.quota_evictions;
+      artifacts_.erase(artifact);
+      if (lru_.empty()) boot_lru_begin_ = lru_.end();
+      else if (was_boot_begin) boot_lru_begin_ = next;
+    }
+    iterator = next;
+  }
+  return before - resident_bytes_;
+}
+
 void JitArtifactStore::cancel_writeback() noexcept {
   if (writeback_cancel_requested_.exchange(true,
                                            std::memory_order_acq_rel)) {

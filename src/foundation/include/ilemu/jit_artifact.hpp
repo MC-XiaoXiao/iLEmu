@@ -167,6 +167,10 @@ public:
       JitArtifactRetention retention = JitArtifactRetention::Normal);
   [[nodiscard]] std::size_t size() const;
   [[nodiscard]] JitArtifactStoreStats stats() const;
+  // Pressure reclamation removes only non-boot artifacts that have no
+  // external users. It never changes artifact validity or Guest execution;
+  // later runtime lookup simply falls back to the disk record or demand JIT.
+  std::size_t trim_resident_bytes(std::size_t target_bytes) noexcept;
   // Stops optional background persistence and releases queued artifacts.
   // Guest execution and resident-cache lookups remain available.
   void cancel_writeback() noexcept;
