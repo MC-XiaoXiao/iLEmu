@@ -107,6 +107,7 @@ enum class PerfLatencyKind : std::uint8_t {
     VsyncSwapEndToGuestSubmit,
     VsyncDueToGuestSubmit,
     JitColdPath,
+    JitDemandTranslation,
     JitBlockCompile,
     RuntimeDestructor,
     GlesTargetRelease,

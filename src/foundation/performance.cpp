@@ -259,6 +259,7 @@ bool is_display_window_latency(PerfLatencyKind kind) {
     case PerfLatencyKind::InputEnqueue:
     case PerfLatencyKind::DisplayPresent:
     case PerfLatencyKind::JitColdPath:
+    case PerfLatencyKind::JitDemandTranslation:
     case PerfLatencyKind::JitBlockCompile:
     case PerfLatencyKind::RuntimeDestructor:
     case PerfLatencyKind::GlesTargetRelease:
@@ -1870,6 +1871,8 @@ std::string_view perf_latency_kind_name(PerfLatencyKind kind) {
     case PerfLatencyKind::VsyncDueToGuestSubmit:
         return "vsync-due-guest-submit";
     case PerfLatencyKind::JitColdPath: return "jit-cold-path";
+    case PerfLatencyKind::JitDemandTranslation:
+        return "jit-demand-translation";
     case PerfLatencyKind::JitBlockCompile: return "jit-block-compile";
     case PerfLatencyKind::RuntimeDestructor: return "runtime-destructor";
     case PerfLatencyKind::GlesTargetRelease: return "gles-target-release";
@@ -2042,6 +2045,12 @@ std::string format_performance_summary(
              << latency.over_16_7ms << '/' << latency.over_20ms << '/'
              << latency.over_33_3ms << '/' << latency.over_50ms;
     }
+    const auto& jit_demand = snapshot.latencies[static_cast<std::size_t>(
+        PerfLatencyKind::JitDemandTranslation)];
+    text << " jit-demand-translation=" << jit_demand.samples << '/'
+         << jit_demand.p50_nanoseconds << '/' << jit_demand.p95_nanoseconds
+         << '/' << jit_demand.p99_nanoseconds << '/'
+         << jit_demand.maximum_nanoseconds;
     text << " jit-cache-slots=";
     first = true;
     for (const auto& usage : snapshot.jit_cache_slots) {

@@ -429,6 +429,9 @@ private:
         // code that was actually reached.
         if (!portable_generation_location_ &&
             !explicit_artifact_publication_) {
+            performance_counters().record_latency(
+                PerfLatencyKind::JitDemandTranslation,
+                translation_nanoseconds);
             return;
         }
         const auto published = publish_artifact(
