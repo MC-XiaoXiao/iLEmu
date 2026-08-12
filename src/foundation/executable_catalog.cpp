@@ -1283,6 +1283,10 @@ std::vector<ContentIdentity> ExecutableCatalog::content_identities() const {
   return identities;
 }
 
+std::span<const ExecutableCatalogEntry> ExecutableCatalog::entries() const noexcept {
+  return entries_;
+}
+
 std::filesystem::path ExecutableCatalog::normalize_path(
     const std::filesystem::path &path) {
   std::error_code error;

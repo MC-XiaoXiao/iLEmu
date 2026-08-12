@@ -11,6 +11,7 @@ add_library(ilemu_foundation STATIC
     dyld_shared_cache.cpp
     display.cpp
     executable_catalog.cpp
+    firmware_prepare.cpp
     guest_cpu_topology.cpp
     guest_exclusive_address_resolver.cpp
     host_resource_controller.cpp

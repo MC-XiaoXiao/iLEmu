@@ -6,6 +6,7 @@
 #include <map>
 #include <optional>
 #include <set>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -141,6 +142,10 @@ public:
       std::uint32_t mapping_size, std::uint64_t file_offset) const;
   [[nodiscard]] std::size_t reliable_entry_point_count() const noexcept;
   [[nodiscard]] std::vector<ContentIdentity> content_identities() const;
+  // Firmware preparation consumes the immutable scan result after the
+  // manifest has been atomically refreshed. Entries remain catalog-owned and
+  // are never used as a substitute for runtime mapping validation.
+  [[nodiscard]] std::span<const ExecutableCatalogEntry> entries() const noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
   [[nodiscard]] std::uint64_t revision() const noexcept {
     return mutation_revision_;

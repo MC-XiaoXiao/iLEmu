@@ -40,6 +40,7 @@
 #include "ilemu/display.hpp"
 #include "ilemu/executable_catalog.hpp"
 #include "ilemu/frame_file_presenter.hpp"
+#include "ilemu/firmware_prepare.hpp"
 #include "ilemu/gdb_rsp.hpp"
 #include "ilemu/gles_renderer.hpp"
 #include "ilemu/guest_parallelism_policy.hpp"
@@ -1034,6 +1035,13 @@ std::string usage() {
          "  ilemu catalog --rootfs DIR [--device PROFILE] [--manifest FILE] "
          "[--host-cache DIR] "
          "[--output FILE]\n"
+         "  ilemu firmware prepare --rootfs DIR [--device PROFILE] "
+         "[--manifest FILE] [--host-cache DIR] [--prepare-force] "
+         "[--prepare-file-blocks N] [--prepare-image-blocks N] "
+         "[--prepare-firmware-blocks N] [--prepare-file-ms N] "
+         "[--prepare-image-ms N] [--prepare-firmware-ms N] "
+         "[--jit-artifact-memory-mib 1..4096] "
+         "[--jit-artifact-disk-mib 0..4096] [--output FILE]\n"
          "  ilemu disasm --rootfs DIR --binary PATH "
          "(--symbol NAME | --address ADDR) [--device PROFILE] [--count N] [--thumb]\n"
          "  ilemu boot --rootfs DIR [--device iPhone1,1|iPhone1,2|iPhone2,1] "
@@ -1140,6 +1148,26 @@ std::uintmax_t parse_mib_value(std::string_view value, std::string_view name,
                              std::to_string(maximum) + " MiB"};
   }
   return static_cast<std::uintmax_t>(mebibytes) * 1024U * 1024U;
+}
+
+std::size_t parse_prepare_count(const std::vector<std::string> &args,
+                                std::string_view name, std::size_t fallback,
+                                std::size_t maximum) {
+  const auto value = option(args, name).value_or(std::to_string(fallback));
+  std::size_t consumed{};
+  const auto parsed = std::stoull(value, &consumed, 10);
+  if (consumed != value.size() || parsed == 0U || parsed > maximum) {
+    throw std::runtime_error{std::string{name} + " must be in the range 1.." +
+                             std::to_string(maximum)};
+  }
+  return static_cast<std::size_t>(parsed);
+}
+
+std::chrono::milliseconds parse_prepare_time(
+    const std::vector<std::string> &args, std::string_view name,
+    std::size_t fallback, std::size_t maximum) {
+  return std::chrono::milliseconds{
+      parse_prepare_count(args, name, fallback, maximum)};
 }
 
 struct JitCodeCacheBudget {
@@ -1398,6 +1426,132 @@ void catalog(const std::vector<std::string> &args, Output &output) {
       " reliable-entry-points=" +
       std::to_string(executable_catalog.reliable_entry_point_count()) +
       " manifest=" + manifest);
+}
+
+void firmware_prepare(const std::vector<std::string> &args, Output &output) {
+  const auto rootfs = option(args, "--rootfs");
+  if (!rootfs) throw std::runtime_error{"firmware prepare requires --rootfs"};
+  const auto &device = select_device_profile(args);
+  const auto cpu_model = make_arm_cpu_model(device.cpu_model, device.cpu_hz);
+  const auto host_cache =
+      host_cache_directory(args, std::filesystem::path{*rootfs});
+  const auto manifest = option(args, "--manifest").value_or(
+      (host_cache / "executable-catalog.bin").string());
+
+  FirmwarePrepareLimits limits;
+  limits.max_file_blocks =
+      parse_prepare_count(args, "--prepare-file-blocks", 128U, 65'536U);
+  limits.max_image_blocks =
+      parse_prepare_count(args, "--prepare-image-blocks", 128U, 65'536U);
+  limits.max_firmware_blocks =
+      parse_prepare_count(args, "--prepare-firmware-blocks", 4096U,
+                          1'000'000U);
+  limits.max_file_time =
+      parse_prepare_time(args, "--prepare-file-ms", 500U, 3'600'000U);
+  limits.max_image_time =
+      parse_prepare_time(args, "--prepare-image-ms", 500U, 3'600'000U);
+  limits.max_firmware_time =
+      parse_prepare_time(args, "--prepare-firmware-ms", 30'000U,
+                         86'400'000U);
+  const auto file_memory = parse_mib_value(
+      option(args, "--prepare-file-memory-mib").value_or("128"),
+      "--prepare-file-memory-mib", 1U, 4096U);
+  const auto image_memory = parse_mib_value(
+      option(args, "--prepare-image-memory-mib").value_or("128"),
+      "--prepare-image-memory-mib", 1U, 4096U);
+  const auto firmware_memory = parse_mib_value(
+      option(args, "--prepare-firmware-memory-mib").value_or("512"),
+      "--prepare-firmware-memory-mib", 1U, 16'384U);
+  const auto file_storage = parse_mib_value(
+      option(args, "--prepare-file-storage-mib").value_or("32"),
+      "--prepare-file-storage-mib", 1U, 4096U);
+  const auto image_storage = parse_mib_value(
+      option(args, "--prepare-image-storage-mib").value_or("32"),
+      "--prepare-image-storage-mib", 1U, 4096U);
+  const auto firmware_storage = parse_mib_value(
+      option(args, "--prepare-firmware-storage-mib").value_or("256"),
+      "--prepare-firmware-storage-mib", 1U, 4096U);
+  limits.max_file_memory_bytes = static_cast<std::size_t>(file_memory);
+  limits.max_image_memory_bytes = static_cast<std::size_t>(image_memory);
+  limits.max_firmware_memory_bytes = static_cast<std::size_t>(firmware_memory);
+  limits.max_file_storage_bytes = static_cast<std::size_t>(file_storage);
+  limits.max_image_storage_bytes = static_cast<std::size_t>(image_storage);
+  limits.max_firmware_storage_bytes = static_cast<std::size_t>(firmware_storage);
+  limits.artifact_resident_bytes = jit_artifact_memory_limit(args);
+  const auto disk_mib = option(args, "--jit-artifact-disk-mib");
+  if (disk_mib && *disk_mib == "0") {
+    limits.artifact_persistence_bytes = 0U;
+    limits.artifact_persistence_enabled = false;
+  } else {
+    limits.artifact_persistence_bytes = static_cast<std::size_t>(
+        parse_mib_value(disk_mib.value_or("256"), "--jit-artifact-disk-mib",
+                        1U, 4096U));
+  }
+  limits.artifact_minimum_free_bytes = static_cast<std::uintmax_t>(
+      parse_mib_value(
+          option(args, "--jit-artifact-min-free-mib").value_or("1024"),
+          "--jit-artifact-min-free-mib", 0U, 16'384U));
+  limits.force = flag(args, "--prepare-force");
+
+  FirmwarePreparer preparer{
+      std::filesystem::path{*rootfs}, std::filesystem::path{manifest},
+      host_cache, cpu_model->architecture_version(), *cpu_model, limits};
+  const auto stats = preparer.run();
+  const auto status = stats.interrupted || stats.partial_files != 0U ||
+                              stats.preparation_failures != 0U ||
+                              stats.skipped_limits != 0U
+                          ? "partial"
+                          : "complete";
+  output.line(
+      "[firmware-prepare] rootfs=" + *rootfs + " manifest=" + manifest +
+      " catalog-entries=" + std::to_string(stats.catalog_entries) +
+      " regular-files=" + std::to_string(stats.catalog_scan.regular_files) +
+      " macho-images=" + std::to_string(stats.catalog_scan.mach_o_images) +
+      " reused-macho-images=" +
+      std::to_string(stats.catalog_scan.reused_mach_o_images) +
+      " shared-cache-images=" +
+      std::to_string(stats.catalog_scan.dyld_shared_cache_images) +
+      " failed-files=" + std::to_string(stats.catalog_scan.failed_files) +
+      " reliable-entry-points=" +
+      std::to_string(stats.reliable_entry_points) +
+      " status=" + status);
+  output.line(
+      "[firmware-prepare-work] candidates=" +
+      std::to_string(stats.candidates) + " skipped-dynamic=" +
+      std::to_string(stats.skipped_dynamic_mappings) +
+      " skipped-without-generation=" +
+      std::to_string(stats.skipped_without_generation) + " skipped-limits=" +
+      std::to_string(stats.skipped_limits) + " resumed=" +
+      std::to_string(stats.resumed) + " files-processed=" +
+      std::to_string(stats.files_processed) + " images-processed=" +
+      std::to_string(stats.images_processed) + " completed=" +
+      std::to_string(stats.completed_files) + " partial=" +
+      std::to_string(stats.partial_files) + " failures=" +
+      std::to_string(stats.preparation_failures) + " interrupted=" +
+      std::to_string(stats.interrupted ? 1 : 0) + " storage-limited=" +
+      std::to_string(stats.storage_limited ? 1 : 0) + " state-writes=" +
+      std::to_string(stats.state_writes));
+  output.line(
+      "[precompile] target=portable-ir attempted=" +
+      std::to_string(stats.blocks_attempted) + " generated=" +
+      std::to_string(stats.portable_generated) + " artifact-hits=" +
+      std::to_string(stats.portable_artifact_hits) + " deferred=" +
+      std::to_string(stats.deferred) + " unstable=" +
+      std::to_string(stats.unstable) + " failed=" +
+      std::to_string(stats.failed) + " deadline-stops=" +
+      std::to_string(stats.deadline_stops) + " prepared-memory-bytes=" +
+      std::to_string(stats.prepared_memory_bytes));
+  output.line(
+      "[jit-artifact] resident-bytes=" +
+      std::to_string(stats.artifact_stats.resident_bytes) +
+      " writeback-pending-bytes=" +
+      std::to_string(stats.artifact_stats.writeback_pending_bytes) +
+      " disk-bytes=" + std::to_string(stats.artifact_stats.disk_bytes) +
+      " disk-hits=" + std::to_string(stats.artifact_stats.disk_hits) +
+      " memory-hits=" + std::to_string(stats.artifact_stats.memory_hits) +
+      " evictions=" + std::to_string(stats.artifact_stats.evictions) +
+      " quota-evictions=" +
+      std::to_string(stats.artifact_stats.quota_evictions));
 }
 
 template <std::size_t Size>
@@ -4716,6 +4870,12 @@ int main(int argc, char **argv) {
         inspect(args, *output);
       } else if (command == "catalog") {
         catalog(args, *output);
+      } else if (command == "firmware") {
+        if (args.empty() || args.front() != "prepare") {
+          throw std::runtime_error{"firmware requires the 'prepare' mode"};
+        }
+        firmware_prepare(
+            std::vector<std::string>{args.begin() + 1, args.end()}, *output);
       } else if (command == "disasm") {
         disasm(args, *output);
       } else if (command == "smoke") {
