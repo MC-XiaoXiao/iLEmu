@@ -342,7 +342,7 @@ FirmwarePrepareStats FirmwarePreparer::run() {
   artifact_limits.writeback_bytes = 0U;
   artifact_limits.compaction_bytes = 0U;
   auto artifacts = std::make_shared<JitArtifactStore>(
-      host_cache_ / "portable-ir-artifacts.bin", artifact_limits);
+      host_cache_ / "jit-artifacts.bin", artifact_limits);
   JitTranslationProfileStore profiles{host_cache_ / "jit-translation-profiles"};
 
   std::vector<Candidate> candidates;
