@@ -4948,6 +4948,29 @@ void boot(const std::vector<std::string> &args, Output &output) {
         " writeback-pending-bytes=" +
         std::to_string(artifact_stats.writeback_pending_bytes) +
         " disk-bytes=" + std::to_string(artifact_stats.disk_bytes));
+    const auto &validation = artifact_stats.validation_rejections;
+    output.line(
+        "[perf-artifact-validation] unavailable=" +
+        std::to_string(validation[static_cast<std::size_t>(
+            JitArtifactValidationRejection::Unavailable)]) +
+        " no-exact-artifact=" +
+        std::to_string(validation[static_cast<std::size_t>(
+            JitArtifactValidationRejection::NoExactArtifact)]) +
+        " empty-ir=" +
+        std::to_string(validation[static_cast<std::size_t>(
+            JitArtifactValidationRejection::EmptyIr)]) +
+        " dependency-mismatch=" +
+        std::to_string(validation[static_cast<std::size_t>(
+            JitArtifactValidationRejection::DependencyMismatch)]) +
+        " deserialize-failed=" +
+        std::to_string(validation[static_cast<std::size_t>(
+            JitArtifactValidationRejection::DeserializeFailed)]) +
+        " descriptor-mismatch=" +
+        std::to_string(validation[static_cast<std::size_t>(
+            JitArtifactValidationRejection::DescriptorMismatch)]) +
+        " exception=" +
+        std::to_string(validation[static_cast<std::size_t>(
+            JitArtifactValidationRejection::Exception)]));
     const auto graphics_resource_bytes =
         gles_renderer ? gles_renderer->resource_bytes() : 0U;
     std::uint64_t host_resource_total = stopped_guest.jit_code_cache_bytes;

@@ -2135,6 +2135,14 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
   return result;
 }
 
+void JitArtifactStore::record_validation_rejection(
+    JitArtifactValidationRejection rejection) const noexcept {
+  const auto index = static_cast<std::size_t>(rejection);
+  if (index >= jit_artifact_validation_rejection_count) return;
+  const std::lock_guard lock{mutex_};
+  ++stats_.validation_rejections[index];
+}
+
 std::size_t JitArtifactStore::trim_resident_bytes(
     std::size_t target_bytes) noexcept {
   std::lock_guard lock{mutex_};

@@ -303,20 +303,44 @@ private:
         std::uint64_t location_descriptor) const noexcept {
         if (!artifact_store_ || !portable_artifact_import_supported() ||
             !jit_artifact_producer_fingerprint_available) {
+            if (artifact_store_) {
+                artifact_store_->record_validation_rejection(
+                    JitArtifactValidationRejection::Unavailable);
+            }
             return std::nullopt;
         }
         try {
             const auto artifact = find_artifact(location_descriptor);
-            if (!artifact || artifact->data.normalized_ir.empty()) {
+            if (!artifact) {
+                artifact_store_->record_validation_rejection(
+                    JitArtifactValidationRejection::NoExactArtifact);
                 return std::nullopt;
             }
-            if (!dependencies_match(*artifact)) return std::nullopt;
+            if (artifact->data.normalized_ir.empty()) {
+                artifact_store_->record_validation_rejection(
+                    JitArtifactValidationRejection::EmptyIr);
+                return std::nullopt;
+            }
+            if (!dependencies_match(*artifact)) {
+                artifact_store_->record_validation_rejection(
+                    JitArtifactValidationRejection::DependencyMismatch);
+                return std::nullopt;
+            }
             auto block = deserialize_dynarmic_ir(artifact->data.normalized_ir);
-            if (!block || block->Location().Value() != location_descriptor) {
+            if (!block) {
+                artifact_store_->record_validation_rejection(
+                    JitArtifactValidationRejection::DeserializeFailed);
+                return std::nullopt;
+            }
+            if (block->Location().Value() != location_descriptor) {
+                artifact_store_->record_validation_rejection(
+                    JitArtifactValidationRejection::DescriptorMismatch);
                 return std::nullopt;
             }
             return block;
         } catch (...) {
+            artifact_store_->record_validation_rejection(
+                JitArtifactValidationRejection::Exception);
             return std::nullopt;
         }
     }

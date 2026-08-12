@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <condition_variable>
 #include <cstddef>
@@ -32,6 +33,20 @@ enum class JitArtifactRetention : std::uint8_t {
   Normal,
   BootWorkingSet,
 };
+
+enum class JitArtifactValidationRejection : std::uint8_t {
+  Unavailable,
+  NoExactArtifact,
+  EmptyIr,
+  DependencyMismatch,
+  DeserializeFailed,
+  DescriptorMismatch,
+  Exception,
+  Count,
+};
+
+inline constexpr auto jit_artifact_validation_rejection_count =
+    static_cast<std::size_t>(JitArtifactValidationRejection::Count);
 
 // Every field that can change the generated block or its calling convention
 // belongs in this key. In particular, no path or mtime participates in cache
@@ -139,6 +154,8 @@ struct JitArtifactStoreStats {
   std::uint64_t writeback_dropped{};
   std::uint64_t writeback_failures{};
   std::uint64_t writeback_cancellations{};
+  std::array<std::uint64_t, jit_artifact_validation_rejection_count>
+      validation_rejections{};
   std::size_t resident_bytes{};
   std::size_t writeback_pending_bytes{};
   std::uintmax_t disk_bytes{};
@@ -167,6 +184,8 @@ public:
       JitArtifactRetention retention = JitArtifactRetention::Normal);
   [[nodiscard]] std::size_t size() const;
   [[nodiscard]] JitArtifactStoreStats stats() const;
+  void record_validation_rejection(
+      JitArtifactValidationRejection rejection) const noexcept;
   // Pressure reclamation removes only non-boot artifacts that have no
   // external users. It never changes artifact validity or Guest execution;
   // later runtime lookup simply falls back to the disk record or demand JIT.
