@@ -538,6 +538,40 @@ JitCodeCacheReservation::~JitCodeCacheReservation() {
   }
 }
 
+struct RuntimeWorkEpoch {
+  [[nodiscard]] std::uint64_t current() const noexcept {
+    return epoch_.load(std::memory_order_acquire);
+  }
+
+  [[nodiscard]] std::uint64_t begin_transition() noexcept {
+    cancelled_.store(true, std::memory_order_release);
+    auto expected = epoch_.load(std::memory_order_relaxed);
+    for (;;) {
+      if (expected == std::numeric_limits<std::uint64_t>::max()) return expected;
+      if (epoch_.compare_exchange_weak(
+              expected, expected + 1U, std::memory_order_acq_rel,
+              std::memory_order_relaxed)) {
+        return expected + 1U;
+      }
+    }
+  }
+
+  void activate(std::uint64_t expected_epoch) noexcept {
+    if (epoch_.load(std::memory_order_acquire) == expected_epoch)
+      cancelled_.store(false, std::memory_order_release);
+  }
+
+  [[nodiscard]] bool stop_requested(
+      std::uint64_t expected_epoch) const noexcept {
+    return cancelled_.load(std::memory_order_acquire) ||
+           epoch_.load(std::memory_order_acquire) != expected_epoch;
+  }
+
+private:
+  std::atomic<std::uint64_t> epoch_{1};
+  std::atomic<bool> cancelled_{};
+};
+
 struct Runtime {
   // Keep the reservation before the native runtime fields so its destructor
   // releases the budget only after Dynarmic's code cache has been destroyed.
@@ -550,12 +584,34 @@ struct Runtime {
   std::optional<PendingExec> pending_exec;
   std::shared_ptr<HostWorkToken> precompile_task;
   JitPrecompilePhase precompile_phase{JitPrecompilePhase::Remaining};
+  RuntimeWorkEpoch work_epoch;
   std::optional<std::chrono::steady_clock::time_point>
       execution_reclaim_after;
   bool fresh_spawn_address_space{};
 
+  [[nodiscard]] std::uint64_t begin_image_transition(
+      HostResourceController &host_resources) {
+    const auto next_epoch = work_epoch.begin_transition();
+    if (precompile_task) precompile_task->cancel();
+    host_resources.wake();
+    if (cpus) cpus->quiesce_precompilation();
+    return next_epoch;
+  }
+
+  void activate_image_epoch(std::uint64_t epoch) noexcept {
+    work_epoch.activate(epoch);
+  }
+
+  [[nodiscard]] bool precompile_stop_requested(
+      std::uint64_t expected_epoch) const noexcept {
+    return work_epoch.stop_requested(expected_epoch);
+  }
+
   ~Runtime() {
     PerformanceLatencyScope latency{PerfLatencyKind::RuntimeDestructor};
+    static_cast<void>(work_epoch.begin_transition());
+    if (precompile_task) precompile_task->cancel();
+    if (cpus) cpus->quiesce_precompilation();
     pending_exec.reset();
     std::vector<bool>{}.swap(allocated);
     kernel.reset();
@@ -2812,6 +2868,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
           if (child_runtime == nullptr)
             return false;
 
+          const auto image_epoch =
+              child_runtime->begin_image_transition(host_resources);
           try {
             refresh_catalog_after_file_mutations(true);
             debug_target.notify_exec(child_pid);
@@ -2852,6 +2910,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   *child_runtime, catalog_generation_pending,
                   loaded.executable_path);
             }
+            child_runtime->activate_image_epoch(image_epoch);
             child_runtime->fresh_spawn_address_space = false;
             if (start_suspended) {
               static_cast<void>(scheduler.block(XnuThreadId{child_pid, 0}));
@@ -3415,8 +3474,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
     const auto precompile_finished = [&](Runtime &runtime) {
       if (!runtime.precompile_task) return true;
       if (!runtime.precompile_task->finished()) {
-        runtime.precompile_task->cancel();
-        host_resources.wake();
+        static_cast<void>(runtime.begin_image_transition(host_resources));
         return false;
       }
       runtime.precompile_task.reset();
@@ -3673,6 +3731,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                  runtime.pending_exec) {
         auto pending = std::move(*runtime.pending_exec);
         runtime.pending_exec.reset();
+        const auto image_epoch = runtime.begin_image_transition(host_resources);
         try {
           refresh_catalog_after_file_mutations(true);
           debug_target.notify_exec(runtime.kernel->process().pid);
@@ -3701,6 +3760,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                                  loaded.executable_path);
           precompile_catalog_generation(runtime, catalog_generation_pending,
                                         loaded.executable_path);
+          runtime.activate_image_epoch(image_epoch);
           static_cast<void>(scheduler.complete_slice(
               scheduled->thread, result.ticks_consumed,
               XnuSliceCompletion::Terminate, XnuTimeAccounting::Deferred));
@@ -4033,13 +4093,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
         const auto budget = available_precompile_budget(work_kind);
         if (budget == 0)
           return;
+        const auto expected_epoch = runtime->work_epoch.current();
         runtime->precompile_task = host_resources.submit(
             work_kind, host_compile_deadline,
-            [runtime, budget, idle_precompile_block_budget, phase, target,
+            [runtime, expected_epoch, budget, idle_precompile_block_budget,
+             phase, target,
              &precompile_blocks_by_phase, &precompile_blocks_by_target,
              &record_precompile_outcomes] {
               const auto result = runtime->cpus->precompile_pending(
-                  idle_precompile_block_budget, budget, target);
+                  idle_precompile_block_budget, budget, target,
+                  [runtime, expected_epoch] {
+                    return runtime->precompile_stop_requested(expected_epoch);
+                  });
               record_precompile_outcomes(result);
               const auto compiled = target == JitPrecompileTarget::NativeCode
                                         ? result.native_compiled
