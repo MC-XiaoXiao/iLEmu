@@ -87,7 +87,7 @@ constexpr std::size_t jit_minimum_shared_slab_bytes =
 constexpr std::size_t jit_emergency_budget_bytes =
     256U * bytes_per_mebibyte;
 constexpr std::size_t jit_maximum_adaptive_budget_bytes =
-    1024U * bytes_per_mebibyte;
+    2048U * bytes_per_mebibyte;
 constexpr std::size_t arm_thumb_breakpoint_size = 2;
 constexpr std::size_t arm_breakpoint_size = 4;
 // GDB and mixed SDL/control sessions still use this bounded fallback because
