@@ -2,13 +2,13 @@
 
 #include "test_support.hpp"
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/baseband_device.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_tty_abi.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/output.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/baseband_device.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_tty_abi.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/output.hpp"
 
 #include <array>
 #include <cstddef>
@@ -17,10 +17,10 @@
 #include <sstream>
 #include <string_view>
 
-namespace ilegacysim::test::kernel {
+namespace ilemu::test::kernel {
 namespace {
 
-using ::ilegacysim::test::require;
+using ::ilemu::test::require;
 
 void random_character_device_test() {
   AddressSpace memory;
@@ -157,4 +157,4 @@ void run_device_tests() {
   baseband_h5_transport_test();
 }
 
-} // namespace ilegacysim::test::kernel
+} // namespace ilemu::test::kernel

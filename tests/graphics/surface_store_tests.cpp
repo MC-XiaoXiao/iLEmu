@@ -2,13 +2,13 @@
 
 #include "test_support.hpp"
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/surface_store.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/surface_store.hpp"
 
 #include <cstdint>
 #include <optional>
 
-namespace ilegacysim::test {
+namespace ilemu::test {
 namespace {
 
 void cross_process_surface_mapping_test() {
@@ -60,4 +60,4 @@ void cross_process_surface_mapping_test() {
 
 void run_surface_store_tests() { cross_process_surface_mapping_test(); }
 
-} // namespace ilegacysim::test
+} // namespace ilemu::test

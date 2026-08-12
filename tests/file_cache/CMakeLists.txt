@@ -4,4 +4,4 @@ target_link_libraries(ilemu_file_page_cache_tests PRIVATE
     ilemu_test_support)
 add_test(NAME file_page_cache COMMAND ilemu_file_page_cache_tests)
 set_tests_properties(file_page_cache PROPERTIES
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+    WORKING_DIRECTORY "${ILEMU_WORKSPACE_DIR}")

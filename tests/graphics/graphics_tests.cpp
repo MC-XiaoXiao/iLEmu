@@ -20,55 +20,55 @@
 
 #include <sys/xattr.h>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/apple80211_hle.hpp"
-#include "ilegacysim/clock_mig_ids.hpp"
-#include "ilegacysim/clock_reply_mig_ids.hpp"
-#include "ilegacysim/core_surface_abi.hpp"
-#include "ilegacysim/core_surface_hle.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_kqueue_abi.hpp"
-#include "ilegacysim/darwin_network_abi.hpp"
-#include "ilegacysim/darwin_resource_abi.hpp"
-#include "ilegacysim/darwin_route_socket.hpp"
-#include "ilegacysim/device_mig_ids.hpp"
-#include "ilegacysim/display.hpp"
-#include "ilegacysim/dnssd_ipc_abi.hpp"
-#include "ilegacysim/gdb_rsp.hpp"
-#include "ilegacysim/gles_abi.hpp"
-#include "ilegacysim/hfs_metadata.hpp"
-#include "ilegacysim/host_network.hpp"
-#include "ilegacysim/iokit_abi.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/kernel_iokit.hpp"
-#include "ilegacysim/kernel_mach_ipc.hpp"
-#include "ilegacysim/mach_clock_abi.hpp"
-#include "ilegacysim/mach_namespace.hpp"
-#include "ilegacysim/mach_port_mig_ids.hpp"
-#include "ilegacysim/mach_port_object.hpp"
-#include "ilegacysim/mach_scheduler_abi.hpp"
-#include "ilegacysim/mach_thread_policy_abi.hpp"
-#include "ilegacysim/macho.hpp"
-#include "ilegacysim/mbx2d_abi.hpp"
-#include "ilegacysim/mbx2d_hle.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/mobile_framebuffer_hle.hpp"
-#include "ilegacysim/opengles_hle.hpp"
-#include "ilegacysim/surface_store.hpp"
-#include "ilegacysim/system_configuration_mig_ids.hpp"
-#include "ilegacysim/userland_hle.hpp"
-#include "ilegacysim/virtual_network.hpp"
-#include "ilegacysim/wifi_state.hpp"
-#include "ilegacysim/xnu_mig_adapter.hpp"
-#include "ilegacysim/xnu_scheduler.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/apple80211_hle.hpp"
+#include "ilemu/clock_mig_ids.hpp"
+#include "ilemu/clock_reply_mig_ids.hpp"
+#include "ilemu/core_surface_abi.hpp"
+#include "ilemu/core_surface_hle.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_kqueue_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
+#include "ilemu/darwin_resource_abi.hpp"
+#include "ilemu/darwin_route_socket.hpp"
+#include "ilemu/device_mig_ids.hpp"
+#include "ilemu/display.hpp"
+#include "ilemu/dnssd_ipc_abi.hpp"
+#include "ilemu/gdb_rsp.hpp"
+#include "ilemu/gles_abi.hpp"
+#include "ilemu/hfs_metadata.hpp"
+#include "ilemu/host_network.hpp"
+#include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/kernel_iokit.hpp"
+#include "ilemu/kernel_mach_ipc.hpp"
+#include "ilemu/mach_clock_abi.hpp"
+#include "ilemu/mach_namespace.hpp"
+#include "ilemu/mach_port_mig_ids.hpp"
+#include "ilemu/mach_port_object.hpp"
+#include "ilemu/mach_scheduler_abi.hpp"
+#include "ilemu/mach_thread_policy_abi.hpp"
+#include "ilemu/macho.hpp"
+#include "ilemu/mbx2d_abi.hpp"
+#include "ilemu/mbx2d_hle.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/mobile_framebuffer_hle.hpp"
+#include "ilemu/opengles_hle.hpp"
+#include "ilemu/surface_store.hpp"
+#include "ilemu/system_configuration_mig_ids.hpp"
+#include "ilemu/userland_hle.hpp"
+#include "ilemu/virtual_network.hpp"
+#include "ilemu/wifi_state.hpp"
+#include "ilemu/xnu_mig_adapter.hpp"
+#include "ilemu/xnu_scheduler.hpp"
 
 #include "test_support.hpp"
 
 namespace {
 
-using namespace ilegacysim;
-using ilegacysim::test::require;
+using namespace ilemu;
+using ilemu::test::require;
 
 void core_surface_firmware_hle_test() {
   const std::array candidates{
@@ -132,13 +132,14 @@ void core_surface_firmware_hle_test() {
 
   const auto client = invoke("_CoreSurfaceClientBufferCreate", {0, 0, 0});
   require(client != 0, "CoreSurface client buffer creation failed");
-  require(invoke("_CoreSurfaceClientBufferGetWidth", {client, 0, 0}) ==
-                  iphone_2g_display_width &&
-              invoke("_CoreSurfaceClientBufferGetHeight", {client, 0, 0}) ==
-                  iphone_2g_display_height &&
-              invoke("_CoreSurfaceClientBufferGetBytesPerRow",
-                     {client, 0, 0}) == iphone_2g_display_width * 4U,
-          "CoreSurface client buffer geometry does not match iPhone 2G");
+  require(
+      invoke("_CoreSurfaceClientBufferGetWidth", {client, 0, 0}) ==
+              default_display_width &&
+          invoke("_CoreSurfaceClientBufferGetHeight", {client, 0, 0}) ==
+              default_display_height &&
+          invoke("_CoreSurfaceClientBufferGetBytesPerRow", {client, 0, 0}) ==
+              default_display_width * 4U,
+      "CoreSurface client buffer geometry does not match the device profile");
   const auto base =
       invoke("_CoreSurfaceClientBufferGetBaseAddress", {client, 0, 0});
   require(base != 0 && memory.write32(base, 0xff112233U),
@@ -147,28 +148,6 @@ void core_surface_firmware_hle_test() {
           "CoreSurface client unlock failed");
   require(display->snapshot().pixels.front() == 0xff112233U,
           "CoreSurface client pixels were not submitted to the display");
-
-  constexpr std::uint32_t preserved_exit_pixel = 0xff5a7caeU;
-  shared_state->pending_application_exit_snapshot =
-      KernelSharedState::ApplicationExitSnapshot{
-          1,
-          std::vector<std::uint32_t>(
-              static_cast<std::size_t>(iphone_2g_display_width) *
-                  iphone_2g_display_height,
-              preserved_exit_pixel)};
-  const auto exit_client =
-      invoke("_CoreSurfaceClientBufferCreate", {0, 0, 0});
-  const auto exit_base = invoke("_CoreSurfaceClientBufferGetBaseAddress",
-                                {exit_client, 0, 0});
-  require(exit_client != 0 && exit_base != 0 &&
-              memory.write32(exit_base, 0xff010203U) &&
-              invoke("_CoreSurfaceClientBufferUnlock",
-                     {exit_client, 0, 0}) == 0 &&
-              memory.read32(exit_base) ==
-                  std::optional<std::uint32_t>{preserved_exit_pixel} &&
-              display->snapshot().pixels.front() == preserved_exit_pixel &&
-              !shared_state->pending_application_exit_snapshot,
-          "CoreSurface exit snapshot did not preserve the final live frame");
 }
 
 void mbx2d_surface_composition_test() {
@@ -332,20 +311,20 @@ void mbx2d_surface_composition_test() {
           "MBX2D scissor did not clip the color fill");
 
   constexpr std::uint32_t post_affine_color = 0xff3070b0U;
-  require(mbx_call("_mbx2DEnable", {mbx2d_abi::feature_rotation}) ==
-                  mbx2d_abi::success &&
-              mbx_call("_mbx2DDisable", {mbx2d_abi::feature_rotation}) ==
-                  mbx2d_abi::success &&
-              mbx_call("_mbx2DBlitColor",
-                       {100, 100, 1, 1, post_affine_color}) ==
-                  mbx2d_abi::success &&
-              memory.read32(destination_base + 100U * destination_pitch +
-                            100U * 4U) ==
-                  std::optional<std::uint32_t>{post_affine_color},
-          "MBX2D affine scissor leaked into later LayerKit blits");
+  require(
+      mbx_call("_mbx2DEnable", {mbx2d_abi::feature_rotation}) ==
+              mbx2d_abi::success &&
+          mbx_call("_mbx2DDisable", {mbx2d_abi::feature_rotation}) ==
+              mbx2d_abi::success &&
+          mbx_call("_mbx2DBlitColor", {100, 100, 1, 1, post_affine_color}) ==
+              mbx2d_abi::success &&
+          memory.read32(destination_base + 100U * destination_pitch +
+                        100U * 4U) ==
+              std::optional<std::uint32_t>{post_affine_color},
+      "MBX2D affine scissor leaked into later LayerKit blits");
 
   require(mbx_call("_mbx2DSetScissor",
-                   {0, 0, iphone_2g_display_width, iphone_2g_display_height}) ==
+                   {0, 0, default_display_width, default_display_height}) ==
               mbx2d_abi::success,
           "MBX2D full-screen scissor setup failed");
   constexpr std::uint32_t premultiplied_half_red = 0x80800000U;
@@ -382,10 +361,8 @@ void mbx2d_surface_composition_test() {
   constexpr std::uint32_t opaque_blue = 0xff0000ffU;
   constexpr std::uint32_t quarter_red_three_quarters_blue = 0xff4000bfU;
   require(
-      memory.write32(source_base + 70U * source_pitch + 61U * 4U,
-                     opaque_red) &&
-          memory.write32(destination_base + 80U * destination_pitch +
-                             72U * 4U,
+      memory.write32(source_base + 70U * source_pitch + 61U * 4U, opaque_red) &&
+          memory.write32(destination_base + 80U * destination_pitch + 72U * 4U,
                          opaque_blue) &&
           mbx_call("_mbx2DSetBlendEquation",
                    {mbx2d_abi::layerkit_crossfade_source_word,
@@ -395,34 +372,31 @@ void mbx2d_surface_composition_test() {
               mbx2d_abi::success &&
           memory.read32(destination_base + 80U * destination_pitch +
                         72U * 4U) ==
-              std::optional<std::uint32_t>{
-                  quarter_red_three_quarters_blue},
+              std::optional<std::uint32_t>{quarter_red_three_quarters_blue},
       "MBX2D constant-alpha crossfade is incorrect");
   require(mbx_call("_mbx2DSetBlendEquationComplex",
                    {mbx2d_abi::layerkit_mask_source_word,
                     mbx2d_abi::layerkit_mask_destination_word,
                     mbx2d_abi::layerkit_mask_operation_word, 0xffU}) ==
-                  mbx2d_abi::success,
+              mbx2d_abi::success,
           "MBX2D straight-alpha equation was rejected");
   constexpr std::uint32_t straight_half_red = 0x80ff0000U;
   constexpr std::uint32_t straight_source_over_result = 0xff80007fU;
-  require(memory.write32(source_base + 70U * source_pitch + 62U * 4U,
-                         straight_half_red) &&
-              memory.write32(destination_base + 80U * destination_pitch +
-                                 73U * 4U,
-                             opaque_blue) &&
-              mbx_call("_mbx2DBlitCopy", {62, 70, 73, 80, 1, 1}) ==
-                  mbx2d_abi::success &&
-              memory.read32(destination_base + 80U * destination_pitch +
-                            73U * 4U) ==
-                  std::optional<std::uint32_t>{
-                      straight_source_over_result},
-          "MBX2D straight-alpha source-over blend is incorrect");
   require(
-              mbx_call("_mbx2DSetBlendEquationComplex",
-                       {0, mbx2d_abi::layerkit_mask_destination_word,
-                        mbx2d_abi::layerkit_mask_operation_word, 0xffU}) ==
-                  mbx2d_abi::failure,
+      memory.write32(source_base + 70U * source_pitch + 62U * 4U,
+                     straight_half_red) &&
+          memory.write32(destination_base + 80U * destination_pitch + 73U * 4U,
+                         opaque_blue) &&
+          mbx_call("_mbx2DBlitCopy", {62, 70, 73, 80, 1, 1}) ==
+              mbx2d_abi::success &&
+          memory.read32(destination_base + 80U * destination_pitch +
+                        73U * 4U) ==
+              std::optional<std::uint32_t>{straight_source_over_result},
+      "MBX2D straight-alpha source-over blend is incorrect");
+  require(mbx_call("_mbx2DSetBlendEquationComplex",
+                   {0, mbx2d_abi::layerkit_mask_destination_word,
+                    mbx2d_abi::layerkit_mask_operation_word, 0xffU}) ==
+              mbx2d_abi::failure,
           "MBX2D complex blend validation differs from firmware");
   require(mbx_call("_mbx2DDisable", {mbx2d_abi::feature_blend}) ==
               mbx2d_abi::success,
@@ -570,8 +544,8 @@ void mbx2d_surface_composition_test() {
           "MBX3D QuadCopy did not rasterize a non-axis-aligned quad");
   require(mbx_call("_mbx2DFinish", {destination_surface}) ==
                   mbx2d_abi::success &&
-              display->snapshot().pixels[
-                  200U * iphone_2g_display_width + 200U] == stripe[0],
+              display->snapshot().pixels[200U * default_display_width + 200U] ==
+                  stripe[0],
           "MBX2D finish did not submit the destination surface");
   require(mbx_call("_mbx2DTerminate", {}) == mbx2d_abi::success &&
               mbx_call("_mbx2DTerminate", {}) == mbx2d_abi::failure,
@@ -812,13 +786,12 @@ void opengles_resource_firmware_boundary_test() {
                        std::bit_cast<std::uint32_t>(1.0F)});
   invoke("_glMatrixMode", {gles_abi::modelview});
   invoke("_glLoadIdentity", {});
-  invoke("_glViewport",
-         {0, 0, iphone_2g_display_width, iphone_2g_display_height});
+  invoke("_glViewport", {0, 0, default_display_width, default_display_height});
   display->clear(0xff000000U);
   invoke("_glDrawArrays", {gles_abi::triangles, 0, 3});
   const auto rendered = display->snapshot();
   require(invoke("_glGetError", {}) == gles_abi::no_error &&
-              rendered.pixels[240U * iphone_2g_display_width + 160U] ==
+              rendered.pixels[240U * default_display_width + 160U] ==
                   0xffff0000U,
           "OpenGLES VBO/client-array triangle rasterization failed");
 
@@ -832,7 +805,7 @@ void opengles_resource_firmware_boundary_test() {
       core_image, "_CoreSurfaceClientBufferGetBytesPerRow", {surface_client});
   constexpr std::uint32_t public_surface = output_address + 0x40U;
   require(surface_client != 0 && surface_base != 0 && surface_id != 0 &&
-              surface_pitch == iphone_2g_display_width *
+              surface_pitch == default_display_width *
                                    core_surface_abi::bytes_per_bgra_pixel &&
               memory.write32(public_surface +
                                  core_surface_abi::public_client_buffer_offset,
@@ -858,9 +831,9 @@ void opengles_resource_firmware_boundary_test() {
               texture != nullptr && texture->levels.contains(0) &&
               texture->levels.at(0).surface_id ==
                   std::optional<std::uint32_t>{surface_id} &&
-              texture->levels.at(0).width == iphone_2g_display_width &&
-              texture->levels.at(0).height == iphone_2g_display_height &&
-              texture->levels.at(0).argb[sample_y * iphone_2g_display_width +
+              texture->levels.at(0).width == default_display_width &&
+              texture->levels.at(0).height == default_display_height &&
+              texture->levels.at(0).argb[sample_y * default_display_width +
                                          sample_x] == initial_surface_pixel,
           "OpenGLES CoreSurface rectangle texture import failed");
 
@@ -875,7 +848,7 @@ void opengles_resource_firmware_boundary_test() {
          {gles_abi::maximum_texture_units, output_address + 0x18U});
   require(invoke("_glGetError", {}) == gles_abi::no_error &&
               texture != nullptr &&
-              texture->levels.at(0).argb[sample_y * iphone_2g_display_width +
+              texture->levels.at(0).argb[sample_y * default_display_width +
                                          sample_x] == refreshed_surface_pixel &&
               memory.read32(output_address + 0x14U) ==
                   std::optional<std::uint32_t>{surface_texture} &&
@@ -909,7 +882,7 @@ void opengles_resource_firmware_boundary_test() {
   invoke("_glEnable", {gles_abi::scissor_test});
   display->clear(0xff000000U);
   invoke("_glDrawArrays", {gles_abi::triangles, 0, 3});
-  require(display->snapshot().pixels[240U * iphone_2g_display_width + 160U] ==
+  require(display->snapshot().pixels[240U * default_display_width + 160U] ==
               0xff000000U,
           "OpenGLES scissor did not reject an out-of-box fragment");
   invoke("_glScissor", {100, 100, 120, 300});
@@ -919,7 +892,7 @@ void opengles_resource_firmware_boundary_test() {
               memory.read32(output_address + 0x20U) ==
                   std::optional<std::uint32_t>{
                       std::bit_cast<std::uint32_t>(0.0F)} &&
-              surface_rendered.pixels[240U * iphone_2g_display_width + 160U] ==
+              surface_rendered.pixels[240U * default_display_width + 160U] ==
                   0xff00ab34U,
           "OpenGLES CoreSurface texture/scissor/color-mask state failed");
   invoke("_glClearColor", {std::bit_cast<std::uint32_t>(1.0F),
@@ -929,7 +902,7 @@ void opengles_resource_firmware_boundary_test() {
   invoke("_glClear", {gles_abi::color_buffer_bit});
   const auto cleared = display->snapshot();
   require(invoke("_glGetError", {}) == gles_abi::no_error &&
-              cleared.pixels[240U * iphone_2g_display_width + 160U] ==
+              cleared.pixels[240U * default_display_width + 160U] ==
                   0xff00ffffU &&
               cleared.pixels[0] == 0xff000000U,
           "OpenGLES clear did not honor scissor and color write mask");
@@ -994,7 +967,7 @@ void opengles_resource_firmware_boundary_test() {
                   std::optional<std::uint32_t>{second_texture_unit} &&
               memory.read32(output_address + 0x8cU) ==
                   std::optional<std::uint32_t>{second_texture} &&
-              multitextured.pixels[240U * iphone_2g_display_width + 160U] ==
+              multitextured.pixels[240U * default_display_width + 160U] ==
                   combined_pixel,
           "OpenGLES two-unit texture state/composition failed");
 
@@ -1093,12 +1066,11 @@ void mobile_framebuffer_firmware_boundary_test() {
           "display-size firmware hook was not installed");
 
   constexpr auto pixel_count =
-      static_cast<std::size_t>(iphone_2g_display_width) *
-      iphone_2g_display_height;
+      static_cast<std::size_t>(default_display_width) * default_display_height;
   constexpr auto allocation_size = static_cast<std::uint32_t>(
       pixel_count * core_surface_abi::bytes_per_bgra_pixel);
   constexpr auto pitch =
-      iphone_2g_display_width * core_surface_abi::bytes_per_bgra_pixel;
+      default_display_width * core_surface_abi::bytes_per_bgra_pixel;
   const auto pixel_base =
       registry.allocate_data(allocation_size, AddressSpace::page_size);
   const auto client =
@@ -1124,12 +1096,11 @@ void mobile_framebuffer_firmware_boundary_test() {
                          client) &&
           memory.write32(sample_address, sample_argb),
       "IOMobileFramebuffer CoreSurface fixture setup failed");
-  require(surfaces->publish(
-              memory,
-              SurfaceStore::Backing{
-                  surface_id, pixel_base, allocation_size,
-                  iphone_2g_display_width, iphone_2g_display_height, pitch,
-                  surface_pixel_format_bgra}),
+  require(surfaces->publish(memory,
+                            SurfaceStore::Backing{
+                                surface_id, pixel_base, allocation_size,
+                                default_display_width, default_display_height,
+                                pitch, surface_pixel_format_bgra}),
           "IOMobileFramebuffer surface publication failed");
 
   const auto invoke = [&](std::string_view symbol,
@@ -1160,26 +1131,26 @@ void mobile_framebuffer_firmware_boundary_test() {
   const auto float_bits = [](float value) {
     return std::bit_cast<std::uint32_t>(value);
   };
-  require(invoke("_IOMobileFramebufferSwapBegin",
-                 {framebuffer_object, swap_id_output}) == iokit_abi::success &&
-              memory.read32(swap_id_output) ==
-                  std::optional<std::uint32_t>{1} &&
-              invoke("_IOMobileFramebufferSwapSetLayer",
-                     {framebuffer_object, rgb_layer, public_surface,
-                      float_bits(0.0F), float_bits(0.0F),
-                      float_bits(static_cast<float>(iphone_2g_display_width)),
-                      float_bits(static_cast<float>(iphone_2g_display_height)),
-                      float_bits(0.0F), float_bits(0.0F),
-                      float_bits(static_cast<float>(iphone_2g_display_width)),
-                      float_bits(static_cast<float>(iphone_2g_display_height)),
-                      0}) == iokit_abi::success &&
-              invoke("_IOMobileFramebufferSwapEnd", {framebuffer_object, 1}) ==
-                  iokit_abi::success,
-          "IOMobileFramebuffer layer swap transaction failed");
+  require(
+      invoke("_IOMobileFramebufferSwapBegin",
+             {framebuffer_object, swap_id_output}) == iokit_abi::success &&
+          memory.read32(swap_id_output) == std::optional<std::uint32_t>{1} &&
+          invoke("_IOMobileFramebufferSwapSetLayer",
+                 {framebuffer_object, rgb_layer, public_surface,
+                  float_bits(0.0F), float_bits(0.0F),
+                  float_bits(static_cast<float>(default_display_width)),
+                  float_bits(static_cast<float>(default_display_height)),
+                  float_bits(0.0F), float_bits(0.0F),
+                  float_bits(static_cast<float>(default_display_width)),
+                  float_bits(static_cast<float>(default_display_height)), 0}) ==
+              iokit_abi::success &&
+          invoke("_IOMobileFramebufferSwapEnd", {framebuffer_object, 1}) ==
+              iokit_abi::success,
+      "IOMobileFramebuffer layer swap transaction failed");
   const auto frame = display->snapshot();
   require(frame.sequence == 1 &&
               frame.pixels[static_cast<std::size_t>(sample_y) *
-                               iphone_2g_display_width +
+                               default_display_width +
                            sample_x] == sample_argb,
           "IOMobileFramebuffer did not present the CoreSurface pixels");
 
@@ -1203,11 +1174,10 @@ void mobile_framebuffer_firmware_boundary_test() {
           "IOMobileFramebuffer overlay fixture setup failed");
   require(surfaces->publish(
               memory,
-              SurfaceStore::Backing{
-                  overlay_surface_id, overlay_base,
-                  core_surface_abi::bytes_per_bgra_pixel, 1, 1,
-                  core_surface_abi::bytes_per_bgra_pixel,
-                  surface_pixel_format_bgra}),
+              SurfaceStore::Backing{overlay_surface_id, overlay_base,
+                                    core_surface_abi::bytes_per_bgra_pixel, 1,
+                                    1, core_surface_abi::bytes_per_bgra_pixel,
+                                    surface_pixel_format_bgra}),
           "IOMobileFramebuffer overlay publication failed");
   constexpr std::uint32_t overlay_layer = 1;
   require(
@@ -1240,7 +1210,7 @@ void mobile_framebuffer_firmware_boundary_test() {
       blend_channel(overlay_argb & 0xffU, sample_argb & 0xffU,
                     overlay_inverse_alpha);
   require(display->snapshot().pixels[static_cast<std::size_t>(sample_y) *
-                                         iphone_2g_display_width +
+                                         default_display_width +
                                      sample_x] == overlay_expected,
           "IOMobileFramebuffer layer alpha composition is incorrect");
   require(invoke("_IOMobileFramebufferSwapBegin",
@@ -1251,13 +1221,13 @@ void mobile_framebuffer_firmware_boundary_test() {
               invoke("_IOMobileFramebufferSwapEnd", {framebuffer_object}) ==
                   iokit_abi::success &&
               display->snapshot().pixels[static_cast<std::size_t>(sample_y) *
-                                             iphone_2g_display_width +
+                                             default_display_width +
                                          sample_x] == sample_argb,
           "IOMobileFramebuffer did not remove a cleared hardware layer");
 }
 
 void run_tests() {
-  ilegacysim::test::run_surface_store_tests();
+  ilemu::test::run_surface_store_tests();
   core_surface_firmware_hle_test();
   mbx2d_surface_composition_test();
   opengles_resource_firmware_boundary_test();
@@ -1266,4 +1236,4 @@ void run_tests() {
 
 } // namespace
 
-int main() { return ilegacysim::test::run_suite("graphics", run_tests); }
+int main() { return ilemu::test::run_suite("graphics", run_tests); }

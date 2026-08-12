@@ -2,22 +2,22 @@
 
 #include "test_support.hpp"
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/mach_port_mig_ids.hpp"
-#include "ilegacysim/mach_port_object.hpp"
-#include "ilegacysim/output.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/mach_port_mig_ids.hpp"
+#include "ilemu/mach_port_object.hpp"
+#include "ilemu/output.hpp"
 
 #include <cstdint>
 #include <optional>
 #include <sstream>
 
-namespace ilegacysim::test::mach_suite {
+namespace ilemu::test::mach_suite {
 namespace {
 
-using ::ilegacysim::test::require;
+using ::ilemu::test::require;
 
 void set_port_queue_limit_test() {
   AddressSpace memory;
@@ -133,4 +133,4 @@ void set_port_queue_limit_test() {
 
 void run_port_limit_tests() { set_port_queue_limit_test(); }
 
-} // namespace ilegacysim::test::mach_suite
+} // namespace ilemu::test::mach_suite

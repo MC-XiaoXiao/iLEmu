@@ -1,7 +1,8 @@
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_sysctl.hpp"
-#include "ilegacysim/kernel.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_sysctl.hpp"
+#include "ilemu/device_profile.hpp"
+#include "ilemu/kernel.hpp"
 
 #include "test_support.hpp"
 
@@ -13,7 +14,7 @@
 #include <string>
 #include <string_view>
 
-namespace ilegacysim::test::kernel {
+namespace ilemu::test::kernel {
 
 void run_sysctl_tests() {
   AddressSpace memory;
@@ -43,7 +44,8 @@ void run_sysctl_tests() {
   Cpu cpu{0, memory, monitor};
   std::ostringstream stream;
   Output output{stream};
-  CompatibilityKernel kernel{memory, output};
+  const auto &profile = DeviceProfile::default_profile();
+  CompatibilityKernel kernel{memory, output, {}, profile};
   cpu.registers()[0] = request_mib;
   cpu.registers()[1] = 2;
   cpu.registers()[2] = result_mib;
@@ -70,12 +72,12 @@ void run_sysctl_tests() {
   cpu.registers()[5] = 0;
   cpu.registers()[12] = 202;
   kernel.dispatch(cpu, 0x80);
-  const auto value = memory.read_bytes(
-      value_address, darwin::sysctl::iphone_2g_machine.size() + 1);
+  const auto value =
+      memory.read_bytes(value_address, profile.product_type.size() + 1);
   require(cpu.registers()[0] == 0 && value &&
               std::string_view{reinterpret_cast<const char *>(value->data())} ==
-                  darwin::sysctl::iphone_2g_machine,
-          "HW_MACHINE did not project the iPhone 2G machine identifier");
+                  profile.product_type,
+          "HW_MACHINE did not project the selected device identifier");
 
   const auto model_identifier = darwin::sysctl::resolve_name("hw.model");
   require(model_identifier && model_identifier->size == 2 &&
@@ -95,12 +97,12 @@ void run_sysctl_tests() {
   cpu.registers()[5] = 0;
   cpu.registers()[12] = 202;
   kernel.dispatch(cpu, 0x80);
-  const auto model = memory.read_bytes(
-      value_address, darwin::sysctl::iphone_2g_model.size() + 1);
+  const auto model =
+      memory.read_bytes(value_address, profile.board_config.size() + 1);
   require(cpu.registers()[0] == 0 && model &&
               std::string_view{reinterpret_cast<const char *>(model->data())} ==
-                  darwin::sysctl::iphone_2g_model,
-          "HW_MODEL did not project the iPhone 2G platform identifier");
+                  profile.board_config,
+          "HW_MODEL did not project the selected platform identifier");
 
   require(memory.write32(request_mib, darwin::sysctl::control_kernel) &&
               memory.write32(request_mib + 4,
@@ -124,4 +126,4 @@ void run_sysctl_tests() {
           "KERN_PROCARGS did not export the target process image and argv");
 }
 
-} // namespace ilegacysim::test::kernel
+} // namespace ilemu::test::kernel

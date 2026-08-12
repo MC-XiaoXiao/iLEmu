@@ -5,7 +5,7 @@
 #include <string>
 #include <string_view>
 
-namespace ilegacysim::test {
+namespace ilemu::test {
 
 void require(bool condition, std::string_view message);
 
@@ -17,4 +17,4 @@ void require(bool condition, std::string_view message);
 
 int run_suite(std::string_view name, void (*suite)());
 
-}  // namespace ilegacysim::test
+}  // namespace ilemu::test

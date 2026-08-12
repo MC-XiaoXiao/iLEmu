@@ -2,22 +2,22 @@
 
 #include "test_support.hpp"
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/vm_map_mig_ids.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/vm_map_mig_ids.hpp"
 
 #include <cstdint>
 #include <optional>
 #include <sstream>
 
-namespace ilegacysim::test::mach_suite {
+namespace ilemu::test::mach_suite {
 namespace {
 
-using ::ilegacysim::test::require;
+using ::ilemu::test::require;
 
 void vm_purgable_state_round_trip_test() {
   constexpr std::uint32_t message = 0x51000U;
@@ -82,4 +82,4 @@ void vm_purgable_state_round_trip_test() {
 
 void run_vm_purgable_tests() { vm_purgable_state_round_trip_test(); }
 
-} // namespace ilegacysim::test::mach_suite
+} // namespace ilemu::test::mach_suite

@@ -1,12 +1,12 @@
 #include "suite.hpp"
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_kernel_control_abi.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/kernel_control.hpp"
-#include "ilegacysim/output.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_kernel_control_abi.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/kernel_control.hpp"
+#include "ilemu/output.hpp"
 #include "test_support.hpp"
 
 #include <cstdint>
@@ -14,10 +14,10 @@
 #include <sstream>
 #include <string>
 
-namespace ilegacysim::test::network_suite {
+namespace ilemu::test::network_suite {
 namespace {
 
-using ::ilegacysim::test::require;
+using ::ilemu::test::require;
 
 void commcenter_kernel_control_contract_test() {
   AddressSpace memory;
@@ -145,4 +145,4 @@ void run_kernel_control_tests() {
   commcenter_kernel_control_contract_test();
 }
 
-} // namespace ilegacysim::test::network_suite
+} // namespace ilemu::test::network_suite

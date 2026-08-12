@@ -2,18 +2,18 @@
 #include <cstdint>
 #include <optional>
 
-#include "ilegacysim/mach_namespace.hpp"
-#include "ilegacysim/mach_port_object.hpp"
-#include "ilegacysim/xnu_scheduler.hpp"
+#include "ilemu/mach_namespace.hpp"
+#include "ilemu/mach_port_object.hpp"
+#include "ilemu/xnu_scheduler.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-using namespace ilegacysim;
-using ilegacysim::test::require;
+using namespace ilemu;
+using ilemu::test::require;
 
 void mach_namespace_test() {
-  using namespace ilegacysim::xnu792::ipc;
+  using namespace ilemu::xnu792::ipc;
   MachNamespaceTable namespaces;
   namespaces.create_task(1);
   namespaces.create_task(2);
@@ -53,7 +53,7 @@ void mach_namespace_test() {
 }
 
 void mach_port_object_table_test() {
-  using namespace ilegacysim::xnu792::ipc;
+  using namespace ilemu::xnu792::ipc;
   PortObjectTable objects;
   require(!objects.create(0, 1) && !objects.create(0xffff'ffffU, 1),
           "ipc_port table accepted a null/dead object identity");
@@ -369,5 +369,5 @@ void mach_model_suite() {
 } // namespace
 
 int main() {
-  return ilegacysim::test::run_suite("Mach model", mach_model_suite);
+  return ilemu::test::run_suite("Mach model", mach_model_suite);
 }

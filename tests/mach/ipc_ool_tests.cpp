@@ -18,58 +18,58 @@
 
 #include <sys/xattr.h>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/apple80211_hle.hpp"
-#include "ilegacysim/clock_mig_ids.hpp"
-#include "ilegacysim/clock_reply_mig_ids.hpp"
-#include "ilegacysim/core_surface_abi.hpp"
-#include "ilegacysim/core_surface_hle.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_kqueue_abi.hpp"
-#include "ilegacysim/darwin_network_abi.hpp"
-#include "ilegacysim/darwin_resource_abi.hpp"
-#include "ilegacysim/darwin_route_socket.hpp"
-#include "ilegacysim/device_mig_ids.hpp"
-#include "ilegacysim/display.hpp"
-#include "ilegacysim/dnssd_ipc_abi.hpp"
-#include "ilegacysim/gdb_rsp.hpp"
-#include "ilegacysim/gles_abi.hpp"
-#include "ilegacysim/hfs_metadata.hpp"
-#include "ilegacysim/host_network.hpp"
-#include "ilegacysim/iokit_abi.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/kernel_iokit.hpp"
-#include "ilegacysim/kernel_mach_ipc.hpp"
-#include "ilegacysim/mach_clock_abi.hpp"
-#include "ilegacysim/mach_namespace.hpp"
-#include "ilegacysim/mach_port_mig_ids.hpp"
-#include "ilegacysim/mach_port_object.hpp"
-#include "ilegacysim/mach_scheduler_abi.hpp"
-#include "ilegacysim/mach_thread_policy_abi.hpp"
-#include "ilegacysim/macho.hpp"
-#include "ilegacysim/mbx2d_abi.hpp"
-#include "ilegacysim/mbx2d_hle.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/mobile_framebuffer_hle.hpp"
-#include "ilegacysim/opengles_hle.hpp"
-#include "ilegacysim/surface_store.hpp"
-#include "ilegacysim/system_configuration_mig_ids.hpp"
-#include "ilegacysim/userland_hle.hpp"
-#include "ilegacysim/virtual_network.hpp"
-#include "ilegacysim/wifi_state.hpp"
-#include "ilegacysim/xnu_mig_adapter.hpp"
-#include "ilegacysim/xnu_scheduler.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/apple80211_hle.hpp"
+#include "ilemu/clock_mig_ids.hpp"
+#include "ilemu/clock_reply_mig_ids.hpp"
+#include "ilemu/core_surface_abi.hpp"
+#include "ilemu/core_surface_hle.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_kqueue_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
+#include "ilemu/darwin_resource_abi.hpp"
+#include "ilemu/darwin_route_socket.hpp"
+#include "ilemu/device_mig_ids.hpp"
+#include "ilemu/display.hpp"
+#include "ilemu/dnssd_ipc_abi.hpp"
+#include "ilemu/gdb_rsp.hpp"
+#include "ilemu/gles_abi.hpp"
+#include "ilemu/hfs_metadata.hpp"
+#include "ilemu/host_network.hpp"
+#include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/kernel_iokit.hpp"
+#include "ilemu/kernel_mach_ipc.hpp"
+#include "ilemu/mach_clock_abi.hpp"
+#include "ilemu/mach_namespace.hpp"
+#include "ilemu/mach_port_mig_ids.hpp"
+#include "ilemu/mach_port_object.hpp"
+#include "ilemu/mach_scheduler_abi.hpp"
+#include "ilemu/mach_thread_policy_abi.hpp"
+#include "ilemu/macho.hpp"
+#include "ilemu/mbx2d_abi.hpp"
+#include "ilemu/mbx2d_hle.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/mobile_framebuffer_hle.hpp"
+#include "ilemu/opengles_hle.hpp"
+#include "ilemu/surface_store.hpp"
+#include "ilemu/system_configuration_mig_ids.hpp"
+#include "ilemu/userland_hle.hpp"
+#include "ilemu/virtual_network.hpp"
+#include "ilemu/wifi_state.hpp"
+#include "ilemu/xnu_mig_adapter.hpp"
+#include "ilemu/xnu_scheduler.hpp"
 
 #include "test_support.hpp"
 
 #include "suite.hpp"
 
-namespace ilegacysim::test::mach_suite {
+namespace ilemu::test::mach_suite {
 namespace {
 
-using namespace ::ilegacysim;
-using ::ilegacysim::test::require;
+using namespace ::ilemu;
+using ::ilemu::test::require;
 
 void cross_process_ool_mach_ipc_test() {
   constexpr std::uint32_t mach_send_message = 1;
@@ -1058,7 +1058,7 @@ void system_configuration_watched_key_mach_ipc_test() {
           stream.str().find("mig=config.notifyadd") != std::string::npos &&
           stream.str().find("mig=config.configset") != std::string::npos &&
           stream.str().find("mig=config.notifychanges") != std::string::npos,
-      "notifychanges payload/status or named MIG trace mismatch");
+          "notifychanges payload/status or named MIG trace mismatch");
 }
 
 } // namespace
@@ -1069,4 +1069,4 @@ void run_ipc_ool_tests() {
   system_configuration_watched_key_mach_ipc_test();
 }
 
-} // namespace ilegacysim::test::mach_suite
+} // namespace ilemu::test::mach_suite

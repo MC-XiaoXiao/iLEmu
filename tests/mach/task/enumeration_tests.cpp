@@ -1,9 +1,9 @@
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/task_mig_ids.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/task_mig_ids.hpp"
 
 #include "test_support.hpp"
 
@@ -14,10 +14,10 @@
 #include <optional>
 #include <sstream>
 
-namespace ilegacysim::test::mach_suite {
+namespace ilemu::test::mach_suite {
 namespace {
 
-using ::ilegacysim::test::require;
+using ::ilemu::test::require;
 
 void dispatch_mig(Cpu &cpu, CompatibilityKernel &kernel, std::uint32_t message,
                   std::uint32_t send_size, std::uint32_t receive_size) {
@@ -127,4 +127,4 @@ void task_threads_enumeration_test() {
 
 void run_task_tests() { task_threads_enumeration_test(); }
 
-} // namespace ilegacysim::test::mach_suite
+} // namespace ilemu::test::mach_suite

@@ -1,7 +1,7 @@
 #include "suite.hpp"
 #include "test_support.hpp"
 
-namespace ilegacysim::test::network_suite {
+namespace ilemu::test::network_suite {
 
 void run_tests() {
   run_abi_route_tests();
@@ -13,9 +13,9 @@ void run_tests() {
   run_unix_socket_tests();
 }
 
-} // namespace ilegacysim::test::network_suite
+} // namespace ilemu::test::network_suite
 
 int main() {
-  return ilegacysim::test::run_suite(
-      "network_suite", ilegacysim::test::network_suite::run_tests);
+  return ilemu::test::run_suite(
+      "network_suite", ilemu::test::network_suite::run_tests);
 }

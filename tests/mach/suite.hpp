@@ -1,6 +1,6 @@
 #pragma once
 
-namespace ilegacysim::test::mach_suite {
+namespace ilemu::test::mach_suite {
 
 void run_mig_policy_tests();
 void run_timer_tests();
@@ -15,4 +15,4 @@ void run_task_tests();
 void run_thread_tests();
 void run_vm_tests();
 
-} // namespace ilegacysim::test::mach_suite
+} // namespace ilemu::test::mach_suite

@@ -2,15 +2,15 @@
 
 #include "test_support.hpp"
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/bootstrap_mig_ids.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/mach_namespace.hpp"
-#include "ilegacysim/mach_port_mig_ids.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/task_mig_ids.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/bootstrap_mig_ids.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/mach_namespace.hpp"
+#include "ilemu/mach_port_mig_ids.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/task_mig_ids.hpp"
 
 #include <array>
 #include <cstddef>
@@ -18,10 +18,10 @@
 #include <optional>
 #include <sstream>
 
-namespace ilegacysim::test::mach_suite {
+namespace ilemu::test::mach_suite {
 namespace {
 
-using ::ilegacysim::test::require;
+using ::ilemu::test::require;
 
 constexpr std::uint32_t mach_send = 1;
 constexpr std::uint32_t mach_receive = 2;
@@ -500,4 +500,4 @@ void run_launchd_ipc_tests() {
   check_in_job_port_identity_test();
 }
 
-} // namespace ilegacysim::test::mach_suite
+} // namespace ilemu::test::mach_suite

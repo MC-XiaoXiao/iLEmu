@@ -4,4 +4,4 @@ target_link_libraries(ilemu_dyld_shared_cache_tests PRIVATE
     ilemu_test_support)
 add_test(NAME dyld_shared_cache COMMAND ilemu_dyld_shared_cache_tests)
 set_tests_properties(dyld_shared_cache PROPERTIES
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+    WORKING_DIRECTORY "${ILEMU_WORKSPACE_DIR}")

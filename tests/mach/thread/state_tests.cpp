@@ -1,12 +1,12 @@
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/mach_arm_thread_abi.hpp"
-#include "ilegacysim/mach_port_mig_ids.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/thread_act_mig_ids.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/mach_arm_thread_abi.hpp"
+#include "ilemu/mach_port_mig_ids.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/thread_act_mig_ids.hpp"
 
 #include "test_support.hpp"
 
@@ -17,10 +17,10 @@
 #include <optional>
 #include <sstream>
 
-namespace ilegacysim::test::mach_suite {
+namespace ilemu::test::mach_suite {
 namespace {
 
-using ::ilegacysim::test::require;
+using ::ilemu::test::require;
 
 void arm_thread_get_state_test() {
   constexpr std::uint32_t message = 0x4e000U;
@@ -192,4 +192,4 @@ void run_thread_tests() {
   thread_self_terminate_test();
 }
 
-} // namespace ilegacysim::test::mach_suite
+} // namespace ilemu::test::mach_suite

@@ -18,56 +18,56 @@
 
 #include <sys/xattr.h>
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/apple80211_hle.hpp"
-#include "ilegacysim/clock_mig_ids.hpp"
-#include "ilegacysim/clock_reply_mig_ids.hpp"
-#include "ilegacysim/core_surface_abi.hpp"
-#include "ilegacysim/core_surface_hle.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_kqueue_abi.hpp"
-#include "ilegacysim/darwin_network_abi.hpp"
-#include "ilegacysim/darwin_resource_abi.hpp"
-#include "ilegacysim/darwin_route_socket.hpp"
-#include "ilegacysim/device_mig_ids.hpp"
-#include "ilegacysim/display.hpp"
-#include "ilegacysim/dnssd_ipc_abi.hpp"
-#include "ilegacysim/gdb_rsp.hpp"
-#include "ilegacysim/gles_abi.hpp"
-#include "ilegacysim/hfs_metadata.hpp"
-#include "ilegacysim/host_network.hpp"
-#include "ilegacysim/iokit_abi.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/kernel_iokit.hpp"
-#include "ilegacysim/kernel_mach_ipc.hpp"
-#include "ilegacysim/mach_clock_abi.hpp"
-#include "ilegacysim/mach_namespace.hpp"
-#include "ilegacysim/mach_port_mig_ids.hpp"
-#include "ilegacysim/mach_port_object.hpp"
-#include "ilegacysim/mach_scheduler_abi.hpp"
-#include "ilegacysim/mach_thread_policy_abi.hpp"
-#include "ilegacysim/macho.hpp"
-#include "ilegacysim/mbx2d_abi.hpp"
-#include "ilegacysim/mbx2d_hle.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/mobile_framebuffer_hle.hpp"
-#include "ilegacysim/opengles_hle.hpp"
-#include "ilegacysim/surface_store.hpp"
-#include "ilegacysim/system_configuration_mig_ids.hpp"
-#include "ilegacysim/userland_hle.hpp"
-#include "ilegacysim/virtual_network.hpp"
-#include "ilegacysim/wifi_state.hpp"
-#include "ilegacysim/xnu_mig_adapter.hpp"
-#include "ilegacysim/xnu_scheduler.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/apple80211_hle.hpp"
+#include "ilemu/clock_mig_ids.hpp"
+#include "ilemu/clock_reply_mig_ids.hpp"
+#include "ilemu/core_surface_abi.hpp"
+#include "ilemu/core_surface_hle.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_kqueue_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
+#include "ilemu/darwin_resource_abi.hpp"
+#include "ilemu/darwin_route_socket.hpp"
+#include "ilemu/device_mig_ids.hpp"
+#include "ilemu/display.hpp"
+#include "ilemu/dnssd_ipc_abi.hpp"
+#include "ilemu/gdb_rsp.hpp"
+#include "ilemu/gles_abi.hpp"
+#include "ilemu/hfs_metadata.hpp"
+#include "ilemu/host_network.hpp"
+#include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/kernel_iokit.hpp"
+#include "ilemu/kernel_mach_ipc.hpp"
+#include "ilemu/mach_clock_abi.hpp"
+#include "ilemu/mach_namespace.hpp"
+#include "ilemu/mach_port_mig_ids.hpp"
+#include "ilemu/mach_port_object.hpp"
+#include "ilemu/mach_scheduler_abi.hpp"
+#include "ilemu/mach_thread_policy_abi.hpp"
+#include "ilemu/macho.hpp"
+#include "ilemu/mbx2d_abi.hpp"
+#include "ilemu/mbx2d_hle.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/mobile_framebuffer_hle.hpp"
+#include "ilemu/opengles_hle.hpp"
+#include "ilemu/surface_store.hpp"
+#include "ilemu/system_configuration_mig_ids.hpp"
+#include "ilemu/userland_hle.hpp"
+#include "ilemu/virtual_network.hpp"
+#include "ilemu/wifi_state.hpp"
+#include "ilemu/xnu_mig_adapter.hpp"
+#include "ilemu/xnu_scheduler.hpp"
 
 #include "suite.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-using namespace ilegacysim;
-using ilegacysim::test::require;
+using namespace ilemu;
+using ilemu::test::require;
 
 void address_space_test() {
   AddressSpace memory;
@@ -114,10 +114,10 @@ void address_space_test() {
                                __FILE__, 0),
           "shared file page map failed");
   auto file_child = file_memory.clone();
-  require(file_memory.cached_file_page_count() == 1 &&
-              file_child->cached_file_page_count() == 1 &&
-              file_memory.read8(file_base) ==
-                  static_cast<std::uint8_t>(source_byte),
+  require(file_memory.read8(file_base) ==
+                  static_cast<std::uint8_t>(source_byte) &&
+              file_memory.cached_file_page_count() == 1 &&
+              file_child->cached_file_page_count() == 1,
           "forked address spaces did not reuse the file page cache");
   require(file_child->write8(
               file_base, static_cast<std::uint8_t>(
@@ -136,13 +136,13 @@ void display_state_test() {
   display.clear(0xff336699U);
   display.present();
   require(presented.has_value(), "display presenter was not called");
-  require(presented->width == iphone_2g_display_width &&
-              presented->height == iphone_2g_display_height,
-          "display frame does not use the iPhone 2G mode");
+  require(presented->width == default_display_width &&
+              presented->height == default_display_height,
+          "display frame does not use the default device geometry");
   require(presented->sequence == 1 &&
               presented->pixels.size() ==
-                  static_cast<std::size_t>(iphone_2g_display_width) *
-                      iphone_2g_display_height,
+                  static_cast<std::size_t>(default_display_width) *
+                      default_display_height,
           "display frame metadata mismatch");
   require(std::all_of(presented->pixels.begin(), presented->pixels.end(),
                       [](std::uint32_t pixel) { return pixel == 0xff336699U; }),
@@ -372,7 +372,8 @@ void layerkit_root_compatibility_test() {
               std::bit_cast<std::uint32_t>(320.0F),
               std::bit_cast<std::uint32_t>(460.0F), 320U, 480U) ==
                   std::optional<LayerKitApplicationPlacement>{
-                      {std::bit_cast<std::uint32_t>(250.0F), 20}} &&
+                      {std::bit_cast<std::uint32_t>(250.0F), 0.0F, 20.0F,
+                       20.0F}} &&
               compatibility.application_window_placement(
                   context, detached_root, detached_root, layer_flags,
                   std::bit_cast<std::uint32_t>(160.0F),
@@ -380,7 +381,8 @@ void layerkit_root_compatibility_test() {
                   std::bit_cast<std::uint32_t>(320.0F),
                   std::bit_cast<std::uint32_t>(460.0F), 320U, 480U) ==
                   std::optional<LayerKitApplicationPlacement>{
-                      {std::bit_cast<std::uint32_t>(250.0F), 20}} &&
+                      {std::bit_cast<std::uint32_t>(250.0F), 0.0F, 0.0F,
+                       20.0F}} &&
               compatibility.application_window_placement(
                   context, detached_root, detached_root, layer_flags,
                   std::bit_cast<std::uint32_t>(384.0F),
@@ -388,13 +390,17 @@ void layerkit_root_compatibility_test() {
                   std::bit_cast<std::uint32_t>(768.0F),
                   std::bit_cast<std::uint32_t>(1000.0F), 768U, 1024U) ==
                   std::optional<LayerKitApplicationPlacement>{
-                      {std::bit_cast<std::uint32_t>(524.0F), 24}} &&
-              !compatibility.application_window_placement(
+                      {std::bit_cast<std::uint32_t>(524.0F), 0.0F, 24.0F,
+                       24.0F}} &&
+              compatibility.application_window_placement(
                   context, detached_root, detached_root, layer_flags,
                   std::bit_cast<std::uint32_t>(160.0F),
                   std::bit_cast<std::uint32_t>(240.0F),
                   std::bit_cast<std::uint32_t>(320.0F),
-                  std::bit_cast<std::uint32_t>(480.0F), 320U, 480U) &&
+                  std::bit_cast<std::uint32_t>(480.0F), 320U, 480U) ==
+                  std::optional<LayerKitApplicationPlacement>{
+                      {std::bit_cast<std::uint32_t>(240.0F), 0.0F, 0.0F,
+                       0.0F}} &&
               !compatibility.application_window_placement(
                   context, detached_root, wrapper, layer_flags,
                   std::bit_cast<std::uint32_t>(160.0F),
@@ -1180,7 +1186,7 @@ void iokit_notification_test() {
               display_connection,
               method_reply_port) == std::optional<std::uint32_t>{0},
           "AppleH1CLCD default-surface method failed");
-  constexpr auto default_surface_reply_size = inband_output_offset(1);
+  constexpr auto default_surface_reply_size = reply_size(1, 0);
   require(memory.read32(message + 4) ==
                   std::optional<std::uint32_t>{default_surface_reply_size} &&
               memory.read32(message + 20) ==
@@ -1199,6 +1205,9 @@ void iokit_notification_test() {
               memory.read32(message + scalar_output_offset + 4U) ==
                   std::optional<std::uint32_t>{0} &&
               memory.read32(message + inband_output_count_offset(1)) ==
+                  std::optional<std::uint32_t>{0} &&
+              memory.read32(
+                  message + out_of_line_output_size_offset(1, 0)) ==
                   std::optional<std::uint32_t>{0},
           "AppleH1CLCD default-surface scalar reply mismatch");
   validate_iokit_connect_method_reply_with_firmware(memory, message);
@@ -1255,7 +1264,7 @@ void shared_memory_syscall_test() {
           "shared-memory name copy failed");
 
   const auto test_directory =
-      std::filesystem::temp_directory_path() / "ilegacysim-tests";
+      std::filesystem::temp_directory_path() / "ilemu-tests";
   std::error_code filesystem_error;
   std::filesystem::remove_all(test_directory, filesystem_error);
   std::filesystem::create_directories(test_directory / "rootfs",
@@ -1491,6 +1500,55 @@ void concurrent_wait_syscall_test() {
           "second concurrent wait4 did not complete independently");
 }
 
+void wall_clock_syscall_test() {
+  AddressSpace memory;
+  constexpr std::uint32_t timeval_address = 0x53000;
+  require(memory.map(timeval_address, AddressSpace::page_size,
+                     MemoryPermission::Read | MemoryPermission::Write),
+          "gettimeofday result page map failed");
+  Dynarmic::ExclusiveMonitor monitor{1};
+  Cpu cpu{0, memory, monitor};
+  std::ostringstream stream;
+  Output output{stream};
+  CompatibilityKernel kernel{memory, output};
+
+  constexpr std::uint64_t synchronized_seconds = 1'800'000'000ULL;
+  constexpr std::uint64_t synchronized_nanoseconds = 123'456'000ULL;
+  kernel.synchronize_wall_time(
+      synchronized_seconds * VirtualClock::nanoseconds_per_second +
+      synchronized_nanoseconds);
+
+  const auto get_time = [&] {
+    // Match libSystem's ___gettimeofday stub: r3 retains the destination
+    // while the kernel returns timeval.tv_sec/tv_usec in r0/r1.
+    cpu.registers()[0] = timeval_address;
+    cpu.registers()[1] = 0;
+    cpu.registers()[3] = timeval_address;
+    cpu.registers()[12] = 116; // gettimeofday
+    kernel.dispatch(cpu, 0x80);
+    const auto success = (cpu.cpsr() & (1U << 29U)) == 0;
+    if (success) {
+      static_cast<void>(memory.write32(cpu.registers()[3], cpu.registers()[0]));
+      static_cast<void>(
+          memory.write32(cpu.registers()[3] + sizeof(std::uint32_t),
+                         cpu.registers()[1]));
+    }
+    return std::pair{memory.read32(timeval_address),
+                     memory.read32(timeval_address + sizeof(std::uint32_t))};
+  };
+
+  const auto initial = get_time();
+  require(initial.first == synchronized_seconds &&
+              initial.second == synchronized_nanoseconds / 1'000ULL,
+          "gettimeofday did not use the synchronized wall clock");
+
+  kernel.advance_time_by(2 * VirtualClock::nanoseconds_per_second + 500'000);
+  const auto advanced = get_time();
+  require(advanced.first == synchronized_seconds + 2 &&
+              advanced.second == 123'956,
+          "synchronized gettimeofday did not advance with monotonic time");
+}
+
 void run_tests() {
   address_space_test();
   display_state_test();
@@ -1509,12 +1567,13 @@ void run_tests() {
   kill_syscall_test();
   credential_syscall_test();
   concurrent_wait_syscall_test();
-  ilegacysim::test::kernel::run_sysctl_tests();
-  ilegacysim::test::kernel::run_device_tests();
-  ilegacysim::test::kernel::run_iokit_power_tests();
-  ilegacysim::test::kernel::run_iokit_display_tests();
+  wall_clock_syscall_test();
+  ilemu::test::kernel::run_sysctl_tests();
+  ilemu::test::kernel::run_device_tests();
+  ilemu::test::kernel::run_iokit_power_tests();
+  ilemu::test::kernel::run_iokit_display_tests();
 }
 
 } // namespace
 
-int main() { return ilegacysim::test::run_suite("kernel", run_tests); }
+int main() { return ilemu::test::run_suite("kernel", run_tests); }

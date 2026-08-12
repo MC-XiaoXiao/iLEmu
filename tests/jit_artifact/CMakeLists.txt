@@ -4,4 +4,4 @@ target_link_libraries(ilemu_jit_artifact_tests PRIVATE
     ilemu_test_support)
 add_test(NAME jit_artifact COMMAND ilemu_jit_artifact_tests)
 set_tests_properties(jit_artifact PROPERTIES
-    WORKING_DIRECTORY "${PROJECT_SOURCE_DIR}")
+    WORKING_DIRECTORY "${ILEMU_WORKSPACE_DIR}")

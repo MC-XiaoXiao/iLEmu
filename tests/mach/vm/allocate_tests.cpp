@@ -2,21 +2,21 @@
 
 #include "test_support.hpp"
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/output.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/output.hpp"
 
 #include <cstdint>
 #include <optional>
 #include <sstream>
 
-namespace ilegacysim::test::mach_suite {
+namespace ilemu::test::mach_suite {
 namespace {
 
-using ::ilegacysim::test::require;
+using ::ilemu::test::require;
 
 void arm32_mach_vm_allocate_test() {
   constexpr std::uint32_t message = 0x51000U;
@@ -70,4 +70,4 @@ void arm32_mach_vm_allocate_test() {
 
 void run_vm_allocate_tests() { arm32_mach_vm_allocate_test(); }
 
-} // namespace ilegacysim::test::mach_suite
+} // namespace ilemu::test::mach_suite

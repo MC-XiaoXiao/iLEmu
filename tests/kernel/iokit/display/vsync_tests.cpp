@@ -1,14 +1,14 @@
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/device_mig_ids.hpp"
-#include "ilegacysim/iokit_abi.hpp"
-#include "ilegacysim/kernel_iokit.hpp"
-#include "ilegacysim/kernel_iokit_display.hpp"
-#include "ilegacysim/kernel_mach_ipc.hpp"
-#include "ilegacysim/kernel_shared_state.hpp"
-#include "ilegacysim/mach_namespace.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/xnu_mig_adapter.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/device_mig_ids.hpp"
+#include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel_iokit.hpp"
+#include "ilemu/kernel_iokit_display.hpp"
+#include "ilemu/kernel_mach_ipc.hpp"
+#include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/mach_namespace.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/xnu_mig_adapter.hpp"
 
 #include "test_support.hpp"
 
@@ -19,7 +19,7 @@
 #include <sstream>
 #include <string>
 
-namespace ilegacysim::test::kernel {
+namespace ilemu::test::kernel {
 namespace {
 
 namespace device_mig = xnu792::mig::device;
@@ -143,16 +143,19 @@ void display_vsync_notification_test() {
 
   constexpr std::uint64_t display_power_on = 1;
   const std::array<std::uint64_t, 1> power_input{display_power_on};
-  const auto power = kernel_iokit::display::dispatch_connect_method(
-      state, process, connection_object,
-      static_cast<std::uint32_t>(
-          iokit_abi::AppleH1ClcdSelector::RequestPowerChange),
-      power_input, {}, 0);
-  require(power && power->return_code == iokit_abi::success &&
-              state.iokit_display_connections.at(connection_object)
-                      .requested_power_state == display_power_on &&
-              state.requested_display_power_state == display_power_on,
-          "AppleH1CLCD selector 14 did not retain display power state");
+  for (const auto selector :
+       {iokit_abi::AppleH1ClcdSelector::RequestPowerChangeV2,
+        iokit_abi::AppleH1ClcdSelector::RequestPowerChangeV1,
+        iokit_abi::AppleH1ClcdSelector::RequestPowerChange}) {
+    const auto power = kernel_iokit::display::dispatch_connect_method(
+        state, process, connection_object,
+        static_cast<std::uint32_t>(selector), power_input, {}, 0);
+    require(power && power->return_code == iokit_abi::success &&
+                state.iokit_display_connections.at(connection_object)
+                        .requested_power_state == display_power_on &&
+                state.requested_display_power_state == display_power_on,
+            "AppleH1CLCD power selector did not retain display power state");
+  }
 
   kernel_iokit::display::deliver_due_vsync_locked(state, *deadline);
   const auto queue = state.mach_queues.find(notification_object);
@@ -206,4 +209,4 @@ void display_vsync_notification_test() {
 
 void run_iokit_display_tests() { display_vsync_notification_test(); }
 
-} // namespace ilegacysim::test::kernel
+} // namespace ilemu::test::kernel

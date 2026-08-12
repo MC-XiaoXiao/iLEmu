@@ -2,21 +2,21 @@
 
 #include "test_support.hpp"
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/host_priv_mig_ids.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/output.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/host_priv_mig_ids.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/output.hpp"
 
 #include <cstdint>
 #include <optional>
 #include <sstream>
 
-namespace ilegacysim::test::mach_suite {
+namespace ilemu::test::mach_suite {
 namespace {
 
-using ::ilegacysim::test::require;
+using ::ilemu::test::require;
 
 void host_processor_sets_test() {
   AddressSpace memory;
@@ -64,4 +64,4 @@ void host_processor_sets_test() {
 
 void run_processor_set_tests() { host_processor_sets_test(); }
 
-} // namespace ilegacysim::test::mach_suite
+} // namespace ilemu::test::mach_suite

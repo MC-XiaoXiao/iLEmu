@@ -1,2 +1,2 @@
-ilegacysim_add_compatibility_suite(
-    ilegacysim_filesystem_tests filesystem filesystem_tests.cpp)
+ilemu_add_compatibility_suite(
+    ilemu_filesystem_tests filesystem filesystem_tests.cpp)

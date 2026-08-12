@@ -1,7 +1,7 @@
 #include "suite.hpp"
 #include "test_support.hpp"
 
-namespace ilegacysim::test::mach_suite {
+namespace ilemu::test::mach_suite {
 
 void run_tests() {
   run_mig_policy_tests();
@@ -18,9 +18,9 @@ void run_tests() {
   run_vm_tests();
 }
 
-} // namespace ilegacysim::test::mach_suite
+} // namespace ilemu::test::mach_suite
 
 int main() {
-  return ilegacysim::test::run_suite("mach_suite",
-                                     ilegacysim::test::mach_suite::run_tests);
+  return ilemu::test::run_suite("mach_suite",
+                                     ilemu::test::mach_suite::run_tests);
 }

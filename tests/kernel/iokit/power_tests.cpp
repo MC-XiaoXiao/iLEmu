@@ -1,12 +1,12 @@
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/device_mig_ids.hpp"
-#include "ilegacysim/iokit_abi.hpp"
-#include "ilegacysim/kernel_iokit.hpp"
-#include "ilegacysim/kernel_shared_state.hpp"
-#include "ilegacysim/mach_namespace.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/xnu_mig_adapter.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/device_mig_ids.hpp"
+#include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel_iokit.hpp"
+#include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/mach_namespace.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/xnu_mig_adapter.hpp"
 
 #include "test_support.hpp"
 
@@ -17,7 +17,7 @@
 #include <sstream>
 #include <string_view>
 
-namespace ilegacysim::test::kernel {
+namespace ilemu::test::kernel {
 namespace {
 
 namespace device_mig = xnu792::mig::device;
@@ -141,4 +141,4 @@ void register_for_system_power_test() {
 
 void run_iokit_power_tests() { register_for_system_power_test(); }
 
-} // namespace ilegacysim::test::kernel
+} // namespace ilemu::test::kernel

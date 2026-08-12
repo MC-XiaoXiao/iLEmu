@@ -5,16 +5,16 @@
 #include <optional>
 #include <string>
 
-#include "ilegacysim/kernel_shared_state.hpp"
-#include "ilegacysim/macho.hpp"
+#include "ilemu/kernel_shared_state.hpp"
+#include "ilemu/macho.hpp"
 #include "test_support.hpp"
 
 namespace {
 
-using namespace ilegacysim;
-using ilegacysim::test::find_existing;
-using ilegacysim::test::read_binary_file;
-using ilegacysim::test::require;
+using namespace ilemu;
+using ilemu::test::find_existing;
+using ilemu::test::read_binary_file;
+using ilemu::test::require;
 
 void resolver_contract_suite() {
   const std::array responder_candidates{
@@ -116,16 +116,14 @@ void resolver_contract_suite() {
        {"PROBE libinfo callback", "PROBE dnssd callback",
         "PROBE dnssd A callback", "PROBE dnssd AAAA callback", "PROBE complete",
         "PROBE sc store callback", "PROBE sc reachability flags",
-        "PROBE sc reachability callback", "iPhone-020000000001.local"}) {
+        "PROBE sc reachability callback", "iPhone-021a543a0002.local"}) {
     require(probe_bytes.find(marker) != std::string::npos,
             "guest resolver probe contract changed");
   }
 
   const KernelSharedState shared_state;
   const auto ethernet = shared_state.network_interfaces.find("en0");
-  const std::array expected_mac{std::byte{0x02}, std::byte{0x00},
-                                std::byte{0x00}, std::byte{0x00},
-                                std::byte{0x00}, std::byte{0x01}};
+  const auto expected_mac = virtual_network::interface_mac_address;
   require(ethernet != shared_state.network_interfaces.end() &&
               ethernet->second.link_address_length == expected_mac.size() &&
               ethernet->second.link_address == expected_mac,
@@ -135,6 +133,6 @@ void resolver_contract_suite() {
 } // namespace
 
 int main() {
-  return ilegacysim::test::run_suite("resolver contract",
+  return ilemu::test::run_suite("resolver contract",
                                      resolver_contract_suite);
 }

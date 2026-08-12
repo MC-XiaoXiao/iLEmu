@@ -1,10 +1,10 @@
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/darwin_network_abi.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/virtual_udp.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_network_abi.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/virtual_udp.hpp"
 
 #include "suite.hpp"
 #include "test_support.hpp"
@@ -18,7 +18,7 @@
 #include <sstream>
 #include <vector>
 
-namespace ilegacysim::test::network_suite {
+namespace ilemu::test::network_suite {
 namespace {
 
 using test::require;
@@ -229,4 +229,4 @@ void mdns_multicast_data_plane_test() {
 
 void run_virtual_udp_tests() { mdns_multicast_data_plane_test(); }
 
-} // namespace ilegacysim::test::network_suite
+} // namespace ilemu::test::network_suite

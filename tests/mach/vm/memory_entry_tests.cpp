@@ -2,22 +2,22 @@
 
 #include "test_support.hpp"
 
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/darwin_abi.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/output.hpp"
-#include "ilegacysim/vm_map_mig_ids.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/darwin_abi.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/output.hpp"
+#include "ilemu/vm_map_mig_ids.hpp"
 
 #include <cstdint>
 #include <optional>
 #include <sstream>
 
-namespace ilegacysim::test::mach_suite {
+namespace ilemu::test::mach_suite {
 namespace {
 
-using ::ilegacysim::test::require;
+using ::ilemu::test::require;
 
 constexpr std::uint32_t message_address = 0x51000U;
 constexpr std::uint32_t reply_port = 0x930U;
@@ -211,4 +211,4 @@ void run_vm_memory_entry_tests() {
   named_memory_shared_and_copy_on_write_test();
 }
 
-} // namespace ilegacysim::test::mach_suite
+} // namespace ilemu::test::mach_suite

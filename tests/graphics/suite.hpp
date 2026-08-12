@@ -1,7 +1,7 @@
 #pragma once
 
-namespace ilegacysim::test {
+namespace ilemu::test {
 
 void run_surface_store_tests();
 
-} // namespace ilegacysim::test
+} // namespace ilemu::test

@@ -5,7 +5,7 @@
 #include <iterator>
 #include <stdexcept>
 
-namespace ilegacysim::test {
+namespace ilemu::test {
 
 void require(bool condition, std::string_view message) {
     if (!condition) throw std::runtime_error{std::string{message}};
@@ -38,4 +38,4 @@ int run_suite(std::string_view name, void (*suite)()) {
     }
 }
 
-}  // namespace ilegacysim::test
+}  // namespace ilemu::test

@@ -1,8 +1,8 @@
-#include "ilegacysim/address_space.hpp"
-#include "ilegacysim/cpu.hpp"
-#include "ilegacysim/kernel.hpp"
-#include "ilegacysim/mig_wire_abi.hpp"
-#include "ilegacysim/vm_map_mig_ids.hpp"
+#include "ilemu/address_space.hpp"
+#include "ilemu/cpu.hpp"
+#include "ilemu/kernel.hpp"
+#include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/vm_map_mig_ids.hpp"
 
 #include "test_support.hpp"
 
@@ -15,10 +15,10 @@
 #include <sstream>
 #include <vector>
 
-namespace ilegacysim::test::mach_suite {
+namespace ilemu::test::mach_suite {
 namespace {
 
-using ::ilegacysim::test::require;
+using ::ilemu::test::require;
 
 void overlapping_vm_copy_test() {
   constexpr std::uint32_t message = 0x4a000;
@@ -111,4 +111,4 @@ void overlapping_vm_copy_test() {
 
 void run_vm_copy_tests() { overlapping_vm_copy_test(); }
 
-} // namespace ilegacysim::test::mach_suite
+} // namespace ilemu::test::mach_suite
