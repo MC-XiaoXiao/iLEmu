@@ -68,6 +68,19 @@ constexpr std::uintmax_t maximum_persistence_bytes =
     std::uintmax_t{4U} * 1024U * 1024U * 1024U;
 std::atomic<std::uint64_t> next_context_id{1};
 
+[[nodiscard]] bool artifact_key_shape_valid(
+    const JitArtifactKey &key) noexcept {
+  const auto descriptor_pc =
+      static_cast<std::uint32_t>(key.location_descriptor);
+  const auto descriptor_thumb =
+      ((key.location_descriptor >> 32U) & 1U) != 0U;
+  return !key.content_identity.empty() && !key.layout_identity.empty() &&
+         key.guest_pc == descriptor_pc && key.thumb == descriptor_thumb &&
+         key.host_isa != JitHostIsa::Unknown &&
+         key.architecture <= ArmArchitectureVersion::Armv7 &&
+         key.cpu_model <= ArmCpuModelKind::CortexA8;
+}
+
 class ArtifactFileLock {
 public:
   enum class Mode { Shared, Exclusive };
@@ -360,9 +373,7 @@ void write_key(std::ostream &stream, const JitArtifactKey &key) {
   if (!host_features || !format) return std::nullopt;
   key.host_feature_mask = *host_features;
   key.artifact_format_version = *format;
-  if (key.architecture > ArmArchitectureVersion::Armv7 ||
-      key.cpu_model > ArmCpuModelKind::CortexA8 ||
-      key.host_isa > JitHostIsa::Arm64) {
+  if (!artifact_key_shape_valid(key)) {
     return std::nullopt;
   }
   return key;
@@ -2007,6 +2018,7 @@ void JitArtifactStore::retire_writeback_locked(
 std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
     JitArtifactKey key, JitArtifactData data,
     JitArtifactRetention retention) {
+  if (!artifact_key_shape_valid(key)) return nullptr;
   const auto artifact_bytes = serialized_artifact_bytes(data);
   if (!artifact_bytes) return nullptr;
   std::shared_ptr<const BlockArtifact> result;
