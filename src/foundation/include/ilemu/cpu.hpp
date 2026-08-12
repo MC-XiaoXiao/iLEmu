@@ -162,6 +162,8 @@ private:
 
 class CpuCluster {
 public:
+    using PrecompileStopCondition = std::function<bool()>;
+
     ~CpuCluster();
 
     CpuCluster(std::size_t processor_count, AddressSpace& memory);
@@ -230,7 +232,11 @@ public:
         JitPrecompileTarget target = JitPrecompileTarget::NativeCode);
     JitPrecompileBatchResult precompile_pending(
         std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
-        JitPrecompileTarget target = JitPrecompileTarget::NativeCode);
+        JitPrecompileTarget target = JitPrecompileTarget::NativeCode,
+        PrecompileStopCondition stop_condition = {});
+    // Stop queued precompilation and wait only for this cluster's active
+    // precompile call to reach a Dynarmic block boundary.
+    void quiesce_precompilation();
     // A dead guest task keeps its small register context until the parent
     // reaps the process, but no longer needs executable host code. Detach the
     // shared execution pool so its JIT caches can be destroyed off the

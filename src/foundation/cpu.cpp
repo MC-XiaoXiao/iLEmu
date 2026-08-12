@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cctype>
+#include <condition_variable>
 #include <deque>
 #include <limits>
 #include <mutex>
@@ -1606,6 +1607,7 @@ public:
     }
 
     ~CpuExecutionPool() {
+        quiesce_precompilation();
         // Clear the executors before dropping the shared accounting record.
         // Their destructors publish zero for their local slots; the final
         // release then removes the one shared slab entry without leaving a
@@ -1667,6 +1669,7 @@ public:
     void set_translation_profile(
         std::shared_ptr<JitTranslationProfile> profile,
         JitPrecompilePhase phase) {
+        quiesce_precompilation();
         const auto locations =
             profile ? profile->snapshot() : std::vector<std::uint64_t>{};
         for (auto& executor : executors_) {
@@ -1723,12 +1726,42 @@ public:
 
     JitPrecompileBatchResult precompile_pending(
         std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
-        JitPrecompileTarget target) {
+        JitPrecompileTarget target,
+        const CpuCluster::PrecompileStopCondition &stop_condition) {
         JitPrecompileBatchResult result;
         if (executors_.empty() || maximum_blocks == 0 ||
             budget_nanoseconds == 0) {
             return result;
         }
+        std::uint64_t cancellation_generation{};
+        {
+            const std::lock_guard queue_lock{precompile_queue_mutex_};
+            cancellation_generation = precompile_cancellation_generation_;
+            ++active_precompile_tasks_;
+        }
+        std::unordered_set<PrecompileEntry, PrecompileEntryHash>
+            owned_inflight_entries;
+        const auto stop_requested = [&]() {
+            if (stop_condition && stop_condition()) return true;
+            const std::lock_guard queue_lock{precompile_queue_mutex_};
+            return precompile_cancellation_generation_ !=
+                   cancellation_generation;
+        };
+        const auto cleanup = [&]() {
+            const std::lock_guard queue_lock{precompile_queue_mutex_};
+            for (const auto &entry : owned_inflight_entries)
+                inflight_precompile_entries_.erase(entry);
+            owned_inflight_entries.clear();
+        };
+        const auto finish = [&]() {
+            const std::lock_guard queue_lock{precompile_queue_mutex_};
+            if (active_precompile_tasks_ == 0U)
+                throw std::logic_error{"precompile task accounting underflow"};
+            --active_precompile_tasks_;
+            if (active_precompile_tasks_ == 0U)
+                precompile_idle_.notify_all();
+        };
+        try {
         const auto started = std::chrono::steady_clock::now();
         const auto bounded_budget = std::min<std::uint64_t>(
             budget_nanoseconds,
@@ -1740,6 +1773,7 @@ public:
                               bounded_budget)};
         std::size_t processed = 0;
         while (processed < maximum_blocks) {
+            if (stop_requested()) break;
             if (std::chrono::steady_clock::now() >= deadline) {
                 ++result.deadline_stops;
                 break;
@@ -1752,6 +1786,7 @@ public:
                 if (!entry) break;
                 executor_index = next_precompile_executor_++ % executors_.size();
             }
+            owned_inflight_entries.insert(entry->first);
             ++processed;
             ++result.attempted;
             const auto precompile_entry = entry->first;
@@ -1761,18 +1796,28 @@ public:
                 disposition = executors_[executor_index]->precompile_descriptor(
                     descriptor, target);
             } catch (...) {
+                const auto cancelled = stop_requested();
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
                 inflight_precompile_entries_.erase(precompile_entry);
-                deferred_precompile_entries_[precompile_entry] =
-                    DeferredPrecompileEntry{entry->second, std::nullopt};
+                owned_inflight_entries.erase(precompile_entry);
+                if (!cancelled) {
+                    deferred_precompile_entries_[precompile_entry] =
+                        DeferredPrecompileEntry{entry->second, std::nullopt};
+                }
                 ++result.failed;
                 break;
             }
+            const auto cancelled = stop_requested();
             {
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
                 inflight_precompile_entries_.erase(precompile_entry);
-                if (disposition ==
-                        JitExecutor::PrecompileDisposition::Deferred) {
+                owned_inflight_entries.erase(precompile_entry);
+                if (cancelled) {
+                    // The block may have finished after the epoch changed.
+                    // It belongs to the old work generation and must not be
+                    // published into the replacement profile's sets.
+                } else if (disposition ==
+                           JitExecutor::PrecompileDisposition::Deferred) {
                     deferred_precompile_entries_[precompile_entry] =
                         DeferredPrecompileEntry{entry->second, std::nullopt};
                 } else if (disposition ==
@@ -1785,6 +1830,7 @@ public:
                     completed_precompile_entries_.insert(precompile_entry);
                 }
             }
+            if (cancelled) break;
             switch (disposition) {
             case JitExecutor::PrecompileDisposition::NativeCompiled:
                 ++result.native_compiled;
@@ -1821,7 +1867,32 @@ public:
                 break;
             }
         }
+        cleanup();
+        finish();
         return result;
+        } catch (...) {
+            cleanup();
+            finish();
+            throw;
+        }
+    }
+
+    void quiesce_precompilation() {
+        {
+            const std::lock_guard queue_lock{precompile_queue_mutex_};
+            ++precompile_cancellation_generation_;
+            for (auto &queue : pending_precompile_entries_) queue.clear();
+            pending_precompile_phases_.clear();
+            deferred_precompile_entries_.clear();
+            completed_precompile_entries_.clear();
+            cache_full_generation_observed_.reset();
+            next_precompile_executor_ = 0;
+        }
+        std::unique_lock queue_lock{precompile_queue_mutex_};
+        precompile_idle_.wait(queue_lock, [this] {
+            return active_precompile_tasks_ == 0U;
+        });
+        inflight_precompile_entries_.clear();
     }
 
 private:
@@ -1955,6 +2026,9 @@ private:
         completed_precompile_entries_;
     std::optional<std::uint64_t> cache_full_generation_observed_;
     std::size_t next_precompile_executor_{};
+    std::uint64_t precompile_cancellation_generation_{1};
+    std::uint64_t active_precompile_tasks_{};
+    std::condition_variable precompile_idle_;
     std::mutex precompile_queue_mutex_;
 };
 
@@ -2234,6 +2308,7 @@ CpuCluster::CpuCluster(
 }
 
 CpuCluster::~CpuCluster() {
+    quiesce_precompilation();
     if (address_resolver_ != nullptr) {
         address_resolver_->unbind(
             monitor_processor_base_, monitor_processor_count_, *memory_);
@@ -2298,12 +2373,18 @@ std::optional<JitPrecompilePhase> CpuCluster::next_precompile_phase(
 
 JitPrecompileBatchResult CpuCluster::precompile_pending(
     std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
-    JitPrecompileTarget target) {
+    JitPrecompileTarget target,
+    PrecompileStopCondition stop_condition) {
     if (!execution_pool_) {
         return {};
     }
     return execution_pool_->precompile_pending(
-        maximum_blocks, budget_nanoseconds, target);
+        maximum_blocks, budget_nanoseconds, target, stop_condition);
+}
+
+void CpuCluster::quiesce_precompilation() {
+    if (execution_pool_)
+        execution_pool_->quiesce_precompilation();
 }
 
 std::shared_ptr<CpuExecutionPool>
@@ -2311,6 +2392,7 @@ CpuCluster::release_execution_resources() {
     if (!execution_pool_) {
         return {};
     }
+    quiesce_precompilation();
     for (const auto& cpu : cpus_) {
         if (cpu->active_executor_ != nullptr) {
             throw std::logic_error{
