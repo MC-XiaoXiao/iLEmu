@@ -40,6 +40,10 @@ constexpr auto sdl_presenter_surface_owner =
     std::numeric_limits<std::uint64_t>::max();
 std::atomic<std::uint64_t> next_sdl_presenter_surface{1};
 constexpr std::size_t presentation_queue_capacity = 8;
+// Keep one extra slot for the repaint copy retained by last_presented_frame.
+// The queue itself remains bounded at presentation_queue_capacity.
+constexpr std::size_t presentation_surface_capacity =
+    presentation_queue_capacity + 1;
 constexpr auto presentation_backpressure_timeout =
     std::chrono::milliseconds{250};
 constexpr auto presentation_flush_timeout = std::chrono::seconds{5};
@@ -47,25 +51,31 @@ constexpr auto presentation_flush_timeout = std::chrono::seconds{5};
 } // namespace
 
 struct SdlDisplay::Impl {
+  struct PresentationSurfaceSlot {
+    HostSurfaceKey key{};
+    std::shared_ptr<HostSurface> surface;
+    bool in_use{};
+    bool held_by_last{};
+  };
+
   Impl(DisplayGeometry initial_geometry, DisplayGeometry input_geometry)
       : geometry{initial_geometry},
         guest_geometry{initial_geometry},
-        cpu_present_surface_key{
-            sdl_presenter_surface_owner,
-            next_sdl_presenter_surface.fetch_add(1,
-                                                 std::memory_order_relaxed)},
         input{input_geometry} {
     input.set_display_geometry(geometry);
+    for (auto &slot : cpu_present_surfaces)
+      slot.key = {sdl_presenter_surface_owner,
+                  next_sdl_presenter_surface.fetch_add(
+                      1, std::memory_order_relaxed)};
+    for (auto &slot : oriented_present_surfaces)
+      slot.key = {sdl_presenter_surface_owner,
+                  next_sdl_presenter_surface.fetch_add(
+                      1, std::memory_order_relaxed)};
   }
 
   DisplayGeometry geometry;
   DisplayGeometry guest_geometry;
   DisplayOrientation orientation{DisplayOrientation::Portrait};
-  HostSurfaceKey cpu_present_surface_key;
-  HostSurfaceKey oriented_present_surface_key{
-      sdl_presenter_surface_owner,
-      next_sdl_presenter_surface.fetch_add(1,
-                                           std::memory_order_relaxed)};
 #if defined(ILEMU_HAS_SDL2)
   SDL_Window *window{};
   SDL_Renderer *renderer{};
@@ -196,8 +206,10 @@ struct SdlDisplay::Impl {
   // repaint without waiting for the guest to submit another frame.
   std::optional<DisplayFrame> last_presented_frame;
   std::shared_ptr<HostGraphicsDevice> host_graphics;
-  std::shared_ptr<HostSurface> cpu_present_surface;
-  std::shared_ptr<HostSurface> oriented_present_surface;
+  std::array<PresentationSurfaceSlot, presentation_surface_capacity>
+      cpu_present_surfaces;
+  std::array<PresentationSurfaceSlot, presentation_surface_capacity>
+      oriented_present_surfaces;
   std::unique_ptr<CommandEncoder> orientation_encoder;
   std::thread presentation_thread;
   std::atomic<std::uint64_t> presented_frames{};
@@ -208,10 +220,86 @@ struct SdlDisplay::Impl {
   SdlInput input;
   bool running{true};
 
-  void release_queued_frame() {
+  template <std::size_t N>
+  static void set_surface_in_use_locked(
+      std::array<PresentationSurfaceSlot, N> &slots,
+      const std::shared_ptr<HostSurface> &surface, bool in_use) {
+    if (!surface)
+      return;
+    for (auto &slot : slots) {
+      if (slot.surface == surface) {
+        slot.in_use = in_use;
+        return;
+      }
+    }
+  }
+
+  template <std::size_t N>
+  static void set_surface_held_locked(
+      std::array<PresentationSurfaceSlot, N> &slots,
+      const std::shared_ptr<HostSurface> &surface, bool held) {
+    if (!surface)
+      return;
+    for (auto &slot : slots) {
+      if (slot.surface == surface) {
+        slot.held_by_last = held;
+        return;
+      }
+    }
+  }
+
+  void set_frame_surface_in_use_locked(const DisplayFrame &frame,
+                                       bool in_use) {
+    set_surface_in_use_locked(cpu_present_surfaces, frame.host_surface,
+                              in_use);
+    set_surface_in_use_locked(cpu_present_surfaces,
+                              frame.presentation_staging_surface, in_use);
+    set_surface_in_use_locked(oriented_present_surfaces, frame.host_surface,
+                              in_use);
+    set_surface_in_use_locked(oriented_present_surfaces,
+                              frame.presentation_staging_surface, in_use);
+  }
+
+  void set_frame_surface_held_locked(const DisplayFrame &frame, bool held) {
+    set_surface_held_locked(cpu_present_surfaces, frame.host_surface, held);
+    set_surface_held_locked(cpu_present_surfaces,
+                            frame.presentation_staging_surface, held);
+    set_surface_held_locked(oriented_present_surfaces, frame.host_surface,
+                            held);
+    set_surface_held_locked(oriented_present_surfaces,
+                            frame.presentation_staging_surface, held);
+  }
+
+  void set_last_presented_frame_locked(const DisplayFrame &frame) {
+    if (last_presented_frame)
+      set_frame_surface_held_locked(*last_presented_frame, false);
+    last_presented_frame = frame;
+    set_frame_surface_held_locked(*last_presented_frame, true);
+  }
+
+  void release_frame_surface_in_use_locked(const DisplayFrame &frame) {
+    set_frame_surface_in_use_locked(frame, false);
+  }
+
+  void reset_presentation_surface_pool_locked() {
+    for (auto &slot : cpu_present_surfaces) {
+      slot.in_use = false;
+      slot.held_by_last = false;
+      slot.surface.reset();
+    }
+    for (auto &slot : oriented_present_surfaces) {
+      slot.in_use = false;
+      slot.held_by_last = false;
+      slot.surface.reset();
+    }
+  }
+
+  void release_queued_frame(const DisplayFrame *frame = nullptr) {
     std::uint64_t depth{};
     {
       std::lock_guard lock{frame_mutex};
+      if (frame != nullptr)
+        release_frame_surface_in_use_locked(*frame);
       if (queued_frame_count == 0)
         return;
       --queued_frame_count;
@@ -234,6 +322,10 @@ struct SdlDisplay::Impl {
     native_fallback_frames.clear();
     native_fallback_active = false;
     queued_frame_count = 0;
+    if (last_presented_frame)
+      set_frame_surface_held_locked(*last_presented_frame, false);
+    last_presented_frame.reset();
+    reset_presentation_surface_pool_locked();
   }
 
   void update_orientation(DisplayOrientation next_orientation) {
@@ -283,31 +375,39 @@ struct SdlDisplay::Impl {
       frame.pixels = frame.read_pixels();
     if (frame.pixels.size() != expected)
       return false;
-    if (!cpu_present_surface) {
-      cpu_present_surface = host_graphics->create_surface(
-          cpu_present_surface_key,
-          HostSurfaceDescriptor{
-              frame.width, frame.height,
-              frame.width * static_cast<std::uint32_t>(sizeof(std::uint32_t)),
-              0U, PerfSurfaceKind::Scanout},
-          frame.pixels);
-    } else {
-      const auto descriptor = cpu_present_surface->descriptor();
-      if (descriptor.width != frame.width ||
-          descriptor.height != frame.height) {
-        cpu_present_surface = host_graphics->create_surface(
-            cpu_present_surface_key,
-            HostSurfaceDescriptor{
-                frame.width, frame.height,
-                frame.width *
-                    static_cast<std::uint32_t>(sizeof(std::uint32_t)),
-                0U, PerfSurfaceKind::Scanout},
-            frame.pixels);
-      } else {
-        cpu_present_surface->replace_cpu(frame.pixels);
+    const auto descriptor = HostSurfaceDescriptor{
+        frame.width, frame.height,
+        frame.width * static_cast<std::uint32_t>(sizeof(std::uint32_t)), 0U,
+        PerfSurfaceKind::Scanout};
+    std::shared_ptr<HostSurface> staged_surface;
+    {
+      std::lock_guard lock{frame_mutex};
+      PresentationSurfaceSlot *slot{};
+      for (auto &candidate : cpu_present_surfaces) {
+        if (!candidate.in_use && !candidate.held_by_last) {
+          slot = &candidate;
+          break;
+        }
       }
+      if (slot == nullptr)
+        return false;
+      if (!slot->surface ||
+          slot->surface->descriptor().width != descriptor.width ||
+          slot->surface->descriptor().height != descriptor.height ||
+          slot->surface->descriptor().bytes_per_row !=
+              descriptor.bytes_per_row) {
+        slot->surface = host_graphics->create_surface(
+            slot->key, descriptor, frame.pixels);
+      } else {
+        slot->surface->replace_cpu(frame.pixels);
+      }
+      if (slot->surface == nullptr)
+        return false;
+      slot->in_use = true;
+      staged_surface = slot->surface;
     }
-    frame.host_surface = cpu_present_surface;
+    frame.host_surface = staged_surface;
+    frame.presentation_staging_surface = staged_surface;
     return frame.host_surface != nullptr;
   }
 
@@ -328,22 +428,41 @@ struct SdlDisplay::Impl {
         is_landscape(requested_orientation)
             ? DisplayGeometry{frame.height, frame.width}
             : DisplayGeometry{frame.width, frame.height};
-    if (!oriented_present_surface ||
-        oriented_present_surface->descriptor().width !=
-            output_geometry.width ||
-        oriented_present_surface->descriptor().height !=
-            output_geometry.height) {
-      oriented_present_surface = host_graphics->create_surface(
-          oriented_present_surface_key,
-          HostSurfaceDescriptor{
-              output_geometry.width, output_geometry.height,
-              output_geometry.width *
-                  static_cast<std::uint32_t>(sizeof(std::uint32_t)),
-              source_descriptor.pixel_format,
-              PerfSurfaceKind::Scanout});
+    const auto descriptor = HostSurfaceDescriptor{
+        output_geometry.width, output_geometry.height,
+        output_geometry.width *
+            static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+        source_descriptor.pixel_format, PerfSurfaceKind::Scanout};
+    std::shared_ptr<HostSurface> oriented_surface;
+    {
+      std::lock_guard lock{frame_mutex};
+      PresentationSurfaceSlot *slot{};
+      for (auto &candidate : oriented_present_surfaces) {
+        if (!candidate.in_use && !candidate.held_by_last) {
+          slot = &candidate;
+          break;
+        }
+      }
+      if (slot == nullptr)
+        return false;
+      if (!slot->surface ||
+          slot->surface->descriptor().width != descriptor.width ||
+          slot->surface->descriptor().height != descriptor.height ||
+          slot->surface->descriptor().bytes_per_row !=
+              descriptor.bytes_per_row ||
+          slot->surface->descriptor().pixel_format !=
+              descriptor.pixel_format) {
+        slot->surface = host_graphics->create_surface(slot->key, descriptor);
+      }
+      if (slot->surface == nullptr)
+        return false;
+      slot->in_use = true;
+      oriented_surface = slot->surface;
     }
-    if (!oriented_present_surface)
+
+    if (!oriented_surface) {
       return false;
+    }
 
     const auto source_width = static_cast<float>(frame.width);
     const auto source_height = static_cast<float>(frame.height);
@@ -386,15 +505,18 @@ struct SdlDisplay::Impl {
     const auto destination_rectangle = HostRectangle{
         0, 0, output_geometry.width, output_geometry.height};
     if (!orientation_encoder->copy_quad(
-            source, oriented_present_surface, quad, source_rectangle,
+            source, oriented_surface, quad, source_rectangle,
             destination_rectangle, HostCompositeMode::Copy, 0xffU,
             HostFilter::Nearest) ||
         !orientation_encoder->submit(PerfSubmitReason::Presentation)) {
+      std::lock_guard lock{frame_mutex};
+      set_surface_in_use_locked(oriented_present_surfaces, oriented_surface,
+                                false);
       return false;
     }
 
     auto graphics = host_graphics;
-    auto oriented = oriented_present_surface;
+    auto oriented = oriented_surface;
     frame.width = output_geometry.width;
     frame.height = output_geometry.height;
     frame.pixels.clear();
@@ -471,6 +593,7 @@ struct SdlDisplay::Impl {
         lock.lock();
         presentation_active = false;
         if (result == HostGraphicsDevice::PresentResult::Queued) {
+          release_frame_surface_in_use_locked(frame);
           if (queued_frame_count != 0) {
             --queued_frame_count;
             released_depth = queued_frame_count;
@@ -665,8 +788,6 @@ void SdlDisplay::set_host_graphics(
     impl_->abandon_queued_frames_locked();
     impl_->last_presented_frame.reset();
     impl_->host_graphics = std::move(graphics);
-    impl_->cpu_present_surface.reset();
-    impl_->oriented_present_surface.reset();
     impl_->presentation_failed = false;
     impl_->orientation_encoder =
         impl_->host_graphics
@@ -840,16 +961,24 @@ bool SdlDisplay::poll_events() {
         const auto oriented = orient_display_pixels(
             raw_geometry, frame->pixels, requested_orientation);
         if (oriented.empty()) {
-          frame.reset();
           if (queued_frame) {
-            impl_->release_queued_frame();
+            impl_->release_queued_frame(&*frame);
             queued_frame = false;
             std::lock_guard lock{impl_->frame_mutex};
             impl_->fail_presentation_locked();
+          } else {
+            std::lock_guard lock{impl_->frame_mutex};
+            impl_->release_frame_surface_in_use_locked(*frame);
           }
+          frame.reset();
         } else {
           frame->pixels = oriented;
+          {
+            std::lock_guard lock{impl_->frame_mutex};
+            impl_->release_frame_surface_in_use_locked(*frame);
+          }
           frame->host_surface.reset();
+          frame->presentation_staging_surface.reset();
           frame->read_pixels = {};
           if (is_landscape(requested_orientation))
             std::swap(frame->width, frame->height);
@@ -889,7 +1018,7 @@ bool SdlDisplay::poll_events() {
       bool queued_native{};
       {
         std::lock_guard lock{impl_->frame_mutex};
-        impl_->last_presented_frame = *frame;
+        impl_->set_last_presented_frame_locked(*frame);
         if (telemetry_enabled)
           frame->native_queued_at = std::chrono::steady_clock::now();
         native_queued_at = frame->native_queued_at;
@@ -954,13 +1083,13 @@ bool SdlDisplay::poll_events() {
       SDL_RenderPresent(impl_->renderer);
       {
         std::lock_guard lock{impl_->frame_mutex};
-        impl_->last_presented_frame = *frame;
+        impl_->set_last_presented_frame_locked(*frame);
       }
       impl_->presented_frames.fetch_add(1, std::memory_order_release);
       performance_counters().record_cpu_present_fallback(
           frame->sequence, frame->submitted_at);
       if (queued_frame) {
-        impl_->release_queued_frame();
+        impl_->release_queued_frame(&*frame);
         queued_frame = false;
       }
     } else if (queued_frame) {

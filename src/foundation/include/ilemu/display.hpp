@@ -42,6 +42,11 @@ struct DisplayFrame {
   // A hardware presenter consumes the native surface directly. CPU sinks
   // invoke read_pixels only at an explicit screenshot/software boundary.
   std::shared_ptr<HostSurface> host_surface;
+  // SDL's native presenter fills a bounded pool of private surfaces when a
+  // frame arrives as CPU pixels. Keep the source lease with the frame when a
+  // rotation pass creates a second destination surface; otherwise a queued
+  // frame could outlive the staging buffer that owns its pixels.
+  std::shared_ptr<HostSurface> presentation_staging_surface;
   std::function<std::vector<std::uint32_t>()> read_pixels;
   // Process incarnation that last populated the shared display state. This
   // lets teardown revoke only stale application content without clearing a
