@@ -10,7 +10,7 @@ bool concise_prefix(std::string_view text) {
     constexpr std::string_view prefixes[]{
         "[control]", "[device-state]", "[loader]", "[clock]",
         "[process]", "[display]", "[baseband]", "[watch]", "[gles]",
-        "[perf]", "[perf-display]", "[boot]", "[benchmark]",
+        "[perf]", "[perf-display]", "[perf-clock]", "[boot]", "[benchmark]",
     };
     for (const auto prefix : prefixes) {
         if (text.starts_with(prefix)) return true;

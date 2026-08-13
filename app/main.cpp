@@ -3514,6 +3514,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
     }
   };
   std::optional<std::string> display_performance_window;
+  struct DisplayClockWindow {
+    std::chrono::steady_clock::time_point started_at;
+    std::uint64_t guest_started_at{};
+    std::uint64_t pacer_started_at{};
+    std::uint64_t rebase_count{};
+    std::uint64_t rebase_deficit_total_nanoseconds{};
+    std::uint64_t rebase_deficit_max_nanoseconds{};
+  };
+  std::optional<DisplayClockWindow> display_clock_window;
   Runtime *display_scanout_owner = nullptr;
   auto observed_display_submissions =
       initial_runtime->kernel->display_submitted_frames();
@@ -3687,6 +3696,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
               output.line("[control] error: perf window could not begin");
             } else {
               display_performance_window = command.message;
+              if (realtime_pacer) {
+                display_clock_window = DisplayClockWindow{
+                    std::chrono::steady_clock::now(),
+                    initial_runtime->kernel->current_absolute_time(),
+                    realtime_pacer->allowed_virtual_time()};
+              }
               output.line("[control] perf-begin label=" + command.message);
             }
           }
@@ -3695,6 +3710,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
           if (!display_performance_window) {
             output.line("[control] error: no active perf window");
           } else {
+            const auto clock_ended_at = std::chrono::steady_clock::now();
+            const auto guest_ended_at =
+                initial_runtime->kernel->current_absolute_time();
+            const auto pacer_ended_at =
+                realtime_pacer ? realtime_pacer->allowed_virtual_time() : 0U;
             if (sdl_display)
               sdl_display->flush_presentation();
             const auto snapshot =
@@ -3705,6 +3725,34 @@ void boot(const std::vector<std::string> &args, Output &output) {
             } else {
               output.line("[control] error: perf window could not end");
             }
+            if (display_clock_window) {
+              const auto host_elapsed = static_cast<std::uint64_t>(
+                  std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      clock_ended_at - display_clock_window->started_at)
+                      .count());
+              const auto guest_elapsed =
+                  guest_ended_at >= display_clock_window->guest_started_at
+                      ? guest_ended_at - display_clock_window->guest_started_at
+                      : 0U;
+              const auto pacer_elapsed =
+                  pacer_ended_at >= display_clock_window->pacer_started_at
+                      ? pacer_ended_at - display_clock_window->pacer_started_at
+                      : 0U;
+              output.line(
+                  "[perf-clock] label=" + *display_performance_window +
+                  " host-ns=" + std::to_string(host_elapsed) +
+                  " guest-ns=" + std::to_string(guest_elapsed) +
+                  " pacer-ns=" + std::to_string(pacer_elapsed) +
+                  " rebase=" +
+                  std::to_string(display_clock_window->rebase_count) +
+                  " rebase-deficit-total-ns=" +
+                  std::to_string(
+                      display_clock_window->rebase_deficit_total_nanoseconds) +
+                  " rebase-deficit-max-ns=" +
+                  std::to_string(
+                      display_clock_window->rebase_deficit_max_nanoseconds));
+            }
+            display_clock_window.reset();
             display_performance_window.reset();
           }
           break;
@@ -3786,6 +3834,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
           const auto deficit = host_time - current_time;
           if (deficit >
               iokit_abi::display_vsync::period_absolute_time) {
+            if (display_clock_window) {
+              ++display_clock_window->rebase_count;
+              display_clock_window->rebase_deficit_total_nanoseconds +=
+                  deficit;
+              display_clock_window->rebase_deficit_max_nanoseconds =
+                  std::max(
+                      display_clock_window->rebase_deficit_max_nanoseconds,
+                      deficit);
+            }
             realtime_pacer.emplace(current_time);
           }
         }
