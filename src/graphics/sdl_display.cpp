@@ -180,8 +180,11 @@ struct SdlDisplay::Impl {
   // single-slot mailbox silently discarded an older frame whenever two
   // submissions arrived between event-loop pumps.
   std::deque<DisplayFrame> pending_frames;
-  std::optional<DisplayFrame> pending_native_frame;
-  std::optional<DisplayFrame> failed_native_frame;
+  // Keep native submissions ordered as well. A skipped/failed native attempt
+  // moves to the software fallback queue instead of disappearing.
+  std::deque<DisplayFrame> pending_native_frames;
+  std::deque<DisplayFrame> native_fallback_frames;
+  bool native_fallback_active{};
   // SDL windows can lose their compositor back buffer while hidden or
   // covered. Retain the last host-ready frame so an expose/restore event can
   // repaint without waiting for the guest to submit another frame.
@@ -382,12 +385,15 @@ struct SdlDisplay::Impl {
       std::unique_lock lock{frame_mutex};
       while (true) {
         presentation_available.wait(lock, [this] {
-          return presentation_stopping || pending_native_frame.has_value();
+          return presentation_stopping ||
+                 (!pending_native_frames.empty() &&
+                  native_fallback_frames.empty() &&
+                  !native_fallback_active);
         });
         if (presentation_stopping)
           return;
-        auto frame = std::move(*pending_native_frame);
-        pending_native_frame.reset();
+        auto frame = std::move(pending_native_frames.front());
+        pending_native_frames.pop_front();
         presentation_active = true;
         auto graphics = host_graphics;
         lock.unlock();
@@ -427,20 +433,27 @@ struct SdlDisplay::Impl {
         }
         lock.lock();
         presentation_active = false;
-        if (result == HostGraphicsDevice::PresentResult::Failed)
-          failed_native_frame = std::move(frame);
+        if (result != HostGraphicsDevice::PresentResult::Queued) {
+          native_fallback_frames.push_back(std::move(frame));
+          // A failed native frame is an ordering barrier. Present every frame
+          // already behind it through SDL as well, so a newer native frame
+          // cannot become visible before the failed frame is recovered.
+          while (!pending_native_frames.empty()) {
+            native_fallback_frames.push_back(
+                std::move(pending_native_frames.front()));
+            pending_native_frames.pop_front();
+          }
+        }
         presentation_idle.notify_all();
       }
     });
   }
 
   void stop_native_presenter() {
+    flush_native_presenter();
     {
       std::lock_guard lock{frame_mutex};
       presentation_stopping = true;
-      if (pending_native_frame)
-        performance_counters().record_native_present_mailbox_coalesced();
-      pending_native_frame.reset();
     }
     presentation_available.notify_all();
     if (presentation_thread.joinable())
@@ -457,7 +470,7 @@ struct SdlDisplay::Impl {
     if (!presentation_thread.joinable())
       return;
     presentation_idle.wait(lock, [this] {
-      return !pending_native_frame && !presentation_active;
+      return pending_native_frames.empty() && !presentation_active;
     });
   }
 };
@@ -586,8 +599,9 @@ void SdlDisplay::set_host_graphics(
     // destroyed would let Vulkan tear down a Wayland surface after SDL has
     // already destroyed its window.
     impl_->pending_frames.clear();
-    impl_->pending_native_frame.reset();
-    impl_->failed_native_frame.reset();
+    impl_->pending_native_frames.clear();
+    impl_->native_fallback_frames.clear();
+    impl_->native_fallback_active = false;
     impl_->last_presented_frame.reset();
     impl_->host_graphics = std::move(graphics);
     impl_->cpu_present_surface.reset();
@@ -630,8 +644,10 @@ void SdlDisplay::flush_presentation() {
     static_cast<void>(poll_events());
     impl_->flush_native_presenter();
     std::lock_guard lock{impl_->frame_mutex};
-    if (impl_->pending_frames.empty() && !impl_->pending_native_frame &&
-        !impl_->failed_native_frame && !impl_->presentation_active) {
+    if (impl_->pending_frames.empty() && impl_->pending_native_frames.empty() &&
+        impl_->native_fallback_frames.empty() &&
+        !impl_->native_fallback_active &&
+        !impl_->presentation_active) {
       break;
     }
   }
@@ -645,7 +661,7 @@ std::uint64_t SdlDisplay::presented_frames() const {
 bool SdlDisplay::poll_events() {
 #if defined(ILEMU_HAS_SDL2)
   // SDL events are latency-sensitive and must be drained before any CPU
-  // fallback upload. Native presentation is handed to a lossy mailbox worker
+  // fallback upload. Native presentation is handed to an ordered worker queue
   // and never waits on acquire/present from the guest scheduler thread.
   impl_->running = impl_->input.poll(impl_->window);
   const auto redraw_requested = impl_->input.take_redraw_request();
@@ -654,10 +670,11 @@ bool SdlDisplay::poll_events() {
   bool repainting{};
   {
     std::lock_guard lock{impl_->frame_mutex};
-    if (impl_->failed_native_frame) {
-      frame = std::move(impl_->failed_native_frame);
-      impl_->failed_native_frame.reset();
+    if (!impl_->native_fallback_frames.empty()) {
+      frame = std::move(impl_->native_fallback_frames.front());
+      impl_->native_fallback_frames.pop_front();
       native_failed = true;
+      impl_->native_fallback_active = true;
     } else if (!impl_->pending_frames.empty()) {
       frame = std::move(impl_->pending_frames.front());
       impl_->pending_frames.pop_front();
@@ -723,19 +740,22 @@ bool SdlDisplay::poll_events() {
         impl_->host_graphics->native_presentation_available()) {
       const auto native_sequence = frame->sequence;
       std::chrono::steady_clock::time_point native_queued_at;
+      bool queued_native{};
       {
         std::lock_guard lock{impl_->frame_mutex};
-        if (impl_->pending_native_frame) {
-          performance_counters()
-              .record_native_present_mailbox_coalesced();
-        }
         impl_->last_presented_frame = *frame;
         if (telemetry_enabled)
           frame->native_queued_at = std::chrono::steady_clock::now();
         native_queued_at = frame->native_queued_at;
-        impl_->pending_native_frame = std::move(*frame);
+        if (impl_->native_fallback_active ||
+            !impl_->native_fallback_frames.empty()) {
+          impl_->native_fallback_frames.push_back(std::move(*frame));
+        } else {
+          impl_->pending_native_frames.push_back(std::move(*frame));
+          queued_native = true;
+        }
       }
-      if (telemetry_enabled) {
+      if (telemetry_enabled && queued_native) {
         performance.record_diagnostic_native_queue(
             native_sequence, native_queued_at);
       }
@@ -793,6 +813,13 @@ bool SdlDisplay::poll_events() {
       performance_counters().record_cpu_present_fallback(
           frame->sequence, frame->submitted_at);
     }
+  }
+  if (native_failed) {
+    {
+      std::lock_guard lock{impl_->frame_mutex};
+      impl_->native_fallback_active = false;
+    }
+    impl_->presentation_available.notify_all();
   }
 #endif
   return impl_->running;
