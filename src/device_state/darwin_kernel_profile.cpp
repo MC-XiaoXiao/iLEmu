@@ -142,6 +142,11 @@ make_darwin_kernel_identity_profile(const std::filesystem::path &rootfs) {
   if (!system_version.build_version.empty()) {
     profile.build_version = system_version.build_version;
     profile.abi_build_version = system_version.build_version;
+  } else if (rootfs.empty() || !std::filesystem::exists(rootfs)) {
+    // Unit and embedding callers may intentionally omit a firmware rootfs.
+    // In that case use the explicitly compiled compatibility default rather
+    // than treating the absence of a fixture as an unidentified firmware.
+    profile.abi_build_version = profile.build_version;
   }
   const auto contract = contract_for_build(profile.abi_build_version);
   profile.abi_epoch = contract.abi_epoch;

@@ -36,9 +36,10 @@ struct DarwinKernelIdentityProfile {
   // Compatibility value exposed through kern.osversion/sysctl when the
   // firmware does not provide a trustworthy ProductBuildVersion.
   std::string build_version{"1A543a"};
-  // Empty means that SystemVersion.plist was missing, malformed, or did not
-  // contain ProductBuildVersion. This is the only build string eligible for
-  // version-sensitive ABI routing; it must not inherit the display default.
+  // Empty means that a present firmware rootfs was missing, malformed, or did
+  // not contain ProductBuildVersion. This is the only build string eligible
+  // for version-sensitive ABI routing; callers that intentionally omit a
+  // rootfs use the explicitly compiled compatibility default instead.
   std::string abi_build_version;
   DarwinAbiEpoch abi_epoch{DarwinAbiEpoch::Unknown};
   DarwinGuestCapabilities capabilities;
