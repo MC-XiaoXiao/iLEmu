@@ -483,12 +483,6 @@ private:
         std::uint64_t location_descriptor,
         std::uint64_t translation_nanoseconds,
         const Dynarmic::IR::Block* optimized_block) noexcept {
-        const auto pc = static_cast<std::uint32_t>(location_descriptor);
-        if (translation_profile_ &&
-            memory_.translation_profile_stable(
-                pc, sizeof(std::uint32_t))) {
-            translation_profile_->record(location_descriptor);
-        }
         maybe_check_host_yield(
             0U, translation_nanoseconds >=
                        static_cast<std::uint64_t>(
@@ -497,8 +491,8 @@ private:
                                .count()));
         // Ordinary guest execution is latency-sensitive. Artifact production
         // is reserved for an explicit precompile request, while the
-        // translation profile remains a cheap metadata-only hint for runtime
-        // code that was actually reached.
+        // translation profile is populated from explicit preparation data;
+        // avoid mutating it on the demand-translation path.
         if (!portable_generation_location_ &&
             !explicit_artifact_publication_) {
             performance_counters().record_latency(
