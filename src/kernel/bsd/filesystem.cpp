@@ -117,6 +117,14 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     return hfs_volumes_.for_guest_path(
         (std::filesystem::path{"/"} / relative).generic_string());
   };
+  const auto reject_unavailable_baseband = [&](std::string_view path) {
+    if (!bsd::baseband_device::is_path(path) ||
+        shared_state_->baseband_device_state.available()) {
+      return false;
+    }
+    bsd_error(cpu, darwin::error::no_such_device_or_address);
+    return true;
+  };
   switch (number) {
   case 9: { // link
     const auto source_path = memory_.read_c_string(registers[0]);
@@ -237,12 +245,14 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     const auto host = resolve_guest_path(*path);
     const auto flags = registers[1];
     output_.write("[vfs] open " + *path + "\n");
+    if (reject_unavailable_baseband(*path)) {
+      return;
+    }
     if (bsd::baseband_device::is_mux_channel_path(*path) &&
         !shared_state_->baseband_device_state.dynamic_channels_available()) {
-      // An offline profile exposes the mux ABI, but a dynamically allocated
-      // DLCI has no modem endpoint to back it. Return the device-level failure
-      // used by the fixed baseband node instead of creating a descriptor.
-      // There is no guest-visible modem endpoint or synthetic response.
+      // Offline has no dynamically allocated modem endpoints. The fixed mux
+      // remains available as a logical setup/control endpoint; its writes are
+      // consumed by the emulator and never reach a host modem.
       constexpr auto error = darwin::error::no_such_device_or_address;
       bsd_error(cpu, error);
       return;
@@ -546,8 +556,11 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       return;
     }
     output_.write("[vfs] access " + *path + "\n");
-    if (bsd::baseband_device::is_path(*path) &&
-        !shared_state_->baseband_device_state.available()) {
+    if (reject_unavailable_baseband(*path)) {
+      return;
+    }
+    if (bsd::baseband_device::is_mux_channel_path(*path) &&
+        !shared_state_->baseband_device_state.dynamic_channels_available()) {
       bsd_error(cpu, darwin::error::no_such_device_or_address);
       return;
     }
@@ -1939,6 +1952,14 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       }
       return true;
     };
+    if (reject_unavailable_baseband(*path)) {
+      return;
+    }
+    if (bsd::baseband_device::is_mux_channel_path(*path) &&
+        !shared_state_->baseband_device_state.dynamic_channels_available()) {
+      bsd_error(cpu, darwin::error::no_such_device_or_address);
+      return;
+    }
     if (const auto minor = virtual_character_path_minor(*path)) {
       if (!write_guest_device_stat64(registers[1], *minor, true)) {
         bsd_error(cpu, bsd_support::bad_address);
@@ -2061,6 +2082,14 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       return;
     }
     output_.write("[vfs] stat " + *path + "\n");
+    if (reject_unavailable_baseband(*path)) {
+      return;
+    }
+    if (bsd::baseband_device::is_mux_channel_path(*path) &&
+        !shared_state_->baseband_device_state.dynamic_channels_available()) {
+      bsd_error(cpu, darwin::error::no_such_device_or_address);
+      return;
+    }
     if (const auto minor = virtual_character_path_minor(*path)) {
       if (!write_guest_device_stat(registers[1], *minor, true)) {
         bsd_error(cpu, bsd_support::bad_address);

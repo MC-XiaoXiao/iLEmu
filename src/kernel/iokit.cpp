@@ -914,10 +914,10 @@ void populate_matching_services_locked(KernelSharedState &shared_state,
   if (const auto profile =
           kernel_iokit::baseband::matching_service(matching);
       profile && shared_state.baseband_device_state.available()) {
-    // A profile marked unavailable has no baseband capability at all. Keep
-    // the registry boundary in lockstep with the device node so clients do
-    // not open a service that cannot exist; the normal Offline profile still
-    // publishes the virtual ABI needed for stock CommCenter startup.
+    // Offline keeps the registry-level service visible so CoreTelephony can
+    // observe the modem's normal Offline state. The filesystem boundary
+    // rejects the mux transport separately; this service must not be treated
+    // as evidence that a physical modem or a data path exists.
     services.push_back(kernel_iokit::baseband::ensure_service_locked(
         shared_state, *profile));
   }

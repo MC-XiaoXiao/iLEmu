@@ -11,19 +11,15 @@
 
 namespace ilemu {
 
-// The simulator can expose the character-device ABI while declaring whether a
-// physical baseband transport is actually present. This is a capability
-// profile, not a firmware-version or application rule. The virtual mode is
-// retained for explicit transport fixtures/replay; normal boots select the
-// offline mode because no modem is attached to the host. Unavailable is
-// reserved for a true no-device boot policy.
+// The simulator can expose a baseband transport for an explicit replay fixture
+// or run with the normal offline/no-modem policy. This is a capability
+// profile, not a firmware-version or application rule.
 enum class BasebandTransportProfile : std::uint8_t {
     Virtual,
-    // The device-node/IOKit ABI is present so stock CommCenter can complete
-    // startup, but no radio notifications are authoritative. This is the
-    // normal simulator profile and does not synthesize AT replies.
+    // No physical modem is attached. Registry and control-plane probes stay
+    // visible so stock clients settle on the normal Offline state, while no
+    // guest input is injected and no host-bound modem output is produced.
     Offline,
-    Unavailable,
 };
 
 // Guest-visible graphics accelerator family. This describes the firmware
@@ -72,8 +68,15 @@ struct DeviceProfile {
     // accelerator exposes only the legacy MBX service and has no private
     // driver bundle to publish through IOAcceleratorES.
     std::string_view graphics_driver_bundle;
+    // Default transport for a normal boot without --baseband-input. An
+    // explicit replay input overrides this with Virtual.
     BasebandTransportProfile baseband_transport{
         BasebandTransportProfile::Virtual};
+    // Whether this device profile has a guest-visible fixed baseband control
+    // endpoint. This is a platform capability used by the transport boundary;
+    // it is not a firmware-version or process-name rule. An explicit replay
+    // transport always makes the endpoint available at boot.
+    bool baseband_device_available{true};
 
     static const DeviceProfile& default_profile();
     [[nodiscard]] static std::span<const DeviceProfile> available_profiles();

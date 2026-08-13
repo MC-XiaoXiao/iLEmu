@@ -224,10 +224,14 @@ bool is_mux_channel_path(std::string_view candidate) {
          has_numeric_suffix(candidate, "/dev/dlci.h5.baseband.");
 }
 
-bool is_path(std::string_view candidate) {
-  return candidate == path || candidate == spi_mux_path ||
-         candidate == h5_mux_path || candidate == legacy_path ||
+bool is_mux_path(std::string_view candidate) {
+  return candidate == spi_mux_path || candidate == h5_mux_path ||
          is_mux_channel_path(candidate);
+}
+
+bool is_path(std::string_view candidate) {
+  return candidate == path || candidate == legacy_path ||
+         is_mux_path(candidate);
 }
 
 } // namespace ilemu::bsd::baseband_device

@@ -28,11 +28,6 @@ inline constexpr std::string_view spi_mux_directory_name{"mux.spi-baseband"};
 inline constexpr std::string_view h5_mux_directory_name{"mux.h5.baseband"};
 inline constexpr std::string_view descriptor_kind{"baseband"};
 inline constexpr unsigned device_minor = 3;
-// The no-modem profile still exposes the serial-mux ABI used by stock
-// CommCenter.  The client keeps a finite channel table; bounding anonymous
-// allocations prevents a silent transport from turning retries into an
-// ever-growing logical channel id stream.
-inline constexpr std::uint32_t offline_mux_channel_capacity = 16;
 
 enum class IoctlResult {
   success,
@@ -47,13 +42,9 @@ public:
   [[nodiscard]] bool available() const;
   void set_available(bool available);
   // This is the guest-to-device tty transmit queue, not modem availability.
-  // An offline device can still consume a complete command without producing
-  // a reply, just as a serial driver can drain bytes after its peer disappears.
   [[nodiscard]] bool transmit_queue_writable() const;
   void set_transmit_queue_writable(bool writable);
-  // Dynamic DLCI nodes require a modem-side mux endpoint.  Keep this separate
-  // from the fixed tty's transmit queue so an offline profile can accept a
-  // complete command while continuing to reject unsupported channels.
+  // Dynamic DLCI nodes require a modem-side mux endpoint.
   [[nodiscard]] bool dynamic_channels_available() const;
   void set_dynamic_channels_available(bool available);
   [[nodiscard]] bool may_open(bool privileged) const;
@@ -66,8 +57,8 @@ public:
   [[nodiscard]] std::size_t minimum_receive_bytes() const;
   void set_minimum_receive_bytes(std::size_t bytes);
   // A zero capacity preserves the virtual/replay transport's dynamic channel
-  // allocation.  Offline transport uses the stock client's finite channel
-  // table and reuses anonymous slots when CommCenter retries setup.
+  // allocation. Offline transport rejects mux nodes before channel
+  // allocation, so no logical DLCI is synthesized.
   void set_mux_channel_capacity(std::uint32_t capacity);
   [[nodiscard]] std::uint32_t register_mux_channel(std::string_view name);
   [[nodiscard]] std::optional<std::uint32_t>
@@ -106,5 +97,6 @@ private:
 
 [[nodiscard]] bool is_path(std::string_view candidate);
 [[nodiscard]] bool is_mux_channel_path(std::string_view candidate);
+[[nodiscard]] bool is_mux_path(std::string_view candidate);
 
 } // namespace ilemu::bsd::baseband_device

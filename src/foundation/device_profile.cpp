@@ -28,6 +28,8 @@ constexpr std::array<DeviceProfile, 3> profiles{
         default_display_geometry,
         GraphicsAcceleratorProfileKind::MbxLite,
         "",
+        BasebandTransportProfile::Offline,
+        true,
     },
     DeviceProfile{
         "iPhone1,2",
@@ -50,6 +52,8 @@ constexpr std::array<DeviceProfile, 3> profiles{
         default_display_geometry,
         GraphicsAcceleratorProfileKind::MbxLite,
         "",
+        BasebandTransportProfile::Offline,
+        true,
     },
     DeviceProfile{
         "iPhone2,1",
@@ -74,6 +78,8 @@ constexpr std::array<DeviceProfile, 3> profiles{
         default_display_geometry,
         GraphicsAcceleratorProfileKind::Sgx535,
         "IMGSGX535GLDriver",
+        BasebandTransportProfile::Offline,
+        false,
     },
 };
 

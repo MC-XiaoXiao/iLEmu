@@ -437,6 +437,14 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
         }
         const auto channel_name =
             extract_mux_channel_name(memory_, argument, *payload);
+        if (!shared_state_->baseband_device_state
+                 .dynamic_channels_available()) {
+          output_.write("[baseband] ioctl pid=" +
+                        std::to_string(process_.pid) +
+                        " ASMIOCNEWDLCI unavailable\n");
+          bsd_error(cpu, darwin::error::no_such_device_or_address);
+          return;
+        }
         const auto channel_unit = shared_state_->baseband_device_state
                                        .register_mux_channel(channel_name
                                                                  ? *channel_name

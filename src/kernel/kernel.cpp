@@ -247,18 +247,21 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
       std::string{device_profile_.graphics_driver_bundle};
   shared_state_->device_cpu_subtype = mach_cpu_subtype_for_architecture(
       arm_architecture_for_model(device_profile_.cpu_model));
+  const auto virtual_baseband =
+      device_profile_.baseband_transport == BasebandTransportProfile::Virtual;
+  const auto baseband_device_available =
+      virtual_baseband || device_profile_.baseband_device_available;
+  // Keep the registry/CoreTelephony surface present in Offline mode so stock
+  // clients can settle on the normal Offline state. Offline still exposes a
+  // fixed mux control endpoint for the daemon's setup ABI, but it only
+  // records logical channels; it has no modem input and no host-bound output.
   shared_state_->baseband_device_state.set_available(
-      device_profile_.baseband_transport !=
-      BasebandTransportProfile::Unavailable);
+      baseband_device_available);
   shared_state_->baseband_device_state.set_transmit_queue_writable(
-      device_profile_.baseband_transport !=
-      BasebandTransportProfile::Unavailable);
+      baseband_device_available);
   shared_state_->baseband_device_state.set_dynamic_channels_available(
-      device_profile_.baseband_transport == BasebandTransportProfile::Virtual);
-  shared_state_->baseband_device_state.set_mux_channel_capacity(
-      device_profile_.baseband_transport == BasebandTransportProfile::Offline
-          ? bsd::baseband_device::offline_mux_channel_capacity
-          : 0U);
+      virtual_baseband);
+  shared_state_->baseband_device_state.set_mux_channel_capacity(0U);
   shared_state_->mounts.clear();
   for (const auto &volume : hfs_volumes_.volumes()) {
     shared_state_->mounts.push_back({"hfs", volume.mount_point,
@@ -1207,8 +1210,13 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu &cpu) {
   }
   if (const auto pending = pending_baseband_writes_.find(cpu.processor_id());
       pending != pending_baseband_writes_.end()) {
-    if (!shared_state_->baseband_device_state.transmit_queue_writable())
-      return false;
+    if (!shared_state_->baseband_device_state.transmit_queue_writable()) {
+      bsd_error(cpu, darwin::error::no_such_device_or_address);
+      pending_baseband_writes_.erase(pending);
+      process_.waiting_for_events = false;
+      cpu.clear_halt();
+      return true;
+    }
     const auto descriptor = virtual_descriptors_.find(pending->second.fd);
     if (descriptor == virtual_descriptors_.end() ||
         descriptor->second != bsd::baseband_device::descriptor_kind) {

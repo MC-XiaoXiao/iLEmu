@@ -2201,15 +2201,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
       baseband_input_path
           ? bsd::baseband_device::load_replay_file(*baseband_input_path)
           : std::vector<std::byte>{};
-  // A normal simulator boot has no modem. A replay input is the only fixture
-  // that supplies a device-side transport contract; capture-only mode merely
-  // records writes from the offline ABI and must not make CommCenter believe
-  // that a radio is present. Keep the offline surface in that mode so the
-  // stock daemon cannot turn the missing modem into a radio-dead alert.
+  // A replay input is the only fixture that supplies a device-side transport
+  // contract. Without one, retain the common Offline/no-modem policy so a
+  // missing radio cannot block the rest of the system.
   device.baseband_transport =
       baseband_input_path
           ? BasebandTransportProfile::Virtual
-          : BasebandTransportProfile::Offline;
+          : device.baseband_transport;
 
   auto initial_memory = std::make_unique<AddressSpace>();
   initial_memory->set_parallel_access(guest_processor_count > 1);
@@ -2560,6 +2558,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
     initial->kernel->set_baseband_capture_enabled(false);
     output.line("[baseband] capture mode=null");
   }
+  output.line(std::string{"[baseband] profile="} +
+              (baseband_input_path ? "virtual" : "offline") +
+              " service=" +
+              ((baseband_input_path || device.baseband_device_available)
+                   ? "visible"
+                   : "unavailable") +
+              " mux=" +
+              (baseband_input_path ? "enabled" : "disabled") +
+              " data=" + (baseband_input_path ? "replay-only" : "none"));
   initial->cpus->set_process_id(initial->kernel->process().pid);
   std::shared_ptr<SdlAudioSink> audio_sink;
   if (SdlAudioSink::available()) {
