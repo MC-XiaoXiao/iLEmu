@@ -2621,11 +2621,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
           performance_counters().record_diagnostic_frame_content(
               frame.sequence, frame.owner_process_id, frame.submitted_at,
               frame.width, frame.height, pixels);
-          const auto visible = std::count_if(
-              pixels.begin(), pixels.end(),
-              [](std::uint32_t pixel) { return (pixel & 0x00ffffffU) != 0; });
-          output.line("[display] frame=" + std::to_string(frame.sequence) +
-                      " visible-pixels=" + std::to_string(visible));
+          // A content-diagnostic window is part of the measured presenter
+          // path. Do not turn it into a per-frame stdout-flush benchmark:
+          // the in-memory content record above already retains the semantic
+          // change evidence needed by the offline analyzer.
+          if (!diagnostic_window) {
+            const auto visible = std::count_if(
+                pixels.begin(), pixels.end(), [](std::uint32_t pixel) {
+                  return (pixel & 0x00ffffffU) != 0;
+                });
+            output.line("[display] frame=" +
+                        std::to_string(frame.sequence) +
+                        " visible-pixels=" + std::to_string(visible));
+          }
         });
   }
   initial->allocated.assign(initial_guest_thread_slots, false);
