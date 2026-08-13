@@ -756,6 +756,9 @@ bool SdlDisplay::poll_events() {
     if (frame->pixels.size() != expected && frame->read_pixels)
       frame->pixels = frame->read_pixels();
     if (frame->pixels.size() == expected) {
+      performance_counters().record_diagnostic_frame_content(
+          frame->sequence, frame->owner_process_id, frame->submitted_at,
+          frame->width, frame->height, frame->pixels);
       impl_->ensure_cpu_presenter();
       if (SDL_UpdateTexture(
               impl_->texture, nullptr, frame->pixels.data(),

@@ -1203,7 +1203,7 @@ std::string usage() {
          "[--activation activated|unactivated|preserve] "
          "[--frame-output FILE] [--touch-replay FILE] [--control-stdin] "
          "[--baseband-input FILE] [--baseband-output FILE] "
-         "[--perf-summary] [--output FILE]\n"
+         "[--perf-summary] [--perf-frame-content] [--output FILE]\n"
          "  ilemu smoke [--cores N] [--jit-cache-mib 8..128] "
          "[--perf-summary] [--output FILE]\n"
          "  ilemu benchmark arm [--iterations N] "
@@ -5186,6 +5186,13 @@ int main(int argc, char **argv) {
     auto output = make_output(args);
     const auto perf_summary = flag(args, "--perf-summary");
     performance_counters().reset(perf_summary);
+    const auto perf_frame_content = flag(args, "--perf-frame-content");
+    if (perf_frame_content && !perf_summary) {
+      throw std::runtime_error{
+          "--perf-frame-content requires --perf-summary"};
+    }
+    performance_counters().set_frame_content_diagnostics(
+        perf_frame_content);
     const std::string_view command{argv[1]};
     try {
       if (command == "profile") {

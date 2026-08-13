@@ -9,6 +9,7 @@
 #include <map>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -249,6 +250,14 @@ class PerformanceCounters {
     [[nodiscard]] bool enabled() const {
         return enabled_.load(std::memory_order_relaxed);
     }
+    void set_frame_content_diagnostics(bool enabled) {
+        frame_content_diagnostics_enabled_.store(
+            enabled, std::memory_order_release);
+    }
+    [[nodiscard]] bool frame_content_diagnostics_enabled() const {
+        return frame_content_diagnostics_enabled_.load(
+            std::memory_order_acquire);
+    }
 
     void record_jit(std::uint64_t creation_nanoseconds = 0);
     // Background precompilation uses this always-on history to reserve time
@@ -310,6 +319,20 @@ class PerformanceCounters {
     void record_display_submission(
         std::uint64_t frame_sequence, std::uint32_t owner_process_id,
         std::chrono::steady_clock::time_point submitted_at);
+    // Optional software-present diagnostics used to identify the semantic
+    // start and end of an animation independently from the perf-window first
+    // and last submission. The previous visible frame is retained while the
+    // diagnostic is enabled so the first in-window frame has a real baseline.
+    void record_diagnostic_frame_content(
+        std::uint64_t frame_sequence, std::uint32_t owner_process_id,
+        std::chrono::steady_clock::time_point submitted_at,
+        std::uint32_t width, std::uint32_t height,
+        std::span<const std::uint32_t> pixels);
+    void record_diagnostic_input(
+        std::string_view kind, std::string_view phase, float x, float y,
+        bool queued,
+        std::chrono::steady_clock::time_point enqueued_at =
+            std::chrono::steady_clock::now());
     // Temporary frame-hitch timeline probes. Remove these together with the
     // ordered display diagnostics once the exit/unlock stall is localized.
     void record_diagnostic_display_dequeue(
@@ -400,6 +423,7 @@ class PerformanceCounters {
         std::chrono::steady_clock::time_point submitted_at);
 
     std::atomic<bool> enabled_{false};
+    std::atomic<bool> frame_content_diagnostics_enabled_{false};
     std::atomic<std::uint64_t> jit_instances_{};
     std::atomic<std::uint64_t> jit_live_instances_{};
     std::atomic<std::uint64_t> jit_live_peak_instances_{};

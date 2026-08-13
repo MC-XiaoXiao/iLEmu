@@ -364,6 +364,7 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput &input) {
                                              scene_coordinator_.get(),
                                              presentation_tracker_.get(),
                                              &home_recovery_requested);
+  const auto enqueued_at = std::chrono::steady_clock::now();
   const auto phase = [phase = input.phase] {
     switch (phase) {
     case TouchPhase::Down:
@@ -377,6 +378,9 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput &input) {
     }
     return "unknown";
   }();
+  performance_counters().record_diagnostic_input(
+      "touch", phase, input.x, input.y,
+      result == graphics_services_input::EnqueueResult::Queued, enqueued_at);
   output_.write("[input] touch phase=" + std::string{phase} + " x=" +
                 std::to_string(input.x) + " y=" + std::to_string(input.y) +
                 (result == graphics_services_input::EnqueueResult::Queued
@@ -452,6 +456,7 @@ void CompatibilityKernel::enqueue_system_button_impl(
   const auto result = graphics_services_input::enqueue_system_button(
       *shared_state_, input, &system_input_sequence,
       begins_display_lock_transaction);
+  const auto enqueued_at = std::chrono::steady_clock::now();
   // A sleeping Home or Sleep/Wake button is a wake request for SpringBoard,
   // not a new suspend transition. The firmware prepares its lock scene and
   // then requests LCD power through IOKit.
@@ -479,6 +484,10 @@ void CompatibilityKernel::enqueue_system_button_impl(
     }
     return "unknown";
   }();
+  performance_counters().record_diagnostic_input(
+      std::string{"button-"} + button,
+      input.phase == SystemButtonPhase::Down ? "down" : "up", 0.0F, 0.0F,
+      result == graphics_services_input::EnqueueResult::Queued, enqueued_at);
   output_.write("[input] button=" + std::string{button} + " phase=" +
                 (input.phase == SystemButtonPhase::Down ? "down" : "up") +
                 (result == graphics_services_input::EnqueueResult::Queued

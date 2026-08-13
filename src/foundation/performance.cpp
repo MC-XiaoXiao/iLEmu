@@ -1,6 +1,7 @@
 #include "ilemu/performance.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -89,9 +90,33 @@ struct DiagnosticVsyncFrame {
     DiagnosticFrameWork work;
 };
 
+struct DiagnosticContentFrame {
+    std::uint64_t sequence{};
+    std::uint32_t owner_process_id{};
+    std::chrono::steady_clock::time_point submitted;
+    bool comparable{};
+    std::uint64_t changed_pixels{};
+    std::uint64_t absolute_rgb_delta{};
+    std::uint64_t hash{};
+};
+
+struct DiagnosticInputEvent {
+    std::string kind;
+    std::string phase;
+    float x{};
+    float y{};
+    bool queued{};
+    std::chrono::steady_clock::time_point enqueued;
+};
+
 std::chrono::steady_clock::time_point diagnostic_window_started_at;
 std::vector<DiagnosticDisplayFrame> diagnostic_display_frames;
 std::vector<DiagnosticVsyncFrame> diagnostic_vsync_frames;
+std::vector<DiagnosticContentFrame> diagnostic_content_frames;
+std::vector<DiagnosticInputEvent> diagnostic_input_events;
+std::vector<std::uint32_t> diagnostic_previous_content_pixels;
+std::uint32_t diagnostic_previous_content_width{};
+std::uint32_t diagnostic_previous_content_height{};
 DiagnosticFrameWork diagnostic_previous_frame_work;
 PerformanceSnapshot diagnostic_work_baseline;
 std::map<std::string, HlePerformanceSnapshot, std::less<>>
@@ -288,6 +313,8 @@ bool is_display_window_latency(PerfLatencyKind kind) {
 void PerformanceCounters::reset(bool enabled) {
     enabled_.store(false, std::memory_order_relaxed);
     display_window_active_.store(false, std::memory_order_release);
+    frame_content_diagnostics_enabled_.store(false,
+                                              std::memory_order_release);
     jit_instances_.store(0, std::memory_order_relaxed);
     jit_live_instances_.store(0, std::memory_order_relaxed);
     jit_live_peak_instances_.store(0, std::memory_order_relaxed);
@@ -407,6 +434,9 @@ void PerformanceCounters::reset(bool enabled) {
     {
         std::lock_guard lock{display_window_mutex_};
         reset_display_window_locked();
+        diagnostic_previous_content_pixels.clear();
+        diagnostic_previous_content_width = 0;
+        diagnostic_previous_content_height = 0;
     }
     enabled_.store(enabled, std::memory_order_release);
 }
@@ -420,6 +450,8 @@ void PerformanceCounters::reset_display_window_locked() {
     diagnostic_window_started_at = {};
     diagnostic_display_frames.clear();
     diagnostic_vsync_frames.clear();
+    diagnostic_content_frames.clear();
+    diagnostic_input_events.clear();
     diagnostic_previous_frame_work = {};
 }
 
@@ -1017,6 +1049,77 @@ void PerformanceCounters::record_display_submission(
         frame.submitted = submitted_at;
         diagnostic_display_frames.push_back(frame);
     }
+}
+
+void PerformanceCounters::record_diagnostic_frame_content(
+    std::uint64_t frame_sequence, std::uint32_t owner_process_id,
+    std::chrono::steady_clock::time_point submitted_at,
+    std::uint32_t width, std::uint32_t height,
+    std::span<const std::uint32_t> pixels) {
+    if (!enabled() || !frame_content_diagnostics_enabled() || width == 0 ||
+        height == 0 ||
+        pixels.size() != static_cast<std::size_t>(width) * height) {
+        return;
+    }
+
+    std::lock_guard lock{display_window_mutex_};
+    if (!display_window_active_.load(std::memory_order_relaxed)) {
+        diagnostic_previous_content_width = width;
+        diagnostic_previous_content_height = height;
+        diagnostic_previous_content_pixels.assign(pixels.begin(), pixels.end());
+        return;
+    }
+    const auto comparable =
+        diagnostic_previous_content_width == width &&
+        diagnostic_previous_content_height == height &&
+        diagnostic_previous_content_pixels.size() == pixels.size();
+    std::uint64_t changed_pixels{};
+    std::uint64_t absolute_rgb_delta{};
+    std::uint64_t hash{14695981039346656037ULL};
+    for (std::size_t index = 0; index < pixels.size(); ++index) {
+        const auto pixel = pixels[index];
+        hash ^= pixel;
+        hash *= 1099511628211ULL;
+        if (!comparable || pixel == diagnostic_previous_content_pixels[index])
+            continue;
+        ++changed_pixels;
+        const auto previous = diagnostic_previous_content_pixels[index];
+        for (const auto shift : {0U, 8U, 16U}) {
+            const auto current_channel =
+                static_cast<int>((pixel >> shift) & 0xffU);
+            const auto previous_channel =
+                static_cast<int>((previous >> shift) & 0xffU);
+            absolute_rgb_delta += static_cast<std::uint64_t>(
+                std::abs(current_channel - previous_channel));
+        }
+    }
+
+    if (diagnostic_content_frames.size() <
+        maximum_diagnostic_sequence_samples) {
+        diagnostic_content_frames.push_back(DiagnosticContentFrame{
+            frame_sequence, owner_process_id, submitted_at, comparable,
+            changed_pixels, absolute_rgb_delta, hash});
+    }
+    diagnostic_previous_content_width = width;
+    diagnostic_previous_content_height = height;
+    diagnostic_previous_content_pixels.assign(pixels.begin(), pixels.end());
+}
+
+void PerformanceCounters::record_diagnostic_input(
+    std::string_view kind, std::string_view phase, float x, float y,
+    bool queued, std::chrono::steady_clock::time_point enqueued_at) {
+    if (!enabled() || !frame_content_diagnostics_enabled() ||
+        !display_window_active_.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::lock_guard lock{display_window_mutex_};
+    if (!display_window_active_.load(std::memory_order_relaxed) ||
+        diagnostic_input_events.size() >=
+            maximum_diagnostic_sequence_samples) {
+        return;
+    }
+    diagnostic_input_events.push_back(DiagnosticInputEvent{
+        std::string{kind}, std::string{phase}, x, y, queued, enqueued_at});
 }
 
 void PerformanceCounters::record_diagnostic_display_dequeue(
@@ -2147,6 +2250,48 @@ std::string format_display_performance_summary(
     }
     text << " diagnostic-window-start-ns="
          << steady_nanoseconds(diagnostic_window_started_at)
+         << " diagnostic-input-format=kind:phase:x:y:queued:enqueued-us"
+         << " diagnostic-input=";
+    if (diagnostic_input_events.empty()) {
+        text << "none";
+    } else {
+        for (std::size_t index = 0; index < diagnostic_input_events.size();
+             ++index) {
+            if (index != 0)
+                text << ',';
+            const auto& event = diagnostic_input_events[index];
+            text << event.kind << ':' << event.phase << ':' << event.x << ':'
+                 << event.y << ':' << (event.queued ? 'q' : 'd') << ':';
+            append_diagnostic_timestamp(text, event.enqueued);
+        }
+    }
+    text << " diagnostic-content-format="
+            "frame:pid:submitted-us:changed-pixels:rgb-delta:hash"
+         << " diagnostic-content=";
+    if (diagnostic_content_frames.empty()) {
+        text << "none";
+    } else {
+        for (std::size_t index = 0; index < diagnostic_content_frames.size();
+             ++index) {
+            if (index != 0)
+                text << ',';
+            const auto& frame = diagnostic_content_frames[index];
+            text << frame.sequence << ':' << frame.owner_process_id << ':';
+            append_diagnostic_timestamp(text, frame.submitted);
+            text << ':';
+            if (frame.comparable)
+                text << frame.changed_pixels;
+            else
+                text << '-';
+            text << ':';
+            if (frame.comparable)
+                text << frame.absolute_rgb_delta;
+            else
+                text << '-';
+            text << ':' << std::hex << frame.hash << std::dec;
+        }
+    }
+    text
          << " diagnostic-timeline-format="
          << "d:frame:pid:vsync:fb:"
             "submit/display-dequeue/native-queue/native-dequeue/"
