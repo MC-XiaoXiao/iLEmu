@@ -42,12 +42,16 @@ class State {
 public:
   [[nodiscard]] bool available() const;
   void set_available(bool available);
-  // Offline transport exposes the device ABI but has no modem-side writer.
-  // Keep its descriptor non-writable for readiness polling so CommCenter
-  // sleeps instead of spinning after the last host-visible command. Virtual
-  // and replay transports retain the normal always-writable tty contract.
-  [[nodiscard]] bool transport_writable() const;
-  void set_transport_writable(bool writable);
+  // This is the guest-to-device tty transmit queue, not modem availability.
+  // An offline device can still consume a complete command without producing
+  // a reply, just as a serial driver can drain bytes after its peer disappears.
+  [[nodiscard]] bool transmit_queue_writable() const;
+  void set_transmit_queue_writable(bool writable);
+  // Dynamic DLCI nodes require a modem-side mux endpoint.  Keep this separate
+  // from the fixed tty's transmit queue so an offline profile can accept a
+  // complete command while continuing to reject unsupported channels.
+  [[nodiscard]] bool dynamic_channels_available() const;
+  void set_dynamic_channels_available(bool available);
   [[nodiscard]] bool may_open(bool privileged) const;
   [[nodiscard]] IoctlResult ioctl(std::uint32_t command);
   [[nodiscard]] bool exclusive() const;
@@ -73,7 +77,8 @@ public:
 private:
   mutable std::mutex mutex_;
   bool available_{true};
-  bool transport_writable_{true};
+  bool transmit_queue_writable_{true};
+  bool dynamic_channels_available_{true};
   bool exclusive_{};
   bool h5_transport_mode_{};
   std::size_t minimum_receive_bytes_{};

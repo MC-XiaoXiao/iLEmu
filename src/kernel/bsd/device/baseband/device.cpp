@@ -35,14 +35,24 @@ void State::set_available(bool available) {
   available_ = available;
 }
 
-bool State::transport_writable() const {
+bool State::transmit_queue_writable() const {
   const std::lock_guard lock{mutex_};
-  return transport_writable_;
+  return transmit_queue_writable_;
 }
 
-void State::set_transport_writable(bool writable) {
+void State::set_transmit_queue_writable(bool writable) {
   const std::lock_guard lock{mutex_};
-  transport_writable_ = writable;
+  transmit_queue_writable_ = writable;
+}
+
+bool State::dynamic_channels_available() const {
+  const std::lock_guard lock{mutex_};
+  return dynamic_channels_available_;
+}
+
+void State::set_dynamic_channels_available(bool available) {
+  const std::lock_guard lock{mutex_};
+  dynamic_channels_available_ = available;
 }
 
 bool State::may_open(bool privileged) const {

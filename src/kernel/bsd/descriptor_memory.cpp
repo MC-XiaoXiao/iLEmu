@@ -525,12 +525,9 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
                       bsd_support::format_payload_prefix(*bytes) + "\n");
         ++baseband_io_trace_count_;
       }
-      if (!shared_state_->baseband_device_state.transport_writable()) {
-        // Offline capability profiles have no event that can make this
-        // descriptor writable.  Blocking here would leave a guest thread
-        // asleep forever while keeping the rest of the kernel's pending-I/O
-        // machinery alive.  Report the unavailable transport immediately;
-        // no modem response or synthetic radio state is produced.
+      if (!shared_state_->baseband_device_state.transmit_queue_writable()) {
+        // A profile without a device node has no event that can make this
+        // queue writable.  Report the unavailable transport immediately.
         bsd_error(cpu, darwin::error::no_such_device_or_address);
         return;
       }

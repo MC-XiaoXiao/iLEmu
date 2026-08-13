@@ -238,7 +238,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     const auto flags = registers[1];
     output_.write("[vfs] open " + *path + "\n");
     if (bsd::baseband_device::is_mux_channel_path(*path) &&
-        !shared_state_->baseband_device_state.transport_writable()) {
+        !shared_state_->baseband_device_state.dynamic_channels_available()) {
       // An offline profile exposes the mux ABI, but a dynamically allocated
       // DLCI has no modem endpoint to back it. Return the device-level failure
       // used by the fixed baseband node instead of creating a descriptor.

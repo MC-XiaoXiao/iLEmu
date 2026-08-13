@@ -250,8 +250,11 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   shared_state_->baseband_device_state.set_available(
       device_profile_.baseband_transport !=
       BasebandTransportProfile::Unavailable);
-  shared_state_->baseband_device_state.set_transport_writable(
-      device_profile_.baseband_transport != BasebandTransportProfile::Offline);
+  shared_state_->baseband_device_state.set_transmit_queue_writable(
+      device_profile_.baseband_transport !=
+      BasebandTransportProfile::Unavailable);
+  shared_state_->baseband_device_state.set_dynamic_channels_available(
+      device_profile_.baseband_transport == BasebandTransportProfile::Virtual);
   shared_state_->baseband_device_state.set_mux_channel_capacity(
       device_profile_.baseband_transport == BasebandTransportProfile::Offline
           ? bsd::baseband_device::offline_mux_channel_capacity
@@ -1195,7 +1198,7 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu &cpu) {
   }
   if (const auto pending = pending_baseband_writes_.find(cpu.processor_id());
       pending != pending_baseband_writes_.end()) {
-    if (!shared_state_->baseband_device_state.transport_writable())
+    if (!shared_state_->baseband_device_state.transmit_queue_writable())
       return false;
     const auto descriptor = virtual_descriptors_.find(pending->second.fd);
     if (descriptor == virtual_descriptors_.end() ||
