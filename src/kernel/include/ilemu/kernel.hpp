@@ -255,6 +255,9 @@ public:
   network_interface_snapshot(std::string_view name) const;
   [[nodiscard]] std::vector<darwin::route::Entry> route_snapshot() const;
   void enqueue_baseband_input(std::span<const std::byte> bytes);
+  void set_baseband_capture_enabled(bool enabled);
+  void set_baseband_transmit_sink(
+      bsd::baseband_device::State::TransmitSink sink);
   void enqueue_touch_input(const TouchInput &input);
   void enqueue_system_button(const SystemButtonInput &input);
   void set_ringer_switch_active(bool active);

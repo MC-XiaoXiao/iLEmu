@@ -531,8 +531,12 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
         bsd_error(cpu, darwin::error::no_such_device_or_address);
         return;
       }
-      bsd_success(cpu, static_cast<std::uint32_t>(
-                           shared_state_->baseband_device_state.write(*bytes)));
+      const auto written = shared_state_->baseband_device_state.write(*bytes);
+      if (written != bytes->size()) {
+        bsd_error(cpu, darwin::error::io);
+        return;
+      }
+      bsd_success(cpu, static_cast<std::uint32_t>(written));
       return;
     }
     if (const auto file = file_descriptors_.find(fd);

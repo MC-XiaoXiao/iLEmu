@@ -598,6 +598,15 @@ bool CompatibilityKernel::display_powered_on() const {
   return shared_state_->requested_display_power_state.value_or(1U) != 0;
 }
 
+void CompatibilityKernel::set_baseband_capture_enabled(bool enabled) {
+  shared_state_->baseband_device_state.set_transmit_capture_enabled(enabled);
+}
+
+void CompatibilityKernel::set_baseband_transmit_sink(
+    bsd::baseband_device::State::TransmitSink sink) {
+  shared_state_->baseband_device_state.set_transmit_sink(std::move(sink));
+}
+
 std::vector<std::byte> CompatibilityKernel::take_baseband_output() {
   return shared_state_->baseband_device_state.take_transmitted();
 }
@@ -1207,11 +1216,15 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu &cpu) {
     } else {
       const auto written = shared_state_->baseband_device_state.write(
           pending->second.bytes);
-      bsd_success(cpu, static_cast<std::uint32_t>(written));
-      output_.write("[baseband] write wake pid=" +
-                    std::to_string(process_.pid) + " fd=" +
-                    std::to_string(pending->second.fd) + " bytes=" +
-                    std::to_string(written) + "\n");
+      if (written != pending->second.bytes.size()) {
+        bsd_error(cpu, darwin::error::io);
+      } else {
+        bsd_success(cpu, static_cast<std::uint32_t>(written));
+        output_.write("[baseband] write wake pid=" +
+                      std::to_string(process_.pid) + " fd=" +
+                      std::to_string(pending->second.fd) + " bytes=" +
+                      std::to_string(written) + "\n");
+      }
     }
     pending_baseband_writes_.erase(pending);
     process_.waiting_for_events = false;

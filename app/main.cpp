@@ -19,6 +19,7 @@
 #include <mutex>
 #include <optional>
 #include <sstream>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -2186,6 +2187,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
   }
   const auto baseband_input_path = option(args, "--baseband-input");
   const auto baseband_output_path = option(args, "--baseband-output");
+  std::optional<std::ofstream> baseband_capture_stream;
+  std::uint64_t baseband_capture_bytes{};
+  if (baseband_output_path) {
+    baseband_capture_stream.emplace(
+        *baseband_output_path, std::ios::binary | std::ios::trunc);
+    if (!*baseband_capture_stream) {
+      throw std::runtime_error{"cannot open baseband capture output: " +
+                               *baseband_output_path};
+    }
+  }
   const auto baseband_input =
       baseband_input_path
           ? bsd::baseband_device::load_replay_file(*baseband_input_path)
@@ -2532,6 +2543,23 @@ void boot(const std::vector<std::string> &args, Output &output) {
       std::make_unique<CompatibilityKernel>(*initial->memory, output, *rootfs,
                                             device, activation_override,
                                             lockdown_profile);
+  if (baseband_capture_stream) {
+    auto *stream = &*baseband_capture_stream;
+    initial->kernel->set_baseband_transmit_sink(
+        [stream, &baseband_capture_bytes](std::span<const std::byte> bytes) {
+          stream->write(reinterpret_cast<const char *>(bytes.data()),
+                        static_cast<std::streamsize>(bytes.size()));
+          if (!*stream)
+            return false;
+          baseband_capture_bytes += bytes.size();
+          return true;
+        });
+    output.line("[baseband] capture mode=stream output=" +
+                *baseband_output_path);
+  } else {
+    initial->kernel->set_baseband_capture_enabled(false);
+    output.line("[baseband] capture mode=null");
+  }
   initial->cpus->set_process_id(initial->kernel->process().pid);
   std::shared_ptr<SdlAudioSink> audio_sink;
   if (SdlAudioSink::available()) {
@@ -4892,11 +4920,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
     message << " state=waiting-for-events";
   }
   output.line(message.str());
-  if (baseband_output_path) {
-    const auto captured = initial_runtime->kernel->take_baseband_output();
-    bsd::baseband_device::write_capture_file(*baseband_output_path, captured);
+  if (baseband_capture_stream) {
+    baseband_capture_stream->flush();
+    if (!*baseband_capture_stream) {
+      throw std::runtime_error{"cannot flush baseband capture output: " +
+                               *baseband_output_path};
+    }
     output.line("[baseband] capture output=" + *baseband_output_path +
-                " bytes=" + std::to_string(captured.size()));
+                " bytes=" + std::to_string(baseband_capture_bytes));
   }
   const auto report_performance = flag(args, "--perf-summary");
   if (sdl_display)

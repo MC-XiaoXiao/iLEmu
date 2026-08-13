@@ -185,6 +185,14 @@ std::size_t State::pending_receive_bytes() const {
 
 std::size_t State::write(std::span<const std::byte> bytes) {
   const std::lock_guard lock{mutex_};
+  if (transmit_sink_) {
+    if (!transmit_sink_(bytes)) {
+      return 0;
+    }
+    return bytes.size();
+  }
+  if (!transmit_capture_enabled_)
+    return bytes.size();
   transmitted_.insert(transmitted_.end(), bytes.begin(), bytes.end());
   return bytes.size();
 }
@@ -194,6 +202,21 @@ std::vector<std::byte> State::take_transmitted() {
   auto bytes = std::move(transmitted_);
   transmitted_.clear();
   return bytes;
+}
+
+void State::set_transmit_capture_enabled(bool enabled) {
+  const std::lock_guard lock{mutex_};
+  transmit_capture_enabled_ = enabled;
+  transmit_sink_ = {};
+  if (!enabled)
+    transmitted_.clear();
+}
+
+void State::set_transmit_sink(TransmitSink sink) {
+  const std::lock_guard lock{mutex_};
+  transmit_sink_ = std::move(sink);
+  transmit_capture_enabled_ = false;
+  transmitted_.clear();
 }
 
 bool is_mux_channel_path(std::string_view candidate) {

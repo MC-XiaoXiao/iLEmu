@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <map>
 #include <mutex>
 #include <optional>
@@ -40,6 +41,9 @@ enum class IoctlResult {
 
 class State {
 public:
+  using TransmitSink =
+      std::function<bool(std::span<const std::byte>)>;
+
   [[nodiscard]] bool available() const;
   void set_available(bool available);
   // This is the guest-to-device tty transmit queue, not modem availability.
@@ -73,6 +77,13 @@ public:
   [[nodiscard]] std::size_t pending_receive_bytes() const;
   [[nodiscard]] std::size_t write(std::span<const std::byte> bytes);
   [[nodiscard]] std::vector<std::byte> take_transmitted();
+  // The application normally installs a null sink. Tests and embedding
+  // callers retain the legacy in-memory capture until they opt out.
+  void set_transmit_capture_enabled(bool enabled);
+  // A sink receives one complete guest write while the device state is
+  // serialized. Returning false makes that write fail instead of reporting a
+  // partial fixed-node write.
+  void set_transmit_sink(TransmitSink sink);
 
 private:
   mutable std::mutex mutex_;
@@ -89,6 +100,8 @@ private:
   darwin::tty::Arm32Attributes attributes_{darwin::tty::default_attributes()};
   std::deque<std::byte> receive_queue_;
   std::vector<std::byte> transmitted_;
+  TransmitSink transmit_sink_;
+  bool transmit_capture_enabled_{true};
 };
 
 [[nodiscard]] bool is_path(std::string_view candidate);
