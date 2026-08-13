@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -123,10 +124,22 @@ std::vector<DiagnosticInputEvent> diagnostic_input_events;
 std::vector<std::uint32_t> diagnostic_previous_content_pixels;
 std::uint32_t diagnostic_previous_content_width{};
 std::uint32_t diagnostic_previous_content_height{};
+std::uint64_t diagnostic_previous_content_hash{};
+bool diagnostic_previous_content_hash_valid{};
 DiagnosticFrameWork diagnostic_previous_frame_work;
 PerformanceSnapshot diagnostic_work_baseline;
 std::map<std::string, HlePerformanceSnapshot, std::less<>>
     diagnostic_hle_baseline;
+
+std::uint64_t diagnostic_content_hash(
+    std::span<const std::uint32_t> pixels) {
+    std::uint64_t hash{14695981039346656037ULL};
+    for (const auto pixel : pixels) {
+        hash ^= pixel;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
 
 std::optional<std::size_t>
 diagnostic_sequence_index(PerfLatencyKind kind) {
@@ -547,6 +560,8 @@ void PerformanceCounters::reset(bool enabled) {
         diagnostic_previous_content_pixels.clear();
         diagnostic_previous_content_width = 0;
         diagnostic_previous_content_height = 0;
+        diagnostic_previous_content_hash = 0;
+        diagnostic_previous_content_hash_valid = false;
     }
     enabled_.store(enabled, std::memory_order_release);
 }
@@ -1216,15 +1231,36 @@ void PerformanceCounters::record_diagnostic_frame_content(
         diagnostic_previous_content_width = width;
         diagnostic_previous_content_height = height;
         diagnostic_previous_content_pixels.assign(pixels.begin(), pixels.end());
+        diagnostic_previous_content_hash_valid = false;
         return;
     }
     const auto comparable =
         diagnostic_previous_content_width == width &&
         diagnostic_previous_content_height == height &&
         diagnostic_previous_content_pixels.size() == pixels.size();
+    const auto unchanged =
+        comparable &&
+        std::memcmp(pixels.data(), diagnostic_previous_content_pixels.data(),
+                    pixels.size_bytes()) == 0;
     std::uint64_t changed_pixels{};
     std::uint64_t absolute_rgb_delta{};
-    std::uint64_t hash{14695981039346656037ULL};
+    auto hash = diagnostic_previous_content_hash;
+    if (unchanged) {
+        if (!diagnostic_previous_content_hash_valid) {
+            hash = diagnostic_content_hash(pixels);
+            diagnostic_previous_content_hash = hash;
+            diagnostic_previous_content_hash_valid = true;
+        }
+        if (diagnostic_content_frames.size() <
+            maximum_diagnostic_sequence_samples) {
+            diagnostic_content_frames.push_back(DiagnosticContentFrame{
+                frame_sequence, owner_process_id, submitted_at, comparable,
+                changed_pixels, absolute_rgb_delta, hash});
+        }
+        return;
+    }
+
+    hash = 14695981039346656037ULL;
     for (std::size_t index = 0; index < pixels.size(); ++index) {
         const auto pixel = pixels[index];
         hash ^= pixel;
@@ -1249,6 +1285,8 @@ void PerformanceCounters::record_diagnostic_frame_content(
             frame_sequence, owner_process_id, submitted_at, comparable,
             changed_pixels, absolute_rgb_delta, hash});
     }
+    diagnostic_previous_content_hash = hash;
+    diagnostic_previous_content_hash_valid = true;
     diagnostic_previous_content_width = width;
     diagnostic_previous_content_height = height;
     diagnostic_previous_content_pixels.assign(pixels.begin(), pixels.end());
