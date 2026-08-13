@@ -6,6 +6,10 @@
 #include <fstream>
 #include <limits>
 
+#if defined(__x86_64__) || defined(__i386__)
+#include <immintrin.h>
+#endif
+
 #include <unistd.h>
 
 namespace ilemu {
@@ -41,6 +45,246 @@ constexpr std::uint32_t big_endian_word(const std::byte *bytes) noexcept {
          (std::to_integer<std::uint32_t>(bytes[2]) << 8U) |
          std::to_integer<std::uint32_t>(bytes[3]);
 }
+
+void sha256_transform_scalar(std::uint32_t state[8],
+                             const std::byte input[64]) {
+  std::array<std::uint32_t, 64> schedule{};
+  for (std::size_t index = 0; index < 16U; ++index) {
+    schedule[index] = big_endian_word(
+        input + static_cast<std::ptrdiff_t>(index * 4U));
+  }
+  for (std::size_t index = 16U; index < schedule.size(); ++index) {
+    const auto first = schedule[index - 15U];
+    const auto second = schedule[index - 2U];
+    const auto sigma0 = rotate_right(first, 7U) ^ rotate_right(first, 18U) ^
+                        (first >> 3U);
+    const auto sigma1 = rotate_right(second, 17U) ^
+                        rotate_right(second, 19U) ^ (second >> 10U);
+    schedule[index] = schedule[index - 16U] + sigma0 +
+                      schedule[index - 7U] + sigma1;
+  }
+
+  std::array<std::uint32_t, 8> working{};
+  std::copy_n(state, working.size(), working.begin());
+  for (std::size_t index = 0; index < schedule.size(); ++index) {
+    const auto &a = working[0];
+    const auto &b = working[1];
+    const auto &c = working[2];
+    const auto &d = working[3];
+    const auto &e = working[4];
+    const auto &f = working[5];
+    const auto &g = working[6];
+    const auto &h = working[7];
+    const auto sigma1 = rotate_right(e, 6U) ^ rotate_right(e, 11U) ^
+                        rotate_right(e, 25U);
+    const auto choose = (e & f) ^ ((~e) & g);
+    const auto temporary1 = h + sigma1 + choose + round_constants[index] +
+                            schedule[index];
+    const auto sigma0 = rotate_right(a, 2U) ^ rotate_right(a, 13U) ^
+                        rotate_right(a, 22U);
+    const auto majority = (a & b) ^ (a & c) ^ (b & c);
+    const auto temporary2 = sigma0 + majority;
+    working[7] = g;
+    working[6] = f;
+    working[5] = e;
+    working[4] = d + temporary1;
+    working[3] = c;
+    working[2] = b;
+    working[1] = a;
+    working[0] = temporary1 + temporary2;
+  }
+  for (std::size_t index = 0; index < 8U; ++index) {
+    state[index] += working[index];
+  }
+}
+
+#if (defined(__x86_64__) || defined(__i386__)) && \
+    (defined(__GNUC__) || defined(__clang__))
+
+__attribute__((target("sha,ssse3,sse4.1")))
+void sha256_transform_sha_ni(std::uint32_t state[8],
+                             const std::byte input[64]) {
+  __m128i state0, state1;
+  __m128i msg, tmp;
+  __m128i msg0, msg1, msg2, msg3;
+  __m128i abef_save, cdgh_save;
+  const __m128i mask = _mm_set_epi64x(0x0c0d0e0f08090a0bULL,
+                                      0x0405060700010203ULL);
+  const auto *bytes = reinterpret_cast<const std::uint8_t *>(input);
+
+  tmp = _mm_loadu_si128(reinterpret_cast<const __m128i *>(state));
+  state1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(state + 4));
+  tmp = _mm_shuffle_epi32(tmp, 0xb1);
+  state1 = _mm_shuffle_epi32(state1, 0x1b);
+  state0 = _mm_alignr_epi8(tmp, state1, 8);
+  state1 = _mm_blend_epi16(state1, tmp, 0xf0);
+
+  abef_save = state0;
+  cdgh_save = state1;
+
+  msg = _mm_loadu_si128(reinterpret_cast<const __m128i *>(bytes + 0));
+  msg0 = _mm_shuffle_epi8(msg, mask);
+  msg = _mm_add_epi32(msg0, _mm_set_epi64x(0xe9b5dba5b5c0fbcFULL,
+                                           0x71374491428a2f98ULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+
+  msg1 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(bytes + 16));
+  msg1 = _mm_shuffle_epi8(msg1, mask);
+  msg = _mm_add_epi32(msg1, _mm_set_epi64x(0xab1c5ed5923f82a4ULL,
+                                           0x59f111f13956c25bULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  msg0 = _mm_sha256msg1_epu32(msg0, msg1);
+
+  msg2 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(bytes + 32));
+  msg2 = _mm_shuffle_epi8(msg2, mask);
+  msg = _mm_add_epi32(msg2, _mm_set_epi64x(0x550c7dc3243185beULL,
+                                           0x12835b01d807aa98ULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  msg1 = _mm_sha256msg1_epu32(msg1, msg2);
+
+  msg3 = _mm_loadu_si128(reinterpret_cast<const __m128i *>(bytes + 48));
+  msg3 = _mm_shuffle_epi8(msg3, mask);
+  msg = _mm_add_epi32(msg3, _mm_set_epi64x(0xc19bf1749bdc06a7ULL,
+                                           0x80deb1fe72be5d74ULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  tmp = _mm_alignr_epi8(msg3, msg2, 4);
+  msg0 = _mm_add_epi32(msg0, tmp);
+  msg0 = _mm_sha256msg2_epu32(msg0, msg3);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  msg2 = _mm_sha256msg1_epu32(msg2, msg3);
+
+  msg = _mm_add_epi32(msg0, _mm_set_epi64x(0x240ca1cc0fc19dc6ULL,
+                                           0xefbe4786e49b69c1ULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  tmp = _mm_alignr_epi8(msg0, msg3, 4);
+  msg1 = _mm_add_epi32(msg1, tmp);
+  msg1 = _mm_sha256msg2_epu32(msg1, msg0);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  msg3 = _mm_sha256msg1_epu32(msg3, msg0);
+
+  msg = _mm_add_epi32(msg1, _mm_set_epi64x(0x76f988da5cb0a9dcULL,
+                                           0x4a7484aa2de92c6fULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  tmp = _mm_alignr_epi8(msg1, msg0, 4);
+  msg2 = _mm_add_epi32(msg2, tmp);
+  msg2 = _mm_sha256msg2_epu32(msg2, msg1);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  msg0 = _mm_sha256msg1_epu32(msg0, msg1);
+
+  msg = _mm_add_epi32(msg2, _mm_set_epi64x(0xbf597fc7b00327c8ULL,
+                                           0xa831c66d983e5152ULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  tmp = _mm_alignr_epi8(msg2, msg1, 4);
+  msg3 = _mm_add_epi32(msg3, tmp);
+  msg3 = _mm_sha256msg2_epu32(msg3, msg2);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  msg1 = _mm_sha256msg1_epu32(msg1, msg2);
+
+  msg = _mm_add_epi32(msg3, _mm_set_epi64x(0x1429296706ca6351ULL,
+                                           0xd5a79147c6e00bf3ULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  tmp = _mm_alignr_epi8(msg3, msg2, 4);
+  msg0 = _mm_add_epi32(msg0, tmp);
+  msg0 = _mm_sha256msg2_epu32(msg0, msg3);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  msg2 = _mm_sha256msg1_epu32(msg2, msg3);
+
+  msg = _mm_add_epi32(msg0, _mm_set_epi64x(0x53380d134d2c6dfcULL,
+                                           0x2e1b213827b70a85ULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  tmp = _mm_alignr_epi8(msg0, msg3, 4);
+  msg1 = _mm_add_epi32(msg1, tmp);
+  msg1 = _mm_sha256msg2_epu32(msg1, msg0);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  msg3 = _mm_sha256msg1_epu32(msg3, msg0);
+
+  msg = _mm_add_epi32(msg1, _mm_set_epi64x(0x92722c8581c2c92eULL,
+                                           0x766a0abb650a7354ULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  tmp = _mm_alignr_epi8(msg1, msg0, 4);
+  msg2 = _mm_add_epi32(msg2, tmp);
+  msg2 = _mm_sha256msg2_epu32(msg2, msg1);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  msg0 = _mm_sha256msg1_epu32(msg0, msg1);
+
+  msg = _mm_add_epi32(msg2, _mm_set_epi64x(0xc76c51a3c24b8b70ULL,
+                                           0xa81a664ba2bfe8a1ULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  tmp = _mm_alignr_epi8(msg2, msg1, 4);
+  msg3 = _mm_add_epi32(msg3, tmp);
+  msg3 = _mm_sha256msg2_epu32(msg3, msg2);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  msg1 = _mm_sha256msg1_epu32(msg1, msg2);
+
+  msg = _mm_add_epi32(msg3, _mm_set_epi64x(0x106aa070f40e3585ULL,
+                                           0xd6990624d192e819ULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  tmp = _mm_alignr_epi8(msg3, msg2, 4);
+  msg0 = _mm_add_epi32(msg0, tmp);
+  msg0 = _mm_sha256msg2_epu32(msg0, msg3);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  msg2 = _mm_sha256msg1_epu32(msg2, msg3);
+
+  msg = _mm_add_epi32(msg0, _mm_set_epi64x(0x34b0bcb52748774cULL,
+                                           0x1e376c0819a4c116ULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  tmp = _mm_alignr_epi8(msg0, msg3, 4);
+  msg1 = _mm_add_epi32(msg1, tmp);
+  msg1 = _mm_sha256msg2_epu32(msg1, msg0);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+  msg3 = _mm_sha256msg1_epu32(msg3, msg0);
+
+  msg = _mm_add_epi32(msg1, _mm_set_epi64x(0x682e6ff35b9cca4fULL,
+                                           0x4ed8aa4a391c0cb3ULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  tmp = _mm_alignr_epi8(msg1, msg0, 4);
+  msg2 = _mm_add_epi32(msg2, tmp);
+  msg2 = _mm_sha256msg2_epu32(msg2, msg1);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+
+  msg = _mm_add_epi32(msg2, _mm_set_epi64x(0x8cc7020884c87814ULL,
+                                           0x78a5636f748f82eeULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  tmp = _mm_alignr_epi8(msg2, msg1, 4);
+  msg3 = _mm_add_epi32(msg3, tmp);
+  msg3 = _mm_sha256msg2_epu32(msg3, msg2);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+
+  msg = _mm_add_epi32(msg3, _mm_set_epi64x(0xc67178f2bef9a3f7ULL,
+                                           0xa4506ceb90befffaULL));
+  state1 = _mm_sha256rnds2_epu32(state1, state0, msg);
+  msg = _mm_shuffle_epi32(msg, 0x0e);
+  state0 = _mm_sha256rnds2_epu32(state0, state1, msg);
+
+  state0 = _mm_add_epi32(state0, abef_save);
+  state1 = _mm_add_epi32(state1, cdgh_save);
+  tmp = _mm_shuffle_epi32(state0, 0x1b);
+  state1 = _mm_shuffle_epi32(state1, 0xb1);
+  state0 = _mm_blend_epi16(tmp, state1, 0xf0);
+  state1 = _mm_alignr_epi8(state1, tmp, 8);
+  _mm_storeu_si128(reinterpret_cast<__m128i *>(state), state0);
+  _mm_storeu_si128(reinterpret_cast<__m128i *>(state + 4), state1);
+}
+
+#endif
 
 class Sha256State {
 public:
@@ -93,53 +337,19 @@ public:
 
 private:
   void transform(const std::array<std::byte, 64> &input_block) {
-    std::array<std::uint32_t, 64> schedule{};
-    for (std::size_t index = 0; index < 16U; ++index) {
-      schedule[index] = big_endian_word(
-          input_block.data() + static_cast<std::ptrdiff_t>(index * 4U));
-    }
-    for (std::size_t index = 16U; index < schedule.size(); ++index) {
-      const auto first = schedule[index - 15U];
-      const auto second = schedule[index - 2U];
-      const auto sigma0 = rotate_right(first, 7U) ^ rotate_right(first, 18U) ^
-                          (first >> 3U);
-      const auto sigma1 = rotate_right(second, 17U) ^
-                          rotate_right(second, 19U) ^ (second >> 10U);
-      schedule[index] = schedule[index - 16U] + sigma0 +
-                        schedule[index - 7U] + sigma1;
-    }
-
-    auto working = state_;
-    for (std::size_t index = 0; index < schedule.size(); ++index) {
-      const auto &a = working[0];
-      const auto &b = working[1];
-      const auto &c = working[2];
-      const auto &d = working[3];
-      const auto &e = working[4];
-      const auto &f = working[5];
-      const auto &g = working[6];
-      const auto &h = working[7];
-      const auto sigma1 = rotate_right(e, 6U) ^ rotate_right(e, 11U) ^
-                          rotate_right(e, 25U);
-      const auto choose = (e & f) ^ ((~e) & g);
-      const auto temporary1 = h + sigma1 + choose + round_constants[index] +
-                              schedule[index];
-      const auto sigma0 = rotate_right(a, 2U) ^ rotate_right(a, 13U) ^
-                          rotate_right(a, 22U);
-      const auto majority = (a & b) ^ (a & c) ^ (b & c);
-      const auto temporary2 = sigma0 + majority;
-      working[7] = g;
-      working[6] = f;
-      working[5] = e;
-      working[4] = d + temporary1;
-      working[3] = c;
-      working[2] = b;
-      working[1] = a;
-      working[0] = temporary1 + temporary2;
-    }
-    for (std::size_t index = 0; index < state_.size(); ++index) {
-      state_[index] += working[index];
-    }
+    using TransformFunction = void (*)(std::uint32_t *, const std::byte *);
+    static const TransformFunction transform_function = [] {
+#if (defined(__x86_64__) || defined(__i386__)) && \
+    (defined(__GNUC__) || defined(__clang__))
+      if (__builtin_cpu_supports("sha") &&
+          __builtin_cpu_supports("ssse3") &&
+          __builtin_cpu_supports("sse4.1")) {
+        return static_cast<TransformFunction>(&sha256_transform_sha_ni);
+      }
+#endif
+      return static_cast<TransformFunction>(&sha256_transform_scalar);
+    }();
+    transform_function(state_.data(), input_block.data());
   }
 
   std::array<std::uint32_t, 8> state_{};
