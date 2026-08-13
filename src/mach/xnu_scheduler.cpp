@@ -35,6 +35,17 @@ XnuScheduler::XnuScheduler(
     priority_usage_shift_ = priority_usage_shift(scheduler_tick_ticks_);
 }
 
+void XnuScheduler::set_dispatch_diagnostics(bool enabled) {
+    dispatch_diagnostics_enabled_ = enabled;
+    // A perf window must not inherit queue age from before its semantic
+    // boundary. Existing runnable threads begin producing samples only after
+    // their next in-window enqueue.
+    for (auto& [thread, record] : threads_) {
+        static_cast<void>(thread);
+        record.enqueued_at = {};
+    }
+}
+
 bool XnuScheduler::register_thread(
     XnuThreadId thread, std::int32_t base_priority, bool runnable) {
     const auto [iterator, inserted] = threads_.try_emplace(thread);
@@ -142,6 +153,7 @@ bool XnuScheduler::block(XnuThreadId thread) {
     auto& record = iterator->second;
     const auto was_waiting = record.info.state == XnuThreadState::Waiting;
     remove_from_queue(thread, record);
+    record.enqueued_at = {};
     record.info.state = XnuThreadState::Waiting;
     if (!was_waiting) {
         ++waiting_count_;
@@ -170,6 +182,7 @@ bool XnuScheduler::suspend_thread(XnuThreadId thread) {
         record.info.state == XnuThreadState::Running;
     if (record.info.state != XnuThreadState::Waiting) {
         remove_from_queue(thread, record);
+        record.enqueued_at = {};
         record.info.state = XnuThreadState::Waiting;
         ++waiting_count_;
         if (record.info.timeshare) {
@@ -310,6 +323,8 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
             return std::nullopt;
         }
         auto& record = iterator->second;
+        const auto runnable_since = record.enqueued_at;
+        const auto front_continuation = record.front_continuation;
         remove_from_queue(*preferred, record);
         if (record.info.depressed) restore_depression(*preferred, record);
         record.info.state = XnuThreadState::Running;
@@ -321,8 +336,10 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
             record.info.timeslice_processor = processor;
         }
         record.priority_usage_shift = processor_set_priority_shift();
+        record.enqueued_at = {};
         return XnuScheduledSlice{
-            *preferred, processor, record.info.remaining_quantum};
+            *preferred, processor, record.info.remaining_quantum,
+            runnable_since, front_continuation};
     }
 
     auto* selected_queue = selected_run_queue(processor);
@@ -330,6 +347,8 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
 
     const auto thread = pop_highest(*selected_queue);
     auto& record = threads_.at(thread);
+    const auto runnable_since = record.enqueued_at;
+    const auto front_continuation = record.front_continuation;
     record.queued = false;
     record.queued_processor.reset();
     --runnable_count_;
@@ -343,8 +362,10 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
         record.info.timeslice_processor = processor;
     }
     record.priority_usage_shift = processor_set_priority_shift();
+    record.enqueued_at = {};
     return XnuScheduledSlice{
-        thread, processor, record.info.remaining_quantum};
+        thread, processor, record.info.remaining_quantum,
+        runnable_since, front_continuation};
 }
 
 XnuPreemption XnuScheduler::preemption_for(
@@ -553,6 +574,10 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position) {
     record.front_continuation = position == QueuePosition::Front;
     record.queued_processor = record.info.bound_processor;
     record.enqueue_sequence = next_enqueue_sequence_++;
+    if (dispatch_diagnostics_enabled_ &&
+        record.enqueued_at == std::chrono::steady_clock::time_point{}) {
+        record.enqueued_at = std::chrono::steady_clock::now();
+    }
     ++runnable_count_;
     ++run_queue.count;
     run_queue.bitmap[static_cast<std::size_t>(priority) / 32U] |=

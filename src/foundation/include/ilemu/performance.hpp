@@ -126,6 +126,19 @@ enum class PerfLatencyKind : std::uint8_t {
     SpawnMemoryClear,
     SpawnImageLoad,
     SpawnResetRuntime,
+    CpuRunLockWait,
+    CpuRunSharedWriteSync,
+    CpuRunEnsureJit,
+    CpuRunInvalidation,
+    CpuRunLoadState,
+    CpuRunCallbacksBegin,
+    CpuRunArtifactPreload,
+    CpuRunExecute,
+    CpuRunResult,
+    CpuRunSaveState,
+    CpuRunCacheAccounting,
+    CpuRunTotal,
+    SchedulerRunnableToDispatch,
     Count,
 };
 
@@ -153,6 +166,25 @@ struct JitCacheSlotSnapshot {
 
 struct HlePerformanceSnapshot {
     std::string subsystem;
+    std::uint64_t calls{};
+    std::uint64_t nanoseconds{};
+};
+
+enum class PerfDiagnosticSourceKind : std::uint8_t {
+    SchedulerBack,
+    SchedulerFront,
+    SvcBsd,
+    SvcMach,
+    SvcFast,
+    SvcHle,
+    SharedRegionPhase,
+    MappedImagePhase,
+};
+
+struct DiagnosticSourceSnapshot {
+    PerfDiagnosticSourceKind kind{};
+    std::uint32_t process_id{};
+    std::uint32_t number{};
     std::uint64_t calls{};
     std::uint64_t nanoseconds{};
 };
@@ -240,6 +272,7 @@ struct PerformanceSnapshot {
     std::array<PerfLatencySnapshot, perf_latency_kind_count> latencies{};
     std::vector<JitCacheSlotSnapshot> jit_cache_slots;
     std::vector<HlePerformanceSnapshot> hle_subsystems;
+    std::vector<DiagnosticSourceSnapshot> diagnostic_sources;
 };
 
 class PerformanceCounters {
@@ -257,6 +290,21 @@ class PerformanceCounters {
     [[nodiscard]] bool frame_content_diagnostics_enabled() const {
         return frame_content_diagnostics_enabled_.load(
             std::memory_order_acquire);
+    }
+    void set_cpu_source_diagnostics(bool enabled) {
+        cpu_source_diagnostics_configured_.store(
+            enabled, std::memory_order_release);
+    }
+    [[nodiscard]] bool cpu_source_diagnostics_configured() const {
+        return cpu_source_diagnostics_configured_.load(
+            std::memory_order_acquire);
+    }
+    // CPU phase timing is deliberately limited to explicit perf windows. It
+    // performs several host-clock reads per guest slice and must not perturb
+    // ordinary execution or the unmeasured boot path.
+    [[nodiscard]] bool cpu_source_diagnostics_enabled() const {
+        return enabled() && cpu_source_diagnostics_configured() &&
+               display_window_active_.load(std::memory_order_acquire);
     }
 
     void record_jit(std::uint64_t creation_nanoseconds = 0);
@@ -371,6 +419,14 @@ class PerformanceCounters {
                                    std::uint32_t framebuffer);
     void discard_pending_vsync_callbacks();
     void record_hle(std::string_view subsystem, std::uint64_t nanoseconds);
+    void record_cpu_run_phases(
+        std::span<const std::uint64_t> phase_nanoseconds);
+    void record_diagnostic_scheduler_dispatch(
+        std::uint32_t process_id, bool front_continuation,
+        std::uint64_t nanoseconds);
+    void record_diagnostic_svc_dispatch(
+        PerfDiagnosticSourceKind kind, std::uint32_t process_id,
+        std::uint32_t number, std::uint64_t nanoseconds);
     void record_diagnostic_graphics_hle(
         PerfDiagnosticGraphicsHleKind kind, std::uint64_t nanoseconds);
     void record_fork();
@@ -424,6 +480,7 @@ class PerformanceCounters {
 
     std::atomic<bool> enabled_{false};
     std::atomic<bool> frame_content_diagnostics_enabled_{false};
+    std::atomic<bool> cpu_source_diagnostics_configured_{false};
     std::atomic<std::uint64_t> jit_instances_{};
     std::atomic<std::uint64_t> jit_live_instances_{};
     std::atomic<std::uint64_t> jit_live_peak_instances_{};
@@ -540,6 +597,18 @@ class PerformanceCounters {
     mutable std::mutex hle_mutex_;
     std::map<std::string, HlePerformanceSnapshot, std::less<>>
         hle_subsystems_;
+    using DiagnosticSourceKey =
+        std::tuple<PerfDiagnosticSourceKind, std::uint32_t, std::uint32_t>;
+    static constexpr std::size_t diagnostic_source_capacity = 4096;
+    struct DiagnosticSourceCounter {
+        std::atomic<std::uint64_t> key{};
+        std::atomic<std::uint64_t> calls{};
+        std::atomic<std::uint64_t> nanoseconds{};
+    };
+    std::array<DiagnosticSourceCounter, diagnostic_source_capacity>
+        diagnostic_source_counters_;
+    std::map<DiagnosticSourceKey, DiagnosticSourceSnapshot>
+        display_window_diagnostic_source_baseline_;
     std::atomic<std::uint64_t> diagnostic_hle_calls_{};
     std::atomic<std::uint64_t> diagnostic_hle_nanoseconds_{};
     std::array<std::atomic<std::uint64_t>,

@@ -74,6 +74,54 @@ constexpr auto host_yield_slow_translation_threshold =
     std::chrono::microseconds{250};
 static_assert(sizeof(void *) == sizeof(std::uint64_t));
 
+class CpuRunPhaseDiagnostics {
+public:
+    static constexpr auto first_kind =
+        static_cast<std::size_t>(PerfLatencyKind::CpuRunLockWait);
+    static constexpr auto last_kind =
+        static_cast<std::size_t>(PerfLatencyKind::CpuRunTotal);
+    static constexpr auto phase_count = last_kind - first_kind + 1U;
+
+    CpuRunPhaseDiagnostics()
+        : enabled_{performance_counters().cpu_source_diagnostics_enabled()} {
+        if (enabled_) {
+            total_started_ = std::chrono::steady_clock::now();
+            phase_started_ = total_started_;
+        }
+    }
+
+    CpuRunPhaseDiagnostics(const CpuRunPhaseDiagnostics&) = delete;
+    CpuRunPhaseDiagnostics& operator=(const CpuRunPhaseDiagnostics&) = delete;
+
+    ~CpuRunPhaseDiagnostics() {
+        if (!enabled_) return;
+        const auto elapsed = std::chrono::steady_clock::now() - total_started_;
+        phase_nanoseconds_.back() = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed)
+                .count());
+        performance_counters().record_cpu_run_phases(phase_nanoseconds_);
+    }
+
+    void checkpoint(PerfLatencyKind kind) {
+        if (!enabled_) return;
+        const auto ended = std::chrono::steady_clock::now();
+        const auto index = static_cast<std::size_t>(kind) - first_kind;
+        if (index < phase_nanoseconds_.size() - 1U) {
+            phase_nanoseconds_[index] = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    ended - phase_started_)
+                    .count());
+        }
+        phase_started_ = ended;
+    }
+
+private:
+    bool enabled_{};
+    std::chrono::steady_clock::time_point total_started_;
+    std::chrono::steady_clock::time_point phase_started_;
+    std::array<std::uint64_t, phase_count> phase_nanoseconds_{};
+};
+
 [[nodiscard]] std::uint64_t logical_committed_code_bytes(
     std::uint64_t used_bytes) noexcept {
     // Linux Dynarmic maps the complete slab in one anonymous mapping and does
@@ -1158,23 +1206,32 @@ public:
         bool cooperative_execution,
         std::chrono::nanoseconds host_slice_budget =
             default_host_cooperative_slice_budget) {
-        const std::scoped_lock lock{execution_mutex_};
+        CpuRunPhaseDiagnostics diagnostics;
+        const std::unique_lock lock{execution_mutex_};
+        diagnostics.checkpoint(PerfLatencyKind::CpuRunLockWait);
         memory_.synchronize_shared_write_tracking();
+        diagnostics.checkpoint(PerfLatencyKind::CpuRunSharedWriteSync);
         ensure_jit();
+        diagnostics.checkpoint(PerfLatencyKind::CpuRunEnsureJit);
         service_pending_shared_invalidation();
         observe_shared_invalidation_epoch();
+        diagnostics.checkpoint(PerfLatencyKind::CpuRunInvalidation);
         load_state(cpu);
+        diagnostics.checkpoint(PerfLatencyKind::CpuRunLoadState);
         const auto effective_host_slice_budget = std::max(
             host_slice_budget, std::chrono::nanoseconds::zero());
         callbacks_->begin(
             single_step ? 1 : ticks,
             cooperative_execution && !single_step,
             effective_host_slice_budget);
+        diagnostics.checkpoint(PerfLatencyKind::CpuRunCallbacksBegin);
         try {
             if (!single_step) {
                 preload_current_artifact();
             }
+            diagnostics.checkpoint(PerfLatencyKind::CpuRunArtifactPreload);
             const auto reason = single_step ? jit_->Step() : jit_->Run();
+            diagnostics.checkpoint(PerfLatencyKind::CpuRunExecute);
             record_dispatch_counters();
             auto result = callbacks_->result(reason);
             performance_counters().record_jit_host_yield(
@@ -1184,9 +1241,12 @@ public:
                     static_cast<std::uint64_t>(
                         effective_host_slice_budget.count()));
             }
+            diagnostics.checkpoint(PerfLatencyKind::CpuRunResult);
             save_state(cpu);
+            diagnostics.checkpoint(PerfLatencyKind::CpuRunSaveState);
             record_code_cache_usage();
             performance_counters().record_cpu_execution(result.ticks_consumed);
+            diagnostics.checkpoint(PerfLatencyKind::CpuRunCacheAccounting);
             return result;
         } catch (...) {
             record_dispatch_counters();

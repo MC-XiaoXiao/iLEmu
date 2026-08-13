@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
@@ -94,6 +95,8 @@ struct XnuScheduledSlice {
     XnuThreadId thread;
     std::size_t processor{};
     std::uint64_t tick_budget{};
+    std::chrono::steady_clock::time_point runnable_since;
+    bool front_continuation{};
 };
 
 struct XnuThreadSchedulingInfo {
@@ -132,6 +135,8 @@ public:
         std::uint64_t scheduler_tick_ticks =
             xnu792::scheduler::scheduler_tick_interval,
         std::size_t processor_count = 1);
+
+    void set_dispatch_diagnostics(bool enabled);
 
     bool register_thread(
         XnuThreadId thread,
@@ -223,6 +228,7 @@ private:
         bool queued{};
         std::int32_t queued_priority{};
         std::uint64_t enqueue_sequence{};
+        std::chrono::steady_clock::time_point enqueued_at;
         // A partially used quantum stays at the queue head. Preserve that
         // continuation priority when local and global queues are compared.
         bool front_continuation{};
@@ -293,6 +299,7 @@ private:
     std::uint64_t elapsed_ticks_{};
     std::uint64_t scheduler_tick_{};
     std::uint64_t next_enqueue_sequence_{};
+    bool dispatch_diagnostics_enabled_{};
 };
 
 }  // namespace ilemu

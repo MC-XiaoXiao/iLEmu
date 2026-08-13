@@ -1203,7 +1203,8 @@ std::string usage() {
          "[--activation activated|unactivated|preserve] "
          "[--frame-output FILE] [--touch-replay FILE] [--control-stdin] "
          "[--baseband-input FILE] [--baseband-output FILE] "
-         "[--perf-summary] [--perf-frame-content] [--output FILE]\n"
+         "[--perf-summary] [--perf-frame-content] [--perf-cpu-phases] "
+         "[--output FILE]\n"
          "  ilemu smoke [--cores N] [--jit-cache-mib 8..128] "
          "[--perf-summary] [--output FILE]\n"
          "  ilemu benchmark arm [--iterations N] "
@@ -3695,6 +3696,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
             if (!performance_counters().begin_display_window()) {
               output.line("[control] error: perf window could not begin");
             } else {
+              if (performance_counters().cpu_source_diagnostics_configured()) {
+                scheduler.set_dispatch_diagnostics(true);
+              }
               display_performance_window = command.message;
               if (realtime_pacer) {
                 display_clock_window = DisplayClockWindow{
@@ -3715,6 +3719,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 initial_runtime->kernel->current_absolute_time();
             const auto pacer_ended_at =
                 realtime_pacer ? realtime_pacer->allowed_virtual_time() : 0U;
+            if (performance_counters().cpu_source_diagnostics_configured()) {
+              scheduler.set_dispatch_diagnostics(false);
+            }
             if (sdl_display)
               sdl_display->flush_presentation();
             const auto snapshot =
@@ -3968,6 +3975,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
       const auto scheduled =
           scheduler.choose_next(processor, preferred_thread);
       if (scheduled) {
+        if (performance_counters().cpu_source_diagnostics_enabled() &&
+            scheduled->runnable_since !=
+                std::chrono::steady_clock::time_point{}) {
+          const auto elapsed =
+              std::chrono::steady_clock::now() - scheduled->runnable_since;
+          const auto nanoseconds = static_cast<std::uint64_t>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed)
+                  .count());
+          performance_counters().record_diagnostic_scheduler_dispatch(
+              scheduled->thread.process,
+              scheduled->front_continuation, nanoseconds);
+        }
         scheduled_batch.push_back(*scheduled);
         if (bounded_execution) {
           reservable_ticks -=
@@ -5187,12 +5206,18 @@ int main(int argc, char **argv) {
     const auto perf_summary = flag(args, "--perf-summary");
     performance_counters().reset(perf_summary);
     const auto perf_frame_content = flag(args, "--perf-frame-content");
+    const auto perf_cpu_phases = flag(args, "--perf-cpu-phases");
     if (perf_frame_content && !perf_summary) {
       throw std::runtime_error{
           "--perf-frame-content requires --perf-summary"};
     }
     performance_counters().set_frame_content_diagnostics(
         perf_frame_content);
+    if (perf_cpu_phases && !perf_summary) {
+      throw std::runtime_error{
+          "--perf-cpu-phases requires --perf-summary"};
+    }
+    performance_counters().set_cpu_source_diagnostics(perf_cpu_phases);
     const std::string_view command{argv[1]};
     try {
       if (command == "profile") {

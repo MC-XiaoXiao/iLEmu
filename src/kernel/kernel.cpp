@@ -44,6 +44,8 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
@@ -83,6 +85,64 @@ constexpr std::uint32_t root_disk_device =
 // touching the cache; keep the check in 64-bit arithmetic so host-side
 // address overflow cannot turn an invalid range into a valid wrapped one.
 constexpr std::uint64_t arm_user_vm_max_address = 0x80000000ULL;
+
+std::pair<PerfDiagnosticSourceKind, std::uint32_t>
+svc_diagnostic_source(const Cpu &cpu, std::uint32_t immediate) {
+  if (immediate != 0x80U) {
+    return {PerfDiagnosticSourceKind::SvcHle, immediate};
+  }
+  const auto raw_number = cpu.registers()[12];
+  if (raw_number == darwin::arm_fast_trap::syscall_number) {
+    return {PerfDiagnosticSourceKind::SvcFast, cpu.registers()[3]};
+  }
+  const auto signed_number = std::bit_cast<std::int32_t>(raw_number);
+  if (signed_number < 0) {
+    return {PerfDiagnosticSourceKind::SvcMach,
+            static_cast<std::uint32_t>(
+                -static_cast<std::int64_t>(signed_number))};
+  }
+  // Darwin syscall 0 is the indirect form: r0 contains the real syscall
+  // number and dispatch_bsd_process shifts the remaining arguments before
+  // redispatching it. Attribute the complete outer dispatch to that real
+  // operation instead of collapsing unrelated cold-start work into bsd-0.
+  const auto number = raw_number == 0U ? cpu.registers()[0] : raw_number;
+  return {PerfDiagnosticSourceKind::SvcBsd, number};
+}
+
+class SvcDispatchDiagnostics {
+public:
+  SvcDispatchDiagnostics(std::uint32_t process_id, const Cpu &cpu,
+                         std::uint32_t immediate)
+      : enabled_{performance_counters().cpu_source_diagnostics_enabled()},
+        process_id_{process_id} {
+    if (!enabled_)
+      return;
+    const auto [kind, number] = svc_diagnostic_source(cpu, immediate);
+    kind_ = kind;
+    number_ = number;
+    started_ = std::chrono::steady_clock::now();
+  }
+
+  SvcDispatchDiagnostics(const SvcDispatchDiagnostics &) = delete;
+  SvcDispatchDiagnostics &operator=(const SvcDispatchDiagnostics &) = delete;
+
+  ~SvcDispatchDiagnostics() {
+    if (!enabled_)
+      return;
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - started_);
+    const auto nanoseconds = static_cast<std::uint64_t>(elapsed.count());
+    performance_counters().record_diagnostic_svc_dispatch(
+        kind_, process_id_, number_, nanoseconds);
+  }
+
+private:
+  bool enabled_{};
+  PerfDiagnosticSourceKind kind_{};
+  std::uint32_t process_id_{};
+  std::uint32_t number_{};
+  std::chrono::steady_clock::time_point started_;
+};
 
 OpenGlesGuestProfileKind open_gles_profile_for_device(
     GraphicsAcceleratorProfileKind accelerator) {
@@ -699,6 +759,21 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
     Cpu &cpu, const std::filesystem::path &image_path,
     std::uint32_t mapping_address, std::uint32_t mapping_size,
     std::uint64_t file_offset, bool shared_cache_mapping) {
+  const auto diagnostics_enabled =
+      performance_counters().cpu_source_diagnostics_enabled();
+  auto phase_started = diagnostics_enabled
+                           ? std::chrono::steady_clock::now()
+                           : std::chrono::steady_clock::time_point{};
+  const auto checkpoint = [&](std::uint32_t phase) {
+    if (!diagnostics_enabled) return;
+    const auto now = std::chrono::steady_clock::now();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        now - phase_started);
+    performance_counters().record_diagnostic_svc_dispatch(
+        PerfDiagnosticSourceKind::MappedImagePhase, process_.pid, phase,
+        static_cast<std::uint64_t>(elapsed.count()));
+    phase_started = std::chrono::steady_clock::now();
+  };
   // A dyld shared-cache mapping is backed by a container/subcache rather than
   // by a standalone Mach-O file. Its image header and linkedit data are
   // distributed across cache mappings, so MachOImage::parse(path) cannot be
@@ -711,17 +786,22 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
                                    mapping_address, mapping_size, file_offset,
                                    arm_architecture_for_model(
                                        device_profile_.cpu_model));
+  checkpoint(1U);
   if (!shared_cache_mapping && mapped_executable_handler_) {
     mapped_executable_handler_(image_path, mapping_address, mapping_size,
                                file_offset);
   }
+  checkpoint(2U);
   constexpr std::string_view uikit_image{"/UIKit.framework/UIKit"};
   constexpr std::string_view graphics_services_image{
       "/GraphicsServices.framework/GraphicsServices"};
   constexpr std::string_view quartz_core_image{
       "/QuartzCore.framework/QuartzCore"};
   const auto path = image_path.generic_string();
-  if (shared_cache_mapping) return installed;
+  if (shared_cache_mapping) {
+    checkpoint(3U);
+    return installed;
+  }
   if (path.ends_with(uikit_image)) {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
     if (const auto process = shared_state_->processes.find(process_.pid);
@@ -764,6 +844,7 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
       }
     }
   }
+  checkpoint(3U);
   return installed;
 }
 
@@ -1841,6 +1922,7 @@ void CompatibilityKernel::inherit_process_state(
 }
 
 void CompatibilityKernel::dispatch(Cpu &cpu, std::uint32_t svc_immediate) {
+  const SvcDispatchDiagnostics diagnostics{process_.pid, cpu, svc_immediate};
   std::lock_guard lock{mutex_};
   if (apple80211_hle_.deliver_pending_event(
           cpu, process_.pid, svc_immediate)) {

@@ -268,6 +268,83 @@ double frames_per_second(std::uint64_t frames, std::uint64_t first,
            static_cast<double>(last - first);
 }
 
+std::string diagnostic_source_name(const DiagnosticSourceSnapshot& source) {
+    std::string name;
+    switch (source.kind) {
+    case PerfDiagnosticSourceKind::SchedulerBack:
+        name = "scheduler-pid-" + std::to_string(source.process_id) +
+               "-back";
+        break;
+    case PerfDiagnosticSourceKind::SchedulerFront:
+        name = "scheduler-pid-" + std::to_string(source.process_id) +
+               "-front";
+        break;
+    case PerfDiagnosticSourceKind::SvcBsd:
+        name = "svc-pid-" + std::to_string(source.process_id) + "-bsd-" +
+               std::to_string(source.number);
+        break;
+    case PerfDiagnosticSourceKind::SvcMach:
+        name = "svc-pid-" + std::to_string(source.process_id) + "-mach-" +
+               std::to_string(source.number);
+        break;
+    case PerfDiagnosticSourceKind::SvcFast:
+        name = "svc-pid-" + std::to_string(source.process_id) + "-fast-" +
+               std::to_string(source.number);
+        break;
+    case PerfDiagnosticSourceKind::SvcHle:
+        name = "svc-pid-" + std::to_string(source.process_id) + "-hle-" +
+               std::to_string(source.number);
+        break;
+    case PerfDiagnosticSourceKind::SharedRegionPhase: {
+        constexpr std::array<std::string_view, 9> phase_names{
+            "unknown", "preflight", "cache-probe", "cache-parse",
+            "read-mappings", "choose-slide", "resolve-source", "map",
+            "install-image"};
+        const auto phase = source.number < phase_names.size()
+                               ? phase_names[source.number]
+                               : phase_names.front();
+        name = "shared-region-pid-" + std::to_string(source.process_id) +
+               "-" + std::string{phase};
+        break;
+    }
+    case PerfDiagnosticSourceKind::MappedImagePhase: {
+        constexpr std::array<std::string_view, 4> phase_names{
+            "unknown", "hle-install", "catalog-hints", "profile-detect"};
+        const auto phase = source.number < phase_names.size()
+                               ? phase_names[source.number]
+                               : phase_names.front();
+        name = "mapped-image-pid-" + std::to_string(source.process_id) +
+               "-" + std::string{phase};
+        break;
+    }
+    }
+    return name;
+}
+
+std::uint64_t diagnostic_source_key(PerfDiagnosticSourceKind kind,
+                                    std::uint32_t process_id,
+                                    std::uint32_t number) {
+    constexpr std::uint32_t maximum_process_id = 0x0fffffffU;
+    if (process_id > maximum_process_id)
+        return 0;
+    return (static_cast<std::uint64_t>(kind) + 1U) << 60U |
+           static_cast<std::uint64_t>(process_id) << 32U | number;
+}
+
+DiagnosticSourceSnapshot diagnostic_source_snapshot(
+    std::uint64_t key, std::uint64_t calls, std::uint64_t nanoseconds) {
+    return DiagnosticSourceSnapshot{
+        static_cast<PerfDiagnosticSourceKind>((key >> 60U) - 1U),
+        static_cast<std::uint32_t>((key >> 32U) & 0x0fffffffU),
+        static_cast<std::uint32_t>(key), calls, nanoseconds};
+}
+
+std::tuple<PerfDiagnosticSourceKind, std::uint32_t, std::uint32_t>
+diagnostic_source_tuple(
+    const DiagnosticSourceSnapshot& source) {
+    return {source.kind, source.process_id, source.number};
+}
+
 bool is_display_window_latency(PerfLatencyKind kind) {
     switch (kind) {
     case PerfLatencyKind::DisplayMailbox:
@@ -280,6 +357,19 @@ bool is_display_window_latency(PerfLatencyKind kind) {
     case PerfLatencyKind::VsyncCallbackToSwapEnd:
     case PerfLatencyKind::VsyncSwapEndToGuestSubmit:
     case PerfLatencyKind::VsyncDueToGuestSubmit:
+    case PerfLatencyKind::CpuRunLockWait:
+    case PerfLatencyKind::CpuRunSharedWriteSync:
+    case PerfLatencyKind::CpuRunEnsureJit:
+    case PerfLatencyKind::CpuRunInvalidation:
+    case PerfLatencyKind::CpuRunLoadState:
+    case PerfLatencyKind::CpuRunCallbacksBegin:
+    case PerfLatencyKind::CpuRunArtifactPreload:
+    case PerfLatencyKind::CpuRunExecute:
+    case PerfLatencyKind::CpuRunResult:
+    case PerfLatencyKind::CpuRunSaveState:
+    case PerfLatencyKind::CpuRunCacheAccounting:
+    case PerfLatencyKind::CpuRunTotal:
+    case PerfLatencyKind::SchedulerRunnableToDispatch:
         return true;
     case PerfLatencyKind::InputEnqueue:
     case PerfLatencyKind::DisplayPresent:
@@ -314,6 +404,8 @@ void PerformanceCounters::reset(bool enabled) {
     enabled_.store(false, std::memory_order_relaxed);
     display_window_active_.store(false, std::memory_order_release);
     frame_content_diagnostics_enabled_.store(false,
+                                              std::memory_order_release);
+    cpu_source_diagnostics_configured_.store(false,
                                               std::memory_order_release);
     jit_instances_.store(0, std::memory_order_relaxed);
     jit_live_instances_.store(0, std::memory_order_relaxed);
@@ -425,6 +517,12 @@ void PerformanceCounters::reset(bool enabled) {
         std::lock_guard lock{hle_mutex_};
         hle_subsystems_.clear();
     }
+    for (auto& source : diagnostic_source_counters_) {
+        source.key.store(0, std::memory_order_relaxed);
+        source.calls.store(0, std::memory_order_relaxed);
+        source.nanoseconds.store(0, std::memory_order_relaxed);
+    }
+    display_window_diagnostic_source_baseline_.clear();
     diagnostic_hle_calls_.store(0, std::memory_order_relaxed);
     diagnostic_hle_nanoseconds_.store(0, std::memory_order_relaxed);
     for (auto& counter : diagnostic_graphics_hle_calls_)
@@ -535,6 +633,17 @@ bool PerformanceCounters::begin_display_window() {
     {
         std::lock_guard hle_lock{hle_mutex_};
         diagnostic_hle_baseline = hle_subsystems_;
+    }
+    display_window_diagnostic_source_baseline_.clear();
+    for (const auto& source : diagnostic_source_counters_) {
+        const auto key = source.key.load(std::memory_order_relaxed);
+        if (key == 0)
+            continue;
+        const auto snapshot = diagnostic_source_snapshot(
+            key, source.calls.load(std::memory_order_relaxed),
+            source.nanoseconds.load(std::memory_order_relaxed));
+        display_window_diagnostic_source_baseline_.emplace(
+            diagnostic_source_tuple(snapshot), snapshot);
     }
     display_window_active_.store(true, std::memory_order_release);
     return true;
@@ -652,6 +761,34 @@ PerformanceCounters::end_display_window() {
                 result.hle_subsystems.push_back(
                     HlePerformanceSnapshot{name, calls, nanoseconds});
             }
+        }
+    }
+    for (const auto& source : diagnostic_source_counters_) {
+        const auto encoded_key = source.key.load(std::memory_order_relaxed);
+        if (encoded_key == 0)
+            continue;
+        const auto current = diagnostic_source_snapshot(
+            encoded_key, source.calls.load(std::memory_order_relaxed),
+            source.nanoseconds.load(std::memory_order_relaxed));
+        const auto key = diagnostic_source_tuple(current);
+        const auto baseline =
+            display_window_diagnostic_source_baseline_.find(key);
+        const auto baseline_calls =
+            baseline == display_window_diagnostic_source_baseline_.end()
+                ? 0
+                : baseline->second.calls;
+        const auto baseline_nanoseconds =
+            baseline == display_window_diagnostic_source_baseline_.end()
+                ? 0
+                : baseline->second.nanoseconds;
+        const auto calls = diagnostic_delta(current.calls, baseline_calls);
+        const auto nanoseconds = diagnostic_delta(
+            current.nanoseconds, baseline_nanoseconds);
+        if (calls != 0 || nanoseconds != 0) {
+            auto snapshot = current;
+            snapshot.calls = calls;
+            snapshot.nanoseconds = nanoseconds;
+            result.diagnostic_sources.push_back(snapshot);
         }
     }
     return result;
@@ -1587,6 +1724,97 @@ void PerformanceCounters::record_hle(std::string_view subsystem,
     stats.nanoseconds += nanoseconds;
 }
 
+void PerformanceCounters::record_cpu_run_phases(
+    std::span<const std::uint64_t> phase_nanoseconds) {
+    constexpr auto first_kind =
+        static_cast<std::size_t>(PerfLatencyKind::CpuRunLockWait);
+    constexpr auto last_kind =
+        static_cast<std::size_t>(PerfLatencyKind::CpuRunTotal);
+    constexpr auto expected_count = last_kind - first_kind + 1U;
+    if (!cpu_source_diagnostics_enabled() ||
+        phase_nanoseconds.size() != expected_count) {
+        return;
+    }
+    for (std::size_t index = 0; index < phase_nanoseconds.size(); ++index) {
+        record_global_latency(
+            static_cast<PerfLatencyKind>(first_kind + index),
+            phase_nanoseconds[index]);
+    }
+    std::lock_guard lock{display_window_mutex_};
+    if (!display_window_active_.load(std::memory_order_relaxed))
+        return;
+    for (std::size_t index = 0; index < phase_nanoseconds.size(); ++index) {
+        record_display_window_latency_locked(
+            static_cast<PerfLatencyKind>(first_kind + index),
+            phase_nanoseconds[index]);
+    }
+}
+
+void PerformanceCounters::record_diagnostic_scheduler_dispatch(
+    std::uint32_t process_id, bool front_continuation,
+    std::uint64_t nanoseconds) {
+    if (!cpu_source_diagnostics_enabled())
+        return;
+    record_latency(PerfLatencyKind::SchedulerRunnableToDispatch,
+                   nanoseconds);
+    const auto kind = front_continuation
+        ? PerfDiagnosticSourceKind::SchedulerFront
+        : PerfDiagnosticSourceKind::SchedulerBack;
+    const auto key = diagnostic_source_key(kind, process_id, 0U);
+    if (key == 0)
+        return;
+    auto index = static_cast<std::size_t>(
+        (key ^ (key >> 32U)) * 0x9e3779b97f4a7c15ULL) &
+        (diagnostic_source_capacity - 1U);
+    for (std::size_t probe = 0; probe < diagnostic_source_capacity;
+         ++probe) {
+        auto& source = diagnostic_source_counters_[index];
+        auto observed = source.key.load(std::memory_order_relaxed);
+        if (observed == 0) {
+            static_cast<void>(source.key.compare_exchange_strong(
+                observed, key, std::memory_order_relaxed,
+                std::memory_order_relaxed));
+        }
+        if (observed == 0 || observed == key) {
+            source.calls.fetch_add(1, std::memory_order_relaxed);
+            source.nanoseconds.fetch_add(nanoseconds,
+                                         std::memory_order_relaxed);
+            return;
+        }
+        index = (index + 1U) & (diagnostic_source_capacity - 1U);
+    }
+}
+
+void PerformanceCounters::record_diagnostic_svc_dispatch(
+    PerfDiagnosticSourceKind kind, std::uint32_t process_id,
+    std::uint32_t number, std::uint64_t nanoseconds) {
+    if (!cpu_source_diagnostics_enabled())
+        return;
+    const auto key = diagnostic_source_key(kind, process_id, number);
+    if (key == 0)
+        return;
+    auto index = static_cast<std::size_t>(
+        (key ^ (key >> 32U)) * 0x9e3779b97f4a7c15ULL) &
+        (diagnostic_source_capacity - 1U);
+    for (std::size_t probe = 0; probe < diagnostic_source_capacity;
+         ++probe) {
+        auto& source = diagnostic_source_counters_[index];
+        auto observed = source.key.load(std::memory_order_relaxed);
+        if (observed == 0) {
+            static_cast<void>(source.key.compare_exchange_strong(
+                observed, key, std::memory_order_relaxed,
+                std::memory_order_relaxed));
+        }
+        if (observed == 0 || observed == key) {
+            source.calls.fetch_add(1, std::memory_order_relaxed);
+            source.nanoseconds.fetch_add(nanoseconds,
+                                         std::memory_order_relaxed);
+            return;
+        }
+        index = (index + 1U) & (diagnostic_source_capacity - 1U);
+    }
+}
+
 void PerformanceCounters::record_diagnostic_graphics_hle(
     PerfDiagnosticGraphicsHleKind kind, std::uint64_t nanoseconds) {
     const auto index = static_cast<std::size_t>(kind);
@@ -1887,6 +2115,14 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
             result.hle_subsystems.push_back(stats);
         }
     }
+    for (const auto& source : diagnostic_source_counters_) {
+        const auto key = source.key.load(std::memory_order_relaxed);
+        if (key == 0)
+            continue;
+        result.diagnostic_sources.push_back(diagnostic_source_snapshot(
+            key, source.calls.load(std::memory_order_relaxed),
+            source.nanoseconds.load(std::memory_order_relaxed)));
+    }
     return result;
 }
 
@@ -1995,6 +2231,25 @@ std::string_view perf_latency_kind_name(PerfLatencyKind kind) {
     case PerfLatencyKind::SpawnMemoryClear: return "spawn-memory-clear";
     case PerfLatencyKind::SpawnImageLoad: return "spawn-image-load";
     case PerfLatencyKind::SpawnResetRuntime: return "spawn-reset-runtime";
+    case PerfLatencyKind::CpuRunLockWait: return "cpu-run-lock-wait";
+    case PerfLatencyKind::CpuRunSharedWriteSync:
+        return "cpu-run-shared-write-sync";
+    case PerfLatencyKind::CpuRunEnsureJit: return "cpu-run-ensure-jit";
+    case PerfLatencyKind::CpuRunInvalidation:
+        return "cpu-run-invalidation";
+    case PerfLatencyKind::CpuRunLoadState: return "cpu-run-load-state";
+    case PerfLatencyKind::CpuRunCallbacksBegin:
+        return "cpu-run-callbacks-begin";
+    case PerfLatencyKind::CpuRunArtifactPreload:
+        return "cpu-run-artifact-preload";
+    case PerfLatencyKind::CpuRunExecute: return "cpu-run-execute";
+    case PerfLatencyKind::CpuRunResult: return "cpu-run-result";
+    case PerfLatencyKind::CpuRunSaveState: return "cpu-run-save-state";
+    case PerfLatencyKind::CpuRunCacheAccounting:
+        return "cpu-run-cache-accounting";
+    case PerfLatencyKind::CpuRunTotal: return "cpu-run-total";
+    case PerfLatencyKind::SchedulerRunnableToDispatch:
+        return "scheduler-runnable-dispatch";
     case PerfLatencyKind::Count: break;
     }
     return "unknown";
@@ -2176,6 +2431,17 @@ std::string format_performance_summary(
     }
     if (first)
         text << "none";
+    text << " diagnostic-source=";
+    first = true;
+    for (const auto& stats : snapshot.diagnostic_sources) {
+        if (!first)
+            text << ',';
+        first = false;
+        text << diagnostic_source_name(stats) << ':' << stats.calls << '/'
+             << stats.nanoseconds;
+    }
+    if (first)
+        text << "none";
     return text.str();
 }
 
@@ -2225,6 +2491,36 @@ std::string format_display_performance_summary(
         if (!first)
             text << ',';
         first = false;
+        const auto& latency =
+            snapshot.latencies[static_cast<std::size_t>(kind)];
+        text << perf_latency_kind_name(kind) << ':' << latency.samples << '/'
+             << latency.p50_nanoseconds << '/' << latency.p95_nanoseconds
+             << '/' << latency.p99_nanoseconds << '/'
+             << latency.maximum_nanoseconds << '/'
+             << latency.over_16_7ms << '/' << latency.over_20ms << '/'
+             << latency.over_33_3ms << '/' << latency.over_50ms;
+    }
+    constexpr std::array cpu_source_latencies{
+        PerfLatencyKind::CpuRunLockWait,
+        PerfLatencyKind::CpuRunSharedWriteSync,
+        PerfLatencyKind::CpuRunEnsureJit,
+        PerfLatencyKind::CpuRunInvalidation,
+        PerfLatencyKind::CpuRunLoadState,
+        PerfLatencyKind::CpuRunCallbacksBegin,
+        PerfLatencyKind::CpuRunArtifactPreload,
+        PerfLatencyKind::CpuRunExecute,
+        PerfLatencyKind::CpuRunResult,
+        PerfLatencyKind::CpuRunSaveState,
+        PerfLatencyKind::CpuRunCacheAccounting,
+        PerfLatencyKind::CpuRunTotal,
+        PerfLatencyKind::SchedulerRunnableToDispatch,
+    };
+    text << " diagnostic-cpu-latency-ns=";
+    for (std::size_t index = 0; index < cpu_source_latencies.size();
+         ++index) {
+        if (index != 0)
+            text << ',';
+        const auto kind = cpu_source_latencies[index];
         const auto& latency =
             snapshot.latencies[static_cast<std::size_t>(kind)];
         text << perf_latency_kind_name(kind) << ':' << latency.samples << '/'
@@ -2414,6 +2710,17 @@ std::string format_display_performance_summary(
              << hle.nanoseconds;
     }
     if (snapshot.hle_subsystems.empty())
+        text << "none";
+    text << " diagnostic-source=";
+    for (std::size_t index = 0;
+         index < snapshot.diagnostic_sources.size(); ++index) {
+        if (index != 0)
+            text << ',';
+        const auto& stats = snapshot.diagnostic_sources[index];
+        text << diagnostic_source_name(stats) << ':' << stats.calls << '/'
+             << stats.nanoseconds;
+    }
+    if (snapshot.diagnostic_sources.empty())
         text << "none";
     return text.str();
 }

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -69,6 +70,51 @@ struct MappingSource {
 enum class MappingLayout {
   Arm32Words,
   MachVm64,
+};
+
+enum class SharedRegionDiagnosticPhase : std::uint32_t {
+  Preflight = 1,
+  CacheProbe,
+  CacheParse,
+  ReadMappings,
+  ChooseSlide,
+  ResolveSource,
+  Map,
+  InstallImage,
+};
+
+class SharedRegionDiagnostics {
+public:
+  explicit SharedRegionDiagnostics(std::uint32_t process_id)
+      : enabled_{performance_counters().cpu_source_diagnostics_enabled()},
+        process_id_{process_id} {
+    if (enabled_) phase_started_ = std::chrono::steady_clock::now();
+  }
+
+  void checkpoint(SharedRegionDiagnosticPhase phase) {
+    if (!enabled_) return;
+    const auto now = std::chrono::steady_clock::now();
+    record(phase, now - phase_started_);
+    phase_started_ = now;
+  }
+
+  template <typename Duration>
+  void record(SharedRegionDiagnosticPhase phase, Duration elapsed) {
+    if (!enabled_) return;
+    const auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        elapsed);
+    performance_counters().record_diagnostic_svc_dispatch(
+        PerfDiagnosticSourceKind::SharedRegionPhase, process_id_,
+        static_cast<std::uint32_t>(phase),
+        static_cast<std::uint64_t>(nanoseconds.count()));
+  }
+
+  [[nodiscard]] bool enabled() const { return enabled_; }
+
+private:
+  bool enabled_{};
+  std::uint32_t process_id_{};
+  std::chrono::steady_clock::time_point phase_started_;
 };
 
 [[nodiscard]] bool add_overflows(std::uint32_t left, std::uint32_t right) {
@@ -406,6 +452,8 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
   }
   if (number != 299 && number != 295) return false;
 
+  SharedRegionDiagnostics diagnostics{process_.pid};
+
   auto descriptor_number = registers[0];
   if (const auto duplicate = duplicated_descriptors_.find(descriptor_number);
       duplicate != duplicated_descriptors_.end()) {
@@ -439,11 +487,13 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
     bsd_error(cpu, bsd_support::invalid_argument);
     return true;
   }
+  diagnostics.checkpoint(SharedRegionDiagnosticPhase::Preflight);
 
+  const auto is_shared_cache = looks_like_dyld_shared_cache(descriptor->second);
+  diagnostics.checkpoint(SharedRegionDiagnosticPhase::CacheProbe);
   const auto *shared_cache =
-      looks_like_dyld_shared_cache(descriptor->second)
-          ? dyld_shared_cache_for(descriptor->second)
-          : nullptr;
+      is_shared_cache ? dyld_shared_cache_for(descriptor->second) : nullptr;
+  diagnostics.checkpoint(SharedRegionDiagnosticPhase::CacheParse);
   // A split cache can place an executable mapping in a subcache. The parser
   // validates each file independently; use an intentionally permissive bound
   // here and perform the source-file bounds check after correlating the range.
@@ -463,12 +513,14 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
     bsd_error(cpu, bsd_support::invalid_argument);
     return true;
   }
+  diagnostics.checkpoint(SharedRegionDiagnosticPhase::ReadMappings);
 
   const auto slide = choose_slide(memory_, *mappings, slide_address != 0);
   if (!slide) {
     bsd_error(cpu, 12); // ENOMEM / KERN_NO_SPACE
     return true;
   }
+  diagnostics.checkpoint(SharedRegionDiagnosticPhase::ChooseSlide);
 
   const auto mapping_source = [&](const Mapping &mapping)
       -> std::optional<MappingSource> {
@@ -502,19 +554,32 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
 
   std::vector<AppliedMapping> applied;
   applied.reserve(mappings->size());
+  std::chrono::nanoseconds source_resolution_time{};
+  std::chrono::nanoseconds map_time{};
+  std::chrono::nanoseconds install_time{};
   for (const auto &mapping : *mappings) {
     const auto address = mapping.address + *slide;
     const auto zero_fill =
         (mapping.initial_protection & vm_protection_zero_fill) != 0;
     const auto mapping_permissions =
         permissions(mapping.initial_protection);
+    const auto source_started = diagnostics.enabled()
+                                    ? std::chrono::steady_clock::now()
+                                    : std::chrono::steady_clock::time_point{};
     const auto source = zero_fill ? std::optional<MappingSource>{}
                                   : mapping_source(mapping);
+    if (diagnostics.enabled()) {
+      source_resolution_time += std::chrono::steady_clock::now() -
+                                source_started;
+    }
     if (!zero_fill && !source) {
       rollback(memory_, applied);
       bsd_error(cpu, bsd_support::invalid_argument);
       return true;
     }
+    const auto map_started = diagnostics.enabled()
+                                 ? std::chrono::steady_clock::now()
+                                 : std::chrono::steady_clock::time_point{};
     const auto mapped = zero_fill
                             ? memory_.map(
                                   address, mapping.size, mapping_permissions)
@@ -522,6 +587,8 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
                                   address, mapping.size,
                                   mapping_permissions,
                                   source->path, source->file_offset);
+    if (diagnostics.enabled())
+      map_time += std::chrono::steady_clock::now() - map_started;
     if (!mapped) {
       rollback(memory_, applied);
       bsd_error(cpu, zero_fill ? 12 : bsd_support::invalid_argument);
@@ -541,12 +608,29 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
   }
   for (const auto &mapping : *mappings) {
     if ((mapping.initial_protection & vm_protection_zero_fill) != 0) continue;
+    const auto source_started = diagnostics.enabled()
+                                    ? std::chrono::steady_clock::now()
+                                    : std::chrono::steady_clock::time_point{};
     const auto source = mapping_source(mapping);
+    if (diagnostics.enabled()) {
+      source_resolution_time += std::chrono::steady_clock::now() -
+                                source_started;
+    }
     if (!source) continue;
+    const auto install_started = diagnostics.enabled()
+                                     ? std::chrono::steady_clock::now()
+                                     : std::chrono::steady_clock::time_point{};
     static_cast<void>(install_mapped_user_image(
         cpu, source->path, mapping.address + *slide, mapping.size,
         source->file_offset, shared_cache != nullptr));
+    if (diagnostics.enabled())
+      install_time += std::chrono::steady_clock::now() - install_started;
   }
+  diagnostics.record(SharedRegionDiagnosticPhase::ResolveSource,
+                     source_resolution_time);
+  diagnostics.record(SharedRegionDiagnosticPhase::Map, map_time);
+  diagnostics.record(SharedRegionDiagnosticPhase::InstallImage,
+                     install_time);
   output_.write("[shared-region] map pid=" + std::to_string(process_.pid) +
                 " file=" + descriptor->second.string() +
                 " entries=" + std::to_string(mapping_count) +
