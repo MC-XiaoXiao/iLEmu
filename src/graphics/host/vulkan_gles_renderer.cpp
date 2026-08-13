@@ -1418,21 +1418,6 @@ bool VulkanGlesRenderer::create_presentation_swapchain() {
             formats.data()) != VK_SUCCESS) {
         return false;
     }
-    VkPresentModeKHR present_mode = VK_PRESENT_MODE_FIFO_KHR;
-    std::uint32_t present_mode_count{};
-    if (vkGetPhysicalDeviceSurfacePresentModesKHR(
-            physical_device_, presentation_surface_, &present_mode_count,
-            nullptr) == VK_SUCCESS &&
-        present_mode_count != 0) {
-        std::vector<VkPresentModeKHR> present_modes(present_mode_count);
-        if (vkGetPhysicalDeviceSurfacePresentModesKHR(
-                physical_device_, presentation_surface_, &present_mode_count,
-                present_modes.data()) == VK_SUCCESS &&
-            std::find(present_modes.begin(), present_modes.end(),
-                      VK_PRESENT_MODE_MAILBOX_KHR) != present_modes.end()) {
-            present_mode = VK_PRESENT_MODE_MAILBOX_KHR;
-        }
-    }
     auto selected = formats.front();
     if (const auto preferred = std::find_if(
             formats.begin(), formats.end(), [](const auto& format) {
@@ -1488,7 +1473,10 @@ bool VulkanGlesRenderer::create_presentation_swapchain() {
     info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
     info.preTransform = capabilities.currentTransform;
     info.compositeAlpha = composite_alpha;
-    info.presentMode = present_mode;
+    // FIFO preserves every queued image until its display turn. MAILBOX may
+    // replace an older queued image with a newer one, which violates the
+    // emulator's no-dropped-animation-frame presentation contract.
+    info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     info.clipped = VK_TRUE;
     info.oldSwapchain = presentation_swapchain_;
     VkSwapchainKHR swapchain{};
@@ -1535,10 +1523,7 @@ bool VulkanGlesRenderer::create_presentation_swapchain() {
     presentation_layouts_.assign(swapchain_image_count,
                                  VK_IMAGE_LAYOUT_UNDEFINED);
     if (renderer_name_.find("present-mode=") == std::string::npos) {
-        renderer_name_ +=
-            present_mode == VK_PRESENT_MODE_MAILBOX_KHR
-                ? "; present-mode=mailbox"
-                : "; present-mode=fifo";
+        renderer_name_ += "; present-mode=fifo";
     }
     return true;
 }
