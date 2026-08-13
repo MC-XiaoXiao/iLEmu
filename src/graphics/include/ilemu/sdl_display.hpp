@@ -31,7 +31,8 @@ public:
   void present(const DisplayFrame &frame);
   void flush_presentation();
   // Counts frames accepted by the native swapchain, or completed by the SDL
-  // software presenter. Frames coalesced in either mailbox are not counted.
+  // software presenter. Frames coalesced by the native-present mailbox are
+  // not counted.
   [[nodiscard]] std::uint64_t presented_frames() const;
   // Returns false after the user closes the window.
   [[nodiscard]] bool poll_events();

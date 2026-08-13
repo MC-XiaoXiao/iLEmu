@@ -5,6 +5,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -175,7 +176,10 @@ struct SdlDisplay::Impl {
   std::mutex frame_mutex;
   std::condition_variable presentation_available;
   std::condition_variable presentation_idle;
-  std::optional<DisplayFrame> pending_frame;
+  // Preserve every guest submission until the SDL thread presents it. A
+  // single-slot mailbox silently discarded an older frame whenever two
+  // submissions arrived between event-loop pumps.
+  std::deque<DisplayFrame> pending_frames;
   std::optional<DisplayFrame> pending_native_frame;
   std::optional<DisplayFrame> failed_native_frame;
   // SDL windows can lose their compositor back buffer while hidden or
@@ -581,7 +585,7 @@ void SdlDisplay::set_host_graphics(
     // a shared host-graphics reference alive; retaining it until Impl is
     // destroyed would let Vulkan tear down a Wayland surface after SDL has
     // already destroyed its window.
-    impl_->pending_frame.reset();
+    impl_->pending_frames.clear();
     impl_->pending_native_frame.reset();
     impl_->failed_native_frame.reset();
     impl_->last_presented_frame.reset();
@@ -611,9 +615,7 @@ void SdlDisplay::present(const DisplayFrame &frame) {
     return;
   }
   std::lock_guard lock{impl_->frame_mutex};
-  if (impl_->pending_frame)
-    performance_counters().record_display_mailbox_coalesced();
-  impl_->pending_frame = frame;
+  impl_->pending_frames.push_back(frame);
 #else
   static_cast<void>(frame);
 #endif
@@ -628,7 +630,7 @@ void SdlDisplay::flush_presentation() {
     static_cast<void>(poll_events());
     impl_->flush_native_presenter();
     std::lock_guard lock{impl_->frame_mutex};
-    if (!impl_->pending_frame && !impl_->pending_native_frame &&
+    if (impl_->pending_frames.empty() && !impl_->pending_native_frame &&
         !impl_->failed_native_frame && !impl_->presentation_active) {
       break;
     }
@@ -656,12 +658,9 @@ bool SdlDisplay::poll_events() {
       frame = std::move(impl_->failed_native_frame);
       impl_->failed_native_frame.reset();
       native_failed = true;
-      if (impl_->pending_frame) {
-        frame = std::move(impl_->pending_frame);
-        impl_->pending_frame.reset();
-      }
-    } else {
-      frame.swap(impl_->pending_frame);
+    } else if (!impl_->pending_frames.empty()) {
+      frame = std::move(impl_->pending_frames.front());
+      impl_->pending_frames.pop_front();
     }
     if (!frame && redraw_requested && impl_->last_presented_frame) {
       frame = *impl_->last_presented_frame;
