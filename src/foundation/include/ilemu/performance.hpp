@@ -296,6 +296,9 @@ class PerformanceCounters {
         return frame_content_diagnostics_enabled_.load(
             std::memory_order_acquire);
     }
+    [[nodiscard]] bool display_window_active() const {
+        return display_window_active_.load(std::memory_order_acquire);
+    }
     void set_cpu_source_diagnostics(bool enabled) {
         cpu_source_diagnostics_configured_.store(
             enabled, std::memory_order_release);
@@ -383,8 +386,20 @@ class PerformanceCounters {
         std::span<const std::uint32_t> pixels);
     void record_diagnostic_input(
         std::string_view kind, std::string_view phase, float x, float y,
-        bool queued,
+        bool queued, std::uint64_t input_sequence,
         std::chrono::steady_clock::time_point enqueued_at =
+            std::chrono::steady_clock::now());
+    void record_diagnostic_input_guest(
+        std::uint64_t input_sequence, std::uint32_t process_id,
+        std::uint32_t thread, std::chrono::steady_clock::time_point entered_at =
+            std::chrono::steady_clock::now());
+    void record_diagnostic_input_runnable(
+        std::uint64_t input_sequence, std::uint32_t process_id,
+        std::uint32_t thread, std::chrono::steady_clock::time_point runnable_at =
+            std::chrono::steady_clock::now());
+    void record_diagnostic_input_execute(
+        std::uint32_t process_id, std::uint32_t thread,
+        std::chrono::steady_clock::time_point executed_at =
             std::chrono::steady_clock::now());
     // Temporary frame-hitch timeline probes. Remove these together with the
     // ordered display diagnostics once the exit/unlock stall is localized.

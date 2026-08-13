@@ -1749,7 +1749,8 @@ ServiceResolution record_bootstrap_reply_locked(
 EnqueueResult enqueue_touch(KernelSharedState &state, const TouchInput &input,
                             SceneCoordinator *scenes,
                             PresentationTracker *presentations,
-                            bool *home_recovery_requested) {
+                            bool *home_recovery_requested,
+                            std::uint64_t *input_sequence_output) {
   if (home_recovery_requested)
     *home_recovery_requested = false;
   const TouchInput sanitized{input.phase,
@@ -1762,6 +1763,8 @@ EnqueueResult enqueue_touch(KernelSharedState &state, const TouchInput &input,
   std::unique_lock lock{state.mach_mutex};
   const auto input_sequence =
       allocate_graphics_input_sequence_locked(state);
+  if (input_sequence_output)
+    *input_sequence_output = input_sequence;
 
   const auto terminal = sanitized.phase == TouchPhase::Up ||
                         sanitized.phase == TouchPhase::Cancel;

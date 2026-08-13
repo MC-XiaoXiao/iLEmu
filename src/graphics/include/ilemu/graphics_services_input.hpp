@@ -110,6 +110,8 @@ void record_bootstrap_registration_locked(KernelSharedState &state,
                                           PresentationTracker *presentations =
                                               nullptr,
                                           bool *home_recovery_requested =
+                                              nullptr,
+                                          std::uint64_t *input_sequence =
                                               nullptr);
 
 // A complete Home Down/Up pair wakes a sleeping lock screen before touch.

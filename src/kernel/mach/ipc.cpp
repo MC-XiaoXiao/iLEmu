@@ -16,6 +16,7 @@
 #include "ilemu/mach_scheduler_abi.hpp"
 #include "ilemu/mach_thread_policy_abi.hpp"
 #include "ilemu/mig_wire_abi.hpp"
+#include "ilemu/performance.hpp"
 #include "ilemu/task_mig_ids.hpp"
 #include "ilemu/thread_act_mig_ids.hpp"
 #include "ilemu/vm_map_mig_ids.hpp"
@@ -26,6 +27,7 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <chrono>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -590,6 +592,16 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
   const auto copied =
       memory_.copy_in(pending->second.message_address, received->bytes);
   if (copied) {
+    if (delivered_input_sequence != 0U &&
+        delivered_input_kind !=
+            KernelSharedState::MachMessage::GraphicsInputKind::None) {
+      const auto entered_at = std::chrono::steady_clock::now();
+      last_delivered_graphics_inputs_[cpu.processor_id()] =
+          delivered_input_sequence;
+      performance_counters().record_diagnostic_input_guest(
+          delivered_input_sequence, process_.pid,
+          static_cast<std::uint32_t>(cpu.processor_id()), entered_at);
+    }
     if (delivered_graphics_event_type) {
       // Bootstrap service ports remain owned by launchd while a cold app is
       // starting. Observe lifecycle delivery only after the receive right has

@@ -106,7 +106,13 @@ struct DiagnosticInputEvent {
     float x{};
     float y{};
     bool queued{};
+    std::uint64_t sequence{};
+    std::uint32_t process_id{};
+    std::uint32_t thread{};
     std::chrono::steady_clock::time_point enqueued;
+    std::chrono::steady_clock::time_point guest_entered;
+    std::chrono::steady_clock::time_point runnable;
+    std::chrono::steady_clock::time_point executed;
 };
 
 std::chrono::steady_clock::time_point diagnostic_window_started_at;
@@ -1250,7 +1256,8 @@ void PerformanceCounters::record_diagnostic_frame_content(
 
 void PerformanceCounters::record_diagnostic_input(
     std::string_view kind, std::string_view phase, float x, float y,
-    bool queued, std::chrono::steady_clock::time_point enqueued_at) {
+    bool queued, std::uint64_t input_sequence,
+    std::chrono::steady_clock::time_point enqueued_at) {
     if (!enabled() || !frame_content_diagnostics_enabled() ||
         !display_window_active_.load(std::memory_order_acquire)) {
         return;
@@ -1262,7 +1269,79 @@ void PerformanceCounters::record_diagnostic_input(
         return;
     }
     diagnostic_input_events.push_back(DiagnosticInputEvent{
-        std::string{kind}, std::string{phase}, x, y, queued, enqueued_at});
+        std::string{kind}, std::string{phase}, x, y, queued, input_sequence,
+        0, 0, enqueued_at, {}, {}, {}});
+}
+
+void PerformanceCounters::record_diagnostic_input_guest(
+    std::uint64_t input_sequence, std::uint32_t process_id,
+    std::uint32_t thread,
+    std::chrono::steady_clock::time_point entered_at) {
+    if (!enabled() || !frame_content_diagnostics_enabled() ||
+        !display_window_active_.load(std::memory_order_acquire) ||
+        input_sequence == 0) {
+        return;
+    }
+    std::lock_guard lock{display_window_mutex_};
+    if (!display_window_active_.load(std::memory_order_relaxed))
+        return;
+    const auto found = std::find_if(
+        diagnostic_input_events.rbegin(), diagnostic_input_events.rend(),
+        [input_sequence](const auto& event) {
+            return event.sequence == input_sequence;
+        });
+    if (found == diagnostic_input_events.rend())
+        return;
+    found->process_id = process_id;
+    found->thread = thread;
+    found->guest_entered = entered_at;
+}
+
+void PerformanceCounters::record_diagnostic_input_runnable(
+    std::uint64_t input_sequence, std::uint32_t process_id,
+    std::uint32_t thread,
+    std::chrono::steady_clock::time_point runnable_at) {
+    if (!enabled() || !frame_content_diagnostics_enabled() ||
+        !display_window_active_.load(std::memory_order_acquire) ||
+        input_sequence == 0) {
+        return;
+    }
+    std::lock_guard lock{display_window_mutex_};
+    if (!display_window_active_.load(std::memory_order_relaxed))
+        return;
+    const auto found = std::find_if(
+        diagnostic_input_events.rbegin(), diagnostic_input_events.rend(),
+        [input_sequence](const auto& event) {
+            return event.sequence == input_sequence;
+        });
+    if (found == diagnostic_input_events.rend())
+        return;
+    found->process_id = process_id;
+    found->thread = thread;
+    found->runnable = runnable_at;
+}
+
+void PerformanceCounters::record_diagnostic_input_execute(
+    std::uint32_t process_id, std::uint32_t thread,
+    std::chrono::steady_clock::time_point executed_at) {
+    if (!enabled() || !frame_content_diagnostics_enabled() ||
+        !display_window_active_.load(std::memory_order_acquire)) {
+        return;
+    }
+    std::lock_guard lock{display_window_mutex_};
+    if (!display_window_active_.load(std::memory_order_relaxed))
+        return;
+    const auto found = std::find_if(
+        diagnostic_input_events.begin(), diagnostic_input_events.end(),
+        [process_id, thread](const auto& event) {
+            return event.process_id == process_id &&
+                   event.thread == thread &&
+                   event.runnable != std::chrono::steady_clock::time_point{} &&
+                   event.executed == std::chrono::steady_clock::time_point{};
+        });
+    if (found == diagnostic_input_events.end())
+        return;
+    found->executed = executed_at;
 }
 
 void PerformanceCounters::record_diagnostic_display_dequeue(
@@ -2624,7 +2703,9 @@ std::string format_display_performance_summary(
     }
     text << " diagnostic-window-start-ns="
          << steady_nanoseconds(diagnostic_window_started_at)
-         << " diagnostic-input-format=kind:phase:x:y:queued:enqueued-us"
+         << " diagnostic-input-format="
+            "kind:phase:x:y:sequence:queued:pid:thread:"
+            "enqueued-us/guest-us/runnable-us/execute-us"
          << " diagnostic-input=";
     if (diagnostic_input_events.empty()) {
         text << "none";
@@ -2635,8 +2716,16 @@ std::string format_display_performance_summary(
                 text << ',';
             const auto& event = diagnostic_input_events[index];
             text << event.kind << ':' << event.phase << ':' << event.x << ':'
-                 << event.y << ':' << (event.queued ? 'q' : 'd') << ':';
+                 << event.y << ':' << event.sequence << ':'
+                 << (event.queued ? 'q' : 'd') << ':' << event.process_id << ':'
+                 << event.thread << ':';
             append_diagnostic_timestamp(text, event.enqueued);
+            text << '/';
+            append_diagnostic_timestamp(text, event.guest_entered);
+            text << '/';
+            append_diagnostic_timestamp(text, event.runnable);
+            text << '/';
+            append_diagnostic_timestamp(text, event.executed);
         }
     }
     text << " diagnostic-content-format="

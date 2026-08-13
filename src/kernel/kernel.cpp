@@ -430,11 +430,13 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput &input) {
   const PerformanceLatencyScope latency{PerfLatencyKind::InputEnqueue};
   performance_counters().discard_pending_vsync_callbacks();
   bool home_recovery_requested = false;
+  std::uint64_t input_sequence = 0;
   const auto result =
       graphics_services_input::enqueue_touch(*shared_state_, input,
                                              scene_coordinator_.get(),
                                              presentation_tracker_.get(),
-                                             &home_recovery_requested);
+                                             &home_recovery_requested,
+                                             &input_sequence);
   const auto enqueued_at = std::chrono::steady_clock::now();
   const auto phase = [phase = input.phase] {
     switch (phase) {
@@ -451,7 +453,8 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput &input) {
   }();
   performance_counters().record_diagnostic_input(
       "touch", phase, input.x, input.y,
-      result == graphics_services_input::EnqueueResult::Queued, enqueued_at);
+      result == graphics_services_input::EnqueueResult::Queued, input_sequence,
+      enqueued_at);
   output_.write("[input] touch phase=" + std::string{phase} + " x=" +
                 std::to_string(input.x) + " y=" + std::to_string(input.y) +
                 (result == graphics_services_input::EnqueueResult::Queued
@@ -558,7 +561,8 @@ void CompatibilityKernel::enqueue_system_button_impl(
   performance_counters().record_diagnostic_input(
       std::string{"button-"} + button,
       input.phase == SystemButtonPhase::Down ? "down" : "up", 0.0F, 0.0F,
-      result == graphics_services_input::EnqueueResult::Queued, enqueued_at);
+      result == graphics_services_input::EnqueueResult::Queued,
+      system_input_sequence, enqueued_at);
   output_.write("[input] button=" + std::string{button} + " phase=" +
                 (input.phase == SystemButtonPhase::Down ? "down" : "up") +
                 (result == graphics_services_input::EnqueueResult::Queued
@@ -756,6 +760,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id) {
   }
   thread_ports_.clear();
   thread_ports_.emplace(processor_id, current_thread_port);
+  last_delivered_graphics_inputs_.clear();
   disabled_thread_signals_.clear();
   pending_waits_.clear();
   pending_mach_receives_.clear();
@@ -1096,6 +1101,18 @@ bool CompatibilityKernel::deliver_pending_event(Cpu &cpu) {
   if (pending_mach_receives_.contains(cpu.processor_id()))
     return deliver_pending_mach_if_ready_locked(cpu);
   return deliver_pending_io_locked(cpu);
+}
+
+std::optional<std::uint64_t>
+CompatibilityKernel::take_last_delivered_graphics_input(
+    std::size_t processor) {
+  std::lock_guard lock{mutex_};
+  const auto found = last_delivered_graphics_inputs_.find(processor);
+  if (found == last_delivered_graphics_inputs_.end())
+    return std::nullopt;
+  const auto sequence = found->second;
+  last_delivered_graphics_inputs_.erase(found);
+  return sequence;
 }
 
 bool CompatibilityKernel::deliver_pending_io_locked(Cpu &cpu) {

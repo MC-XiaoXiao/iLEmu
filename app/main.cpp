@@ -2601,11 +2601,26 @@ void boot(const std::vector<std::string> &args, Output &output) {
     initial->kernel->set_display_presenter(
         [backend = frame_file_presenter.get(),
          &output](const DisplayFrame &frame) {
-          backend->present(frame);
+          // Animation diagnostics must not turn the measured window into a
+          // PNG-writing benchmark. The presenter callback is still the
+          // actual CPU-present boundary for the headless sink; retain pixels
+          // already carried by the frame for in-memory change detection.
+          const auto diagnostic_window =
+              performance_counters().frame_content_diagnostics_enabled() &&
+              performance_counters().display_window_active();
+          if (!diagnostic_window)
+            backend->present(frame);
+          performance_counters().record_cpu_present_fallback(
+              frame.sequence, frame.submitted_at);
           const auto pixels =
-              frame.pixels.empty() && frame.read_pixels
-                  ? frame.read_pixels()
-                  : frame.pixels;
+              !frame.pixels.empty()
+                  ? frame.pixels
+                  : (!diagnostic_window && frame.read_pixels
+                         ? frame.read_pixels()
+                         : std::vector<std::uint32_t>{});
+          performance_counters().record_diagnostic_frame_content(
+              frame.sequence, frame.owner_process_id, frame.submitted_at,
+              frame.width, frame.height, pixels);
           const auto visible = std::count_if(
               pixels.begin(), pixels.end(),
               [](std::uint32_t pixel) { return (pixel & 0x00ffffffU) != 0; });
@@ -3914,7 +3929,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
         auto &waiting_cpu = runtime->cpus->cpu(processor);
         if (runtime->kernel->deliver_pending_event(waiting_cpu)) {
-          static_cast<void>(scheduler.make_runnable(thread));
+          const auto delivered_input =
+              runtime->kernel->take_last_delivered_graphics_input(processor);
+          if (scheduler.make_runnable(thread) && delivered_input) {
+            performance_counters().record_diagnostic_input_runnable(
+                *delivered_input, thread.process, thread.thread);
+          }
         }
       }
     }
@@ -4010,6 +4030,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
       const auto scheduled =
           scheduler.choose_next(processor, preferred_thread);
       if (scheduled) {
+        performance_counters().record_diagnostic_input_execute(
+            scheduled->thread.process, scheduled->thread.thread);
         if (performance_counters().cpu_source_diagnostics_enabled() &&
             scheduled->runnable_since !=
                 std::chrono::steady_clock::time_point{}) {

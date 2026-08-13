@@ -287,6 +287,11 @@ public:
   // Scheduler-facing event dispatch. A guest thread can block in only one
   // syscall at a time, so this avoids probing every unrelated pending table.
   bool deliver_pending_event(Cpu &cpu);
+  // Returns the graphics input sequence delivered while waking this guest
+  // thread. The scheduler consumes it immediately to record runnable/dispatch
+  // latency without assigning meaning to unrelated wakeups.
+  [[nodiscard]] std::optional<std::uint64_t>
+  take_last_delivered_graphics_input(std::size_t processor);
   [[nodiscard]] std::optional<std::uint64_t> next_timer_deadline() const;
   [[nodiscard]] std::optional<std::uint64_t>
   next_display_vsync_deadline() const;
@@ -659,6 +664,7 @@ private:
   std::map<std::size_t, SchedulerYieldRequest> scheduler_yields_;
   std::map<std::size_t, PendingWait> pending_waits_;
   std::map<std::size_t, PendingMachReceive> pending_mach_receives_;
+  std::map<std::size_t, std::uint64_t> last_delivered_graphics_inputs_;
   std::map<std::size_t, PendingKevent> pending_kevents_;
   std::map<std::size_t, PendingRecvmsg> pending_recvmsgs_;
   std::map<std::size_t, PendingSocketRead> pending_socket_reads_;
