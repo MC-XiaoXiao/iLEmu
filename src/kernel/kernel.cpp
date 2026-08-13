@@ -249,6 +249,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
       arm_architecture_for_model(device_profile_.cpu_model));
   const auto virtual_baseband =
       device_profile_.baseband_transport == BasebandTransportProfile::Virtual;
+  const auto offline_baseband =
+      device_profile_.baseband_transport == BasebandTransportProfile::Offline;
   const auto baseband_device_available =
       virtual_baseband || device_profile_.baseband_device_available;
   // Keep the registry/CoreTelephony surface present in Offline mode so stock
@@ -260,8 +262,11 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   shared_state_->baseband_device_state.set_transmit_queue_writable(
       baseband_device_available);
   shared_state_->baseband_device_state.set_dynamic_channels_available(
-      virtual_baseband);
-  shared_state_->baseband_device_state.set_mux_channel_capacity(0U);
+      virtual_baseband || (offline_baseband && baseband_device_available));
+  shared_state_->baseband_device_state.set_mux_channel_capacity(
+      offline_baseband && baseband_device_available
+          ? bsd::baseband_device::offline_mux_channel_capacity
+          : 0U);
   shared_state_->mounts.clear();
   for (const auto &volume : hfs_volumes_.volumes()) {
     shared_state_->mounts.push_back({"hfs", volume.mount_point,

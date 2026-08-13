@@ -28,6 +28,10 @@ inline constexpr std::string_view spi_mux_directory_name{"mux.spi-baseband"};
 inline constexpr std::string_view h5_mux_directory_name{"mux.h5.baseband"};
 inline constexpr std::string_view descriptor_kind{"baseband"};
 inline constexpr unsigned device_minor = 3;
+// Offline devices with a fixed endpoint retain the finite logical channel
+// table expected by stock CommCenter. These channels are not backed by a
+// modem and never synthesize receive data.
+inline constexpr std::uint32_t offline_mux_channel_capacity = 16;
 
 enum class IoctlResult {
   success,
@@ -44,7 +48,8 @@ public:
   // This is the guest-to-device tty transmit queue, not modem availability.
   [[nodiscard]] bool transmit_queue_writable() const;
   void set_transmit_queue_writable(bool writable);
-  // Dynamic DLCI nodes require a modem-side mux endpoint.
+  // Whether the profile supports guest-visible DLCI setup nodes. Offline
+  // devices may expose bounded logical channels without a modem peer.
   [[nodiscard]] bool dynamic_channels_available() const;
   void set_dynamic_channels_available(bool available);
   [[nodiscard]] bool may_open(bool privileged) const;
@@ -57,8 +62,7 @@ public:
   [[nodiscard]] std::size_t minimum_receive_bytes() const;
   void set_minimum_receive_bytes(std::size_t bytes);
   // A zero capacity preserves the virtual/replay transport's dynamic channel
-  // allocation. Offline transport rejects mux nodes before channel
-  // allocation, so no logical DLCI is synthesized.
+  // allocation. Offline transport uses a bounded logical channel table.
   void set_mux_channel_capacity(std::uint32_t capacity);
   [[nodiscard]] std::uint32_t register_mux_channel(std::string_view name);
   [[nodiscard]] std::optional<std::uint32_t>

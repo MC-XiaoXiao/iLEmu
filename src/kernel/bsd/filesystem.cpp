@@ -250,9 +250,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     }
     if (bsd::baseband_device::is_mux_channel_path(*path) &&
         !shared_state_->baseband_device_state.dynamic_channels_available()) {
-      // Offline has no dynamically allocated modem endpoints. The fixed mux
-      // remains available as a logical setup/control endpoint; its writes are
-      // consumed by the emulator and never reach a host modem.
+      // This profile has no guest-visible DLCI setup capability. Do not
+      // allocate a descriptor that could be mistaken for a modem endpoint.
       constexpr auto error = darwin::error::no_such_device_or_address;
       bsd_error(cpu, error);
       return;
