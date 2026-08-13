@@ -465,6 +465,12 @@ void PerformanceCounters::reset(bool enabled) {
     display_mailbox_coalesced_.store(0, std::memory_order_relaxed);
     display_vsync_budget_cuts_.store(0, std::memory_order_relaxed);
     display_vsync_budget_saved_ticks_.store(0, std::memory_order_relaxed);
+    display_queue_depth_.store(0, std::memory_order_relaxed);
+    display_queue_high_watermark_.store(0, std::memory_order_relaxed);
+    display_queue_backpressure_waits_.store(0, std::memory_order_relaxed);
+    display_queue_backpressure_max_wait_nanoseconds_.store(
+        0, std::memory_order_relaxed);
+    display_queue_backpressure_timeouts_.store(0, std::memory_order_relaxed);
     sdl_idle_waits_.store(0, std::memory_order_relaxed);
     native_present_attempts_.store(0, std::memory_order_relaxed);
     native_present_mailbox_coalesced_.store(0,
@@ -1333,6 +1339,59 @@ void PerformanceCounters::record_display_vsync_budget(
         original_ticks - limited_ticks);
 }
 
+void PerformanceCounters::record_display_queue_depth(std::uint64_t depth) {
+    if (!enabled())
+        return;
+    display_queue_depth_.store(depth, std::memory_order_relaxed);
+    auto high_watermark =
+        display_queue_high_watermark_.load(std::memory_order_relaxed);
+    while (high_watermark < depth &&
+           !display_queue_high_watermark_.compare_exchange_weak(
+               high_watermark, depth, std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+    }
+    if (!display_window_active_.load(std::memory_order_acquire))
+        return;
+    std::lock_guard lock{display_window_mutex_};
+    if (!display_window_active_.load(std::memory_order_relaxed))
+        return;
+    display_window_snapshot_.display_queue_depth = depth;
+    display_window_snapshot_.display_queue_high_watermark =
+        std::max(display_window_snapshot_.display_queue_high_watermark, depth);
+}
+
+void PerformanceCounters::record_display_queue_wait(
+    std::uint64_t nanoseconds, bool timed_out) {
+    if (!enabled())
+        return;
+    display_queue_backpressure_waits_.fetch_add(1,
+                                                std::memory_order_relaxed);
+    auto maximum = display_queue_backpressure_max_wait_nanoseconds_.load(
+        std::memory_order_relaxed);
+    while (maximum < nanoseconds &&
+           !display_queue_backpressure_max_wait_nanoseconds_.compare_exchange_weak(
+               maximum, nanoseconds, std::memory_order_relaxed,
+               std::memory_order_relaxed)) {
+    }
+    if (timed_out)
+        display_queue_backpressure_timeouts_.fetch_add(
+            1, std::memory_order_relaxed);
+    add_display_window_counter(
+        &PerformanceSnapshot::display_queue_backpressure_waits);
+    if (timed_out)
+        add_display_window_counter(
+            &PerformanceSnapshot::display_queue_backpressure_timeouts);
+    if (display_window_active_.load(std::memory_order_acquire)) {
+        std::lock_guard lock{display_window_mutex_};
+        if (display_window_active_.load(std::memory_order_relaxed)) {
+            display_window_snapshot_.display_queue_backpressure_max_wait_nanoseconds =
+                std::max(
+                    display_window_snapshot_.display_queue_backpressure_max_wait_nanoseconds,
+                    nanoseconds);
+        }
+    }
+}
+
 void PerformanceCounters::record_sdl_idle_wait() {
     if (!enabled())
         return;
@@ -2022,6 +2081,17 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
         display_vsync_budget_cuts_.load(std::memory_order_relaxed);
     result.display_vsync_budget_saved_ticks =
         display_vsync_budget_saved_ticks_.load(std::memory_order_relaxed);
+    result.display_queue_depth =
+        display_queue_depth_.load(std::memory_order_relaxed);
+    result.display_queue_high_watermark =
+        display_queue_high_watermark_.load(std::memory_order_relaxed);
+    result.display_queue_backpressure_waits =
+        display_queue_backpressure_waits_.load(std::memory_order_relaxed);
+    result.display_queue_backpressure_max_wait_nanoseconds =
+        display_queue_backpressure_max_wait_nanoseconds_.load(
+            std::memory_order_relaxed);
+    result.display_queue_backpressure_timeouts =
+        display_queue_backpressure_timeouts_.load(std::memory_order_relaxed);
     result.sdl_idle_waits =
         sdl_idle_waits_.load(std::memory_order_relaxed);
     result.native_present_attempts =
@@ -2324,6 +2394,14 @@ std::string format_performance_summary(
          << " display-coalesced=" << snapshot.display_mailbox_coalesced
          << " display-vsync-budget=" << snapshot.display_vsync_budget_cuts
          << '/' << snapshot.display_vsync_budget_saved_ticks
+         << " display-queue=" << snapshot.display_queue_depth
+         << '/' << snapshot.display_queue_high_watermark
+         << " display-queue-waits="
+         << snapshot.display_queue_backpressure_waits
+         << " display-queue-max-wait-ns="
+         << snapshot.display_queue_backpressure_max_wait_nanoseconds
+         << " display-queue-timeouts="
+         << snapshot.display_queue_backpressure_timeouts
          << " sdl-idle-waits=" << snapshot.sdl_idle_waits
          << " native-attempt=" << snapshot.native_present_attempts
          << " native-coalesced="

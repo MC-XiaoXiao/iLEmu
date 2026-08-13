@@ -246,6 +246,11 @@ struct PerformanceSnapshot {
     std::uint64_t display_mailbox_coalesced{};
     std::uint64_t display_vsync_budget_cuts{};
     std::uint64_t display_vsync_budget_saved_ticks{};
+    std::uint64_t display_queue_depth{};
+    std::uint64_t display_queue_high_watermark{};
+    std::uint64_t display_queue_backpressure_waits{};
+    std::uint64_t display_queue_backpressure_max_wait_nanoseconds{};
+    std::uint64_t display_queue_backpressure_timeouts{};
     std::uint64_t sdl_idle_waits{};
     std::uint64_t native_present_attempts{};
     std::uint64_t native_present_mailbox_coalesced{};
@@ -395,6 +400,9 @@ class PerformanceCounters {
     void record_display_mailbox_coalesced();
     void record_display_vsync_budget(std::uint64_t original_ticks,
                                      std::uint64_t limited_ticks);
+    void record_display_queue_depth(std::uint64_t depth);
+    void record_display_queue_wait(std::uint64_t nanoseconds,
+                                   bool timed_out);
     void record_sdl_idle_wait();
     void record_native_present_attempt();
     void record_native_present_mailbox_coalesced();
@@ -536,6 +544,12 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> display_mailbox_coalesced_{};
     std::atomic<std::uint64_t> display_vsync_budget_cuts_{};
     std::atomic<std::uint64_t> display_vsync_budget_saved_ticks_{};
+    std::atomic<std::uint64_t> display_queue_depth_{};
+    std::atomic<std::uint64_t> display_queue_high_watermark_{};
+    std::atomic<std::uint64_t> display_queue_backpressure_waits_{};
+    std::atomic<std::uint64_t>
+        display_queue_backpressure_max_wait_nanoseconds_{};
+    std::atomic<std::uint64_t> display_queue_backpressure_timeouts_{};
     std::atomic<std::uint64_t> sdl_idle_waits_{};
     std::atomic<std::uint64_t> native_present_attempts_{};
     std::atomic<std::uint64_t> native_present_mailbox_coalesced_{};
