@@ -458,7 +458,12 @@ void deliver_due_vsync_locked(KernelSharedState &state,
       ++registration.sequence;
       state.enqueue_mach_message_locked(
           registration.notification_port,
-          make_vsync_message(registration, deadline));
+          // The callback's frame time is the scheduled pulse that this
+          // notification represents.  `deadline` can be later when the
+          // virtual clock catches up after a long host-side stall; using it
+          // here would make the guest observe a frame timestamp that skips
+          // the fixed VSync phase.
+          make_vsync_message(registration, indexed_deadline));
       performance_counters().record_vsync_due(
           registration.owner_pid,
           registration.async_reference
