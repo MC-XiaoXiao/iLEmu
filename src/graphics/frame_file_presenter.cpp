@@ -127,6 +127,8 @@ FrameFilePresenter::FrameFilePresenter(std::filesystem::path path)
 }
 
 void FrameFilePresenter::present(const DisplayFrame& frame) {
+    if (!enabled())
+        return;
     DisplayFrame materialized = frame;
     auto expected = static_cast<std::size_t>(frame.width) * frame.height;
     if (materialized.pixels.size() != expected &&
@@ -184,6 +186,14 @@ void FrameFilePresenter::present(const DisplayFrame& frame) {
         throw std::runtime_error{"could not replace frame output: " +
                                  path_.string()};
     }
+}
+
+void FrameFilePresenter::set_enabled(bool enabled) noexcept {
+    enabled_.store(enabled, std::memory_order_relaxed);
+}
+
+bool FrameFilePresenter::enabled() const noexcept {
+    return enabled_.load(std::memory_order_relaxed);
 }
 
 }  // namespace ilemu

@@ -2608,19 +2608,25 @@ void boot(const std::vector<std::string> &args, Output &output) {
           const auto diagnostic_window =
               performance_counters().frame_content_diagnostics_enabled() &&
               performance_counters().display_window_active();
-          if (!diagnostic_window)
+          const auto file_output_enabled = backend->enabled();
+          if (!diagnostic_window && file_output_enabled)
             backend->present(frame);
           performance_counters().record_cpu_present_fallback(
               frame.sequence, frame.submitted_at);
+          if (diagnostic_window) {
+            const auto pixels = frame.pixels;
+            performance_counters().record_diagnostic_frame_content(
+                frame.sequence, frame.owner_process_id, frame.submitted_at,
+                frame.width, frame.height, pixels);
+            return;
+          }
+          if (!file_output_enabled)
+            return;
           const auto pixels =
               !frame.pixels.empty()
                   ? frame.pixels
-                  : (!diagnostic_window && frame.read_pixels
-                         ? frame.read_pixels()
-                         : std::vector<std::uint32_t>{});
-          performance_counters().record_diagnostic_frame_content(
-              frame.sequence, frame.owner_process_id, frame.submitted_at,
-              frame.width, frame.height, pixels);
+                  : (frame.read_pixels ? frame.read_pixels()
+                                       : std::vector<std::uint32_t>{});
           // A content-diagnostic window is part of the measured presenter
           // path. Do not turn it into a per-frame stdout-flush benchmark:
           // the in-memory content record above already retains the semantic
@@ -3758,6 +3764,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 scheduler.set_dispatch_diagnostics(true);
               }
               display_performance_window = command.message;
+              // A formal no-content performance window must not fall back to
+              // the headless presenter's per-frame PNG writes. The first
+              // frame was already captured before the animation window, and
+              // explicit snapshots use their own presenter below.
+              if (frame_file_presenter && command.message == "animation")
+                frame_file_presenter->set_enabled(false);
               if (realtime_pacer) {
                 display_clock_window = DisplayClockWindow{
                     std::chrono::steady_clock::now(),
@@ -3817,6 +3829,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   std::to_string(
                       display_clock_window->rebase_deficit_max_nanoseconds));
             }
+            if (frame_file_presenter)
+              frame_file_presenter->set_enabled(true);
             display_clock_window.reset();
             display_performance_window.reset();
           }
