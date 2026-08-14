@@ -1946,10 +1946,34 @@ void boot(const std::vector<std::string> &args, Output &output) {
       host_cache_directory(args, std::filesystem::path{*rootfs});
   const auto catalog_manifest = option(args, "--catalog").value_or(
       (host_cache / "executable-catalog.bin").string());
+  auto device = select_device_profile(args);
   ExecutableCatalog executable_catalog;
   bool catalog_loaded = executable_catalog.load(catalog_manifest);
+  std::string catalog_source = catalog_loaded ? "manifest" : "fallback";
+  if (!catalog_loaded) {
+    try {
+      const auto summary = executable_catalog.register_tree(
+          *rootfs, arm_architecture_for_model(device.cpu_model));
+      catalog_loaded = true;
+      catalog_source = "startup-scan";
+      const auto manifest_saved = executable_catalog.save(catalog_manifest);
+      output.line(
+          "[catalog] startup-scan=complete regular-files=" +
+          std::to_string(summary.regular_files) + " macho-images=" +
+          std::to_string(summary.mach_o_images) + " failed-files=" +
+          std::to_string(summary.failed_files) + " entries=" +
+          std::to_string(executable_catalog.size()) +
+          " reliable-entry-points=" +
+          std::to_string(executable_catalog.reliable_entry_point_count()) +
+          " manifest-save=" + (manifest_saved ? "ok" : "failed"));
+    } catch (const std::exception &error) {
+      output.line("[catalog] startup-scan=failed error=" +
+                  std::string{error.what()});
+    }
+  }
   output.line("[catalog] manifest=" + catalog_manifest +
               " status=" + (catalog_loaded ? "loaded" : "fallback") +
+              " source=" + catalog_source +
               " entries=" + std::to_string(executable_catalog.size()));
   auto *catalog_index = catalog_loaded ? &executable_catalog : nullptr;
   const auto gles_backend = parse_gles_backend(args);
@@ -1957,7 +1981,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
       host_cache / "vulkan-pipeline-cache.bin");
   configure_gles_backend(gles_backend);
   const auto binary = option(args, "--binary").value_or("/sbin/launchd");
-  auto device = select_device_profile(args);
   if (const auto display_size = option(args, "--display-size")) {
     device.display = parse_display_geometry(*display_size);
   }
