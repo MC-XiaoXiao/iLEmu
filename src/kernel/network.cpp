@@ -624,8 +624,14 @@ bool CompatibilityKernel::receive_socket_bytes(
     }
     if (const auto descriptor = virtual_descriptors_.find(fd);
         descriptor != virtual_descriptors_.end() &&
-        descriptor->second == bsd::offline_serial_device::descriptor_kind &&
-        offline_serial_state_.pending_bytes() != 0) {
+        descriptor->second == bsd::offline_serial_device::descriptor_kind) {
+        const auto bytes = offline_serial_state_.read(size);
+        if (bytes.empty()) return false;
+        if (!memory_.copy_in(address, bytes)) {
+            bsd_error(cpu, darwin::error::bad_address);
+        } else {
+            bsd_success(cpu, static_cast<std::uint32_t>(bytes.size()));
+        }
         return true;
     }
     if (const auto host = host_sockets_.find(fd); host != host_sockets_.end()) {
@@ -1205,6 +1211,12 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const {
         shared_state_->baseband_device_state.pending_receive_bytes() != 0) {
         return true;
     }
+    if (const auto descriptor = virtual_descriptors_.find(fd);
+        descriptor != virtual_descriptors_.end() &&
+        descriptor->second == bsd::offline_serial_device::descriptor_kind &&
+        offline_serial_state_.pending_bytes() != 0) {
+        return true;
+    }
     if (const auto host = host_sockets_.find(fd);
         host != host_sockets_.end() && host->second->readable()) {
         return true;
@@ -1336,6 +1348,13 @@ std::optional<std::uint32_t> CompatibilityKernel::socket_pending_byte_count(
         descriptor->second == bsd::baseband_device::descriptor_kind) {
         return static_cast<std::uint32_t>(std::min<std::size_t>(
             shared_state_->baseband_device_state.pending_receive_bytes(),
+            std::numeric_limits<std::uint32_t>::max()));
+    }
+    if (const auto descriptor = virtual_descriptors_.find(fd);
+        descriptor != virtual_descriptors_.end() &&
+        descriptor->second == bsd::offline_serial_device::descriptor_kind) {
+        return static_cast<std::uint32_t>(std::min<std::size_t>(
+            offline_serial_state_.pending_bytes(),
             std::numeric_limits<std::uint32_t>::max()));
     }
     if (const auto endpoint = socket_pair_endpoints_.find(fd);

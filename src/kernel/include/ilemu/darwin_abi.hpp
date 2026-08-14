@@ -24,6 +24,7 @@ inline constexpr std::uint32_t permission_denied = 13;
 inline constexpr std::uint32_t bad_address = 14;
 inline constexpr std::uint32_t device_busy = 16;
 inline constexpr std::uint32_t file_exists = 17;
+inline constexpr std::uint32_t no_space_on_device = 28;
 inline constexpr std::uint32_t inappropriate_ioctl = 25;
 inline constexpr std::uint32_t illegal_seek = 29;
 inline constexpr std::uint32_t broken_pipe = 32;

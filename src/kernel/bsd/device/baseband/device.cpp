@@ -109,6 +109,52 @@ void State::set_minimum_receive_bytes(std::size_t bytes) {
   minimum_receive_bytes_ = bytes;
 }
 
+std::uint32_t State::modem_control_bits() const {
+  const std::lock_guard lock{mutex_};
+  return modem_control_bits_;
+}
+
+void State::set_modem_control_bits(std::uint32_t bits) {
+  const std::lock_guard lock{mutex_};
+  modem_control_bits_ = bits;
+}
+
+void State::update_modem_control_bits(std::uint32_t bits, bool enabled) {
+  const std::lock_guard lock{mutex_};
+  if (enabled) {
+    modem_control_bits_ |= bits;
+  } else {
+    modem_control_bits_ &= ~bits;
+  }
+}
+
+bool State::configure_receive_queue(
+    std::span<const std::byte> configuration) {
+  if (configuration.size() != receive_queue_configuration_.size()) {
+    return false;
+  }
+  const std::lock_guard lock{mutex_};
+  std::copy(configuration.begin(), configuration.end(),
+            receive_queue_configuration_.begin());
+  receive_queue_configured_ = true;
+  return true;
+}
+
+bool State::receive_queue_configured() const {
+  const std::lock_guard lock{mutex_};
+  return receive_queue_configured_;
+}
+
+void State::flush_buffers(std::uint32_t what) {
+  const std::lock_guard lock{mutex_};
+  // Darwin's TIOCFLUSH treats zero as both FREAD and FWRITE. The offline
+  // endpoint has no asynchronous transmit queue; only the receive side can
+  // contain bytes that need to be discarded here.
+  if (what == 0 || (what & 0x1U) != 0) {
+    receive_queue_.clear();
+  }
+}
+
 void State::set_mux_channel_capacity(std::uint32_t capacity) {
   const std::lock_guard lock{mutex_};
   anonymous_mux_channel_capacity_ = capacity;
@@ -127,6 +173,13 @@ std::uint32_t State::register_mux_channel(std::string_view name) {
     const auto key = std::string{name};
     if (const auto found = mux_channels_.find(key); found != mux_channels_.end()) {
       return found->second;
+    }
+    if (anonymous_mux_channel_capacity_ != 0 &&
+        mux_channels_.size() >= anonymous_mux_channel_capacity_) {
+      // Named channels use a separate ID range so they never alias the
+      // anonymous slots. Keep their registry bounded as well; otherwise an
+      // offline CommCenter retry loop could grow this map indefinitely.
+      return 0;
     }
     const auto unit = next_mux_channel_++;
     mux_channels_.emplace(key, unit);

@@ -80,6 +80,16 @@ inline constexpr std::uint32_t set_attributes_after_drain =
     sized_command(ioctl_input, 't', 21, arm32_attributes_size);
 inline constexpr std::uint32_t set_attributes_after_drain_and_flush =
     sized_command(ioctl_input, 't', 22, arm32_attributes_size);
+inline constexpr std::uint32_t flush_buffers =
+    sized_command(ioctl_input, 't', 16, sizeof(std::uint32_t));
+inline constexpr std::uint32_t get_modem_control_bits =
+    sized_command(ioctl_output, 't', 106, sizeof(std::uint32_t));
+inline constexpr std::uint32_t clear_modem_control_bits =
+    sized_command(ioctl_input, 't', 107, sizeof(std::uint32_t));
+inline constexpr std::uint32_t set_modem_control_bits =
+    sized_command(ioctl_input, 't', 108, sizeof(std::uint32_t));
+inline constexpr std::uint32_t set_all_modem_control_bits =
+    sized_command(ioctl_input, 't', 109, sizeof(std::uint32_t));
 inline constexpr std::uint32_t drain_output = void_command('t', 94);
 inline constexpr std::uint32_t set_controlling_terminal =
     void_command('t', 97);
@@ -104,9 +114,16 @@ inline constexpr std::uint32_t set_receive_threshold =
 
 // Apple Serial Mux requests used by CommCenter while it builds the baseband
 // DLCI/channel table.
+// The ARMv6 CommCenter issues this four-byte output query before deciding
+// whether a serial-side reset/status path is needed. Offline returns a
+// bounded all-zero status: no modem event is pending and no RX is produced.
+inline constexpr std::size_t ioaos_status_size = sizeof(std::uint32_t);
+inline constexpr std::uint32_t ioaos_status_query =
+    sized_command(ioctl_output, 'y', 0x90, ioaos_status_size);
 inline constexpr std::uint32_t asm_new_dlci =
     sized_command(ioctl_input | ioctl_output, 'x', 0x0a, 0x48U);
+inline constexpr std::size_t receive_queue_configuration_size = 0x10U;
 inline constexpr std::uint32_t ioaos_receive_queue =
-    sized_command(ioctl_input, 'x', 0x28, 0x10U);
+    sized_command(ioctl_input, 'x', 0x28, receive_queue_configuration_size);
 
 } // namespace ilemu::darwin::tty

@@ -184,6 +184,23 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       return;
     if (ioctl_kernel_control_socket(cpu))
       return;
+    // Keep FIONREAD on the common descriptor path. In particular, do not let
+    // the baseband/serial tty branches turn a readiness query into an
+    // unrelated private-ioctl success or ENOTTY.
+    if (registers[1] == darwin::socket::ioctl_pending_bytes) {
+      std::uint32_t pending_error = 0;
+      const auto pending_count = socket_pending_byte_count(fd, pending_error);
+      if (!pending_count) {
+        bsd_error(cpu, pending_error);
+        return;
+      }
+      if (!memory_.write32(registers[2], *pending_count)) {
+        bsd_error(cpu, bsd_support::bad_address);
+      } else {
+        bsd_success(cpu, 0);
+      }
+      return;
+    }
     const auto tty_descriptor =
         device->second == "console" ||
         device->second == bsd::baseband_device::descriptor_kind ||
@@ -409,10 +426,81 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
         bsd_success(cpu, 0);
         return;
       }
-    if (request == darwin::tty::set_receive_threshold) {
-      const auto threshold = memory_.read32(argument);
-      if (!threshold) {
-        bsd_error(cpu, bsd_support::bad_address);
+      if (request == darwin::tty::ioaos_status_query) {
+        std::array<std::byte, darwin::tty::ioaos_status_size> status{};
+        if (!memory_.copy_in(argument, status)) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        output_.write("[baseband] ioctl pid=" + std::to_string(process_.pid) +
+                      " IOAOSSTATUS pending=0\n");
+        bsd_success(cpu, 0);
+        return;
+      }
+      if (request == darwin::tty::get_modem_control_bits) {
+        const auto bits =
+            shared_state_->baseband_device_state.modem_control_bits();
+        if (!memory_.write32(argument, bits)) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        output_.write("[baseband] ioctl pid=" + std::to_string(process_.pid) +
+                      " TIOCMGET bits=" + std::to_string(bits) + "\n");
+        bsd_success(cpu, 0);
+        return;
+      }
+      if (request == darwin::tty::clear_modem_control_bits ||
+          request == darwin::tty::set_modem_control_bits ||
+          request == darwin::tty::set_all_modem_control_bits) {
+        const auto bits = memory_.read32(argument);
+        if (!bits) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        if (request == darwin::tty::set_all_modem_control_bits) {
+          shared_state_->baseband_device_state.set_modem_control_bits(*bits);
+        } else {
+          shared_state_->baseband_device_state.update_modem_control_bits(
+              *bits, request == darwin::tty::set_modem_control_bits);
+        }
+        output_.write("[baseband] ioctl pid=" + std::to_string(process_.pid) +
+                      " TIOCMUPDATE bits=" + std::to_string(*bits) + "\n");
+        bsd_success(cpu, 0);
+        return;
+      }
+      if (request == darwin::tty::flush_buffers) {
+        const auto what = memory_.read32(argument);
+        if (!what) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        shared_state_->baseband_device_state.flush_buffers(*what);
+        output_.write("[baseband] ioctl pid=" + std::to_string(process_.pid) +
+                      " TIOCFLUSH what=" + std::to_string(*what) + "\n");
+        bsd_success(cpu, 0);
+        return;
+      }
+      if (request == darwin::tty::ioaos_receive_queue) {
+        const auto payload_size = darwin::tty::parameter_length(request);
+        const auto payload = memory_.read_bytes(argument, payload_size);
+        if (!payload) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        if (!shared_state_->baseband_device_state.configure_receive_queue(
+                *payload)) {
+          bsd_error(cpu, darwin::error::invalid_argument);
+          return;
+        }
+        output_.write("[baseband] ioctl pid=" + std::to_string(process_.pid) +
+                      " IOAOSRECEIVEQUEUE configured=1\n");
+        bsd_success(cpu, 0);
+        return;
+      }
+      if (request == darwin::tty::set_receive_threshold) {
+        const auto threshold = memory_.read32(argument);
+        if (!threshold) {
+          bsd_error(cpu, bsd_support::bad_address);
           return;
         }
         shared_state_->baseband_device_state.set_minimum_receive_bytes(
@@ -449,6 +537,13 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
                                        .register_mux_channel(channel_name
                                                                  ? *channel_name
                                                                  : std::string{});
+        if (channel_unit == 0) {
+          output_.write("[baseband] ioctl pid=" +
+                        std::to_string(process_.pid) +
+                        " ASMIOCNEWDLCI capacity-exhausted\n");
+          bsd_error(cpu, darwin::error::no_space_on_device);
+          return;
+        }
         if (!memory_.copy_in(argument, *payload) ||
             !memory_.write32(argument, 0U) ||
             !memory_.write32(argument + sizeof(std::uint32_t),
@@ -478,7 +573,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
         return;
       }
       std::ostringstream message;
-      message << "[baseband] passthrough ioctl pid=" << process_.pid
+      message << "[baseband] unsupported ioctl pid=" << process_.pid
               << " request=0x" << std::hex << registers[1];
       constexpr std::uint32_t maximum_traced_ioctl_payload = 64;
       const auto payload_size = darwin::tty::parameter_length(registers[1]);
@@ -491,21 +586,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
       }
       message << '\n';
       output_.write(message.str());
-      bsd_success(cpu, 0);
-      return;
-    }
-    if (registers[1] == darwin::socket::ioctl_pending_bytes) {
-      std::uint32_t pending_error = 0;
-      const auto pending_count = socket_pending_byte_count(fd, pending_error);
-      if (!pending_count) {
-        bsd_error(cpu, pending_error);
-        return;
-      }
-      if (!memory_.write32(registers[2], *pending_count)) {
-        bsd_error(cpu, bsd_support::bad_address);
-      } else {
-        bsd_success(cpu, 0);
-      }
+      bsd_error(cpu, darwin::error::inappropriate_ioctl);
       return;
     }
     if (device->second == "inet-dgram" || device->second == "inet6-dgram") {

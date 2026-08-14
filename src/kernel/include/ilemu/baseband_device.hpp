@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -61,8 +62,22 @@ public:
   void set_h5_transport_mode(bool enabled);
   [[nodiscard]] std::size_t minimum_receive_bytes() const;
   void set_minimum_receive_bytes(std::size_t bytes);
+  [[nodiscard]] std::uint32_t modem_control_bits() const;
+  void set_modem_control_bits(std::uint32_t bits);
+  void update_modem_control_bits(std::uint32_t bits, bool enabled);
+  // IOAOS_RECEIVE_QUEUE installs a fixed-size driver queue descriptor. The
+  // offline endpoint records the bounded descriptor for state inspection but
+  // never dereferences guest pointers or creates synthetic receive bytes.
+  [[nodiscard]] bool configure_receive_queue(
+      std::span<const std::byte> configuration);
+  [[nodiscard]] bool receive_queue_configured() const;
+  // TIOCFLUSH clears the software receive queue. Writes are synchronous, so
+  // there is no pending transmit queue to retain or fabricate.
+  void flush_buffers(std::uint32_t what);
   // A zero capacity preserves the virtual/replay transport's dynamic channel
-  // allocation. Offline transport uses a bounded logical channel table.
+  // allocation. Offline transport bounds both its anonymous slots and its
+  // named logical-channel registry; named IDs remain outside the anonymous
+  // slot range.
   void set_mux_channel_capacity(std::uint32_t capacity);
   [[nodiscard]] std::uint32_t register_mux_channel(std::string_view name);
   [[nodiscard]] std::optional<std::uint32_t>
@@ -88,6 +103,10 @@ private:
   bool exclusive_{};
   bool h5_transport_mode_{};
   std::size_t minimum_receive_bytes_{};
+  std::uint32_t modem_control_bits_{};
+  std::array<std::byte, darwin::tty::receive_queue_configuration_size>
+      receive_queue_configuration_{};
+  bool receive_queue_configured_{};
   std::uint32_t anonymous_mux_channel_capacity_{};
   std::uint32_t next_anonymous_mux_channel_{1};
   std::map<std::string, std::uint32_t> mux_channels_;
