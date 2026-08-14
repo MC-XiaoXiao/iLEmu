@@ -33,6 +33,10 @@ inline constexpr unsigned device_minor = 3;
 // table expected by stock CommCenter. These channels are not backed by a
 // modem and never synthesize receive data.
 inline constexpr std::uint32_t offline_mux_channel_capacity = 16;
+// In-memory capture is a test/embedding diagnostic, not the production
+// transport. Keep it bounded even when a caller explicitly enables it; the
+// application uses the streaming sink for unbounded captures.
+inline constexpr std::size_t transmit_capture_capacity = 1U * 1024U * 1024U;
 
 enum class IoctlResult {
   success,
@@ -87,8 +91,9 @@ public:
   [[nodiscard]] std::size_t pending_receive_bytes() const;
   [[nodiscard]] std::size_t write(std::span<const std::byte> bytes);
   [[nodiscard]] std::vector<std::byte> take_transmitted();
-  // The application normally installs a null sink. Tests and embedding
-  // callers retain the legacy in-memory capture until they opt out.
+  // Capture is opt-in. The application installs either a null sink or a
+  // streaming sink, and tests/embedding callers explicitly enable bounded
+  // in-memory capture when they need to inspect recent bytes.
   void set_transmit_capture_enabled(bool enabled);
   // A sink receives one complete guest write while the device state is
   // serialized. Returning false makes that write fail instead of reporting a
@@ -115,7 +120,7 @@ private:
   std::deque<std::byte> receive_queue_;
   std::vector<std::byte> transmitted_;
   TransmitSink transmit_sink_;
-  bool transmit_capture_enabled_{true};
+  bool transmit_capture_enabled_{};
 };
 
 [[nodiscard]] bool is_path(std::string_view candidate);

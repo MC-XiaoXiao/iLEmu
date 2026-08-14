@@ -246,6 +246,22 @@ std::size_t State::write(std::span<const std::byte> bytes) {
   }
   if (!transmit_capture_enabled_)
     return bytes.size();
+  // Retain only the newest diagnostic bytes. Device write semantics remain
+  // synchronous and successful, while the in-memory inspection path cannot
+  // grow with an offline CommCenter retry loop.
+  if (bytes.size() >= transmit_capture_capacity) {
+    transmitted_.assign(
+        bytes.end() - static_cast<std::ptrdiff_t>(transmit_capture_capacity),
+        bytes.end());
+    return bytes.size();
+  }
+  const auto retained_room = transmit_capture_capacity - bytes.size();
+  if (transmitted_.size() > retained_room) {
+    transmitted_.erase(
+        transmitted_.begin(),
+        transmitted_.begin() + static_cast<std::ptrdiff_t>(
+                                   transmitted_.size() - retained_room));
+  }
   transmitted_.insert(transmitted_.end(), bytes.begin(), bytes.end());
   return bytes.size();
 }
