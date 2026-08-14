@@ -774,6 +774,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id) {
   pending_unix_accepts_.clear();
   pending_flocks_.clear();
   pending_record_locks_.clear();
+  pending_polls_.clear();
   pending_selects_.clear();
   pending_timers_.clear();
   pending_semaphore_waits_.clear();
@@ -1420,6 +1421,41 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu &cpu) {
     cpu.clear_halt();
     return true;
   }
+  if (const auto pending = pending_polls_.find(cpu.processor_id());
+      pending != pending_polls_.end()) {
+    std::uint32_t ready_count = 0;
+    std::vector<std::uint16_t> revents(pending->second.entries.size());
+    for (std::size_t index = 0; index < pending->second.entries.size();
+         ++index) {
+      revents[index] = descriptor_poll_revents(
+          pending->second.entries[index].fd,
+          pending->second.entries[index].events);
+      if (revents[index] != 0)
+        ++ready_count;
+    }
+    const auto timed_out =
+        pending->second.deadline &&
+        shared_state_->clock.now() >= *pending->second.deadline;
+    if (ready_count == 0 && !timed_out)
+      return false;
+    bool copied = true;
+    for (std::size_t index = 0; index < revents.size(); ++index) {
+      copied = copied && memory_.write16(
+                              pending->second.address +
+                                  static_cast<std::uint32_t>(
+                                      index * darwin::poll::pollfd_size +
+                                      darwin::poll::revents_offset),
+                              revents[index]);
+    }
+    if (copied)
+      bsd_success(cpu, ready_count);
+    else
+      bsd_error(cpu, efault);
+    pending_polls_.erase(pending);
+    process_.waiting_for_events = false;
+    cpu.clear_halt();
+    return true;
+  }
   if (const auto pending = pending_socket_reads_.find(cpu.processor_id());
       pending != pending_socket_reads_.end()) {
     if (const auto descriptor =
@@ -1547,6 +1583,11 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const {
     return "select(nfds=" + std::to_string(pending->second.descriptor_count) +
            ")";
   }
+  if (const auto pending = pending_polls_.find(processor);
+      pending != pending_polls_.end()) {
+    return "poll(nfds=" + std::to_string(pending->second.entries.size()) +
+           ")";
+  }
   if (const auto pending = pending_recvmsgs_.find(processor);
       pending != pending_recvmsgs_.end()) {
     return "recvmsg(fd=" + std::to_string(pending->second.fd) + ")";
@@ -1605,6 +1646,12 @@ std::optional<std::uint64_t> CompatibilityKernel::next_timer_deadline() const {
     }
   }
   for (const auto &[processor, wait] : pending_selects_) {
+    static_cast<void>(processor);
+    if (wait.deadline && (!deadline || *wait.deadline < *deadline)) {
+      deadline = wait.deadline;
+    }
+  }
+  for (const auto &[processor, wait] : pending_polls_) {
     static_cast<void>(processor);
     if (wait.deadline && (!deadline || *wait.deadline < *deadline)) {
       deadline = wait.deadline;

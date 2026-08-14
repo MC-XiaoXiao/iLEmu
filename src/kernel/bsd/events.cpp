@@ -1370,6 +1370,80 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
     bsd_error(cpu, 25); // ENOTTY
     return;
   }
+  case darwin::syscall::poll: { // poll
+    constexpr std::uint32_t maximum_poll_descriptors = 1024;
+    constexpr std::uint64_t nanoseconds_per_millisecond = 1'000'000ULL;
+    const auto descriptor_count = registers[1];
+    if (descriptor_count > maximum_poll_descriptors) {
+      bsd_error(cpu, bsd_support::invalid_argument);
+      return;
+    }
+
+    std::vector<PendingPollEntry> entries;
+    entries.reserve(descriptor_count);
+    std::vector<std::uint16_t> revents;
+    revents.reserve(descriptor_count);
+    for (std::uint32_t index = 0; index < descriptor_count; ++index) {
+      const auto address =
+          registers[0] + index * darwin::poll::pollfd_size;
+      const auto fd = memory_.read32(address + darwin::poll::fd_offset);
+      const auto events =
+          memory_.read16(address + darwin::poll::events_offset);
+      if (!fd || !events) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+      const auto entry = PendingPollEntry{static_cast<std::int32_t>(*fd),
+                                          *events};
+      entries.push_back(entry);
+      revents.push_back(descriptor_poll_revents(entry.fd, entry.events));
+    }
+
+    std::uint32_t ready_count = 0;
+    for (const auto value : revents) {
+      if (value != 0)
+        ++ready_count;
+    }
+    for (std::size_t index = 0; index < revents.size(); ++index) {
+      const auto address =
+          registers[0] + static_cast<std::uint32_t>(
+                              index * darwin::poll::pollfd_size +
+                              darwin::poll::revents_offset);
+      if (!memory_.write16(address, revents[index])) {
+        bsd_error(cpu, bsd_support::bad_address);
+        return;
+      }
+    }
+
+    const auto timeout = static_cast<std::int32_t>(registers[2]);
+    if (ready_count != 0 || timeout == 0) {
+      bsd_success(cpu, ready_count);
+      return;
+    }
+
+    std::optional<std::uint64_t> timeout_deadline;
+    if (timeout > 0) {
+      const auto duration = static_cast<std::uint64_t>(timeout) *
+                            nanoseconds_per_millisecond;
+      const auto now = shared_state_->clock.now();
+      timeout_deadline =
+          duration > std::numeric_limits<std::uint64_t>::max() - now
+              ? std::numeric_limits<std::uint64_t>::max()
+              : now + duration;
+    }
+    // A negative timeout blocks indefinitely, while zero returned above
+    // without registering a wait. This is the same state transition used by
+    // select/kevent, so Offline baseband readiness wakes consistently.
+    process_.waiting_for_events = true;
+    pending_polls_[cpu.processor_id()] =
+        PendingPoll{registers[0], std::move(entries), cpu.processor_id(),
+                    timeout_deadline};
+    output_.write("[network] poll wait pid=" + std::to_string(process_.pid) +
+                  " nfds=" + std::to_string(descriptor_count) + "\n");
+    bsd_success(cpu, 0);
+    cpu.halt(Dynarmic::HaltReason::UserDefined5);
+    return;
+  }
   case 93: { // select
     constexpr std::uint64_t microseconds_per_second = 1'000'000ULL;
     constexpr std::uint64_t nanoseconds_per_microsecond = 1'000ULL;

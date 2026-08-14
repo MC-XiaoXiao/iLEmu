@@ -199,6 +199,18 @@ struct PendingSelect {
   std::optional<std::uint64_t> deadline;
 };
 
+struct PendingPollEntry {
+  std::int32_t fd{};
+  std::uint16_t events{};
+};
+
+struct PendingPoll {
+  std::uint32_t address{};
+  std::vector<PendingPollEntry> entries;
+  std::size_t processor{};
+  std::optional<std::uint64_t> deadline;
+};
+
 struct PendingSemaphoreWait {
   std::uint32_t semaphore{};
   std::size_t processor{};

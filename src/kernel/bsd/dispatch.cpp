@@ -58,6 +58,8 @@ std::optional<std::uint32_t> canonical_no_cancel_syscall(
     return darwin::syscall::fcntl;
   case 407: // select_nocancel
     return darwin::syscall::select;
+  case 417: // poll_nocancel
+    return darwin::syscall::poll;
   case 408: // fsync_nocancel
     return darwin::syscall::synchronize_file;
   case 409: // connect_nocancel
@@ -341,6 +343,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
     dispatch_bsd_socket(cpu, number);
     return;
   case 54:
+  case darwin::syscall::poll:
   case 93:
   case 202:
   case 362:

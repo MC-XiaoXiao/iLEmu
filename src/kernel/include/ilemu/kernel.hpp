@@ -539,6 +539,9 @@ private:
   import_descriptor(const KernelSharedState::DescriptorTransfer &transfer);
   [[nodiscard]] bool descriptor_readable(std::uint32_t fd) const;
   [[nodiscard]] bool descriptor_writable(std::uint32_t fd) const;
+  [[nodiscard]] bool descriptor_valid(std::uint32_t fd) const;
+  [[nodiscard]] std::uint16_t descriptor_poll_revents(
+      std::int32_t fd, std::uint16_t events) const;
   // EVFILT_MACHPORT reports the task-local receive name that currently has a
   // queued message. For a port set this is the ready member, not the set name.
   [[nodiscard]] std::optional<std::uint32_t>
@@ -677,6 +680,7 @@ private:
   std::map<std::size_t, PendingUnixAccept> pending_unix_accepts_;
   std::map<std::size_t, PendingFlock> pending_flocks_;
   std::map<std::size_t, PendingRecordLock> pending_record_locks_;
+  std::map<std::size_t, PendingPoll> pending_polls_;
   std::map<std::size_t, PendingSelect> pending_selects_;
   std::map<std::size_t, PendingTimer> pending_timers_;
   std::map<std::size_t, PendingSemaphoreWait> pending_semaphore_waits_;

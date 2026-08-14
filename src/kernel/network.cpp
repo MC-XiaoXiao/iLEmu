@@ -1287,6 +1287,41 @@ bool CompatibilityKernel::descriptor_writable(std::uint32_t fd) const {
     return false;
 }
 
+bool CompatibilityKernel::descriptor_valid(std::uint32_t fd) const {
+  return fd <= 2 || file_descriptors_.contains(fd) ||
+         virtual_descriptors_.contains(fd) ||
+         duplicated_descriptors_.contains(fd) ||
+         descriptor_flags_.contains(fd) || bpf_descriptors_.contains(fd) ||
+         host_sockets_.contains(fd) || virtual_udp_sockets_.contains(fd) ||
+         kernel_control_endpoints_.contains(fd) ||
+         socket_pair_endpoints_.contains(fd);
+}
+
+std::uint16_t CompatibilityKernel::descriptor_poll_revents(
+    std::int32_t fd, std::uint16_t events) const {
+  // A negative pollfd is an explicitly ignored entry. It does not produce
+  // POLLNVAL, matching Darwin's poll(2) ABI.
+  if (fd < 0)
+    return 0;
+  const auto descriptor = static_cast<std::uint32_t>(fd);
+  if (!descriptor_valid(descriptor))
+    return darwin::poll::invalid;
+
+  std::uint16_t revents = 0;
+  constexpr auto readable_events = static_cast<std::uint16_t>(
+      darwin::poll::in | darwin::poll::read_normal | darwin::poll::read_band);
+  constexpr auto writable_events = static_cast<std::uint16_t>(
+      darwin::poll::out | darwin::poll::write_normal | darwin::poll::write_band);
+  if ((events & readable_events) != 0 && descriptor_readable(descriptor))
+    revents |= events & readable_events;
+  if ((events & writable_events) != 0 && descriptor_writable(descriptor))
+    revents |= events & writable_events;
+  // The compatibility endpoints currently expose no asynchronous error or
+  // hangup source. Those bits remain unset until a provider can report them;
+  // invalid descriptors are handled above with POLLNVAL.
+  return revents;
+}
+
 std::optional<std::uint32_t>
 CompatibilityKernel::ready_mach_port_name(std::uint32_t name) const {
     using xnu792::ipc::Right;

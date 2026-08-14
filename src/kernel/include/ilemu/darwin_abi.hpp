@@ -255,6 +255,7 @@ inline constexpr std::uint32_t read = 3;
 inline constexpr std::uint32_t write = 4;
 inline constexpr std::uint32_t open = 5;
 inline constexpr std::uint32_t close = 6;
+inline constexpr std::uint32_t poll = 230;
 inline constexpr std::uint32_t set_user_id = 23;
 inline constexpr std::uint32_t ptrace = 26;
 inline constexpr std::uint32_t kill = 37;
@@ -331,6 +332,27 @@ inline constexpr std::uint32_t kqueue = 362;
 inline constexpr std::uint32_t kevent = 363;
 inline constexpr std::uint32_t mac_syscall = 381;
 } // namespace syscall
+
+namespace poll {
+// Darwin's ARM32 pollfd is the native 8-byte {int fd, short events,
+// short revents} layout. Keep the wire offsets explicit at the compatibility
+// boundary instead of using the host's pollfd definition.
+inline constexpr std::uint32_t fd_offset = 0;
+inline constexpr std::uint32_t events_offset = 4;
+inline constexpr std::uint32_t revents_offset = 6;
+inline constexpr std::uint32_t pollfd_size = 8;
+
+inline constexpr std::uint16_t in = 0x0001;
+inline constexpr std::uint16_t priority = 0x0002;
+inline constexpr std::uint16_t out = 0x0004;
+inline constexpr std::uint16_t error = 0x0008;
+inline constexpr std::uint16_t hangup = 0x0010;
+inline constexpr std::uint16_t invalid = 0x0020;
+inline constexpr std::uint16_t read_normal = 0x0040;
+inline constexpr std::uint16_t read_band = 0x0080;
+inline constexpr std::uint16_t write_band = 0x0100;
+inline constexpr std::uint16_t write_normal = out;
+} // namespace poll
 
 namespace flock_operation {
 inline constexpr std::uint32_t shared = 0x01;
