@@ -47,6 +47,23 @@ bool CompatibilityKernel::deliver_pending_mach(Cpu &cpu) {
   return deliver_pending_mach_if_ready_locked(cpu);
 }
 
+std::optional<std::size_t>
+CompatibilityKernel::display_vsync_receiver_processor() {
+  std::lock_guard kernel_lock{mutex_};
+  std::lock_guard mach_lock{shared_state_->mach_mutex};
+  for (const auto &[connection_object, registration] :
+       shared_state_->iokit_display_vsync) {
+    static_cast<void>(connection_object);
+    if (!registration.enabled || registration.owner_pid != process_.pid)
+      continue;
+    if (const auto receiver = preferred_pending_mach_receiver_locked(
+            registration.notification_port)) {
+      return receiver;
+    }
+  }
+  return std::nullopt;
+}
+
 bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(Cpu &cpu) {
   const auto pending = pending_mach_receives_.find(cpu.processor_id());
   if (pending == pending_mach_receives_.end())

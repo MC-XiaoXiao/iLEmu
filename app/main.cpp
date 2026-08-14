@@ -2983,6 +2983,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
       guest_processor_count};
   GuestParallelismPolicy guest_parallelism_policy{guest_ticks_per_second};
   std::optional<XnuThreadId> last_serial_thread;
+  std::optional<std::uint32_t> display_urgent_process;
+  std::optional<XnuThreadId> display_urgent_thread;
 
   std::uint32_t next_pid = 2;
   std::size_t watchpoint_trace_count = 0;
@@ -3939,6 +3941,21 @@ void boot(const std::vector<std::string> &args, Output &output) {
         continue;
       }
     }
+    if (display_urgent_process) {
+      for (auto &runtime : runtimes) {
+        if (runtime->kernel->process().pid != *display_urgent_process ||
+            runtime->kernel->process().exited) {
+          continue;
+        }
+        if (const auto processor =
+                runtime->kernel->display_vsync_receiver_processor()) {
+          display_urgent_thread = XnuThreadId{
+              *display_urgent_process,
+              static_cast<std::uint32_t>(*processor)};
+        }
+        break;
+      }
+    }
     for (auto &runtime : runtimes) {
       for (std::size_t processor = 0; processor < runtime->cpus->size();
            ++processor) {
@@ -4042,6 +4059,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
       preferred_thread = XnuThreadId{debug_request->thread->process,
                                      debug_request->thread->thread - 1U};
     }
+    if (!preferred_thread && display_urgent_thread) {
+      if (const auto info = scheduler.info(*display_urgent_thread);
+          info && info->state == XnuThreadState::Runnable) {
+        preferred_thread = display_urgent_thread;
+      }
+    }
+    display_urgent_thread.reset();
+    display_urgent_process.reset();
     std::vector<XnuScheduledSlice> scheduled_batch;
     scheduled_batch.reserve(guest_processor_count);
     auto reservable_ticks = remaining_ticks;
@@ -4438,6 +4463,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
       if (hard_stop)
         break;
     }
+    const auto display_deadline_before_advance =
+        initial_runtime->kernel->next_display_vsync_deadline();
+    const auto display_time_before_advance =
+        initial_runtime->kernel->current_absolute_time();
     scheduler.advance_time(scheduler_round_ticks);
     if (scheduler_round_ticks != 0) {
       initial_runtime->kernel->advance_time_by(
@@ -4472,6 +4501,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
       if (display_scanout_owner != nullptr)
         static_cast<void>(
             display_scanout_owner->kernel->refresh_display_scanout());
+      if (display_deadline_before_advance &&
+          *display_deadline_before_advance > display_time_before_advance &&
+          advanced_time >= *display_deadline_before_advance &&
+          display_scanout_owner != nullptr) {
+        display_urgent_process =
+            display_scanout_owner->kernel->process().pid;
+      }
     }
     const auto display_submissions =
         initial_runtime->kernel->display_submitted_frames();

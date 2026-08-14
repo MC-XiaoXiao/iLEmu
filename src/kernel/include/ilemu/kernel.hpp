@@ -295,6 +295,8 @@ public:
   [[nodiscard]] std::optional<std::uint64_t> next_timer_deadline() const;
   [[nodiscard]] std::optional<std::uint64_t>
   next_display_vsync_deadline() const;
+  [[nodiscard]] std::optional<std::size_t>
+  display_vsync_receiver_processor();
   void advance_absolute_time(std::uint64_t deadline);
   void advance_time_by(std::uint64_t interval);
   // The clock is shared by every process, while device registrations are
