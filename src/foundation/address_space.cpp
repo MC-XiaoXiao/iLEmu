@@ -43,6 +43,22 @@ std::uint64_t page_range_end(std::uint32_t address, std::size_t size) {
          AddressSpace::page_size;
 }
 
+[[nodiscard]] std::uint8_t *jit_page_pointer(
+    const GuestPageBacking &backing, std::uint32_t guest_page) noexcept {
+  const auto host_page = reinterpret_cast<std::uintptr_t>(
+      backing.bytes.data());
+  if constexpr (sizeof(std::uintptr_t) >= sizeof(std::uint64_t)) {
+    // Dynarmic's absolute-offset page-table mode adds the full Guest
+    // address to this entry. Keep the arithmetic in uintptr_t so the
+    // deliberately-before-object pointer is never formed by C++ pointer
+    // arithmetic; the generated access always lands inside bytes.
+    return reinterpret_cast<std::uint8_t *>(host_page - guest_page);
+  } else {
+    static_cast<void>(guest_page);
+    return reinterpret_cast<std::uint8_t *>(host_page);
+  }
+}
+
 [[nodiscard]] std::uint64_t backing_reservation_key(
     const GuestPageBacking &backing, std::uint32_t address) noexcept {
   const auto identity = backing.reservation_identity();
@@ -951,8 +967,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address) {
   const auto *page = find_page_locked(base);
   if (read_entry && (flags & read_required) == read_required &&
       page != nullptr && page->backing) {
-    *read_entry =
-        reinterpret_cast<std::uint8_t *>(page->backing->bytes.data());
+    *read_entry = jit_page_pointer(*page->backing, base);
   }
 
   constexpr auto write_required = static_cast<std::uint8_t>(
@@ -972,7 +987,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address) {
   }
   if (exclusive_write_tracked_pages_.contains(base)) return;
   *write_entry =
-      reinterpret_cast<std::uint8_t *>(page->backing->bytes.data());
+      jit_page_pointer(*page->backing, base);
   direct_jit_write_pages_.insert(base);
 }
 

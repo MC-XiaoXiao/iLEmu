@@ -1542,6 +1542,8 @@ private:
                 reinterpret_cast<DynarmicPageTable*>(read_table);
             config.page_table =
                 reinterpret_cast<DynarmicPageTable*>(write_table);
+            config.absolute_offset_page_table =
+                sizeof(std::uintptr_t) >= sizeof(std::uint64_t);
             config.detect_misaligned_access_via_page_table =
                 static_cast<std::uint8_t>(8U | 16U | 32U | 64U);
             config.only_detect_misalignment_via_page_table_on_page_boundary =
