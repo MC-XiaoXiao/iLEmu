@@ -120,6 +120,9 @@ static_assert(
     device_mig::id(device_mig::Routine::io_registry_entry_set_properties) ==
     static_cast<std::uint32_t>(iokit_abi::Message::RegistryEntrySetProperties));
 static_assert(
+    device_mig::id(device_mig::Routine::io_registry_get_root_entry) ==
+    static_cast<std::uint32_t>(iokit_abi::Message::RegistryGetRootEntry));
+static_assert(
     device_mig::id(device_mig::Routine::io_service_get_busy_state) ==
     static_cast<std::uint32_t>(iokit_abi::Message::ServiceGetBusyState));
 static_assert(device_mig::id(device_mig::Routine::io_service_open) ==
@@ -1226,6 +1229,26 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
     }
     return 0;
   }
+
+  if (message_id == static_cast<std::uint32_t>(
+                        iokit_abi::Message::RegistryGetRootEntry)) {
+    if (receive_size < 40U)
+      return mach_rcv_invalid_data;
+    std::uint32_t root_object = xnu792::ipc::null_name;
+    std::uint32_t root_name = xnu792::ipc::null_name;
+    {
+      std::lock_guard mach_lock{shared_state.mach_mutex};
+      root_object = shared_state.iokit_registry_root_object;
+      root_name = copyout_send_locked(shared_state, process.pid, root_object);
+    }
+    output.write("[iokit] root-entry pid=" + std::to_string(process.pid) +
+                 " master-object=" + std::to_string(remote_object) +
+                 " root-object=" + std::to_string(root_object) +
+                 " root-name=" + std::to_string(root_name) + "\n");
+    return write_port_reply(memory, message_address, local_port, message_id,
+                            root_name);
+  }
+
   if (message_id == static_cast<std::uint32_t>(
                         iokit_abi::Message::ServiceGetMatchingServices)) {
     // io_service_get_matching_services uses the Darwin 8 c_string wire

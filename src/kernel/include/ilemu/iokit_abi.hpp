@@ -15,6 +15,7 @@ enum class Message : std::uint32_t {
   ServiceClose = 2816,
   ConnectSetNotificationPort = 2818,
   ConnectMapMemory = 2819,
+  RegistryGetRootEntry = 2827,
   RegistryEntrySetProperties = 2828,
   ServiceGetBusyState = 2831,
   ServiceAddNotification = 2849,
