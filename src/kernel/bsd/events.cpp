@@ -426,6 +426,21 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
         bsd_success(cpu, 0);
         return;
       }
+      if (request == darwin::tty::set_mux_speed) {
+        const auto speed = memory_.read32(argument);
+        if (!speed) {
+          bsd_error(cpu, bsd_support::bad_address);
+          return;
+        }
+        auto attributes = shared_state_->baseband_device_state.attributes();
+        attributes.input_speed = static_cast<std::int32_t>(*speed);
+        attributes.output_speed = static_cast<std::int32_t>(*speed);
+        shared_state_->baseband_device_state.set_attributes(attributes);
+        output_.write("[baseband] ioctl pid=" + std::to_string(process_.pid) +
+                      " IOAOSSPEED speed=" + std::to_string(*speed) + "\n");
+        bsd_success(cpu, 0);
+        return;
+      }
       if (request == darwin::tty::ioaos_status_query) {
         std::array<std::byte, darwin::tty::ioaos_status_size> status{};
         if (!memory_.copy_in(argument, status)) {

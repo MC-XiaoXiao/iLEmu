@@ -112,6 +112,12 @@ inline constexpr std::uint32_t set_receive_threshold =
     sized_command(ioctl_input | ioctl_output, 'y', 0x9a,
                   sizeof(std::uint32_t));
 
+// Apple Onboard Serial mux speed setter observed in CommCenter. This is
+// distinct from IOSSIOSPEED: the mux programs its transport at 12,000,000
+// baud through this vendor-group request.
+inline constexpr std::uint32_t set_mux_speed =
+    sized_command(ioctl_input, 'y', 0xa4, sizeof(std::uint32_t));
+
 // Apple Serial Mux requests used by CommCenter while it builds the baseband
 // DLCI/channel table.
 // The ARMv6 CommCenter issues this four-byte output query before deciding
