@@ -68,6 +68,12 @@ constexpr std::uint32_t dialing_call_state{2U};
 constexpr std::uint32_t disconnected_call_state{4U};
 constexpr std::size_t maximum_dialed_number_bytes{256U};
 
+// SpringBoard's private registration enum predates the public CoreTelephony
+// status objects. On the offline path, value 3 selects the firmware's
+// localized No Service view on the iPhoneOS 1.x-3.x SpringBoard builds in
+// this matrix; it is a UI state, not a modem or AT reply.
+constexpr std::uint32_t offline_springboard_registration_status{3U};
+
 // These APIs have scalar return values in iPhoneOS 1.0. An offline handset
 // has no data attachment, active data context, signal, airplane mode, or calls.
 constexpr std::array<std::string_view, 4> offline_scalar_queries{
@@ -570,6 +576,16 @@ void register_core_telephony_hle(
         "-[SBStatusBarController telephonyControllerCheckedIn]",
         [](UserlandHleCall& call) { call.set_return(1); });
 
+    registry.register_objc_instance_method(
+        std::string{springboard_image}, "SBTelephonyManager",
+        "registrationStatus", "-[SBTelephonyManager registrationStatus]",
+        [offline_transport](UserlandHleCall& call) {
+            if (offline_transport && is_offline_ui_client(call)) {
+                call.set_return(offline_springboard_registration_status);
+                return;
+            }
+            call.resume_original_persistently();
+        });
     // SBTelephonyManager registers this observer before it has any SIM or
     // service state. A silent transport is not evidence that a physical radio
     // died, so suppress only that firmware-owned observer in the offline
