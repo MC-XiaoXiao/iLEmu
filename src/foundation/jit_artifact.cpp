@@ -2063,6 +2063,9 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::publish(
     result = inserted != artifacts_.end()
                  ? inserted->second.artifact
                  : (notify_writeback ? artifact : nullptr);
+    if (result) {
+      publication_generation_.fetch_add(1, std::memory_order_release);
+    }
   }
   if (notify_writeback) writeback_condition_.notify_one();
   return result;
@@ -2133,6 +2136,10 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
     }
   }
   return result;
+}
+
+std::uint64_t JitArtifactStore::publication_generation() const noexcept {
+  return publication_generation_.load(std::memory_order_acquire);
 }
 
 void JitArtifactStore::record_validation_rejection(

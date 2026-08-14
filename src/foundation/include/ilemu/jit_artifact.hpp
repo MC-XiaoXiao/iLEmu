@@ -184,6 +184,10 @@ public:
       JitArtifactRetention retention = JitArtifactRetention::Normal);
   [[nodiscard]] std::size_t size() const;
   [[nodiscard]] JitArtifactStoreStats stats() const;
+  // Changes whenever a new artifact becomes available to runtime lookups.
+  // Executors use this to retry a previously negative probe without polling
+  // the store on every CPU slice.
+  [[nodiscard]] std::uint64_t publication_generation() const noexcept;
   void record_validation_rejection(
       JitArtifactValidationRejection rejection) const noexcept;
   // Pressure reclamation removes only non-boot artifacts that have no
@@ -345,6 +349,7 @@ private:
   mutable bool writeback_stopping_{};
   mutable bool writeback_disabled_{};
   mutable std::atomic<bool> writeback_cancel_requested_{};
+  std::atomic<std::uint64_t> publication_generation_{};
   std::thread writeback_thread_;
   mutable JitArtifactStoreStats stats_;
 };

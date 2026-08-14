@@ -338,6 +338,11 @@ public:
         return make_artifact_key(location_descriptor);
     }
 
+    [[nodiscard]] std::uint64_t artifact_publication_generation() const
+        noexcept {
+        return artifact_store_ ? artifact_store_->publication_generation() : 0U;
+    }
+
     void discard_translation_location(
         std::uint64_t location_descriptor) noexcept {
         if (translation_profile_) {
@@ -1335,10 +1340,20 @@ public:
         }
         const auto imported = callbacks_->import_artifact(*jit_, descriptor);
         if (imported == JitCallbacks::ArtifactImportOutcome::Imported) {
+            if (key) {
+                artifact_probes_[descriptor] = ArtifactProbe{
+                    key->content_identity, key->layout_identity, true,
+                    callbacks_->artifact_publication_generation()};
+            }
             record_code_cache_usage();
             return PrecompileDisposition::ArtifactImported;
         }
         if (imported == JitCallbacks::ArtifactImportOutcome::AlreadyPresent) {
+            if (key) {
+                artifact_probes_[descriptor] = ArtifactProbe{
+                    key->content_identity, key->layout_identity, true,
+                    callbacks_->artifact_publication_generation()};
+            }
             record_code_cache_usage();
             return PrecompileDisposition::SharedSlabHit;
         }
@@ -1363,7 +1378,8 @@ public:
                 key->content_identity, key->layout_identity,
                 imported == JitCallbacks::ArtifactImportOutcome::Imported ||
                     imported ==
-                        JitCallbacks::ArtifactImportOutcome::AlreadyPresent};
+                        JitCallbacks::ArtifactImportOutcome::AlreadyPresent,
+                callbacks_->artifact_publication_generation()};
         }
         record_code_cache_usage();
         return newly_emitted ? PrecompileDisposition::NativeCompiled
@@ -1413,6 +1429,7 @@ private:
         ContentIdentity content_identity;
         ContentIdentity layout_identity;
         bool imported{};
+        std::uint64_t publication_generation{};
 
         [[nodiscard]] bool matches(const JitArtifactKey& key) const noexcept {
             return imported && content_identity == key.content_identity &&
@@ -1426,19 +1443,28 @@ private:
             Dynarmic::A32::FPSCR{jit_->Fpscr()}};
         const auto location =
             static_cast<Dynarmic::IR::LocationDescriptor>(descriptor).Value();
-        if (artifact_probes_.find(location) != artifact_probes_.end()) {
-            return;
-        }
         const auto key = callbacks_->artifact_key(location);
         if (!key) return;
+        const auto publication_generation =
+            callbacks_->artifact_publication_generation();
+        if (const auto probe = artifact_probes_.find(location);
+            probe != artifact_probes_.end()) {
+            if (probe->second.matches(*key) ||
+                (!probe->second.imported &&
+                 probe->second.publication_generation ==
+                     publication_generation)) {
+                return;
+            }
+        }
         const auto imported = callbacks_->import_artifact(*jit_, location);
-        artifact_probes_.emplace(
+        artifact_probes_.insert_or_assign(
             location,
             ArtifactProbe{key->content_identity, key->layout_identity,
                           imported !=
                               JitCallbacks::ArtifactImportOutcome::Unavailable &&
                           imported !=
-                              JitCallbacks::ArtifactImportOutcome::Failed});
+                              JitCallbacks::ArtifactImportOutcome::Failed,
+                          publication_generation});
     }
 
     void observe_shared_invalidation_epoch() {
