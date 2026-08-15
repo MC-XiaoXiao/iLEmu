@@ -3,7 +3,11 @@
 #include "ilemu/darwin_tty_abi.hpp"
 
 #include <algorithm>
+#include <array>
+#include <charconv>
+#include <cstdint>
 #include <mutex>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -11,16 +15,27 @@ namespace ilemu::bsd::baseband_device {
 
 namespace {
 
-bool has_numeric_suffix(std::string_view candidate,
-                        std::string_view prefix) {
-  if (!candidate.starts_with(prefix)) {
-    return false;
+std::optional<std::uint32_t> numeric_suffix(std::string_view candidate) {
+  constexpr std::array<std::string_view, 2> prefixes{
+      "/dev/dlci.spi-baseband.", "/dev/dlci.h5.baseband."};
+  for (const auto prefix : prefixes) {
+    if (!candidate.starts_with(prefix)) {
+      continue;
+    }
+    const auto suffix = candidate.substr(prefix.size());
+    if (suffix.empty()) {
+      return std::nullopt;
+    }
+    std::uint32_t value{};
+    const auto result = std::from_chars(
+        suffix.data(), suffix.data() + suffix.size(), value, 10);
+    if (result.ec != std::errc{} || result.ptr != suffix.data() + suffix.size() ||
+        value == 0) {
+      return std::nullopt;
+    }
+    return value;
   }
-  const auto suffix = candidate.substr(prefix.size());
-  return !suffix.empty() && std::all_of(
-      suffix.begin(), suffix.end(), [](const char value) {
-        return value >= '0' && value <= '9';
-      });
+  return std::nullopt;
 }
 
 } // namespace
@@ -53,6 +68,19 @@ bool State::dynamic_channels_available() const {
 void State::set_dynamic_channels_available(bool available) {
   const std::lock_guard lock{mutex_};
   dynamic_channels_available_ = available;
+}
+
+bool State::mux_channel_path_available(std::string_view candidate) const {
+  const auto unit = numeric_suffix(candidate);
+  if (!unit) {
+    return false;
+  }
+  const std::lock_guard lock{mutex_};
+  if (!dynamic_channels_available_) {
+    return false;
+  }
+  return anonymous_mux_channel_capacity_ == 0 ||
+         *unit <= anonymous_mux_channel_capacity_;
 }
 
 bool State::may_open(bool privileged) const {
@@ -289,8 +317,7 @@ void State::set_transmit_sink(TransmitSink sink) {
 }
 
 bool is_mux_channel_path(std::string_view candidate) {
-  return has_numeric_suffix(candidate, "/dev/dlci.spi-baseband.") ||
-         has_numeric_suffix(candidate, "/dev/dlci.h5.baseband.");
+  return numeric_suffix(candidate).has_value();
 }
 
 bool is_mux_path(std::string_view candidate) {

@@ -1509,6 +1509,26 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
         return;
       }
     }
+    // Unlike poll(2), select(2) has no per-entry revents field. XNU reports
+    // EBADF when any requested descriptor is invalid instead of silently
+    // treating it as not ready. Validate both sets before writing filtered
+    // results back to the guest so an error cannot leave a partially updated
+    // fd_set behind.
+    for (std::uint32_t word_index = 0; word_index < words; ++word_index) {
+      for (std::uint32_t bit = 0; bit < 32; ++bit) {
+        const auto fd = word_index * 32U + bit;
+        if (fd >= descriptor_count) {
+          continue;
+        }
+        const auto requested =
+            ((requested_read_words[word_index] |
+              requested_write_words[word_index]) & (1U << bit)) != 0;
+        if (requested && !descriptor_valid(fd)) {
+          bsd_error(cpu, bsd_support::bad_file_descriptor);
+          return;
+        }
+      }
+    }
     if (ready_count != 0) {
       bsd_success(cpu, ready_count);
       return;

@@ -57,6 +57,10 @@ public:
   // devices may expose bounded logical channels without a modem peer.
   [[nodiscard]] bool dynamic_channels_available() const;
   void set_dynamic_channels_available(bool available);
+  // Direct /dev/dlci.*.<unit> opens use the same bounded logical channel
+  // table as ASMIOCNEWDLCI.  Keep the path validation in the device state so
+  // filesystem, stat, and access do not grow separate capacity rules.
+  [[nodiscard]] bool mux_channel_path_available(std::string_view candidate) const;
   [[nodiscard]] bool may_open(bool privileged) const;
   [[nodiscard]] IoctlResult ioctl(std::uint32_t command);
   [[nodiscard]] bool exclusive() const;

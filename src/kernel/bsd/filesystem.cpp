@@ -249,7 +249,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       return;
     }
     if (bsd::baseband_device::is_mux_channel_path(*path) &&
-        !shared_state_->baseband_device_state.dynamic_channels_available()) {
+        !shared_state_->baseband_device_state.mux_channel_path_available(
+            *path)) {
       // This profile has no guest-visible DLCI setup capability. Do not
       // allocate a descriptor that could be mistaken for a modem endpoint.
       constexpr auto error = darwin::error::no_such_device_or_address;
@@ -559,7 +560,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       return;
     }
     if (bsd::baseband_device::is_mux_channel_path(*path) &&
-        !shared_state_->baseband_device_state.dynamic_channels_available()) {
+        !shared_state_->baseband_device_state.mux_channel_path_available(
+            *path)) {
       bsd_error(cpu, darwin::error::no_such_device_or_address);
       return;
     }
@@ -1958,7 +1960,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       return;
     }
     if (bsd::baseband_device::is_mux_channel_path(*path) &&
-        !shared_state_->baseband_device_state.dynamic_channels_available()) {
+        !shared_state_->baseband_device_state.mux_channel_path_available(
+            *path)) {
       bsd_error(cpu, darwin::error::no_such_device_or_address);
       return;
     }
@@ -2088,7 +2091,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
       return;
     }
     if (bsd::baseband_device::is_mux_channel_path(*path) &&
-        !shared_state_->baseband_device_state.dynamic_channels_available()) {
+        !shared_state_->baseband_device_state.mux_channel_path_available(
+            *path)) {
       bsd_error(cpu, darwin::error::no_such_device_or_address);
       return;
     }
