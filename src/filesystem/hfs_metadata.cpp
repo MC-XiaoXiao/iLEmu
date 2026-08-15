@@ -251,7 +251,8 @@ MetadataProvider::MetadataProvider(std::filesystem::path root)
     : root_{std::move(root)} {}
 
 std::optional<Metadata> MetadataProvider::query(
-    const std::filesystem::path& path, bool follow_symlink) const {
+    const std::filesystem::path& path, bool follow_symlink,
+    bool include_directory_entry_count) const {
     struct stat status {};
     if ((follow_symlink ? ::stat(path.c_str(), &status)
                         : ::lstat(path.c_str(), &status)) != 0) {
@@ -353,7 +354,7 @@ std::optional<Metadata> MetadataProvider::query(
             finder->begin(), std::min(finder->size(), result.finder_info.size()),
             result.finder_info.begin());
     }
-    if (result.directory) {
+    if (result.directory && include_directory_entry_count) {
         std::error_code error;
         for (std::filesystem::directory_iterator iterator{path, error}, end;
              !error && iterator != end; iterator.increment(error)) {

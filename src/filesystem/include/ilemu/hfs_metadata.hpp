@@ -158,7 +158,8 @@ public:
     explicit MetadataProvider(std::filesystem::path root);
 
     [[nodiscard]] std::optional<Metadata> query(
-        const std::filesystem::path& path, bool follow_symlink) const;
+        const std::filesystem::path& path, bool follow_symlink,
+        bool include_directory_entry_count = true) const;
     [[nodiscard]] static bool valid_request(const AttributeRequest& request);
     [[nodiscard]] static std::vector<std::byte> pack_attributes(
         const Metadata& metadata, const AttributeRequest& request);

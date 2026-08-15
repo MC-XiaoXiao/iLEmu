@@ -324,6 +324,12 @@ private:
     std::uint32_t error{};
   };
 
+  struct DirectoryEntry {
+    std::string name;
+    std::uint8_t type{};
+    std::uint32_t catalog_id{};
+  };
+
   void dispatch_arm_fast_trap(Cpu &cpu);
   void dispatch_bsd(Cpu &cpu, std::uint32_t number);
   void dispatch_bsd_nosys(Cpu &cpu, bool send_sigsys);
@@ -446,7 +452,8 @@ private:
                      bool follow_final_symlink = true) const;
   [[nodiscard]] std::optional<hfs::Metadata>
   query_hfs_metadata(const std::filesystem::path &path,
-                     bool follow_symlink) const;
+                     bool follow_symlink,
+                     bool include_directory_entry_count = true) const;
   [[nodiscard]] std::optional<std::vector<std::byte>>
   query_hfs_named_attribute(const std::filesystem::path &path,
                             bool follow_symlink, std::string_view name) const;
@@ -609,6 +616,8 @@ private:
   std::map<std::uint32_t, std::pair<std::uint32_t, bool>>
       virtual_block_descriptors_;
   std::map<std::uint32_t, std::uint64_t> file_offsets_;
+  std::map<std::filesystem::path, std::vector<DirectoryEntry>>
+      directory_entries_cache_;
   std::map<std::uint32_t, std::uint32_t> file_status_flags_;
   std::map<std::uint32_t, std::uint32_t> descriptor_flags_;
   std::map<std::uint32_t, AioCompletion> aio_completions_;

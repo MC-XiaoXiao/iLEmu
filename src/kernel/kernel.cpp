@@ -2467,8 +2467,10 @@ CompatibilityKernel::resolve_guest_path(const std::string &path,
 
 std::optional<hfs::Metadata>
 CompatibilityKernel::query_hfs_metadata(const std::filesystem::path &path,
-                                        bool follow_symlink) const {
-  auto metadata = hfs_metadata_.query(path, follow_symlink);
+                                        bool follow_symlink,
+                                        bool include_directory_entry_count) const {
+  auto metadata =
+      hfs_metadata_.query(path, follow_symlink, include_directory_entry_count);
   if (!metadata)
     return std::nullopt;
   const std::lock_guard filesystem_lock{shared_state_->filesystem_mutex};
