@@ -426,6 +426,10 @@ void CompatibilityKernel::enqueue_baseband_input(
   shared_state_->baseband_device_state.enqueue_receive(bytes);
 }
 
+void CompatibilityKernel::set_baseband_receive_eof(bool eof) {
+  shared_state_->baseband_device_state.set_receive_eof(eof);
+}
+
 void CompatibilityKernel::enqueue_touch_input(const TouchInput &input) {
   const PerformanceLatencyScope latency{PerfLatencyKind::InputEnqueue};
   performance_counters().discard_pending_vsync_callbacks();
@@ -1010,6 +1014,8 @@ CompatibilityKernel::export_descriptor(std::uint32_t fd) const {
   transfer.file_status_flags = file_status_flags_.contains(fd)
                                    ? file_status_flags_.at(fd)
                                    : darwin::open_flag::read_write;
+  if (const auto baseband = baseband_open_description(fd))
+    transfer.baseband_open_description = baseband;
   if (const auto endpoint = socket_pair_endpoints_.find(fd);
       endpoint != socket_pair_endpoints_.end()) {
     transfer.socket_endpoint = endpoint->second;
@@ -1058,6 +1064,10 @@ std::optional<std::uint32_t> CompatibilityKernel::import_descriptor(
   } else {
     virtual_descriptors_[*fd] = transfer.virtual_type;
     file_status_flags_[*fd] = transfer.file_status_flags;
+    if (transfer.baseband_open_description) {
+      baseband_open_descriptions_[*fd] =
+          transfer.baseband_open_description;
+    }
     if (transfer.virtual_type == "route-socket") {
       std::lock_guard route_lock{shared_state_->route_socket_mutex};
       route_socket_states_[*fd] =
@@ -1233,7 +1243,8 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu &cpu) {
   }
   if (const auto pending = pending_baseband_writes_.find(cpu.processor_id());
       pending != pending_baseband_writes_.end()) {
-    if (!shared_state_->baseband_device_state.transmit_queue_writable()) {
+    const auto endpoint = baseband_open_description(pending->second.fd);
+    if (!endpoint || !endpoint->writable()) {
       bsd_error(cpu, darwin::error::no_such_device_or_address);
       pending_baseband_writes_.erase(pending);
       process_.waiting_for_events = false;
@@ -1245,8 +1256,7 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu &cpu) {
         descriptor->second != bsd::baseband_device::descriptor_kind) {
       bsd_error(cpu, ebadf);
     } else {
-      const auto written = shared_state_->baseband_device_state.write(
-          pending->second.bytes);
+      const auto written = endpoint->write(pending->second.bytes);
       if (written != pending->second.bytes.size()) {
         bsd_error(cpu, darwin::error::io);
       } else {
@@ -1963,6 +1973,7 @@ void CompatibilityKernel::inherit_process_state(
   file_status_flags_ = parent.file_status_flags_;
   descriptor_flags_ = parent.descriptor_flags_;
   virtual_descriptors_ = parent.virtual_descriptors_;
+  baseband_open_descriptions_ = parent.baseband_open_descriptions_;
   wifi_driver_event_streams_ = parent.wifi_driver_event_streams_;
   offline_serial_state_.inherit_configuration(parent.offline_serial_state_);
   bpf_descriptors_ = parent.bpf_descriptors_;

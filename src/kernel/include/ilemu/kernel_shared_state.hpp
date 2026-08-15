@@ -445,6 +445,8 @@ struct KernelSharedState {
         regular_file_open_description;
     std::optional<std::pair<std::uint32_t, bool>> block_device;
     std::string virtual_type;
+    std::shared_ptr<bsd::baseband_device::OpenDescription>
+        baseband_open_description;
     std::optional<SocketPairEndpoint> socket_endpoint;
     std::shared_ptr<UnixListener> unix_listener_state;
     std::shared_ptr<RouteSocketState> route_socket_state;

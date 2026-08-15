@@ -244,6 +244,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
     }
     const auto host = resolve_guest_path(*path);
     const auto flags = registers[1];
+    std::shared_ptr<bsd::baseband_device::OpenDescription>
+        baseband_description;
     output_.write("[vfs] open " + *path + "\n");
     if (reject_unavailable_baseband(*path)) {
       return;
@@ -281,8 +283,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
         bsd_error(cpu, darwin::error::no_such_device_or_address);
         return;
       }
-      if (!shared_state_->baseband_device_state.may_open(
-              process_.effective_uid == 0)) {
+      baseband_description =
+          shared_state_->baseband_device_state.open_description(*path,
+                                                                process_.pid);
+      if (!baseband_description) {
         bsd_error(cpu, darwin::error::device_busy);
         return;
       }
@@ -339,6 +343,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(Cpu &cpu,
                             ? bsd::offline_serial_device::descriptor_kind
                             : std::string_view{"random"};
       virtual_descriptors_.emplace(*fd, kind);
+      if (baseband_description)
+        baseband_open_descriptions_[*fd] = std::move(baseband_description);
       file_status_flags_[*fd] = flags;
       bsd_success(cpu, *fd);
       return;

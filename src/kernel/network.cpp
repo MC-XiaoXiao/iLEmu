@@ -670,9 +670,16 @@ bool CompatibilityKernel::receive_socket_bytes(
     if (const auto descriptor = virtual_descriptors_.find(fd);
         descriptor != virtual_descriptors_.end() &&
         descriptor->second == bsd::baseband_device::descriptor_kind) {
-        auto bytes =
-            shared_state_->baseband_device_state.receive(size);
-        if (bytes.empty()) return false;
+        const auto endpoint = baseband_open_description(fd);
+        auto bytes = endpoint ? endpoint->receive(size)
+                              : std::vector<std::byte>{};
+        if (bytes.empty()) {
+            if (endpoint && endpoint->receive_eof()) {
+                bsd_success(cpu, 0);
+                return true;
+            }
+            return false;
+        }
         if (!memory_.copy_in(address, bytes)) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
@@ -1207,9 +1214,12 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const {
     }
     if (const auto descriptor = virtual_descriptors_.find(fd);
         descriptor != virtual_descriptors_.end() &&
-        descriptor->second == bsd::baseband_device::descriptor_kind &&
-        shared_state_->baseband_device_state.pending_receive_bytes() != 0) {
-        return true;
+        descriptor->second == bsd::baseband_device::descriptor_kind) {
+        if (const auto endpoint = baseband_open_description(fd);
+            endpoint && (endpoint->pending_receive_bytes() != 0 ||
+                         endpoint->receive_eof())) {
+            return true;
+        }
     }
     if (const auto descriptor = virtual_descriptors_.find(fd);
         descriptor != virtual_descriptors_.end() &&
@@ -1279,7 +1289,8 @@ bool CompatibilityKernel::descriptor_writable(std::uint32_t fd) const {
         (descriptor->second == "route-socket" ||
          descriptor->second == darwin::bpf::descriptor_kind ||
          (descriptor->second == bsd::baseband_device::descriptor_kind &&
-          shared_state_->baseband_device_state.transmit_queue_writable()) ||
+          baseband_open_description(fd) &&
+          baseband_open_description(fd)->writable()) ||
          descriptor->second ==
              bsd::offline_serial_device::descriptor_kind)) {
         return true;
@@ -1316,9 +1327,16 @@ std::uint16_t CompatibilityKernel::descriptor_poll_revents(
     revents |= events & readable_events;
   if ((events & writable_events) != 0 && descriptor_writable(descriptor))
     revents |= events & writable_events;
-  // The compatibility endpoints currently expose no asynchronous error or
-  // hangup source. Those bits remain unset until a provider can report them;
-  // invalid descriptors are handled above with POLLNVAL.
+  if (const auto kind = virtual_descriptors_.find(descriptor);
+      kind != virtual_descriptors_.end() &&
+      kind->second == bsd::baseband_device::descriptor_kind) {
+    if (const auto endpoint = baseband_open_description(descriptor)) {
+      if (endpoint->receive_eof())
+        revents |= darwin::poll::hangup;
+      if (endpoint->transmit_sink_failed())
+        revents |= darwin::poll::error;
+    }
+  }
   return revents;
 }
 
@@ -1381,8 +1399,9 @@ std::optional<std::uint32_t> CompatibilityKernel::socket_pending_byte_count(
     if (const auto descriptor = virtual_descriptors_.find(fd);
         descriptor != virtual_descriptors_.end() &&
         descriptor->second == bsd::baseband_device::descriptor_kind) {
+        const auto endpoint = baseband_open_description(fd);
         return static_cast<std::uint32_t>(std::min<std::size_t>(
-            shared_state_->baseband_device_state.pending_receive_bytes(),
+            endpoint ? endpoint->pending_receive_bytes() : 0U,
             std::numeric_limits<std::uint32_t>::max()));
     }
     if (const auto descriptor = virtual_descriptors_.find(fd);
@@ -1413,6 +1432,21 @@ std::optional<std::uint32_t> CompatibilityKernel::socket_pending_byte_count(
     }
     darwin_error = 25;  // ENOTTY
     return std::nullopt;
+}
+
+std::shared_ptr<bsd::baseband_device::OpenDescription>
+CompatibilityKernel::baseband_open_description(std::uint32_t fd) const {
+  for (unsigned depth = 0; depth < 256U; ++depth) {
+    if (const auto description = baseband_open_descriptions_.find(fd);
+        description != baseband_open_descriptions_.end()) {
+      return description->second;
+    }
+    const auto duplicate = duplicated_descriptors_.find(fd);
+    if (duplicate == duplicated_descriptors_.end())
+      break;
+    fd = duplicate->second;
+  }
+  return {};
 }
 
 std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(

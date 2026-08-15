@@ -489,7 +489,10 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
           bsd_error(cpu, bsd_support::bad_address);
           return;
         }
-        shared_state_->baseband_device_state.flush_buffers(*what);
+        if (const auto endpoint = baseband_open_description(fd))
+          endpoint->flush_buffers(*what);
+        else
+          shared_state_->baseband_device_state.flush_buffers(*what);
         output_.write("[baseband] ioctl pid=" + std::to_string(process_.pid) +
                       " TIOCFLUSH what=" + std::to_string(*what) + "\n");
         bsd_success(cpu, 0);
@@ -577,14 +580,22 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
         bsd_success(cpu, 0);
         return;
       }
-      if (shared_state_->baseband_device_state.ioctl(registers[1]) ==
-          bsd::baseband_device::IoctlResult::success) {
+      const auto endpoint = baseband_open_description(fd);
+      const auto ioctl_result =
+          endpoint ? endpoint->ioctl(registers[1])
+                   : shared_state_->baseband_device_state.ioctl(registers[1]);
+      if (ioctl_result == bsd::baseband_device::IoctlResult::success) {
         std::ostringstream message;
         message << "[baseband] ioctl pid=" << process_.pid << " request=0x"
                 << std::hex << registers[1] << std::dec << " exclusive="
                 << shared_state_->baseband_device_state.exclusive() << '\n';
         output_.write(message.str());
         bsd_success(cpu, 0);
+        return;
+      }
+      if (ioctl_result ==
+          bsd::baseband_device::IoctlResult::permission_denied) {
+        bsd_error(cpu, darwin::error::permission_denied);
         return;
       }
       std::ostringstream message;

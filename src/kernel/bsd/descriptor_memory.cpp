@@ -525,13 +525,17 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
                       bsd_support::format_payload_prefix(*bytes) + "\n");
         ++baseband_io_trace_count_;
       }
-      if (!shared_state_->baseband_device_state.transmit_queue_writable()) {
+      const auto endpoint = baseband_open_description(fd);
+      if (!endpoint || !endpoint->writable()) {
+        if (endpoint && endpoint->transmit_sink_failed())
+          bsd_error(cpu, darwin::error::io);
+        else
         // A profile without a device node has no event that can make this
         // queue writable.  Report the unavailable transport immediately.
-        bsd_error(cpu, darwin::error::no_such_device_or_address);
+          bsd_error(cpu, darwin::error::no_such_device_or_address);
         return;
       }
-      const auto written = shared_state_->baseband_device_state.write(*bytes);
+      const auto written = endpoint->write(*bytes);
       if (written != bytes->size()) {
         bsd_error(cpu, darwin::error::io);
         return;
@@ -700,6 +704,18 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
                                 ? duplicated_descriptors_.at(source)
                                 : source;
       duplicated_descriptors_.emplace(allocated, original);
+    }
+    if (const auto baseband = baseband_open_description(source)) {
+      // A dup retains the same open description. Keep a direct descriptor
+      // entry as well so poll/select and later descriptor passing do not need
+      // to interpret a string kind as a transport session.
+      baseband_open_descriptions_[allocated] = baseband;
+      virtual_descriptors_[allocated] = bsd::baseband_device::descriptor_kind;
+      file_status_flags_[allocated] =
+          file_status_flags_.contains(source)
+              ? file_status_flags_.at(source)
+              : darwin::open_flag::read_write;
+      duplicated_descriptors_.erase(allocated);
     }
     bsd_success(cpu, allocated);
     return;
@@ -874,6 +890,15 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(Cpu &cpu,
           duplicated_descriptors_.contains(source)
               ? duplicated_descriptors_.at(source)
               : source;
+    }
+    if (const auto baseband = baseband_open_description(source)) {
+      baseband_open_descriptions_[destination] = baseband;
+      virtual_descriptors_[destination] = bsd::baseband_device::descriptor_kind;
+      file_status_flags_[destination] =
+          file_status_flags_.contains(source)
+              ? file_status_flags_.at(source)
+              : darwin::open_flag::read_write;
+      duplicated_descriptors_.erase(destination);
     }
     bsd_success(cpu, destination);
     return;

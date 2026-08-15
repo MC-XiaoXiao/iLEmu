@@ -11,6 +11,7 @@ bool CompatibilityKernel::release_file_descriptor(
   release_record_locks_for_descriptor(descriptor);
   const auto erased = file_descriptors_.erase(descriptor) +
                       virtual_descriptors_.erase(descriptor) +
+                      baseband_open_descriptions_.erase(descriptor) +
                       duplicated_descriptors_.erase(descriptor);
   if (erased != 0)
     detach_kevents_for_descriptor(descriptor);

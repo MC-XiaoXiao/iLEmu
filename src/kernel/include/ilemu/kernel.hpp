@@ -255,6 +255,7 @@ public:
   network_interface_snapshot(std::string_view name) const;
   [[nodiscard]] std::vector<darwin::route::Entry> route_snapshot() const;
   void enqueue_baseband_input(std::span<const std::byte> bytes);
+  void set_baseband_receive_eof(bool eof);
   void set_baseband_capture_enabled(bool enabled);
   void set_baseband_transmit_sink(
       bsd::baseband_device::State::TransmitSink sink);
@@ -549,6 +550,8 @@ private:
   [[nodiscard]] std::optional<std::uint32_t>
   socket_pending_byte_count(std::uint32_t fd,
                             std::uint32_t &darwin_error) const;
+  [[nodiscard]] std::shared_ptr<bsd::baseband_device::OpenDescription>
+  baseband_open_description(std::uint32_t fd) const;
   [[nodiscard]] std::optional<std::uint32_t>
   collect_ready_kevents(std::uint32_t queue_fd, std::uint32_t event_address,
                         std::uint32_t event_count);
@@ -610,6 +613,9 @@ private:
   std::map<std::uint32_t, std::uint32_t> descriptor_flags_;
   std::map<std::uint32_t, AioCompletion> aio_completions_;
   std::unordered_map<std::uint32_t, std::string> virtual_descriptors_;
+  std::map<std::uint32_t,
+           std::shared_ptr<bsd::baseband_device::OpenDescription>>
+      baseband_open_descriptions_;
   bsd::offline_serial_device::State offline_serial_state_;
   std::map<std::uint32_t, std::shared_ptr<darwin::bpf::DescriptorState>>
       bpf_descriptors_;

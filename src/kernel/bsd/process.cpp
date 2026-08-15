@@ -89,6 +89,7 @@ void CompatibilityKernel::release_process_descriptors() {
   file_status_flags_.clear();
   descriptor_flags_.clear();
   virtual_descriptors_.clear();
+  baseband_open_descriptions_.clear();
   bpf_descriptors_.clear();
   host_sockets_.clear();
   pending_host_writes_.clear();

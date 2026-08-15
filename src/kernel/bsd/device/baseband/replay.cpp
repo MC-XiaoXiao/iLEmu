@@ -1,7 +1,7 @@
 #include "ilemu/baseband_replay.hpp"
 
+#include <cstdint>
 #include <fstream>
-#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -14,17 +14,22 @@ std::vector<std::byte> load_replay_file(const std::filesystem::path &path) {
     throw std::runtime_error{"cannot open baseband replay input: " +
                              path.string()};
   }
-  const std::vector<char> source{std::istreambuf_iterator<char>{stream},
-                                 std::istreambuf_iterator<char>{}};
-  if (stream.bad()) {
+  stream.seekg(0, std::ios::end);
+  const auto end = stream.tellg();
+  if (end < 0 || static_cast<std::uintmax_t>(end) > maximum_replay_bytes) {
+    throw std::runtime_error{"baseband replay input exceeds the bounded "
+                             "replay budget: " + path.string()};
+  }
+  const auto size = static_cast<std::size_t>(end);
+  stream.seekg(0, std::ios::beg);
+  std::vector<std::byte> bytes(size);
+  if (size != 0) {
+    stream.read(reinterpret_cast<char *>(bytes.data()),
+                static_cast<std::streamsize>(size));
+  }
+  if (!stream || stream.gcount() != static_cast<std::streamsize>(size)) {
     throw std::runtime_error{"cannot read baseband replay input: " +
                              path.string()};
-  }
-  std::vector<std::byte> bytes;
-  bytes.reserve(source.size());
-  for (const auto byte : source) {
-    bytes.push_back(static_cast<std::byte>(
-        static_cast<unsigned char>(byte)));
   }
   return bytes;
 }

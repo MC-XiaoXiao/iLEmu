@@ -2611,6 +2611,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       process.executable_path,
       process.executable.code_signature_entitlements());
   initial->kernel->enqueue_baseband_input(baseband_input);
+  initial->kernel->set_baseband_receive_eof(baseband_input_path.has_value());
   if (baseband_input_path) {
     output.line("[baseband] replay input=" + *baseband_input_path +
                 " bytes=" + std::to_string(baseband_input.size()));
