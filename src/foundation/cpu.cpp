@@ -109,7 +109,7 @@ public:
         performance_counters().record_cpu_run_phases(
             process_id_, processor_id_, execution_slot_, total_started_, ended,
             phase_nanoseconds_, requested_ticks_, consumed_ticks_,
-            host_yield_checks_, host_yielded_);
+            host_yield_checks_, host_yielded_, svc_calls_, svc_);
     }
 
     void checkpoint(PerfLatencyKind kind) {
@@ -127,10 +127,13 @@ public:
 
     void record_result(
         std::uint64_t consumed_ticks, std::uint64_t host_yield_checks,
-        bool host_yielded) noexcept {
+        bool host_yielded, std::uint64_t svc_calls,
+        std::optional<std::uint32_t> svc) noexcept {
         consumed_ticks_ = consumed_ticks;
         host_yield_checks_ = host_yield_checks;
         host_yielded_ = host_yielded;
+        svc_calls_ = svc_calls;
+        svc_ = svc;
     }
 
 private:
@@ -141,6 +144,8 @@ private:
     std::uint64_t consumed_ticks_{};
     std::uint64_t host_yield_checks_{};
     bool host_yielded_{};
+    std::uint64_t svc_calls_{};
+    std::optional<std::uint32_t> svc_;
     bool enabled_{};
     std::chrono::steady_clock::time_point total_started_;
     std::chrono::steady_clock::time_point phase_started_;
@@ -1263,7 +1268,7 @@ public:
             auto result = callbacks_->result(reason);
             diagnostics.record_result(
                 result.ticks_consumed, result.host_yield_checks,
-                result.host_yielded);
+                result.host_yielded, result.svc_calls, result.svc);
             performance_counters().record_jit_host_yield(
                 result.host_yield_checks, result.host_yielded);
             if (cooperative_execution && !single_step) {
