@@ -203,16 +203,25 @@ private:
     bool thumb{};
     std::vector<std::byte> original;
   };
+  struct CachedMappedSymbol {
+    std::uint32_t symbol_index{};
+    std::uint64_t file_offset{};
+    std::uint16_t registration_id{};
+    std::uint8_t patch_size{};
+    bool guest_function{};
+  };
   struct ParsedImageCacheEntry {
     ArmArchitectureVersion architecture{};
     ContentIdentity content_identity;
     std::shared_ptr<const MachOImage> image;
+    std::uint64_t registration_generation{};
+    std::vector<CachedMappedSymbol> mapped_symbols;
   };
 
   [[nodiscard]] Registration *select_registration(std::string_view image_path,
                                                   std::string_view symbol);
   [[nodiscard]] const Registration *find_registration(std::uint16_t id) const;
-  [[nodiscard]] const MachOImage &cached_image(
+  [[nodiscard]] ParsedImageCacheEntry &cached_image(
       const std::filesystem::path &image_path,
       ArmArchitectureVersion architecture);
   [[nodiscard]] std::uint32_t ensure_string_page();
@@ -243,6 +252,7 @@ private:
   Output &output_;
   std::vector<Registration> registrations_;
   std::vector<std::pair<std::string, std::string>> guest_functions_;
+  std::uint64_t registration_generation_{};
   std::map<std::string, ParsedImageCacheEntry, std::less<>>
       parsed_image_cache_;
   std::map<std::uint32_t, InstalledCall> installed_calls_;

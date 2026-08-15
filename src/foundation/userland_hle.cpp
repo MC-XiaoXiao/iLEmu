@@ -512,6 +512,7 @@ void UserlandHleRegistry::register_function(std::string image_suffix,
       Registration{static_cast<std::uint16_t>(registrations_.size() + 1U),
                    std::move(image_suffix), std::move(symbol), false,
                    std::nullopt, std::nullopt, false, std::move(handler)});
+  ++registration_generation_;
 }
 
 void UserlandHleRegistry::register_prefix(std::string image_suffix,
@@ -524,6 +525,7 @@ void UserlandHleRegistry::register_prefix(std::string image_suffix,
       Registration{static_cast<std::uint16_t>(registrations_.size() + 1U),
                    std::move(image_suffix), std::move(symbol_prefix), true,
                    std::nullopt, std::nullopt, false, std::move(handler)});
+  ++registration_generation_;
 }
 
 void UserlandHleRegistry::register_guest_function(std::string image_suffix,
@@ -538,6 +540,7 @@ void UserlandHleRegistry::register_guest_function(std::string image_suffix,
                              dependency.second};
   }
   guest_functions_.push_back(dependency);
+  ++registration_generation_;
 }
 
 void UserlandHleRegistry::register_objc_instance_method(
@@ -565,6 +568,7 @@ void UserlandHleRegistry::register_objc_instance_method(
       std::move(image_suffix), std::move(diagnostic_name), false, std::nullopt,
       std::pair{std::move(class_name), std::move(selector)}, false,
       std::move(handler)});
+  ++registration_generation_;
 }
 
 void UserlandHleRegistry::register_objc_class_method(
@@ -593,6 +597,7 @@ void UserlandHleRegistry::register_objc_class_method(
       std::move(image_suffix), std::move(diagnostic_name), false, std::nullopt,
       std::pair{std::move(class_name), std::move(selector)}, true,
       std::move(handler)});
+  ++registration_generation_;
 }
 
 void UserlandHleRegistry::register_address(std::string image_suffix,
@@ -618,6 +623,7 @@ void UserlandHleRegistry::register_address(std::string image_suffix,
       Registration{static_cast<std::uint16_t>(registrations_.size() + 1U),
                    std::move(image_suffix), std::move(diagnostic_name), false,
                    virtual_address, std::nullopt, false, std::move(handler)});
+  ++registration_generation_;
 }
 
 UserlandHleRegistry::Registration *
@@ -651,13 +657,14 @@ UserlandHleRegistry::find_registration(std::uint16_t id) const {
   return registration.id == id ? &registration : nullptr;
 }
 
-const MachOImage &UserlandHleRegistry::cached_image(
+UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
     const std::filesystem::path &image_path,
     ArmArchitectureVersion architecture) {
   const auto key = image_path.generic_string();
   const auto cached = parsed_image_cache_.find(key);
   if (cached != parsed_image_cache_.end() &&
-      cached->second.architecture == architecture) {
+      cached->second.architecture == architecture &&
+      cached->second.registration_generation == registration_generation_) {
     // Mach-O parsing is cached only while the pathname still names the same
     // content. shared_file_identity() normally resolves from the parser's
     // generation-aware process cache; if a file was replaced, it recomputes
@@ -665,17 +672,59 @@ const MachOImage &UserlandHleRegistry::cached_image(
     const auto current = shared_file_identity(image_path);
     if (current.content_identity &&
         *current.content_identity == cached->second.content_identity) {
-      return *cached->second.image;
+      return cached->second;
     }
   }
 
   auto image = std::make_shared<MachOImage>(
       MachOImage::parse(image_path, architecture));
   auto [iterator, inserted] = parsed_image_cache_.insert_or_assign(
-      key, ParsedImageCacheEntry{architecture, image->content_identity(),
-                                 std::move(image)});
+      key, ParsedImageCacheEntry{architecture, image->content_identity(), image,
+                                 registration_generation_, {}});
   static_cast<void>(inserted);
-  return *iterator->second.image;
+  auto &entry = iterator->second;
+  entry.mapped_symbols.reserve(entry.image->symbols().size());
+  for (std::size_t index = 0; index < entry.image->symbols().size(); ++index) {
+    const auto &symbol = entry.image->symbols()[index];
+    if (symbol.value == 0)
+      continue;
+    const auto segment = std::find_if(
+        entry.image->segments().begin(), entry.image->segments().end(),
+        [&](const MachSegment &candidate) {
+          return symbol.value >= candidate.vm_address &&
+                 symbol.value - candidate.vm_address < candidate.file_size;
+        });
+    if (segment == entry.image->segments().end())
+      continue;
+    const auto symbol_file_offset =
+        static_cast<std::uint64_t>(segment->file_offset) +
+        (symbol.value - segment->vm_address);
+    const auto *registration = select_registration(key, symbol.name);
+    const auto guest_function = std::any_of(
+        guest_functions_.begin(), guest_functions_.end(),
+        [&](const auto &dependency) {
+          return path_has_suffix(key, dependency.first) &&
+                 dependency.second == symbol.name;
+        });
+    const auto registration_id = registration != nullptr
+                                     ? registration->id
+                                     : std::uint16_t{0};
+    const auto patch_size = registration != nullptr
+                                ? static_cast<std::uint8_t>(
+                                      symbol.thumb_definition()
+                                          ? thumb_patch_size(
+                                                *entry.image, symbol.value,
+                                                architecture)
+                                          : sizeof(std::uint32_t))
+                                : std::uint8_t{0};
+    entry.mapped_symbols.push_back(CachedMappedSymbol{
+        static_cast<std::uint32_t>(index),
+        symbol_file_offset,
+        registration_id,
+        patch_size,
+        guest_function});
+  }
+  return entry;
 }
 
 std::size_t UserlandHleRegistry::install_mapped_image(
@@ -701,25 +750,15 @@ std::size_t UserlandHleRegistry::install_mapped_image(
   if (!hle_relevant && !guest_relevant)
     return 0;
 
-  const auto &image = cached_image(image_path, architecture);
+  auto &cached = cached_image(image_path, architecture);
+  const auto &image = *cached.image;
   const auto mapping_offset = static_cast<std::uint32_t>(file_offset);
   const auto mapping_file_end =
       static_cast<std::uint64_t>(mapping_offset) + mapping_size;
   std::size_t patched = 0;
-  for (const auto &symbol : image.symbols()) {
-    if (symbol.value == 0)
-      continue;
-    const auto segment = std::find_if(
-        image.segments().begin(), image.segments().end(),
-        [&](const MachSegment &candidate) {
-          return symbol.value >= candidate.vm_address &&
-                 symbol.value - candidate.vm_address < candidate.file_size;
-        });
-    if (segment == image.segments().end())
-      continue;
-    const auto symbol_file_offset =
-        static_cast<std::uint64_t>(segment->file_offset) +
-        (symbol.value - segment->vm_address);
+  for (const auto &cached_symbol : cached.mapped_symbols) {
+    const auto &symbol = image.symbols()[cached_symbol.symbol_index];
+    const auto symbol_file_offset = cached_symbol.file_offset;
     if (symbol_file_offset < mapping_offset ||
         symbol_file_offset >= mapping_file_end) {
       continue;
@@ -731,25 +770,19 @@ std::size_t UserlandHleRegistry::install_mapped_image(
     }
     const auto runtime_address =
         mapping_address + static_cast<std::uint32_t>(mapping_delta);
-    const auto guest_dependency =
-        std::find_if(guest_functions_.begin(), guest_functions_.end(),
-                     [&](const auto &dependency) {
-                       return path_has_suffix(path, dependency.first) &&
-                              dependency.second == symbol.name;
-                     });
-    if (hle_relevant || guest_dependency != guest_functions_.end()) {
+    if (hle_relevant || cached_symbol.guest_function) {
       installed_symbols_.insert_or_assign(symbol.name, runtime_address);
       installed_symbol_thumb_.insert_or_assign(symbol.name,
                                                symbol.thumb_definition());
     }
 
-    auto *registration = select_registration(path, symbol.name);
+    const auto *registration = cached_symbol.registration_id == 0U
+                                   ? nullptr
+                                   : find_registration(
+                                         cached_symbol.registration_id);
     if (registration == nullptr)
       continue;
-    const auto patch_size = symbol.thumb_definition()
-                                ? thumb_patch_size(image, symbol.value,
-                                                   architecture)
-                                : sizeof(std::uint32_t);
+    const auto patch_size = cached_symbol.patch_size;
     if (symbol_file_offset + patch_size > mapping_file_end)
       continue;
     if (installed_calls_.contains(runtime_address))
@@ -1436,6 +1469,7 @@ void UserlandHleRegistry::inherit_mappings(const UserlandHleRegistry &parent) {
   installed_symbols_ = parent.installed_symbols_;
   installed_symbol_thumb_ = parent.installed_symbol_thumb_;
   loaded_images_ = parent.loaded_images_;
+  registration_generation_ = parent.registration_generation_;
   parsed_image_cache_ = parent.parsed_image_cache_;
   interned_strings_ = parent.interned_strings_;
   string_page_ = parent.string_page_;
