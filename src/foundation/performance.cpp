@@ -108,7 +108,10 @@ constexpr auto diagnostic_cpu_run_phase_kinds = std::array{
 
 constexpr auto diagnostic_cpu_run_phase_count =
     diagnostic_cpu_run_phase_kinds.size();
-constexpr std::uint64_t minimum_diagnostic_cpu_run_nanoseconds = 1'000'000;
+// Keep the bounded timeline focused on runs that can consume a meaningful
+// fraction of a 60 Hz frame. The percentile histograms retain the complete
+// phase population; this ordered list is for frame-correlation outliers.
+constexpr std::uint64_t minimum_diagnostic_cpu_run_nanoseconds = 8'000'000;
 
 struct DiagnosticCpuRun {
     std::uint32_t process_id{};
