@@ -121,6 +121,10 @@ struct DiagnosticCpuRun {
     std::chrono::steady_clock::time_point ended;
     std::array<std::uint64_t, diagnostic_cpu_run_phase_count>
         phase_nanoseconds{};
+    std::uint64_t requested_ticks{};
+    std::uint64_t consumed_ticks{};
+    std::uint64_t host_yield_checks{};
+    bool host_yielded{};
 };
 
 struct DiagnosticContentFrame {
@@ -1939,7 +1943,9 @@ void PerformanceCounters::record_cpu_run_phases(
     std::uint32_t execution_slot,
     std::chrono::steady_clock::time_point started_at,
     std::chrono::steady_clock::time_point ended_at,
-    std::span<const std::uint64_t> phase_nanoseconds) {
+    std::span<const std::uint64_t> phase_nanoseconds,
+    std::uint64_t requested_ticks, std::uint64_t consumed_ticks,
+    std::uint64_t host_yield_checks, bool host_yielded) {
     constexpr auto first_kind =
         static_cast<std::size_t>(PerfLatencyKind::CpuRunLockWait);
     constexpr auto last_kind =
@@ -1972,6 +1978,10 @@ void PerformanceCounters::record_cpu_run_phases(
         run.ended = ended_at;
         std::copy(phase_nanoseconds.begin(), phase_nanoseconds.end(),
                   run.phase_nanoseconds.begin());
+        run.requested_ticks = requested_ticks;
+        run.consumed_ticks = consumed_ticks;
+        run.host_yield_checks = host_yield_checks;
+        run.host_yielded = host_yielded;
         diagnostic_cpu_runs.push_back(run);
     }
 }
@@ -2779,7 +2789,8 @@ std::string format_display_performance_summary(
             "pid:processor:slot:start-us/end-us:"
             "lock-wait/shared-write-sync/ensure-jit/invalidation/load-state/"
             "callbacks-begin/artifact-preload/execute/result/save-state/"
-            "cache-accounting/total-us"
+            "cache-accounting/total-us:requested-ticks/consumed-ticks/"
+            "host-yielded/host-yield-checks"
          << " diagnostic-cpu-run=";
     if (diagnostic_cpu_runs.empty()) {
         text << "none";
@@ -2801,6 +2812,9 @@ std::string format_display_performance_summary(
                     text << '/';
                 text << run.phase_nanoseconds[phase] / 1'000U;
             }
+            text << ':' << run.requested_ticks << '/' << run.consumed_ticks
+                 << '/' << (run.host_yielded ? 1U : 0U) << '/'
+                 << run.host_yield_checks;
         }
     }
     text << " diagnostic-sequence-us=";

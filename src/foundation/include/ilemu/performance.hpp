@@ -447,7 +447,9 @@ class PerformanceCounters {
         std::uint32_t execution_slot,
         std::chrono::steady_clock::time_point started_at,
         std::chrono::steady_clock::time_point ended_at,
-        std::span<const std::uint64_t> phase_nanoseconds);
+        std::span<const std::uint64_t> phase_nanoseconds,
+        std::uint64_t requested_ticks, std::uint64_t consumed_ticks,
+        std::uint64_t host_yield_checks, bool host_yielded);
     void record_diagnostic_scheduler_dispatch(
         std::uint32_t process_id, bool front_continuation,
         std::uint64_t nanoseconds);

@@ -84,10 +84,11 @@ public:
 
     CpuRunPhaseDiagnostics(
         std::uint32_t process_id, std::uint32_t processor_id,
-        std::uint32_t execution_slot)
+        std::uint32_t execution_slot, std::uint64_t requested_ticks)
         : process_id_{process_id},
           processor_id_{processor_id},
           execution_slot_{execution_slot},
+          requested_ticks_{requested_ticks},
           enabled_{performance_counters().cpu_source_diagnostics_enabled()} {
         if (enabled_) {
             total_started_ = std::chrono::steady_clock::now();
@@ -107,7 +108,8 @@ public:
                 .count());
         performance_counters().record_cpu_run_phases(
             process_id_, processor_id_, execution_slot_, total_started_, ended,
-            phase_nanoseconds_);
+            phase_nanoseconds_, requested_ticks_, consumed_ticks_,
+            host_yield_checks_, host_yielded_);
     }
 
     void checkpoint(PerfLatencyKind kind) {
@@ -123,10 +125,22 @@ public:
         phase_started_ = ended;
     }
 
+    void record_result(
+        std::uint64_t consumed_ticks, std::uint64_t host_yield_checks,
+        bool host_yielded) noexcept {
+        consumed_ticks_ = consumed_ticks;
+        host_yield_checks_ = host_yield_checks;
+        host_yielded_ = host_yielded;
+    }
+
 private:
     std::uint32_t process_id_{};
     std::uint32_t processor_id_{};
     std::uint32_t execution_slot_{};
+    std::uint64_t requested_ticks_{};
+    std::uint64_t consumed_ticks_{};
+    std::uint64_t host_yield_checks_{};
+    bool host_yielded_{};
     bool enabled_{};
     std::chrono::steady_clock::time_point total_started_;
     std::chrono::steady_clock::time_point phase_started_;
@@ -1218,7 +1232,8 @@ public:
             default_host_cooperative_slice_budget) {
         CpuRunPhaseDiagnostics diagnostics{
             process_id_, static_cast<std::uint32_t>(cpu.processor_id()),
-            static_cast<std::uint32_t>(execution_slot_)};
+            static_cast<std::uint32_t>(execution_slot_),
+            single_step ? 1U : ticks};
         const std::unique_lock lock{execution_mutex_};
         diagnostics.checkpoint(PerfLatencyKind::CpuRunLockWait);
         memory_.synchronize_shared_write_tracking();
@@ -1246,6 +1261,9 @@ public:
             diagnostics.checkpoint(PerfLatencyKind::CpuRunExecute);
             record_dispatch_counters();
             auto result = callbacks_->result(reason);
+            diagnostics.record_result(
+                result.ticks_consumed, result.host_yield_checks,
+                result.host_yielded);
             performance_counters().record_jit_host_yield(
                 result.host_yield_checks, result.host_yielded);
             if (cooperative_execution && !single_step) {
