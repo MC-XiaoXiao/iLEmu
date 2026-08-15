@@ -40,12 +40,11 @@ constexpr auto sdl_presenter_surface_owner =
     std::numeric_limits<std::uint64_t>::max();
 std::atomic<std::uint64_t> next_sdl_presenter_surface{1};
 constexpr std::size_t presentation_queue_capacity = 8;
-// Keep one extra slot for the repaint copy retained by last_presented_frame.
-// The queue itself remains bounded at presentation_queue_capacity.
+// Keep one extra surface slot for the repaint copy retained by
+// last_presented_frame. Frame admission has the eight-slot ordered queue plus
+// one bounded latest-only overflow slot below; it never grows with a burst.
 constexpr std::size_t presentation_surface_capacity =
     presentation_queue_capacity + 1;
-constexpr auto presentation_backpressure_timeout =
-    std::chrono::milliseconds{250};
 constexpr auto presentation_flush_timeout = std::chrono::seconds{5};
 
 } // namespace
@@ -192,10 +191,16 @@ struct SdlDisplay::Impl {
   std::condition_variable presentation_available;
   std::condition_variable presentation_space_available;
   std::condition_variable presentation_idle;
-  // Preserve every guest submission until the SDL thread presents it. A
-  // single-slot mailbox silently discarded an older frame whenever two
-  // submissions arrived between event-loop pumps.
+  // Preserve ordered submissions until the SDL thread presents them while
+  // the queue has room. If a producer burst outruns event-loop pumping, the
+  // bounded admission policy below replaces the oldest pending frame and
+  // records that loss as display-mailbox coalescing.
   std::deque<DisplayFrame> pending_frames;
+  // Admission must not park the guest execution thread behind a slow window
+  // compositor. When all regular queue slots are occupied, retain one latest
+  // frame behind the ordered queue. Replacing this slot is an explicit,
+  // counted coalescing event; normal 60 Hz operation never uses it.
+  std::optional<DisplayFrame> overflow_frame;
   // Keep native submissions ordered as well. A skipped/failed native attempt
   // moves to the software fallback queue instead of disappearing.
   std::deque<DisplayFrame> pending_native_frames;
@@ -318,6 +323,7 @@ struct SdlDisplay::Impl {
 
   void abandon_queued_frames_locked() {
     pending_frames.clear();
+    overflow_frame.reset();
     pending_native_frames.clear();
     native_fallback_frames.clear();
     native_fallback_active = false;
@@ -811,50 +817,41 @@ void SdlDisplay::present(const DisplayFrame &frame) {
       (frame.pixels.empty() && !frame.read_pixels)) {
     return;
   }
-  std::unique_lock lock{impl_->frame_mutex};
-  const auto wait_started = std::chrono::steady_clock::now();
-  const auto wait_deadline = wait_started + presentation_backpressure_timeout;
-  bool waited{};
-  bool timed_out{};
-  while (impl_->queued_frame_count >= presentation_queue_capacity &&
-         !impl_->presentation_stopping && !impl_->presentation_failed &&
-         impl_->running) {
-    waited = true;
-    if (!impl_->presentation_space_available.wait_until(
-            lock, wait_deadline, [this] {
-              return impl_->queued_frame_count < presentation_queue_capacity ||
-                     impl_->presentation_stopping ||
-                     impl_->presentation_failed || !impl_->running;
-            })) {
-      timed_out = true;
-      impl_->fail_presentation_locked();
-      break;
+  std::uint64_t depth{};
+  bool coalesced{};
+  {
+    std::lock_guard lock{impl_->frame_mutex};
+    if (impl_->presentation_stopping || impl_->presentation_failed ||
+        !impl_->running) {
+      coalesced = true;
+    } else if (impl_->queued_frame_count < presentation_queue_capacity) {
+      impl_->pending_frames.push_back(frame);
+      ++impl_->queued_frame_count;
+      depth = impl_->queued_frame_count;
+    } else if (!impl_->pending_frames.empty()) {
+      // Keep the queue ordered but discard the oldest frame that has not yet
+      // crossed into the native presenter. The queue remains bounded and the
+      // newest state wins under an artificial or real producer burst.
+      impl_->pending_frames.pop_front();
+      impl_->pending_frames.push_back(frame);
+      coalesced = true;
+      depth = impl_->queued_frame_count;
+    } else if (impl_->overflow_frame) {
+      // Native work may own every regular slot. Keep only one additional
+      // latest frame until the native sequence reaches it.
+      *impl_->overflow_frame = frame;
+      coalesced = true;
+      depth = impl_->queued_frame_count;
+    } else {
+      impl_->overflow_frame = frame;
+      ++impl_->queued_frame_count;
+      depth = impl_->queued_frame_count;
     }
   }
-  const auto waited_nanoseconds =
-      waited
-          ? static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() - wait_started)
-                    .count())
-          : 0;
-  if (timed_out || impl_->presentation_stopping ||
-      impl_->presentation_failed || !impl_->running) {
-    lock.unlock();
-    if (waited)
-      performance_counters().record_display_queue_wait(
-          waited_nanoseconds, timed_out);
-    impl_->presentation_available.notify_all();
-    return;
-  }
-  impl_->pending_frames.push_back(frame);
-  ++impl_->queued_frame_count;
-  const auto depth = impl_->queued_frame_count;
-  lock.unlock();
-  if (waited)
-    performance_counters().record_display_queue_wait(
-        waited_nanoseconds, false);
-  performance_counters().record_display_queue_depth(depth);
+  if (coalesced)
+    performance_counters().record_display_mailbox_coalesced();
+  if (depth != 0)
+    performance_counters().record_display_queue_depth(depth);
 #else
   static_cast<void>(frame);
 #endif
@@ -939,6 +936,10 @@ bool SdlDisplay::poll_events() {
       frame = std::move(impl_->pending_frames.front());
       impl_->pending_frames.pop_front();
       queued_frame = true;
+    } else if (impl_->overflow_frame) {
+      frame = std::move(*impl_->overflow_frame);
+      impl_->overflow_frame.reset();
+      queued_frame = true;
     }
     if (!frame && redraw_requested && impl_->last_presented_frame) {
       frame = *impl_->last_presented_frame;
@@ -1019,6 +1020,12 @@ bool SdlDisplay::poll_events() {
       {
         std::lock_guard lock{impl_->frame_mutex};
         impl_->set_last_presented_frame_locked(*frame);
+        // A redraw-only frame was not admitted through present(), so account
+        // for it before handing it to the native queue. Otherwise a failed
+        // native attempt would later decrement the count for an uncounted
+        // frame when it enters the fallback path.
+        if (!queued_frame)
+          ++impl_->queued_frame_count;
         if (telemetry_enabled)
           frame->native_queued_at = std::chrono::steady_clock::now();
         native_queued_at = frame->native_queued_at;
