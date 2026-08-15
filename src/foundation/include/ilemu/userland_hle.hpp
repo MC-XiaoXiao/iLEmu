@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <functional>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -14,11 +15,13 @@
 #include <vector>
 
 #include "ilemu/arm_cpu_model.hpp"
+#include "ilemu/content_identity.hpp"
 
 namespace ilemu {
 
 class AddressSpace;
 class Cpu;
+class MachOImage;
 class Output;
 
 // ARM SVC immediates in this namespace are emitted only into intercepted
@@ -200,10 +203,18 @@ private:
     bool thumb{};
     std::vector<std::byte> original;
   };
+  struct ParsedImageCacheEntry {
+    ArmArchitectureVersion architecture{};
+    ContentIdentity content_identity;
+    std::shared_ptr<const MachOImage> image;
+  };
 
   [[nodiscard]] Registration *select_registration(std::string_view image_path,
                                                   std::string_view symbol);
   [[nodiscard]] const Registration *find_registration(std::uint16_t id) const;
+  [[nodiscard]] const MachOImage &cached_image(
+      const std::filesystem::path &image_path,
+      ArmArchitectureVersion architecture);
   [[nodiscard]] std::uint32_t ensure_string_page();
   [[nodiscard]] std::optional<std::uint32_t>
   install_continuation(Cpu &cpu, std::uint32_t return_address,
@@ -232,6 +243,8 @@ private:
   Output &output_;
   std::vector<Registration> registrations_;
   std::vector<std::pair<std::string, std::string>> guest_functions_;
+  std::map<std::string, ParsedImageCacheEntry, std::less<>>
+      parsed_image_cache_;
   std::map<std::uint32_t, InstalledCall> installed_calls_;
   std::map<std::string, std::uint32_t, std::less<>> installed_symbols_;
   std::map<std::string, bool, std::less<>> installed_symbol_thumb_;

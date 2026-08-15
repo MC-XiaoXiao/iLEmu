@@ -651,6 +651,33 @@ UserlandHleRegistry::find_registration(std::uint16_t id) const {
   return registration.id == id ? &registration : nullptr;
 }
 
+const MachOImage &UserlandHleRegistry::cached_image(
+    const std::filesystem::path &image_path,
+    ArmArchitectureVersion architecture) {
+  const auto key = image_path.generic_string();
+  const auto cached = parsed_image_cache_.find(key);
+  if (cached != parsed_image_cache_.end() &&
+      cached->second.architecture == architecture) {
+    // Mach-O parsing is cached only while the pathname still names the same
+    // content. shared_file_identity() normally resolves from the parser's
+    // generation-aware process cache; if a file was replaced, it recomputes
+    // the identity and the next branch refreshes the parsed image.
+    const auto current = shared_file_identity(image_path);
+    if (current.content_identity &&
+        *current.content_identity == cached->second.content_identity) {
+      return *cached->second.image;
+    }
+  }
+
+  auto image = std::make_shared<MachOImage>(
+      MachOImage::parse(image_path, architecture));
+  auto [iterator, inserted] = parsed_image_cache_.insert_or_assign(
+      key, ParsedImageCacheEntry{architecture, image->content_identity(),
+                                 std::move(image)});
+  static_cast<void>(inserted);
+  return *iterator->second.image;
+}
+
 std::size_t UserlandHleRegistry::install_mapped_image(
     Cpu &cpu, std::uint32_t process_id, const std::filesystem::path &image_path,
     std::uint32_t mapping_address, std::uint32_t mapping_size,
@@ -674,7 +701,7 @@ std::size_t UserlandHleRegistry::install_mapped_image(
   if (!hle_relevant && !guest_relevant)
     return 0;
 
-  const auto image = MachOImage::parse(image_path, architecture);
+  const auto &image = cached_image(image_path, architecture);
   const auto mapping_offset = static_cast<std::uint32_t>(file_offset);
   const auto mapping_file_end =
       static_cast<std::uint64_t>(mapping_offset) + mapping_size;
@@ -1387,6 +1414,7 @@ void UserlandHleRegistry::reset_mappings() {
   installed_symbols_.clear();
   installed_symbol_thumb_.clear();
   loaded_images_.clear();
+  parsed_image_cache_.clear();
   interned_strings_.clear();
   string_page_ = 0;
   string_cursor_ = 0;
@@ -1408,6 +1436,7 @@ void UserlandHleRegistry::inherit_mappings(const UserlandHleRegistry &parent) {
   installed_symbols_ = parent.installed_symbols_;
   installed_symbol_thumb_ = parent.installed_symbol_thumb_;
   loaded_images_ = parent.loaded_images_;
+  parsed_image_cache_ = parent.parsed_image_cache_;
   interned_strings_ = parent.interned_strings_;
   string_page_ = parent.string_page_;
   string_cursor_ = parent.string_cursor_;
