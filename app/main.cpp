@@ -5191,6 +5191,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
   }
   runtimes.clear();
   runtime_reaper.finish();
+  if (*activation != LockdownActivation::Preserve) {
+    // Native lockdownd may publish its runtime decision back into data_ark
+    // during boot. Reapply the explicit simulator profile only after every
+    // Guest runtime has been retired, so the requested state persists for the
+    // next launch without racing a live daemon.
+    const auto shutdown_activation_result =
+        apply_lockdown_profile(*rootfs, *activation, lockdown_profile);
+    output.line(
+        "[device-state] shutdown-reapply=" + activation_value +
+        " path=" + shutdown_activation_result.path.string() +
+        " changed=" +
+        std::to_string(shutdown_activation_result.changed));
+  }
   if (report_performance) {
     // Make the reported disk footprint include artifacts generated during the
     // run. The store still performs the same atomic save again at destruction.
