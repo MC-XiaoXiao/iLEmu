@@ -4245,20 +4245,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
               return guest_parallelism_policy.should_serialize(
                   prepared.scheduled.thread);
             });
-    // Keep the one-processor scheduler at the same cooperative SVC boundary
-    // as a parallel batch. Immediate HLE dispatch runs inside Dynarmic's
-    // guest execution and can therefore hold the host loop past a display
-    // deadline; deferred dispatch returns to this scheduler before invoking
-    // the compatibility kernel. The dispatch itself remains synchronous and
-    // preserves the existing guest-visible ordering.
-    constexpr bool defer_serial_svc_dispatch = true;
-    const auto defer_svc_dispatch =
-        parallel_guest_batch || defer_serial_svc_dispatch;
     for (auto &prepared : prepared_slices) {
-      prepared.deferred_svc = defer_svc_dispatch;
+      prepared.deferred_svc = parallel_guest_batch;
       prepared.cpu->set_svc_dispatch_mode(
-          defer_svc_dispatch ? SvcDispatchMode::Deferred
-                             : SvcDispatchMode::Immediate);
+          parallel_guest_batch ? SvcDispatchMode::Deferred
+                               : SvcDispatchMode::Immediate);
     }
 
     if (guest_processor_count == 1 && !prepared_slices.empty() &&
