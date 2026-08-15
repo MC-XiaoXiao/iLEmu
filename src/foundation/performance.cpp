@@ -91,6 +91,35 @@ struct DiagnosticVsyncFrame {
     DiagnosticFrameWork work;
 };
 
+constexpr auto diagnostic_cpu_run_phase_kinds = std::array{
+    PerfLatencyKind::CpuRunLockWait,
+    PerfLatencyKind::CpuRunSharedWriteSync,
+    PerfLatencyKind::CpuRunEnsureJit,
+    PerfLatencyKind::CpuRunInvalidation,
+    PerfLatencyKind::CpuRunLoadState,
+    PerfLatencyKind::CpuRunCallbacksBegin,
+    PerfLatencyKind::CpuRunArtifactPreload,
+    PerfLatencyKind::CpuRunExecute,
+    PerfLatencyKind::CpuRunResult,
+    PerfLatencyKind::CpuRunSaveState,
+    PerfLatencyKind::CpuRunCacheAccounting,
+    PerfLatencyKind::CpuRunTotal,
+};
+
+constexpr auto diagnostic_cpu_run_phase_count =
+    diagnostic_cpu_run_phase_kinds.size();
+constexpr std::uint64_t minimum_diagnostic_cpu_run_nanoseconds = 1'000'000;
+
+struct DiagnosticCpuRun {
+    std::uint32_t process_id{};
+    std::uint32_t processor_id{};
+    std::uint32_t execution_slot{};
+    std::chrono::steady_clock::time_point started;
+    std::chrono::steady_clock::time_point ended;
+    std::array<std::uint64_t, diagnostic_cpu_run_phase_count>
+        phase_nanoseconds{};
+};
+
 struct DiagnosticContentFrame {
     std::uint64_t sequence{};
     std::uint32_t owner_process_id{};
@@ -119,6 +148,7 @@ struct DiagnosticInputEvent {
 std::chrono::steady_clock::time_point diagnostic_window_started_at;
 std::vector<DiagnosticDisplayFrame> diagnostic_display_frames;
 std::vector<DiagnosticVsyncFrame> diagnostic_vsync_frames;
+std::vector<DiagnosticCpuRun> diagnostic_cpu_runs;
 std::vector<DiagnosticContentFrame> diagnostic_content_frames;
 std::vector<DiagnosticInputEvent> diagnostic_input_events;
 std::vector<std::uint32_t> diagnostic_previous_content_pixels;
@@ -575,6 +605,7 @@ void PerformanceCounters::reset_display_window_locked() {
     diagnostic_window_started_at = {};
     diagnostic_display_frames.clear();
     diagnostic_vsync_frames.clear();
+    diagnostic_cpu_runs.clear();
     diagnostic_content_frames.clear();
     diagnostic_input_events.clear();
     diagnostic_previous_frame_work = {};
@@ -1901,6 +1932,10 @@ void PerformanceCounters::record_hle(std::string_view subsystem,
 }
 
 void PerformanceCounters::record_cpu_run_phases(
+    std::uint32_t process_id, std::uint32_t processor_id,
+    std::uint32_t execution_slot,
+    std::chrono::steady_clock::time_point started_at,
+    std::chrono::steady_clock::time_point ended_at,
     std::span<const std::uint64_t> phase_nanoseconds) {
     constexpr auto first_kind =
         static_cast<std::size_t>(PerfLatencyKind::CpuRunLockWait);
@@ -1923,6 +1958,18 @@ void PerformanceCounters::record_cpu_run_phases(
         record_display_window_latency_locked(
             static_cast<PerfLatencyKind>(first_kind + index),
             phase_nanoseconds[index]);
+    }
+    if (phase_nanoseconds.back() >= minimum_diagnostic_cpu_run_nanoseconds &&
+        diagnostic_cpu_runs.size() < maximum_diagnostic_sequence_samples) {
+        DiagnosticCpuRun run;
+        run.process_id = process_id;
+        run.processor_id = processor_id;
+        run.execution_slot = execution_slot;
+        run.started = started_at;
+        run.ended = ended_at;
+        std::copy(phase_nanoseconds.begin(), phase_nanoseconds.end(),
+                  run.phase_nanoseconds.begin());
+        diagnostic_cpu_runs.push_back(run);
     }
 }
 
@@ -2724,6 +2771,34 @@ std::string format_display_performance_summary(
              << latency.maximum_nanoseconds << '/'
              << latency.over_16_7ms << '/' << latency.over_20ms << '/'
              << latency.over_33_3ms << '/' << latency.over_50ms;
+    }
+    text << " diagnostic-cpu-run-format="
+            "pid:processor:slot:start-us/end-us:"
+            "lock-wait/shared-write-sync/ensure-jit/invalidation/load-state/"
+            "callbacks-begin/artifact-preload/execute/result/save-state/"
+            "cache-accounting/total-us"
+         << " diagnostic-cpu-run=";
+    if (diagnostic_cpu_runs.empty()) {
+        text << "none";
+    } else {
+        for (std::size_t index = 0; index < diagnostic_cpu_runs.size();
+             ++index) {
+            if (index != 0)
+                text << ',';
+            const auto& run = diagnostic_cpu_runs[index];
+            text << run.process_id << ':' << run.processor_id << ':'
+                 << run.execution_slot << ':';
+            append_diagnostic_timestamp(text, run.started);
+            text << '/';
+            append_diagnostic_timestamp(text, run.ended);
+            text << ':';
+            for (std::size_t phase = 0;
+                 phase < run.phase_nanoseconds.size(); ++phase) {
+                if (phase != 0)
+                    text << '/';
+                text << run.phase_nanoseconds[phase] / 1'000U;
+            }
+        }
     }
     text << " diagnostic-sequence-us=";
     for (std::size_t index = 0;

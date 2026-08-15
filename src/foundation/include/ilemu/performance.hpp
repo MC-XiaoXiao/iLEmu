@@ -443,6 +443,10 @@ class PerformanceCounters {
     void discard_pending_vsync_callbacks();
     void record_hle(std::string_view subsystem, std::uint64_t nanoseconds);
     void record_cpu_run_phases(
+        std::uint32_t process_id, std::uint32_t processor_id,
+        std::uint32_t execution_slot,
+        std::chrono::steady_clock::time_point started_at,
+        std::chrono::steady_clock::time_point ended_at,
         std::span<const std::uint64_t> phase_nanoseconds);
     void record_diagnostic_scheduler_dispatch(
         std::uint32_t process_id, bool front_continuation,

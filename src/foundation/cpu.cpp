@@ -82,8 +82,13 @@ public:
         static_cast<std::size_t>(PerfLatencyKind::CpuRunTotal);
     static constexpr auto phase_count = last_kind - first_kind + 1U;
 
-    CpuRunPhaseDiagnostics()
-        : enabled_{performance_counters().cpu_source_diagnostics_enabled()} {
+    CpuRunPhaseDiagnostics(
+        std::uint32_t process_id, std::uint32_t processor_id,
+        std::uint32_t execution_slot)
+        : process_id_{process_id},
+          processor_id_{processor_id},
+          execution_slot_{execution_slot},
+          enabled_{performance_counters().cpu_source_diagnostics_enabled()} {
         if (enabled_) {
             total_started_ = std::chrono::steady_clock::now();
             phase_started_ = total_started_;
@@ -95,11 +100,14 @@ public:
 
     ~CpuRunPhaseDiagnostics() {
         if (!enabled_) return;
-        const auto elapsed = std::chrono::steady_clock::now() - total_started_;
+        const auto ended = std::chrono::steady_clock::now();
+        const auto elapsed = ended - total_started_;
         phase_nanoseconds_.back() = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed)
                 .count());
-        performance_counters().record_cpu_run_phases(phase_nanoseconds_);
+        performance_counters().record_cpu_run_phases(
+            process_id_, processor_id_, execution_slot_, total_started_, ended,
+            phase_nanoseconds_);
     }
 
     void checkpoint(PerfLatencyKind kind) {
@@ -116,6 +124,9 @@ public:
     }
 
 private:
+    std::uint32_t process_id_{};
+    std::uint32_t processor_id_{};
+    std::uint32_t execution_slot_{};
     bool enabled_{};
     std::chrono::steady_clock::time_point total_started_;
     std::chrono::steady_clock::time_point phase_started_;
@@ -1205,7 +1216,9 @@ public:
         bool cooperative_execution,
         std::chrono::nanoseconds host_slice_budget =
             default_host_cooperative_slice_budget) {
-        CpuRunPhaseDiagnostics diagnostics;
+        CpuRunPhaseDiagnostics diagnostics{
+            process_id_, static_cast<std::uint32_t>(cpu.processor_id()),
+            static_cast<std::uint32_t>(execution_slot_)};
         const std::unique_lock lock{execution_mutex_};
         diagnostics.checkpoint(PerfLatencyKind::CpuRunLockWait);
         memory_.synchronize_shared_write_tracking();
