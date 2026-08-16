@@ -487,31 +487,56 @@ struct SdlDisplay::Impl {
         output_geometry.width *
             static_cast<std::uint32_t>(sizeof(std::uint32_t)),
         source_descriptor.pixel_format, PerfSurfaceKind::Scanout};
+    std::size_t slot_index{};
+    HostSurfaceKey slot_key{};
     std::shared_ptr<HostSurface> oriented_surface;
     {
       std::lock_guard lock{frame_mutex};
       PresentationSurfaceSlot *slot{};
-      for (auto &candidate : oriented_present_surfaces) {
+      for (std::size_t index = 0; index < oriented_present_surfaces.size();
+           ++index) {
+        auto &candidate = oriented_present_surfaces[index];
         if (!candidate.in_use && !candidate.held_by_last) {
+          slot_index = index;
+          slot_key = candidate.key;
           slot = &candidate;
           break;
         }
       }
       if (slot == nullptr)
         return false;
-      if (!slot->surface ||
-          slot->surface->descriptor().width != descriptor.width ||
-          slot->surface->descriptor().height != descriptor.height ||
-          slot->surface->descriptor().bytes_per_row !=
-              descriptor.bytes_per_row ||
-          slot->surface->descriptor().pixel_format !=
-              descriptor.pixel_format) {
-        slot->surface = host_graphics->create_surface(slot->key, descriptor);
-      }
-      if (slot->surface == nullptr)
-        return false;
       slot->in_use = true;
       oriented_surface = slot->surface;
+    }
+
+    const auto surface_matches =
+        oriented_surface &&
+        oriented_surface->descriptor().width == descriptor.width &&
+        oriented_surface->descriptor().height == descriptor.height &&
+        oriented_surface->descriptor().bytes_per_row ==
+            descriptor.bytes_per_row &&
+        oriented_surface->descriptor().pixel_format == descriptor.pixel_format;
+    if (!surface_matches) {
+      try {
+        oriented_surface = host_graphics->create_surface(slot_key, descriptor);
+      } catch (...) {
+        std::lock_guard lock{frame_mutex};
+        oriented_present_surfaces[slot_index].in_use = false;
+        throw;
+      }
+    }
+    {
+      std::lock_guard lock{frame_mutex};
+      auto &slot = oriented_present_surfaces[slot_index];
+      if (!slot.in_use) {
+        return false;
+      }
+      slot.surface = oriented_surface;
+      if (slot.surface == nullptr) {
+        slot.in_use = false;
+        return false;
+      }
+      oriented_surface = slot.surface;
     }
 
     if (!oriented_surface) {
