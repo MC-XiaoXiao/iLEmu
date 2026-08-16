@@ -290,10 +290,10 @@ struct SdlDisplay::Impl {
                             frame.presentation_staging_surface, held);
   }
 
-  void set_last_presented_frame_locked(const DisplayFrame &frame) {
+  void set_last_presented_frame_locked(DisplayFrame frame) {
     if (last_presented_frame)
       set_frame_surface_held_locked(*last_presented_frame, false);
-    last_presented_frame = frame;
+    last_presented_frame = std::move(frame);
     set_frame_surface_held_locked(*last_presented_frame, true);
   }
 
@@ -682,6 +682,8 @@ struct SdlDisplay::Impl {
         lock.lock();
         cpu_presentation_active = false;
         std::uint64_t depth{};
+        const auto frame_sequence = pending.frame.sequence;
+        const auto frame_submitted_at = pending.frame.submitted_at;
         if (pending.queued) {
           release_frame_surface_in_use_locked(pending.frame);
           if (queued_frame_count != 0) {
@@ -690,10 +692,14 @@ struct SdlDisplay::Impl {
           }
         }
         if (presented) {
-          set_last_presented_frame_locked(pending.frame);
+          // The queued frame is no longer needed after a successful CPU
+          // present. Move it into the repaint cache instead of copying its
+          // pixel vector while holding frame_mutex; Guest admission can then
+          // continue independently of this bookkeeping.
+          set_last_presented_frame_locked(std::move(pending.frame));
           presented_frames.fetch_add(1, std::memory_order_release);
           performance_counters().record_cpu_present_fallback(
-              pending.frame.sequence, pending.frame.submitted_at);
+              frame_sequence, frame_submitted_at);
         } else {
           if (error)
             cpu_presentation_error = error;
@@ -1031,6 +1037,11 @@ void SdlDisplay::present(const DisplayFrame &frame) {
       (frame.pixels.empty() && !frame.read_pixels)) {
     return;
   }
+  // Admission must not hold frame_mutex while copying the full pixel vector.
+  // The copy is still required by the const presenter interface, but moving
+  // the completed frame under the lock keeps worker bookkeeping from turning
+  // into Guest-side lock contention.
+  auto admitted_frame = frame;
   std::uint64_t depth{};
   bool coalesced{};
   {
@@ -1039,7 +1050,7 @@ void SdlDisplay::present(const DisplayFrame &frame) {
         !impl_->running) {
       coalesced = true;
     } else if (impl_->queued_frame_count < presentation_queue_capacity) {
-      impl_->pending_frames.push_back(frame);
+      impl_->pending_frames.push_back(std::move(admitted_frame));
       ++impl_->queued_frame_count;
       depth = impl_->queued_frame_count;
     } else if (!impl_->pending_frames.empty()) {
@@ -1047,17 +1058,17 @@ void SdlDisplay::present(const DisplayFrame &frame) {
       // crossed into the native presenter. The queue remains bounded and the
       // newest state wins under an artificial or real producer burst.
       impl_->pending_frames.pop_front();
-      impl_->pending_frames.push_back(frame);
+      impl_->pending_frames.push_back(std::move(admitted_frame));
       coalesced = true;
       depth = impl_->queued_frame_count;
     } else if (impl_->overflow_frame) {
       // Native work may own every regular slot. Keep only one additional
       // latest frame until the native sequence reaches it.
-      *impl_->overflow_frame = frame;
+      *impl_->overflow_frame = std::move(admitted_frame);
       coalesced = true;
       depth = impl_->queued_frame_count;
     } else {
-      impl_->overflow_frame = frame;
+      impl_->overflow_frame = std::move(admitted_frame);
       ++impl_->queued_frame_count;
       depth = impl_->queued_frame_count;
     }
@@ -1242,11 +1253,16 @@ bool SdlDisplay::poll_events() {
     if (!native_failed && frame->host_surface && impl_->host_graphics &&
         impl_->host_graphics->native_presentation_available()) {
       const auto native_sequence = frame->sequence;
+      // Keep the repaint copy outside frame_mutex. The native queue still
+      // receives its own frame below, while the potentially large pixel
+      // vector is copied without blocking Guest-side admission.
+      auto last_presented_frame = *frame;
       std::chrono::steady_clock::time_point native_queued_at;
       bool queued_native{};
       {
         std::lock_guard lock{impl_->frame_mutex};
-        impl_->set_last_presented_frame_locked(*frame);
+        impl_->set_last_presented_frame_locked(
+            std::move(last_presented_frame));
         // A redraw-only frame was not admitted through present(), so account
         // for it before handing it to the native queue. Otherwise a failed
         // native attempt would later decrement the count for an uncounted
