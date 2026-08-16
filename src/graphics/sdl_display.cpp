@@ -408,32 +408,57 @@ struct SdlDisplay::Impl {
         frame.width, frame.height,
         frame.width * static_cast<std::uint32_t>(sizeof(std::uint32_t)), 0U,
         PerfSurfaceKind::Scanout};
-    std::shared_ptr<HostSurface> staged_surface;
+    auto graphics = host_graphics;
+    std::size_t slot_index{};
+    std::shared_ptr<HostSurface> reusable_surface;
+    HostSurfaceKey slot_key{};
     {
       std::lock_guard lock{frame_mutex};
-      PresentationSurfaceSlot *slot{};
-      for (auto &candidate : cpu_present_surfaces) {
+      bool found_slot{};
+      for (std::size_t index = 0; index < cpu_present_surfaces.size();
+           ++index) {
+        auto &candidate = cpu_present_surfaces[index];
         if (!candidate.in_use && !candidate.held_by_last) {
-          slot = &candidate;
+          slot_index = index;
+          slot_key = candidate.key;
+          reusable_surface = candidate.surface;
+          candidate.in_use = true;
+          found_slot = true;
           break;
         }
       }
-      if (slot == nullptr)
+      if (!found_slot)
         return false;
-      if (!slot->surface ||
-          slot->surface->descriptor().width != descriptor.width ||
-          slot->surface->descriptor().height != descriptor.height ||
-          slot->surface->descriptor().bytes_per_row !=
+    }
+
+    std::shared_ptr<HostSurface> staged_surface;
+    try {
+      if (!reusable_surface ||
+          reusable_surface->descriptor().width != descriptor.width ||
+          reusable_surface->descriptor().height != descriptor.height ||
+          reusable_surface->descriptor().bytes_per_row !=
               descriptor.bytes_per_row) {
-        slot->surface = host_graphics->create_surface(
-            slot->key, descriptor, frame.pixels);
+        staged_surface = graphics->create_surface(slot_key, descriptor,
+                                                   frame.pixels);
       } else {
-        slot->surface->replace_cpu(frame.pixels);
+        reusable_surface->replace_cpu(frame.pixels);
+        staged_surface = reusable_surface;
       }
-      if (slot->surface == nullptr)
+    } catch (...) {
+      std::lock_guard lock{frame_mutex};
+      cpu_present_surfaces[slot_index].in_use = false;
+      throw;
+    }
+
+    {
+      std::lock_guard lock{frame_mutex};
+      auto &slot = cpu_present_surfaces[slot_index];
+      slot.surface = staged_surface;
+      if (slot.surface == nullptr) {
+        slot.in_use = false;
         return false;
-      slot->in_use = true;
-      staged_surface = slot->surface;
+      }
+      staged_surface = slot.surface;
     }
     frame.host_surface = staged_surface;
     frame.presentation_staging_surface = staged_surface;
