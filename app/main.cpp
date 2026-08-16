@@ -3914,6 +3914,24 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   scheduled_snapshots.front().second.string());
       scheduled_snapshots.erase(scheduled_snapshots.begin());
     }
+    const auto resolve_display_urgent_thread = [&]() {
+      if (!display_urgent_process || display_urgent_thread)
+        return;
+      for (auto &runtime : runtimes) {
+        if (runtime->kernel->process().pid != *display_urgent_process ||
+            runtime->kernel->process().exited) {
+          continue;
+        }
+        if (const auto processor =
+                runtime->kernel->display_vsync_receiver_processor()) {
+          display_urgent_thread = XnuThreadId{
+              *display_urgent_process,
+              static_cast<std::uint32_t>(*processor)};
+        }
+        break;
+      }
+    };
+    resolve_display_urgent_thread();
     if (realtime_pacer) {
       const auto current_time =
           initial_runtime->kernel->current_absolute_time();
@@ -3953,8 +3971,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
           }
         }
       }
-      const auto guest_ahead_delay = realtime_pacer->delay_until(
-          initial_runtime->kernel->current_absolute_time());
+      const auto display_urgent_runnable = [&]() {
+        if (!display_urgent_thread)
+          return false;
+        if (const auto info = scheduler.info(*display_urgent_thread);
+            info.has_value()) {
+          return info->state == XnuThreadState::Runnable;
+        }
+        return false;
+      }();
+      const auto guest_ahead_delay = display_urgent_runnable
+          ? std::chrono::nanoseconds::zero()
+          : realtime_pacer->delay_until(
+                initial_runtime->kernel->current_absolute_time());
       if (guest_ahead_delay > std::chrono::nanoseconds::zero()) {
         const auto sleep_delay = realtime_pacer->limit_delay(
             guest_ahead_delay, next_host_control_deadline());
@@ -3964,21 +3993,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
         // A due host control should wake the polling loop, not make a guest
         // that is still ahead appear eligible to execute.
         continue;
-      }
-    }
-    if (display_urgent_process) {
-      for (auto &runtime : runtimes) {
-        if (runtime->kernel->process().pid != *display_urgent_process ||
-            runtime->kernel->process().exited) {
-          continue;
-        }
-        if (const auto processor =
-                runtime->kernel->display_vsync_receiver_processor()) {
-          display_urgent_thread = XnuThreadId{
-              *display_urgent_process,
-              static_cast<std::uint32_t>(*processor)};
-        }
-        break;
       }
     }
     for (auto &runtime : runtimes) {
