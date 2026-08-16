@@ -211,8 +211,9 @@ struct SdlDisplay::Impl {
   // frame behind the ordered queue. Replacing this slot is an explicit,
   // counted coalescing event; normal 60 Hz operation never uses it.
   std::optional<DisplayFrame> overflow_frame;
-  // Keep native submissions ordered as well. A skipped/failed native attempt
-  // moves to the software fallback queue instead of disappearing.
+  // Keep native submissions ordered as well. Frames are staged on this
+  // worker before acquire/present; a skipped/failed native attempt moves to
+  // the software fallback queue instead of disappearing.
   std::deque<DisplayFrame> pending_native_frames;
   std::deque<DisplayFrame> native_fallback_frames;
   bool native_fallback_active{};
@@ -614,6 +615,36 @@ struct SdlDisplay::Impl {
     return true;
   }
 
+  // Native staging can allocate/replace a scanout surface and can perform a
+  // CPU rotation when a Guest frame has no host surface. Keep both operations
+  // on the native presenter worker; poll_events() remains an input and queue
+  // pump on the Guest scheduler thread.
+  bool prepare_native_frame(DisplayFrame &frame) {
+    const auto requested_orientation = frame.orientation;
+    if (requested_orientation != DisplayOrientation::Portrait) {
+      if (frame.host_surface) {
+        if (!stage_oriented_frame_for_native_present(
+                frame, requested_orientation)) {
+          return false;
+        }
+      } else {
+        const auto raw_geometry = DisplayGeometry{frame.width, frame.height};
+        const auto expected = raw_geometry.pixel_count();
+        if (frame.pixels.size() != expected && frame.read_pixels)
+          frame.pixels = frame.read_pixels();
+        const auto oriented = orient_display_pixels(
+            raw_geometry, frame.pixels, requested_orientation);
+        if (oriented.empty())
+          return false;
+        frame.pixels = oriented;
+        if (is_landscape(requested_orientation))
+          std::swap(frame.width, frame.height);
+        frame.orientation = DisplayOrientation::Portrait;
+      }
+    }
+    return stage_cpu_frame_for_native_present(frame);
+  }
+
 #if defined(ILEMU_HAS_SDL2)
   bool present_cpu_frame(DisplayFrame &frame) {
     auto &performance = performance_counters();
@@ -843,9 +874,28 @@ struct SdlDisplay::Impl {
                       residence)
                       .count()));
         }
+        bool prepared{};
+        try {
+          prepared = prepare_native_frame(frame);
+        } catch (...) {
+          // Native staging failures retain the original frame for the
+          // ordered SDL fallback below. The existing fallback path owns the
+          // error boundary and preserves sequence order.
+          prepared = false;
+        }
+        if (prepared) {
+          // The repaint cache is published only after a host-ready surface
+          // exists. Its potentially large pixel vector is copied on this
+          // worker, never on the Guest scheduler thread.
+          auto worker_last_presented_frame = frame;
+          lock.lock();
+          set_last_presented_frame_locked(
+              std::move(worker_last_presented_frame));
+          lock.unlock();
+        }
         if (telemetry_enabled)
           performance.record_native_present_attempt();
-        const auto result = graphics && frame.host_surface
+        const auto result = prepared && graphics && frame.host_surface
                                 ? graphics->present(frame.host_surface)
                                 : HostGraphicsDevice::PresentResult::Failed;
         if (result == HostGraphicsDevice::PresentResult::Queued) {
@@ -1207,6 +1257,7 @@ bool SdlDisplay::poll_events() {
   bool native_failed{};
   bool repainting{};
   bool queued_frame{};
+  bool native_presentation{};
   {
     std::lock_guard lock{impl_->frame_mutex};
     if (!impl_->native_fallback_frames.empty()) {
@@ -1231,46 +1282,13 @@ bool SdlDisplay::poll_events() {
   }
   if (frame) {
     const auto requested_orientation = frame->orientation;
-    if (requested_orientation != DisplayOrientation::Portrait) {
-      const auto native_oriented =
-          !native_failed &&
-          impl_->stage_oriented_frame_for_native_present(
-              *frame, requested_orientation);
-      if (!native_oriented) {
-        const auto raw_geometry =
-            DisplayGeometry{frame->width, frame->height};
-        const auto expected = raw_geometry.pixel_count();
-        if (frame->pixels.size() != expected && frame->read_pixels)
-          frame->pixels = frame->read_pixels();
-        const auto oriented = orient_display_pixels(
-            raw_geometry, frame->pixels, requested_orientation);
-        if (oriented.empty()) {
-          if (queued_frame) {
-            impl_->release_queued_frame(&*frame);
-            queued_frame = false;
-            std::lock_guard lock{impl_->frame_mutex};
-            impl_->fail_presentation_locked();
-          } else {
-            std::lock_guard lock{impl_->frame_mutex};
-            impl_->release_frame_surface_in_use_locked(*frame);
-          }
-          frame.reset();
-        } else {
-          frame->pixels = oriented;
-          {
-            std::lock_guard lock{impl_->frame_mutex};
-            impl_->release_frame_surface_in_use_locked(*frame);
-          }
-          frame->host_surface.reset();
-          frame->presentation_staging_surface.reset();
-          frame->read_pixels = {};
-          if (is_landscape(requested_orientation))
-            std::swap(frame->width, frame->height);
-          frame->orientation = DisplayOrientation::Portrait;
-        }
-      }
-    }
-    if (frame && !repainting && impl_->orientation != requested_orientation)
+    native_presentation =
+        !native_failed && impl_->host_graphics &&
+        impl_->host_graphics->native_presentation_available();
+    // Window/orientation changes are explicit boundaries. The potentially
+    // expensive frame staging itself is still deferred to the native worker.
+    if (native_presentation && !repainting &&
+        impl_->orientation != requested_orientation)
       impl_->update_orientation(requested_orientation);
   }
   if (frame) {
@@ -1293,23 +1311,14 @@ bool SdlDisplay::poll_events() {
               std::chrono::duration_cast<std::chrono::nanoseconds>(residence)
                   .count()));
     }
-    if (!native_failed)
-      static_cast<void>(impl_->stage_cpu_frame_for_native_present(*frame));
-    if (!native_failed && frame->host_surface && impl_->host_graphics &&
-        impl_->host_graphics->native_presentation_available()) {
+    if (native_presentation) {
       const auto native_sequence = frame->sequence;
-      // Keep the repaint copy outside frame_mutex. The native queue still
-      // receives its own frame below, while the potentially large pixel
-      // vector is copied without blocking Guest-side admission.
-      auto last_presented_frame = *frame;
       std::chrono::steady_clock::time_point native_queued_at;
       bool queued_native{};
       {
         std::lock_guard lock{impl_->frame_mutex};
-        impl_->set_last_presented_frame_locked(
-            std::move(last_presented_frame));
         // A redraw-only frame was not admitted through present(), so account
-        // for it before handing it to the native queue. Otherwise a failed
+        // for it before handing it to the native worker. Otherwise a failed
         // native attempt would later decrement the count for an uncounted
         // frame when it enters the fallback path.
         if (!queued_frame)
@@ -1333,6 +1342,43 @@ bool SdlDisplay::poll_events() {
       frame.reset();
       queued_frame = false;
     }
+  }
+  if (frame) {
+    const auto requested_orientation = frame->orientation;
+    if (requested_orientation != DisplayOrientation::Portrait) {
+      const auto raw_geometry = DisplayGeometry{frame->width, frame->height};
+      const auto expected = raw_geometry.pixel_count();
+      if (frame->pixels.size() != expected && frame->read_pixels)
+        frame->pixels = frame->read_pixels();
+      const auto oriented = orient_display_pixels(
+          raw_geometry, frame->pixels, requested_orientation);
+      if (oriented.empty()) {
+        if (queued_frame) {
+          impl_->release_queued_frame(&*frame);
+          queued_frame = false;
+          std::lock_guard lock{impl_->frame_mutex};
+          impl_->fail_presentation_locked();
+        } else {
+          std::lock_guard lock{impl_->frame_mutex};
+          impl_->release_frame_surface_in_use_locked(*frame);
+        }
+        frame.reset();
+      } else {
+        frame->pixels = oriented;
+        {
+          std::lock_guard lock{impl_->frame_mutex};
+          impl_->release_frame_surface_in_use_locked(*frame);
+        }
+        frame->host_surface.reset();
+        frame->presentation_staging_surface.reset();
+        frame->read_pixels = {};
+        if (is_landscape(requested_orientation))
+          std::swap(frame->width, frame->height);
+        frame->orientation = DisplayOrientation::Portrait;
+      }
+    }
+    if (frame && !repainting && impl_->orientation != requested_orientation)
+      impl_->update_orientation(requested_orientation);
   }
   if (frame) {
     static_cast<void>(impl_->queue_cpu_frame(
