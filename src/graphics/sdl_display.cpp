@@ -41,11 +41,13 @@ constexpr auto sdl_presenter_surface_owner =
     std::numeric_limits<std::uint64_t>::max();
 std::atomic<std::uint64_t> next_sdl_presenter_surface{1};
 constexpr std::size_t presentation_queue_capacity = 8;
+constexpr std::size_t presentation_queue_lease_capacity =
+    presentation_queue_capacity + 1;
 // Keep one extra surface slot for the repaint copy retained by
 // last_presented_frame. Frame admission has the eight-slot ordered queue plus
 // one bounded latest-only overflow slot below; it never grows with a burst.
 constexpr std::size_t presentation_surface_capacity =
-    presentation_queue_capacity + 1;
+    presentation_queue_lease_capacity;
 constexpr auto presentation_flush_timeout = std::chrono::seconds{5};
 
 } // namespace
@@ -1162,9 +1164,15 @@ void SdlDisplay::present(DisplayFrame frame) {
       *impl_->overflow_frame = std::move(frame);
       coalesced = true;
       depth = impl_->queued_frame_count;
-    } else {
+    } else if (impl_->queued_frame_count < presentation_queue_lease_capacity) {
       impl_->overflow_frame = std::move(frame);
       ++impl_->queued_frame_count;
+      depth = impl_->queued_frame_count;
+    } else {
+      // Every regular and overflow lease is already owned by native/fallback
+      // work. Drop this newest submission explicitly rather than extending
+      // the queue past its bounded budget or making the Guest wait.
+      coalesced = true;
       depth = impl_->queued_frame_count;
     }
   }
@@ -1315,25 +1323,38 @@ bool SdlDisplay::poll_events() {
       const auto native_sequence = frame->sequence;
       std::chrono::steady_clock::time_point native_queued_at;
       bool queued_native{};
+      bool native_coalesced{};
       {
         std::lock_guard lock{impl_->frame_mutex};
         // A redraw-only frame was not admitted through present(), so account
         // for it before handing it to the native worker. Otherwise a failed
         // native attempt would later decrement the count for an uncounted
         // frame when it enters the fallback path.
-        if (!queued_frame)
-          ++impl_->queued_frame_count;
-        if (telemetry_enabled)
-          frame->native_queued_at = std::chrono::steady_clock::now();
-        native_queued_at = frame->native_queued_at;
-        if (impl_->native_fallback_active ||
-            !impl_->native_fallback_frames.empty()) {
-          impl_->native_fallback_frames.push_back(std::move(*frame));
+        // Repaint requests are not Guest submissions and may arrive as an
+        // expose/focus storm. Share the eight-slot queue plus one overflow
+        // lease with regular frames; when that bounded budget is occupied,
+        // the next repaint is redundant and is safely coalesced instead of
+        // growing the native worker queue.
+        if (!queued_frame &&
+            impl_->queued_frame_count >= presentation_queue_lease_capacity) {
+          native_coalesced = true;
         } else {
-          impl_->pending_native_frames.push_back(std::move(*frame));
-          queued_native = true;
+          if (!queued_frame)
+            ++impl_->queued_frame_count;
+          if (telemetry_enabled)
+            frame->native_queued_at = std::chrono::steady_clock::now();
+          native_queued_at = frame->native_queued_at;
+          if (impl_->native_fallback_active ||
+              !impl_->native_fallback_frames.empty()) {
+            impl_->native_fallback_frames.push_back(std::move(*frame));
+          } else {
+            impl_->pending_native_frames.push_back(std::move(*frame));
+            queued_native = true;
+          }
         }
       }
+      if (native_coalesced)
+        performance.record_native_present_mailbox_coalesced();
       if (telemetry_enabled && queued_native) {
         performance.record_diagnostic_native_queue(
             native_sequence, native_queued_at);
