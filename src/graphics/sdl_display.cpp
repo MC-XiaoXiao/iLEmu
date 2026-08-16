@@ -7,6 +7,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <exception>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -55,6 +56,13 @@ struct SdlDisplay::Impl {
     std::shared_ptr<HostSurface> surface;
     bool in_use{};
     bool held_by_last{};
+  };
+
+  struct CpuPresentationFrame {
+    DisplayFrame frame;
+    bool queued{};
+    bool native_failed{};
+    bool repainting{};
   };
 
   Impl(DisplayGeometry initial_geometry, DisplayGeometry input_geometry)
@@ -191,6 +199,8 @@ struct SdlDisplay::Impl {
   std::condition_variable presentation_available;
   std::condition_variable presentation_space_available;
   std::condition_variable presentation_idle;
+  std::condition_variable cpu_presentation_available;
+  std::condition_variable cpu_presentation_idle;
   // Preserve ordered submissions until the SDL thread presents them while
   // the queue has room. If a producer burst outruns event-loop pumping, the
   // bounded admission policy below replaces the oldest pending frame and
@@ -206,6 +216,7 @@ struct SdlDisplay::Impl {
   std::deque<DisplayFrame> pending_native_frames;
   std::deque<DisplayFrame> native_fallback_frames;
   bool native_fallback_active{};
+  std::deque<CpuPresentationFrame> pending_cpu_frames;
   // SDL windows can lose their compositor back buffer while hidden or
   // covered. Retain the last host-ready frame so an expose/restore event can
   // repaint without waiting for the guest to submit another frame.
@@ -217,11 +228,15 @@ struct SdlDisplay::Impl {
       oriented_present_surfaces;
   std::unique_ptr<CommandEncoder> orientation_encoder;
   std::thread presentation_thread;
+  std::thread cpu_presentation_thread;
   std::atomic<std::uint64_t> presented_frames{};
   std::size_t queued_frame_count{};
   bool presentation_stopping{};
   bool presentation_failed{};
   bool presentation_active{};
+  bool cpu_presentation_stopping{};
+  bool cpu_presentation_active{};
+  std::exception_ptr cpu_presentation_error;
   SdlInput input;
   bool running{true};
 
@@ -318,7 +333,10 @@ struct SdlDisplay::Impl {
   void fail_presentation_locked() {
     presentation_failed = true;
     presentation_stopping = true;
+    cpu_presentation_stopping = true;
     running = false;
+    presentation_available.notify_all();
+    cpu_presentation_available.notify_all();
   }
 
   void abandon_queued_frames_locked() {
@@ -327,6 +345,7 @@ struct SdlDisplay::Impl {
     pending_native_frames.clear();
     native_fallback_frames.clear();
     native_fallback_active = false;
+    pending_cpu_frames.clear();
     queued_frame_count = 0;
     if (last_presented_frame)
       set_frame_surface_held_locked(*last_presented_frame, false);
@@ -337,6 +356,10 @@ struct SdlDisplay::Impl {
   void update_orientation(DisplayOrientation next_orientation) {
     if (orientation == next_orientation)
       return;
+#if defined(ILEMU_HAS_SDL2)
+    if (!flush_cpu_presenter())
+      return;
+#endif
     orientation = next_orientation;
     geometry = is_landscape(orientation)
                    ? DisplayGeometry{guest_geometry.height,
@@ -541,6 +564,189 @@ struct SdlDisplay::Impl {
     return true;
   }
 
+#if defined(ILEMU_HAS_SDL2)
+  bool present_cpu_frame(DisplayFrame &frame) {
+    auto &performance = performance_counters();
+    const auto telemetry_enabled = performance.enabled();
+    if (frame.host_surface) {
+      if (const auto gles_renderer =
+              std::dynamic_pointer_cast<GlesRenderer>(host_graphics)) {
+        performance.record_fallback(gles_renderer->failure_reason());
+      }
+    }
+    const auto expected = static_cast<std::size_t>(frame.width) * frame.height;
+    if (frame.pixels.size() != expected && frame.read_pixels)
+      frame.pixels = frame.read_pixels();
+    if (frame.pixels.size() != expected)
+      return false;
+
+    ensure_cpu_presenter();
+    if (telemetry_enabled)
+      performance.record_diagnostic_frame_content(
+          frame.sequence, frame.owner_process_id, frame.submitted_at,
+          frame.width, frame.height, frame.pixels);
+    if (SDL_UpdateTexture(
+            texture, nullptr, frame.pixels.data(),
+            static_cast<int>(frame.width * sizeof(std::uint32_t))) != 0) {
+      throw std::runtime_error{"SDL texture upload failed: " +
+                               std::string{SDL_GetError()}};
+    }
+    int output_width{};
+    int output_height{};
+    if (SDL_GetRendererOutputSize(renderer, &output_width, &output_height) !=
+        0) {
+      throw std::runtime_error{
+          "SDL renderer output query failed: " + std::string{SDL_GetError()}};
+    }
+    const auto viewport = fit_display_viewport(
+        {frame.width, frame.height},
+        {static_cast<std::uint32_t>(std::max(output_width, 0)),
+         static_cast<std::uint32_t>(std::max(output_height, 0))});
+    const SDL_Rect destination{
+        viewport.x, viewport.y, static_cast<int>(viewport.width),
+        static_cast<int>(viewport.height)};
+    SDL_SetRenderDrawColor(renderer, 0U, 0U, 0U, 255U);
+    SDL_RenderClear(renderer);
+    SDL_RenderCopy(renderer, texture, nullptr, &destination);
+    SDL_RenderPresent(renderer);
+    return true;
+  }
+
+  bool queue_cpu_frame(DisplayFrame frame, bool queued, bool native_failed,
+                       bool repainting) {
+    try {
+      ensure_cpu_presenter();
+    } catch (...) {
+      std::lock_guard lock{frame_mutex};
+      if (queued) {
+        release_frame_surface_in_use_locked(frame);
+        if (queued_frame_count != 0)
+          --queued_frame_count;
+      }
+      fail_presentation_locked();
+      return false;
+    }
+    {
+      std::lock_guard lock{frame_mutex};
+      if (cpu_presentation_stopping || presentation_failed || !running) {
+        if (queued) {
+          release_frame_surface_in_use_locked(frame);
+          if (queued_frame_count != 0)
+            --queued_frame_count;
+        }
+        return false;
+      }
+      if (repainting) {
+        // Repaint requests carry no Guest queue lease. Keep at most one
+        // pending repaint so window expose storms cannot create an unbounded
+        // software-present backlog behind a slow compositor.
+        for (auto iterator = pending_cpu_frames.rbegin();
+             iterator != pending_cpu_frames.rend(); ++iterator) {
+          if (iterator->repainting) {
+            iterator->frame = std::move(frame);
+            return true;
+          }
+        }
+      }
+      pending_cpu_frames.push_back(CpuPresentationFrame{
+          std::move(frame), queued, native_failed, repainting});
+    }
+    cpu_presentation_available.notify_one();
+    return true;
+  }
+
+  void start_cpu_presenter() {
+    if (cpu_presentation_thread.joinable() || presentation_failed || !running)
+      return;
+    cpu_presentation_stopping = false;
+    cpu_presentation_error = {};
+    cpu_presentation_thread = std::thread([this] {
+      std::unique_lock lock{frame_mutex};
+      while (true) {
+        cpu_presentation_available.wait(lock, [this] {
+          return cpu_presentation_stopping || !pending_cpu_frames.empty();
+        });
+        if (cpu_presentation_stopping)
+          return;
+        auto pending = std::move(pending_cpu_frames.front());
+        pending_cpu_frames.pop_front();
+        cpu_presentation_active = true;
+        lock.unlock();
+        bool presented{};
+        std::exception_ptr error;
+        try {
+          presented = present_cpu_frame(pending.frame);
+        } catch (...) {
+          error = std::current_exception();
+        }
+        lock.lock();
+        cpu_presentation_active = false;
+        std::uint64_t depth{};
+        if (pending.queued) {
+          release_frame_surface_in_use_locked(pending.frame);
+          if (queued_frame_count != 0) {
+            --queued_frame_count;
+            depth = queued_frame_count;
+          }
+        }
+        if (presented) {
+          set_last_presented_frame_locked(pending.frame);
+          presented_frames.fetch_add(1, std::memory_order_release);
+          performance_counters().record_cpu_present_fallback(
+              pending.frame.sequence, pending.frame.submitted_at);
+        } else {
+          if (error)
+            cpu_presentation_error = error;
+          else {
+            cpu_presentation_error = std::make_exception_ptr(
+                std::runtime_error{"SDL CPU presentation failed"});
+          }
+          fail_presentation_locked();
+        }
+        if (pending.native_failed)
+          native_fallback_active = false;
+        cpu_presentation_idle.notify_all();
+        if (depth != 0 || queued_frame_count == 0)
+          presentation_space_available.notify_all();
+        presentation_available.notify_all();
+      }
+    });
+  }
+
+  bool flush_cpu_presenter() {
+    std::unique_lock lock{frame_mutex};
+    if (!cpu_presentation_thread.joinable())
+      return true;
+    if (cpu_presentation_idle.wait_until(
+            lock, std::chrono::steady_clock::now() +
+                      presentation_flush_timeout,
+            [this] {
+              return pending_cpu_frames.empty() &&
+                     !cpu_presentation_active;
+            })) {
+      return !cpu_presentation_error && !presentation_failed;
+    }
+    fail_presentation_locked();
+    return false;
+  }
+
+  void stop_cpu_presenter() {
+    if (!cpu_presentation_thread.joinable())
+      return;
+    {
+      std::lock_guard lock{frame_mutex};
+      cpu_presentation_stopping = true;
+    }
+    cpu_presentation_available.notify_all();
+    cpu_presentation_thread.join();
+    {
+      std::lock_guard lock{frame_mutex};
+      cpu_presentation_stopping = false;
+      cpu_presentation_active = false;
+    }
+  }
+#endif
+
   void start_native_presenter() {
     if (presentation_thread.joinable() || presentation_failed || !running)
       return;
@@ -704,6 +910,7 @@ SdlDisplay::SdlDisplay(DisplayGeometry frame_geometry,
   }
   if (!impl_->vulkan_window)
     impl_->ensure_cpu_presenter();
+  impl_->start_cpu_presenter();
 #else
   throw std::runtime_error{
       "SDL2 display support was not available when iLEmu was built"};
@@ -715,6 +922,7 @@ SdlDisplay::~SdlDisplay() {
   if (impl_) {
     flush_presentation();
     impl_->stop_native_presenter();
+    impl_->stop_cpu_presenter();
     {
       std::lock_guard lock{impl_->frame_mutex};
       impl_->abandon_queued_frames_locked();
@@ -785,6 +993,7 @@ void SdlDisplay::set_host_graphics(
     std::shared_ptr<HostGraphicsDevice> graphics) {
   flush_presentation();
   impl_->stop_native_presenter();
+  impl_->stop_cpu_presenter();
   {
     std::lock_guard lock{impl_->frame_mutex};
     // Release frames before dropping the renderer. A deferred readback keeps
@@ -804,8 +1013,13 @@ void SdlDisplay::set_host_graphics(
   if (impl_->host_graphics &&
       !impl_->host_graphics->native_presentation_available()) {
     impl_->ensure_cpu_presenter();
-  } else if (impl_->host_graphics) {
-    impl_->start_native_presenter();
+  }
+  if (impl_->host_graphics) {
+    impl_->start_cpu_presenter();
+    if (impl_->host_graphics->native_presentation_available())
+      impl_->start_native_presenter();
+  } else {
+    impl_->stop_cpu_presenter();
   }
 #endif
 }
@@ -880,6 +1094,19 @@ void SdlDisplay::flush_presentation() {
       return;
     }
     if (!impl_->flush_native_presenter()) {
+      std::uint64_t depth{};
+      {
+        std::lock_guard lock{impl_->frame_mutex};
+        depth = impl_->queued_frame_count;
+        impl_->abandon_queued_frames_locked();
+      }
+      if (depth != 0)
+        performance_counters().record_display_queue_depth(0);
+      impl_->presentation_available.notify_all();
+      impl_->presentation_space_available.notify_all();
+      return;
+    }
+    if (!impl_->flush_cpu_presenter()) {
       std::uint64_t depth{};
       {
         std::lock_guard lock{impl_->frame_mutex};
@@ -1047,72 +1274,8 @@ bool SdlDisplay::poll_events() {
     }
   }
   if (frame) {
-    if (frame->host_surface) {
-      if (const auto renderer = std::dynamic_pointer_cast<GlesRenderer>(
-              impl_->host_graphics)) {
-        performance_counters().record_fallback(renderer->failure_reason());
-      }
-    }
-    const auto expected =
-        static_cast<std::size_t>(frame->width) * frame->height;
-    if (frame->pixels.size() != expected && frame->read_pixels)
-      frame->pixels = frame->read_pixels();
-    if (frame->pixels.size() == expected) {
-      performance_counters().record_diagnostic_frame_content(
-          frame->sequence, frame->owner_process_id, frame->submitted_at,
-          frame->width, frame->height, frame->pixels);
-      impl_->ensure_cpu_presenter();
-      if (SDL_UpdateTexture(
-              impl_->texture, nullptr, frame->pixels.data(),
-              static_cast<int>(frame->width * sizeof(std::uint32_t))) != 0) {
-        throw std::runtime_error{"SDL texture upload failed: " +
-                                 std::string{SDL_GetError()}};
-      }
-      int output_width{};
-      int output_height{};
-      if (SDL_GetRendererOutputSize(
-              impl_->renderer, &output_width, &output_height) != 0) {
-        throw std::runtime_error{
-            "SDL renderer output query failed: " +
-            std::string{SDL_GetError()}};
-      }
-      const auto viewport = fit_display_viewport(
-          {frame->width, frame->height},
-          {static_cast<std::uint32_t>(std::max(output_width, 0)),
-           static_cast<std::uint32_t>(std::max(output_height, 0))});
-      const SDL_Rect destination{
-          viewport.x, viewport.y, static_cast<int>(viewport.width),
-          static_cast<int>(viewport.height)};
-      SDL_SetRenderDrawColor(impl_->renderer, 0U, 0U, 0U, 255U);
-      SDL_RenderClear(impl_->renderer);
-      SDL_RenderCopy(
-          impl_->renderer, impl_->texture, nullptr, &destination);
-      SDL_RenderPresent(impl_->renderer);
-      {
-        std::lock_guard lock{impl_->frame_mutex};
-        impl_->set_last_presented_frame_locked(*frame);
-      }
-      impl_->presented_frames.fetch_add(1, std::memory_order_release);
-      performance_counters().record_cpu_present_fallback(
-          frame->sequence, frame->submitted_at);
-      if (queued_frame) {
-        impl_->release_queued_frame(&*frame);
-        queued_frame = false;
-      }
-    } else if (queued_frame) {
-      impl_->release_queued_frame();
-      queued_frame = false;
-      std::lock_guard lock{impl_->frame_mutex};
-      impl_->fail_presentation_locked();
-      impl_->presentation_available.notify_all();
-    }
-  }
-  if (native_failed) {
-    {
-      std::lock_guard lock{impl_->frame_mutex};
-      impl_->native_fallback_active = false;
-    }
-    impl_->presentation_available.notify_all();
+    static_cast<void>(impl_->queue_cpu_frame(
+        std::move(*frame), queued_frame, native_failed, repainting));
   }
 #endif
   return impl_->running;
