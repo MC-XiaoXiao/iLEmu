@@ -103,7 +103,7 @@ void DisplayState::set_powered_on(bool powered_on) {
     performance.record_display_submission(
         frame.sequence, frame.owner_process_id, frame.submitted_at);
   }
-  presenter(frame);
+  presenter(std::move(frame));
 }
 
 void DisplayState::present(std::uint32_t owner_process_id) {
@@ -138,7 +138,7 @@ void DisplayState::present(std::uint32_t owner_process_id) {
     performance.record_display_submission(
         frame.sequence, frame.owner_process_id, frame.submitted_at);
   }
-  presenter(frame);
+  presenter(std::move(frame));
 }
 
 bool DisplayState::clear_if_owner(std::uint32_t owner_process_id) {
@@ -170,7 +170,7 @@ bool DisplayState::clear_if_owner(std::uint32_t owner_process_id) {
     performance.record_display_submission(
         frame.sequence, frame.owner_process_id, frame.submitted_at);
   }
-  presenter(frame);
+  presenter(std::move(frame));
   return true;
 }
 

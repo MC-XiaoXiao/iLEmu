@@ -1080,18 +1080,13 @@ void SdlDisplay::set_host_graphics(
 #endif
 }
 
-void SdlDisplay::present(const DisplayFrame &frame) {
+void SdlDisplay::present(DisplayFrame frame) {
 #if defined(ILEMU_HAS_SDL2)
   if (frame.width != impl_->guest_geometry.width ||
       frame.height != impl_->guest_geometry.height ||
       (frame.pixels.empty() && !frame.read_pixels)) {
     return;
   }
-  // Admission must not hold frame_mutex while copying the full pixel vector.
-  // The copy is still required by the const presenter interface, but moving
-  // the completed frame under the lock keeps worker bookkeeping from turning
-  // into Guest-side lock contention.
-  auto admitted_frame = frame;
   std::uint64_t depth{};
   bool coalesced{};
   {
@@ -1100,7 +1095,7 @@ void SdlDisplay::present(const DisplayFrame &frame) {
         !impl_->running) {
       coalesced = true;
     } else if (impl_->queued_frame_count < presentation_queue_capacity) {
-      impl_->pending_frames.push_back(std::move(admitted_frame));
+      impl_->pending_frames.push_back(std::move(frame));
       ++impl_->queued_frame_count;
       depth = impl_->queued_frame_count;
     } else if (!impl_->pending_frames.empty()) {
@@ -1108,17 +1103,17 @@ void SdlDisplay::present(const DisplayFrame &frame) {
       // crossed into the native presenter. The queue remains bounded and the
       // newest state wins under an artificial or real producer burst.
       impl_->pending_frames.pop_front();
-      impl_->pending_frames.push_back(std::move(admitted_frame));
+      impl_->pending_frames.push_back(std::move(frame));
       coalesced = true;
       depth = impl_->queued_frame_count;
     } else if (impl_->overflow_frame) {
       // Native work may own every regular slot. Keep only one additional
       // latest frame until the native sequence reaches it.
-      *impl_->overflow_frame = std::move(admitted_frame);
+      *impl_->overflow_frame = std::move(frame);
       coalesced = true;
       depth = impl_->queued_frame_count;
     } else {
-      impl_->overflow_frame = std::move(admitted_frame);
+      impl_->overflow_frame = std::move(frame);
       ++impl_->queued_frame_count;
       depth = impl_->queued_frame_count;
     }

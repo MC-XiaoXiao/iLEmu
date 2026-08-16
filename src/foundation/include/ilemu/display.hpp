@@ -60,7 +60,10 @@ struct DisplayFrame {
 
 class DisplayState {
 public:
-  using Presenter = std::function<void(const DisplayFrame &)>;
+  // A submitted frame is immutable after DisplayState hands it to the
+  // presenter. Passing ownership avoids a second full pixel-vector copy at
+  // the SDL admission boundary; snapshots remain const views of state.
+  using Presenter = std::function<void(DisplayFrame)>;
   using OrientationResolver =
       std::function<DisplayOrientation(std::uint32_t process_id)>;
 

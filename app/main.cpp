@@ -2618,13 +2618,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
   }
   if (sdl_display) {
     initial->kernel->set_display_presenter(
-        [backend = sdl_display.get()](const DisplayFrame &frame) {
-          backend->present(frame);
+        [backend = sdl_display.get()](DisplayFrame frame) {
+          backend->present(std::move(frame));
         });
   } else if (frame_file_presenter) {
     initial->kernel->set_display_presenter(
         [backend = frame_file_presenter.get(),
-         &output](const DisplayFrame &frame) {
+         &output](DisplayFrame frame) {
           // Animation diagnostics must not turn the measured window into a
           // PNG-writing benchmark. The presenter callback is still the
           // actual CPU-present boundary for the headless sink; retain pixels
