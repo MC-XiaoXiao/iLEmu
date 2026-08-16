@@ -3638,6 +3638,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   }
   while ((!bounded_execution || remaining_ticks != 0) &&
          !initial_runtime->kernel->process().exited && !hard_stop) {
+    std::optional<XnuThreadId> input_preferred_thread;
     refresh_catalog_after_file_mutations(scheduler.runnable_count() == 0);
     if (sdl_display && !sdl_display->poll_events()) {
       hard_stop = true;
@@ -3995,6 +3996,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
           const auto delivered_input =
               runtime->kernel->take_last_delivered_graphics_input(processor);
           if (scheduler.make_runnable(thread) && delivered_input) {
+            // A just-delivered input event is a generic interactive wakeup,
+            // not a process-specific priority. Let its receiver run once
+            // before ordinary runnable continuations consume another slice.
+            // The preference is scoped to this host-loop iteration and does
+            // not alter Guest priority, quantum, wait/wake state, or clocks.
+            input_preferred_thread = thread;
             performance_counters().record_diagnostic_input_runnable(
                 *delivered_input, thread.process, thread.thread);
           }
@@ -4087,6 +4094,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
       if (const auto info = scheduler.info(*display_urgent_thread);
           info && info->state == XnuThreadState::Runnable) {
         preferred_thread = display_urgent_thread;
+      }
+    }
+    if (!preferred_thread && input_preferred_thread) {
+      if (const auto info = scheduler.info(*input_preferred_thread);
+          info && info->state == XnuThreadState::Runnable) {
+        preferred_thread = input_preferred_thread;
       }
     }
     display_urgent_thread.reset();
