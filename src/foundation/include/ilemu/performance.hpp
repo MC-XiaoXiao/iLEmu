@@ -232,6 +232,9 @@ struct PerformanceSnapshot {
     std::uint64_t jit_host_slice_budget_total_nanoseconds{};
     std::uint64_t jit_host_slice_budget_min_nanoseconds{};
     std::uint64_t jit_host_slice_budget_max_nanoseconds{};
+    std::uint64_t jit_demand_artifact_probes{};
+    std::uint64_t jit_demand_artifact_hits{};
+    std::uint64_t jit_demand_artifact_misses{};
     std::uint64_t scheduler_runnable_transitions{};
     std::uint64_t scheduler_dispatches{};
     std::uint64_t scheduler_wakeups{};
@@ -377,6 +380,7 @@ class PerformanceCounters {
                              std::uint64_t rsb_misses);
     void record_jit_host_yield(std::uint64_t checks, bool yielded);
     void record_jit_host_slice_budget(std::uint64_t nanoseconds);
+    void record_jit_demand_artifact_probe(bool hit);
     void record_scheduler_runnable_transition();
     void record_scheduler_dispatch();
     void record_scheduler_wakeup(
@@ -574,6 +578,9 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> jit_host_slice_budget_total_nanoseconds_{};
     std::atomic<std::uint64_t> jit_host_slice_budget_min_nanoseconds_{};
     std::atomic<std::uint64_t> jit_host_slice_budget_max_nanoseconds_{};
+    std::atomic<std::uint64_t> jit_demand_artifact_probes_{};
+    std::atomic<std::uint64_t> jit_demand_artifact_hits_{};
+    std::atomic<std::uint64_t> jit_demand_artifact_misses_{};
     std::atomic<std::uint64_t> scheduler_runnable_transitions_{};
     std::atomic<std::uint64_t> scheduler_dispatches_{};
     std::atomic<std::uint64_t> scheduler_wakeups_{};

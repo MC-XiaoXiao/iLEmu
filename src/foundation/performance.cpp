@@ -502,6 +502,9 @@ void PerformanceCounters::reset(bool enabled) {
         0, std::memory_order_relaxed);
     jit_host_slice_budget_max_nanoseconds_.store(
         0, std::memory_order_relaxed);
+    jit_demand_artifact_probes_.store(0, std::memory_order_relaxed);
+    jit_demand_artifact_hits_.store(0, std::memory_order_relaxed);
+    jit_demand_artifact_misses_.store(0, std::memory_order_relaxed);
     scheduler_runnable_transitions_.store(0, std::memory_order_relaxed);
     scheduler_dispatches_.store(0, std::memory_order_relaxed);
     scheduler_wakeups_.store(0, std::memory_order_relaxed);
@@ -678,6 +681,12 @@ bool PerformanceCounters::begin_display_window() {
         jit_instances_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.jit_creation_nanoseconds =
         jit_creation_nanoseconds_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_demand_artifact_probes =
+        jit_demand_artifact_probes_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_demand_artifact_hits =
+        jit_demand_artifact_hits_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_demand_artifact_misses =
+        jit_demand_artifact_misses_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.translation_blocks =
         translation_blocks_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.cpu_executions =
@@ -799,6 +808,15 @@ PerformanceCounters::end_display_window() {
     result.jit_creation_nanoseconds = diagnostic_delta(
         jit_creation_nanoseconds_.load(std::memory_order_relaxed),
         diagnostic_work_baseline.jit_creation_nanoseconds);
+    result.jit_demand_artifact_probes = diagnostic_delta(
+        jit_demand_artifact_probes_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.jit_demand_artifact_probes);
+    result.jit_demand_artifact_hits = diagnostic_delta(
+        jit_demand_artifact_hits_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.jit_demand_artifact_hits);
+    result.jit_demand_artifact_misses = diagnostic_delta(
+        jit_demand_artifact_misses_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.jit_demand_artifact_misses);
     result.scheduler_runnable_transitions = diagnostic_delta(
         scheduler_runnable_transitions_.load(std::memory_order_relaxed),
         diagnostic_work_baseline.scheduler_runnable_transitions);
@@ -1229,6 +1247,13 @@ void PerformanceCounters::record_jit_host_slice_budget(
                maximum, nanoseconds, std::memory_order_relaxed,
                std::memory_order_relaxed)) {
     }
+}
+
+void PerformanceCounters::record_jit_demand_artifact_probe(bool hit) {
+    if (!enabled()) return;
+    jit_demand_artifact_probes_.fetch_add(1, std::memory_order_relaxed);
+    (hit ? jit_demand_artifact_hits_ : jit_demand_artifact_misses_)
+        .fetch_add(1, std::memory_order_relaxed);
 }
 
 void PerformanceCounters::record_scheduler_runnable_transition() {
@@ -2364,6 +2389,12 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
     result.jit_host_slice_budget_max_nanoseconds =
         jit_host_slice_budget_max_nanoseconds_.load(
             std::memory_order_relaxed);
+    result.jit_demand_artifact_probes =
+        jit_demand_artifact_probes_.load(std::memory_order_relaxed);
+    result.jit_demand_artifact_hits =
+        jit_demand_artifact_hits_.load(std::memory_order_relaxed);
+    result.jit_demand_artifact_misses =
+        jit_demand_artifact_misses_.load(std::memory_order_relaxed);
     result.scheduler_runnable_transitions =
         scheduler_runnable_transitions_.load(std::memory_order_relaxed);
     result.scheduler_dispatches =
@@ -2719,6 +2750,9 @@ std::string format_performance_summary(
          << snapshot.jit_host_slice_budget_min_nanoseconds << "/"
          << host_budget_average << "/"
          << snapshot.jit_host_slice_budget_max_nanoseconds
+         << " jit-demand-artifact=" << snapshot.jit_demand_artifact_probes
+         << "/" << snapshot.jit_demand_artifact_hits << "/"
+         << snapshot.jit_demand_artifact_misses
          << " scheduler-runnable="
          << snapshot.scheduler_runnable_transitions
          << " scheduler-dispatch=" << snapshot.scheduler_dispatches
@@ -2909,6 +2943,9 @@ std::string format_display_performance_summary(
          << snapshot.scheduler_preemption_deferred_consumes
          << " scheduler-quantum-expired="
          << snapshot.scheduler_quantum_expirations
+         << " jit-demand-artifact=" << snapshot.jit_demand_artifact_probes
+         << "/" << snapshot.jit_demand_artifact_hits << "/"
+         << snapshot.jit_demand_artifact_misses
          << " native-attempt=" << snapshot.native_present_attempts
          << " native-coalesced="
          << snapshot.native_present_mailbox_coalesced

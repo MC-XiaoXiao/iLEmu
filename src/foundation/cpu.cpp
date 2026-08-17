@@ -373,6 +373,84 @@ public:
         return artifact_store_ ? artifact_store_->publication_generation() : 0U;
     }
 
+    // Preparation is deliberately separate from the Dynarmic miss callback:
+    // store lookup, dependency validation, and IR deserialization all happen
+    // before Jit::Run. The miss callback only consumes this executor-local
+    // slot after NativeCodeSlab::find_block has failed.
+    bool stage_demand_artifact(
+        std::uint64_t location_descriptor,
+        std::uint64_t slab_generation) {
+        try {
+            if (demand_artifact_location_ == location_descriptor &&
+                demand_artifact_slab_generation_ == slab_generation &&
+                demand_artifact_ && !demand_artifact_consumed_) {
+                return true;
+            }
+            demand_artifact_.reset();
+            demand_artifact_consumed_ = false;
+            demand_artifact_location_ = 0;
+            demand_artifact_slab_generation_ = 0;
+
+            const auto key = make_artifact_key(location_descriptor);
+            if (!key) return false;
+            auto block = validated_artifact_block(location_descriptor);
+            if (!block || block->Location().Value() != location_descriptor) {
+                return false;
+            }
+            demand_artifact_key_ = *key;
+            demand_artifact_location_ = location_descriptor;
+            demand_artifact_slab_generation_ = slab_generation;
+            demand_artifact_.emplace(std::move(*block));
+            return true;
+        } catch (...) {
+            discard_demand_artifact();
+            return false;
+        }
+    }
+
+    [[nodiscard]] bool demand_artifact_staged(
+        std::uint64_t location_descriptor,
+        std::uint64_t slab_generation) const noexcept {
+        return demand_artifact_location_ == location_descriptor &&
+               demand_artifact_slab_generation_ == slab_generation &&
+               demand_artifact_.has_value() &&
+               !demand_artifact_consumed_;
+    }
+
+    [[nodiscard]] bool demand_artifact_native_ready(
+        std::uint64_t location_descriptor,
+        std::uint64_t slab_generation) const noexcept {
+        return demand_artifact_location_ == location_descriptor &&
+               demand_artifact_slab_generation_ == slab_generation &&
+               demand_artifact_consumed_;
+    }
+
+    void discard_demand_artifact() noexcept {
+        demand_artifact_.reset();
+        demand_artifact_key_ = {};
+        demand_artifact_location_ = 0;
+        demand_artifact_slab_generation_ = 0;
+        demand_artifact_consumed_ = false;
+    }
+
+    // Called by Dynarmic only after NativeCodeSlab::find_block misses. This
+    // function does not access the store and does not allocate or lock.
+    [[nodiscard]] Dynarmic::IR::Block* take_demand_artifact(
+        std::uint64_t location_descriptor,
+        std::uint64_t slab_generation) noexcept {
+        const bool hit = demand_artifact_ && !demand_artifact_consumed_ &&
+                         demand_artifact_location_ == location_descriptor &&
+                         demand_artifact_slab_generation_ == slab_generation &&
+                         demand_artifact_key_.location_descriptor ==
+                             location_descriptor &&
+                         demand_artifact_->Location().Value() ==
+                             location_descriptor;
+        performance_counters().record_jit_demand_artifact_probe(hit);
+        if (!hit) return nullptr;
+        demand_artifact_consumed_ = true;
+        return &*demand_artifact_;
+    }
+
     void discard_translation_location(
         std::uint64_t location_descriptor) noexcept {
         if (translation_profile_) {
@@ -1007,6 +1085,11 @@ private:
     std::vector<std::uint32_t> translation_code_pages_;
     std::vector<JitConstantDependency> translation_constant_dependencies_;
     bool constant_dependency_failed_{};
+    std::optional<Dynarmic::IR::Block> demand_artifact_;
+    JitArtifactKey demand_artifact_key_{};
+    std::uint64_t demand_artifact_location_{};
+    std::uint64_t demand_artifact_slab_generation_{};
+    bool demand_artifact_consumed_{};
     bool cooperative_execution_{};
     bool host_yield_requested_{};
     std::uint32_t host_yield_probe_count_{};
@@ -1452,6 +1535,8 @@ public:
         ensure_jit();
         guest_preemption_requested_ = false;
         guest_preemption_requested_at_.reset();
+        callbacks_->discard_demand_artifact();
+        demand_artifact_probes_.clear();
         jit_->Reset();
     }
 
@@ -1489,6 +1574,14 @@ public:
     }
 
 private:
+    static Dynarmic::IR::Block* portable_ir_demand_provider(
+        void* user_arg, std::uint64_t location_descriptor,
+        std::uint64_t slab_generation) noexcept {
+        auto& executor = *static_cast<JitExecutor*>(user_arg);
+        return executor.callbacks_->take_demand_artifact(
+            location_descriptor, slab_generation);
+    }
+
     struct ArtifactProbe {
         ContentIdentity content_identity;
         ContentIdentity layout_identity;
@@ -1501,6 +1594,21 @@ private:
         }
     };
 
+    struct DemandArtifactProbe {
+        JitArtifactKey key;
+        std::uint64_t publication_generation{};
+        std::uint64_t slab_generation{};
+
+        [[nodiscard]] bool matches(
+            const JitArtifactKey& candidate,
+            std::uint64_t candidate_publication_generation,
+            std::uint64_t candidate_slab_generation) const noexcept {
+            return key == candidate &&
+                   publication_generation == candidate_publication_generation &&
+                   slab_generation == candidate_slab_generation;
+        }
+    };
+
     void preload_current_artifact() {
         const Dynarmic::A32::LocationDescriptor descriptor{
             jit_->Regs()[15], Dynarmic::A32::PSR{jit_->Cpsr()},
@@ -1509,26 +1617,25 @@ private:
             static_cast<Dynarmic::IR::LocationDescriptor>(descriptor).Value();
         const auto key = callbacks_->artifact_key(location);
         if (!key) return;
+        const auto slab_generation =
+            execution_context_->native_code_slab()->generation();
+        if (callbacks_->demand_artifact_staged(location, slab_generation) ||
+            callbacks_->demand_artifact_native_ready(
+                location, slab_generation)) {
+            return;
+        }
         const auto publication_generation =
             callbacks_->artifact_publication_generation();
-        if (const auto probe = artifact_probes_.find(location);
-            probe != artifact_probes_.end()) {
-            if (probe->second.matches(*key) ||
-                (!probe->second.imported &&
-                 probe->second.publication_generation ==
-                     publication_generation)) {
-                return;
-            }
+        if (const auto probe = demand_artifact_probes_.find(location);
+            probe != demand_artifact_probes_.end() &&
+            probe->second.matches(
+                *key, publication_generation, slab_generation)) {
+            return;
         }
-        const auto imported = callbacks_->import_artifact(*jit_, location);
-        artifact_probes_.insert_or_assign(
-            location,
-            ArtifactProbe{key->content_identity, key->layout_identity,
-                          imported !=
-                              JitCallbacks::ArtifactImportOutcome::Unavailable &&
-                          imported !=
-                              JitCallbacks::ArtifactImportOutcome::Failed,
-                          publication_generation});
+        callbacks_->stage_demand_artifact(location, slab_generation);
+        demand_artifact_probes_.insert_or_assign(
+            location, DemandArtifactProbe{
+                          *key, publication_generation, slab_generation});
     }
 
     void observe_shared_invalidation_epoch() {
@@ -1536,6 +1643,8 @@ private:
             execution_context_->cache_invalidation_epoch();
         if (invalidation_epoch == observed_invalidation_epoch_) return;
         artifact_probes_.clear();
+        demand_artifact_probes_.clear();
+        callbacks_->discard_demand_artifact();
         observed_invalidation_epoch_ = invalidation_epoch;
     }
 
@@ -1561,6 +1670,8 @@ private:
         // publish a guest invalidation epoch. Retire probes when a
         // precompile operation reaches this slower, serialized boundary.
         artifact_probes_.clear();
+        demand_artifact_probes_.clear();
+        callbacks_->discard_demand_artifact();
         observed_slab_generation_ = slab_generation;
     }
 
@@ -1644,6 +1755,8 @@ private:
                                  ? std::chrono::steady_clock::now()
                                  : std::chrono::steady_clock::time_point{};
         jit_ = std::make_unique<Dynarmic::A32::Jit>(config);
+        jit_->SetPortableIRDemandProvider(
+            &JitExecutor::portable_ir_demand_provider, this);
         recorded_dispatch_counters_ = {};
         recorded_shared_cache_state_ = false;
         recorded_shared_range_count_ = 0;
@@ -1828,6 +1941,8 @@ private:
     std::uint64_t observed_invalidation_epoch_{};
     std::uint64_t observed_slab_generation_{};
     std::unordered_map<std::uint64_t, ArtifactProbe> artifact_probes_;
+    std::unordered_map<std::uint64_t, DemandArtifactProbe>
+        demand_artifact_probes_;
     bool guest_preemption_requested_{};
     std::optional<std::chrono::steady_clock::time_point>
         guest_preemption_requested_at_;
