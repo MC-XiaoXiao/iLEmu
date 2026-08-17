@@ -124,6 +124,9 @@ public:
                             MemoryPermission access);
     void clear_halt();
     void halt(Dynarmic::HaltReason reason = Dynarmic::HaltReason::UserDefined1);
+    // Record and request an XNU AST/preemption boundary. This remains
+    // separate from host cooperative yielding and deferred SVC halts.
+    void request_guest_preemption();
     [[nodiscard]] Dynarmic::HaltReason consume_requested_halt_reason();
 
     [[nodiscard]] std::size_t processor_id() const { return processor_id_; }

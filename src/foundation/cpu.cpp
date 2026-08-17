@@ -1266,6 +1266,22 @@ public:
             diagnostics.checkpoint(PerfLatencyKind::CpuRunExecute);
             record_dispatch_counters();
             auto result = callbacks_->result(reason);
+            if (guest_preemption_requested_) {
+                performance_counters().record_scheduler_preemption_return();
+                if (guest_preemption_requested_at_) {
+                    const auto elapsed =
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(
+                            std::chrono::steady_clock::now() -
+                            *guest_preemption_requested_at_)
+                            .count();
+                    performance_counters().record_latency(
+                        PerfLatencyKind::SchedulerPreemptionRequestToReturn,
+                        static_cast<std::uint64_t>(std::max<std::int64_t>(
+                            0, elapsed)));
+                }
+                guest_preemption_requested_ = false;
+                guest_preemption_requested_at_.reset();
+            }
             diagnostics.record_result(
                 result.ticks_consumed, result.host_yield_checks,
                 result.host_yielded, result.svc_calls, result.svc);
@@ -1284,6 +1300,8 @@ public:
             diagnostics.checkpoint(PerfLatencyKind::CpuRunCacheAccounting);
             return result;
         } catch (...) {
+            guest_preemption_requested_ = false;
+            guest_preemption_requested_at_.reset();
             record_dispatch_counters();
             save_state(cpu);
             record_code_cache_usage();
@@ -1306,6 +1324,14 @@ public:
         if (jit_) {
             jit_->HaltExecution(reason);
         }
+    }
+
+    void request_guest_preemption() {
+        guest_preemption_requested_ = true;
+        if (performance_counters().cpu_source_diagnostics_enabled()) {
+            guest_preemption_requested_at_ = std::chrono::steady_clock::now();
+        }
+        halt(Dynarmic::HaltReason::UserDefined2);
     }
 
     void raise_memory_fault(std::uint32_t address, std::size_t size,
@@ -1424,6 +1450,8 @@ public:
 
     void reset_live_state() {
         ensure_jit();
+        guest_preemption_requested_ = false;
+        guest_preemption_requested_at_.reset();
         jit_->Reset();
     }
 
@@ -1800,6 +1828,9 @@ private:
     std::uint64_t observed_invalidation_epoch_{};
     std::uint64_t observed_slab_generation_{};
     std::unordered_map<std::uint64_t, ArtifactProbe> artifact_probes_;
+    bool guest_preemption_requested_{};
+    std::optional<std::chrono::steady_clock::time_point>
+        guest_preemption_requested_at_;
     std::mutex execution_mutex_;
 };
 
@@ -2377,9 +2408,21 @@ void Cpu::halt(Dynarmic::HaltReason reason) {
     }
 }
 
+void Cpu::request_guest_preemption() {
+    performance_counters().record_scheduler_preemption_request();
+    requested_halt_reason_ =
+        requested_halt_reason_ | Dynarmic::HaltReason::UserDefined2;
+    if (active_executor_) {
+        active_executor_->request_guest_preemption();
+    }
+}
+
 Dynarmic::HaltReason Cpu::consume_requested_halt_reason() {
     const auto reason = requested_halt_reason_;
     requested_halt_reason_ = {};
+    if (Dynarmic::Has(reason, Dynarmic::HaltReason::UserDefined2)) {
+        performance_counters().record_scheduler_preemption_deferred_consume();
+    }
     return reason;
 }
 

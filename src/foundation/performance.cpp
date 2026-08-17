@@ -428,6 +428,7 @@ bool is_display_window_latency(PerfLatencyKind kind) {
     case PerfLatencyKind::CpuRunCacheAccounting:
     case PerfLatencyKind::CpuRunTotal:
     case PerfLatencyKind::SchedulerRunnableToDispatch:
+    case PerfLatencyKind::SchedulerPreemptionRequestToReturn:
         return true;
     case PerfLatencyKind::InputEnqueue:
     case PerfLatencyKind::DisplayPresent:
@@ -501,6 +502,19 @@ void PerformanceCounters::reset(bool enabled) {
         0, std::memory_order_relaxed);
     jit_host_slice_budget_max_nanoseconds_.store(
         0, std::memory_order_relaxed);
+    scheduler_runnable_transitions_.store(0, std::memory_order_relaxed);
+    scheduler_dispatches_.store(0, std::memory_order_relaxed);
+    scheduler_wakeups_.store(0, std::memory_order_relaxed);
+    scheduler_wake_pending_.store(0, std::memory_order_relaxed);
+    scheduler_blocks_.store(0, std::memory_order_relaxed);
+    scheduler_preemption_checks_.store(0, std::memory_order_relaxed);
+    scheduler_preemptions_.store(0, std::memory_order_relaxed);
+    scheduler_urgent_preemptions_.store(0, std::memory_order_relaxed);
+    scheduler_preemption_requests_.store(0, std::memory_order_relaxed);
+    scheduler_preemption_returns_.store(0, std::memory_order_relaxed);
+    scheduler_preemption_deferred_consumes_.store(
+        0, std::memory_order_relaxed);
+    scheduler_quantum_expirations_.store(0, std::memory_order_relaxed);
     translation_blocks_.store(0, std::memory_order_relaxed);
     cpu_executions_.store(0, std::memory_order_relaxed);
     cpu_ticks_.store(0, std::memory_order_relaxed);
@@ -693,6 +707,31 @@ bool PerformanceCounters::begin_display_window() {
         host_fills_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.host_copies =
         host_copies_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_runnable_transitions =
+        scheduler_runnable_transitions_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_dispatches =
+        scheduler_dispatches_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_wakeups =
+        scheduler_wakeups_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_wake_pending =
+        scheduler_wake_pending_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_blocks =
+        scheduler_blocks_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_preemption_checks =
+        scheduler_preemption_checks_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_preemptions =
+        scheduler_preemptions_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_urgent_preemptions =
+        scheduler_urgent_preemptions_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_preemption_requests =
+        scheduler_preemption_requests_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_preemption_returns =
+        scheduler_preemption_returns_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_preemption_deferred_consumes =
+        scheduler_preemption_deferred_consumes_.load(
+            std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_quantum_expirations =
+        scheduler_quantum_expirations_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.cpu_map_reads =
         cpu_map_reads_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.cpu_map_writes =
@@ -760,6 +799,43 @@ PerformanceCounters::end_display_window() {
     result.jit_creation_nanoseconds = diagnostic_delta(
         jit_creation_nanoseconds_.load(std::memory_order_relaxed),
         diagnostic_work_baseline.jit_creation_nanoseconds);
+    result.scheduler_runnable_transitions = diagnostic_delta(
+        scheduler_runnable_transitions_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_runnable_transitions);
+    result.scheduler_dispatches = diagnostic_delta(
+        scheduler_dispatches_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_dispatches);
+    result.scheduler_wakeups = diagnostic_delta(
+        scheduler_wakeups_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_wakeups);
+    result.scheduler_wake_pending = diagnostic_delta(
+        scheduler_wake_pending_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_wake_pending);
+    result.scheduler_blocks = diagnostic_delta(
+        scheduler_blocks_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_blocks);
+    result.scheduler_preemption_checks = diagnostic_delta(
+        scheduler_preemption_checks_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_preemption_checks);
+    result.scheduler_preemptions = diagnostic_delta(
+        scheduler_preemptions_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_preemptions);
+    result.scheduler_urgent_preemptions = diagnostic_delta(
+        scheduler_urgent_preemptions_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_urgent_preemptions);
+    result.scheduler_preemption_requests = diagnostic_delta(
+        scheduler_preemption_requests_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_preemption_requests);
+    result.scheduler_preemption_returns = diagnostic_delta(
+        scheduler_preemption_returns_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_preemption_returns);
+    result.scheduler_preemption_deferred_consumes = diagnostic_delta(
+        scheduler_preemption_deferred_consumes_.load(
+            std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_preemption_deferred_consumes);
+    result.scheduler_quantum_expirations = diagnostic_delta(
+        scheduler_quantum_expirations_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_quantum_expirations);
     result.translation_blocks = diagnostic_delta(
         translation_blocks_.load(std::memory_order_relaxed),
         diagnostic_work_baseline.translation_blocks);
@@ -1153,6 +1229,64 @@ void PerformanceCounters::record_jit_host_slice_budget(
                maximum, nanoseconds, std::memory_order_relaxed,
                std::memory_order_relaxed)) {
     }
+}
+
+void PerformanceCounters::record_scheduler_runnable_transition() {
+    if (!enabled()) return;
+    scheduler_runnable_transitions_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void PerformanceCounters::record_scheduler_dispatch() {
+    if (!enabled()) return;
+    scheduler_dispatches_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void PerformanceCounters::record_scheduler_wakeup(
+    bool pending_on_running_thread, bool became_pending) {
+    if (!enabled()) return;
+    scheduler_wakeups_.fetch_add(1, std::memory_order_relaxed);
+    if (pending_on_running_thread && became_pending) {
+        scheduler_wake_pending_.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
+void PerformanceCounters::record_scheduler_block() {
+    if (!enabled()) return;
+    scheduler_blocks_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void PerformanceCounters::record_scheduler_preemption_check(
+    PerfSchedulerPreemptionKind result) {
+    if (!enabled()) return;
+    scheduler_preemption_checks_.fetch_add(1, std::memory_order_relaxed);
+    if (result != PerfSchedulerPreemptionKind::None) {
+        scheduler_preemptions_.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (result == PerfSchedulerPreemptionKind::Urgent) {
+        scheduler_urgent_preemptions_.fetch_add(1,
+                                                 std::memory_order_relaxed);
+    }
+}
+
+void PerformanceCounters::record_scheduler_preemption_request() {
+    if (!enabled()) return;
+    scheduler_preemption_requests_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void PerformanceCounters::record_scheduler_preemption_return() {
+    if (!enabled()) return;
+    scheduler_preemption_returns_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void PerformanceCounters::record_scheduler_preemption_deferred_consume() {
+    if (!enabled()) return;
+    scheduler_preemption_deferred_consumes_.fetch_add(
+        1, std::memory_order_relaxed);
+}
+
+void PerformanceCounters::record_scheduler_quantum_expiry() {
+    if (!enabled()) return;
+    scheduler_quantum_expirations_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void PerformanceCounters::record_translation_block() {
@@ -2230,6 +2364,31 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
     result.jit_host_slice_budget_max_nanoseconds =
         jit_host_slice_budget_max_nanoseconds_.load(
             std::memory_order_relaxed);
+    result.scheduler_runnable_transitions =
+        scheduler_runnable_transitions_.load(std::memory_order_relaxed);
+    result.scheduler_dispatches =
+        scheduler_dispatches_.load(std::memory_order_relaxed);
+    result.scheduler_wakeups =
+        scheduler_wakeups_.load(std::memory_order_relaxed);
+    result.scheduler_wake_pending =
+        scheduler_wake_pending_.load(std::memory_order_relaxed);
+    result.scheduler_blocks =
+        scheduler_blocks_.load(std::memory_order_relaxed);
+    result.scheduler_preemption_checks =
+        scheduler_preemption_checks_.load(std::memory_order_relaxed);
+    result.scheduler_preemptions =
+        scheduler_preemptions_.load(std::memory_order_relaxed);
+    result.scheduler_urgent_preemptions =
+        scheduler_urgent_preemptions_.load(std::memory_order_relaxed);
+    result.scheduler_preemption_requests =
+        scheduler_preemption_requests_.load(std::memory_order_relaxed);
+    result.scheduler_preemption_returns =
+        scheduler_preemption_returns_.load(std::memory_order_relaxed);
+    result.scheduler_preemption_deferred_consumes =
+        scheduler_preemption_deferred_consumes_.load(
+            std::memory_order_relaxed);
+    result.scheduler_quantum_expirations =
+        scheduler_quantum_expirations_.load(std::memory_order_relaxed);
     result.translation_blocks =
         translation_blocks_.load(std::memory_order_relaxed);
     result.cpu_executions = cpu_executions_.load(std::memory_order_relaxed);
@@ -2502,6 +2661,8 @@ std::string_view perf_latency_kind_name(PerfLatencyKind kind) {
     case PerfLatencyKind::CpuRunTotal: return "cpu-run-total";
     case PerfLatencyKind::SchedulerRunnableToDispatch:
         return "scheduler-runnable-dispatch";
+    case PerfLatencyKind::SchedulerPreemptionRequestToReturn:
+        return "scheduler-preemption-request-return";
     case PerfLatencyKind::Count: break;
     }
     return "unknown";
@@ -2558,6 +2719,20 @@ std::string format_performance_summary(
          << snapshot.jit_host_slice_budget_min_nanoseconds << "/"
          << host_budget_average << "/"
          << snapshot.jit_host_slice_budget_max_nanoseconds
+         << " scheduler-runnable="
+         << snapshot.scheduler_runnable_transitions
+         << " scheduler-dispatch=" << snapshot.scheduler_dispatches
+         << " scheduler-wake=" << snapshot.scheduler_wakeups << "/"
+         << snapshot.scheduler_wake_pending
+         << " scheduler-block=" << snapshot.scheduler_blocks
+         << " scheduler-preempt=" << snapshot.scheduler_preemption_checks
+         << "/" << snapshot.scheduler_preemptions << "/"
+         << snapshot.scheduler_urgent_preemptions << "/"
+         << snapshot.scheduler_preemption_requests << "/"
+         << snapshot.scheduler_preemption_returns << "/"
+         << snapshot.scheduler_preemption_deferred_consumes
+         << " scheduler-quantum-expired="
+         << snapshot.scheduler_quantum_expirations
          << " translation-blocks=" << snapshot.translation_blocks
          << " cpu-exec=" << snapshot.cpu_executions
          << " cpu-ticks=" << snapshot.cpu_ticks
@@ -2720,6 +2895,20 @@ std::string format_display_performance_summary(
          << " display-coalesced=" << snapshot.display_mailbox_coalesced
          << " display-vsync-budget=" << snapshot.display_vsync_budget_cuts
          << '/' << snapshot.display_vsync_budget_saved_ticks
+         << " scheduler-runnable="
+         << snapshot.scheduler_runnable_transitions
+         << " scheduler-dispatch=" << snapshot.scheduler_dispatches
+         << " scheduler-wake=" << snapshot.scheduler_wakeups << "/"
+         << snapshot.scheduler_wake_pending
+         << " scheduler-block=" << snapshot.scheduler_blocks
+         << " scheduler-preempt=" << snapshot.scheduler_preemption_checks
+         << "/" << snapshot.scheduler_preemptions << "/"
+         << snapshot.scheduler_urgent_preemptions << "/"
+         << snapshot.scheduler_preemption_requests << "/"
+         << snapshot.scheduler_preemption_returns << "/"
+         << snapshot.scheduler_preemption_deferred_consumes
+         << " scheduler-quantum-expired="
+         << snapshot.scheduler_quantum_expirations
          << " native-attempt=" << snapshot.native_present_attempts
          << " native-coalesced="
          << snapshot.native_present_mailbox_coalesced
@@ -2774,6 +2963,7 @@ std::string format_display_performance_summary(
         PerfLatencyKind::CpuRunCacheAccounting,
         PerfLatencyKind::CpuRunTotal,
         PerfLatencyKind::SchedulerRunnableToDispatch,
+        PerfLatencyKind::SchedulerPreemptionRequestToReturn,
     };
     text << " diagnostic-cpu-latency-ns=";
     for (std::size_t index = 0; index < cpu_source_latencies.size();

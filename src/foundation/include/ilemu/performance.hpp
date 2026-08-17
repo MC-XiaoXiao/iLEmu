@@ -139,6 +139,7 @@ enum class PerfLatencyKind : std::uint8_t {
     CpuRunCacheAccounting,
     CpuRunTotal,
     SchedulerRunnableToDispatch,
+    SchedulerPreemptionRequestToReturn,
     Count,
 };
 
@@ -189,6 +190,12 @@ struct DiagnosticSourceSnapshot {
     std::uint64_t nanoseconds{};
 };
 
+enum class PerfSchedulerPreemptionKind : std::uint8_t {
+    None,
+    Preempt,
+    Urgent,
+};
+
 struct PerformanceSnapshot {
     std::uint64_t jit_instances{};
     std::uint64_t jit_live_instances{};
@@ -225,6 +232,18 @@ struct PerformanceSnapshot {
     std::uint64_t jit_host_slice_budget_total_nanoseconds{};
     std::uint64_t jit_host_slice_budget_min_nanoseconds{};
     std::uint64_t jit_host_slice_budget_max_nanoseconds{};
+    std::uint64_t scheduler_runnable_transitions{};
+    std::uint64_t scheduler_dispatches{};
+    std::uint64_t scheduler_wakeups{};
+    std::uint64_t scheduler_wake_pending{};
+    std::uint64_t scheduler_blocks{};
+    std::uint64_t scheduler_preemption_checks{};
+    std::uint64_t scheduler_preemptions{};
+    std::uint64_t scheduler_urgent_preemptions{};
+    std::uint64_t scheduler_preemption_requests{};
+    std::uint64_t scheduler_preemption_returns{};
+    std::uint64_t scheduler_preemption_deferred_consumes{};
+    std::uint64_t scheduler_quantum_expirations{};
     std::uint64_t translation_blocks{};
     std::uint64_t cpu_executions{};
     std::uint64_t cpu_ticks{};
@@ -358,6 +377,17 @@ class PerformanceCounters {
                              std::uint64_t rsb_misses);
     void record_jit_host_yield(std::uint64_t checks, bool yielded);
     void record_jit_host_slice_budget(std::uint64_t nanoseconds);
+    void record_scheduler_runnable_transition();
+    void record_scheduler_dispatch();
+    void record_scheduler_wakeup(
+        bool pending_on_running_thread, bool became_pending);
+    void record_scheduler_block();
+    void record_scheduler_preemption_check(
+        PerfSchedulerPreemptionKind result);
+    void record_scheduler_preemption_request();
+    void record_scheduler_preemption_return();
+    void record_scheduler_preemption_deferred_consume();
+    void record_scheduler_quantum_expiry();
     void record_translation_block();
     void record_cpu_execution(std::uint64_t ticks);
     void record_svc();
@@ -544,6 +574,18 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> jit_host_slice_budget_total_nanoseconds_{};
     std::atomic<std::uint64_t> jit_host_slice_budget_min_nanoseconds_{};
     std::atomic<std::uint64_t> jit_host_slice_budget_max_nanoseconds_{};
+    std::atomic<std::uint64_t> scheduler_runnable_transitions_{};
+    std::atomic<std::uint64_t> scheduler_dispatches_{};
+    std::atomic<std::uint64_t> scheduler_wakeups_{};
+    std::atomic<std::uint64_t> scheduler_wake_pending_{};
+    std::atomic<std::uint64_t> scheduler_blocks_{};
+    std::atomic<std::uint64_t> scheduler_preemption_checks_{};
+    std::atomic<std::uint64_t> scheduler_preemptions_{};
+    std::atomic<std::uint64_t> scheduler_urgent_preemptions_{};
+    std::atomic<std::uint64_t> scheduler_preemption_requests_{};
+    std::atomic<std::uint64_t> scheduler_preemption_returns_{};
+    std::atomic<std::uint64_t> scheduler_preemption_deferred_consumes_{};
+    std::atomic<std::uint64_t> scheduler_quantum_expirations_{};
     std::atomic<std::uint64_t> translation_blocks_{};
     std::atomic<std::uint64_t> cpu_executions_{};
     std::atomic<std::uint64_t> cpu_ticks_{};

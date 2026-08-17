@@ -1,4 +1,5 @@
 #include "ilemu/xnu_scheduler.hpp"
+#include "ilemu/performance.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -61,6 +62,7 @@ bool XnuScheduler::register_thread(
     process_threads_[thread.process].insert(thread);
     if (runnable) {
         ++active_timeshare_count_;
+        performance_counters().record_scheduler_runnable_transition();
         enqueue(thread, QueuePosition::Back);
     } else {
         ++waiting_count_;
@@ -125,6 +127,8 @@ bool XnuScheduler::make_runnable(XnuThreadId thread) {
         if (record.info.timeshare) {
             ++active_timeshare_count_;
         }
+        performance_counters().record_scheduler_runnable_transition();
+        performance_counters().record_scheduler_wakeup(false, false);
     }
     record.info.state = XnuThreadState::Runnable;
     record.info.remaining_quantum = quantum_for(record);
@@ -141,7 +145,9 @@ bool XnuScheduler::wake_thread(XnuThreadId thread) {
     const auto iterator = threads_.find(thread);
     if (iterator == threads_.end()) return false;
     if (iterator->second.info.state == XnuThreadState::Running) {
+        const bool became_pending = !iterator->second.wake_pending;
         iterator->second.wake_pending = true;
+        performance_counters().record_scheduler_wakeup(true, became_pending);
         return true;
     }
     return make_runnable(thread);
@@ -160,6 +166,7 @@ bool XnuScheduler::block(XnuThreadId thread) {
         if (record.info.timeshare) {
             --active_timeshare_count_;
         }
+        performance_counters().record_scheduler_block();
     }
     record.info.remaining_quantum = quantum_for(record);
     record.info.computation_metered = 0;
@@ -188,6 +195,7 @@ bool XnuScheduler::suspend_thread(XnuThreadId thread) {
         if (record.info.timeshare) {
             --active_timeshare_count_;
         }
+        performance_counters().record_scheduler_block();
     }
     return true;
 }
@@ -208,6 +216,8 @@ bool XnuScheduler::resume_thread(XnuThreadId thread) {
     }
     record.info.remaining_quantum = quantum_for(record);
     record.info.computation_metered = 0;
+    performance_counters().record_scheduler_runnable_transition();
+    performance_counters().record_scheduler_wakeup(false, false);
     enqueue(thread, QueuePosition::Back);
     return true;
 }
@@ -337,6 +347,7 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
         }
         record.priority_usage_shift = processor_set_priority_shift();
         record.enqueued_at = {};
+        performance_counters().record_scheduler_dispatch();
         return XnuScheduledSlice{
             *preferred, processor, record.info.remaining_quantum,
             runnable_since, front_continuation};
@@ -363,6 +374,7 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
     }
     record.priority_usage_shift = processor_set_priority_shift();
     record.enqueued_at = {};
+    performance_counters().record_scheduler_dispatch();
     return XnuScheduledSlice{
         thread, processor, record.info.remaining_quantum,
         runnable_since, front_continuation};
@@ -370,18 +382,33 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
 
 XnuPreemption XnuScheduler::preemption_for(
     XnuThreadId running_thread, std::size_t processor) const {
+    const auto observe = [](XnuPreemption result) {
+        const auto perf_result = [&] {
+            switch (result) {
+            case XnuPreemption::None:
+                return PerfSchedulerPreemptionKind::None;
+            case XnuPreemption::Preempt:
+                return PerfSchedulerPreemptionKind::Preempt;
+            case XnuPreemption::Urgent:
+                return PerfSchedulerPreemptionKind::Urgent;
+            }
+            return PerfSchedulerPreemptionKind::None;
+        }();
+        performance_counters().record_scheduler_preemption_check(perf_result);
+        return result;
+    };
     const auto current = threads_.find(running_thread);
     if (processor >= processor_run_queues_.size() ||
         current == threads_.end() ||
         current->second.info.state != XnuThreadState::Running) {
-        return XnuPreemption::None;
+        return observe(XnuPreemption::None);
     }
 
     const auto candidate_thread = peek_next_for_processor(processor);
-    if (!candidate_thread) return XnuPreemption::None;
+    if (!candidate_thread) return observe(XnuPreemption::None);
 
     const auto candidate = threads_.find(*candidate_thread);
-    if (candidate == threads_.end()) return XnuPreemption::None;
+    if (candidate == threads_.end()) return observe(XnuPreemption::None);
     const auto candidate_priority = candidate->second.info.scheduled_priority;
     const auto current_priority = current->second.info.scheduled_priority;
     const auto first_timeslice =
@@ -396,11 +423,12 @@ XnuPreemption XnuScheduler::preemption_for(
             current->second.info.realtime_deadline) {
         preempt = true;
     }
-    if (!preempt) return XnuPreemption::None;
-    return !candidate->second.info.timeshare &&
-                   candidate_priority >= xnu792::scheduler::preempt_priority
-        ? XnuPreemption::Urgent
-        : XnuPreemption::Preempt;
+    if (!preempt) return observe(XnuPreemption::None);
+    return observe(!candidate->second.info.timeshare &&
+                           candidate_priority >=
+                               xnu792::scheduler::preempt_priority
+                       ? XnuPreemption::Urgent
+                       : XnuPreemption::Preempt);
 }
 
 bool XnuScheduler::should_yield(XnuThreadId running_thread) const {
@@ -458,6 +486,7 @@ bool XnuScheduler::complete_slice(
         if (record.wake_pending) {
             record.wake_pending = false;
             record.info.state = XnuThreadState::Runnable;
+            performance_counters().record_scheduler_runnable_transition();
             record.info.remaining_quantum = quantum_for(record);
             record.info.remaining_timeslices = 0;
             record.info.timeslice_processor.reset();
@@ -469,6 +498,7 @@ bool XnuScheduler::complete_slice(
         if (record.info.timeshare) {
             --active_timeshare_count_;
         }
+        performance_counters().record_scheduler_block();
         record.info.remaining_quantum = quantum_for(record);
         record.info.remaining_timeslices = 0;
         record.info.timeslice_processor.reset();
@@ -478,6 +508,9 @@ bool XnuScheduler::complete_slice(
     record.wake_pending = false;
 
     const auto quantum_expired = record.info.remaining_quantum == 0;
+    if (quantum_expired) {
+        performance_counters().record_scheduler_quantum_expiry();
+    }
     if (completion == XnuSliceCompletion::Yield || quantum_expired) {
         if (completion == XnuSliceCompletion::Yield) {
             record.info.computation_metered = 0;
@@ -485,6 +518,7 @@ bool XnuScheduler::complete_slice(
         record.info.remaining_quantum = quantum_for(record);
         recompute_priority(thread, record);
         record.info.state = XnuThreadState::Runnable;
+        performance_counters().record_scheduler_runnable_transition();
         if (completion != XnuSliceCompletion::Yield && record.info.timeshare &&
             record.info.remaining_timeslices > 1) {
             --record.info.remaining_timeslices;
@@ -496,6 +530,7 @@ bool XnuScheduler::complete_slice(
         }
     } else {
         record.info.state = XnuThreadState::Runnable;
+        performance_counters().record_scheduler_runnable_transition();
         enqueue(thread, QueuePosition::Front);
     }
     return true;

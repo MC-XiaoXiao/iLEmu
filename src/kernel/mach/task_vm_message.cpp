@@ -221,7 +221,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
           scheduler_preemption_query_(cpu.processor_id())) {
         // Scheduler AST boundary. Unlike an explicit yield, this
         // preserves the remainder of the current first timeslice.
-        cpu.halt(Dynarmic::HaltReason::UserDefined2);
+        cpu.request_guest_preemption();
       }
       return true;
     }
@@ -481,7 +481,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
     registers[0] = 0;
     if (policy_applied && scheduler_preemption_query_ &&
         scheduler_preemption_query_(cpu.processor_id())) {
-      cpu.halt(Dynarmic::HaltReason::UserDefined2);
+      cpu.request_guest_preemption();
     }
     return true;
   }
