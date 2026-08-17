@@ -445,6 +445,12 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
       }
       if (!applied) {
         kernel_result = darwin::mach::invalid_argument;
+      } else if (scheduler_preemption_query_ &&
+                 scheduler_preemption_query_(cpu.processor_id())) {
+        // Legacy thread_policy can change a runnable candidate's priority or
+        // realtime deadline. Check the complete scheduler ordering before the
+        // current HLE dispatch returns to guest code.
+        cpu.request_guest_preemption();
       }
     } else if (*message_id ==
                mig_message_id(

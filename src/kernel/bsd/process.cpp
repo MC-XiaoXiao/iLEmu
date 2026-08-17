@@ -498,6 +498,13 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
           xnu792::scheduler::default_base_priority - process_.nice_value;
       if (task_priority_handler_) {
         task_priority_handler_(process_.thread_base_priority);
+        if (scheduler_preemption_query_ &&
+            scheduler_preemption_query_(cpu.processor_id())) {
+          // setpriority changes every thread in this task. Let the scheduler
+          // compare the current thread with all runnable candidates before
+          // the current HLE dispatch resumes guest execution.
+          cpu.request_guest_preemption();
+        }
       }
       bsd_success(cpu, 0);
     }
