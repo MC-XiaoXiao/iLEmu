@@ -94,25 +94,29 @@ struct SdlDisplay::Impl {
   bool vulkan_window{};
   std::atomic<bool> surface_created{};
 
+  void ensure_cpu_window() {
+    if (window != nullptr && !vulkan_window)
+      return;
+    if (window != nullptr)
+      SDL_DestroyWindow(window);
+    window = SDL_CreateWindow(
+        "iLEmu", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        static_cast<int>(geometry.width), static_cast<int>(geometry.height),
+        SDL_WINDOW_RESIZABLE);
+    vulkan_window = false;
+  }
+
   void ensure_cpu_presenter() {
     if (renderer == nullptr) {
+      // SDL renderers are thread-affine. The CPU presenter calls this method
+      // from its worker, so create the renderer and texture there rather than
+      // in the scheduler thread that owns the SDL event pump.
+      if (window == nullptr || vulkan_window)
+        ensure_cpu_window();
       SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
       renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
       if (renderer == nullptr)
         renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
-      if (renderer == nullptr && vulkan_window && !surface_created) {
-        SDL_DestroyWindow(window);
-        window = SDL_CreateWindow(
-            "iLEmu", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-            static_cast<int>(geometry.width),
-            static_cast<int>(geometry.height), SDL_WINDOW_RESIZABLE);
-        vulkan_window = false;
-        if (window != nullptr)
-          renderer =
-              SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-        if (renderer == nullptr && window != nullptr)
-          renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
-      }
     }
     if (renderer == nullptr) {
       throw std::runtime_error{"SDL renderer creation failed: " +
@@ -697,18 +701,6 @@ struct SdlDisplay::Impl {
 
   bool queue_cpu_frame(DisplayFrame frame, bool queued, bool native_failed,
                        bool repainting) {
-    try {
-      ensure_cpu_presenter();
-    } catch (...) {
-      std::lock_guard lock{frame_mutex};
-      if (queued) {
-        release_frame_surface_in_use_locked(frame);
-        if (queued_frame_count != 0)
-          --queued_frame_count;
-      }
-      fail_presentation_locked();
-      return false;
-    }
     {
       std::lock_guard lock{frame_mutex};
       if (cpu_presentation_stopping || presentation_failed || !running) {
@@ -1016,8 +1008,6 @@ SdlDisplay::SdlDisplay(DisplayGeometry frame_geometry,
     throw std::runtime_error{"SDL window creation failed: " +
                              std::string{SDL_GetError()}};
   }
-  if (!impl_->vulkan_window)
-    impl_->ensure_cpu_presenter();
   impl_->start_cpu_presenter();
 #else
   throw std::runtime_error{
@@ -1119,9 +1109,8 @@ void SdlDisplay::set_host_graphics(
   }
 #if defined(ILEMU_HAS_SDL2)
   if (impl_->host_graphics &&
-      !impl_->host_graphics->native_presentation_available()) {
-    impl_->ensure_cpu_presenter();
-  }
+      !impl_->host_graphics->native_presentation_available())
+    impl_->ensure_cpu_window();
   if (impl_->host_graphics) {
     impl_->start_cpu_presenter();
     if (impl_->host_graphics->native_presentation_available())
