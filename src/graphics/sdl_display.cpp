@@ -90,11 +90,16 @@ struct SdlDisplay::Impl {
   SDL_Renderer *renderer{};
   SDL_Texture *texture{};
   SDL_Window *retired_window{};
+  // SDL's X11 backend and the Vulkan/XCB stack share the host display
+  // connection. Keep the scheduler's event pump and the CPU presenter from
+  // allocating X11 resources concurrently.
+  std::recursive_mutex sdl_mutex;
   bool vulkan_library_loaded{};
   bool vulkan_window{};
   std::atomic<bool> surface_created{};
 
   void ensure_cpu_window() {
+    std::lock_guard lock{sdl_mutex};
     if (window != nullptr && !vulkan_window)
       return;
     if (window != nullptr)
@@ -107,6 +112,7 @@ struct SdlDisplay::Impl {
   }
 
   void ensure_cpu_presenter() {
+    std::lock_guard lock{sdl_mutex};
     if (renderer == nullptr) {
       // SDL renderers are thread-affine. The CPU presenter calls this method
       // from its worker, so create the renderer and texture there rather than
@@ -140,6 +146,7 @@ struct SdlDisplay::Impl {
   // request carries the new aspect ratio. The native presenter is rebound by
   // the caller while the previous toplevel is still alive.
   bool recreate_wayland_window() {
+    std::lock_guard lock{sdl_mutex};
     if (window == nullptr ||
         std::string_view{SDL_GetCurrentVideoDriver() != nullptr
                              ? SDL_GetCurrentVideoDriver()
@@ -195,6 +202,7 @@ struct SdlDisplay::Impl {
   }
 
   void destroy_retired_window() {
+    std::lock_guard lock{sdl_mutex};
     if (retired_window != nullptr) {
       SDL_DestroyWindow(retired_window);
       retired_window = nullptr;
@@ -387,13 +395,17 @@ struct SdlDisplay::Impl {
         }
         destroy_retired_window();
       } else {
-        SDL_SetWindowSize(window, static_cast<int>(geometry.width),
-                          static_cast<int>(geometry.height));
+        {
+          std::lock_guard lock{sdl_mutex};
+          SDL_SetWindowSize(window, static_cast<int>(geometry.width),
+                            static_cast<int>(geometry.height));
+        }
         if (native_presentation)
           start_native_presenter();
       }
     }
     if (texture != nullptr) {
+      std::lock_guard lock{sdl_mutex};
       SDL_DestroyTexture(texture);
       texture = nullptr;
     }
@@ -667,6 +679,7 @@ struct SdlDisplay::Impl {
     if (frame.pixels.size() != expected)
       return false;
 
+    std::lock_guard lock{sdl_mutex};
     ensure_cpu_presenter();
     if (telemetry_enabled)
       performance.record_diagnostic_frame_content(
@@ -1026,18 +1039,21 @@ SdlDisplay::~SdlDisplay() {
       impl_->abandon_queued_frames_locked();
     }
     impl_->presentation_space_available.notify_all();
-    if (impl_->texture != nullptr)
-      SDL_DestroyTexture(impl_->texture);
-    if (impl_->renderer != nullptr)
-      SDL_DestroyRenderer(impl_->renderer);
-    impl_->destroy_retired_window();
-    if (impl_->window != nullptr)
-      SDL_DestroyWindow(impl_->window);
+    {
+      std::lock_guard lock{impl_->sdl_mutex};
+      if (impl_->texture != nullptr)
+        SDL_DestroyTexture(impl_->texture);
+      if (impl_->renderer != nullptr)
+        SDL_DestroyRenderer(impl_->renderer);
+      impl_->destroy_retired_window();
+      if (impl_->window != nullptr)
+        SDL_DestroyWindow(impl_->window);
 #if defined(ILEMU_HAS_VULKAN)
-    if (impl_->vulkan_library_loaded)
-      SDL_Vulkan_UnloadLibrary();
+      if (impl_->vulkan_library_loaded)
+        SDL_Vulkan_UnloadLibrary();
 #endif
-    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+      SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    }
   }
 #endif
 }
@@ -1045,6 +1061,7 @@ SdlDisplay::~SdlDisplay() {
 std::optional<VulkanPresenterConfiguration>
 SdlDisplay::vulkan_presenter_configuration() const {
 #if defined(ILEMU_HAS_SDL2) && defined(ILEMU_HAS_VULKAN)
+  std::lock_guard sdl_lock{impl_->sdl_mutex};
   if (!impl_->vulkan_window)
     return std::nullopt;
   unsigned int count{};
@@ -1064,6 +1081,7 @@ SdlDisplay::vulkan_presenter_configuration() const {
     configuration.instance_extensions.emplace_back(name);
   auto* implementation = impl_.get();
   configuration.create_surface = [implementation](std::uintptr_t instance) {
+    std::lock_guard callback_lock{implementation->sdl_mutex};
     VkSurfaceKHR surface{};
     if (SDL_Vulkan_CreateSurface(
             implementation->window,
@@ -1074,6 +1092,7 @@ SdlDisplay::vulkan_presenter_configuration() const {
     return reinterpret_cast<std::uintptr_t>(surface);
   };
   configuration.drawable_size = [implementation] {
+    std::lock_guard callback_lock{implementation->sdl_mutex};
     int width{};
     int height{};
     SDL_Vulkan_GetDrawableSize(implementation->window, &width, &height);
@@ -1239,7 +1258,11 @@ bool SdlDisplay::poll_events() {
   // SDL events are latency-sensitive and must be drained before any CPU
   // fallback upload. Native presentation is handed to an ordered worker queue
   // and never waits on acquire/present from the guest scheduler thread.
-  const auto input_running = impl_->input.poll(impl_->window);
+  bool input_running{};
+  {
+    std::lock_guard lock{impl_->sdl_mutex};
+    input_running = impl_->input.poll(impl_->window);
+  }
   {
     std::lock_guard lock{impl_->frame_mutex};
     if (!input_running)
@@ -1401,7 +1424,11 @@ bool SdlDisplay::poll_events() {
 bool SdlDisplay::wait_for_event(std::chrono::nanoseconds timeout) {
   performance_counters().record_sdl_idle_wait();
 #if defined(ILEMU_HAS_SDL2)
-  const auto input_running = impl_->input.wait(impl_->window, timeout);
+  bool input_running{};
+  {
+    std::lock_guard lock{impl_->sdl_mutex};
+    input_running = impl_->input.wait(impl_->window, timeout);
+  }
   {
     std::lock_guard lock{impl_->frame_mutex};
     if (!input_running)
