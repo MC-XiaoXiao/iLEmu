@@ -51,19 +51,33 @@ void CompatibilityKernel::dispatch_mach(Cpu &cpu, std::uint32_t trap) {
     }
     return;
   case 33: { // semaphore_signal_trap
-    std::lock_guard mach_lock{shared_state_->mach_mutex};
-    registers[0] = signal_semaphore_locked(registers[0], false);
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> woken_threads;
+    {
+      std::lock_guard mach_lock{shared_state_->mach_mutex};
+      registers[0] = signal_semaphore_locked(registers[0], false, true,
+                                             &woken_threads);
+    }
+    wake_threads_and_maybe_preempt(cpu, woken_threads);
     return;
   }
   case 34: { // semaphore_signal_all_trap
-    std::lock_guard mach_lock{shared_state_->mach_mutex};
-    registers[0] = signal_semaphore_locked(registers[0], true, false);
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> woken_threads;
+    {
+      std::lock_guard mach_lock{shared_state_->mach_mutex};
+      registers[0] = signal_semaphore_locked(registers[0], true, false,
+                                             &woken_threads);
+    }
+    wake_threads_and_maybe_preempt(cpu, woken_threads);
     return;
   }
   case 35: { // semaphore_signal_thread_trap
-    std::lock_guard mach_lock{shared_state_->mach_mutex};
-    registers[0] =
-        signal_semaphore_thread_locked(registers[0], registers[1]);
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> woken_threads;
+    {
+      std::lock_guard mach_lock{shared_state_->mach_mutex};
+      registers[0] = signal_semaphore_thread_locked(
+          registers[0], registers[1], &woken_threads);
+    }
+    wake_threads_and_maybe_preempt(cpu, woken_threads);
     return;
   }
   case 36: // semaphore_wait_trap

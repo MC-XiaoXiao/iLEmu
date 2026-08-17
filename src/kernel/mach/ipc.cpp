@@ -64,6 +64,13 @@ CompatibilityKernel::display_vsync_receiver_processor() {
   return std::nullopt;
 }
 
+std::optional<std::size_t>
+CompatibilityKernel::pending_mach_receiver_processor(std::uint32_t object) {
+  std::lock_guard kernel_lock{mutex_};
+  std::lock_guard mach_lock{shared_state_->mach_mutex};
+  return preferred_pending_mach_receiver_locked(object);
+}
+
 bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(Cpu &cpu) {
   const auto pending = pending_mach_receives_.find(cpu.processor_id());
   if (pending == pending_mach_receives_.end())

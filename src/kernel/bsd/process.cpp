@@ -225,6 +225,13 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
                   " child=" + std::to_string(*child) + " bootstrap=" +
                   std::to_string(process_.bootstrap_port) + "\n");
     bsd_success(cpu, *child);
+    if (scheduler_preemption_query_ &&
+        scheduler_preemption_query_(cpu.processor_id())) {
+      // fork publishes a runnable child before the parent resumes in Guest
+      // code. Preserve the parent's current quantum and stop at the normal
+      // semantic-preemption boundary if the child should run first.
+      cpu.request_guest_preemption();
+    }
     return;
   }
   case 66: { // vfork
@@ -241,6 +248,10 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu &cpu, std::uint32_t number) {
                   " child=" + std::to_string(*child) + " bootstrap=" +
                   std::to_string(process_.bootstrap_port) + "\n");
     bsd_success(cpu, *child);
+    if (scheduler_preemption_query_ &&
+        scheduler_preemption_query_(cpu.processor_id())) {
+      cpu.request_guest_preemption();
+    }
     return;
   }
   case 7: { // wait4

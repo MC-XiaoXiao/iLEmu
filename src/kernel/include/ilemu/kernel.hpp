@@ -90,6 +90,8 @@ public:
       std::function<bool(std::uint32_t, std::uint32_t, bool)>;
   using ThreadWakeHandler =
       std::function<bool(std::uint32_t, std::uint32_t)>;
+  using MachMessageWakeHandler =
+      std::function<bool(std::uint32_t, std::uint32_t)>;
   using ForkHandler = std::function<std::optional<std::uint32_t>(Cpu &)>;
   using SpawnCreateHandler =
       std::function<std::optional<std::uint32_t>(Cpu &)>;
@@ -159,6 +161,9 @@ public:
   }
   void set_thread_wake_handler(ThreadWakeHandler handler) {
     thread_wake_handler_ = std::move(handler);
+  }
+  void set_mach_message_wake_handler(MachMessageWakeHandler handler) {
+    mach_message_wake_handler_ = std::move(handler);
   }
   void set_fork_handler(ForkHandler handler) {
     fork_handler_ = std::move(handler);
@@ -285,6 +290,8 @@ public:
   bool fail_wait(Cpu &cpu, std::uint32_t error);
   bool deliver_pending_mach(Cpu &cpu);
   bool deliver_pending_io(Cpu &cpu);
+  [[nodiscard]] std::optional<std::size_t>
+  pending_mach_receiver_processor(std::uint32_t object);
   // Scheduler-facing event dispatch. A guest thread can block in only one
   // syscall at a time, so this avoids probing every unrelated pending table.
   bool deliver_pending_event(Cpu &cpu);
@@ -564,10 +571,19 @@ private:
                         std::uint32_t event_count);
   void detach_kevents_for_descriptor(std::uint32_t fd);
   [[nodiscard]] std::uint32_t
-  signal_semaphore_locked(std::uint32_t name, bool all, bool prepost = true);
+  signal_semaphore_locked(
+      std::uint32_t name, bool all, bool prepost = true,
+      std::vector<std::pair<std::uint32_t, std::uint32_t>> *woken_threads =
+          nullptr);
   [[nodiscard]] std::uint32_t
   signal_semaphore_thread_locked(std::uint32_t semaphore_name,
-                                 std::uint32_t thread_name);
+                                 std::uint32_t thread_name,
+                                 std::vector<std::pair<std::uint32_t,
+                                                       std::uint32_t>> *
+                                     woken_threads = nullptr);
+  void wake_threads_and_maybe_preempt(
+      Cpu &cpu,
+      std::span<const std::pair<std::uint32_t, std::uint32_t>> threads);
   void wait_on_semaphore(Cpu &cpu, std::uint32_t wait_name,
                          std::uint32_t signal_name,
                          std::optional<std::uint64_t> timeout_interval,
@@ -668,6 +684,7 @@ private:
   ThreadPointerUpdateHandler thread_pointer_update_handler_;
   ThreadRunnableHandler thread_runnable_handler_;
   ThreadWakeHandler thread_wake_handler_;
+  MachMessageWakeHandler mach_message_wake_handler_;
   ForkHandler fork_handler_;
   SpawnCreateHandler spawn_create_handler_;
   ExecHandler exec_handler_;

@@ -146,6 +146,14 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
     bsd_error(cpu, 8); // ENOEXEC
     return true;
   }
+  if (scheduler_preemption_query_ &&
+      scheduler_preemption_query_(cpu.processor_id())) {
+    // A successful non-suspended spawn leaves a new runnable child visible to
+    // the scheduler before the parent returns to Guest code. A suspended
+    // child is already blocked by spawn_exec_handler_ and therefore does not
+    // trigger this query unless another runnable candidate wins ordering.
+    cpu.request_guest_preemption();
+  }
   graphics_services_input::record_application_spawn(
       *shared_state_, process_.pid, *child, *path, *arguments,
       scene_coordinator_.get());

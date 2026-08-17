@@ -3190,6 +3190,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
         [&scheduler](std::uint32_t pid, std::uint32_t slot) {
           return scheduler.wake_thread(XnuThreadId{pid, slot});
         });
+    runtime.kernel->set_mach_message_wake_handler(
+        [&runtime_index, &scheduler](std::uint32_t pid,
+                                     std::uint32_t object) {
+          auto *receiver = runtime_index.find(pid);
+          if (receiver == nullptr)
+            return false;
+          const auto processor =
+              receiver->kernel->pending_mach_receiver_processor(object);
+          if (!processor)
+            return false;
+          return scheduler.wake_thread(
+              XnuThreadId{pid, static_cast<std::uint32_t>(*processor)});
+        });
     const auto create_child_runtime =
         [&, runtime_ptr](Cpu *parent_cpu,
                          CompatibilityKernel::ProcessInheritance inheritance)
@@ -4002,7 +4015,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                  static_cast<std::uint32_t>(processor)};
         const auto scheduling_info = scheduler.info(thread);
         if (!runtime->allocated[processor] || !scheduling_info ||
-            scheduling_info->state != XnuThreadState::Waiting) {
+            (scheduling_info->state != XnuThreadState::Waiting &&
+             scheduling_info->state != XnuThreadState::Runnable)) {
           continue;
         }
         auto &waiting_cpu = runtime->cpus->cpu(processor);

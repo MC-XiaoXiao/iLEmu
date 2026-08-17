@@ -352,6 +352,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
     std::uint32_t remote_object = 0;
     std::uint32_t remote_owner = 0;
     std::size_t remote_queue_depth = 0;
+    std::optional<std::size_t> local_pending_receiver;
     std::string bootstrap_service_name;
     const auto caller_header_size =
         memory_.read32(message_address + darwin::mig_wire::header_size_offset)
@@ -843,10 +844,31 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
                              .value_or(xnu792::ipc::PortObject{})
                              .receive_owner;
           remote_queue_depth = shared_state_->mach_queues[remote_object].size();
+          if (remote_owner == process_.pid) {
+            local_pending_receiver =
+                preferred_pending_mach_receiver_locked(remote_object);
+          }
         }
       }
     }
     if (routable) {
+      bool receiver_woken = false;
+      if (local_pending_receiver && thread_wake_handler_) {
+        receiver_woken = thread_wake_handler_(
+            process_.pid, static_cast<std::uint32_t>(*local_pending_receiver));
+      } else if (remote_owner != process_.pid &&
+                 mach_message_wake_handler_ && remote_owner != 0) {
+        // The sender's CompatibilityKernel does not own the receiver's
+        // pending-mach map. The app-level callback resolves that map and
+        // wakes the selected receiver without touching Dynarmic from a
+        // different host thread.
+        receiver_woken = mach_message_wake_handler_(remote_owner,
+                                                    remote_object);
+      }
+      if (receiver_woken && scheduler_preemption_query_ &&
+          scheduler_preemption_query_(cpu.processor_id())) {
+        cpu.request_guest_preemption();
+      }
       if (bytes) {
         if (service_source_create_path && routed_reply_object) {
           audio_service_->observe_service_source_create_request(

@@ -57,7 +57,11 @@ CompatibilityKernel::consume_scheduler_yield(std::size_t processor_id) {
 
 std::uint32_t CompatibilityKernel::signal_semaphore_locked(std::uint32_t name,
                                                            bool all,
-                                                           bool prepost) {
+                                                           bool prepost,
+                                                           std::vector<std::pair<
+                                                               std::uint32_t,
+                                                               std::uint32_t>> *
+                                                               woken_threads) {
   const auto object = resolve_name_with_right(*shared_state_, process_.pid,
                                               name, xnu792::ipc::Right::Send);
   if (!object)
@@ -70,12 +74,16 @@ std::uint32_t CompatibilityKernel::signal_semaphore_locked(std::uint32_t name,
   if (all) {
     for (const auto &waiter : waiters) {
       shared_state_->semaphore_wakeups.insert(waiter);
+      if (woken_threads)
+        woken_threads->push_back(waiter);
     }
     waiters.clear();
     // semaphore_signal_all never leaves a prepost behind.
     semaphore->second.count = 0;
   } else if (!waiters.empty()) {
     shared_state_->semaphore_wakeups.insert(waiters.front());
+    if (woken_threads)
+      woken_threads->push_back(waiters.front());
     waiters.pop_front();
   } else if (prepost) {
     ++semaphore->second.count;
@@ -84,7 +92,8 @@ std::uint32_t CompatibilityKernel::signal_semaphore_locked(std::uint32_t name,
 }
 
 std::uint32_t CompatibilityKernel::signal_semaphore_thread_locked(
-    std::uint32_t semaphore_name, std::uint32_t thread_name) {
+    std::uint32_t semaphore_name, std::uint32_t thread_name,
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> *woken_threads) {
   constexpr std::uint32_t kern_invalid_argument = 4;
   constexpr std::uint32_t kern_not_waiting = 48;
   const auto semaphore_object = resolve_name_with_right(
@@ -115,8 +124,28 @@ std::uint32_t CompatibilityKernel::signal_semaphore_thread_locked(
   if (waiter == waiters.end())
     return kern_not_waiting;
   shared_state_->semaphore_wakeups.insert(*waiter);
+  if (woken_threads)
+    woken_threads->push_back(*waiter);
   waiters.erase(waiter);
   return 0;
+}
+
+void CompatibilityKernel::wake_threads_and_maybe_preempt(
+    Cpu &cpu,
+    std::span<const std::pair<std::uint32_t, std::uint32_t>> threads) {
+  if (!thread_wake_handler_)
+    return;
+  bool woke_thread = false;
+  for (const auto &[process, processor] : threads) {
+    woke_thread |= thread_wake_handler_(process, processor);
+  }
+  if (woke_thread && scheduler_preemption_query_ &&
+      scheduler_preemption_query_(cpu.processor_id())) {
+    // The wake happened in the active CPU's HLE/SVC dispatch. Request the
+    // same AST boundary used by thread creation and policy changes; the main
+    // loop will complete the target's pending wait before dispatching it.
+    cpu.request_guest_preemption();
+  }
 }
 
 void CompatibilityKernel::wait_on_semaphore(
@@ -126,6 +155,7 @@ void CompatibilityKernel::wait_on_semaphore(
   constexpr std::uint32_t kern_operation_timed_out = 49;
   std::uint32_t result = 0;
   bool blocked = false;
+  std::vector<std::pair<std::uint32_t, std::uint32_t>> woken_threads;
   {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
     const auto wait_object = resolve_name_with_right(
@@ -160,9 +190,12 @@ void CompatibilityKernel::wait_on_semaphore(
     // XNU first establishes/consumes the wait and only then performs the
     // paired signal, keeping pthread condition-variable handoff atomic.
     if (result == 0 && signal_name != 0) {
-      result = signal_semaphore_locked(signal_name, false);
+      result = signal_semaphore_locked(signal_name, false, true,
+                                       &woken_threads);
     }
   }
+
+  wake_threads_and_maybe_preempt(cpu, woken_threads);
 
   if (result != 0) {
     if (bsd_result) {
