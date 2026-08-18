@@ -232,6 +232,10 @@ public:
     void set_translation_profile(
         std::shared_ptr<JitTranslationProfile> profile,
         JitPrecompilePhase phase = JitPrecompilePhase::Remaining);
+    // Append descriptors merged by the safe-point recorder since the last
+    // profile assignment. This is called only from an idle/precompile
+    // scheduler boundary and remains bounded by the profile queue capacity.
+    void refresh_translation_profile();
     // Boot-critical processes mark every executable artifact they actually
     // consume, naturally covering dyld and the mapped dependency closure
     // without putting process paths into artifact identity.

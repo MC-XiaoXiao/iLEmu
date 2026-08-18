@@ -4823,11 +4823,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
       const auto schedule_profile_warm =
           [&](Runtime *runtime) {
             if (runtime == nullptr || runtime->kernel->process().exited) {
-              schedule_precompile_runtime(runtime,
+                schedule_precompile_runtime(runtime,
                                           HostWorkKind::BackgroundCompile,
                                           JitPrecompileTarget::NativeCode);
-              return;
+                return;
             }
+            runtime->cpus->refresh_translation_profile();
             // Native warming is preferred for the active and scanout owners.
             // Once their native queue is exhausted, spend a small idle slice
             // generating reusable Portable IR for the same profile hints.
@@ -4886,6 +4887,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
              !runtime->precompile_task->finished())) {
           continue;
         }
+        runtime->cpus->refresh_translation_profile();
         const auto phase = runtime->cpus->next_precompile_phase(
             JitPrecompileTarget::PortableIr);
         if (phase &&

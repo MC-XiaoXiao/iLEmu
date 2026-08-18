@@ -2296,6 +2296,8 @@ public:
         deferred_precompile_entries_.clear();
         cache_full_generation_observed_.reset();
         next_precompile_executor_ = 0;
+        translation_profile_ = profile;
+        translation_profile_phase_ = phase;
         profile_locations_.clear();
         for (const auto location : locations) {
             if (location == 0U) continue;
@@ -2312,6 +2314,29 @@ public:
             if (!native_queued || !portable_queued) {
                 break;
             }
+        }
+    }
+
+    void refresh_translation_profile() {
+        const auto profile = translation_profile_;
+        if (!profile) return;
+        const auto locations = profile->snapshot();
+        const std::lock_guard queue_lock{precompile_queue_mutex_};
+        for (const auto location : locations) {
+            if (location == 0U || profile_locations_.contains(location)) {
+                continue;
+            }
+            profile_locations_.insert(location);
+            const auto native_queued = enqueue_precompile_entry_locked(
+                PrecompileEntry{location, JitPrecompileTarget::NativeCode},
+                translation_profile_phase_);
+            const auto portable_queued = enqueue_precompile_entry_locked(
+                PrecompileEntry{location, JitPrecompileTarget::PortableIr},
+                translation_profile_phase_);
+            if (portable_queued) {
+                profile->note_profile_enqueued_portable();
+            }
+            if (!native_queued || !portable_queued) break;
         }
     }
 
@@ -2647,6 +2672,9 @@ private:
     std::unordered_set<PrecompileEntry, PrecompileEntryHash>
         completed_precompile_entries_;
     std::unordered_set<std::uint64_t> profile_locations_;
+    std::shared_ptr<JitTranslationProfile> translation_profile_;
+    JitPrecompilePhase translation_profile_phase_{
+        JitPrecompilePhase::Remaining};
     std::optional<std::uint64_t> cache_full_generation_observed_;
     std::size_t next_precompile_executor_{};
     std::uint64_t precompile_cancellation_generation_{1};
@@ -3002,6 +3030,10 @@ void CpuCluster::set_translation_profile(
     std::shared_ptr<JitTranslationProfile> profile,
     JitPrecompilePhase phase) {
     execution_pool_->set_translation_profile(std::move(profile), phase);
+}
+
+void CpuCluster::refresh_translation_profile() {
+    if (execution_pool_) execution_pool_->refresh_translation_profile();
 }
 
 void CpuCluster::set_jit_artifact_retention(
