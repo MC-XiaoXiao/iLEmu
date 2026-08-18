@@ -136,8 +136,8 @@ void CompatibilityKernel::wake_thread_and_maybe_preempt(
     Cpu &cpu, const std::optional<WokenThread> &thread) {
   if (!thread || !thread_wake_handler_)
     return;
-  const auto woke_thread = thread_wake_handler_(thread->first, thread->second);
-  if (woke_thread && scheduler_preemption_query_ &&
+  const auto wake_result = thread_wake_handler_(thread->first, thread->second);
+  if (wake_result.preemption_needed && scheduler_preemption_query_ &&
       scheduler_preemption_query_(cpu.processor_id())) {
     // The wake happened in the active CPU's HLE/SVC dispatch. Request the
     // same AST boundary used by thread creation and policy changes; the main
@@ -151,11 +151,12 @@ void CompatibilityKernel::wake_threads_and_maybe_preempt(
     std::span<const WokenThread> threads) {
   if (!thread_wake_handler_)
     return;
-  bool woke_thread = false;
+  bool preemption_needed = false;
   for (const auto &[process, processor] : threads) {
-    woke_thread |= thread_wake_handler_(process, processor);
+    preemption_needed |=
+        thread_wake_handler_(process, processor).preemption_needed;
   }
-  if (woke_thread && scheduler_preemption_query_ &&
+  if (preemption_needed && scheduler_preemption_query_ &&
       scheduler_preemption_query_(cpu.processor_id())) {
     // The wake happened in the active CPU's HLE/SVC dispatch. Request the
     // same AST boundary used by thread creation and policy changes; the main

@@ -3195,11 +3195,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                      std::uint32_t object) {
           auto *receiver = runtime_index.find(pid);
           if (receiver == nullptr)
-            return false;
+            return XnuThreadWakeResult{};
           const auto processor =
               receiver->kernel->pending_mach_receiver_processor(object);
           if (!processor)
-            return false;
+            return XnuThreadWakeResult{};
           return scheduler.wake_thread(
               XnuThreadId{pid, static_cast<std::uint32_t>(*processor)});
         });

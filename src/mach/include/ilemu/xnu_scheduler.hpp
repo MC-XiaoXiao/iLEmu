@@ -59,6 +59,13 @@ struct XnuThreadId {
     auto operator<=>(const XnuThreadId&) const = default;
 };
 
+struct XnuThreadWakeResult {
+    bool handled{};
+    bool preemption_needed{};
+
+    constexpr explicit operator bool() const noexcept { return handled; }
+};
+
 struct XnuThreadIdHash {
     [[nodiscard]] std::size_t operator()(XnuThreadId thread) const noexcept {
         const auto value = (static_cast<std::uint64_t>(thread.process) << 32U) |
@@ -149,7 +156,10 @@ public:
     bool make_runnable(XnuThreadId thread);
     // Device and IPC completion can race a thread's final blocking SVC. Keep
     // that wake pending until complete_slice observes the Block transition.
-    bool wake_thread(XnuThreadId thread);
+    // `handled` reports whether the thread identity/state was valid; the
+    // separate preemption bit lets callers coalesce a queued or duplicate
+    // wake without treating it as a failed wake.
+    XnuThreadWakeResult wake_thread(XnuThreadId thread);
     bool block(XnuThreadId thread);
     bool suspend_thread(XnuThreadId thread);
     bool resume_thread(XnuThreadId thread);

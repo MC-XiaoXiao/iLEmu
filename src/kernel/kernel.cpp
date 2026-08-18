@@ -1796,9 +1796,10 @@ void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline) {
     const auto slot = static_cast<std::uint32_t>(*callback->processor);
     if (thread_state_update_handler_ && thread_wake_handler_ &&
         update_thread_pointer(*callback->processor) &&
-        thread_state_update_handler_(process_.pid, slot, state) &&
-        thread_wake_handler_(process_.pid, slot)) {
-      return;
+        thread_state_update_handler_(process_.pid, slot, state)) {
+      const auto wake_result = thread_wake_handler_(process_.pid, slot);
+      if (wake_result.handled)
+        return;
     }
     userland_hle_.unbind_thread_callback(*callback->processor);
     if (thread_terminate_handler_) {

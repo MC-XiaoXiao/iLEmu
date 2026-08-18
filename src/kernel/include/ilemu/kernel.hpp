@@ -55,6 +55,7 @@
 #include "ilemu/userland_hle.hpp"
 #include "ilemu/virtual_udp.hpp"
 #include "ilemu/wifi_state.hpp"
+#include "ilemu/xnu_scheduler.hpp"
 
 namespace ilemu {
 
@@ -89,9 +90,9 @@ public:
   using ThreadRunnableHandler =
       std::function<bool(std::uint32_t, std::uint32_t, bool)>;
   using ThreadWakeHandler =
-      std::function<bool(std::uint32_t, std::uint32_t)>;
+      std::function<XnuThreadWakeResult(std::uint32_t, std::uint32_t)>;
   using MachMessageWakeHandler =
-      std::function<bool(std::uint32_t, std::uint32_t)>;
+      std::function<XnuThreadWakeResult(std::uint32_t, std::uint32_t)>;
   using ForkHandler = std::function<std::optional<std::uint32_t>(Cpu &)>;
   using SpawnCreateHandler =
       std::function<std::optional<std::uint32_t>(Cpu &)>;

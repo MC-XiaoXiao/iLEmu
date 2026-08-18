@@ -852,9 +852,9 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
       }
     }
     if (routable) {
-      bool receiver_woken = false;
+      XnuThreadWakeResult receiver_wake_result{};
       if (local_pending_receiver && thread_wake_handler_) {
-        receiver_woken = thread_wake_handler_(
+        receiver_wake_result = thread_wake_handler_(
             process_.pid, static_cast<std::uint32_t>(*local_pending_receiver));
       } else if (remote_owner != process_.pid &&
                  mach_message_wake_handler_ && remote_owner != 0) {
@@ -862,10 +862,10 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
         // pending-mach map. The app-level callback resolves that map and
         // wakes the selected receiver without touching Dynarmic from a
         // different host thread.
-        receiver_woken = mach_message_wake_handler_(remote_owner,
-                                                    remote_object);
+        receiver_wake_result = mach_message_wake_handler_(remote_owner,
+                                                          remote_object);
       }
-      if (receiver_woken && scheduler_preemption_query_ &&
+      if (receiver_wake_result.preemption_needed && scheduler_preemption_query_ &&
           scheduler_preemption_query_(cpu.processor_id())) {
         cpu.request_guest_preemption();
       }
