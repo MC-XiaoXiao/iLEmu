@@ -192,6 +192,33 @@ public:
         demand_seen_count_.store(0U, std::memory_order_release);
     }
 
+    void invalidate_range(std::uint32_t address, std::size_t length) noexcept {
+        if (length == 0U) return;
+        const auto lower = static_cast<std::uint64_t>(address);
+        constexpr auto guest_address_limit = std::uint64_t{1} << 32U;
+        const auto requested_length = static_cast<std::uint64_t>(length);
+        const auto upper = requested_length > guest_address_limit - lower
+                               ? guest_address_limit
+                               : lower + requested_length;
+        if (lower >= upper) return;
+        for (auto& location : locations_) {
+            auto known = location.load(std::memory_order_acquire);
+            while (known != 0U) {
+                const auto pc = static_cast<std::uint32_t>(known);
+                if (static_cast<std::uint64_t>(pc) < lower ||
+                    static_cast<std::uint64_t>(pc) >= upper) {
+                    break;
+                }
+                if (location.compare_exchange_weak(
+                        known, 0U, std::memory_order_acq_rel,
+                        std::memory_order_acquire)) {
+                    ready_count_.fetch_sub(1U, std::memory_order_release);
+                    break;
+                }
+            }
+        }
+    }
+
 private:
     [[nodiscard]] static std::size_t hash(
         std::uint64_t location_descriptor) noexcept {
@@ -1895,6 +1922,12 @@ public:
     }
 
 private:
+    static void native_code_block_lookup(
+        void* user_arg, std::uint64_t location_descriptor) noexcept {
+        static_cast<JitExecutor *>(user_arg)->mark_native_preimport_used(
+            location_descriptor);
+    }
+
     static Dynarmic::IR::Block* portable_ir_demand_provider(
         void* user_arg, std::uint64_t location_descriptor,
         std::uint64_t slab_generation) noexcept {
@@ -1980,7 +2013,6 @@ private:
         if (invalidation_epoch == observed_invalidation_epoch_) return;
         artifact_probes_.clear();
         demand_artifact_probes_.clear();
-        native_preimport_tracker_->clear();
         callbacks_->clear_demand_locations();
         callbacks_->discard_demand_artifact();
         observed_invalidation_epoch_ = invalidation_epoch;
@@ -2003,6 +2035,14 @@ private:
         observe_shared_invalidation_epoch();
         const auto slab_generation =
             execution_context_->native_code_slab()->generation();
+        if (observed_slab_generation_ == 0U) {
+            // The slab starts at generation one. Each executor observes the
+            // shared slab lazily, so its first observation is initialization,
+            // not an invalidation. Clearing the pool-wide preimport tracker
+            // here would erase valid imports made by an earlier executor.
+            observed_slab_generation_ = slab_generation;
+            return;
+        }
         if (slab_generation == observed_slab_generation_) return;
         // Capacity transitions are internal to the shared slab and do not
         // publish a guest invalidation epoch. Retire probes when a
@@ -2041,6 +2081,9 @@ private:
         Dynarmic::A32::UserConfig config{callbacks_.get()};
         config.native_code_slab = execution_context_->native_code_slab();
         config.callbacks_link = runtime_link_cell_address_;
+        config.native_code_block_lookup_callback =
+            &JitExecutor::native_code_block_lookup;
+        config.native_code_block_lookup_callback_arg = this;
         config.lookup_link = lookup_link_cell_address_;
         config.runtime_config_link = runtime_config_link_cell_address_;
         config.fast_dispatch_table_link = fast_dispatch_table_link_cell_address_;
@@ -2397,6 +2440,7 @@ public:
 
     void clear_cache() {
         static_cast<void>(execution_context_->request_cache_clear());
+        native_preimport_tracker_->clear();
         performance_counters().record_jit_shared_invalidation(true);
     }
 
@@ -2404,6 +2448,7 @@ public:
         if (length == 0U) return;
         static_cast<void>(
             execution_context_->request_cache_range(address, length));
+        native_preimport_tracker_->invalidate_range(address, length);
         performance_counters().record_jit_shared_invalidation(false);
     }
 

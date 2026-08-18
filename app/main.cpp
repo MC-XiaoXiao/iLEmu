@@ -2546,6 +2546,31 @@ void boot(const std::vector<std::string> &args, Output &output) {
                     " deferred=" + std::to_string(result.deferred) +
                     " failed=" + std::to_string(result.failed));
       };
+  constexpr std::size_t maximum_startup_profile_blocks = 64U;
+  constexpr std::uint64_t startup_profile_budget_nanoseconds = 4'000'000U;
+  const auto precompile_startup_profile =
+      [&output, &record_precompile_outcomes](
+          Runtime &runtime, std::string_view executable_path) {
+        if (!runtime.cpus->next_precompile_phase(
+                JitPrecompileTarget::NativeCode)) {
+          return;
+        }
+        const auto result = runtime.cpus->precompile_pending(
+            maximum_startup_profile_blocks,
+            startup_profile_budget_nanoseconds,
+            JitPrecompileTarget::NativeCode);
+        record_precompile_outcomes(result);
+        output.line("[jit-profile] startup-native-warm executable=" +
+                    std::string{executable_path} +
+                    " blocks=" + std::to_string(result.native_compiled) +
+                    " attempted=" + std::to_string(result.attempted) +
+                    " artifact-imported=" +
+                    std::to_string(result.artifact_imported) +
+                    " shared-slab=" +
+                    std::to_string(result.shared_slab_hits) +
+                    " deferred=" + std::to_string(result.deferred) +
+                    " failed=" + std::to_string(result.failed));
+      };
   auto initial = std::make_unique<Runtime>();
   initial->memory = std::move(initial_memory);
   initial->jit_cache_reservation =
@@ -2617,6 +2642,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   initial->kernel->set_process_image(
       process.executable_path,
       process.executable.code_signature_entitlements());
+  precompile_startup_profile(*initial, process.executable_path);
   initial->kernel->enqueue_baseband_input(baseband_input);
   initial->kernel->set_baseband_receive_eof(baseband_input_path.has_value());
   if (baseband_input_path) {
@@ -3373,6 +3399,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
               child_cpu.set_cpsr(0x10);
               child_runtime->kernel->install_main_image_hle(
                   child_cpu, loaded.executable_path);
+              precompile_startup_profile(*child_runtime,
+                                         loaded.executable_path);
               precompile_catalog_generation(
                   *child_runtime, catalog_generation_pending,
                   loaded.executable_path);
@@ -4414,6 +4442,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           exec_cpu.set_cpsr(0x10);
           runtime.kernel->install_main_image_hle(exec_cpu,
                                                  loaded.executable_path);
+          precompile_startup_profile(runtime, loaded.executable_path);
           precompile_catalog_generation(runtime, catalog_generation_pending,
                                         loaded.executable_path);
           runtime.activate_image_epoch(image_epoch);
