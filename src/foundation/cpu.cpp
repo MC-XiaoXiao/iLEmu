@@ -267,7 +267,10 @@ public:
         std::shared_ptr<JitArtifactStore> artifact_store)
         : memory_{memory},
           cpu_model_{cpu_model},
-          artifact_store_{std::move(artifact_store)} {}
+          artifact_store_{std::move(artifact_store)} {
+        demand_locations_seen_.reserve(
+            jit_translation_profile_recorder_capacity * 2U);
+    }
 
     void attach(Cpu* owner, Dynarmic::A32::Jit* jit) {
         owner_ = owner;
@@ -388,10 +391,7 @@ public:
                 demand_artifact_ && !demand_artifact_consumed_) {
                 return true;
             }
-            demand_artifact_.reset();
-            demand_artifact_consumed_ = false;
-            demand_artifact_location_ = 0;
-            demand_artifact_slab_generation_ = 0;
+            discard_demand_artifact();
 
             const auto key = make_artifact_key(location_descriptor);
             if (!key) return false;
@@ -403,6 +403,9 @@ public:
             demand_artifact_location_ = location_descriptor;
             demand_artifact_slab_generation_ = slab_generation;
             demand_artifact_.emplace(std::move(*block));
+            if (translation_profile_) {
+                translation_profile_->note_demand_artifact_staged();
+            }
             return true;
         } catch (...) {
             discard_demand_artifact();
@@ -428,11 +431,22 @@ public:
     }
 
     void discard_demand_artifact() noexcept {
+        if (demand_artifact_ && !demand_artifact_consumed_ &&
+            translation_profile_) {
+            translation_profile_->note_demand_artifact_stage_unused();
+        }
         demand_artifact_.reset();
         demand_artifact_key_ = {};
         demand_artifact_location_ = 0;
         demand_artifact_slab_generation_ = 0;
         demand_artifact_consumed_ = false;
+    }
+
+    void finish_demand_artifact(std::uint64_t location_descriptor) noexcept {
+        if (demand_artifact_ && !demand_artifact_consumed_ &&
+            demand_artifact_location_ == location_descriptor) {
+            discard_demand_artifact();
+        }
     }
 
     // Called by Dynarmic only after NativeCodeSlab::find_block misses. This
@@ -450,6 +464,9 @@ public:
         performance_counters().record_jit_demand_artifact_probe(hit);
         if (!hit) return nullptr;
         demand_artifact_consumed_ = true;
+        if (translation_profile_) {
+            translation_profile_->note_demand_artifact_consumed();
+        }
         return &*demand_artifact_;
     }
 
@@ -605,11 +622,13 @@ private:
                                host_yield_slow_translation_threshold)
                                .count()));
         // Ordinary guest execution is latency-sensitive. Artifact production
-        // is reserved for an explicit precompile request, while the
-        // translation profile is populated from explicit preparation data;
-        // avoid mutating it on the demand-translation path.
+        // remains reserved for an explicit precompile request, but a complete
+        // descriptor is retained in fixed executor-local storage for a later
+        // safe-point profile merge. No store lookup, IR serialization, or
+        // profile lock is allowed on this callback path.
         if (!portable_generation_location_ &&
             !explicit_artifact_publication_) {
+            static_cast<void>(translation_recorder_.record(location_descriptor));
             performance_counters().record_latency(
                 PerfLatencyKind::JitDemandTranslation,
                 translation_nanoseconds);
@@ -830,7 +849,109 @@ public:
     }
     void set_translation_profile(
         std::shared_ptr<JitTranslationProfile> profile) {
+        flush_translation_profile_recorder();
         translation_profile_ = std::move(profile);
+    }
+
+    // Drain only after Dynarmic has returned to a host safe point. The hot
+    // callback records raw descriptors into fixed executor-local storage; all
+    // address-space checks, profile locking, and metric aggregation happen
+    // here instead of in CodeTranslationCompleted.
+    void flush_translation_profile_recorder() noexcept {
+        const auto recorded = translation_recorder_.locations();
+        if (recorded.empty() && translation_recorder_.deduplicated() == 0U &&
+            translation_recorder_.dropped_capacity() == 0U) {
+            return;
+        }
+        std::array<std::uint64_t,
+                   jit_translation_profile_recorder_capacity>
+            stable_locations{};
+        std::size_t stable_count{};
+        std::uint64_t unstable_count{};
+        for (const auto location_descriptor : recorded) {
+            try {
+                demand_locations_seen_.insert(location_descriptor);
+            } catch (...) {
+                // The bounded seen-set is advisory and never affects Guest
+                // execution or the recorder's persisted order.
+            }
+            const auto code_address =
+                static_cast<std::uint32_t>(location_descriptor) &
+                ~std::uint32_t{3};
+            bool stable = false;
+            try {
+                stable = memory_.translation_profile_stable(
+                             code_address, sizeof(std::uint32_t)) &&
+                         memory_.is_read_only_executable(
+                             code_address, sizeof(std::uint32_t));
+            } catch (...) {
+                stable = false;
+            }
+            if (stable && stable_count < stable_locations.size()) {
+                stable_locations[stable_count++] = location_descriptor;
+            } else {
+                ++unstable_count;
+            }
+        }
+        if (translation_profile_) {
+            translation_profile_->merge(
+                std::span<const std::uint64_t>{stable_locations.data(),
+                                                stable_count},
+                translation_recorder_.deduplicated(),
+                translation_recorder_.dropped_capacity() + unstable_count);
+            translation_profile_->note_unstable_dropped(unstable_count);
+        }
+        translation_recorder_.reset();
+    }
+
+    [[nodiscard]] bool demand_location_seen(
+        std::uint64_t location_descriptor) const noexcept {
+        return demand_locations_seen_.contains(location_descriptor);
+    }
+
+    void clear_demand_locations() noexcept {
+        demand_locations_seen_.clear();
+    }
+
+    void note_profile_portable_existence_hit() noexcept {
+        if (translation_profile_) {
+            translation_profile_->note_portable_existence_hit();
+        }
+    }
+    void note_profile_portable_generated() noexcept {
+        if (translation_profile_) {
+            translation_profile_->note_profile_portable_generated();
+        }
+    }
+    void note_native_preimport_attempted() noexcept {
+        if (translation_profile_) {
+            translation_profile_->note_native_preimport_attempted();
+        }
+    }
+    void note_native_preimport_imported() noexcept {
+        if (translation_profile_) {
+            translation_profile_->note_native_preimport_imported();
+        }
+    }
+    void note_native_preimport_already_present() noexcept {
+        if (translation_profile_) {
+            translation_profile_->note_native_preimport_already_present();
+        }
+    }
+    void note_native_preimport_before_first_demand() noexcept {
+        if (translation_profile_) {
+            translation_profile_->note_native_preimport_before_first_demand();
+        }
+    }
+    void note_profile_imported_before_first_run() noexcept {
+        if (translation_profile_) {
+            translation_profile_->note_profile_imported_before_first_run();
+        }
+    }
+    void note_native_preimport_used() noexcept {
+        if (translation_profile_) {
+            translation_profile_->note_native_preimport_used();
+        }
     }
 
     void set_artifact_retention(JitArtifactRetention retention) noexcept {
@@ -1100,6 +1221,8 @@ private:
     std::uint64_t host_yield_tick_budget_{};
     std::uint64_t host_yield_checks_{};
     std::chrono::steady_clock::time_point host_slice_deadline_{};
+    JitTranslationProfileRecorder translation_recorder_;
+    std::unordered_set<std::uint64_t> demand_locations_seen_;
 };
 
 // The iPhone ARM user ABI uses CP15 thread-pointer registers in addition to
@@ -1291,11 +1414,14 @@ public:
                 Dynarmic::GetExclusiveMonitorValuePointer(&monitor_, 0))));
         exclusive_monitor_values_link_cell_address_ =
             execution_context_->link_cell_address(exclusive_monitor_values_link_cell_);
+        native_preimport_locations_.reserve(
+            jit_translation_profile_recorder_capacity);
     }
 
     ~JitExecutor() {
         // Deregister the executor from the shared slab before invalidating
         // link cells that retired native code could otherwise still read.
+        callbacks_->flush_translation_profile_recorder();
         const bool had_jit = static_cast<bool>(jit_);
         jit_.reset();
         execution_context_->unlink(runtime_link_cell_);
@@ -1343,6 +1469,9 @@ public:
             effective_host_slice_budget);
         diagnostics.checkpoint(PerfLatencyKind::CpuRunCallbacksBegin);
         try {
+            const auto entry_location = single_step
+                                             ? 0U
+                                             : current_location_descriptor();
             if (!single_step) {
                 preload_current_artifact();
             }
@@ -1351,6 +1480,10 @@ public:
             diagnostics.checkpoint(PerfLatencyKind::CpuRunExecute);
             record_dispatch_counters();
             auto result = callbacks_->result(reason);
+            if (entry_location != 0U && result.ticks_consumed != 0U) {
+                mark_native_preimport_used(entry_location);
+                callbacks_->finish_demand_artifact(entry_location);
+            }
             if (guest_preemption_requested_) {
                 performance_counters().record_scheduler_preemption_return();
                 if (guest_preemption_requested_at_) {
@@ -1380,6 +1513,7 @@ public:
             diagnostics.checkpoint(PerfLatencyKind::CpuRunResult);
             save_state(cpu);
             diagnostics.checkpoint(PerfLatencyKind::CpuRunSaveState);
+            callbacks_->flush_translation_profile_recorder();
             record_code_cache_usage();
             performance_counters().record_cpu_execution(result.ticks_consumed);
             diagnostics.checkpoint(PerfLatencyKind::CpuRunCacheAccounting);
@@ -1389,6 +1523,7 @@ public:
             guest_preemption_requested_at_.reset();
             record_dispatch_counters();
             save_state(cpu);
+            callbacks_->flush_translation_profile_recorder();
             record_code_cache_usage();
             throw;
         }
@@ -1457,7 +1592,8 @@ public:
     }
 
     PrecompileDisposition precompile_descriptor(
-        std::uint64_t descriptor, JitPrecompileTarget target) {
+        std::uint64_t descriptor, JitPrecompileTarget target,
+        bool profile_derived) {
         const std::lock_guard execution_lock{execution_mutex_};
         memory_.synchronize_shared_write_tracking();
         ensure_jit();
@@ -1488,32 +1624,61 @@ public:
         }
         if (target == JitPrecompileTarget::PortableIr) {
             auto available = callbacks_->artifact_available(descriptor);
-            if (available) return PrecompileDisposition::PortableArtifactHit;
+            if (available) {
+                if (profile_derived) {
+                    callbacks_->note_profile_portable_existence_hit();
+                }
+                return PrecompileDisposition::PortableArtifactHit;
+            }
             if (!available) {
                 callbacks_->begin(0);
                 available = callbacks_->generate_portable_artifact(
                     *jit_, descriptor);
             }
             record_code_cache_usage();
+            if (profile_derived && available) {
+                callbacks_->note_profile_portable_generated();
+            }
             return available ? PrecompileDisposition::PortableGenerated
                              : PrecompileDisposition::Failed;
         }
+        const bool before_first_demand =
+            !callbacks_->demand_location_seen(descriptor);
+        if (profile_derived) {
+            callbacks_->note_native_preimport_attempted();
+        }
         const auto imported = callbacks_->import_artifact(*jit_, descriptor);
         if (imported == JitCallbacks::ArtifactImportOutcome::Imported) {
+            if (profile_derived) {
+                callbacks_->note_native_preimport_imported();
+                if (before_first_demand) {
+                    callbacks_->note_native_preimport_before_first_demand();
+                    callbacks_->note_profile_imported_before_first_run();
+                }
+            }
             if (key) {
                 artifact_probes_[descriptor] = ArtifactProbe{
                     key->content_identity, key->layout_identity, true,
                     callbacks_->artifact_publication_generation()};
             }
+            if (profile_derived) mark_native_preimported(descriptor);
             record_code_cache_usage();
             return PrecompileDisposition::ArtifactImported;
         }
         if (imported == JitCallbacks::ArtifactImportOutcome::AlreadyPresent) {
+            if (profile_derived) {
+                callbacks_->note_native_preimport_already_present();
+                if (before_first_demand) {
+                    callbacks_->note_native_preimport_before_first_demand();
+                    callbacks_->note_profile_imported_before_first_run();
+                }
+            }
             if (key) {
                 artifact_probes_[descriptor] = ArtifactProbe{
                     key->content_identity, key->layout_identity, true,
                     callbacks_->artifact_publication_generation()};
             }
+            if (profile_derived) mark_native_preimported(descriptor);
             record_code_cache_usage();
             return PrecompileDisposition::SharedSlabHit;
         }
@@ -1552,6 +1717,8 @@ public:
         guest_preemption_requested_at_.reset();
         callbacks_->discard_demand_artifact();
         demand_artifact_probes_.clear();
+        native_preimport_locations_.clear();
+        callbacks_->clear_demand_locations();
         jit_->Reset();
     }
 
@@ -1624,12 +1791,36 @@ private:
         }
     };
 
-    void preload_current_artifact() {
+    void mark_native_preimported(std::uint64_t location_descriptor) noexcept {
+        if (native_preimport_locations_.size() >=
+            jit_translation_profile_maximum_locations) {
+            return;
+        }
+        try {
+            native_preimport_locations_.insert(location_descriptor);
+        } catch (...) {
+            // Pre-import correlation is advisory; native execution remains
+            // correct if its bounded evidence set cannot grow.
+        }
+    }
+
+    void mark_native_preimport_used(
+        std::uint64_t location_descriptor) noexcept {
+        const auto entry = native_preimport_locations_.find(location_descriptor);
+        if (entry == native_preimport_locations_.end()) return;
+        native_preimport_locations_.erase(entry);
+        callbacks_->note_native_preimport_used();
+    }
+
+    [[nodiscard]] std::uint64_t current_location_descriptor() const {
         const Dynarmic::A32::LocationDescriptor descriptor{
             jit_->Regs()[15], Dynarmic::A32::PSR{jit_->Cpsr()},
             Dynarmic::A32::FPSCR{jit_->Fpscr()}};
-        const auto location =
-            static_cast<Dynarmic::IR::LocationDescriptor>(descriptor).Value();
+        return static_cast<Dynarmic::IR::LocationDescriptor>(descriptor).Value();
+    }
+
+    void preload_current_artifact() {
+        const auto location = current_location_descriptor();
         const auto key = callbacks_->artifact_key(location);
         if (!key) return;
         const auto slab_generation =
@@ -1659,6 +1850,8 @@ private:
         if (invalidation_epoch == observed_invalidation_epoch_) return;
         artifact_probes_.clear();
         demand_artifact_probes_.clear();
+        native_preimport_locations_.clear();
+        callbacks_->clear_demand_locations();
         callbacks_->discard_demand_artifact();
         observed_invalidation_epoch_ = invalidation_epoch;
     }
@@ -1686,6 +1879,8 @@ private:
         // precompile operation reaches this slower, serialized boundary.
         artifact_probes_.clear();
         demand_artifact_probes_.clear();
+        native_preimport_locations_.clear();
+        callbacks_->clear_demand_locations();
         callbacks_->discard_demand_artifact();
         observed_slab_generation_ = slab_generation;
     }
@@ -1958,6 +2153,7 @@ private:
     std::unordered_map<std::uint64_t, ArtifactProbe> artifact_probes_;
     std::unordered_map<std::uint64_t, DemandArtifactProbe>
         demand_artifact_probes_;
+    std::unordered_set<std::uint64_t> native_preimport_locations_;
     bool guest_preemption_requested_{};
     std::optional<std::chrono::steady_clock::time_point>
         guest_preemption_requested_at_;
@@ -2014,6 +2210,7 @@ public:
             throw std::invalid_argument{
                 "exclusive monitor processor range is out of bounds"};
         }
+        profile_locations_.reserve(jit_translation_profile_maximum_locations);
         executors_.reserve(execution_slot_count);
         for (std::size_t slot = 0; slot < execution_slot_count; ++slot) {
             executors_.push_back(std::make_unique<JitExecutor>(
@@ -2099,14 +2296,20 @@ public:
         deferred_precompile_entries_.clear();
         cache_full_generation_observed_.reset();
         next_precompile_executor_ = 0;
-        for (auto location = locations.rbegin(); location != locations.rend();
-             ++location) {
-            if (!enqueue_precompile_entry_locked(
-                    PrecompileEntry{*location, JitPrecompileTarget::NativeCode},
-                    phase) ||
-                !enqueue_precompile_entry_locked(
-                    PrecompileEntry{*location, JitPrecompileTarget::PortableIr},
-                    phase)) {
+        profile_locations_.clear();
+        for (const auto location : locations) {
+            if (location == 0U) continue;
+            profile_locations_.insert(location);
+            const auto native_queued = enqueue_precompile_entry_locked(
+                PrecompileEntry{location, JitPrecompileTarget::NativeCode},
+                phase);
+            const auto portable_queued = enqueue_precompile_entry_locked(
+                PrecompileEntry{location, JitPrecompileTarget::PortableIr},
+                phase);
+            if (portable_queued && profile) {
+                profile->note_profile_enqueued_portable();
+            }
+            if (!native_queued || !portable_queued) {
                 break;
             }
         }
@@ -2196,11 +2399,14 @@ public:
             }
             std::optional<std::pair<PrecompileEntry, JitPrecompilePhase>> entry;
             std::size_t executor_index{};
+            bool profile_derived{};
             {
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
                 entry = take_precompile_entry_locked(target);
                 if (!entry) break;
                 executor_index = next_precompile_executor_++ % executors_.size();
+                profile_derived = profile_locations_.contains(
+                    entry->first.descriptor);
             }
             owned_inflight_entries.insert(entry->first);
             ++processed;
@@ -2210,7 +2416,7 @@ public:
             JitExecutor::PrecompileDisposition disposition;
             try {
                 disposition = executors_[executor_index]->precompile_descriptor(
-                    descriptor, target);
+                    descriptor, target, profile_derived);
             } catch (...) {
                 const auto cancelled = stop_requested();
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
@@ -2440,6 +2646,7 @@ private:
         deferred_precompile_entries_;
     std::unordered_set<PrecompileEntry, PrecompileEntryHash>
         completed_precompile_entries_;
+    std::unordered_set<std::uint64_t> profile_locations_;
     std::optional<std::uint64_t> cache_full_generation_observed_;
     std::size_t next_precompile_executor_{};
     std::uint64_t precompile_cancellation_generation_{1};

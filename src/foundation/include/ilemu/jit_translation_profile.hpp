@@ -135,8 +135,8 @@ public:
     void note_profile_enqueued_portable(std::uint64_t count = 1) noexcept;
     void note_portable_existence_hit() noexcept;
     void note_profile_portable_generated() noexcept;
-    void note_native_preimport_attempted(
-        bool before_first_demand = false) noexcept;
+    void note_native_preimport_attempted() noexcept;
+    void note_native_preimport_before_first_demand() noexcept;
     void note_native_preimport_imported() noexcept;
     void note_native_preimport_already_present() noexcept;
     void note_native_preimport_used() noexcept;

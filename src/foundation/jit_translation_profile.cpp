@@ -574,15 +574,12 @@ void JitTranslationProfile::note_portable_existence_hit() noexcept {
 void JitTranslationProfile::note_profile_portable_generated() noexcept {
     profile_portable_generated_.fetch_add(1, std::memory_order_relaxed);
 }
-void JitTranslationProfile::note_native_preimport_attempted(
-    bool before_first_demand) noexcept {
+void JitTranslationProfile::note_native_preimport_attempted() noexcept {
     native_preimport_attempted_.fetch_add(1, std::memory_order_relaxed);
-    if (before_first_demand) {
-        native_preimport_before_first_demand_.fetch_add(
-            1, std::memory_order_relaxed);
-        profile_imported_before_first_run_.fetch_add(
-            1, std::memory_order_relaxed);
-    }
+}
+void JitTranslationProfile::note_native_preimport_before_first_demand() noexcept {
+    native_preimport_before_first_demand_.fetch_add(
+        1, std::memory_order_relaxed);
 }
 void JitTranslationProfile::note_native_preimport_imported() noexcept {
     native_preimport_imported_.fetch_add(1, std::memory_order_relaxed);
