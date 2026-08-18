@@ -373,7 +373,7 @@ JitTranslationProfile::JitTranslationProfile(
     std::vector<std::uint64_t> location_descriptors) {
     const auto retained = std::min(
         location_descriptors.size(), jit_translation_profile_maximum_locations);
-    known_locations_.reserve(retained * 2U);
+    known_locations_.reserve(retained);
     for (std::size_t index = 0; index < retained; ++index) {
         const auto location = location_descriptors[index];
         if (location != 0 && known_locations_.insert(location).second) {
@@ -457,8 +457,8 @@ void JitTranslationProfile::merge(
             }
         }
         if (locations_.size() > jit_translation_profile_maximum_locations * 2U) {
-            std::deque<std::uint64_t> compacted;
-            compacted.clear();
+            std::vector<std::uint64_t> compacted;
+            compacted.reserve(known_locations_.size());
             for (const auto location : locations_) {
                 if (known_locations_.contains(location)) compacted.push_back(location);
             }
@@ -500,6 +500,26 @@ std::vector<std::uint64_t> JitTranslationProfile::snapshot() const {
         if (known_locations_.contains(location)) result.push_back(location);
     }
     return result;
+}
+
+std::pair<std::vector<std::uint64_t>, std::size_t>
+JitTranslationProfile::snapshot_range(
+    std::size_t offset, std::size_t maximum) const {
+    const std::lock_guard lock{mutex_};
+    const auto start = std::min(offset, locations_.size());
+    std::vector<std::uint64_t> result;
+    result.reserve(std::min(maximum, locations_.size() - start));
+    std::size_t cursor = start;
+    for (; cursor < locations_.size() && result.size() < maximum; ++cursor) {
+        const auto location = locations_[cursor];
+        if (known_locations_.contains(location)) result.push_back(location);
+    }
+    return {std::move(result), cursor};
+}
+
+std::size_t JitTranslationProfile::storage_size() const noexcept {
+    const std::lock_guard lock{mutex_};
+    return locations_.size();
 }
 
 JitTranslationProfileStats JitTranslationProfile::stats() const noexcept {

@@ -4,7 +4,6 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <deque>
 #include <filesystem>
 #include <map>
 #include <memory>
@@ -13,6 +12,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "ilemu/content_identity.hpp"
@@ -129,6 +129,9 @@ public:
     // profile is next saved; guest execution never depends on the hint.
     void discard(std::uint64_t location_descriptor) noexcept;
     [[nodiscard]] std::vector<std::uint64_t> snapshot() const;
+    [[nodiscard]] std::pair<std::vector<std::uint64_t>, std::size_t>
+    snapshot_range(std::size_t offset, std::size_t maximum) const;
+    [[nodiscard]] std::size_t storage_size() const noexcept;
     [[nodiscard]] JitTranslationProfileStats stats() const noexcept;
 
     void note_profile_loaded(std::uint64_t descriptors) noexcept;
@@ -152,7 +155,7 @@ public:
 
 private:
     mutable std::mutex mutex_;
-    std::deque<std::uint64_t> locations_;
+    std::vector<std::uint64_t> locations_;
     std::unordered_set<std::uint64_t> known_locations_;
     std::unordered_set<std::uint64_t> discarded_locations_;
     std::atomic<std::uint64_t> recorded_{};

@@ -73,6 +73,9 @@ constexpr std::uint64_t host_yield_max_tick_budget = 8192U;
 constexpr auto host_yield_urgent_window = std::chrono::microseconds{250};
 constexpr auto host_yield_slow_translation_threshold =
     std::chrono::microseconds{250};
+constexpr std::size_t jit_profile_precompile_batch_size = 16U;
+constexpr std::size_t jit_profile_precompile_queue_entry_capacity =
+    jit_profile_precompile_batch_size * 2U;
 static_assert(sizeof(void *) == sizeof(std::uint64_t));
 
 class CpuRunPhaseDiagnostics {
@@ -2232,7 +2235,6 @@ public:
             throw std::invalid_argument{
                 "exclusive monitor processor range is out of bounds"};
         }
-        profile_locations_.reserve(jit_translation_profile_maximum_locations);
         executors_.reserve(execution_slot_count);
         for (std::size_t slot = 0; slot < execution_slot_count; ++slot) {
             executors_.push_back(std::make_unique<JitExecutor>(
@@ -2308,8 +2310,6 @@ public:
         JitPrecompilePhase phase) {
         quiesce_precompilation();
         native_preimport_tracker_->clear();
-        const auto locations =
-            profile ? profile->snapshot() : std::vector<std::uint64_t>{};
         for (auto& executor : executors_) {
             executor->set_translation_profile(profile);
         }
@@ -2323,50 +2323,16 @@ public:
         next_precompile_executor_ = 0;
         translation_profile_ = profile;
         translation_profile_phase_ = phase;
-        profile_locations_.clear();
-        for (const auto location : locations) {
-            if (location == 0U) continue;
-            profile_locations_.insert(location);
-            const auto native_queued = enqueue_precompile_entry_locked(
-                PrecompileEntry{location, JitPrecompileTarget::NativeCode,
-                                JitPrecompileSource::DemandProfile},
-                phase);
-            const auto portable_queued = enqueue_precompile_entry_locked(
-                PrecompileEntry{location, JitPrecompileTarget::PortableIr,
-                                JitPrecompileSource::DemandProfile},
-                phase);
-            if (portable_queued && profile) {
-                profile->note_profile_enqueued_portable();
-            }
-            if (!native_queued || !portable_queued) {
-                break;
-            }
-        }
+        profile_location_cursor_ = 0U;
+        profile_queue_entries_ = 0U;
+        refill_profile_entries_locked();
     }
 
     void refresh_translation_profile() {
         const auto profile = translation_profile_;
         if (!profile) return;
-        const auto locations = profile->snapshot();
         const std::lock_guard queue_lock{precompile_queue_mutex_};
-        for (const auto location : locations) {
-            if (location == 0U || profile_locations_.contains(location)) {
-                continue;
-            }
-            profile_locations_.insert(location);
-            const auto native_queued = enqueue_precompile_entry_locked(
-                PrecompileEntry{location, JitPrecompileTarget::NativeCode,
-                                JitPrecompileSource::DemandProfile},
-                translation_profile_phase_);
-            const auto portable_queued = enqueue_precompile_entry_locked(
-                PrecompileEntry{location, JitPrecompileTarget::PortableIr,
-                                JitPrecompileSource::DemandProfile},
-                translation_profile_phase_);
-            if (portable_queued) {
-                profile->note_profile_enqueued_portable();
-            }
-            if (!native_queued || !portable_queued) break;
-        }
+        refill_profile_entries_locked();
     }
 
     void set_artifact_retention(JitArtifactRetention retention) {
@@ -2484,6 +2450,10 @@ public:
                 if (!cancelled) {
                     deferred_precompile_entries_[precompile_entry] =
                         DeferredPrecompileEntry{entry->second, std::nullopt};
+                } else if (precompile_entry.source ==
+                               JitPrecompileSource::DemandProfile &&
+                           profile_queue_entries_ != 0U) {
+                    --profile_queue_entries_;
                 }
                 ++result.failed;
                 break;
@@ -2497,6 +2467,11 @@ public:
                     // The block may have finished after the epoch changed.
                     // It belongs to the old work generation and must not be
                     // published into the replacement profile's sets.
+                    if (precompile_entry.source ==
+                            JitPrecompileSource::DemandProfile &&
+                        profile_queue_entries_ != 0U) {
+                        --profile_queue_entries_;
+                    }
                 } else if (disposition ==
                            JitExecutor::PrecompileDisposition::Deferred) {
                     deferred_precompile_entries_[precompile_entry] =
@@ -2509,6 +2484,11 @@ public:
                             execution_context_->native_code_slab()->generation()};
                 } else {
                     completed_precompile_entries_.insert(precompile_entry);
+                    if (precompile_entry.source ==
+                            JitPrecompileSource::DemandProfile &&
+                        profile_queue_entries_ != 0U) {
+                        --profile_queue_entries_;
+                    }
                 }
             }
             if (cancelled) break;
@@ -2568,6 +2548,7 @@ public:
             completed_precompile_entries_.clear();
             cache_full_generation_observed_.reset();
             next_precompile_executor_ = 0;
+            profile_queue_entries_ = 0U;
         }
         std::unique_lock queue_lock{precompile_queue_mutex_};
         precompile_idle_.wait(queue_lock, [this] {
@@ -2614,12 +2595,58 @@ private:
         }
         pending_precompile_phases_.emplace(entry, phase);
         pending_precompile_entries_[phase_index(phase)].push_back(entry);
+        if (entry.source == JitPrecompileSource::DemandProfile) {
+            ++profile_queue_entries_;
+        }
         return true;
+    }
+
+    void refill_profile_entries_locked() {
+        const auto profile = translation_profile_;
+        if (!profile ||
+            profile_queue_entries_ >= jit_profile_precompile_queue_entry_capacity) {
+            return;
+        }
+        if (profile_location_cursor_ > profile->storage_size()) {
+            // Profile compaction can shorten the append-only storage. The
+            // completed-entry set keeps a restart duplicate-safe.
+            profile_location_cursor_ = 0U;
+        }
+        const auto available_entries =
+            jit_profile_precompile_queue_entry_capacity - profile_queue_entries_;
+        const auto maximum_locations = available_entries / 2U;
+        if (maximum_locations == 0U) return;
+        auto [locations, next_cursor] = profile->snapshot_range(
+            profile_location_cursor_,
+            std::min(jit_profile_precompile_batch_size, maximum_locations));
+        profile_location_cursor_ = next_cursor;
+        for (const auto location : locations) {
+            if (location == 0U) continue;
+            const auto native_queued = enqueue_precompile_entry_locked(
+                PrecompileEntry{location, JitPrecompileTarget::NativeCode,
+                                JitPrecompileSource::DemandProfile},
+                translation_profile_phase_);
+            const auto portable_queued = enqueue_precompile_entry_locked(
+                PrecompileEntry{location, JitPrecompileTarget::PortableIr,
+                                JitPrecompileSource::DemandProfile},
+                translation_profile_phase_);
+            if (portable_queued) profile->note_profile_enqueued_portable();
+            if (!native_queued || !portable_queued) break;
+        }
     }
 
     void promote_cache_full_entries_locked(
         std::optional<JitPrecompileSource> source = std::nullopt) {
         if (deferred_precompile_entries_.empty()) return;
+        if (source) {
+            const auto relevant = std::find_if(
+                deferred_precompile_entries_.begin(),
+                deferred_precompile_entries_.end(),
+                [source](const auto &entry) {
+                    return entry.first.source == *source;
+                });
+            if (relevant == deferred_precompile_entries_.end()) return;
+        }
         const auto current_generation =
             execution_context_->native_code_slab()->generation();
         if (cache_full_generation_observed_ &&
@@ -2721,10 +2748,11 @@ private:
         deferred_precompile_entries_;
     std::unordered_set<PrecompileEntry, PrecompileEntryHash>
         completed_precompile_entries_;
-    std::unordered_set<std::uint64_t> profile_locations_;
     std::shared_ptr<JitTranslationProfile> translation_profile_;
     JitPrecompilePhase translation_profile_phase_{
         JitPrecompilePhase::Remaining};
+    std::size_t profile_location_cursor_{};
+    std::size_t profile_queue_entries_{};
     std::optional<std::uint64_t> cache_full_generation_observed_;
     std::size_t next_precompile_executor_{};
     std::uint64_t precompile_cancellation_generation_{1};
