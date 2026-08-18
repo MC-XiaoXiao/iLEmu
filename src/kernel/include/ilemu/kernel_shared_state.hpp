@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -407,6 +408,10 @@ struct KernelSharedState {
     std::vector<std::byte> bytes;
     std::uint32_t destination{};
     std::uint32_t sender_pid{};
+    // Set only for Guest-originated messages while CPU diagnostics are
+    // enabled. This is host monotonic time, deliberately separate from the
+    // Guest mach_absolute_time domain used by the probe.
+    std::uint64_t host_enqueue_nanoseconds{};
     std::uint32_t sender_uid{};
     std::uint32_t sender_gid{};
     std::uint64_t graphics_input_sequence{};

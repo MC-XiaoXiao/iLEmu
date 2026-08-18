@@ -75,6 +75,28 @@ bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(Cpu &cpu) {
   const auto pending = pending_mach_receives_.find(cpu.processor_id());
   if (pending == pending_mach_receives_.end())
     return false;
+
+  // The name is a capability, not a stable object lookup. A blocked receive
+  // must notice a destroyed/replaced receive right even when no new message
+  // advanced the queue generation. XNU wakes this case from ipc_mqueue_changed
+  // with MACH_RCV_PORT_CHANGED.
+  std::lock_guard mach_lock{shared_state_->mach_mutex};
+  const auto resolved_receive = resolve_receive_object(
+      *shared_state_, process_.pid, pending->second.receive_name);
+  if (!resolved_receive ||
+      (pending->second.receive_object &&
+       *pending->second.receive_object != *resolved_receive)) {
+    cpu.registers()[0] =
+        receive_name_is_in_set(*shared_state_, process_.pid,
+                               pending->second.receive_name)
+            ? darwin::mach_message::receive_in_set
+            : darwin::mach_message::receive_port_changed;
+    pending_mach_receives_.erase(pending);
+    process_.waiting_for_events = !pending_mach_receives_.empty();
+    cpu.clear_halt();
+    return true;
+  }
+  pending->second.receive_object = *resolved_receive;
   const auto queue_generation =
       shared_state_->mach_queue_generation_snapshot();
   if (pending->second.receive_object &&
@@ -83,7 +105,6 @@ bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(Cpu &cpu) {
        shared_state_->clock.now() < *pending->second.deadline)) {
     return false;
   }
-  std::lock_guard mach_lock{shared_state_->mach_mutex};
   return deliver_pending_mach_locked(cpu);
 }
 
@@ -112,11 +133,15 @@ CompatibilityKernel::preferred_pending_mach_receiver_locked(
   // Reconstruct that choice here so host CPU polling order cannot redirect a
   // shared-port message to a later port set.
   for (auto &[processor, pending] : pending_mach_receives_) {
-    if (!pending.receive_object) {
-      pending.receive_object = shared_state_->mach_namespaces.resolve(
-          process_.pid, pending.receive_name);
+    const auto resolved_receive = resolve_receive_object(
+        *shared_state_, process_.pid, pending.receive_name);
+    if (!resolved_receive ||
+        (pending.receive_object &&
+         *pending.receive_object != *resolved_receive)) {
+      continue;
     }
-    if (pending.receive_object && *pending.receive_object == queued_port) {
+    pending.receive_object = *resolved_receive;
+    if (*resolved_receive == queued_port) {
       consider(Candidate{pending.wait_queue_sequence,
                          pending.wait_queue_sequence, processor});
     }
@@ -155,13 +180,22 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
   if (pending == pending_mach_receives_.end())
     return false;
 
-  if (!pending->second.receive_object) {
-    const auto resolved_receive = shared_state_->mach_namespaces.resolve(
-        process_.pid, pending->second.receive_name);
-    if (!resolved_receive)
-      return false;
-    pending->second.receive_object = *resolved_receive;
+  const auto resolved_receive = resolve_receive_object(
+      *shared_state_, process_.pid, pending->second.receive_name);
+  if (!resolved_receive ||
+      (pending->second.receive_object &&
+       *pending->second.receive_object != *resolved_receive)) {
+    cpu.registers()[0] =
+        receive_name_is_in_set(*shared_state_, process_.pid,
+                               pending->second.receive_name)
+            ? darwin::mach_message::receive_in_set
+            : darwin::mach_message::receive_port_changed;
+    pending_mach_receives_.erase(pending);
+    process_.waiting_for_events = !pending_mach_receives_.empty();
+    cpu.clear_halt();
+    return true;
   }
+  pending->second.receive_object = *resolved_receive;
   auto queued_port = *pending->second.receive_object;
   auto queue = shared_state_->mach_queues.end();
   bool has_visible_message = false;
@@ -320,6 +354,9 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
     cpu.clear_halt();
     return true;
   }
+  // Mach copyout exposes the sender's reply capability in msgh_remote_port;
+  // the receive name is returned in msgh_local_port.  This is the wire-level
+  // swap that lets a MIG server reply using request.msgh_remote_port.
   write_little_word(received->bytes, 12, *destination_name);
 
   if (sender_reply_name != xnu792::ipc::null_name) {
@@ -599,6 +636,20 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
       pending_message.graphics_touch_phase;
   const auto delivered_destination_send_object =
       pending_message.destination_send_object;
+  if (pending_message.host_enqueue_nanoseconds != 0U &&
+      performance_counters().cpu_source_diagnostics_configured()) {
+    const auto dispatch_nanoseconds = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+    const auto elapsed = dispatch_nanoseconds >=
+                                 pending_message.host_enqueue_nanoseconds
+                             ? dispatch_nanoseconds -
+                                   pending_message.host_enqueue_nanoseconds
+                             : 0U;
+    performance_counters().record_latency(
+        PerfLatencyKind::MachMessageSendToReceive, elapsed);
+  }
   queue->second.pop_front();
   if (delivered_destination_send_object) {
     release_inflight_send_right_locked(*shared_state_,

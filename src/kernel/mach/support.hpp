@@ -62,6 +62,15 @@ find_thread_owner(const KernelSharedState &state, std::uint32_t object);
 [[nodiscard]] std::optional<std::uint32_t>
 resolve_name_with_right(const KernelSharedState &state, std::uint32_t task,
                         std::uint32_t name, xnu792::ipc::Right right);
+// mach_msg receive accepts only a task-local receive right or port-set right.
+// A generic namespace resolve is intentionally insufficient because send-only
+// names resolve to the same global object but are not receive capabilities.
+[[nodiscard]] std::optional<std::uint32_t>
+resolve_receive_object(const KernelSharedState &state, std::uint32_t task,
+                       std::uint32_t name);
+[[nodiscard]] bool receive_name_is_in_set(const KernelSharedState &state,
+                                          std::uint32_t task,
+                                          std::uint32_t name);
 [[nodiscard]] std::optional<std::uint32_t>
 resolve_message_object(const KernelSharedState &state, std::uint32_t sender,
                        std::uint32_t name);

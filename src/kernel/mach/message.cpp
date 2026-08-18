@@ -28,6 +28,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -80,8 +81,15 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
     }
     {
       std::lock_guard mach_lock{shared_state_->mach_mutex};
-      const auto receive_object = shared_state_->mach_namespaces.resolve(
-          process_.pid, registers[4]);
+      const auto receive_object = resolve_receive_object(
+          *shared_state_, process_.pid, registers[4]);
+      if (!receive_object) {
+        registers[0] = receive_name_is_in_set(
+                           *shared_state_, process_.pid, registers[4])
+                           ? darwin::mach_message::receive_in_set
+                           : darwin::mach_message::receive_invalid_name;
+        return;
+      }
       pending_mach_receives_[cpu.processor_id()] = PendingMachReceive{
           message_address,
           registers[3],
@@ -829,6 +837,12 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
           queued.bytes = *bytes;
           queued.destination = remote_object;
           queued.sender_pid = process_.pid;
+          if (performance_counters().cpu_source_diagnostics_configured()) {
+            queued.host_enqueue_nanoseconds = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now().time_since_epoch())
+                    .count());
+          }
           queued.sender_uid = process_.effective_uid;
           queued.sender_gid = process_.effective_gid;
           queued.ool_payloads = std::move(ool_payloads);

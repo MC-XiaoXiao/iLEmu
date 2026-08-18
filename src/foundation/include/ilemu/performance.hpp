@@ -140,6 +140,7 @@ enum class PerfLatencyKind : std::uint8_t {
     CpuRunTotal,
     SchedulerRunnableToDispatch,
     SchedulerPreemptionRequestToReturn,
+    MachMessageSendToReceive,
     Count,
 };
 

@@ -203,9 +203,13 @@ target_task_for_port(const KernelSharedState &state, std::uint32_t caller,
   if (!task_object)
     return std::nullopt;
   const auto task = state.task_port_pids.find(*task_object);
-  return task == state.task_port_pids.end()
-             ? std::nullopt
-             : std::optional<std::uint32_t>{task->second};
+  if (task == state.task_port_pids.end())
+    return std::nullopt;
+  if (const auto process = state.processes.find(task->second);
+      process != state.processes.end() && process->second.exited) {
+    return std::nullopt;
+  }
+  return task->second;
 }
 
 std::optional<std::uint32_t>
@@ -217,10 +221,18 @@ target_task_name_for_port(const KernelSharedState &state, std::uint32_t caller,
     return std::nullopt;
   if (const auto task = state.task_port_pids.find(*object);
       task != state.task_port_pids.end()) {
+    if (const auto process = state.processes.find(task->second);
+        process != state.processes.end() && process->second.exited) {
+      return std::nullopt;
+    }
     return task->second;
   }
   if (const auto task_name_port = state.task_name_port_pids.find(*object);
       task_name_port != state.task_name_port_pids.end()) {
+    if (const auto process = state.processes.find(task_name_port->second);
+        process != state.processes.end() && process->second.exited) {
+      return std::nullopt;
+    }
     return task_name_port->second;
   }
   return std::nullopt;
@@ -245,6 +257,33 @@ resolve_name_with_right(const KernelSharedState &state, std::uint32_t task,
     return std::nullopt;
   }
   return entry->object;
+}
+
+std::optional<std::uint32_t>
+resolve_receive_object(const KernelSharedState &state, std::uint32_t task,
+                       std::uint32_t name) {
+  const auto entry = state.mach_namespaces.lookup(task, name);
+  if (!entry)
+    return std::nullopt;
+  if ((entry->type & xnu792::ipc::type_mask(xnu792::ipc::Right::Receive)) !=
+          0 &&
+      state.mach_port_objects.contains(entry->object) &&
+      !state.mach_port_set_links_by_member.contains(entry->object)) {
+    return entry->object;
+  }
+  if ((entry->type & xnu792::ipc::type_mask(xnu792::ipc::Right::PortSet)) !=
+          0 &&
+      state.mach_port_sets.contains(entry->object)) {
+    return entry->object;
+  }
+  return std::nullopt;
+}
+
+bool receive_name_is_in_set(const KernelSharedState &state,
+                            std::uint32_t task, std::uint32_t name) {
+  const auto object = resolve_name_with_right(
+      state, task, name, xnu792::ipc::Right::Receive);
+  return object && state.mach_port_set_links_by_member.contains(*object);
 }
 
 std::optional<std::uint32_t>
@@ -391,6 +430,9 @@ void discard_mach_message_rights_locked(
 void remove_port_object_locked(KernelSharedState &state, std::uint32_t object) {
   if (!state.mach_ports_being_removed.insert(object).second)
     return;
+  // A receive may be asleep on this object without any queued message. Make
+  // the scheduler revisit its cached namespace capability on the next poll.
+  state.note_mach_queue_topology_change_locked();
   struct RemovalGuard {
     KernelSharedState &state;
     std::uint32_t object;

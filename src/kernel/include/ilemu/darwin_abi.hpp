@@ -232,8 +232,11 @@ inline constexpr std::uint32_t send_invalid_right = 0x1000'000AU;
 inline constexpr std::uint32_t send_no_buffer = 0x1000'000DU;
 inline constexpr std::uint32_t send_invalid_destination = 0x1000'0003U;
 inline constexpr std::uint32_t send_timed_out = 0x1000'0004U;
+inline constexpr std::uint32_t receive_invalid_name = 0x1000'4002U;
 inline constexpr std::uint32_t receive_timed_out = 0x1000'4003U;
+inline constexpr std::uint32_t receive_port_changed = 0x1000'4006U;
 inline constexpr std::uint32_t receive_invalid_data = 0x1000'4008U;
+inline constexpr std::uint32_t receive_in_set = 0x1000'400AU;
 inline constexpr std::uint32_t header_size = 24U;
 
 [[nodiscard]] constexpr std::uint32_t

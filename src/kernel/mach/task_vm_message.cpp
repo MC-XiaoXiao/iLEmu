@@ -93,81 +93,118 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
       registers[3] >= 36U) {
     std::uint32_t result = darwin::mach::invalid_argument;
     std::array<std::uint32_t, 3> registered_objects{};
-    std::vector<std::pair<std::uint32_t, xnu792::ipc::Right>> moved_names;
+    std::vector<std::uint32_t> moved_names;
     bool valid = false;
     const auto bytes = memory_.read_bytes(message_address, registers[2]);
     if (bytes) {
       const auto descriptors = mach_transport::parse_descriptors(*bytes);
-      if (descriptors) {
-        const auto descriptor = std::find_if(
-            descriptors->begin(), descriptors->end(), [](const auto &item) {
-              return item.kind ==
-                     mach_transport::DescriptorKind::OutOfLinePorts;
-            });
-        const auto descriptor_count =
-            descriptor == descriptors->end() ? 0U : descriptor->count_or_size;
+      if (descriptors && descriptors->size() == 1U &&
+          descriptors->front().kind ==
+              mach_transport::DescriptorKind::OutOfLinePorts) {
+        const auto &descriptor = descriptors->front();
+        const auto descriptor_count = descriptor.count_or_size;
         const auto requested_count = memory_.read32(
             message_address +
             static_cast<std::uint32_t>(
                 xnu792::mig::task::mach_ports_register_arguments[1]
                     .request_count_offset));
-        const auto target = target_task_for_port(*shared_state_, process_.pid,
-                                                 *remote_port);
-        valid = target && descriptor != descriptors->end() &&
+        const auto disposition = descriptor.disposition();
+        const auto move_send = disposition ==
+                               darwin::mig_wire::disposition_move_send;
+        const auto copy_send = disposition ==
+                               darwin::mig_wire::disposition_copy_send;
+        valid = requested_count && *requested_count == descriptor_count &&
                 descriptor_count <= registered_objects.size() &&
-                (!requested_count || *requested_count == descriptor_count) &&
-                (descriptor_count == 0U || descriptor->address_or_name != 0U);
+                (move_send || copy_send) &&
+                (descriptor_count == 0U || descriptor.address_or_name != 0U);
         if (valid) {
-          const auto source =
-              source_right_for_disposition(descriptor->disposition());
-          valid = source && *source == xnu792::ipc::Right::Send;
+          for (std::uint32_t index = 0; index < descriptor_count; ++index) {
+            const auto name = memory_.read32(
+                descriptor.address_or_name +
+                static_cast<std::uint32_t>(index * sizeof(std::uint32_t)));
+            if (!name) {
+              valid = false;
+              break;
+            }
+            if (*name != xnu792::ipc::null_name)
+              moved_names.push_back(*name);
+          }
+        }
+        if (valid) {
+          std::lock_guard mach_lock{shared_state_->mach_mutex};
+          const auto target = target_task_for_port(
+              *shared_state_, process_.pid, *remote_port);
+          valid = target.has_value();
+          const auto source_right = xnu792::ipc::Right::Send;
           if (valid) {
             for (std::uint32_t index = 0; index < descriptor_count; ++index) {
               const auto name = memory_.read32(
-                  descriptor->address_or_name +
+                  descriptor.address_or_name +
                   static_cast<std::uint32_t>(index * sizeof(std::uint32_t)));
-              if (!name || *name == xnu792::ipc::null_name) {
-                if (!name)
-                  valid = false;
-                continue;
-              }
-              moved_names.emplace_back(*name, *source);
-              std::lock_guard mach_lock{shared_state_->mach_mutex};
-              const auto object = resolve_name_with_right(
-                  *shared_state_, process_.pid, *name, *source);
-              if (!object) {
+              if (!name) {
                 valid = false;
                 break;
               }
-              registered_objects[index] = *object;
+              if (*name == xnu792::ipc::null_name)
+                continue;
+              const auto entry =
+                  shared_state_->mach_namespaces.lookup(process_.pid, *name);
+              if (!entry ||
+                  (entry->type & xnu792::ipc::type_mask(source_right)) == 0 ||
+                  !shared_state_->mach_port_objects.contains(entry->object)) {
+                valid = false;
+                break;
+              }
+              registered_objects[index] = entry->object;
+              if (move_send) {
+                // Preflight every duplicate before changing any uref. The
+                // commit below runs under the same mach_mutex, so a valid
+                // plan cannot fail halfway through and leave the old stash
+                // or caller namespace partially changed.
+                std::uint32_t occurrences = 1;
+                for (std::uint32_t prior = 0; prior < index; ++prior) {
+                  const auto prior_name = memory_.read32(
+                      descriptor.address_or_name +
+                      static_cast<std::uint32_t>(prior * sizeof(
+                          std::uint32_t)));
+                  if (prior_name && *prior_name == *name)
+                    ++occurrences;
+                }
+                const auto references =
+                    shared_state_->mach_namespaces.user_references(
+                        process_.pid, *name, source_right);
+                if (!references || *references < occurrences) {
+                  valid = false;
+                  break;
+                }
+              }
             }
           }
           if (valid) {
-            std::lock_guard mach_lock{shared_state_->mach_mutex};
             const auto target_pid = *target;
-            if (const auto previous =
-                    shared_state_->mach_registered_ports.find(target_pid);
-                previous != shared_state_->mach_registered_ports.end()) {
+            const auto previous =
+                shared_state_->mach_registered_ports.find(target_pid);
+            for (const auto object : registered_objects) {
+              if (object != xnu792::ipc::null_name)
+                retain_kernel_send_right_locked(*shared_state_, object);
+            }
+            // Every MOVE_SEND was preflighted while holding mach_mutex. The
+            // helper therefore cannot observe a changed name/reference here;
+            // COPY_SEND deliberately leaves the caller's uref untouched.
+            if (move_send) {
+              for (const auto name : moved_names) {
+                static_cast<void>(consume_moved_right_locked(
+                    *shared_state_, process_.pid, name, source_right, false));
+              }
+            }
+            if (previous != shared_state_->mach_registered_ports.end()) {
               for (const auto object : previous->second) {
                 if (object != xnu792::ipc::null_name)
                   release_kernel_send_right_locked(*shared_state_, object);
               }
             }
-            for (const auto object : registered_objects) {
-              if (object != xnu792::ipc::null_name)
-                retain_kernel_send_right_locked(*shared_state_, object);
-            }
             shared_state_->mach_registered_ports[target_pid] =
                 registered_objects;
-            // The MIG array is normally MOVE_SEND. Consume the caller's
-            // supplied reference after the stash has acquired its own hold.
-            for (const auto &[name, right] : moved_names) {
-              if (!consume_moved_right_locked(*shared_state_, process_.pid,
-                                               name, right, false)) {
-                valid = false;
-                break;
-              }
-            }
           }
         }
       }
@@ -347,6 +384,23 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
     std::uint32_t result = darwin::mach::invalid_argument;
     std::array<std::uint32_t, 3> registered_objects{};
     std::array<std::uint32_t, 3> port_names{};
+    std::uint32_t ports_address = 0;
+    bool ports_mapped = false;
+    const auto rollback_lookup = [&] {
+      if (ports_mapped) {
+        static_cast<void>(memory_.unmap(ports_address,
+                                        AddressSpace::page_size));
+        ports_mapped = false;
+      }
+      std::lock_guard mach_lock{shared_state_->mach_mutex};
+      for (auto &name : port_names) {
+        if (name != xnu792::ipc::null_name &&
+            name != xnu792::ipc::dead_name)
+          static_cast<void>(shared_state_->mach_namespaces.deallocate(
+              process_.pid, name));
+        name = xnu792::ipc::null_name;
+      }
+    };
     {
       std::lock_guard mach_lock{shared_state_->mach_mutex};
       if (const auto target =
@@ -362,15 +416,34 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
           const auto object = registered_objects[index];
           if (object == xnu792::ipc::null_name)
             continue;
-          port_names[index] =
-              shared_state_->mach_namespaces
-                  .copyout(process_.pid, object,
-                           xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
-                  .value_or(xnu792::ipc::null_name);
+          if (!shared_state_->mach_port_objects.contains(object)) {
+            // ipc_port_copy_send() returns IP_DEAD for an inactive port. The
+            // lookup ABI exposes that result as MACH_PORT_DEAD rather than
+            // failing the whole three-slot copyout or resurrecting a Send
+            // name for a retired object.
+            port_names[index] = xnu792::ipc::dead_name;
+            continue;
+          }
+          const auto copied_name = shared_state_->mach_namespaces.copyout(
+              process_.pid, object,
+              xnu792::ipc::type_mask(xnu792::ipc::Right::Send));
+          if (!copied_name) {
+            result = darwin::mach::resource_shortage;
+            break;
+          }
+          port_names[index] = *copied_name;
+        }
+        if (result != darwin::mach::success) {
+          for (const auto name : port_names) {
+            if (name != xnu792::ipc::null_name &&
+                name != xnu792::ipc::dead_name)
+              static_cast<void>(shared_state_->mach_namespaces.deallocate(
+                  process_.pid, name));
+          }
+          port_names.fill(xnu792::ipc::null_name);
         }
       }
     }
-    std::uint32_t ports_address = 0;
     if (result == darwin::mach::success) {
       const auto region = find_free_guest_region(
           memory_, ool_results_base, AddressSpace::page_size);
@@ -380,17 +453,20 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
         result = darwin::mach::resource_shortage;
       } else {
         ports_address = *region;
+        ports_mapped = true;
         for (std::size_t index = 0; index < port_names.size(); ++index) {
           if (!memory_.write32(
                   ports_address + static_cast<std::uint32_t>(index * 4U),
                   port_names[index])) {
-            registers[0] = darwin::mach_message::receive_invalid_data;
-            return true;
+            rollback_lookup();
+            return write_simple_reply(
+                darwin::mach_message::receive_invalid_data);
           }
         }
       }
     }
     if (result != darwin::mach::success) {
+      rollback_lookup();
       return write_simple_reply(result);
     }
     const std::array<std::uint32_t, 13> reply{
@@ -412,8 +488,9 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
       if (!memory_.write32(message_address +
                                static_cast<std::uint32_t>(index * 4U),
                            reply[index])) {
-        registers[0] = 0x10004008U;
-        return true;
+        rollback_lookup();
+        return write_simple_reply(
+            darwin::mach_message::receive_invalid_data);
       }
     }
     registers[0] = 0;

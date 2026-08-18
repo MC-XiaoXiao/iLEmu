@@ -447,6 +447,7 @@ bool is_display_window_latency(PerfLatencyKind kind) {
     case PerfLatencyKind::SchedulerRunnableToDispatch:
     case PerfLatencyKind::SchedulerPreemptionRequestToReturn:
         return true;
+    case PerfLatencyKind::MachMessageSendToReceive:
     case PerfLatencyKind::InputEnqueue:
     case PerfLatencyKind::DisplayPresent:
     case PerfLatencyKind::JitColdPath:
@@ -2282,8 +2283,6 @@ void PerformanceCounters::record_diagnostic_source(
     const auto use = ++diagnostic_source_use_clock_;
     auto index = diagnostic_source_index(key, runnable_generation);
     std::optional<std::size_t> empty_index;
-    std::optional<std::size_t> least_recent_index;
-    std::uint64_t least_recent_use = std::numeric_limits<std::uint64_t>::max();
     for (std::size_t probe = 0; probe < diagnostic_source_capacity;
          ++probe) {
         auto& source = diagnostic_source_counters_[index];
@@ -2299,19 +2298,32 @@ void PerformanceCounters::record_diagnostic_source(
                 1, std::memory_order_relaxed);
             return;
         }
-        if (observed == 0 && !empty_index)
+        if (observed == 0) {
             empty_index = index;
-        const auto last_used =
-            source.last_used.load(std::memory_order_relaxed);
-        if (observed != 0 && last_used < least_recent_use) {
-            least_recent_use = last_used;
-            least_recent_index = index;
+            break;
         }
         index = (index + 1U) & (diagnostic_source_capacity - 1U);
     }
 
-    const auto target = empty_index.value_or(*least_recent_index);
-    auto& source = diagnostic_source_counters_[target];
+    std::optional<std::size_t> target = empty_index;
+    if (!target) {
+        // Only a full-table miss needs an eviction scan. The common miss path
+        // stops at its first empty slot, keeping the diagnostic table bounded
+        // without turning every new source into a 4096-entry walk.
+        std::uint64_t least_recent_use =
+            std::numeric_limits<std::uint64_t>::max();
+        for (std::size_t slot = 0; slot < diagnostic_source_capacity; ++slot) {
+            auto &source = diagnostic_source_counters_[slot];
+            const auto last_used =
+                source.last_used.load(std::memory_order_relaxed);
+            if (!target || last_used < least_recent_use) {
+                least_recent_use = last_used;
+                target = slot;
+            }
+        }
+    }
+    const auto target_index = *target;
+    auto& source = diagnostic_source_counters_[target_index];
     if (!empty_index) {
         diagnostic_source_evicted_.fetch_add(1, std::memory_order_relaxed);
     } else {
@@ -2831,6 +2843,8 @@ std::string_view perf_latency_kind_name(PerfLatencyKind kind) {
         return "scheduler-runnable-dispatch";
     case PerfLatencyKind::SchedulerPreemptionRequestToReturn:
         return "scheduler-preemption-request-return";
+    case PerfLatencyKind::MachMessageSendToReceive:
+        return "mach-message-send-to-receive";
     case PerfLatencyKind::Count: break;
     }
     return "unknown";
