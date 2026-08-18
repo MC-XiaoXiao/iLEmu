@@ -673,6 +673,13 @@ JitTranslationProfileStore::profile_for(
         profiles_.emplace(executable_identity, std::move(profile));
         profile_access_order_[executable_identity] = next_access_order_++;
         if (loaded_bytes != 0) {
+            const auto previous = known_profile_bytes_.find(executable_identity);
+            if (previous != known_profile_bytes_.end()) {
+                known_storage_bytes_ =
+                    previous->second > known_storage_bytes_
+                        ? 0U
+                        : known_storage_bytes_ - previous->second;
+            }
             known_profile_bytes_[executable_identity] =
                 static_cast<std::size_t>(loaded_bytes);
             known_storage_bytes_ += static_cast<std::size_t>(loaded_bytes);
