@@ -433,6 +433,11 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
         name = xnu792::ipc::null_name;
       }
     };
+    const auto fail_lookup_transport = [&] {
+      rollback_lookup();
+      registers[0] = darwin::mach_message::receive_invalid_data;
+      return true;
+    };
     {
       std::lock_guard mach_lock{shared_state_->mach_mutex};
       if (const auto target =
@@ -490,9 +495,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
           if (!memory_.write32(
                   ports_address + static_cast<std::uint32_t>(index * 4U),
                   port_names[index])) {
-            rollback_lookup();
-            return write_simple_reply(
-                darwin::mach_message::receive_invalid_data);
+            return fail_lookup_transport();
           }
         }
       }
@@ -518,11 +521,9 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
     };
     for (std::size_t index = 0; index < reply.size(); ++index) {
       if (!memory_.write32(message_address +
-                               static_cast<std::uint32_t>(index * 4U),
-                           reply[index])) {
-        rollback_lookup();
-        return write_simple_reply(
-            darwin::mach_message::receive_invalid_data);
+                             static_cast<std::uint32_t>(index * 4U),
+                             reply[index])) {
+        return fail_lookup_transport();
       }
     }
     registers[0] = 0;
