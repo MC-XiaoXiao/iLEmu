@@ -146,11 +146,21 @@ bool XnuScheduler::make_runnable(XnuThreadId thread) {
 bool XnuScheduler::wake_thread(XnuThreadId thread) {
     const auto iterator = threads_.find(thread);
     if (iterator == threads_.end()) return false;
-    if (iterator->second.info.state == XnuThreadState::Running) {
-        const bool became_pending = !iterator->second.wake_pending;
-        iterator->second.wake_pending = true;
-        performance_counters().record_scheduler_wakeup(true, became_pending);
+    auto& record = iterator->second;
+    if (record.info.state == XnuThreadState::Running) {
+        if (record.wake_pending)
+            return false;
+        record.wake_pending = true;
+        performance_counters().record_scheduler_wakeup(true, true);
         return true;
+    }
+    // A queued runnable thread already has a scheduler-visible wake. The
+    // caller still records/finishes its Mach event, but need not repeat the
+    // preemption query for an unchanged queue state.
+    if (record.queued || record.suspend_count != 0) {
+        if (record.suspend_count != 0)
+            record.resume_runnable = true;
+        return false;
     }
     return make_runnable(thread);
 }
