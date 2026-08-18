@@ -630,7 +630,16 @@ void PerformanceCounters::reset(bool enabled) {
             source.runnable_generation.store(0, std::memory_order_relaxed);
             source.calls.store(0, std::memory_order_relaxed);
             source.nanoseconds.store(0, std::memory_order_relaxed);
+            source.last_used.store(0, std::memory_order_relaxed);
         }
+        diagnostic_source_use_clock_ = 0;
+        diagnostic_source_occupancy_.store(0, std::memory_order_relaxed);
+        diagnostic_source_inserted_.store(0, std::memory_order_relaxed);
+        diagnostic_source_updated_.store(0, std::memory_order_relaxed);
+        diagnostic_source_evicted_.store(0, std::memory_order_relaxed);
+        diagnostic_source_dropped_.store(0, std::memory_order_relaxed);
+        diagnostic_source_peak_occupancy_.store(
+            0, std::memory_order_relaxed);
         display_window_diagnostic_source_baseline_.clear();
         reset_display_window_locked();
         diagnostic_previous_content_pixels.clear();
@@ -787,6 +796,18 @@ bool PerformanceCounters::begin_display_window() {
                 diagnostic_source_tuple(snapshot), snapshot);
         }
     }
+    diagnostic_work_baseline.diagnostic_source_inserted =
+        diagnostic_source_inserted_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.diagnostic_source_updated =
+        diagnostic_source_updated_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.diagnostic_source_evicted =
+        diagnostic_source_evicted_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.diagnostic_source_dropped =
+        diagnostic_source_dropped_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.diagnostic_source_capacity =
+        diagnostic_source_capacity;
+    diagnostic_work_baseline.diagnostic_source_peak_occupancy =
+        diagnostic_source_peak_occupancy_.load(std::memory_order_relaxed);
     display_window_active_.store(true, std::memory_order_release);
     return true;
 }
@@ -988,6 +1009,21 @@ PerformanceCounters::end_display_window() {
             }
         }
     }
+    result.diagnostic_source_inserted = diagnostic_delta(
+        diagnostic_source_inserted_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.diagnostic_source_inserted);
+    result.diagnostic_source_updated = diagnostic_delta(
+        diagnostic_source_updated_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.diagnostic_source_updated);
+    result.diagnostic_source_evicted = diagnostic_delta(
+        diagnostic_source_evicted_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.diagnostic_source_evicted);
+    result.diagnostic_source_dropped = diagnostic_delta(
+        diagnostic_source_dropped_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.diagnostic_source_dropped);
+    result.diagnostic_source_capacity = diagnostic_source_capacity;
+    result.diagnostic_source_peak_occupancy =
+        diagnostic_source_peak_occupancy_.load(std::memory_order_relaxed);
     return result;
 }
 
@@ -2197,41 +2233,19 @@ void PerformanceCounters::record_diagnostic_scheduler_dispatch(
     std::uint64_t nanoseconds) {
     if (!cpu_source_diagnostics_enabled())
         return;
-    // The timestamp was captured from the exact scheduled slice. A zero
-    // generation indicates a caller that failed to provide a runnable event;
-    // do not fold that sample into a valid thread/generation stream.
-    if (runnable_generation == 0)
-        return;
-    record_latency(PerfLatencyKind::SchedulerRunnableToDispatch,
-                   nanoseconds);
     const auto kind = front_continuation
         ? PerfDiagnosticSourceKind::SchedulerFront
         : PerfDiagnosticSourceKind::SchedulerBack;
-    const auto key = diagnostic_source_key(kind, process_id, thread_id);
-    if (key == 0)
+    if (runnable_generation == 0 ||
+        diagnostic_source_key(kind, process_id, thread_id) == 0) {
+        record_diagnostic_source(kind, process_id, thread_id,
+                                 runnable_generation, nanoseconds);
         return;
-    std::lock_guard source_lock{diagnostic_source_mutex_};
-    auto index = diagnostic_source_index(key, runnable_generation);
-    for (std::size_t probe = 0; probe < diagnostic_source_capacity;
-         ++probe) {
-        auto& source = diagnostic_source_counters_[index];
-        auto observed = source.key.load(std::memory_order_relaxed);
-        if (observed == 0) {
-            source.runnable_generation.store(runnable_generation,
-                                             std::memory_order_relaxed);
-            source.key.store(key, std::memory_order_relaxed);
-            observed = key;
-        }
-        if (observed == key &&
-            source.runnable_generation.load(std::memory_order_relaxed) ==
-                runnable_generation) {
-            source.calls.fetch_add(1, std::memory_order_relaxed);
-            source.nanoseconds.fetch_add(nanoseconds,
-                                         std::memory_order_relaxed);
-            return;
-        }
-        index = (index + 1U) & (diagnostic_source_capacity - 1U);
     }
+    record_latency(PerfLatencyKind::SchedulerRunnableToDispatch,
+                   nanoseconds);
+    record_diagnostic_source(kind, process_id, thread_id,
+                             runnable_generation, nanoseconds);
 }
 
 void PerformanceCounters::record_diagnostic_svc_dispatch(
@@ -2239,29 +2253,85 @@ void PerformanceCounters::record_diagnostic_svc_dispatch(
     std::uint32_t number, std::uint64_t nanoseconds) {
     if (!cpu_source_diagnostics_enabled())
         return;
-    const auto key = diagnostic_source_key(kind, process_id, number);
-    if (key == 0)
+    record_diagnostic_source(kind, process_id, number, 0, nanoseconds);
+}
+
+void PerformanceCounters::record_diagnostic_source(
+    PerfDiagnosticSourceKind kind, std::uint32_t process_id,
+    std::uint32_t number, std::uint64_t runnable_generation,
+    std::uint64_t nanoseconds) {
+    // Source diagnostics are opt-in. Callers perform the fast check before
+    // entering this helper, and the helper repeats it so future call sites
+    // cannot accidentally add a production-path lock or allocation.
+    if (!cpu_source_diagnostics_enabled())
         return;
+    if (runnable_generation == 0 &&
+        (kind == PerfDiagnosticSourceKind::SchedulerBack ||
+         kind == PerfDiagnosticSourceKind::SchedulerFront)) {
+        diagnostic_source_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    const auto key = diagnostic_source_key(kind, process_id, number);
+    if (key == 0) {
+        diagnostic_source_dropped_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+
     std::lock_guard source_lock{diagnostic_source_mutex_};
-    auto index = diagnostic_source_index(key, 0);
+
+    const auto use = ++diagnostic_source_use_clock_;
+    auto index = diagnostic_source_index(key, runnable_generation);
+    std::optional<std::size_t> empty_index;
+    std::optional<std::size_t> least_recent_index;
+    std::uint64_t least_recent_use = std::numeric_limits<std::uint64_t>::max();
     for (std::size_t probe = 0; probe < diagnostic_source_capacity;
          ++probe) {
         auto& source = diagnostic_source_counters_[index];
-        auto observed = source.key.load(std::memory_order_relaxed);
-        if (observed == 0) {
-            source.runnable_generation.store(0, std::memory_order_relaxed);
-            source.key.store(key, std::memory_order_relaxed);
-            observed = key;
-        }
-        if (observed == key &&
-            source.runnable_generation.load(std::memory_order_relaxed) == 0) {
+        const auto observed = source.key.load(std::memory_order_relaxed);
+        const auto observed_generation =
+            source.runnable_generation.load(std::memory_order_relaxed);
+        if (observed == key && observed_generation == runnable_generation) {
             source.calls.fetch_add(1, std::memory_order_relaxed);
             source.nanoseconds.fetch_add(nanoseconds,
                                          std::memory_order_relaxed);
+            source.last_used.store(use, std::memory_order_relaxed);
+            diagnostic_source_updated_.fetch_add(
+                1, std::memory_order_relaxed);
             return;
+        }
+        if (observed == 0 && !empty_index)
+            empty_index = index;
+        const auto last_used =
+            source.last_used.load(std::memory_order_relaxed);
+        if (observed != 0 && last_used < least_recent_use) {
+            least_recent_use = last_used;
+            least_recent_index = index;
         }
         index = (index + 1U) & (diagnostic_source_capacity - 1U);
     }
+
+    const auto target = empty_index.value_or(*least_recent_index);
+    auto& source = diagnostic_source_counters_[target];
+    if (!empty_index) {
+        diagnostic_source_evicted_.fetch_add(1, std::memory_order_relaxed);
+    } else {
+        const auto occupancy = diagnostic_source_occupancy_.fetch_add(
+            1, std::memory_order_relaxed) + 1;
+        auto peak = diagnostic_source_peak_occupancy_.load(
+            std::memory_order_relaxed);
+        while (occupancy > peak &&
+               !diagnostic_source_peak_occupancy_.compare_exchange_weak(
+                   peak, occupancy, std::memory_order_relaxed,
+                   std::memory_order_relaxed)) {
+        }
+    }
+    source.calls.store(1, std::memory_order_relaxed);
+    source.nanoseconds.store(nanoseconds, std::memory_order_relaxed);
+    source.runnable_generation.store(runnable_generation,
+                                     std::memory_order_relaxed);
+    source.last_used.store(use, std::memory_order_relaxed);
+    source.key.store(key, std::memory_order_relaxed);
+    diagnostic_source_inserted_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void PerformanceCounters::record_diagnostic_graphics_hle(
@@ -2621,6 +2691,17 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
                 source.nanoseconds.load(std::memory_order_relaxed)));
         }
     }
+    result.diagnostic_source_inserted =
+        diagnostic_source_inserted_.load(std::memory_order_relaxed);
+    result.diagnostic_source_updated =
+        diagnostic_source_updated_.load(std::memory_order_relaxed);
+    result.diagnostic_source_evicted =
+        diagnostic_source_evicted_.load(std::memory_order_relaxed);
+    result.diagnostic_source_dropped =
+        diagnostic_source_dropped_.load(std::memory_order_relaxed);
+    result.diagnostic_source_capacity = diagnostic_source_capacity;
+    result.diagnostic_source_peak_occupancy =
+        diagnostic_source_peak_occupancy_.load(std::memory_order_relaxed);
     return result;
 }
 
@@ -2968,6 +3049,13 @@ std::string format_performance_summary(
     }
     if (first)
         text << "none";
+    text << " diagnostic-source-stats="
+         << snapshot.diagnostic_source_inserted << '/'
+         << snapshot.diagnostic_source_updated << '/'
+         << snapshot.diagnostic_source_evicted << '/'
+         << snapshot.diagnostic_source_dropped << '/'
+         << snapshot.diagnostic_source_capacity << '/'
+         << snapshot.diagnostic_source_peak_occupancy;
     return text.str();
 }
 
@@ -3314,6 +3402,13 @@ std::string format_display_performance_summary(
     }
     if (snapshot.diagnostic_sources.empty())
         text << "none";
+    text << " diagnostic-source-stats="
+         << snapshot.diagnostic_source_inserted << '/'
+         << snapshot.diagnostic_source_updated << '/'
+         << snapshot.diagnostic_source_evicted << '/'
+         << snapshot.diagnostic_source_dropped << '/'
+         << snapshot.diagnostic_source_capacity << '/'
+         << snapshot.diagnostic_source_peak_occupancy;
     return text.str();
 }
 

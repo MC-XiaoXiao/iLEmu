@@ -304,6 +304,12 @@ struct PerformanceSnapshot {
     std::vector<JitCacheSlotSnapshot> jit_cache_slots;
     std::vector<HlePerformanceSnapshot> hle_subsystems;
     std::vector<DiagnosticSourceSnapshot> diagnostic_sources;
+    std::uint64_t diagnostic_source_inserted{};
+    std::uint64_t diagnostic_source_updated{};
+    std::uint64_t diagnostic_source_evicted{};
+    std::uint64_t diagnostic_source_dropped{};
+    std::uint64_t diagnostic_source_capacity{};
+    std::uint64_t diagnostic_source_peak_occupancy{};
 };
 
 class PerformanceCounters {
@@ -547,6 +553,10 @@ class PerformanceCounters {
     void record_present_completion(
         bool native, std::uint64_t frame_sequence,
         std::chrono::steady_clock::time_point submitted_at);
+    void record_diagnostic_source(
+        PerfDiagnosticSourceKind kind, std::uint32_t process_id,
+        std::uint32_t number, std::uint64_t runnable_generation,
+        std::uint64_t nanoseconds);
 
     std::atomic<bool> enabled_{false};
     std::atomic<bool> frame_content_diagnostics_enabled_{false};
@@ -702,9 +712,17 @@ class PerformanceCounters {
         std::atomic<std::uint64_t> runnable_generation{};
         std::atomic<std::uint64_t> calls{};
         std::atomic<std::uint64_t> nanoseconds{};
+        std::atomic<std::uint64_t> last_used{};
     };
     std::array<DiagnosticSourceCounter, diagnostic_source_capacity>
         diagnostic_source_counters_;
+    std::uint64_t diagnostic_source_use_clock_{};
+    std::atomic<std::uint64_t> diagnostic_source_occupancy_{};
+    std::atomic<std::uint64_t> diagnostic_source_inserted_{};
+    std::atomic<std::uint64_t> diagnostic_source_updated_{};
+    std::atomic<std::uint64_t> diagnostic_source_evicted_{};
+    std::atomic<std::uint64_t> diagnostic_source_dropped_{};
+    std::atomic<std::uint64_t> diagnostic_source_peak_occupancy_{};
     std::map<DiagnosticSourceKey, DiagnosticSourceSnapshot>
         display_window_diagnostic_source_baseline_;
     std::atomic<std::uint64_t> diagnostic_hle_calls_{};
