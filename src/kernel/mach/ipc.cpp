@@ -42,6 +42,43 @@ namespace ilemu {
 
 using namespace mach_support;
 
+namespace {
+
+[[nodiscard]] bool task_owns_mach_right_locked(
+    const KernelSharedState &state, std::uint32_t task, std::uint32_t object,
+    xnu792::ipc::Right right) {
+  const auto mask = xnu792::ipc::type_mask(right);
+  for (const auto &named : state.mach_namespaces.entries(task)) {
+    if (named.entry.object == object && (named.entry.type & mask) != 0U)
+      return true;
+  }
+  return false;
+}
+
+[[nodiscard]] bool pending_mach_receive_is_usable_locked(
+    const KernelSharedState &state, std::uint32_t task,
+    const PendingMachReceive &pending) {
+  if (!pending.receive_object)
+    return false;
+
+  const auto object = *pending.receive_object;
+  if (pending.receive_is_port_set) {
+    return state.mach_port_sets.contains(object) &&
+           task_owns_mach_right_locked(state, task, object,
+                                       xnu792::ipc::Right::PortSet);
+  }
+
+  // A direct receiver remains attached to the cached port object across a
+  // rename. It must stop only when the receive right is gone or the object has
+  // entered a port set while this wait was in progress.
+  return state.mach_port_objects.contains(object) &&
+         task_owns_mach_right_locked(state, task, object,
+                                     xnu792::ipc::Right::Receive) &&
+         !state.mach_port_set_links_by_member.contains(object);
+}
+
+} // namespace
+
 bool CompatibilityKernel::deliver_pending_mach(Cpu &cpu) {
   std::lock_guard kernel_lock{mutex_};
   return deliver_pending_mach_if_ready_locked(cpu);
@@ -76,27 +113,19 @@ bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(Cpu &cpu) {
   if (pending == pending_mach_receives_.end())
     return false;
 
-  // The name is a capability, not a stable object lookup. A blocked receive
-  // must notice a destroyed/replaced receive right even when no new message
-  // advanced the queue generation. XNU wakes this case from ipc_mqueue_changed
-  // with MACH_RCV_PORT_CHANGED.
+  // A blocked receive is attached to the object selected at receive start.
+  // XNU wakes it with MACH_RCV_PORT_CHANGED when that queue is destroyed or a
+  // direct port is moved into a set; a later reuse of the original name must
+  // never redirect the waiter to a different object.
   std::lock_guard mach_lock{shared_state_->mach_mutex};
-  const auto resolved_receive = resolve_receive_object(
-      *shared_state_, process_.pid, pending->second.receive_name);
-  if (!resolved_receive ||
-      (pending->second.receive_object &&
-       *pending->second.receive_object != *resolved_receive)) {
-    cpu.registers()[0] =
-        receive_name_is_in_set(*shared_state_, process_.pid,
-                               pending->second.receive_name)
-            ? darwin::mach_message::receive_in_set
-            : darwin::mach_message::receive_port_changed;
+  if (!pending_mach_receive_is_usable_locked(
+          *shared_state_, process_.pid, pending->second)) {
+    cpu.registers()[0] = darwin::mach_message::receive_port_changed;
     pending_mach_receives_.erase(pending);
     process_.waiting_for_events = !pending_mach_receives_.empty();
     cpu.clear_halt();
     return true;
   }
-  pending->second.receive_object = *resolved_receive;
   const auto queue_generation =
       shared_state_->mach_queue_generation_snapshot();
   if (pending->second.receive_object &&
@@ -133,15 +162,11 @@ CompatibilityKernel::preferred_pending_mach_receiver_locked(
   // Reconstruct that choice here so host CPU polling order cannot redirect a
   // shared-port message to a later port set.
   for (auto &[processor, pending] : pending_mach_receives_) {
-    const auto resolved_receive = resolve_receive_object(
-        *shared_state_, process_.pid, pending.receive_name);
-    if (!resolved_receive ||
-        (pending.receive_object &&
-         *pending.receive_object != *resolved_receive)) {
+    if (!pending_mach_receive_is_usable_locked(*shared_state_, process_.pid,
+                                               pending)) {
       continue;
     }
-    pending.receive_object = *resolved_receive;
-    if (*resolved_receive == queued_port) {
+    if (!pending.receive_is_port_set && *pending.receive_object == queued_port) {
       consider(Candidate{pending.wait_queue_sequence,
                          pending.wait_queue_sequence, processor});
     }
@@ -153,8 +178,12 @@ CompatibilityKernel::preferred_pending_mach_receiver_locked(
     for (const auto &link : links->second) {
       std::optional<Candidate> set_receiver;
       for (const auto &[processor, pending] : pending_mach_receives_) {
-        if (!pending.receive_object ||
+        if (!pending.receive_is_port_set || !pending.receive_object ||
             *pending.receive_object != link.set_object) {
+          continue;
+        }
+        if (!pending_mach_receive_is_usable_locked(*shared_state_, process_.pid,
+                                                   pending)) {
           continue;
         }
         const Candidate candidate{link.wait_queue_sequence,
@@ -180,22 +209,14 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
   if (pending == pending_mach_receives_.end())
     return false;
 
-  const auto resolved_receive = resolve_receive_object(
-      *shared_state_, process_.pid, pending->second.receive_name);
-  if (!resolved_receive ||
-      (pending->second.receive_object &&
-       *pending->second.receive_object != *resolved_receive)) {
-    cpu.registers()[0] =
-        receive_name_is_in_set(*shared_state_, process_.pid,
-                               pending->second.receive_name)
-            ? darwin::mach_message::receive_in_set
-            : darwin::mach_message::receive_port_changed;
+  if (!pending_mach_receive_is_usable_locked(
+          *shared_state_, process_.pid, pending->second)) {
+    cpu.registers()[0] = darwin::mach_message::receive_port_changed;
     pending_mach_receives_.erase(pending);
     process_.waiting_for_events = !pending_mach_receives_.empty();
     cpu.clear_halt();
     return true;
   }
-  pending->second.receive_object = *resolved_receive;
   auto queued_port = *pending->second.receive_object;
   auto queue = shared_state_->mach_queues.end();
   bool has_visible_message = false;

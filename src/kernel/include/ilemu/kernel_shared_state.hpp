@@ -109,6 +109,11 @@ struct PendingMachReceive {
   // blocks on the ipc object. Cache that object after the first resolution so
   // scheduler polling does not repeatedly walk the task namespace.
   std::optional<std::uint32_t> receive_object;
+  // Preserve whether the initial lookup selected a port set. A receive right
+  // that joins a set while blocked must be reported as PORT_CHANGED, whereas
+  // a waiter that started on a port set continues to use that set object after
+  // its name is renamed.
+  bool receive_is_port_set{};
   // The shared queue generation observed while this receive last found no
   // message. A new enqueue or a port-set addition advances the generation,
   // while an unchanged value proves another locked tree walk cannot succeed.

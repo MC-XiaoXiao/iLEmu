@@ -98,6 +98,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
           cpu.processor_id(),
           deadline,
           receive_object,
+          shared_state_->mach_port_sets.contains(*receive_object),
           0,
           shared_state_->allocate_mach_wait_queue_sequence_locked()};
       process_.waiting_for_events = true;
