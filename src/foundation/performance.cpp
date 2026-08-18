@@ -484,6 +484,8 @@ void PerformanceCounters::reset(bool enabled) {
                                               std::memory_order_release);
     cpu_source_diagnostics_configured_.store(false,
                                               std::memory_order_release);
+    native_lookup_diagnostics_configured_.store(false,
+                                                 std::memory_order_release);
     jit_instances_.store(0, std::memory_order_relaxed);
     jit_live_instances_.store(0, std::memory_order_relaxed);
     jit_live_peak_instances_.store(0, std::memory_order_relaxed);

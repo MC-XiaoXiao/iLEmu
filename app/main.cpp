@@ -1206,6 +1206,7 @@ std::string usage() {
          "[--baseband-input FILE] [--baseband-output FILE] "
          "[--disable-scheduler-preemption] "
          "[--perf-summary] [--perf-frame-content] [--perf-cpu-phases] "
+         "[--perf-jit-native-lookups] "
          "[--output FILE]\n"
          "  ilemu smoke [--cores N] [--jit-cache-mib 8..128] "
          "[--perf-summary] [--output FILE]\n"
@@ -5512,6 +5513,8 @@ int main(int argc, char **argv) {
     performance_counters().reset(perf_summary);
     const auto perf_frame_content = flag(args, "--perf-frame-content");
     const auto perf_cpu_phases = flag(args, "--perf-cpu-phases");
+    const auto perf_jit_native_lookups =
+        flag(args, "--perf-jit-native-lookups");
     if (perf_frame_content && !perf_summary) {
       throw std::runtime_error{
           "--perf-frame-content requires --perf-summary"};
@@ -5523,6 +5526,12 @@ int main(int argc, char **argv) {
           "--perf-cpu-phases requires --perf-summary"};
     }
     performance_counters().set_cpu_source_diagnostics(perf_cpu_phases);
+    if (perf_jit_native_lookups && !perf_summary) {
+      throw std::runtime_error{
+          "--perf-jit-native-lookups requires --perf-summary"};
+    }
+    performance_counters().set_native_lookup_diagnostics(
+        perf_jit_native_lookups);
     const std::string_view command{argv[1]};
     try {
       if (command == "profile") {

@@ -347,6 +347,19 @@ class PerformanceCounters {
         return enabled() && cpu_source_diagnostics_configured() &&
                display_window_active_.load(std::memory_order_acquire);
     }
+    // Native block lookup observation is an explicit opt-in diagnostic. It
+    // is intentionally independent of the display-window CPU phase switch:
+    // when disabled, Dynarmic receives a null observer and the guest lookup
+    // path has no host-side callback or tracker probe.
+    void set_native_lookup_diagnostics(bool enabled) {
+        native_lookup_diagnostics_configured_.store(
+            enabled, std::memory_order_release);
+    }
+    [[nodiscard]] bool native_lookup_diagnostics_enabled() const {
+        return enabled() &&
+               native_lookup_diagnostics_configured_.load(
+                   std::memory_order_acquire);
+    }
 
     void record_jit(std::uint64_t creation_nanoseconds = 0);
     // Background precompilation uses this always-on history to reserve time
@@ -562,6 +575,7 @@ class PerformanceCounters {
     std::atomic<bool> enabled_{false};
     std::atomic<bool> frame_content_diagnostics_enabled_{false};
     std::atomic<bool> cpu_source_diagnostics_configured_{false};
+    std::atomic<bool> native_lookup_diagnostics_configured_{false};
     std::atomic<std::uint64_t> jit_instances_{};
     std::atomic<std::uint64_t> jit_live_instances_{};
     std::atomic<std::uint64_t> jit_live_peak_instances_{};

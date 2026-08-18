@@ -1798,11 +1798,17 @@ private:
     };
 
     void mark_native_preimported(std::uint64_t location_descriptor) noexcept {
+        if (!performance_counters().native_lookup_diagnostics_enabled()) {
+            return;
+        }
         native_preimport_tracker_->mark(location_descriptor);
     }
 
     void mark_native_preimport_used(
         std::uint64_t location_descriptor) noexcept {
+        if (!performance_counters().native_lookup_diagnostics_enabled()) {
+            return;
+        }
         if (native_preimport_tracker_->has_ready() &&
             native_preimport_tracker_->consume(location_descriptor)) {
             callbacks_->note_native_preimport_used();
@@ -1915,9 +1921,11 @@ private:
         Dynarmic::A32::UserConfig config{callbacks_.get()};
         config.native_code_slab = execution_context_->native_code_slab();
         config.callbacks_link = runtime_link_cell_address_;
-        config.native_code_block_lookup_callback =
-            &JitExecutor::native_code_block_lookup;
-        config.native_code_block_lookup_callback_arg = this;
+        if (performance_counters().native_lookup_diagnostics_enabled()) {
+            config.native_code_block_lookup_callback =
+                &JitExecutor::native_code_block_lookup;
+            config.native_code_block_lookup_callback_arg = this;
+        }
         config.lookup_link = lookup_link_cell_address_;
         config.runtime_config_link = runtime_config_link_cell_address_;
         config.fast_dispatch_table_link = fast_dispatch_table_link_cell_address_;
