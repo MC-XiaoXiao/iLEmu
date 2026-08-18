@@ -1204,6 +1204,7 @@ std::string usage() {
          "[--activation activated|unactivated|preserve] "
          "[--frame-output FILE] [--touch-replay FILE] [--control-stdin] "
          "[--baseband-input FILE] [--baseband-output FILE] "
+         "[--disable-scheduler-preemption] "
          "[--perf-summary] [--perf-frame-content] [--perf-cpu-phases] "
          "[--output FILE]\n"
          "  ilemu smoke [--cores N] [--jit-cache-mib 8..128] "
@@ -2023,6 +2024,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const auto bounded_execution = ticks_option.has_value();
   const auto ticks = ticks_option ? std::stoull(*ticks_option)
                                   : std::numeric_limits<std::uint64_t>::max();
+  const bool disable_scheduler_preemption =
+      flag(args, "--disable-scheduler-preemption");
+  if (disable_scheduler_preemption) {
+    output.line(
+        "[scheduler] semantic-preemption=disabled host-cooperation=enabled");
+  }
   const auto default_processor_count =
       static_cast<std::size_t>(device.guest_cpu_topology.logical_cpu_count);
   if (!device.guest_cpu_topology.valid()) {
@@ -3435,7 +3442,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
               std::move(*pages), region->permissions};
         });
     runtime.kernel->set_scheduler_preemption_query(
-        [runtime_ptr, &scheduler](std::size_t processor) {
+        [runtime_ptr, &scheduler,
+         disable_scheduler_preemption](std::size_t processor) {
+          if (disable_scheduler_preemption)
+            return false;
           const XnuThreadId thread{runtime_ptr->kernel->process().pid,
                                    static_cast<std::uint32_t>(processor)};
           const auto scheduling_info = scheduler.info(thread);
