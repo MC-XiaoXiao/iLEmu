@@ -41,6 +41,12 @@ enum class JitPrecompileTarget : std::uint8_t {
 inline constexpr std::size_t jit_precompile_target_count =
     static_cast<std::size_t>(JitPrecompileTarget::PortableIr) + 1U;
 
+enum class JitPrecompileSource : std::uint8_t {
+    DemandProfile,
+    ExecutableCatalog,
+    Other,
+};
+
 struct JitPrecompileBatchResult {
     std::uint64_t attempted{};
     std::uint64_t native_compiled{};
@@ -242,14 +248,17 @@ public:
     void set_jit_artifact_retention(JitArtifactRetention retention);
     void add_precompile_entries(
         const std::vector<std::uint64_t> &location_descriptors,
-        JitPrecompilePhase phase = JitPrecompilePhase::Remaining);
+        JitPrecompilePhase phase = JitPrecompilePhase::Remaining,
+        JitPrecompileSource source = JitPrecompileSource::Other);
     [[nodiscard]] std::optional<JitPrecompilePhase>
     next_precompile_phase(
-        JitPrecompileTarget target = JitPrecompileTarget::NativeCode);
+        JitPrecompileTarget target = JitPrecompileTarget::NativeCode,
+        std::optional<JitPrecompileSource> source = std::nullopt);
     JitPrecompileBatchResult precompile_pending(
         std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
         JitPrecompileTarget target = JitPrecompileTarget::NativeCode,
-        PrecompileStopCondition stop_condition = {});
+        PrecompileStopCondition stop_condition = {},
+        std::optional<JitPrecompileSource> source = std::nullopt);
     // Stop queued precompilation and wait only for this cluster's active
     // precompile call to reach a Dynarmic block boundary.
     void quiesce_precompilation();

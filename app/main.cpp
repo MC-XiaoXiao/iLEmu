@@ -2508,7 +2508,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         };
         append_entry_points(loaded.executable);
         append_entry_points(loaded.dynamic_linker);
-        runtime.cpus->add_precompile_entries(entry_points, phase);
+        runtime.cpus->add_precompile_entries(
+            entry_points, phase, JitPrecompileSource::ExecutableCatalog);
         const auto consume_pending_identity = [&](const ContentIdentity &identity) {
           const auto pending = std::find(pending_catalog_compiles.begin(),
                                          pending_catalog_compiles.end(), identity);
@@ -2534,7 +2535,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         const auto result = runtime.cpus->precompile_pending(
             maximum_catalog_preexec_blocks,
             catalog_preexec_budget_nanoseconds,
-            JitPrecompileTarget::NativeCode);
+            JitPrecompileTarget::NativeCode, {},
+            JitPrecompileSource::ExecutableCatalog);
         record_precompile_outcomes(result);
         output.line("[catalog] exec-precompile executable=" +
                     std::string{executable_path} +
@@ -2553,13 +2555,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
       [&output, &record_precompile_outcomes](
           Runtime &runtime, std::string_view executable_path) {
         if (!runtime.cpus->next_precompile_phase(
-                JitPrecompileTarget::NativeCode)) {
+                JitPrecompileTarget::NativeCode,
+                JitPrecompileSource::DemandProfile)) {
           return;
         }
         const auto result = runtime.cpus->precompile_pending(
             maximum_startup_profile_blocks,
             startup_profile_budget_nanoseconds,
-            JitPrecompileTarget::NativeCode);
+            JitPrecompileTarget::NativeCode, {},
+            JitPrecompileSource::DemandProfile);
         record_precompile_outcomes(result);
         output.line("[jit-profile] startup-native-warm executable=" +
                     std::string{executable_path} +
@@ -3077,7 +3081,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
           catalog_mapped_entry_hints_by_phase[static_cast<std::size_t>(
               runtime_ptr->precompile_phase)] += entry_points.size();
           runtime_ptr->cpus->add_precompile_entries(
-              entry_points, runtime_ptr->precompile_phase);
+              entry_points, runtime_ptr->precompile_phase,
+              JitPrecompileSource::ExecutableCatalog);
         });
     if (!runtime.kernel->set_virtual_processor_count(guest_processor_count)) {
       throw std::runtime_error{"invalid virtual processor topology"};

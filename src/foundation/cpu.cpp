@@ -2179,6 +2179,7 @@ class CpuExecutionPool {
     struct PrecompileEntry {
         std::uint64_t descriptor{};
         JitPrecompileTarget target{JitPrecompileTarget::NativeCode};
+        JitPrecompileSource source{JitPrecompileSource::Other};
 
         friend constexpr bool operator==(const PrecompileEntry &,
                                          const PrecompileEntry &) = default;
@@ -2191,9 +2192,13 @@ class CpuExecutionPool {
                 entry.descriptor);
             const auto target_hash = std::hash<std::uint8_t>{}(
                 static_cast<std::uint8_t>(entry.target));
+            const auto source_hash = std::hash<std::uint8_t>{}(
+                static_cast<std::uint8_t>(entry.source));
             return descriptor_hash ^
                    (target_hash + static_cast<std::size_t>(0x9e3779b9U) +
-                    (descriptor_hash << 6U) + (descriptor_hash >> 2U));
+                    (descriptor_hash << 6U) + (descriptor_hash >> 2U)) ^
+                   (source_hash + static_cast<std::size_t>(0x85ebca6bU) +
+                    (target_hash << 5U) + (target_hash >> 3U));
         }
     };
 
@@ -2323,10 +2328,12 @@ public:
             if (location == 0U) continue;
             profile_locations_.insert(location);
             const auto native_queued = enqueue_precompile_entry_locked(
-                PrecompileEntry{location, JitPrecompileTarget::NativeCode},
+                PrecompileEntry{location, JitPrecompileTarget::NativeCode,
+                                JitPrecompileSource::DemandProfile},
                 phase);
             const auto portable_queued = enqueue_precompile_entry_locked(
-                PrecompileEntry{location, JitPrecompileTarget::PortableIr},
+                PrecompileEntry{location, JitPrecompileTarget::PortableIr,
+                                JitPrecompileSource::DemandProfile},
                 phase);
             if (portable_queued && profile) {
                 profile->note_profile_enqueued_portable();
@@ -2348,10 +2355,12 @@ public:
             }
             profile_locations_.insert(location);
             const auto native_queued = enqueue_precompile_entry_locked(
-                PrecompileEntry{location, JitPrecompileTarget::NativeCode},
+                PrecompileEntry{location, JitPrecompileTarget::NativeCode,
+                                JitPrecompileSource::DemandProfile},
                 translation_profile_phase_);
             const auto portable_queued = enqueue_precompile_entry_locked(
-                PrecompileEntry{location, JitPrecompileTarget::PortableIr},
+                PrecompileEntry{location, JitPrecompileTarget::PortableIr,
+                                JitPrecompileSource::DemandProfile},
                 translation_profile_phase_);
             if (portable_queued) {
                 profile->note_profile_enqueued_portable();
@@ -2368,14 +2377,16 @@ public:
 
     void add_precompile_entries(
         const std::vector<std::uint64_t> &location_descriptors,
-        JitPrecompilePhase phase) {
+        JitPrecompilePhase phase, JitPrecompileSource source) {
         const std::lock_guard queue_lock{precompile_queue_mutex_};
         for (const auto entry : location_descriptors) {
             if (!enqueue_precompile_entry_locked(
-                    PrecompileEntry{entry, JitPrecompileTarget::NativeCode},
+                    PrecompileEntry{entry, JitPrecompileTarget::NativeCode,
+                                    source},
                     phase) ||
                 !enqueue_precompile_entry_locked(
-                    PrecompileEntry{entry, JitPrecompileTarget::PortableIr},
+                    PrecompileEntry{entry, JitPrecompileTarget::PortableIr,
+                                    source},
                     phase)) {
                 break;
             }
@@ -2383,15 +2394,18 @@ public:
     }
 
     [[nodiscard]] std::optional<JitPrecompilePhase>
-    next_precompile_phase(JitPrecompileTarget target) {
+    next_precompile_phase(
+        JitPrecompileTarget target,
+        std::optional<JitPrecompileSource> source = std::nullopt) {
         const std::lock_guard queue_lock{precompile_queue_mutex_};
-        return next_precompile_phase_locked(target);
+        return next_precompile_phase_locked(target, source);
     }
 
     JitPrecompileBatchResult precompile_pending(
         std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
         JitPrecompileTarget target,
-        const CpuCluster::PrecompileStopCondition &stop_condition) {
+        const CpuCluster::PrecompileStopCondition &stop_condition,
+        std::optional<JitPrecompileSource> source) {
         JitPrecompileBatchResult result;
         if (executors_.empty() || maximum_blocks == 0 ||
             budget_nanoseconds == 0) {
@@ -2447,11 +2461,11 @@ public:
             bool profile_derived{};
             {
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
-                entry = take_precompile_entry_locked(target);
+                entry = take_precompile_entry_locked(target, source);
                 if (!entry) break;
                 executor_index = next_precompile_executor_++ % executors_.size();
-                profile_derived = profile_locations_.contains(
-                    entry->first.descriptor);
+                profile_derived = entry->first.source ==
+                                  JitPrecompileSource::DemandProfile;
             }
             owned_inflight_entries.insert(entry->first);
             ++processed;
@@ -2603,7 +2617,8 @@ private:
         return true;
     }
 
-    void promote_cache_full_entries_locked() {
+    void promote_cache_full_entries_locked(
+        std::optional<JitPrecompileSource> source = std::nullopt) {
         if (deferred_precompile_entries_.empty()) return;
         const auto current_generation =
             execution_context_->native_code_slab()->generation();
@@ -2614,6 +2629,10 @@ private:
         cache_full_generation_observed_ = current_generation;
         for (auto iterator = deferred_precompile_entries_.begin();
              iterator != deferred_precompile_entries_.end();) {
+            if (source && iterator->first.source != *source) {
+                ++iterator;
+                continue;
+            }
             if (!iterator->second.cache_full_generation ||
                 *iterator->second.cache_full_generation == current_generation) {
                 ++iterator;
@@ -2628,8 +2647,14 @@ private:
     }
 
     [[nodiscard]] std::optional<JitPrecompilePhase>
-    next_precompile_phase_locked(JitPrecompileTarget target) {
-        promote_cache_full_entries_locked();
+    next_precompile_phase_locked(
+        JitPrecompileTarget target,
+        std::optional<JitPrecompileSource> source = std::nullopt) {
+        if (source && *source == JitPrecompileSource::DemandProfile &&
+            !translation_profile_) {
+            return std::nullopt;
+        }
+        promote_cache_full_entries_locked(source);
         for (std::size_t index = 0; index < pending_precompile_entries_.size();
              ++index) {
             auto &queue = pending_precompile_entries_[index];
@@ -2641,7 +2666,8 @@ private:
                     iterator = queue.erase(iterator);
                     continue;
                 }
-                if (entry.target == target) {
+                if (entry.target == target &&
+                    (!source || entry.source == *source)) {
                     return pending->second;
                 }
                 ++iterator;
@@ -2652,8 +2678,10 @@ private:
 
     [[nodiscard]] std::optional<std::pair<PrecompileEntry,
                                           JitPrecompilePhase>>
-    take_precompile_entry_locked(JitPrecompileTarget target) {
-        const auto phase = next_precompile_phase_locked(target);
+    take_precompile_entry_locked(
+        JitPrecompileTarget target,
+        std::optional<JitPrecompileSource> source = std::nullopt) {
+        const auto phase = next_precompile_phase_locked(target, source);
         if (!phase) return std::nullopt;
         auto &queue = pending_precompile_entries_[phase_index(*phase)];
         for (auto iterator = queue.begin(); iterator != queue.end();) {
@@ -2664,7 +2692,8 @@ private:
                 iterator = queue.erase(iterator);
                 continue;
             }
-            if (entry.target != target) {
+            if (entry.target != target ||
+                (source && entry.source != *source)) {
                 ++iterator;
                 continue;
             }
@@ -3064,27 +3093,29 @@ void CpuCluster::set_jit_artifact_retention(
 
 void CpuCluster::add_precompile_entries(
     const std::vector<std::uint64_t> &location_descriptors,
-    JitPrecompilePhase phase) {
+    JitPrecompilePhase phase, JitPrecompileSource source) {
     if (execution_pool_) {
-        execution_pool_->add_precompile_entries(location_descriptors, phase);
+        execution_pool_->add_precompile_entries(location_descriptors, phase,
+                                                 source);
     }
 }
 
 std::optional<JitPrecompilePhase> CpuCluster::next_precompile_phase(
-    JitPrecompileTarget target) {
+    JitPrecompileTarget target, std::optional<JitPrecompileSource> source) {
     if (!execution_pool_) return std::nullopt;
-    return execution_pool_->next_precompile_phase(target);
+    return execution_pool_->next_precompile_phase(target, source);
 }
 
 JitPrecompileBatchResult CpuCluster::precompile_pending(
     std::size_t maximum_blocks, std::uint64_t budget_nanoseconds,
     JitPrecompileTarget target,
-    PrecompileStopCondition stop_condition) {
+    PrecompileStopCondition stop_condition,
+    std::optional<JitPrecompileSource> source) {
     if (!execution_pool_) {
         return {};
     }
     return execution_pool_->precompile_pending(
-        maximum_blocks, budget_nanoseconds, target, stop_condition);
+        maximum_blocks, budget_nanoseconds, target, stop_condition, source);
 }
 
 void CpuCluster::quiesce_precompilation() {
