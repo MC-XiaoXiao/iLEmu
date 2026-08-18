@@ -4680,6 +4680,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         active_runtime = runtime_index.find(*active_process);
       }
       constexpr std::size_t idle_precompile_block_budget = 32;
+      constexpr std::size_t idle_precompile_portable_block_budget = 16;
       constexpr std::uint64_t idle_precompile_time_budget_ns = 500000;
       // A Dynarmic block compile is not preemptible. Keep a conservative
       // reserve beyond the nominal batch budget so profile warming cannot
@@ -4786,14 +4787,17 @@ void boot(const std::vector<std::string> &args, Output &output) {
           return;
         }
         const auto expected_epoch = runtime->work_epoch.current();
+        const auto block_budget =
+            target == JitPrecompileTarget::PortableIr
+                ? idle_precompile_portable_block_budget
+                : idle_precompile_block_budget;
         runtime->precompile_task = host_resources.submit_cancellable(
             work_kind, host_compile_deadline,
-            [runtime, expected_epoch, budget, idle_precompile_block_budget,
-             phase, target,
+            [runtime, expected_epoch, budget, block_budget, phase, target,
              &precompile_blocks_by_phase, &precompile_blocks_by_target,
              &record_precompile_outcomes](const HostWorkToken &token) {
               const auto result = runtime->cpus->precompile_pending(
-                  idle_precompile_block_budget, budget.budget, target,
+                  block_budget, budget.budget, target,
                   [runtime, expected_epoch, &token] {
                     return token.cancelled() ||
                            runtime->precompile_stop_requested(expected_epoch);
@@ -4813,13 +4817,33 @@ void boot(const std::vector<std::string> &args, Output &output) {
           ++precompile_tasks_by_phase[static_cast<std::size_t>(phase)];
           ++precompile_tasks_by_target[static_cast<std::size_t>(target)];
         } else {
-          record_precompile_schedule_skip(
-              PrecompileScheduleSkip::HostRejected);
+          record_precompile_schedule_skip(PrecompileScheduleSkip::HostRejected);
         }
       };
-      schedule_precompile_runtime(active_runtime,
-                                  HostWorkKind::BackgroundCompile,
-                                  JitPrecompileTarget::NativeCode);
+      const auto schedule_profile_warm =
+          [&](Runtime *runtime) {
+            if (runtime == nullptr || runtime->kernel->process().exited) {
+              schedule_precompile_runtime(runtime,
+                                          HostWorkKind::BackgroundCompile,
+                                          JitPrecompileTarget::NativeCode);
+              return;
+            }
+            // Native warming is preferred for the active and scanout owners.
+            // Once their native queue is exhausted, spend a small idle slice
+            // generating reusable Portable IR for the same profile hints.
+            const auto native_phase = runtime->cpus->next_precompile_phase(
+                JitPrecompileTarget::NativeCode);
+            if (native_phase) {
+              schedule_precompile_runtime(runtime,
+                                          HostWorkKind::BackgroundCompile,
+                                          JitPrecompileTarget::NativeCode);
+            } else {
+              schedule_precompile_runtime(runtime,
+                                          HostWorkKind::OfflineCompile,
+                                          JitPrecompileTarget::PortableIr);
+            }
+          };
+      schedule_profile_warm(active_runtime);
       const auto schedule_artifact_compaction = [&]() {
         if (artifact_compaction_task) {
           if (!artifact_compaction_task->finished()) {
@@ -4846,9 +4870,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // the foreground process, so consume their host-only profile hints while
       // every guest thread is idle.
       if (display_scanout_owner != active_runtime) {
-        schedule_precompile_runtime(display_scanout_owner,
-                                    HostWorkKind::BackgroundCompile,
-                                    JitPrecompileTarget::NativeCode);
+        schedule_profile_warm(display_scanout_owner);
       }
       Runtime *offline_precompile_runtime = nullptr;
       std::optional<JitPrecompilePhase> offline_precompile_phase;
@@ -5261,6 +5283,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
     // Make the reported disk footprint include artifacts generated during the
     // run. The store still performs the same atomic save again at destruction.
     static_cast<void>(jit_artifacts->save());
+    translation_profiles.save();
     const auto artifact_stats = jit_artifacts->stats();
     output.line(
         "[perf-artifact] lookup=" + std::to_string(artifact_stats.lookups) +
@@ -5296,6 +5319,50 @@ void boot(const std::vector<std::string> &args, Output &output) {
         " writeback-pending-bytes=" +
         std::to_string(artifact_stats.writeback_pending_bytes) +
         " disk-bytes=" + std::to_string(artifact_stats.disk_bytes));
+    const auto profile_stats = translation_profiles.stats();
+    output.line(
+        "[perf-jit-profile] recorded=" +
+        std::to_string(profile_stats.recorded) + " deduplicated=" +
+        std::to_string(profile_stats.deduplicated) + " dropped-capacity=" +
+        std::to_string(profile_stats.dropped_capacity) +
+        " unstable-dropped=" +
+        std::to_string(profile_stats.unstable_dropped) + " loaded=" +
+        std::to_string(profile_stats.profile_loaded) +
+        " files-loaded=" +
+        std::to_string(profile_stats.profile_files_loaded) +
+        " enqueued-portable=" +
+        std::to_string(profile_stats.profile_enqueued_portable) +
+        " portable-generated=" +
+        std::to_string(profile_stats.profile_portable_generated) +
+        " portable-existence-hit=" +
+        std::to_string(profile_stats.portable_existence_hits) +
+        " native-preimport-attempted=" +
+        std::to_string(profile_stats.native_preimport_attempted) +
+        " native-preimport-imported=" +
+        std::to_string(profile_stats.native_preimport_imported) +
+        " native-preimport-already-present=" +
+        std::to_string(profile_stats.native_preimport_already_present) +
+        " native-preimport-before-first-demand=" +
+        std::to_string(profile_stats.native_preimport_before_first_demand) +
+        " native-preimport-used=" +
+        std::to_string(profile_stats.native_preimport_used) +
+        " demand-artifact-staged=" +
+        std::to_string(profile_stats.demand_artifact_staged) +
+        " demand-artifact-consumed=" +
+        std::to_string(profile_stats.demand_artifact_consumed) +
+        " demand-artifact-stage-unused=" +
+        std::to_string(profile_stats.demand_artifact_stage_unused) +
+        " imported-before-first-run=" +
+        std::to_string(profile_stats.profile_imported_before_first_run) +
+        " merge-calls=" + std::to_string(profile_stats.merge_calls) +
+        " merge-ns=" + std::to_string(profile_stats.merge_nanoseconds) +
+        " save-calls=" + std::to_string(profile_stats.save_calls) +
+        " save-ns=" + std::to_string(profile_stats.save_nanoseconds) +
+        " load-ns=" + std::to_string(profile_stats.load_nanoseconds) +
+        " profile-bytes=" + std::to_string(profile_stats.profile_bytes) +
+        " resident-bytes=" + std::to_string(profile_stats.resident_bytes) +
+        " save-failures=" +
+        std::to_string(profile_stats.profile_save_failures));
     const auto &validation = artifact_stats.validation_rejections;
     output.line(
         "[perf-artifact-validation] unavailable=" +
