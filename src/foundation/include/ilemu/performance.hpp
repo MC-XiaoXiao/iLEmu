@@ -186,9 +186,8 @@ struct DiagnosticSourceSnapshot {
     PerfDiagnosticSourceKind kind{};
     std::uint32_t process_id{};
     std::uint32_t number{};
-    // Scheduler sources aggregate by concrete Guest thread and queue side;
-    // retain the runnable generation of the most recent sample so a report
-    // can verify which runnable event supplied its timestamp.
+    // Scheduler sources are keyed by concrete Guest thread, queue side, and
+    // runnable generation so distinct wakeups are never merged.
     std::uint64_t runnable_generation{};
     std::uint64_t calls{};
     std::uint64_t nanoseconds{};
@@ -690,9 +689,14 @@ class PerformanceCounters {
     mutable std::mutex hle_mutex_;
     std::map<std::string, HlePerformanceSnapshot, std::less<>>
         hle_subsystems_;
-    using DiagnosticSourceKey =
-        std::tuple<PerfDiagnosticSourceKind, std::uint32_t, std::uint32_t>;
+    using DiagnosticSourceKey = std::tuple<PerfDiagnosticSourceKind,
+                                           std::uint32_t, std::uint32_t,
+                                           std::uint64_t>;
     static constexpr std::size_t diagnostic_source_capacity = 4096;
+    // Source diagnostics are explicitly opt-in, so serialize the bounded
+    // table to make (thread, runnable generation) insertion atomic. The
+    // normal scheduler path returns before touching this lock.
+    mutable std::mutex diagnostic_source_mutex_;
     struct DiagnosticSourceCounter {
         std::atomic<std::uint64_t> key{};
         std::atomic<std::uint64_t> runnable_generation{};

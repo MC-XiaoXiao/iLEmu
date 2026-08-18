@@ -26,6 +26,7 @@ constexpr std::uint64_t fifty_milliseconds = 50'000'000;
 constexpr std::uint64_t one_hundred_milliseconds = 100'000'000;
 constexpr std::uint64_t one_second = 1'000'000'000;
 constexpr std::uint64_t ten_seconds = 10'000'000'000;
+constexpr std::size_t diagnostic_source_table_capacity = 4096;
 
 // Temporary frame-hitch diagnostic. Keep the ordered values out of the
 // product snapshot and remove this probe after the exit/unlock stall is
@@ -391,6 +392,16 @@ std::uint64_t diagnostic_source_key(PerfDiagnosticSourceKind kind,
            static_cast<std::uint64_t>(process_id) << 32U | number;
 }
 
+std::size_t diagnostic_source_index(std::uint64_t key,
+                                    std::uint64_t runnable_generation) {
+    const auto generation_hash =
+        runnable_generation * 0x9e3779b97f4a7c15ULL;
+    return static_cast<std::size_t>(
+               (key ^ (key >> 32U) ^ generation_hash) *
+               0x9e3779b97f4a7c15ULL) &
+           (diagnostic_source_table_capacity - 1U);
+}
+
 DiagnosticSourceSnapshot diagnostic_source_snapshot(
     std::uint64_t key, std::uint64_t runnable_generation,
     std::uint64_t calls, std::uint64_t nanoseconds) {
@@ -401,10 +412,12 @@ DiagnosticSourceSnapshot diagnostic_source_snapshot(
         nanoseconds};
 }
 
-std::tuple<PerfDiagnosticSourceKind, std::uint32_t, std::uint32_t>
+std::tuple<PerfDiagnosticSourceKind, std::uint32_t, std::uint32_t,
+           std::uint64_t>
 diagnostic_source_tuple(
     const DiagnosticSourceSnapshot& source) {
-    return {source.kind, source.process_id, source.number};
+    return {source.kind, source.process_id, source.number,
+            source.runnable_generation};
 }
 
 bool is_display_window_latency(PerfLatencyKind kind) {
@@ -603,13 +616,6 @@ void PerformanceCounters::reset(bool enabled) {
         std::lock_guard lock{hle_mutex_};
         hle_subsystems_.clear();
     }
-    for (auto& source : diagnostic_source_counters_) {
-        source.key.store(0, std::memory_order_relaxed);
-        source.runnable_generation.store(0, std::memory_order_relaxed);
-        source.calls.store(0, std::memory_order_relaxed);
-        source.nanoseconds.store(0, std::memory_order_relaxed);
-    }
-    display_window_diagnostic_source_baseline_.clear();
     diagnostic_hle_calls_.store(0, std::memory_order_relaxed);
     diagnostic_hle_nanoseconds_.store(0, std::memory_order_relaxed);
     for (auto& counter : diagnostic_graphics_hle_calls_)
@@ -618,6 +624,14 @@ void PerformanceCounters::reset(bool enabled) {
         counter.store(0, std::memory_order_relaxed);
     {
         std::lock_guard lock{display_window_mutex_};
+        std::lock_guard source_lock{diagnostic_source_mutex_};
+        for (auto& source : diagnostic_source_counters_) {
+            source.key.store(0, std::memory_order_relaxed);
+            source.runnable_generation.store(0, std::memory_order_relaxed);
+            source.calls.store(0, std::memory_order_relaxed);
+            source.nanoseconds.store(0, std::memory_order_relaxed);
+        }
+        display_window_diagnostic_source_baseline_.clear();
         reset_display_window_locked();
         diagnostic_previous_content_pixels.clear();
         diagnostic_previous_content_width = 0;
@@ -757,17 +771,21 @@ bool PerformanceCounters::begin_display_window() {
         std::lock_guard hle_lock{hle_mutex_};
         diagnostic_hle_baseline = hle_subsystems_;
     }
-    display_window_diagnostic_source_baseline_.clear();
-    for (const auto& source : diagnostic_source_counters_) {
-        const auto key = source.key.load(std::memory_order_relaxed);
-        if (key == 0)
-            continue;
-        const auto snapshot = diagnostic_source_snapshot(
-            key, source.runnable_generation.load(std::memory_order_relaxed),
-            source.calls.load(std::memory_order_relaxed),
-            source.nanoseconds.load(std::memory_order_relaxed));
-        display_window_diagnostic_source_baseline_.emplace(
-            diagnostic_source_tuple(snapshot), snapshot);
+    {
+        std::lock_guard source_lock{diagnostic_source_mutex_};
+        display_window_diagnostic_source_baseline_.clear();
+        for (const auto& source : diagnostic_source_counters_) {
+            const auto key = source.key.load(std::memory_order_relaxed);
+            if (key == 0)
+                continue;
+            const auto snapshot = diagnostic_source_snapshot(
+                key,
+                source.runnable_generation.load(std::memory_order_relaxed),
+                source.calls.load(std::memory_order_relaxed),
+                source.nanoseconds.load(std::memory_order_relaxed));
+            display_window_diagnostic_source_baseline_.emplace(
+                diagnostic_source_tuple(snapshot), snapshot);
+        }
     }
     display_window_active_.store(true, std::memory_order_release);
     return true;
@@ -936,34 +954,38 @@ PerformanceCounters::end_display_window() {
             }
         }
     }
-    for (const auto& source : diagnostic_source_counters_) {
-        const auto encoded_key = source.key.load(std::memory_order_relaxed);
-        if (encoded_key == 0)
-            continue;
-        const auto current = diagnostic_source_snapshot(
-            encoded_key,
-            source.runnable_generation.load(std::memory_order_relaxed),
-            source.calls.load(std::memory_order_relaxed),
-            source.nanoseconds.load(std::memory_order_relaxed));
-        const auto key = diagnostic_source_tuple(current);
-        const auto baseline =
-            display_window_diagnostic_source_baseline_.find(key);
-        const auto baseline_calls =
-            baseline == display_window_diagnostic_source_baseline_.end()
-                ? 0
-                : baseline->second.calls;
-        const auto baseline_nanoseconds =
-            baseline == display_window_diagnostic_source_baseline_.end()
-                ? 0
-                : baseline->second.nanoseconds;
-        const auto calls = diagnostic_delta(current.calls, baseline_calls);
-        const auto nanoseconds = diagnostic_delta(
-            current.nanoseconds, baseline_nanoseconds);
-        if (calls != 0 || nanoseconds != 0) {
-            auto snapshot = current;
-            snapshot.calls = calls;
-            snapshot.nanoseconds = nanoseconds;
-            result.diagnostic_sources.push_back(snapshot);
+    {
+        std::lock_guard source_lock{diagnostic_source_mutex_};
+        for (const auto& source : diagnostic_source_counters_) {
+            const auto encoded_key =
+                source.key.load(std::memory_order_relaxed);
+            if (encoded_key == 0)
+                continue;
+            const auto current = diagnostic_source_snapshot(
+                encoded_key,
+                source.runnable_generation.load(std::memory_order_relaxed),
+                source.calls.load(std::memory_order_relaxed),
+                source.nanoseconds.load(std::memory_order_relaxed));
+            const auto key = diagnostic_source_tuple(current);
+            const auto baseline =
+                display_window_diagnostic_source_baseline_.find(key);
+            const auto baseline_calls =
+                baseline == display_window_diagnostic_source_baseline_.end()
+                    ? 0
+                    : baseline->second.calls;
+            const auto baseline_nanoseconds =
+                baseline == display_window_diagnostic_source_baseline_.end()
+                    ? 0
+                    : baseline->second.nanoseconds;
+            const auto calls = diagnostic_delta(current.calls, baseline_calls);
+            const auto nanoseconds = diagnostic_delta(
+                current.nanoseconds, baseline_nanoseconds);
+            if (calls != 0 || nanoseconds != 0) {
+                auto snapshot = current;
+                snapshot.calls = calls;
+                snapshot.nanoseconds = nanoseconds;
+                result.diagnostic_sources.push_back(snapshot);
+            }
         }
     }
     return result;
@@ -2188,21 +2210,21 @@ void PerformanceCounters::record_diagnostic_scheduler_dispatch(
     const auto key = diagnostic_source_key(kind, process_id, thread_id);
     if (key == 0)
         return;
-    auto index = static_cast<std::size_t>(
-        (key ^ (key >> 32U)) * 0x9e3779b97f4a7c15ULL) &
-        (diagnostic_source_capacity - 1U);
+    std::lock_guard source_lock{diagnostic_source_mutex_};
+    auto index = diagnostic_source_index(key, runnable_generation);
     for (std::size_t probe = 0; probe < diagnostic_source_capacity;
          ++probe) {
         auto& source = diagnostic_source_counters_[index];
         auto observed = source.key.load(std::memory_order_relaxed);
         if (observed == 0) {
-            static_cast<void>(source.key.compare_exchange_strong(
-                observed, key, std::memory_order_relaxed,
-                std::memory_order_relaxed));
-        }
-        if (observed == 0 || observed == key) {
             source.runnable_generation.store(runnable_generation,
                                              std::memory_order_relaxed);
+            source.key.store(key, std::memory_order_relaxed);
+            observed = key;
+        }
+        if (observed == key &&
+            source.runnable_generation.load(std::memory_order_relaxed) ==
+                runnable_generation) {
             source.calls.fetch_add(1, std::memory_order_relaxed);
             source.nanoseconds.fetch_add(nanoseconds,
                                          std::memory_order_relaxed);
@@ -2220,19 +2242,19 @@ void PerformanceCounters::record_diagnostic_svc_dispatch(
     const auto key = diagnostic_source_key(kind, process_id, number);
     if (key == 0)
         return;
-    auto index = static_cast<std::size_t>(
-        (key ^ (key >> 32U)) * 0x9e3779b97f4a7c15ULL) &
-        (diagnostic_source_capacity - 1U);
+    std::lock_guard source_lock{diagnostic_source_mutex_};
+    auto index = diagnostic_source_index(key, 0);
     for (std::size_t probe = 0; probe < diagnostic_source_capacity;
          ++probe) {
         auto& source = diagnostic_source_counters_[index];
         auto observed = source.key.load(std::memory_order_relaxed);
         if (observed == 0) {
-            static_cast<void>(source.key.compare_exchange_strong(
-                observed, key, std::memory_order_relaxed,
-                std::memory_order_relaxed));
+            source.runnable_generation.store(0, std::memory_order_relaxed);
+            source.key.store(key, std::memory_order_relaxed);
+            observed = key;
         }
-        if (observed == 0 || observed == key) {
+        if (observed == key &&
+            source.runnable_generation.load(std::memory_order_relaxed) == 0) {
             source.calls.fetch_add(1, std::memory_order_relaxed);
             source.nanoseconds.fetch_add(nanoseconds,
                                          std::memory_order_relaxed);
@@ -2586,14 +2608,18 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
             result.hle_subsystems.push_back(stats);
         }
     }
-    for (const auto& source : diagnostic_source_counters_) {
-        const auto key = source.key.load(std::memory_order_relaxed);
-        if (key == 0)
-            continue;
-        result.diagnostic_sources.push_back(diagnostic_source_snapshot(
-            key, source.runnable_generation.load(std::memory_order_relaxed),
-            source.calls.load(std::memory_order_relaxed),
-            source.nanoseconds.load(std::memory_order_relaxed)));
+    {
+        std::lock_guard source_lock{diagnostic_source_mutex_};
+        for (const auto& source : diagnostic_source_counters_) {
+            const auto key = source.key.load(std::memory_order_relaxed);
+            if (key == 0)
+                continue;
+            result.diagnostic_sources.push_back(diagnostic_source_snapshot(
+                key,
+                source.runnable_generation.load(std::memory_order_relaxed),
+                source.calls.load(std::memory_order_relaxed),
+                source.nanoseconds.load(std::memory_order_relaxed)));
+        }
     }
     return result;
 }
