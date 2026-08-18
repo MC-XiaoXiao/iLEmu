@@ -78,13 +78,22 @@ private:
 };
 
 struct JitTranslationProfileStats {
+    // The legacy names remain in the structure for callers compiled against
+    // the Stage 4.2 interface. Reports use the explicit names below so a
+    // disk load is never confused with descriptors recorded during this run.
     std::uint64_t recorded{};
+    std::uint64_t recorded_descriptors{};
     std::uint64_t deduplicated{};
     std::uint64_t dropped_capacity{};
     std::uint64_t unstable_dropped{};
     std::uint64_t profile_loaded{};
+    std::uint64_t disk_descriptors_loaded{};
     std::uint64_t profile_files_loaded{};
+    std::uint64_t disk_files_loaded{};
     std::uint64_t profile_enqueued_portable{};
+    std::uint64_t profile_native_enqueued{};
+    std::uint64_t profile_native_executed{};
+    std::uint64_t profile_portable_executed{};
     std::uint64_t profile_portable_generated{};
     std::uint64_t portable_existence_hits{};
     std::uint64_t native_preimport_attempted{};
@@ -92,6 +101,8 @@ struct JitTranslationProfileStats {
     std::uint64_t native_preimport_already_present{};
     std::uint64_t native_preimport_before_first_demand{};
     std::uint64_t native_preimport_used{};
+    std::uint64_t native_preimport_first_use_distance_samples{};
+    std::uint64_t native_preimport_first_use_distance_total{};
     std::uint64_t demand_artifact_staged{};
     std::uint64_t demand_artifact_consumed{};
     std::uint64_t demand_artifact_stage_unused{};
@@ -136,13 +147,16 @@ public:
 
     void note_profile_loaded(std::uint64_t descriptors) noexcept;
     void note_profile_enqueued_portable(std::uint64_t count = 1) noexcept;
+    void note_profile_native_enqueued(std::uint64_t count = 1) noexcept;
+    void note_profile_native_executed() noexcept;
+    void note_profile_portable_executed() noexcept;
     void note_portable_existence_hit() noexcept;
     void note_profile_portable_generated() noexcept;
     void note_native_preimport_attempted() noexcept;
     void note_native_preimport_before_first_demand() noexcept;
     void note_native_preimport_imported() noexcept;
     void note_native_preimport_already_present() noexcept;
-    void note_native_preimport_used() noexcept;
+    void note_native_preimport_used(std::uint64_t first_use_distance = 0U) noexcept;
     void note_demand_artifact_staged() noexcept;
     void note_demand_artifact_consumed() noexcept;
     void note_demand_artifact_stage_unused() noexcept;
@@ -165,6 +179,9 @@ private:
     std::atomic<std::uint64_t> profile_loaded_{};
     std::atomic<std::uint64_t> profile_files_loaded_{};
     std::atomic<std::uint64_t> profile_enqueued_portable_{};
+    std::atomic<std::uint64_t> profile_native_enqueued_{};
+    std::atomic<std::uint64_t> profile_native_executed_{};
+    std::atomic<std::uint64_t> profile_portable_executed_{};
     std::atomic<std::uint64_t> profile_portable_generated_{};
     std::atomic<std::uint64_t> portable_existence_hits_{};
     std::atomic<std::uint64_t> native_preimport_attempted_{};
@@ -172,6 +189,8 @@ private:
     std::atomic<std::uint64_t> native_preimport_already_present_{};
     std::atomic<std::uint64_t> native_preimport_before_first_demand_{};
     std::atomic<std::uint64_t> native_preimport_used_{};
+    std::atomic<std::uint64_t> native_preimport_first_use_distance_samples_{};
+    std::atomic<std::uint64_t> native_preimport_first_use_distance_total_{};
     std::atomic<std::uint64_t> demand_artifact_staged_{};
     std::atomic<std::uint64_t> demand_artifact_consumed_{};
     std::atomic<std::uint64_t> demand_artifact_stage_unused_{};

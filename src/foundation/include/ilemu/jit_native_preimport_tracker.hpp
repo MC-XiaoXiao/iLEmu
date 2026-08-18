@@ -22,7 +22,8 @@ class JitNativePreimportTracker {
 public:
     JitNativePreimportTracker() noexcept { clear(); }
 
-    void mark(std::uint64_t location_descriptor) noexcept {
+    void mark(std::uint64_t location_descriptor,
+              std::uint64_t lookup_sequence = 0U) noexcept {
         if (invalid_descriptor(location_descriptor)) return;
         SpinLockGuard guard{preimport_lock_};
         auto slot = hash(location_descriptor) &
@@ -53,6 +54,8 @@ public:
             if (locations_[insertion_slot].compare_exchange_weak(
                     expected, location_descriptor, std::memory_order_acq_rel,
                     std::memory_order_acquire)) {
+                marked_lookup_sequences_[insertion_slot].store(
+                    lookup_sequence, std::memory_order_release);
                 ready_count_.fetch_add(1U, std::memory_order_release);
                 return;
             }
@@ -114,7 +117,9 @@ public:
         return false;
     }
 
-    [[nodiscard]] bool consume(std::uint64_t location_descriptor) noexcept {
+    [[nodiscard]] bool consume(
+        std::uint64_t location_descriptor, std::uint64_t lookup_sequence = 0U,
+        std::uint64_t *first_use_distance = nullptr) noexcept {
         if (invalid_descriptor(location_descriptor)) return false;
         SpinLockGuard guard{preimport_lock_};
         auto slot = hash(location_descriptor) &
@@ -129,6 +134,17 @@ public:
                     if (locations_[slot].compare_exchange_weak(
                             expected, tombstone, std::memory_order_acq_rel,
                             std::memory_order_acquire)) {
+                        const auto marked_sequence =
+                            marked_lookup_sequences_[slot].load(
+                                std::memory_order_acquire);
+                        if (first_use_distance != nullptr) {
+                            *first_use_distance =
+                                lookup_sequence >= marked_sequence
+                                    ? lookup_sequence - marked_sequence
+                                    : 0U;
+                        }
+                        marked_lookup_sequences_[slot].store(
+                            0U, std::memory_order_release);
                         decrement_ready();
                         return true;
                     }
@@ -143,8 +159,12 @@ public:
 
     void clear() noexcept {
         SpinLockGuard preimport_guard{preimport_lock_};
-        for (auto& location : locations_) {
+        for (std::size_t index = 0; index < locations_.size(); ++index) {
+            auto& location = locations_[index];
             location.store(0U, std::memory_order_release);
+        }
+        for (auto& sequence : marked_lookup_sequences_) {
+            sequence.store(0U, std::memory_order_release);
         }
         ready_count_.store(0U, std::memory_order_release);
         SpinLockGuard demand_guard{demand_lock_};
@@ -167,7 +187,8 @@ public:
         if (lower >= upper) return;
 
         SpinLockGuard guard{preimport_lock_};
-        for (auto& location : locations_) {
+        for (std::size_t index = 0; index < locations_.size(); ++index) {
+            auto& location = locations_[index];
             const auto known = location.load(std::memory_order_acquire);
             if (known == 0U || known == tombstone) continue;
             const auto pc = static_cast<std::uint32_t>(known);
@@ -181,6 +202,8 @@ public:
                         expected, tombstone, std::memory_order_acq_rel,
                         std::memory_order_acquire)) {
                     decrement_ready();
+                    marked_lookup_sequences_[index].store(
+                        0U, std::memory_order_release);
                     break;
                 }
                 // A weak CAS can fail spuriously. Retry the same location;
@@ -247,6 +270,9 @@ private:
     std::array<std::atomic<std::uint64_t>,
                jit_native_preimport_tracker_hash_capacity>
         locations_{};
+    std::array<std::atomic<std::uint64_t>,
+               jit_native_preimport_tracker_hash_capacity>
+        marked_lookup_sequences_{};
     std::atomic<std::uint64_t> ready_count_{};
     std::array<std::atomic<std::uint64_t>,
                jit_demand_seen_tracker_hash_capacity>

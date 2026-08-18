@@ -525,15 +525,24 @@ std::size_t JitTranslationProfile::storage_size() const noexcept {
 JitTranslationProfileStats JitTranslationProfile::stats() const noexcept {
     JitTranslationProfileStats result;
     result.recorded = recorded_.load(std::memory_order_relaxed);
+    result.recorded_descriptors = result.recorded;
     result.deduplicated = deduplicated_.load(std::memory_order_relaxed);
     result.dropped_capacity =
         dropped_capacity_.load(std::memory_order_relaxed);
     result.unstable_dropped = unstable_dropped_.load(std::memory_order_relaxed);
     result.profile_loaded = profile_loaded_.load(std::memory_order_relaxed);
+    result.disk_descriptors_loaded = result.profile_loaded;
     result.profile_files_loaded =
         profile_files_loaded_.load(std::memory_order_relaxed);
+    result.disk_files_loaded = result.profile_files_loaded;
     result.profile_enqueued_portable =
         profile_enqueued_portable_.load(std::memory_order_relaxed);
+    result.profile_native_enqueued =
+        profile_native_enqueued_.load(std::memory_order_relaxed);
+    result.profile_native_executed =
+        profile_native_executed_.load(std::memory_order_relaxed);
+    result.profile_portable_executed =
+        profile_portable_executed_.load(std::memory_order_relaxed);
     result.profile_portable_generated =
         profile_portable_generated_.load(std::memory_order_relaxed);
     result.portable_existence_hits =
@@ -548,6 +557,12 @@ JitTranslationProfileStats JitTranslationProfile::stats() const noexcept {
         native_preimport_before_first_demand_.load(std::memory_order_relaxed);
     result.native_preimport_used =
         native_preimport_used_.load(std::memory_order_relaxed);
+    result.native_preimport_first_use_distance_samples =
+        native_preimport_first_use_distance_samples_.load(
+            std::memory_order_relaxed);
+    result.native_preimport_first_use_distance_total =
+        native_preimport_first_use_distance_total_.load(
+            std::memory_order_relaxed);
     result.demand_artifact_staged =
         demand_artifact_staged_.load(std::memory_order_relaxed);
     result.demand_artifact_consumed =
@@ -588,6 +603,16 @@ void JitTranslationProfile::note_profile_enqueued_portable(
     std::uint64_t count) noexcept {
     profile_enqueued_portable_.fetch_add(count, std::memory_order_relaxed);
 }
+void JitTranslationProfile::note_profile_native_enqueued(
+    std::uint64_t count) noexcept {
+    profile_native_enqueued_.fetch_add(count, std::memory_order_relaxed);
+}
+void JitTranslationProfile::note_profile_native_executed() noexcept {
+    profile_native_executed_.fetch_add(1, std::memory_order_relaxed);
+}
+void JitTranslationProfile::note_profile_portable_executed() noexcept {
+    profile_portable_executed_.fetch_add(1, std::memory_order_relaxed);
+}
 void JitTranslationProfile::note_portable_existence_hit() noexcept {
     portable_existence_hits_.fetch_add(1, std::memory_order_relaxed);
 }
@@ -607,8 +632,13 @@ void JitTranslationProfile::note_native_preimport_imported() noexcept {
 void JitTranslationProfile::note_native_preimport_already_present() noexcept {
     native_preimport_already_present_.fetch_add(1, std::memory_order_relaxed);
 }
-void JitTranslationProfile::note_native_preimport_used() noexcept {
+void JitTranslationProfile::note_native_preimport_used(
+    std::uint64_t first_use_distance) noexcept {
     native_preimport_used_.fetch_add(1, std::memory_order_relaxed);
+    native_preimport_first_use_distance_samples_.fetch_add(
+        1, std::memory_order_relaxed);
+    native_preimport_first_use_distance_total_.fetch_add(
+        first_use_distance, std::memory_order_relaxed);
 }
 void JitTranslationProfile::note_demand_artifact_staged() noexcept {
     demand_artifact_staged_.fetch_add(1, std::memory_order_relaxed);
@@ -796,6 +826,9 @@ JitTranslationProfileStats JitTranslationProfileStore::stats() const noexcept {
         result.profile_loaded += current.profile_loaded;
         result.profile_files_loaded += current.profile_files_loaded;
         result.profile_enqueued_portable += current.profile_enqueued_portable;
+        result.profile_native_enqueued += current.profile_native_enqueued;
+        result.profile_native_executed += current.profile_native_executed;
+        result.profile_portable_executed += current.profile_portable_executed;
         result.profile_portable_generated += current.profile_portable_generated;
         result.portable_existence_hits += current.portable_existence_hits;
         result.native_preimport_attempted += current.native_preimport_attempted;
@@ -805,6 +838,10 @@ JitTranslationProfileStats JitTranslationProfileStore::stats() const noexcept {
         result.native_preimport_before_first_demand +=
             current.native_preimport_before_first_demand;
         result.native_preimport_used += current.native_preimport_used;
+        result.native_preimport_first_use_distance_samples +=
+            current.native_preimport_first_use_distance_samples;
+        result.native_preimport_first_use_distance_total +=
+            current.native_preimport_first_use_distance_total;
         result.demand_artifact_staged += current.demand_artifact_staged;
         result.demand_artifact_consumed += current.demand_artifact_consumed;
         result.demand_artifact_stage_unused +=
@@ -819,6 +856,9 @@ JitTranslationProfileStats JitTranslationProfileStore::stats() const noexcept {
         result.profile_save_failures += current.profile_save_failures;
         result.resident_bytes += current.resident_bytes;
     }
+    result.recorded_descriptors = result.recorded;
+    result.disk_descriptors_loaded = result.profile_loaded;
+    result.disk_files_loaded = result.profile_files_loaded;
     return result;
 }
 

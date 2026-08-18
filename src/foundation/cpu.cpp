@@ -946,9 +946,11 @@ public:
             translation_profile_->note_profile_imported_before_first_run();
         }
     }
-    void note_native_preimport_used() noexcept {
+    void note_native_preimport_used(
+        std::uint64_t first_use_distance = 0U) noexcept {
         if (translation_profile_) {
-            translation_profile_->note_native_preimport_used();
+            translation_profile_->note_native_preimport_used(
+                first_use_distance);
         }
     }
 
@@ -1804,7 +1806,8 @@ private:
         if (!performance_counters().native_lookup_diagnostics_enabled()) {
             return;
         }
-        native_preimport_tracker_->mark(location_descriptor);
+        native_preimport_tracker_->mark(location_descriptor,
+                                        native_lookup_sequence_);
     }
 
     void mark_native_preimport_used(
@@ -1812,9 +1815,16 @@ private:
         if (!performance_counters().native_lookup_diagnostics_enabled()) {
             return;
         }
+        if (native_lookup_sequence_ != std::numeric_limits<std::uint64_t>::max()) {
+            ++native_lookup_sequence_;
+        }
+        std::uint64_t first_use_distance{};
         if (native_preimport_tracker_->has_ready() &&
-            native_preimport_tracker_->consume(location_descriptor)) {
-            callbacks_->note_native_preimport_used();
+            native_preimport_tracker_->consume(
+                location_descriptor, native_lookup_sequence_,
+                &first_use_distance)) {
+            callbacks_->note_native_preimport_used(
+                first_use_distance);
         }
     }
 
@@ -2172,6 +2182,7 @@ private:
     std::unordered_map<std::uint64_t, DemandArtifactProbe>
         demand_artifact_probes_;
     std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker_;
+    std::uint64_t native_lookup_sequence_{};
     bool guest_preemption_requested_{};
     std::optional<std::chrono::steady_clock::time_point>
         guest_preemption_requested_at_;
@@ -2346,14 +2357,14 @@ public:
         JitPrecompilePhase phase, JitPrecompileSource source) {
         const std::lock_guard queue_lock{precompile_queue_mutex_};
         for (const auto entry : location_descriptors) {
-            if (!enqueue_precompile_entry_locked(
+            if (enqueue_precompile_entry_locked(
                     PrecompileEntry{entry, JitPrecompileTarget::NativeCode,
                                     source},
-                    phase) ||
-                !enqueue_precompile_entry_locked(
+                    phase) == PrecompileEnqueueResult::Rejected ||
+                enqueue_precompile_entry_locked(
                     PrecompileEntry{entry, JitPrecompileTarget::PortableIr,
                                     source},
-                    phase)) {
+                    phase) == PrecompileEnqueueResult::Rejected) {
                 break;
             }
         }
@@ -2425,6 +2436,7 @@ public:
             std::optional<std::pair<PrecompileEntry, JitPrecompilePhase>> entry;
             std::size_t executor_index{};
             bool profile_derived{};
+            std::shared_ptr<JitTranslationProfile> profile_for_stats;
             {
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
                 entry = take_precompile_entry_locked(target, source);
@@ -2432,10 +2444,18 @@ public:
                 executor_index = next_precompile_executor_++ % executors_.size();
                 profile_derived = entry->first.source ==
                                   JitPrecompileSource::DemandProfile;
+                profile_for_stats = translation_profile_;
             }
             owned_inflight_entries.insert(entry->first);
             ++processed;
             ++result.attempted;
+            if (profile_derived && profile_for_stats) {
+                if (target == JitPrecompileTarget::NativeCode) {
+                    profile_for_stats->note_profile_native_executed();
+                } else {
+                    profile_for_stats->note_profile_portable_executed();
+                }
+            }
             const auto precompile_entry = entry->first;
             const auto descriptor = precompile_entry.descriptor;
             JitExecutor::PrecompileDisposition disposition;
@@ -2563,14 +2583,22 @@ public:
     }
 
 private:
+    enum class PrecompileEnqueueResult : std::uint8_t {
+        Existing,
+        Inserted,
+        Rejected,
+    };
+
     static constexpr std::size_t phase_index(JitPrecompilePhase phase) {
         return static_cast<std::size_t>(phase);
     }
 
-    [[nodiscard]] bool enqueue_precompile_entry_locked(
+    [[nodiscard]] PrecompileEnqueueResult enqueue_precompile_entry_locked(
         PrecompileEntry entry, JitPrecompilePhase phase) {
+        bool was_deferred = false;
         if (const auto deferred = deferred_precompile_entries_.find(entry);
             deferred != deferred_precompile_entries_.end()) {
+            was_deferred = true;
             if (phase_index(deferred->second.phase) < phase_index(phase)) {
                 phase = deferred->second.phase;
             }
@@ -2579,7 +2607,7 @@ private:
         if (entry.descriptor == 0 ||
             completed_precompile_entries_.contains(entry) ||
             inflight_precompile_entries_.contains(entry)) {
-            return true;
+            return PrecompileEnqueueResult::Existing;
         }
         if (const auto pending = pending_precompile_phases_.find(entry);
             pending != pending_precompile_phases_.end()) {
@@ -2588,7 +2616,7 @@ private:
                 pending_precompile_entries_[phase_index(phase)].push_back(
                     entry);
             }
-            return true;
+            return PrecompileEnqueueResult::Existing;
         }
         if (pending_precompile_phases_.size() +
                 inflight_precompile_entries_.size() +
@@ -2596,14 +2624,21 @@ private:
                 completed_precompile_entries_.size() >=
             jit_translation_profile_maximum_locations *
                 jit_precompile_target_count) {
-            return false;
+            return PrecompileEnqueueResult::Rejected;
         }
         pending_precompile_phases_.emplace(entry, phase);
         pending_precompile_entries_[phase_index(phase)].push_back(entry);
         if (entry.source == JitPrecompileSource::DemandProfile) {
             ++profile_queue_entries_;
+            if (!was_deferred && translation_profile_) {
+                if (entry.target == JitPrecompileTarget::NativeCode) {
+                    translation_profile_->note_profile_native_enqueued();
+                } else {
+                    translation_profile_->note_profile_enqueued_portable();
+                }
+            }
         }
-        return true;
+        return PrecompileEnqueueResult::Inserted;
     }
 
     void refill_profile_entries_locked() {
@@ -2635,8 +2670,10 @@ private:
                 PrecompileEntry{location, JitPrecompileTarget::PortableIr,
                                 JitPrecompileSource::DemandProfile},
                 translation_profile_phase_);
-            if (portable_queued) profile->note_profile_enqueued_portable();
-            if (!native_queued || !portable_queued) break;
+            if (native_queued == PrecompileEnqueueResult::Rejected ||
+                portable_queued == PrecompileEnqueueResult::Rejected) {
+                break;
+            }
         }
     }
 

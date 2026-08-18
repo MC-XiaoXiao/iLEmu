@@ -2434,6 +2434,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   constexpr std::uint64_t catalog_preexec_budget_nanoseconds = 4'000'000;
   std::deque<ContentIdentity> pending_catalog_compiles;
   struct PrecompileOutcomeCounters {
+    std::atomic<std::uint64_t> elapsed_nanoseconds{};
     std::atomic<std::uint64_t> attempted{};
     std::atomic<std::uint64_t> native_compiled{};
     std::atomic<std::uint64_t> portable_generated{};
@@ -2473,6 +2474,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
       };
   const auto record_precompile_outcomes =
       [&precompile_outcomes](const JitPrecompileBatchResult &result) {
+        precompile_outcomes.elapsed_nanoseconds.fetch_add(
+            result.elapsed_nanoseconds, std::memory_order_relaxed);
         precompile_outcomes.attempted.fetch_add(result.attempted,
                                                  std::memory_order_relaxed);
         precompile_outcomes.native_compiled.fetch_add(
@@ -5258,7 +5261,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
       std::to_string(precompile_blocks_by_target[1].load(
           std::memory_order_relaxed)));
   output.line(
-      "[precompile-outcomes] attempted=" +
+      "[precompile-outcomes] elapsed-ns=" +
+      std::to_string(precompile_outcomes.elapsed_nanoseconds.load(
+          std::memory_order_relaxed)) +
+      " attempted=" +
       std::to_string(precompile_outcomes.attempted.load(
           std::memory_order_relaxed)) +
       " native-compiled=" +
@@ -5409,18 +5415,38 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(artifact_stats.writeback_pending_bytes) +
         " disk-bytes=" + std::to_string(artifact_stats.disk_bytes));
     const auto profile_stats = translation_profiles.stats();
+    const auto demand_latency = stopped_guest.latencies[static_cast<std::size_t>(
+        PerfLatencyKind::JitDemandTranslation)];
+    const auto avoided_demand_translation_ns =
+        demand_latency.p50_nanoseconds != 0U &&
+                profile_stats.native_preimport_before_first_demand >
+                    std::numeric_limits<std::uint64_t>::max() /
+                        demand_latency.p50_nanoseconds
+            ? std::numeric_limits<std::uint64_t>::max()
+            : demand_latency.p50_nanoseconds == 0U
+                  ? 0U
+                  : profile_stats.native_preimport_before_first_demand *
+                        demand_latency.p50_nanoseconds;
     output.line(
-        "[perf-jit-profile] recorded=" +
-        std::to_string(profile_stats.recorded) + " deduplicated=" +
+        "[perf-jit-profile] recorded-descriptors=" +
+        std::to_string(profile_stats.recorded_descriptors) +
+        " deduplicated=" +
         std::to_string(profile_stats.deduplicated) + " dropped-capacity=" +
         std::to_string(profile_stats.dropped_capacity) +
         " unstable-dropped=" +
-        std::to_string(profile_stats.unstable_dropped) + " loaded=" +
-        std::to_string(profile_stats.profile_loaded) +
-        " files-loaded=" +
-        std::to_string(profile_stats.profile_files_loaded) +
-        " enqueued-portable=" +
+        std::to_string(profile_stats.unstable_dropped) +
+        " disk-descriptors-loaded=" +
+        std::to_string(profile_stats.disk_descriptors_loaded) +
+        " disk-files-loaded=" +
+        std::to_string(profile_stats.disk_files_loaded) +
+        " native-enqueued=" +
+        std::to_string(profile_stats.profile_native_enqueued) +
+        " portable-enqueued=" +
         std::to_string(profile_stats.profile_enqueued_portable) +
+        " native-executed=" +
+        std::to_string(profile_stats.profile_native_executed) +
+        " portable-executed=" +
+        std::to_string(profile_stats.profile_portable_executed) +
         " portable-generated=" +
         std::to_string(profile_stats.profile_portable_generated) +
         " portable-existence-hit=" +
@@ -5435,6 +5461,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(profile_stats.native_preimport_before_first_demand) +
         " native-preimport-used=" +
         std::to_string(profile_stats.native_preimport_used) +
+        " first-use-distance-samples=" +
+        std::to_string(profile_stats.native_preimport_first_use_distance_samples) +
+        " first-use-distance-total=" +
+        std::to_string(profile_stats.native_preimport_first_use_distance_total) +
+        " avoided-demand-translations=" +
+        std::to_string(profile_stats.native_preimport_before_first_demand) +
+        " avoided-demand-translation-p50-ns=" +
+        std::to_string(avoided_demand_translation_ns) +
         " demand-artifact-staged=" +
         std::to_string(profile_stats.demand_artifact_staged) +
         " demand-artifact-consumed=" +
