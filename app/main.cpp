@@ -5483,9 +5483,43 @@ void boot(const std::vector<std::string> &args, Output &output) {
         " save-ns=" + std::to_string(profile_stats.save_nanoseconds) +
         " load-ns=" + std::to_string(profile_stats.load_nanoseconds) +
         " profile-bytes=" + std::to_string(profile_stats.profile_bytes) +
-        " resident-bytes=" + std::to_string(profile_stats.resident_bytes) +
+        " resident-bytes-est=" +
+        std::to_string(profile_stats.resident_bytes) +
         " save-failures=" +
         std::to_string(profile_stats.profile_save_failures));
+    const auto jit_precompile_memory =
+        initial_runtime->cpus->precompile_memory_stats();
+    output.line(
+        "[perf-jit-memory] profile-object-bytes=" +
+        std::to_string(profile_stats.profile_object_bytes) +
+        " profile-vector-bytes=" +
+        std::to_string(profile_stats.location_vector_bytes) +
+        " profile-known-buckets-bytes=" +
+        std::to_string(profile_stats.known_set_bucket_bytes) +
+        " profile-known-nodes-est-bytes=" +
+        std::to_string(profile_stats.known_set_node_bytes) +
+        " profile-discarded-buckets-bytes=" +
+        std::to_string(profile_stats.discarded_set_bucket_bytes) +
+        " profile-discarded-nodes-est-bytes=" +
+        std::to_string(profile_stats.discarded_set_node_bytes) +
+        " queue-profile-entries=" +
+        std::to_string(jit_precompile_memory.profile_queue_entries) +
+        " queue-profile-capacity-entries=" +
+        std::to_string(jit_precompile_memory.profile_queue_capacity_entries) +
+        " queue-pending-entries=" +
+        std::to_string(jit_precompile_memory.pending_entries) +
+        " queue-inflight-entries=" +
+        std::to_string(jit_precompile_memory.inflight_entries) +
+        " queue-deferred-entries=" +
+        std::to_string(jit_precompile_memory.deferred_entries) +
+        " queue-completed-entries=" +
+        std::to_string(jit_precompile_memory.completed_entries) +
+        " queue-entry-bytes-est=" +
+        std::to_string(jit_precompile_memory.estimated_queue_entry_bytes) +
+        " tracker-bytes=" +
+        std::to_string(jit_precompile_memory.native_preimport_tracker_bytes) +
+        " native-slab-used-bytes=" +
+        std::to_string(stopped_guest.jit_shared_used_bytes));
     const auto &validation = artifact_stats.validation_rejections;
     output.line(
         "[perf-artifact-validation] unavailable=" +

@@ -63,6 +63,17 @@ struct JitPrecompileBatchResult {
     std::uint64_t deadline_stops{};
 };
 
+struct JitPrecompileMemoryStats {
+    std::size_t profile_queue_entries{};
+    std::size_t profile_queue_capacity_entries{};
+    std::size_t pending_entries{};
+    std::size_t inflight_entries{};
+    std::size_t deferred_entries{};
+    std::size_t completed_entries{};
+    std::size_t estimated_queue_entry_bytes{};
+    std::size_t native_preimport_tracker_bytes{};
+};
+
 class JitTranslationProfile;
 class JitArtifactStore;
 enum class JitArtifactRetention : std::uint8_t;
@@ -243,6 +254,7 @@ public:
     // profile assignment. This is called only from an idle/precompile
     // scheduler boundary and remains bounded by the profile queue capacity.
     void refresh_translation_profile();
+    [[nodiscard]] JitPrecompileMemoryStats precompile_memory_stats() const;
     // Boot-critical processes mark every executable artifact they actually
     // consume, naturally covering dyld and the mapped dependency closure
     // without putting process paths into artifact identity.

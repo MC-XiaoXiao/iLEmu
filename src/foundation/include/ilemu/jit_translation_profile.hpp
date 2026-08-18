@@ -114,6 +114,12 @@ struct JitTranslationProfileStats {
     std::uint64_t profile_save_failures{};
     std::uint64_t load_nanoseconds{};
     std::uint64_t profile_bytes{};
+    std::size_t profile_object_bytes{};
+    std::size_t location_vector_bytes{};
+    std::size_t known_set_bucket_bytes{};
+    std::size_t known_set_node_bytes{};
+    std::size_t discarded_set_bucket_bytes{};
+    std::size_t discarded_set_node_bytes{};
     std::size_t resident_bytes{};
 };
 

@@ -2346,6 +2346,27 @@ public:
         refill_profile_entries_locked();
     }
 
+    [[nodiscard]] JitPrecompileMemoryStats precompile_memory_stats() const {
+        const std::lock_guard queue_lock{precompile_queue_mutex_};
+        JitPrecompileMemoryStats result;
+        result.profile_queue_entries = profile_queue_entries_;
+        result.profile_queue_capacity_entries =
+            jit_profile_precompile_queue_entry_capacity;
+        result.pending_entries = pending_precompile_phases_.size();
+        result.inflight_entries = inflight_precompile_entries_.size();
+        result.deferred_entries = deferred_precompile_entries_.size();
+        result.completed_entries = completed_precompile_entries_.size();
+        const auto total_entries = result.pending_entries +
+                                   result.inflight_entries +
+                                   result.deferred_entries +
+                                   result.completed_entries;
+        result.estimated_queue_entry_bytes =
+            total_entries * sizeof(PrecompileEntry);
+        result.native_preimport_tracker_bytes =
+            jit_native_preimport_tracker_object_bytes;
+        return result;
+    }
+
     void set_artifact_retention(JitArtifactRetention retention) {
         for (auto& executor : executors_) {
             executor->set_artifact_retention(retention);
@@ -2800,7 +2821,7 @@ private:
     std::uint64_t precompile_cancellation_generation_{1};
     std::uint64_t active_precompile_tasks_{};
     std::condition_variable precompile_idle_;
-    std::mutex precompile_queue_mutex_;
+    mutable std::mutex precompile_queue_mutex_;
 };
 
 Cpu::Cpu(
@@ -3154,6 +3175,11 @@ void CpuCluster::set_translation_profile(
 
 void CpuCluster::refresh_translation_profile() {
     if (execution_pool_) execution_pool_->refresh_translation_profile();
+}
+
+JitPrecompileMemoryStats CpuCluster::precompile_memory_stats() const {
+    if (!execution_pool_) return {};
+    return execution_pool_->precompile_memory_stats();
 }
 
 void CpuCluster::set_jit_artifact_retention(

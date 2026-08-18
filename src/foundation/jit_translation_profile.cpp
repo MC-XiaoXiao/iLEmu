@@ -583,11 +583,25 @@ JitTranslationProfileStats JitTranslationProfile::stats() const noexcept {
         profile_save_failures_.load(std::memory_order_relaxed);
     {
         const std::lock_guard lock{mutex_};
-        result.resident_bytes = locations_.size() * sizeof(std::uint64_t) +
-                                known_locations_.size() * sizeof(std::uint64_t) *
-                                    2U +
-                                discarded_locations_.size() *
-                                    sizeof(std::uint64_t) * 2U;
+        constexpr auto estimated_unordered_node_bytes =
+            sizeof(std::uint64_t) + sizeof(void*);
+        result.profile_object_bytes = sizeof(JitTranslationProfile);
+        result.location_vector_bytes =
+            locations_.capacity() * sizeof(std::uint64_t);
+        result.known_set_bucket_bytes =
+            known_locations_.bucket_count() * sizeof(void*);
+        result.known_set_node_bytes =
+            known_locations_.size() * estimated_unordered_node_bytes;
+        result.discarded_set_bucket_bytes =
+            discarded_locations_.bucket_count() * sizeof(void*);
+        result.discarded_set_node_bytes =
+            discarded_locations_.size() * estimated_unordered_node_bytes;
+        result.resident_bytes = result.profile_object_bytes +
+                                result.location_vector_bytes +
+                                result.known_set_bucket_bytes +
+                                result.known_set_node_bytes +
+                                result.discarded_set_bucket_bytes +
+                                result.discarded_set_node_bytes;
     }
     return result;
 }
@@ -854,6 +868,13 @@ JitTranslationProfileStats JitTranslationProfileStore::stats() const noexcept {
         result.save_nanoseconds += current.save_nanoseconds;
         result.load_nanoseconds += current.load_nanoseconds;
         result.profile_save_failures += current.profile_save_failures;
+        result.profile_object_bytes += current.profile_object_bytes;
+        result.location_vector_bytes += current.location_vector_bytes;
+        result.known_set_bucket_bytes += current.known_set_bucket_bytes;
+        result.known_set_node_bytes += current.known_set_node_bytes;
+        result.discarded_set_bucket_bytes +=
+            current.discarded_set_bucket_bytes;
+        result.discarded_set_node_bytes += current.discarded_set_node_bytes;
         result.resident_bytes += current.resident_bytes;
     }
     result.recorded_descriptors = result.recorded;

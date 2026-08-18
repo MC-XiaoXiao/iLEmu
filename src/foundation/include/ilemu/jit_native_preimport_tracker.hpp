@@ -8,11 +8,15 @@
 
 namespace ilemu {
 
-inline constexpr std::size_t jit_native_preimport_tracker_capacity = 4'096U;
+// The tracker is a bounded diagnostic correlation window, not a copy of the
+// complete profile. Eight 32-entry queue windows cover the largest expected
+// sequence of imports that can remain unused while keeping the hot-pool
+// accounting independent of profile history size.
+inline constexpr std::size_t jit_native_preimport_tracker_capacity = 256U;
 inline constexpr std::size_t jit_native_preimport_tracker_hash_capacity =
-    8'192U;
-inline constexpr std::size_t jit_demand_seen_tracker_capacity = 32'768U;
-inline constexpr std::size_t jit_demand_seen_tracker_hash_capacity = 65'536U;
+    512U;
+inline constexpr std::size_t jit_demand_seen_tracker_capacity = 8'192U;
+inline constexpr std::size_t jit_demand_seen_tracker_hash_capacity = 16'384U;
 
 // This tracker correlates profile-originated native imports with later
 // execution. It is deliberately bounded and host-only. Tombstones preserve
@@ -281,5 +285,8 @@ private:
     mutable std::atomic_flag preimport_lock_ = ATOMIC_FLAG_INIT;
     mutable std::atomic_flag demand_lock_ = ATOMIC_FLAG_INIT;
 };
+
+inline constexpr std::size_t jit_native_preimport_tracker_object_bytes =
+    sizeof(JitNativePreimportTracker);
 
 } // namespace ilemu
