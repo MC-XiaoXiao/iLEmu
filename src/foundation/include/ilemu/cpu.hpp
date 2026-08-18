@@ -48,6 +48,7 @@ enum class JitPrecompileSource : std::uint8_t {
 };
 
 struct JitPrecompileBatchResult {
+    std::uint64_t elapsed_nanoseconds{};
     std::uint64_t attempted{};
     std::uint64_t native_compiled{};
     std::uint64_t portable_generated{};

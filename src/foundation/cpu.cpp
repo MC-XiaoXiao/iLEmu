@@ -2530,6 +2530,11 @@ public:
         }
         cleanup();
         finish();
+        result.elapsed_nanoseconds = static_cast<std::uint64_t>(std::max<
+            std::int64_t>(
+            0, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                   std::chrono::steady_clock::now() - started)
+                   .count()));
         return result;
         } catch (...) {
             cleanup();

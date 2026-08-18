@@ -1207,6 +1207,9 @@ std::string usage() {
          "[--disable-scheduler-preemption] "
          "[--perf-summary] [--perf-frame-content] [--perf-cpu-phases] "
          "[--perf-jit-native-lookups] "
+         "[--jit-startup-profile] [--jit-startup-profile-adaptive] "
+         "[--jit-startup-profile-blocks N] "
+         "[--jit-startup-profile-budget-us N] "
          "[--output FILE]\n"
          "  ilemu smoke [--cores N] [--jit-cache-mib 8..128] "
          "[--perf-summary] [--output FILE]\n"
@@ -2027,6 +2030,45 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                   : std::numeric_limits<std::uint64_t>::max();
   const bool disable_scheduler_preemption =
       flag(args, "--disable-scheduler-preemption");
+  const bool startup_profile_enabled =
+      flag(args, "--jit-startup-profile");
+  const bool startup_profile_adaptive =
+      flag(args, "--jit-startup-profile-adaptive");
+  const auto startup_profile_blocks_value =
+      option(args, "--jit-startup-profile-blocks");
+  const auto startup_profile_budget_us_value =
+      option(args, "--jit-startup-profile-budget-us");
+  const auto parse_startup_value = [](const std::optional<std::string> &value,
+                                      std::string_view name,
+                                      std::uint64_t fallback) -> std::uint64_t {
+    if (!value) return fallback;
+    std::size_t consumed = 0;
+    const auto parsed = std::stoull(*value, &consumed, 10);
+    if (consumed != value->size() || parsed == 0U) {
+      throw std::runtime_error{std::string{name} +
+                               " must be a positive integer"};
+    }
+    return parsed;
+  };
+  const auto startup_profile_blocks = parse_startup_value(
+      startup_profile_blocks_value, "--jit-startup-profile-blocks", 64U);
+  const auto startup_profile_budget_us = parse_startup_value(
+      startup_profile_budget_us_value, "--jit-startup-profile-budget-us",
+      4'000U);
+  if (startup_profile_blocks > 64U) {
+    throw std::runtime_error{
+        "--jit-startup-profile-blocks must be in the range 1..64"};
+  }
+  if (startup_profile_adaptive && !startup_profile_enabled) {
+    throw std::runtime_error{
+        "--jit-startup-profile-adaptive requires --jit-startup-profile"};
+  }
+  output.line(std::string{"[jit-profile] startup-sync="} +
+              (startup_profile_enabled ? "enabled" : "disabled") +
+              " blocks=" + std::to_string(startup_profile_blocks) +
+              " budget-us=" + std::to_string(startup_profile_budget_us) +
+              " adaptive=" +
+              (startup_profile_adaptive ? "true" : "false"));
   if (disable_scheduler_preemption) {
     output.line(
         "[scheduler] semantic-preemption=disabled host-cooperation=enabled");
@@ -2549,19 +2591,27 @@ void boot(const std::vector<std::string> &args, Output &output) {
                     " deferred=" + std::to_string(result.deferred) +
                     " failed=" + std::to_string(result.failed));
       };
-  constexpr std::size_t maximum_startup_profile_blocks = 64U;
-  constexpr std::uint64_t startup_profile_budget_nanoseconds = 4'000'000U;
   const auto precompile_startup_profile =
-      [&output, &record_precompile_outcomes](
+      [&output, &record_precompile_outcomes, startup_profile_enabled,
+       startup_profile_adaptive, startup_profile_blocks,
+       startup_profile_budget_us](
           Runtime &runtime, std::string_view executable_path) {
+        if (!startup_profile_enabled) return;
         if (!runtime.cpus->next_precompile_phase(
                 JitPrecompileTarget::NativeCode,
                 JitPrecompileSource::DemandProfile)) {
           return;
         }
+        const auto blocks = startup_profile_adaptive
+                                ? std::min<std::uint64_t>(
+                                      startup_profile_blocks, 16U)
+                                : startup_profile_blocks;
+        const auto budget_us = startup_profile_adaptive
+                                   ? std::min<std::uint64_t>(
+                                         startup_profile_budget_us, 1'000U)
+                                   : startup_profile_budget_us;
         const auto result = runtime.cpus->precompile_pending(
-            maximum_startup_profile_blocks,
-            startup_profile_budget_nanoseconds,
+            static_cast<std::size_t>(blocks), budget_us * 1'000U,
             JitPrecompileTarget::NativeCode, {},
             JitPrecompileSource::DemandProfile);
         record_precompile_outcomes(result);
@@ -2569,6 +2619,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
                     std::string{executable_path} +
                     " blocks=" + std::to_string(result.native_compiled) +
                     " attempted=" + std::to_string(result.attempted) +
+                    " elapsed-ns=" +
+                    std::to_string(result.elapsed_nanoseconds) +
                     " artifact-imported=" +
                     std::to_string(result.artifact_imported) +
                     " shared-slab=" +
