@@ -1368,4 +1368,34 @@ void ExecutableCatalog::remove_path(const std::filesystem::path &path) {
   }
 }
 
+std::size_t ExecutableCatalog::resident_bytes_estimate() const noexcept {
+  std::size_t total = entries_.capacity() * sizeof(ExecutableCatalogEntry);
+  const auto add = [&total](std::size_t bytes) {
+    total = bytes > std::numeric_limits<std::size_t>::max() - total
+                ? std::numeric_limits<std::size_t>::max()
+                : total + bytes;
+  };
+  const auto add_path = [&add](const std::filesystem::path &path) {
+    add(path.native().capacity() * sizeof(std::filesystem::path::value_type));
+  };
+  for (const auto &entry : entries_) {
+    add(entry.aliases.capacity() * sizeof(std::filesystem::path));
+    for (const auto &alias : entry.aliases) add_path(alias);
+    add(entry.file_generations.capacity() *
+        sizeof(ExecutableCatalogPathGeneration));
+    for (const auto &generation : entry.file_generations) add_path(generation.path);
+    add(entry.kinds.size() *
+        (sizeof(ExecutableCatalogKind) + 3U * sizeof(void *)));
+    add(entry.dependencies.capacity() * sizeof(std::string));
+    for (const auto &dependency : entry.dependencies) add(dependency.capacity());
+    add(entry.mappings.capacity() * sizeof(ExecutableMappingIdentity));
+    add(entry.reliable_entry_points.capacity() * sizeof(std::uint64_t));
+  }
+  add(identity_index_.bucket_count() * sizeof(void *));
+  add(identity_index_.size() *
+      (sizeof(typename decltype(identity_index_)::value_type) +
+       2U * sizeof(void *)));
+  return total;
+}
+
 } // namespace ilemu

@@ -70,8 +70,27 @@ struct JitPrecompileMemoryStats {
     std::size_t inflight_entries{};
     std::size_t deferred_entries{};
     std::size_t completed_entries{};
+    // These are estimates of the owning containers, not allocator or OS RSS
+    // measurements.  Bucket, node, and deque-block overhead are kept
+    // separate so profile and catalog queues cannot be mistaken for native
+    // code or for one another.
     std::size_t estimated_queue_entry_bytes{};
+    std::size_t queue_bucket_bytes{};
+    std::size_t queue_node_bytes{};
+    std::size_t queue_block_bytes{};
+    std::size_t profile_recorder_bytes{};
     std::size_t native_preimport_tracker_bytes{};
+    std::size_t profile_queue_entries_peak{};
+    std::size_t pending_entries_peak{};
+    std::size_t inflight_entries_peak{};
+    std::size_t deferred_entries_peak{};
+    std::size_t completed_entries_peak{};
+    std::size_t estimated_queue_entry_bytes_peak{};
+    std::size_t queue_bucket_bytes_peak{};
+    std::size_t queue_node_bytes_peak{};
+    std::size_t queue_block_bytes_peak{};
+    std::size_t profile_recorder_bytes_peak{};
+    std::size_t native_preimport_tracker_bytes_peak{};
 };
 
 class JitTranslationProfile;
@@ -165,7 +184,8 @@ public:
         std::uint32_t address, MemoryWriteHandler handler);
     void set_debug_breakpoints_enabled(bool enabled);
     void set_translation_profile(
-        std::shared_ptr<JitTranslationProfile> profile);
+        std::shared_ptr<JitTranslationProfile> profile,
+        bool record = true, bool precompile = true);
     // The scheduler calls this when a different guest thread is dispatched on
     // the same serialized virtual processor.
     void clear_exclusive_state(std::size_t execution_slot = 0);
@@ -249,7 +269,8 @@ public:
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
     void set_translation_profile(
         std::shared_ptr<JitTranslationProfile> profile,
-        JitPrecompilePhase phase = JitPrecompilePhase::Remaining);
+        JitPrecompilePhase phase = JitPrecompilePhase::Remaining,
+        bool record = true, bool precompile = true);
     // Append descriptors merged by the safe-point recorder since the last
     // profile assignment. This is called only from an idle/precompile
     // scheduler boundary and remains bounded by the profile queue capacity.

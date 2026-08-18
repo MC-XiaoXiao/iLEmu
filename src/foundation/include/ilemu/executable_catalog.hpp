@@ -147,6 +147,10 @@ public:
   // are never used as a substitute for runtime mapping validation.
   [[nodiscard]] std::span<const ExecutableCatalogEntry> entries() const noexcept;
   [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
+  // Host-container estimate for diagnostics. This includes vector capacity,
+  // unordered-index buckets/nodes, and owned string/vector storage; it is not
+  // an allocator or operating-system RSS measurement.
+  [[nodiscard]] std::size_t resident_bytes_estimate() const noexcept;
   [[nodiscard]] std::uint64_t revision() const noexcept {
     return mutation_revision_;
   }

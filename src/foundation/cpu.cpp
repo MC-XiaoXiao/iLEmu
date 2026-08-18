@@ -631,7 +631,10 @@ private:
         // profile lock is allowed on this callback path.
         if (!portable_generation_location_ &&
             !explicit_artifact_publication_) {
-            static_cast<void>(translation_recorder_.record(location_descriptor));
+            if (translation_recorder_) {
+                static_cast<void>(translation_recorder_->record(
+                    location_descriptor));
+            }
             performance_counters().record_latency(
                 PerfLatencyKind::JitDemandTranslation,
                 translation_nanoseconds);
@@ -851,9 +854,19 @@ public:
         return memory_.jit_write_page_table();
     }
     void set_translation_profile(
-        std::shared_ptr<JitTranslationProfile> profile) {
+        std::shared_ptr<JitTranslationProfile> profile, bool record,
+        std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker) {
         flush_translation_profile_recorder();
         translation_profile_ = std::move(profile);
+        native_preimport_tracker_ = std::move(native_preimport_tracker);
+        if (record) {
+            if (!translation_recorder_) {
+                translation_recorder_ =
+                    std::make_unique<JitTranslationProfileRecorder>();
+            }
+        } else {
+            translation_recorder_.reset();
+        }
     }
 
     // Drain only after Dynarmic has returned to a host safe point. The hot
@@ -861,9 +874,10 @@ public:
     // address-space checks, profile locking, and metric aggregation happen
     // here instead of in CodeTranslationCompleted.
     void flush_translation_profile_recorder() noexcept {
-        const auto recorded = translation_recorder_.locations();
-        if (recorded.empty() && translation_recorder_.deduplicated() == 0U &&
-            translation_recorder_.dropped_capacity() == 0U) {
+        if (!translation_recorder_) return;
+        const auto recorded = translation_recorder_->locations();
+        if (recorded.empty() && translation_recorder_->deduplicated() == 0U &&
+            translation_recorder_->dropped_capacity() == 0U) {
             return;
         }
         std::array<std::uint64_t,
@@ -872,7 +886,9 @@ public:
         std::size_t stable_count{};
         std::uint64_t unstable_count{};
         for (const auto location_descriptor : recorded) {
-            native_preimport_tracker_->mark_demand_seen(location_descriptor);
+            if (native_preimport_tracker_) {
+                native_preimport_tracker_->mark_demand_seen(location_descriptor);
+            }
             const auto code_address =
                 static_cast<std::uint32_t>(location_descriptor) &
                 ~std::uint32_t{3};
@@ -895,20 +911,23 @@ public:
             translation_profile_->merge(
                 std::span<const std::uint64_t>{stable_locations.data(),
                                                 stable_count},
-                translation_recorder_.deduplicated(),
-                translation_recorder_.dropped_capacity() + unstable_count);
+                translation_recorder_->deduplicated(),
+                translation_recorder_->dropped_capacity() + unstable_count);
             translation_profile_->note_unstable_dropped(unstable_count);
         }
-        translation_recorder_.reset();
+        translation_recorder_->reset();
     }
 
     [[nodiscard]] bool demand_location_seen(
         std::uint64_t location_descriptor) const noexcept {
-        return native_preimport_tracker_->demand_seen(location_descriptor);
+        return native_preimport_tracker_ &&
+               native_preimport_tracker_->demand_seen(location_descriptor);
     }
 
     void clear_demand_locations() noexcept {
-        native_preimport_tracker_->clear_demand_locations();
+        if (native_preimport_tracker_) {
+            native_preimport_tracker_->clear_demand_locations();
+        }
     }
 
     void note_profile_portable_existence_hit() noexcept {
@@ -919,6 +938,26 @@ public:
     void note_profile_portable_generated() noexcept {
         if (translation_profile_) {
             translation_profile_->note_profile_portable_generated();
+        }
+    }
+    void note_profile_native_attempted() noexcept {
+        if (translation_profile_) {
+            translation_profile_->note_profile_native_attempted();
+        }
+    }
+    void note_profile_native_executed() noexcept {
+        if (translation_profile_) {
+            translation_profile_->note_profile_native_executed();
+        }
+    }
+    void note_profile_portable_attempted() noexcept {
+        if (translation_profile_) {
+            translation_profile_->note_profile_portable_attempted();
+        }
+    }
+    void note_profile_portable_executed() noexcept {
+        if (translation_profile_) {
+            translation_profile_->note_profile_portable_executed();
         }
     }
     void note_native_preimport_attempted() noexcept {
@@ -1221,7 +1260,7 @@ private:
     std::uint64_t host_yield_tick_budget_{};
     std::uint64_t host_yield_checks_{};
     std::chrono::steady_clock::time_point host_slice_deadline_{};
-    JitTranslationProfileRecorder translation_recorder_;
+    std::unique_ptr<JitTranslationProfileRecorder> translation_recorder_;
     std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker_;
 };
 
@@ -1365,7 +1404,7 @@ public:
               *callbacks_)},
           execution_context_{std::move(execution_context)},
           native_preimport_tracker_{std::move(native_preimport_tracker)} {
-        if (!execution_context_ || !native_preimport_tracker_) {
+        if (!execution_context_) {
             throw std::invalid_argument{
                 "JIT executor requires execution state"};
         }
@@ -1582,9 +1621,12 @@ public:
     }
 
     void set_translation_profile(
-        std::shared_ptr<JitTranslationProfile> profile) {
+        std::shared_ptr<JitTranslationProfile> profile, bool record,
+        std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker) {
         const std::lock_guard execution_lock{execution_mutex_};
-        callbacks_->set_translation_profile(std::move(profile));
+        native_preimport_tracker_ = std::move(native_preimport_tracker);
+        callbacks_->set_translation_profile(
+            std::move(profile), record, native_preimport_tracker_);
     }
 
     void set_artifact_retention(JitArtifactRetention retention) {
@@ -1722,7 +1764,7 @@ public:
         guest_preemption_requested_at_.reset();
         callbacks_->discard_demand_artifact();
         demand_artifact_probes_.clear();
-        native_preimport_tracker_->clear();
+        if (native_preimport_tracker_) native_preimport_tracker_->clear();
         callbacks_->clear_demand_locations();
         jit_->Reset();
     }
@@ -1803,7 +1845,7 @@ private:
     };
 
     void mark_native_preimported(std::uint64_t location_descriptor) noexcept {
-        if (!performance_counters().native_lookup_diagnostics_enabled()) {
+        if (!native_preimport_tracker_) {
             return;
         }
         native_preimport_tracker_->mark(location_descriptor,
@@ -1812,7 +1854,7 @@ private:
 
     void mark_native_preimport_used(
         std::uint64_t location_descriptor) noexcept {
-        if (!performance_counters().native_lookup_diagnostics_enabled()) {
+        if (!native_preimport_tracker_) {
             return;
         }
         if (native_lookup_sequence_ != std::numeric_limits<std::uint64_t>::max()) {
@@ -1902,7 +1944,7 @@ private:
         // precompile operation reaches this slower, serialized boundary.
         artifact_probes_.clear();
         demand_artifact_probes_.clear();
-        native_preimport_tracker_->clear();
+        if (native_preimport_tracker_) native_preimport_tracker_->clear();
         callbacks_->clear_demand_locations();
         callbacks_->discard_demand_artifact();
         observed_slab_generation_ = slab_generation;
@@ -2234,8 +2276,7 @@ public:
         std::shared_ptr<JitArtifactStore> artifact_store)
         : memory_{memory},
           execution_context_{std::make_shared<ExecutionContext>()},
-          native_preimport_tracker_{
-              std::make_shared<JitNativePreimportTracker>()} {
+          native_preimport_tracker_{} {
         if (execution_slot_count == 0) {
             throw std::invalid_argument{
                 "execution_slot_count must be at least one"};
@@ -2250,7 +2291,7 @@ public:
         for (std::size_t slot = 0; slot < execution_slot_count; ++slot) {
             executors_.push_back(std::make_unique<JitExecutor>(
                 first_processor_id + slot, slot, memory, monitor, cpu_model,
-                artifact_store, execution_context_, native_preimport_tracker_));
+                artifact_store, execution_context_, nullptr));
         }
     }
 
@@ -2300,7 +2341,7 @@ public:
 
     void clear_cache() {
         static_cast<void>(execution_context_->request_cache_clear());
-        native_preimport_tracker_->clear();
+        if (native_preimport_tracker_) native_preimport_tracker_->clear();
         performance_counters().record_jit_shared_invalidation(true);
     }
 
@@ -2308,7 +2349,9 @@ public:
         if (length == 0U) return;
         static_cast<void>(
             execution_context_->request_cache_range(address, length));
-        native_preimport_tracker_->invalidate_range(address, length);
+        if (native_preimport_tracker_) {
+            native_preimport_tracker_->invalidate_range(address, length);
+        }
         performance_counters().record_jit_shared_invalidation(false);
     }
 
@@ -2318,11 +2361,14 @@ public:
 
     void set_translation_profile(
         std::shared_ptr<JitTranslationProfile> profile,
-        JitPrecompilePhase phase) {
+        JitPrecompilePhase phase, bool record, bool precompile) {
         quiesce_precompilation();
-        native_preimport_tracker_->clear();
+        native_preimport_tracker_ = precompile
+                                       ? std::make_shared<JitNativePreimportTracker>()
+                                       : nullptr;
         for (auto& executor : executors_) {
-            executor->set_translation_profile(profile);
+            executor->set_translation_profile(
+                profile, record, native_preimport_tracker_);
         }
         const std::lock_guard queue_lock{precompile_queue_mutex_};
         for (auto &queue : pending_precompile_entries_) queue.clear();
@@ -2334,36 +2380,40 @@ public:
         next_precompile_executor_ = 0;
         translation_profile_ = profile;
         translation_profile_phase_ = phase;
+        profile_recording_enabled_ = record;
         profile_location_cursor_ = 0U;
         profile_queue_entries_ = 0U;
-        refill_profile_entries_locked();
+        profile_precompile_enabled_ = precompile;
+        if (precompile) refill_profile_entries_locked();
+        update_memory_peaks_locked();
     }
 
     void refresh_translation_profile() {
-        const auto profile = translation_profile_;
-        if (!profile) return;
         const std::lock_guard queue_lock{precompile_queue_mutex_};
+        if (!translation_profile_ || !profile_precompile_enabled_) return;
         refill_profile_entries_locked();
+        update_memory_peaks_locked();
     }
 
     [[nodiscard]] JitPrecompileMemoryStats precompile_memory_stats() const {
         const std::lock_guard queue_lock{precompile_queue_mutex_};
         JitPrecompileMemoryStats result;
-        result.profile_queue_entries = profile_queue_entries_;
-        result.profile_queue_capacity_entries =
-            jit_profile_precompile_queue_entry_capacity;
-        result.pending_entries = pending_precompile_phases_.size();
-        result.inflight_entries = inflight_precompile_entries_.size();
-        result.deferred_entries = deferred_precompile_entries_.size();
-        result.completed_entries = completed_precompile_entries_.size();
-        const auto total_entries = result.pending_entries +
-                                   result.inflight_entries +
-                                   result.deferred_entries +
-                                   result.completed_entries;
-        result.estimated_queue_entry_bytes =
-            total_entries * sizeof(PrecompileEntry);
-        result.native_preimport_tracker_bytes =
-            jit_native_preimport_tracker_object_bytes;
+        fill_memory_stats_locked(result);
+        update_memory_peaks_locked();
+        result.profile_queue_entries_peak = memory_peak_.profile_queue_entries_peak;
+        result.pending_entries_peak = memory_peak_.pending_entries_peak;
+        result.inflight_entries_peak = memory_peak_.inflight_entries_peak;
+        result.deferred_entries_peak = memory_peak_.deferred_entries_peak;
+        result.completed_entries_peak = memory_peak_.completed_entries_peak;
+        result.estimated_queue_entry_bytes_peak =
+            memory_peak_.estimated_queue_entry_bytes_peak;
+        result.queue_bucket_bytes_peak = memory_peak_.queue_bucket_bytes_peak;
+        result.queue_node_bytes_peak = memory_peak_.queue_node_bytes_peak;
+        result.queue_block_bytes_peak = memory_peak_.queue_block_bytes_peak;
+        result.profile_recorder_bytes_peak =
+            memory_peak_.profile_recorder_bytes_peak;
+        result.native_preimport_tracker_bytes_peak =
+            memory_peak_.native_preimport_tracker_bytes_peak;
         return result;
     }
 
@@ -2389,6 +2439,7 @@ public:
                 break;
             }
         }
+        update_memory_peaks_locked();
     }
 
     [[nodiscard]] std::optional<JitPrecompilePhase>
@@ -2472,9 +2523,9 @@ public:
             ++result.attempted;
             if (profile_derived && profile_for_stats) {
                 if (target == JitPrecompileTarget::NativeCode) {
-                    profile_for_stats->note_profile_native_executed();
+                    profile_for_stats->note_profile_native_attempted();
                 } else {
-                    profile_for_stats->note_profile_portable_executed();
+                    profile_for_stats->note_profile_portable_attempted();
                 }
             }
             const auto precompile_entry = entry->first;
@@ -2531,8 +2582,32 @@ public:
                         --profile_queue_entries_;
                     }
                 }
+                update_memory_peaks_locked();
             }
             if (cancelled) break;
+            if (profile_derived && profile_for_stats) {
+                const bool completed =
+                    target == JitPrecompileTarget::NativeCode
+                        ? disposition ==
+                                  JitExecutor::PrecompileDisposition::NativeCompiled ||
+                              disposition ==
+                                  JitExecutor::PrecompileDisposition::ArtifactImported ||
+                              disposition ==
+                                  JitExecutor::PrecompileDisposition::ArtifactProbeHit ||
+                              disposition ==
+                                  JitExecutor::PrecompileDisposition::SharedSlabHit
+                        : disposition ==
+                                  JitExecutor::PrecompileDisposition::PortableGenerated ||
+                              disposition ==
+                                  JitExecutor::PrecompileDisposition::PortableArtifactHit;
+                if (completed) {
+                    if (target == JitPrecompileTarget::NativeCode) {
+                        profile_for_stats->note_profile_native_executed();
+                    } else {
+                        profile_for_stats->note_profile_portable_executed();
+                    }
+                }
+            }
             switch (disposition) {
             case JitExecutor::PrecompileDisposition::NativeCompiled:
                 ++result.native_compiled;
@@ -2587,6 +2662,7 @@ public:
     void quiesce_precompilation() {
         {
             const std::lock_guard queue_lock{precompile_queue_mutex_};
+            update_memory_peaks_locked();
             ++precompile_cancellation_generation_;
             for (auto &queue : pending_precompile_entries_) queue.clear();
             pending_precompile_phases_.clear();
@@ -2604,6 +2680,102 @@ public:
     }
 
 private:
+    template <typename Container>
+    [[nodiscard]] static std::size_t estimate_unordered_buckets(
+        const Container &container) noexcept {
+        return container.bucket_count() * sizeof(void *);
+    }
+
+    template <typename Container>
+    [[nodiscard]] static std::size_t estimate_unordered_nodes(
+        const Container &container) noexcept {
+        // libstdc++ and libc++ both allocate a link plus the value in each
+        // node.  The extra pointer is deliberately conservative; this is an
+        // explanatory estimate, never an assertion about allocator RSS.
+        return container.size() *
+               (sizeof(typename Container::value_type) + 2U * sizeof(void *));
+    }
+
+    template <typename T>
+    [[nodiscard]] static std::size_t estimate_deque_blocks(
+        const std::deque<T> &container) noexcept {
+        if (container.empty()) return 0U;
+        constexpr auto elements_per_block =
+            std::size_t{4096U} / (sizeof(T) == 0U ? 1U : sizeof(T));
+        constexpr auto block_elements =
+            elements_per_block == 0U ? std::size_t{1U} : elements_per_block;
+        const auto blocks =
+            (container.size() + block_elements - 1U) / block_elements;
+        return blocks * block_elements * sizeof(T) +
+               (blocks + 2U) * sizeof(void *);
+    }
+
+    void fill_memory_stats_locked(JitPrecompileMemoryStats &result) const
+        noexcept {
+        result.profile_recorder_bytes = profile_recording_enabled_
+                                            ? executors_.size() *
+                                                  sizeof(JitTranslationProfileRecorder)
+                                            : 0U;
+        result.native_preimport_tracker_bytes =
+            native_preimport_tracker_ ? jit_native_preimport_tracker_object_bytes
+                                      : 0U;
+        if (!profile_precompile_enabled_) return;
+        result.profile_queue_entries = profile_queue_entries_;
+        result.profile_queue_capacity_entries =
+            jit_profile_precompile_queue_entry_capacity;
+        result.pending_entries = pending_precompile_phases_.size();
+        result.inflight_entries = inflight_precompile_entries_.size();
+        result.deferred_entries = deferred_precompile_entries_.size();
+        result.completed_entries = completed_precompile_entries_.size();
+        for (const auto &queue : pending_precompile_entries_) {
+            result.queue_block_bytes += estimate_deque_blocks(queue);
+        }
+        result.queue_bucket_bytes =
+            estimate_unordered_buckets(pending_precompile_phases_) +
+            estimate_unordered_buckets(inflight_precompile_entries_) +
+            estimate_unordered_buckets(deferred_precompile_entries_) +
+            estimate_unordered_buckets(completed_precompile_entries_);
+        result.queue_node_bytes =
+            estimate_unordered_nodes(pending_precompile_phases_) +
+            estimate_unordered_nodes(inflight_precompile_entries_) +
+            estimate_unordered_nodes(deferred_precompile_entries_) +
+            estimate_unordered_nodes(completed_precompile_entries_);
+        result.estimated_queue_entry_bytes = result.queue_bucket_bytes +
+                                             result.queue_node_bytes +
+                                             result.queue_block_bytes;
+    }
+
+    void update_memory_peaks_locked() const noexcept {
+        JitPrecompileMemoryStats current;
+        fill_memory_stats_locked(current);
+        memory_peak_.profile_queue_entries_peak = std::max(
+            memory_peak_.profile_queue_entries_peak,
+            current.profile_queue_entries);
+        memory_peak_.pending_entries_peak = std::max(
+            memory_peak_.pending_entries_peak, current.pending_entries);
+        memory_peak_.inflight_entries_peak = std::max(
+            memory_peak_.inflight_entries_peak, current.inflight_entries);
+        memory_peak_.deferred_entries_peak = std::max(
+            memory_peak_.deferred_entries_peak, current.deferred_entries);
+        memory_peak_.completed_entries_peak = std::max(
+            memory_peak_.completed_entries_peak, current.completed_entries);
+        memory_peak_.estimated_queue_entry_bytes_peak = std::max(
+            memory_peak_.estimated_queue_entry_bytes_peak,
+            current.estimated_queue_entry_bytes);
+        memory_peak_.queue_bucket_bytes_peak = std::max(
+            memory_peak_.queue_bucket_bytes_peak, current.queue_bucket_bytes);
+        memory_peak_.queue_node_bytes_peak = std::max(
+            memory_peak_.queue_node_bytes_peak, current.queue_node_bytes);
+        memory_peak_.queue_block_bytes_peak = std::max(
+            memory_peak_.queue_block_bytes_peak, current.queue_block_bytes);
+        memory_peak_.profile_recorder_bytes_peak = std::max(
+            memory_peak_.profile_recorder_bytes_peak,
+            current.profile_recorder_bytes);
+        memory_peak_.native_preimport_tracker_bytes_peak = std::max(
+            memory_peak_.native_preimport_tracker_bytes_peak,
+            current.native_preimport_tracker_bytes);
+    }
+
     enum class PrecompileEnqueueResult : std::uint8_t {
         Existing,
         Inserted,
@@ -2659,6 +2831,7 @@ private:
                 }
             }
         }
+        update_memory_peaks_locked();
         return PrecompileEnqueueResult::Inserted;
     }
 
@@ -2734,6 +2907,7 @@ private:
             pending_precompile_entries_[phase_index(phase)].push_back(entry);
             iterator = deferred_precompile_entries_.erase(iterator);
         }
+        update_memory_peaks_locked();
     }
 
     [[nodiscard]] std::optional<JitPrecompilePhase>
@@ -2790,6 +2964,7 @@ private:
             queue.erase(iterator);
             pending_precompile_phases_.erase(entry);
             inflight_precompile_entries_.insert(entry);
+            update_memory_peaks_locked();
             return std::pair{entry, *phase};
         }
         return std::nullopt;
@@ -2814,6 +2989,8 @@ private:
     std::shared_ptr<JitTranslationProfile> translation_profile_;
     JitPrecompilePhase translation_profile_phase_{
         JitPrecompilePhase::Remaining};
+    bool profile_recording_enabled_{};
+    bool profile_precompile_enabled_{};
     std::size_t profile_location_cursor_{};
     std::size_t profile_queue_entries_{};
     std::optional<std::uint64_t> cache_full_generation_observed_;
@@ -2822,6 +2999,7 @@ private:
     std::uint64_t active_precompile_tasks_{};
     std::condition_variable precompile_idle_;
     mutable std::mutex precompile_queue_mutex_;
+    mutable JitPrecompileMemoryStats memory_peak_{};
 };
 
 Cpu::Cpu(
@@ -2999,10 +3177,12 @@ void Cpu::set_debug_breakpoints_enabled(bool enabled) {
     debug_breakpoints_enabled_ = enabled;
 }
 void Cpu::set_translation_profile(
-    std::shared_ptr<JitTranslationProfile> profile) {
+    std::shared_ptr<JitTranslationProfile> profile, bool record,
+    bool precompile) {
     if (execution_pool_) {
         execution_pool_->set_translation_profile(
-            std::move(profile), JitPrecompilePhase::Remaining);
+            std::move(profile), JitPrecompilePhase::Remaining, record,
+            precompile);
     }
 }
 void Cpu::clear_exclusive_state(std::size_t execution_slot) {
@@ -3169,8 +3349,9 @@ void CpuCluster::invalidate_cache_range(
 
 void CpuCluster::set_translation_profile(
     std::shared_ptr<JitTranslationProfile> profile,
-    JitPrecompilePhase phase) {
-    execution_pool_->set_translation_profile(std::move(profile), phase);
+    JitPrecompilePhase phase, bool record, bool precompile) {
+    execution_pool_->set_translation_profile(
+        std::move(profile), phase, record, precompile);
 }
 
 void CpuCluster::refresh_translation_profile() {

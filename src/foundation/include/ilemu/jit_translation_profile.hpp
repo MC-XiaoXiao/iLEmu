@@ -83,7 +83,10 @@ struct JitTranslationProfileStats {
     // disk load is never confused with descriptors recorded during this run.
     std::uint64_t recorded{};
     std::uint64_t recorded_descriptors{};
+    std::uint64_t newly_recorded_descriptors{};
     std::uint64_t deduplicated{};
+    std::uint64_t recorder_deduplicated{};
+    std::uint64_t recorder_dropped_capacity{};
     std::uint64_t dropped_capacity{};
     std::uint64_t unstable_dropped{};
     std::uint64_t profile_loaded{};
@@ -92,7 +95,9 @@ struct JitTranslationProfileStats {
     std::uint64_t disk_files_loaded{};
     std::uint64_t profile_enqueued_portable{};
     std::uint64_t profile_native_enqueued{};
+    std::uint64_t profile_native_attempted{};
     std::uint64_t profile_native_executed{};
+    std::uint64_t profile_portable_attempted{};
     std::uint64_t profile_portable_executed{};
     std::uint64_t profile_portable_generated{};
     std::uint64_t portable_existence_hits{};
@@ -154,7 +159,9 @@ public:
     void note_profile_loaded(std::uint64_t descriptors) noexcept;
     void note_profile_enqueued_portable(std::uint64_t count = 1) noexcept;
     void note_profile_native_enqueued(std::uint64_t count = 1) noexcept;
+    void note_profile_native_attempted() noexcept;
     void note_profile_native_executed() noexcept;
+    void note_profile_portable_attempted() noexcept;
     void note_profile_portable_executed() noexcept;
     void note_portable_existence_hit() noexcept;
     void note_profile_portable_generated() noexcept;
@@ -180,13 +187,17 @@ private:
     std::unordered_set<std::uint64_t> discarded_locations_;
     std::atomic<std::uint64_t> recorded_{};
     std::atomic<std::uint64_t> deduplicated_{};
+    std::atomic<std::uint64_t> recorder_deduplicated_{};
+    std::atomic<std::uint64_t> recorder_dropped_capacity_{};
     std::atomic<std::uint64_t> dropped_capacity_{};
     std::atomic<std::uint64_t> unstable_dropped_{};
     std::atomic<std::uint64_t> profile_loaded_{};
     std::atomic<std::uint64_t> profile_files_loaded_{};
     std::atomic<std::uint64_t> profile_enqueued_portable_{};
     std::atomic<std::uint64_t> profile_native_enqueued_{};
+    std::atomic<std::uint64_t> profile_native_attempted_{};
     std::atomic<std::uint64_t> profile_native_executed_{};
+    std::atomic<std::uint64_t> profile_portable_attempted_{};
     std::atomic<std::uint64_t> profile_portable_executed_{};
     std::atomic<std::uint64_t> profile_portable_generated_{};
     std::atomic<std::uint64_t> portable_existence_hits_{};
@@ -218,7 +229,7 @@ private:
 class JitTranslationProfileStore {
 public:
     explicit JitTranslationProfileStore(
-        std::filesystem::path data_directory);
+        std::filesystem::path data_directory, bool save_enabled = true);
     ~JitTranslationProfileStore();
 
     JitTranslationProfileStore(const JitTranslationProfileStore&) = delete;
@@ -226,7 +237,8 @@ public:
         const JitTranslationProfileStore&) = delete;
 
     [[nodiscard]] std::shared_ptr<JitTranslationProfile> profile_for(
-        const ContentIdentity& executable_identity);
+        const ContentIdentity& executable_identity,
+        bool load_from_disk = true);
     void save() noexcept;
     [[nodiscard]] JitTranslationProfileStats stats() const noexcept;
 
@@ -239,6 +251,7 @@ private:
     std::size_t known_storage_bytes_{};
     std::uint64_t profile_loads_{};
     std::uint64_t profile_save_failures_{};
+    bool save_enabled_{true};
 };
 
 } // namespace ilemu

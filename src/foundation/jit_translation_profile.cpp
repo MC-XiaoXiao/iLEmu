@@ -378,7 +378,6 @@ JitTranslationProfile::JitTranslationProfile(
         const auto location = location_descriptors[index];
         if (location != 0 && known_locations_.insert(location).second) {
             locations_.push_back(location);
-            recorded_.fetch_add(1, std::memory_order_relaxed);
         }
     }
     if (location_descriptors.size() > retained) {
@@ -470,6 +469,10 @@ void JitTranslationProfile::merge(
     }
     recorded_.fetch_add(recorded, std::memory_order_relaxed);
     deduplicated_.fetch_add(deduplicated, std::memory_order_relaxed);
+    recorder_deduplicated_.fetch_add(
+        recorder_deduplicated, std::memory_order_relaxed);
+    recorder_dropped_capacity_.fetch_add(
+        recorder_dropped_capacity, std::memory_order_relaxed);
     dropped_capacity_.fetch_add(dropped, std::memory_order_relaxed);
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - started);
@@ -526,7 +529,12 @@ JitTranslationProfileStats JitTranslationProfile::stats() const noexcept {
     JitTranslationProfileStats result;
     result.recorded = recorded_.load(std::memory_order_relaxed);
     result.recorded_descriptors = result.recorded;
+    result.newly_recorded_descriptors = result.recorded;
     result.deduplicated = deduplicated_.load(std::memory_order_relaxed);
+    result.recorder_deduplicated =
+        recorder_deduplicated_.load(std::memory_order_relaxed);
+    result.recorder_dropped_capacity =
+        recorder_dropped_capacity_.load(std::memory_order_relaxed);
     result.dropped_capacity =
         dropped_capacity_.load(std::memory_order_relaxed);
     result.unstable_dropped = unstable_dropped_.load(std::memory_order_relaxed);
@@ -539,8 +547,12 @@ JitTranslationProfileStats JitTranslationProfile::stats() const noexcept {
         profile_enqueued_portable_.load(std::memory_order_relaxed);
     result.profile_native_enqueued =
         profile_native_enqueued_.load(std::memory_order_relaxed);
+    result.profile_native_attempted =
+        profile_native_attempted_.load(std::memory_order_relaxed);
     result.profile_native_executed =
         profile_native_executed_.load(std::memory_order_relaxed);
+    result.profile_portable_attempted =
+        profile_portable_attempted_.load(std::memory_order_relaxed);
     result.profile_portable_executed =
         profile_portable_executed_.load(std::memory_order_relaxed);
     result.profile_portable_generated =
@@ -621,8 +633,14 @@ void JitTranslationProfile::note_profile_native_enqueued(
     std::uint64_t count) noexcept {
     profile_native_enqueued_.fetch_add(count, std::memory_order_relaxed);
 }
+void JitTranslationProfile::note_profile_native_attempted() noexcept {
+    profile_native_attempted_.fetch_add(1, std::memory_order_relaxed);
+}
 void JitTranslationProfile::note_profile_native_executed() noexcept {
     profile_native_executed_.fetch_add(1, std::memory_order_relaxed);
+}
+void JitTranslationProfile::note_profile_portable_attempted() noexcept {
+    profile_portable_attempted_.fetch_add(1, std::memory_order_relaxed);
 }
 void JitTranslationProfile::note_profile_portable_executed() noexcept {
     profile_portable_executed_.fetch_add(1, std::memory_order_relaxed);
@@ -686,8 +704,9 @@ void JitTranslationProfile::note_load(std::uint64_t nanoseconds) noexcept {
 }
 
 JitTranslationProfileStore::JitTranslationProfileStore(
-    std::filesystem::path data_directory)
-    : data_directory_{std::move(data_directory)} {
+    std::filesystem::path data_directory, bool save_enabled)
+    : data_directory_{std::move(data_directory)},
+      save_enabled_{save_enabled} {
     for (const auto& record : load_profile_index(
              profile_index_path(data_directory_))) {
         profile_access_order_[record.identity] = record.access_order;
@@ -698,11 +717,13 @@ JitTranslationProfileStore::JitTranslationProfileStore(
     }
 }
 
-JitTranslationProfileStore::~JitTranslationProfileStore() { save(); }
+JitTranslationProfileStore::~JitTranslationProfileStore() {
+    if (save_enabled_) save();
+}
 
 std::shared_ptr<JitTranslationProfile>
 JitTranslationProfileStore::profile_for(
-    const ContentIdentity& executable_identity) {
+    const ContentIdentity& executable_identity, bool load_from_disk) {
     if (const auto entry = profiles_.find(executable_identity);
         entry != profiles_.end()) {
         profile_access_order_[executable_identity] = next_access_order_++;
@@ -717,7 +738,7 @@ JitTranslationProfileStore::profile_for(
     }
 
     std::uint64_t loaded_bytes{};
-    if (!executable_identity.empty()) {
+    if (load_from_disk && !executable_identity.empty()) {
         const auto path = data_directory_ /
                           (profile_file_stem(executable_identity) + ".profile");
         const auto started = std::chrono::steady_clock::now();
@@ -757,6 +778,7 @@ JitTranslationProfileStore::profile_for(
 }
 
 void JitTranslationProfileStore::save() noexcept {
+    if (!save_enabled_) return;
     try {
         for (const auto& [executable_identity, profile] : profiles_) {
             if (!profile || executable_identity.empty()) continue;
@@ -834,14 +856,19 @@ JitTranslationProfileStats JitTranslationProfileStore::stats() const noexcept {
         if (!profile) continue;
         const auto current = profile->stats();
         result.recorded += current.recorded;
+        result.newly_recorded_descriptors += current.newly_recorded_descriptors;
         result.deduplicated += current.deduplicated;
+        result.recorder_deduplicated += current.recorder_deduplicated;
+        result.recorder_dropped_capacity += current.recorder_dropped_capacity;
         result.dropped_capacity += current.dropped_capacity;
         result.unstable_dropped += current.unstable_dropped;
         result.profile_loaded += current.profile_loaded;
         result.profile_files_loaded += current.profile_files_loaded;
         result.profile_enqueued_portable += current.profile_enqueued_portable;
         result.profile_native_enqueued += current.profile_native_enqueued;
+        result.profile_native_attempted += current.profile_native_attempted;
         result.profile_native_executed += current.profile_native_executed;
+        result.profile_portable_attempted += current.profile_portable_attempted;
         result.profile_portable_executed += current.profile_portable_executed;
         result.profile_portable_generated += current.profile_portable_generated;
         result.portable_existence_hits += current.portable_existence_hits;
