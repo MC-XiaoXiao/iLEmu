@@ -74,6 +74,8 @@ constexpr auto host_yield_slow_translation_threshold =
     std::chrono::microseconds{250};
 constexpr std::size_t jit_native_preimport_tracker_capacity = 4'096U;
 constexpr std::size_t jit_native_preimport_tracker_hash_capacity = 8'192U;
+constexpr std::size_t jit_demand_seen_tracker_capacity = 32'768U;
+constexpr std::size_t jit_demand_seen_tracker_hash_capacity = 65'536U;
 static_assert(sizeof(void *) == sizeof(std::uint64_t));
 
 // Native pre-import is performed by whichever executor owns the next
@@ -112,6 +114,48 @@ public:
         return ready_count_.load(std::memory_order_acquire) != 0U;
     }
 
+    void mark_demand_seen(std::uint64_t location_descriptor) noexcept {
+        if (location_descriptor == 0U ||
+            demand_seen_count_.load(std::memory_order_acquire) >=
+                jit_demand_seen_tracker_capacity) {
+            return;
+        }
+        auto slot = hash(location_descriptor) &
+                    (jit_demand_seen_tracker_hash_capacity - 1U);
+        for (std::size_t probe = 0;
+             probe < jit_demand_seen_tracker_hash_capacity; ++probe) {
+            auto known = demand_locations_[slot].load(
+                std::memory_order_acquire);
+            if (known == location_descriptor) return;
+            if (known == 0U && demand_locations_[slot].compare_exchange_weak(
+                                  known, location_descriptor,
+                                  std::memory_order_acq_rel,
+                                  std::memory_order_acquire)) {
+                demand_seen_count_.fetch_add(1U, std::memory_order_release);
+                return;
+            }
+            slot = (slot + 1U) &
+                   (jit_demand_seen_tracker_hash_capacity - 1U);
+        }
+    }
+
+    [[nodiscard]] bool demand_seen(
+        std::uint64_t location_descriptor) const noexcept {
+        if (location_descriptor == 0U) return false;
+        auto slot = hash(location_descriptor) &
+                    (jit_demand_seen_tracker_hash_capacity - 1U);
+        for (std::size_t probe = 0;
+             probe < jit_demand_seen_tracker_hash_capacity; ++probe) {
+            const auto known = demand_locations_[slot].load(
+                std::memory_order_acquire);
+            if (known == 0U) return false;
+            if (known == location_descriptor) return true;
+            slot = (slot + 1U) &
+                   (jit_demand_seen_tracker_hash_capacity - 1U);
+        }
+        return false;
+    }
+
     [[nodiscard]] bool consume(std::uint64_t location_descriptor) noexcept {
         if (location_descriptor == 0U) return false;
         auto slot = hash(location_descriptor) &
@@ -138,6 +182,14 @@ public:
             location.store(0U, std::memory_order_release);
         }
         ready_count_.store(0U, std::memory_order_release);
+        clear_demand_locations();
+    }
+
+    void clear_demand_locations() noexcept {
+        for (auto& location : demand_locations_) {
+            location.store(0U, std::memory_order_release);
+        }
+        demand_seen_count_.store(0U, std::memory_order_release);
     }
 
 private:
@@ -156,6 +208,10 @@ private:
                jit_native_preimport_tracker_hash_capacity>
         locations_{};
     std::atomic<std::uint64_t> ready_count_{};
+    std::array<std::atomic<std::uint64_t>,
+               jit_demand_seen_tracker_hash_capacity>
+        demand_locations_{};
+    std::atomic<std::uint64_t> demand_seen_count_{};
 };
 
 class CpuRunPhaseDiagnostics {
@@ -348,13 +404,12 @@ public:
     JitCallbacks(
         AddressSpace& memory,
         const ArmCpuModel& cpu_model,
-        std::shared_ptr<JitArtifactStore> artifact_store)
+        std::shared_ptr<JitArtifactStore> artifact_store,
+        std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker)
         : memory_{memory},
           cpu_model_{cpu_model},
-          artifact_store_{std::move(artifact_store)} {
-        demand_locations_seen_.reserve(
-            jit_translation_profile_recorder_capacity * 2U);
-    }
+          artifact_store_{std::move(artifact_store)},
+          native_preimport_tracker_{std::move(native_preimport_tracker)} {}
 
     void attach(Cpu* owner, Dynarmic::A32::Jit* jit) {
         owner_ = owner;
@@ -953,12 +1008,7 @@ public:
         std::size_t stable_count{};
         std::uint64_t unstable_count{};
         for (const auto location_descriptor : recorded) {
-            try {
-                demand_locations_seen_.insert(location_descriptor);
-            } catch (...) {
-                // The bounded seen-set is advisory and never affects Guest
-                // execution or the recorder's persisted order.
-            }
+            native_preimport_tracker_->mark_demand_seen(location_descriptor);
             const auto code_address =
                 static_cast<std::uint32_t>(location_descriptor) &
                 ~std::uint32_t{3};
@@ -990,11 +1040,11 @@ public:
 
     [[nodiscard]] bool demand_location_seen(
         std::uint64_t location_descriptor) const noexcept {
-        return demand_locations_seen_.contains(location_descriptor);
+        return native_preimport_tracker_->demand_seen(location_descriptor);
     }
 
     void clear_demand_locations() noexcept {
-        demand_locations_seen_.clear();
+        native_preimport_tracker_->clear_demand_locations();
     }
 
     void note_profile_portable_existence_hit() noexcept {
@@ -1306,7 +1356,7 @@ private:
     std::uint64_t host_yield_checks_{};
     std::chrono::steady_clock::time_point host_slice_deadline_{};
     JitTranslationProfileRecorder translation_recorder_;
-    std::unordered_set<std::uint64_t> demand_locations_seen_;
+    std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker_;
 };
 
 // The iPhone ARM user ABI uses CP15 thread-pointer registers in addition to
@@ -1443,7 +1493,8 @@ public:
           memory_{memory},
           monitor_{monitor},
           callbacks_{std::make_unique<JitCallbacks>(
-              memory, cpu_model, std::move(artifact_store))},
+              memory, cpu_model, std::move(artifact_store),
+              native_preimport_tracker)},
           cp15_{std::make_unique<ArmSystemControlCoprocessor>(
               *callbacks_)},
           execution_context_{std::move(execution_context)},
