@@ -72,7 +72,91 @@ constexpr std::uint64_t host_yield_max_tick_budget = 8192U;
 constexpr auto host_yield_urgent_window = std::chrono::microseconds{250};
 constexpr auto host_yield_slow_translation_threshold =
     std::chrono::microseconds{250};
+constexpr std::size_t jit_native_preimport_tracker_capacity = 4'096U;
+constexpr std::size_t jit_native_preimport_tracker_hash_capacity = 8'192U;
 static_assert(sizeof(void *) == sizeof(std::uint64_t));
+
+// Native pre-import is performed by whichever executor owns the next
+// precompile slot, while Guest execution may enter through another executor.
+// Keep the correlation evidence in one bounded, lock-free tracker per
+// execution pool rather than in one executor-local set.
+class JitNativePreimportTracker {
+public:
+    JitNativePreimportTracker() noexcept { clear(); }
+
+    void mark(std::uint64_t location_descriptor) noexcept {
+        if (location_descriptor == 0U ||
+            ready_count_.load(std::memory_order_acquire) >=
+                jit_native_preimport_tracker_capacity) {
+            return;
+        }
+        auto slot = hash(location_descriptor) &
+                    (jit_native_preimport_tracker_hash_capacity - 1U);
+        for (std::size_t probe = 0;
+             probe < jit_native_preimport_tracker_hash_capacity; ++probe) {
+            auto known = locations_[slot].load(std::memory_order_acquire);
+            if (known == location_descriptor) return;
+            if (known == 0U && locations_[slot].compare_exchange_weak(
+                                  known, location_descriptor,
+                                  std::memory_order_acq_rel,
+                                  std::memory_order_acquire)) {
+                ready_count_.fetch_add(1U, std::memory_order_release);
+                return;
+            }
+            slot = (slot + 1U) &
+                   (jit_native_preimport_tracker_hash_capacity - 1U);
+        }
+    }
+
+    [[nodiscard]] bool has_ready() const noexcept {
+        return ready_count_.load(std::memory_order_acquire) != 0U;
+    }
+
+    [[nodiscard]] bool consume(std::uint64_t location_descriptor) noexcept {
+        if (location_descriptor == 0U) return false;
+        auto slot = hash(location_descriptor) &
+                    (jit_native_preimport_tracker_hash_capacity - 1U);
+        for (std::size_t probe = 0;
+             probe < jit_native_preimport_tracker_hash_capacity; ++probe) {
+            auto known = locations_[slot].load(std::memory_order_acquire);
+            if (known == 0U) return false;
+            if (known == location_descriptor && locations_[slot].compare_exchange_weak(
+                                                    known, 0U,
+                                                    std::memory_order_acq_rel,
+                                                    std::memory_order_acquire)) {
+                ready_count_.fetch_sub(1U, std::memory_order_release);
+                return true;
+            }
+            slot = (slot + 1U) &
+                   (jit_native_preimport_tracker_hash_capacity - 1U);
+        }
+        return false;
+    }
+
+    void clear() noexcept {
+        for (auto& location : locations_) {
+            location.store(0U, std::memory_order_release);
+        }
+        ready_count_.store(0U, std::memory_order_release);
+    }
+
+private:
+    [[nodiscard]] static std::size_t hash(
+        std::uint64_t location_descriptor) noexcept {
+        auto value = location_descriptor;
+        value ^= value >> 30U;
+        value *= 0xbf58476d1ce4e5b9ULL;
+        value ^= value >> 27U;
+        value *= 0x94d049bb133111ebULL;
+        value ^= value >> 31U;
+        return static_cast<std::size_t>(value);
+    }
+
+    std::array<std::atomic<std::uint64_t>,
+               jit_native_preimport_tracker_hash_capacity>
+        locations_{};
+    std::atomic<std::uint64_t> ready_count_{};
+};
 
 class CpuRunPhaseDiagnostics {
 public:
@@ -1352,7 +1436,8 @@ public:
         Dynarmic::ExclusiveMonitor& monitor,
         const ArmCpuModel& cpu_model,
         std::shared_ptr<JitArtifactStore> artifact_store,
-        std::shared_ptr<ExecutionContext> execution_context)
+        std::shared_ptr<ExecutionContext> execution_context,
+        std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker)
         : processor_id_{processor_id},
           execution_slot_{execution_slot},
           memory_{memory},
@@ -1361,10 +1446,11 @@ public:
               memory, cpu_model, std::move(artifact_store))},
           cp15_{std::make_unique<ArmSystemControlCoprocessor>(
               *callbacks_)},
-          execution_context_{std::move(execution_context)} {
-        if (!execution_context_) {
+          execution_context_{std::move(execution_context)},
+          native_preimport_tracker_{std::move(native_preimport_tracker)} {
+        if (!execution_context_ || !native_preimport_tracker_) {
             throw std::invalid_argument{
-                "JIT executor requires an execution context"};
+                "JIT executor requires execution state"};
         }
         runtime_link_cell_ = execution_context_->create_link_cell();
         execution_context_->link(
@@ -1414,8 +1500,6 @@ public:
                 Dynarmic::GetExclusiveMonitorValuePointer(&monitor_, 0))));
         exclusive_monitor_values_link_cell_address_ =
             execution_context_->link_cell_address(exclusive_monitor_values_link_cell_);
-        native_preimport_locations_.reserve(
-            jit_translation_profile_recorder_capacity);
     }
 
     ~JitExecutor() {
@@ -1661,7 +1745,9 @@ public:
                     key->content_identity, key->layout_identity, true,
                     callbacks_->artifact_publication_generation()};
             }
-            if (profile_derived) mark_native_preimported(descriptor);
+            if (profile_derived && before_first_demand) {
+                mark_native_preimported(descriptor);
+            }
             record_code_cache_usage();
             return PrecompileDisposition::ArtifactImported;
         }
@@ -1678,7 +1764,9 @@ public:
                     key->content_identity, key->layout_identity, true,
                     callbacks_->artifact_publication_generation()};
             }
-            if (profile_derived) mark_native_preimported(descriptor);
+            if (profile_derived && before_first_demand) {
+                mark_native_preimported(descriptor);
+            }
             record_code_cache_usage();
             return PrecompileDisposition::SharedSlabHit;
         }
@@ -1717,7 +1805,7 @@ public:
         guest_preemption_requested_at_.reset();
         callbacks_->discard_demand_artifact();
         demand_artifact_probes_.clear();
-        native_preimport_locations_.clear();
+        native_preimport_tracker_->clear();
         callbacks_->clear_demand_locations();
         jit_->Reset();
     }
@@ -1792,24 +1880,15 @@ private:
     };
 
     void mark_native_preimported(std::uint64_t location_descriptor) noexcept {
-        if (native_preimport_locations_.size() >=
-            jit_translation_profile_maximum_locations) {
-            return;
-        }
-        try {
-            native_preimport_locations_.insert(location_descriptor);
-        } catch (...) {
-            // Pre-import correlation is advisory; native execution remains
-            // correct if its bounded evidence set cannot grow.
-        }
+        native_preimport_tracker_->mark(location_descriptor);
     }
 
     void mark_native_preimport_used(
         std::uint64_t location_descriptor) noexcept {
-        const auto entry = native_preimport_locations_.find(location_descriptor);
-        if (entry == native_preimport_locations_.end()) return;
-        native_preimport_locations_.erase(entry);
-        callbacks_->note_native_preimport_used();
+        if (native_preimport_tracker_->has_ready() &&
+            native_preimport_tracker_->consume(location_descriptor)) {
+            callbacks_->note_native_preimport_used();
+        }
     }
 
     [[nodiscard]] std::uint64_t current_location_descriptor() const {
@@ -1850,7 +1929,7 @@ private:
         if (invalidation_epoch == observed_invalidation_epoch_) return;
         artifact_probes_.clear();
         demand_artifact_probes_.clear();
-        native_preimport_locations_.clear();
+        native_preimport_tracker_->clear();
         callbacks_->clear_demand_locations();
         callbacks_->discard_demand_artifact();
         observed_invalidation_epoch_ = invalidation_epoch;
@@ -1879,7 +1958,7 @@ private:
         // precompile operation reaches this slower, serialized boundary.
         artifact_probes_.clear();
         demand_artifact_probes_.clear();
-        native_preimport_locations_.clear();
+        native_preimport_tracker_->clear();
         callbacks_->clear_demand_locations();
         callbacks_->discard_demand_artifact();
         observed_slab_generation_ = slab_generation;
@@ -2153,7 +2232,7 @@ private:
     std::unordered_map<std::uint64_t, ArtifactProbe> artifact_probes_;
     std::unordered_map<std::uint64_t, DemandArtifactProbe>
         demand_artifact_probes_;
-    std::unordered_set<std::uint64_t> native_preimport_locations_;
+    std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker_;
     bool guest_preemption_requested_{};
     std::optional<std::chrono::steady_clock::time_point>
         guest_preemption_requested_at_;
@@ -2199,7 +2278,9 @@ public:
         const ArmCpuModel& cpu_model,
         std::shared_ptr<JitArtifactStore> artifact_store)
         : memory_{memory},
-          execution_context_{std::make_shared<ExecutionContext>()} {
+          execution_context_{std::make_shared<ExecutionContext>()},
+          native_preimport_tracker_{
+              std::make_shared<JitNativePreimportTracker>()} {
         if (execution_slot_count == 0) {
             throw std::invalid_argument{
                 "execution_slot_count must be at least one"};
@@ -2215,7 +2296,7 @@ public:
         for (std::size_t slot = 0; slot < execution_slot_count; ++slot) {
             executors_.push_back(std::make_unique<JitExecutor>(
                 first_processor_id + slot, slot, memory, monitor, cpu_model,
-                artifact_store, execution_context_));
+                artifact_store, execution_context_, native_preimport_tracker_));
         }
     }
 
@@ -2283,6 +2364,7 @@ public:
         std::shared_ptr<JitTranslationProfile> profile,
         JitPrecompilePhase phase) {
         quiesce_precompilation();
+        native_preimport_tracker_->clear();
         const auto locations =
             profile ? profile->snapshot() : std::vector<std::uint64_t>{};
         for (auto& executor : executors_) {
@@ -2658,6 +2740,7 @@ private:
 
     AddressSpace& memory_;
     std::shared_ptr<ExecutionContext> execution_context_;
+    std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker_;
     std::vector<std::unique_ptr<JitExecutor>> executors_;
     std::array<std::deque<PrecompileEntry>, jit_precompile_phase_count>
         pending_precompile_entries_;
