@@ -726,6 +726,7 @@ struct Runtime {
   JitCodeCacheClass jit_cache_class{JitCodeCacheClass::Background};
   std::unique_ptr<AddressSpace> memory;
   std::unique_ptr<CpuCluster> cpus;
+  std::shared_ptr<JitTranslationProfile> jit_translation_profile;
   std::unique_ptr<CompatibilityKernel> kernel;
   std::vector<bool> allocated;
   std::optional<PendingExec> pending_exec;
@@ -2538,10 +2539,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
               loaded.executable.content_identity());
         }
         runtime.cpus->set_jit_artifact_retention(retention);
-        runtime.cpus->set_translation_profile(
-            translation_profiles.profile_for(
-                loaded.executable.content_identity()),
-            phase);
+        runtime.jit_translation_profile = translation_profiles.profile_for(
+            loaded.executable.content_identity());
+        runtime.cpus->set_translation_profile(runtime.jit_translation_profile,
+                                               phase);
         if (catalog_index == nullptr) return false;
         std::vector<std::uint64_t> entry_points;
         const auto append_entry_points = [&](const MachOImage &image) {
@@ -2604,6 +2605,30 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 JitPrecompileTarget::NativeCode,
                 JitPrecompileSource::DemandProfile)) {
           return;
+        }
+        if (startup_profile_adaptive) {
+          const auto profile = runtime.jit_translation_profile;
+          const auto profile_stats = profile ? profile->stats()
+                                             : JitTranslationProfileStats{};
+          const auto imported =
+              profile_stats.native_preimport_imported +
+              profile_stats.native_preimport_already_present;
+          const auto minimum_use_count = (imported + 3U) / 4U;
+          if (imported < 8U ||
+              profile_stats.native_preimport_used < minimum_use_count) {
+            output.line("[jit-profile] startup-native-warm executable=" +
+                        std::string{executable_path} +
+                        " skipped=adaptive-history imported=" +
+                        std::to_string(imported) + " used=" +
+                        std::to_string(profile_stats.native_preimport_used));
+            return;
+          }
+          if (host_memory_is_pressured(host_memory_budget_snapshot())) {
+            output.line("[jit-profile] startup-native-warm executable=" +
+                        std::string{executable_path} +
+                        " skipped=adaptive-memory-pressure");
+            return;
+          }
         }
         const auto blocks = startup_profile_adaptive
                                 ? std::min<std::uint64_t>(
