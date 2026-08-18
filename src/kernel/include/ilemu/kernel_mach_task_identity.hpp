@@ -32,7 +32,8 @@ inline constexpr std::uint32_t initial_io_registry_options_name = 0x713U;
 // treating either task's local name as an object identifier.
 [[nodiscard]] bool inherit_child(KernelSharedState &state,
                                  const ProcessContext &parent,
-                                 ProcessContext &child);
+                                 ProcessContext &child,
+                                 bool inherit_registered_ports);
 
 } // namespace mach_task_identity
 } // namespace ilemu

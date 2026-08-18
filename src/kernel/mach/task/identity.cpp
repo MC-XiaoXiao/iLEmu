@@ -2,6 +2,7 @@
 
 #include "ilemu/kernel_shared_state.hpp"
 
+#include <array>
 #include <optional>
 
 namespace ilemu::mach_task_identity {
@@ -74,7 +75,7 @@ bool initialize_root(KernelSharedState &state, ProcessContext &process) {
 }
 
 bool inherit_child(KernelSharedState &state, const ProcessContext &parent,
-                   ProcessContext &child) {
+                   ProcessContext &child, bool inherit_registered_ports) {
   const auto parent_task_object =
       state.mach_namespaces.resolve(parent.pid, parent.task_port);
   if (!parent_task_object) {
@@ -108,6 +109,19 @@ bool inherit_child(KernelSharedState &state, const ProcessContext &parent,
   }
   state.task_port_pids[child_task_object] = child.pid;
   state.task_thread_port_objects[child.pid][0] = child_thread_object;
+
+  if (inherit_registered_ports) {
+    const auto registered = state.mach_registered_ports.find(parent.pid);
+    std::array<std::uint32_t, 3> child_registered{};
+    if (registered != state.mach_registered_ports.end()) {
+      child_registered = registered->second;
+      for (const auto object : child_registered) {
+        if (object != xnu792::ipc::null_name)
+          ++state.mach_kernel_send_rights[object];
+      }
+    }
+    state.mach_registered_ports[child.pid] = child_registered;
+  }
 
   if (const auto actions =
           state.task_exception_actions.find(*parent_task_object);

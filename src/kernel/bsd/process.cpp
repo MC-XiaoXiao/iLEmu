@@ -76,6 +76,15 @@ void CompatibilityKernel::release_process_mach_rights() {
                                                     process_.pid);
   mach_support::terminate_exited_semaphores_locked(*shared_state_,
                                                     process_.pid);
+  if (const auto registered =
+          shared_state_->mach_registered_ports.find(process_.pid);
+      registered != shared_state_->mach_registered_ports.end()) {
+    for (const auto object : registered->second) {
+      if (object != xnu792::ipc::null_name)
+        mach_support::release_kernel_send_right_locked(*shared_state_, object);
+    }
+    shared_state_->mach_registered_ports.erase(registered);
+  }
   shared_state_->mach_namespaces.destroy_task(process_.pid);
   mach_support::cleanup_exited_process_metadata_locked(*shared_state_,
                                                         process_.pid);

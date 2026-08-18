@@ -2003,8 +2003,8 @@ void CompatibilityKernel::inherit_process_state(
   thread_ports_.emplace(0, process_.thread_port);
   {
     std::lock_guard mach_lock{shared_state_->mach_mutex};
-    if (!mach_task_identity::inherit_child(*shared_state_, parent.process_,
-                                           process_)) {
+    if (!mach_task_identity::inherit_child(
+            *shared_state_, parent.process_, process_, inherit_fork_state)) {
       throw std::runtime_error{"failed to inherit child Mach task identity"};
     }
   }

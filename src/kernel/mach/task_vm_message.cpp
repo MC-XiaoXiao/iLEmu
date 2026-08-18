@@ -9,6 +9,7 @@
 #include "ilemu/kernel_iokit.hpp"
 #include "ilemu/kernel_mach_ipc.hpp"
 #include "ilemu/kernel_network.hpp"
+#include "ilemu/mach_descriptor_transport.hpp"
 #include "ilemu/mach_clock_abi.hpp"
 #include "ilemu/mach_host_mig_ids.hpp"
 #include "ilemu/mach_port_mig_ids.hpp"
@@ -60,6 +61,120 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
   const std::optional<std::uint32_t> remote_port{request.remote_port};
   const std::optional<std::uint32_t> local_port{request.local_port};
   const std::optional<std::uint32_t> message_id{request.identifier};
+  const auto write_simple_reply = [&](std::uint32_t result) {
+    if (registers[3] < 36U) {
+      registers[0] = darwin::mach_message::receive_invalid_data;
+      return true;
+    }
+    const std::array<std::uint32_t, 9> reply{
+        darwin::mig_wire::disposition_move_send_once,
+        36U,
+        *local_port,
+        0,
+        0,
+        *message_id + 100U,
+        0,
+        1,
+        result,
+    };
+    for (std::size_t index = 0; index < reply.size(); ++index) {
+      if (!memory_.write32(message_address +
+                               static_cast<std::uint32_t>(index * 4U),
+                           reply[index])) {
+        registers[0] = darwin::mach_message::receive_invalid_data;
+        return true;
+      }
+    }
+    registers[0] = darwin::mach::success;
+    return true;
+  };
+  if (*message_id ==
+          mig_message_id(xnu792::mig::task::Routine::mach_ports_register) &&
+      registers[3] >= 36U) {
+    std::uint32_t result = darwin::mach::invalid_argument;
+    std::array<std::uint32_t, 3> registered_objects{};
+    std::vector<std::pair<std::uint32_t, xnu792::ipc::Right>> moved_names;
+    bool valid = false;
+    const auto bytes = memory_.read_bytes(message_address, registers[2]);
+    if (bytes) {
+      const auto descriptors = mach_transport::parse_descriptors(*bytes);
+      if (descriptors) {
+        const auto descriptor = std::find_if(
+            descriptors->begin(), descriptors->end(), [](const auto &item) {
+              return item.kind ==
+                     mach_transport::DescriptorKind::OutOfLinePorts;
+            });
+        const auto descriptor_count =
+            descriptor == descriptors->end() ? 0U : descriptor->count_or_size;
+        const auto requested_count = memory_.read32(
+            message_address +
+            static_cast<std::uint32_t>(
+                xnu792::mig::task::mach_ports_register_arguments[1]
+                    .request_count_offset));
+        const auto target = target_task_for_port(*shared_state_, process_.pid,
+                                                 *remote_port);
+        valid = target && descriptor != descriptors->end() &&
+                descriptor_count <= registered_objects.size() &&
+                (!requested_count || *requested_count == descriptor_count) &&
+                (descriptor_count == 0U || descriptor->address_or_name != 0U);
+        if (valid) {
+          const auto source =
+              source_right_for_disposition(descriptor->disposition());
+          valid = source && *source == xnu792::ipc::Right::Send;
+          if (valid) {
+            for (std::uint32_t index = 0; index < descriptor_count; ++index) {
+              const auto name = memory_.read32(
+                  descriptor->address_or_name +
+                  static_cast<std::uint32_t>(index * sizeof(std::uint32_t)));
+              if (!name || *name == xnu792::ipc::null_name) {
+                if (!name)
+                  valid = false;
+                continue;
+              }
+              moved_names.emplace_back(*name, *source);
+              std::lock_guard mach_lock{shared_state_->mach_mutex};
+              const auto object = resolve_name_with_right(
+                  *shared_state_, process_.pid, *name, *source);
+              if (!object) {
+                valid = false;
+                break;
+              }
+              registered_objects[index] = *object;
+            }
+          }
+          if (valid) {
+            std::lock_guard mach_lock{shared_state_->mach_mutex};
+            const auto target_pid = *target;
+            if (const auto previous =
+                    shared_state_->mach_registered_ports.find(target_pid);
+                previous != shared_state_->mach_registered_ports.end()) {
+              for (const auto object : previous->second) {
+                if (object != xnu792::ipc::null_name)
+                  release_kernel_send_right_locked(*shared_state_, object);
+              }
+            }
+            for (const auto object : registered_objects) {
+              if (object != xnu792::ipc::null_name)
+                retain_kernel_send_right_locked(*shared_state_, object);
+            }
+            shared_state_->mach_registered_ports[target_pid] =
+                registered_objects;
+            // The MIG array is normally MOVE_SEND. Consume the caller's
+            // supplied reference after the stash has acquired its own hold.
+            for (const auto &[name, right] : moved_names) {
+              if (!consume_moved_right_locked(*shared_state_, process_.pid,
+                                               name, right, false)) {
+                valid = false;
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+    result = valid ? darwin::mach::success : darwin::mach::invalid_argument;
+    return write_simple_reply(result);
+  }
   const auto creates_suspended_thread =
       *message_id == mig_message_id(xnu792::mig::task::Routine::thread_create);
   const auto creates_running_thread =
@@ -229,14 +344,69 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
   if (*message_id ==
           mig_message_id(xnu792::mig::task::Routine::mach_ports_lookup) &&
       registers[3] >= 52) {
+    std::uint32_t result = darwin::mach::invalid_argument;
+    std::array<std::uint32_t, 3> registered_objects{};
+    std::array<std::uint32_t, 3> port_names{};
+    {
+      std::lock_guard mach_lock{shared_state_->mach_mutex};
+      if (const auto target =
+              target_task_for_port(*shared_state_, process_.pid,
+                                   *remote_port)) {
+        result = darwin::mach::success;
+        if (const auto registered =
+                shared_state_->mach_registered_ports.find(*target);
+            registered != shared_state_->mach_registered_ports.end()) {
+          registered_objects = registered->second;
+        }
+        for (std::size_t index = 0; index < registered_objects.size(); ++index) {
+          const auto object = registered_objects[index];
+          if (object == xnu792::ipc::null_name)
+            continue;
+          port_names[index] =
+              shared_state_->mach_namespaces
+                  .copyout(process_.pid, object,
+                           xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
+                  .value_or(xnu792::ipc::null_name);
+        }
+      }
+    }
+    std::uint32_t ports_address = 0;
+    if (result == darwin::mach::success) {
+      const auto region = find_free_guest_region(
+          memory_, ool_results_base, AddressSpace::page_size);
+      if (!region ||
+          !memory_.map(*region, AddressSpace::page_size,
+                       MemoryPermission::Read | MemoryPermission::Write)) {
+        result = darwin::mach::resource_shortage;
+      } else {
+        ports_address = *region;
+        for (std::size_t index = 0; index < port_names.size(); ++index) {
+          if (!memory_.write32(
+                  ports_address + static_cast<std::uint32_t>(index * 4U),
+                  port_names[index])) {
+            registers[0] = darwin::mach_message::receive_invalid_data;
+            return true;
+          }
+        }
+      }
+    }
+    if (result != darwin::mach::success) {
+      return write_simple_reply(result);
+    }
     const std::array<std::uint32_t, 13> reply{
-        0x80000012U, 52,          *local_port, 0, 0, *message_id + 100,
-        1,           // one OOL ports descriptor
-        0,           // empty array address
-        0,           // empty array count
+        0x80000012U,
+        52U,
+        *local_port,
+        0,
+        0,
+        *message_id + 100U,
+        1U,
+        ports_address,
+        3U,
         0x02110000U, // OOL_PORTS, MOVE_SEND
-        0x00000000U, 0x00000001U,
-        0, // init_port_setCnt
+        0U,
+        1U,
+        3U, // init_port_setCnt
     };
     for (std::size_t index = 0; index < reply.size(); ++index) {
       if (!memory_.write32(message_address +

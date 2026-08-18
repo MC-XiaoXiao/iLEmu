@@ -857,6 +857,10 @@ struct KernelSharedState {
   // Global ipc_port objects. Per-task names and rights live exclusively in
   // MachNamespaceTable and resolve to keys in this table.
   xnu792::ipc::PortObjectTable mach_port_objects;
+  // XNU's mach_ports_register stash is inherited by forked tasks and exposed
+  // as fresh Send rights by mach_ports_lookup. These are kernel-held object
+  // references, not task-local names.
+  std::map<std::uint32_t, std::array<std::uint32_t, 3>> mach_registered_ports;
   // Send rights captured by queued messages count as extant for no-senders
   // even though they no longer need a sender-local ipc_entry.
   std::map<std::uint32_t, std::uint32_t> mach_inflight_send_rights;
