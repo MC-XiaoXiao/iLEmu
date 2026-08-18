@@ -63,6 +63,7 @@ bool XnuScheduler::register_thread(
     if (runnable) {
         ++active_timeshare_count_;
         performance_counters().record_scheduler_runnable_transition();
+        begin_runnable_generation(record);
         enqueue(thread, QueuePosition::Back);
     } else {
         ++waiting_count_;
@@ -131,6 +132,7 @@ bool XnuScheduler::make_runnable(XnuThreadId thread) {
         performance_counters().record_scheduler_wakeup(false, false);
     }
     record.info.state = XnuThreadState::Runnable;
+    begin_runnable_generation(record);
     record.info.remaining_quantum = quantum_for(record);
     record.info.computation_metered = 0;
     if (record.info.realtime) {
@@ -211,6 +213,7 @@ bool XnuScheduler::resume_thread(XnuThreadId thread) {
     record.resume_runnable = false;
     --waiting_count_;
     record.info.state = XnuThreadState::Runnable;
+    begin_runnable_generation(record);
     if (record.info.timeshare) {
         ++active_timeshare_count_;
     }
@@ -350,7 +353,7 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
         performance_counters().record_scheduler_dispatch();
         return XnuScheduledSlice{
             *preferred, processor, record.info.remaining_quantum,
-            runnable_since, front_continuation};
+            runnable_since, record.runnable_generation, front_continuation};
     }
 
     auto* selected_queue = selected_run_queue(processor);
@@ -377,7 +380,7 @@ std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
     performance_counters().record_scheduler_dispatch();
     return XnuScheduledSlice{
         thread, processor, record.info.remaining_quantum,
-        runnable_since, front_continuation};
+        runnable_since, record.runnable_generation, front_continuation};
 }
 
 XnuPreemption XnuScheduler::preemption_for(
@@ -487,6 +490,7 @@ bool XnuScheduler::complete_slice(
             record.wake_pending = false;
             record.info.state = XnuThreadState::Runnable;
             performance_counters().record_scheduler_runnable_transition();
+            begin_runnable_generation(record);
             record.info.remaining_quantum = quantum_for(record);
             record.info.remaining_timeslices = 0;
             record.info.timeslice_processor.reset();
@@ -519,6 +523,7 @@ bool XnuScheduler::complete_slice(
         recompute_priority(thread, record);
         record.info.state = XnuThreadState::Runnable;
         performance_counters().record_scheduler_runnable_transition();
+        begin_runnable_generation(record);
         if (completion != XnuSliceCompletion::Yield && record.info.timeshare &&
             record.info.remaining_timeslices > 1) {
             --record.info.remaining_timeslices;
@@ -531,6 +536,7 @@ bool XnuScheduler::complete_slice(
     } else {
         record.info.state = XnuThreadState::Runnable;
         performance_counters().record_scheduler_runnable_transition();
+        begin_runnable_generation(record);
         enqueue(thread, QueuePosition::Front);
     }
     return true;
@@ -582,6 +588,15 @@ std::uint32_t XnuScheduler::priority_usage_shift(
         ++shift;
     }
     return shift;
+}
+
+void XnuScheduler::begin_runnable_generation(ThreadRecord& record) {
+    if (++record.runnable_generation == 0)
+        ++record.runnable_generation;
+    // A requeue caused by a genuine runnable transition must not reuse the
+    // queue age from a prior wake or prior slice. Priority-only reordering
+    // does not call this helper and therefore retains the current generation.
+    record.enqueued_at = {};
 }
 
 void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position) {

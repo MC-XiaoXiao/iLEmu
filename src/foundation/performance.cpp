@@ -331,11 +331,13 @@ std::string diagnostic_source_name(const DiagnosticSourceSnapshot& source) {
     switch (source.kind) {
     case PerfDiagnosticSourceKind::SchedulerBack:
         name = "scheduler-pid-" + std::to_string(source.process_id) +
-               "-back";
+               "-thread-" + std::to_string(source.number) + "-back-gen-" +
+               std::to_string(source.runnable_generation);
         break;
     case PerfDiagnosticSourceKind::SchedulerFront:
         name = "scheduler-pid-" + std::to_string(source.process_id) +
-               "-front";
+               "-thread-" + std::to_string(source.number) + "-front-gen-" +
+               std::to_string(source.runnable_generation);
         break;
     case PerfDiagnosticSourceKind::SvcBsd:
         name = "svc-pid-" + std::to_string(source.process_id) + "-bsd-" +
@@ -390,11 +392,13 @@ std::uint64_t diagnostic_source_key(PerfDiagnosticSourceKind kind,
 }
 
 DiagnosticSourceSnapshot diagnostic_source_snapshot(
-    std::uint64_t key, std::uint64_t calls, std::uint64_t nanoseconds) {
+    std::uint64_t key, std::uint64_t runnable_generation,
+    std::uint64_t calls, std::uint64_t nanoseconds) {
     return DiagnosticSourceSnapshot{
         static_cast<PerfDiagnosticSourceKind>((key >> 60U) - 1U),
         static_cast<std::uint32_t>((key >> 32U) & 0x0fffffffU),
-        static_cast<std::uint32_t>(key), calls, nanoseconds};
+        static_cast<std::uint32_t>(key), runnable_generation, calls,
+        nanoseconds};
 }
 
 std::tuple<PerfDiagnosticSourceKind, std::uint32_t, std::uint32_t>
@@ -514,6 +518,7 @@ void PerformanceCounters::reset(bool enabled) {
     scheduler_preemptions_.store(0, std::memory_order_relaxed);
     scheduler_urgent_preemptions_.store(0, std::memory_order_relaxed);
     scheduler_preemption_requests_.store(0, std::memory_order_relaxed);
+    scheduler_preemption_coalesced_.store(0, std::memory_order_relaxed);
     scheduler_preemption_returns_.store(0, std::memory_order_relaxed);
     scheduler_preemption_deferred_consumes_.store(
         0, std::memory_order_relaxed);
@@ -600,6 +605,7 @@ void PerformanceCounters::reset(bool enabled) {
     }
     for (auto& source : diagnostic_source_counters_) {
         source.key.store(0, std::memory_order_relaxed);
+        source.runnable_generation.store(0, std::memory_order_relaxed);
         source.calls.store(0, std::memory_order_relaxed);
         source.nanoseconds.store(0, std::memory_order_relaxed);
     }
@@ -734,6 +740,8 @@ bool PerformanceCounters::begin_display_window() {
         scheduler_urgent_preemptions_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.scheduler_preemption_requests =
         scheduler_preemption_requests_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.scheduler_preemption_coalesced =
+        scheduler_preemption_coalesced_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.scheduler_preemption_returns =
         scheduler_preemption_returns_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.scheduler_preemption_deferred_consumes =
@@ -755,7 +763,8 @@ bool PerformanceCounters::begin_display_window() {
         if (key == 0)
             continue;
         const auto snapshot = diagnostic_source_snapshot(
-            key, source.calls.load(std::memory_order_relaxed),
+            key, source.runnable_generation.load(std::memory_order_relaxed),
+            source.calls.load(std::memory_order_relaxed),
             source.nanoseconds.load(std::memory_order_relaxed));
         display_window_diagnostic_source_baseline_.emplace(
             diagnostic_source_tuple(snapshot), snapshot);
@@ -844,6 +853,9 @@ PerformanceCounters::end_display_window() {
     result.scheduler_preemption_requests = diagnostic_delta(
         scheduler_preemption_requests_.load(std::memory_order_relaxed),
         diagnostic_work_baseline.scheduler_preemption_requests);
+    result.scheduler_preemption_coalesced = diagnostic_delta(
+        scheduler_preemption_coalesced_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.scheduler_preemption_coalesced);
     result.scheduler_preemption_returns = diagnostic_delta(
         scheduler_preemption_returns_.load(std::memory_order_relaxed),
         diagnostic_work_baseline.scheduler_preemption_returns);
@@ -929,7 +941,9 @@ PerformanceCounters::end_display_window() {
         if (encoded_key == 0)
             continue;
         const auto current = diagnostic_source_snapshot(
-            encoded_key, source.calls.load(std::memory_order_relaxed),
+            encoded_key,
+            source.runnable_generation.load(std::memory_order_relaxed),
+            source.calls.load(std::memory_order_relaxed),
             source.nanoseconds.load(std::memory_order_relaxed));
         const auto key = diagnostic_source_tuple(current);
         const auto baseline =
@@ -1296,6 +1310,11 @@ void PerformanceCounters::record_scheduler_preemption_check(
 void PerformanceCounters::record_scheduler_preemption_request() {
     if (!enabled()) return;
     scheduler_preemption_requests_.fetch_add(1, std::memory_order_relaxed);
+}
+
+void PerformanceCounters::record_scheduler_preemption_coalesced() {
+    if (!enabled()) return;
+    scheduler_preemption_coalesced_.fetch_add(1, std::memory_order_relaxed);
 }
 
 void PerformanceCounters::record_scheduler_preemption_return() {
@@ -2151,16 +2170,22 @@ void PerformanceCounters::record_cpu_run_phases(
 }
 
 void PerformanceCounters::record_diagnostic_scheduler_dispatch(
-    std::uint32_t process_id, bool front_continuation,
+    std::uint32_t process_id, std::uint32_t thread_id,
+    std::uint64_t runnable_generation, bool front_continuation,
     std::uint64_t nanoseconds) {
     if (!cpu_source_diagnostics_enabled())
+        return;
+    // The timestamp was captured from the exact scheduled slice. A zero
+    // generation indicates a caller that failed to provide a runnable event;
+    // do not fold that sample into a valid thread/generation stream.
+    if (runnable_generation == 0)
         return;
     record_latency(PerfLatencyKind::SchedulerRunnableToDispatch,
                    nanoseconds);
     const auto kind = front_continuation
         ? PerfDiagnosticSourceKind::SchedulerFront
         : PerfDiagnosticSourceKind::SchedulerBack;
-    const auto key = diagnostic_source_key(kind, process_id, 0U);
+    const auto key = diagnostic_source_key(kind, process_id, thread_id);
     if (key == 0)
         return;
     auto index = static_cast<std::size_t>(
@@ -2176,6 +2201,8 @@ void PerformanceCounters::record_diagnostic_scheduler_dispatch(
                 std::memory_order_relaxed));
         }
         if (observed == 0 || observed == key) {
+            source.runnable_generation.store(runnable_generation,
+                                             std::memory_order_relaxed);
             source.calls.fetch_add(1, std::memory_order_relaxed);
             source.nanoseconds.fetch_add(nanoseconds,
                                          std::memory_order_relaxed);
@@ -2413,6 +2440,8 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
         scheduler_urgent_preemptions_.load(std::memory_order_relaxed);
     result.scheduler_preemption_requests =
         scheduler_preemption_requests_.load(std::memory_order_relaxed);
+    result.scheduler_preemption_coalesced =
+        scheduler_preemption_coalesced_.load(std::memory_order_relaxed);
     result.scheduler_preemption_returns =
         scheduler_preemption_returns_.load(std::memory_order_relaxed);
     result.scheduler_preemption_deferred_consumes =
@@ -2562,7 +2591,8 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
         if (key == 0)
             continue;
         result.diagnostic_sources.push_back(diagnostic_source_snapshot(
-            key, source.calls.load(std::memory_order_relaxed),
+            key, source.runnable_generation.load(std::memory_order_relaxed),
+            source.calls.load(std::memory_order_relaxed),
             source.nanoseconds.load(std::memory_order_relaxed)));
     }
     return result;
@@ -2763,6 +2793,7 @@ std::string format_performance_summary(
          << "/" << snapshot.scheduler_preemptions << "/"
          << snapshot.scheduler_urgent_preemptions << "/"
          << snapshot.scheduler_preemption_requests << "/"
+         << snapshot.scheduler_preemption_coalesced << "/"
          << snapshot.scheduler_preemption_returns << "/"
          << snapshot.scheduler_preemption_deferred_consumes
          << " scheduler-quantum-expired="
@@ -2939,6 +2970,7 @@ std::string format_display_performance_summary(
          << "/" << snapshot.scheduler_preemptions << "/"
          << snapshot.scheduler_urgent_preemptions << "/"
          << snapshot.scheduler_preemption_requests << "/"
+         << snapshot.scheduler_preemption_coalesced << "/"
          << snapshot.scheduler_preemption_returns << "/"
          << snapshot.scheduler_preemption_deferred_consumes
          << " scheduler-quantum-expired="

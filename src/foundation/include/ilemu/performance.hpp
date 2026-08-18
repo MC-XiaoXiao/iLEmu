@@ -186,6 +186,10 @@ struct DiagnosticSourceSnapshot {
     PerfDiagnosticSourceKind kind{};
     std::uint32_t process_id{};
     std::uint32_t number{};
+    // Scheduler sources aggregate by concrete Guest thread and queue side;
+    // retain the runnable generation of the most recent sample so a report
+    // can verify which runnable event supplied its timestamp.
+    std::uint64_t runnable_generation{};
     std::uint64_t calls{};
     std::uint64_t nanoseconds{};
 };
@@ -244,6 +248,7 @@ struct PerformanceSnapshot {
     std::uint64_t scheduler_preemptions{};
     std::uint64_t scheduler_urgent_preemptions{};
     std::uint64_t scheduler_preemption_requests{};
+    std::uint64_t scheduler_preemption_coalesced{};
     std::uint64_t scheduler_preemption_returns{};
     std::uint64_t scheduler_preemption_deferred_consumes{};
     std::uint64_t scheduler_quantum_expirations{};
@@ -389,6 +394,7 @@ class PerformanceCounters {
     void record_scheduler_preemption_check(
         PerfSchedulerPreemptionKind result);
     void record_scheduler_preemption_request();
+    void record_scheduler_preemption_coalesced();
     void record_scheduler_preemption_return();
     void record_scheduler_preemption_deferred_consume();
     void record_scheduler_quantum_expiry();
@@ -486,7 +492,8 @@ class PerformanceCounters {
         std::uint64_t host_yield_checks, bool host_yielded,
         std::uint64_t svc_calls, std::optional<std::uint32_t> svc);
     void record_diagnostic_scheduler_dispatch(
-        std::uint32_t process_id, bool front_continuation,
+        std::uint32_t process_id, std::uint32_t thread_id,
+        std::uint64_t runnable_generation, bool front_continuation,
         std::uint64_t nanoseconds);
     void record_diagnostic_svc_dispatch(
         PerfDiagnosticSourceKind kind, std::uint32_t process_id,
@@ -590,6 +597,7 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> scheduler_preemptions_{};
     std::atomic<std::uint64_t> scheduler_urgent_preemptions_{};
     std::atomic<std::uint64_t> scheduler_preemption_requests_{};
+    std::atomic<std::uint64_t> scheduler_preemption_coalesced_{};
     std::atomic<std::uint64_t> scheduler_preemption_returns_{};
     std::atomic<std::uint64_t> scheduler_preemption_deferred_consumes_{};
     std::atomic<std::uint64_t> scheduler_quantum_expirations_{};
@@ -687,6 +695,7 @@ class PerformanceCounters {
     static constexpr std::size_t diagnostic_source_capacity = 4096;
     struct DiagnosticSourceCounter {
         std::atomic<std::uint64_t> key{};
+        std::atomic<std::uint64_t> runnable_generation{};
         std::atomic<std::uint64_t> calls{};
         std::atomic<std::uint64_t> nanoseconds{};
     };

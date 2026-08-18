@@ -1398,6 +1398,12 @@ public:
     }
 
     void clear_halt() {
+        // Clearing Dynarmic's AST must also retire the matching request
+        // bookkeeping. Otherwise a wake that is consumed while servicing a
+        // Mach event can leave the next run looking like a continuation of
+        // the old preemption request.
+        guest_preemption_requested_ = false;
+        guest_preemption_requested_at_.reset();
         if (jit_) {
             jit_->ClearHalt(all_halt_reasons());
         }
@@ -1410,11 +1416,18 @@ public:
     }
 
     void request_guest_preemption() {
-        guest_preemption_requested_ = true;
-        if (performance_counters().cpu_source_diagnostics_enabled()) {
-            guest_preemption_requested_at_ = std::chrono::steady_clock::now();
+        if (!guest_preemption_requested_) {
+            guest_preemption_requested_ = true;
+            if (performance_counters().cpu_source_diagnostics_enabled()) {
+                guest_preemption_requested_at_ =
+                    std::chrono::steady_clock::now();
+            }
         }
         halt(Dynarmic::HaltReason::UserDefined2);
+    }
+
+    [[nodiscard]] bool guest_preemption_requested() const noexcept {
+        return guest_preemption_requested_;
     }
 
     void raise_memory_fault(std::uint32_t address, std::size_t size,
@@ -2525,6 +2538,13 @@ void Cpu::halt(Dynarmic::HaltReason reason) {
 
 void Cpu::request_guest_preemption() {
     performance_counters().record_scheduler_preemption_request();
+    const bool coalesced =
+        Dynarmic::Has(requested_halt_reason_, Dynarmic::HaltReason::UserDefined2) ||
+        (active_executor_ != nullptr &&
+         active_executor_->guest_preemption_requested());
+    if (coalesced) {
+        performance_counters().record_scheduler_preemption_coalesced();
+    }
     requested_halt_reason_ =
         requested_halt_reason_ | Dynarmic::HaltReason::UserDefined2;
     if (active_executor_) {

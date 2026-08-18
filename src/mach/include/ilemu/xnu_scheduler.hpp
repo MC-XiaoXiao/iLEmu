@@ -96,6 +96,7 @@ struct XnuScheduledSlice {
     std::size_t processor{};
     std::uint64_t tick_budget{};
     std::chrono::steady_clock::time_point runnable_since;
+    std::uint64_t runnable_generation{};
     bool front_continuation{};
 };
 
@@ -229,6 +230,7 @@ private:
         std::int32_t queued_priority{};
         std::uint64_t enqueue_sequence{};
         std::chrono::steady_clock::time_point enqueued_at;
+        std::uint64_t runnable_generation{};
         // A partially used quantum stays at the queue head. Preserve that
         // continuation priority when local and global queues are compared.
         bool front_continuation{};
@@ -250,6 +252,7 @@ private:
     static std::int32_t clamp_priority(std::int32_t priority);
     static std::uint32_t priority_usage_shift(
         std::uint64_t scheduler_tick_ticks);
+    static void begin_runnable_generation(ThreadRecord& record);
     void enqueue(XnuThreadId thread, QueuePosition position);
     void remove_from_queue(XnuThreadId thread, ThreadRecord& record);
     void index_depression(XnuThreadId thread, const ThreadRecord& record);

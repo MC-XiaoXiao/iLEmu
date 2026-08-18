@@ -4153,8 +4153,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
               std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed)
                   .count());
           performance_counters().record_diagnostic_scheduler_dispatch(
-              scheduled->thread.process,
-              scheduled->front_continuation, nanoseconds);
+              scheduled->thread.process, scheduled->thread.thread,
+              scheduled->runnable_generation, scheduled->front_continuation,
+              nanoseconds);
         }
         scheduled_batch.push_back(*scheduled);
         if (bounded_execution) {
