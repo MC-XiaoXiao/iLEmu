@@ -84,10 +84,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
       const auto receive_object = resolve_receive_object(
           *shared_state_, process_.pid, registers[4]);
       if (!receive_object) {
-        registers[0] = receive_name_is_in_set(
-                           *shared_state_, process_.pid, registers[4])
-                           ? darwin::mach_message::receive_in_set
-                           : darwin::mach_message::receive_invalid_name;
+        registers[0] = darwin::mach_message::receive_invalid_name;
         return;
       }
       pending_mach_receives_[cpu.processor_id()] = PendingMachReceive{

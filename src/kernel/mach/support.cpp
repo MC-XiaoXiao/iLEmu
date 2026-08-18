@@ -267,8 +267,7 @@ resolve_receive_object(const KernelSharedState &state, std::uint32_t task,
     return std::nullopt;
   if ((entry->type & xnu792::ipc::type_mask(xnu792::ipc::Right::Receive)) !=
           0 &&
-      state.mach_port_objects.contains(entry->object) &&
-      !state.mach_port_set_links_by_member.contains(entry->object)) {
+      state.mach_port_objects.contains(entry->object)) {
     return entry->object;
   }
   if ((entry->type & xnu792::ipc::type_mask(xnu792::ipc::Right::PortSet)) !=
