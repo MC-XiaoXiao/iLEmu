@@ -94,7 +94,6 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
     std::uint32_t result = darwin::mach::invalid_argument;
     std::array<std::uint32_t, 3> registered_objects{};
     std::array<std::uint32_t, 3> requested_names{};
-    std::vector<std::uint32_t> moved_names;
     bool valid = false;
     const auto bytes = memory_.read_bytes(message_address, registers[2]);
     if (bytes) {
@@ -138,14 +137,6 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
               requested_names[index] = read_little_word(
                   *ool_bytes,
                   static_cast<std::size_t>(index) * sizeof(std::uint32_t));
-            }
-          }
-          if (valid) {
-            for (std::uint32_t index = 0; index < descriptor_count; ++index) {
-              const auto name = requested_names[index];
-              if (name == xnu792::ipc::null_name)
-                continue;
-              moved_names.push_back(name);
             }
           }
         }
@@ -197,23 +188,55 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
               if (object != xnu792::ipc::null_name)
                 retain_kernel_send_right_locked(*shared_state_, object);
             }
-            // Every MOVE_SEND was preflighted while holding mach_mutex. The
-            // helper therefore cannot observe a changed name/reference here;
-            // COPY_SEND deliberately leaves the caller's uref untouched.
+            std::vector<std::pair<std::uint32_t, std::uint32_t>>
+                consumed_rights;
+            bool commit_succeeded = true;
             if (move_send) {
-              for (const auto name : moved_names) {
-                static_cast<void>(consume_moved_right_locked(
-                    *shared_state_, process_.pid, name, source_right, false));
+              for (std::uint32_t index = 0; index < descriptor_count; ++index) {
+                const auto name = requested_names[index];
+                if (name == xnu792::ipc::null_name)
+                  continue;
+                if (!consume_moved_right_locked(*shared_state_, process_.pid,
+                                                 name, source_right, false)) {
+                  commit_succeeded = false;
+                  break;
+                }
+                consumed_rights.emplace_back(name, registered_objects[index]);
               }
             }
-            if (previous != shared_state_->mach_registered_ports.end()) {
-              for (const auto object : previous->second) {
+            if (!commit_succeeded) {
+              // The preflight and commit share mach_mutex, so this is an
+              // invariant failure rather than an expected path. Still restore
+              // every successful MOVE_SEND and release all temporary holds so
+              // the old stash remains the only committed state.
+              for (const auto &[name, object] : consumed_rights) {
+                const auto restored = shared_state_->mach_namespaces.install(
+                    process_.pid, name, object,
+                    xnu792::ipc::type_mask(source_right));
+                if (!restored) {
+                  // The name/object was validated while holding the same
+                  // mutex; reaching this branch indicates a broken namespace
+                  // invariant that cannot be repaired by another IPC path.
+                  valid = false;
+                }
+              }
+              for (const auto object : registered_objects) {
                 if (object != xnu792::ipc::null_name)
                   release_kernel_send_right_locked(*shared_state_, object);
               }
+              valid = false;
+            } else {
+              // Every MOVE_SEND was preflighted while holding mach_mutex;
+              // COPY_SEND deliberately leaves the caller's uref untouched.
+              if (previous != shared_state_->mach_registered_ports.end()) {
+                for (const auto object : previous->second) {
+                  if (object != xnu792::ipc::null_name)
+                    release_kernel_send_right_locked(*shared_state_, object);
+                }
+              }
+              shared_state_->mach_registered_ports[target_pid] =
+                  registered_objects;
             }
-            shared_state_->mach_registered_ports[target_pid] =
-                registered_objects;
           }
         }
       }
