@@ -69,12 +69,11 @@ namespace {
   }
 
   // A direct receiver remains attached to the cached port object across a
-  // rename. It must stop only when the receive right is gone or the object has
-  // entered a port set while this wait was in progress.
+  // rename and later port-set insertion. It must stop only when the receive
+  // right is gone or the object is otherwise invalidated.
   return state.mach_port_objects.contains(object) &&
          task_owns_mach_right_locked(state, task, object,
-                                     xnu792::ipc::Right::Receive) &&
-         !state.mach_port_set_links_by_member.contains(object);
+                                     xnu792::ipc::Right::Receive);
 }
 
 } // namespace
@@ -114,9 +113,10 @@ bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(Cpu &cpu) {
     return false;
 
   // A blocked receive is attached to the object selected at receive start.
-  // XNU wakes it with MACH_RCV_PORT_CHANGED when that queue is destroyed or a
-  // direct port is moved into a set; a later reuse of the original name must
-  // never redirect the waiter to a different object.
+  // XNU wakes it with MACH_RCV_PORT_CHANGED when that queue is destroyed or
+  // the receive right is lost; adding a set link keeps the direct waiter on
+  // the original object. A later reuse of the original name must never
+  // redirect the waiter to a different object.
   std::lock_guard mach_lock{shared_state_->mach_mutex};
   if (!pending_mach_receive_is_usable_locked(
           *shared_state_, process_.pid, pending->second)) {
