@@ -570,20 +570,22 @@ private:
   collect_ready_kevents(std::uint32_t queue_fd, std::uint32_t event_address,
                         std::uint32_t event_count);
   void detach_kevents_for_descriptor(std::uint32_t fd);
+  using WokenThread = std::pair<std::uint32_t, std::uint32_t>;
   [[nodiscard]] std::uint32_t
   signal_semaphore_locked(
       std::uint32_t name, bool all, bool prepost = true,
-      std::vector<std::pair<std::uint32_t, std::uint32_t>> *woken_threads =
-          nullptr);
+      std::optional<WokenThread> *woken_thread = nullptr,
+      std::vector<WokenThread> *woken_threads = nullptr);
   [[nodiscard]] std::uint32_t
   signal_semaphore_thread_locked(std::uint32_t semaphore_name,
                                  std::uint32_t thread_name,
-                                 std::vector<std::pair<std::uint32_t,
-                                                       std::uint32_t>> *
-                                     woken_threads = nullptr);
+                                 std::optional<WokenThread> *woken_thread =
+                                     nullptr);
+  void wake_thread_and_maybe_preempt(
+      Cpu &cpu, const std::optional<WokenThread> &thread);
   void wake_threads_and_maybe_preempt(
       Cpu &cpu,
-      std::span<const std::pair<std::uint32_t, std::uint32_t>> threads);
+      std::span<const WokenThread> threads);
   void wait_on_semaphore(Cpu &cpu, std::uint32_t wait_name,
                          std::uint32_t signal_name,
                          std::optional<std::uint64_t> timeout_interval,
