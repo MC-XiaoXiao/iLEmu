@@ -52,8 +52,8 @@ inline constexpr auto jit_artifact_validation_rejection_count =
 // belongs in this key. In particular, no path or mtime participates in cache
 // identity.
 struct JitArtifactKey {
-  ContentIdentity content_identity;
-  ContentIdentity layout_identity;
+  PortableExecutableIdentity content_identity;
+  PortableLayoutIdentity layout_identity;
   std::uint32_t guest_pc{};
   bool thumb{};
   // Dynarmic's complete block location. guest_pc/thumb remain as readable
@@ -85,16 +85,16 @@ struct JitArtifactKeyHash {
 struct JitCodeDependency {
   std::uint32_t address{};
   std::uint32_t size{};
-  ContentIdentity content_identity;
-  ContentIdentity layout_identity;
+  PortableExecutableIdentity content_identity;
+  PortableLayoutIdentity layout_identity;
 };
 
 struct JitConstantDependency {
   std::uint32_t address{};
   std::uint32_t size{};
   std::uint64_t value{};
-  ContentIdentity content_identity;
-  ContentIdentity layout_identity;
+  PortableExecutableIdentity content_identity;
+  PortableLayoutIdentity layout_identity;
 };
 
 struct JitArtifactData {

@@ -167,7 +167,9 @@ private:
 constexpr std::uint32_t jit_artifact_hle_abi_version = 1U;
 constexpr std::uint32_t jit_artifact_backend_abi_version = 2U;
 constexpr std::uint64_t jit_artifact_codegen_options = 1U;
-constexpr std::uint32_t jit_artifact_format_version = 7U;
+// Layout identity no longer contains host vnode metadata. Keep old records
+// safely unusable even if a caller happens to reconstruct the same key shape.
+constexpr std::uint32_t jit_artifact_format_version = 8U;
 
 #ifndef ILEMU_DYNARMIC_BUILD_FINGERPRINT
 #define ILEMU_DYNARMIC_BUILD_FINGERPRINT 0x0ULL

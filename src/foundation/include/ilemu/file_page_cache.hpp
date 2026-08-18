@@ -24,11 +24,12 @@ inline constexpr std::uint32_t guest_memory_page_size = 4096;
 inline constexpr std::size_t guest_file_prefetch_pages = 32;
 using GuestPageBytes = std::array<std::byte, guest_memory_page_size>;
 
-// Identifies both the host file object and the metadata generation observed
-// while its descriptor was opened. ContentIdentity alone is insufficient:
-// an atomic replacement can preserve bytes while changing the vnode that a
-// shared mapping must write back to.
-struct GuestFileGeneration {
+// Runtime-only identity of the host file object and metadata generation
+// observed while its descriptor was opened. ContentIdentity alone is
+// insufficient: an atomic replacement can preserve bytes while changing the
+// vnode that a shared mapping must write back to. This type must never be
+// folded into PortableExecutableIdentity or PortableLayoutIdentity.
+struct RuntimeBackingGeneration {
   std::uint64_t device{};
   std::uint64_t inode{};
   std::uint64_t file_size{};
@@ -37,11 +38,15 @@ struct GuestFileGeneration {
   std::int64_t changed_seconds{};
   std::int64_t changed_nanoseconds{};
 
-  friend constexpr bool operator==(const GuestFileGeneration &,
-                                   const GuestFileGeneration &) = default;
-  friend constexpr auto operator<=>(const GuestFileGeneration &,
-                                   const GuestFileGeneration &) = default;
+  friend constexpr bool operator==(const RuntimeBackingGeneration &,
+                                   const RuntimeBackingGeneration &) = default;
+  friend constexpr auto operator<=>(const RuntimeBackingGeneration &,
+                                    const RuntimeBackingGeneration &) = default;
 };
+
+// Keep the existing public spelling source-compatible while callers migrate
+// to the explicit runtime-generation name.
+using GuestFileGeneration = RuntimeBackingGeneration;
 
 enum class GuestFileMutationKind : std::uint8_t {
   Observation,

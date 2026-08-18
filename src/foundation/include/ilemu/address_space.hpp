@@ -30,8 +30,8 @@ struct MemoryFault {
 };
 
 struct ExecutableBackingIdentity {
-  ContentIdentity content;
-  ContentIdentity layout;
+  PortableExecutableIdentity content;
+  PortableLayoutIdentity layout;
 
   friend constexpr bool operator==(const ExecutableBackingIdentity &,
                                    const ExecutableBackingIdentity &) =
@@ -163,10 +163,11 @@ public:
   // Anonymous and dynamically shared code remains conservative and mutable.
   [[nodiscard]] bool is_read_only_executable(std::uint32_t address,
                                               std::size_t size) const;
-  // Returns content and mapping-layout identities for an immutable
+  // Returns portable content and mapping-layout identities for an immutable
   // file-backed executable range. The layout identity includes Guest/file
   // offsets, so the same bytes mapped at a different slide cannot reuse a
-  // layout-sensitive artifact accidentally.
+  // layout-sensitive artifact accidentally. Host path, vnode generation and
+  // registry revision are runtime backing state and are intentionally absent.
   [[nodiscard]] std::optional<ExecutableBackingIdentity>
   executable_backing_identity(std::uint32_t address,
                               std::size_t size) const;
