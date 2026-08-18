@@ -5355,6 +5355,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   if (catalog_loaded && !executable_catalog.save(catalog_manifest)) {
     output.line("[catalog] manifest-save=failed");
   }
+  const auto initial_jit_precompile_memory =
+      initial_runtime->cpus->precompile_memory_stats();
   for (auto &runtime : runtimes) {
     runtime_index.erase(*runtime);
     runtime_reaper.retire(std::move(runtime));
@@ -5487,8 +5489,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(profile_stats.resident_bytes) +
         " save-failures=" +
         std::to_string(profile_stats.profile_save_failures));
-    const auto jit_precompile_memory =
-        initial_runtime->cpus->precompile_memory_stats();
     output.line(
         "[perf-jit-memory] profile-object-bytes=" +
         std::to_string(profile_stats.profile_object_bytes) +
@@ -5503,21 +5503,24 @@ void boot(const std::vector<std::string> &args, Output &output) {
         " profile-discarded-nodes-est-bytes=" +
         std::to_string(profile_stats.discarded_set_node_bytes) +
         " queue-profile-entries=" +
-        std::to_string(jit_precompile_memory.profile_queue_entries) +
+        std::to_string(initial_jit_precompile_memory.profile_queue_entries) +
         " queue-profile-capacity-entries=" +
-        std::to_string(jit_precompile_memory.profile_queue_capacity_entries) +
+        std::to_string(
+            initial_jit_precompile_memory.profile_queue_capacity_entries) +
         " queue-pending-entries=" +
-        std::to_string(jit_precompile_memory.pending_entries) +
+        std::to_string(initial_jit_precompile_memory.pending_entries) +
         " queue-inflight-entries=" +
-        std::to_string(jit_precompile_memory.inflight_entries) +
+        std::to_string(initial_jit_precompile_memory.inflight_entries) +
         " queue-deferred-entries=" +
-        std::to_string(jit_precompile_memory.deferred_entries) +
+        std::to_string(initial_jit_precompile_memory.deferred_entries) +
         " queue-completed-entries=" +
-        std::to_string(jit_precompile_memory.completed_entries) +
+        std::to_string(initial_jit_precompile_memory.completed_entries) +
         " queue-entry-bytes-est=" +
-        std::to_string(jit_precompile_memory.estimated_queue_entry_bytes) +
+        std::to_string(
+            initial_jit_precompile_memory.estimated_queue_entry_bytes) +
         " tracker-bytes=" +
-        std::to_string(jit_precompile_memory.native_preimport_tracker_bytes) +
+        std::to_string(
+            initial_jit_precompile_memory.native_preimport_tracker_bytes) +
         " native-slab-used-bytes=" +
         std::to_string(stopped_guest.jit_shared_used_bytes));
     const auto &validation = artifact_stats.validation_rejections;
