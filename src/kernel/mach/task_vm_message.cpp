@@ -93,6 +93,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
       registers[3] >= 36U) {
     std::uint32_t result = darwin::mach::invalid_argument;
     std::array<std::uint32_t, 3> registered_objects{};
+    std::array<std::uint32_t, 3> requested_names{};
     std::vector<std::uint32_t> moved_names;
     bool valid = false;
     const auto bytes = memory_.read_bytes(message_address, registers[2]);
@@ -103,31 +104,49 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
               mach_transport::DescriptorKind::OutOfLinePorts) {
         const auto &descriptor = descriptors->front();
         const auto descriptor_count = descriptor.count_or_size;
-        const auto requested_count = memory_.read32(
-            message_address +
-            static_cast<std::uint32_t>(
-                xnu792::mig::task::mach_ports_register_arguments[1]
-                    .request_count_offset));
+        const auto request_count_offset =
+            xnu792::mig::task::mach_ports_register_arguments[1]
+                .request_count_offset;
+        const auto requested_count =
+            request_count_offset + sizeof(std::uint32_t) <= bytes->size()
+                ? std::optional<std::uint32_t>{
+                      read_little_word(*bytes, request_count_offset)}
+                : std::nullopt;
         const auto disposition = descriptor.disposition();
         const auto move_send = disposition ==
                                darwin::mig_wire::disposition_move_send;
         const auto copy_send = disposition ==
                                darwin::mig_wire::disposition_copy_send;
         valid = requested_count && *requested_count == descriptor_count &&
-                descriptor_count <= registered_objects.size() &&
+                descriptor_count <= requested_names.size() &&
                 (move_send || copy_send) &&
                 (descriptor_count == 0U || descriptor.address_or_name != 0U);
-        if (valid) {
-          for (std::uint32_t index = 0; index < descriptor_count; ++index) {
-            const auto name = memory_.read32(
-                descriptor.address_or_name +
-                static_cast<std::uint32_t>(index * sizeof(std::uint32_t)));
-            if (!name) {
-              valid = false;
-              break;
+        if (valid && descriptor_count != 0U) {
+          const auto ool_size = static_cast<std::size_t>(descriptor_count) *
+                                sizeof(std::uint32_t);
+          const auto ool_end = static_cast<std::uint64_t>(
+                                  descriptor.address_or_name) +
+                              ool_size;
+          const auto ool_bytes =
+              ool_end <= std::numeric_limits<std::uint32_t>::max() + 1ULL
+                  ? memory_.read_bytes(descriptor.address_or_name, ool_size)
+                  : std::nullopt;
+          if (!ool_bytes) {
+            valid = false;
+          } else {
+            for (std::uint32_t index = 0; index < descriptor_count; ++index) {
+              requested_names[index] = read_little_word(
+                  *ool_bytes,
+                  static_cast<std::size_t>(index) * sizeof(std::uint32_t));
             }
-            if (*name != xnu792::ipc::null_name)
-              moved_names.push_back(*name);
+          }
+          if (valid) {
+            for (std::uint32_t index = 0; index < descriptor_count; ++index) {
+              const auto name = requested_names[index];
+              if (name == xnu792::ipc::null_name)
+                continue;
+              moved_names.push_back(name);
+            }
           }
         }
         if (valid) {
@@ -138,17 +157,11 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
           const auto source_right = xnu792::ipc::Right::Send;
           if (valid) {
             for (std::uint32_t index = 0; index < descriptor_count; ++index) {
-              const auto name = memory_.read32(
-                  descriptor.address_or_name +
-                  static_cast<std::uint32_t>(index * sizeof(std::uint32_t)));
-              if (!name) {
-                valid = false;
-                break;
-              }
-              if (*name == xnu792::ipc::null_name)
+              const auto name = requested_names[index];
+              if (name == xnu792::ipc::null_name)
                 continue;
               const auto entry =
-                  shared_state_->mach_namespaces.lookup(process_.pid, *name);
+                  shared_state_->mach_namespaces.lookup(process_.pid, name);
               if (!entry ||
                   (entry->type & xnu792::ipc::type_mask(source_right)) == 0 ||
                   !shared_state_->mach_port_objects.contains(entry->object)) {
@@ -163,16 +176,12 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                 // or caller namespace partially changed.
                 std::uint32_t occurrences = 1;
                 for (std::uint32_t prior = 0; prior < index; ++prior) {
-                  const auto prior_name = memory_.read32(
-                      descriptor.address_or_name +
-                      static_cast<std::uint32_t>(prior * sizeof(
-                          std::uint32_t)));
-                  if (prior_name && *prior_name == *name)
+                  if (requested_names[prior] == name)
                     ++occurrences;
                 }
                 const auto references =
                     shared_state_->mach_namespaces.user_references(
-                        process_.pid, *name, source_right);
+                        process_.pid, name, source_right);
                 if (!references || *references < occurrences) {
                   valid = false;
                   break;
