@@ -2831,6 +2831,26 @@ void boot(const std::vector<std::string> &args, Output &output) {
   auto jit_artifacts = std::make_shared<JitArtifactStore>(
       host_cache / "jit-artifacts.bin", jit_artifact_limits);
   std::shared_ptr<HostWorkToken> artifact_compaction_task;
+  struct ArtifactCompactionTelemetry {
+    std::atomic<std::uint64_t> admitted{};
+    std::atomic<std::uint64_t> rejected{};
+    std::atomic<std::uint64_t> cancellation_requests{};
+    std::atomic<std::uint64_t> cancellations_observed{};
+    std::atomic<std::uint64_t> completed{};
+    std::atomic<std::uint64_t> failures{};
+    std::atomic<std::uint64_t> max_continuous_nanoseconds{};
+  } artifact_compaction_telemetry;
+  const auto observe_compaction_duration =
+      [&artifact_compaction_telemetry](std::uint64_t elapsed) {
+        auto observed = artifact_compaction_telemetry.max_continuous_nanoseconds
+                            .load(std::memory_order_relaxed);
+        while (observed < elapsed &&
+               !artifact_compaction_telemetry.max_continuous_nanoseconds
+                    .compare_exchange_weak(observed, elapsed,
+                                            std::memory_order_relaxed,
+                                            std::memory_order_relaxed)) {
+        }
+      };
   const auto precompile_phase_for_process =
       [springboard_boot_path](std::string_view executable_path) {
         if (executable_path == springboard_boot_path) {
@@ -5188,7 +5208,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
         if (artifact_compaction_task) {
           if (!artifact_compaction_task->finished()) {
             if (scheduler.runnable_count() != 0) {
-              artifact_compaction_task->cancel();
+              if (!artifact_compaction_task->cancelled()) {
+                artifact_compaction_task->cancel();
+                artifact_compaction_telemetry.cancellation_requests.fetch_add(
+                    1U, std::memory_order_relaxed);
+              }
               host_resources.wake();
             }
             return;
@@ -5199,10 +5223,39 @@ void boot(const std::vector<std::string> &args, Output &output) {
             !jit_artifacts->compaction_needed()) {
           return;
         }
-        artifact_compaction_task = host_resources.submit(
+        const auto task = host_resources.submit_cancellable(
             HostWorkKind::ArtifactCompaction, host_compile_deadline,
-            [jit_artifacts] { static_cast<void>(jit_artifacts->compact()); },
+            [jit_artifacts, &artifact_compaction_telemetry,
+             &observe_compaction_duration](const HostWorkToken &token) {
+              const auto started = std::chrono::steady_clock::now();
+              const auto completed = jit_artifacts->compact([&token] {
+                return token.cancelled();
+              });
+              const auto elapsed = static_cast<std::uint64_t>(
+                  std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now() - started)
+                      .count());
+              observe_compaction_duration(elapsed);
+              if (token.cancelled()) {
+                artifact_compaction_telemetry.cancellations_observed.fetch_add(
+                    1U, std::memory_order_relaxed);
+              } else if (completed) {
+                artifact_compaction_telemetry.completed.fetch_add(
+                    1U, std::memory_order_relaxed);
+              } else {
+                artifact_compaction_telemetry.failures.fetch_add(
+                    1U, std::memory_order_relaxed);
+              }
+            },
             std::chrono::milliseconds{100});
+        if (task) {
+          artifact_compaction_task = task;
+          artifact_compaction_telemetry.admitted.fetch_add(
+              1U, std::memory_order_relaxed);
+        } else {
+          artifact_compaction_telemetry.rejected.fetch_add(
+              1U, std::memory_order_relaxed);
+        }
       };
       if (profile_background_warming_enabled) {
         Runtime *active_runtime = nullptr;
@@ -5659,6 +5712,30 @@ void boot(const std::vector<std::string> &args, Output &output) {
       " sha-bytes=" + std::to_string(host_watch_stats.sha_bytes) +
       " confirmed-changes=" +
       std::to_string(host_watch_stats.confirmed_changes));
+  output.line(
+      "[host-maintenance] artifact-compaction-admitted=" +
+      std::to_string(artifact_compaction_telemetry.admitted.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-rejected=" +
+      std::to_string(artifact_compaction_telemetry.rejected.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-cancel-requests=" +
+      std::to_string(artifact_compaction_telemetry.cancellation_requests.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-cancelled=" +
+      std::to_string(artifact_compaction_telemetry.cancellations_observed.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-completed=" +
+      std::to_string(artifact_compaction_telemetry.completed.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-failures=" +
+      std::to_string(artifact_compaction_telemetry.failures.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-max-continuous-ns=" +
+      std::to_string(artifact_compaction_telemetry.max_continuous_nanoseconds
+                         .load(std::memory_order_relaxed)) +
+      " controller-rejected=" + std::to_string(host_resources.rejected()) +
+      " controller-completed=" + std::to_string(host_resources.completed()));
   output.line(
       "[precompile] loader=" +
       std::to_string(precompile_tasks_by_phase[0]) + "/" +

@@ -1533,7 +1533,8 @@ append_indexed_segment(
 }
 
 bool copy_disk_record(std::istream &source, std::ostream &destination,
-                      std::uint64_t offset, std::uint64_t byte_count) {
+                      std::uint64_t offset, std::uint64_t byte_count,
+                      const std::function<bool()> &cancellation_check = {}) {
   if (offset > static_cast<std::uint64_t>(
                    std::numeric_limits<std::streamoff>::max()) ||
       byte_count > static_cast<std::uint64_t>(
@@ -1546,6 +1547,7 @@ bool copy_disk_record(std::istream &source, std::ostream &destination,
   std::array<char, 64U * 1024U> buffer{};
   auto remaining = byte_count;
   while (remaining != 0U) {
+    if (cancellation_check && cancellation_check()) return false;
     const auto requested = std::min<std::uint64_t>(remaining, buffer.size());
     source.read(buffer.data(), static_cast<std::streamsize>(requested));
     if (source.gcount() != static_cast<std::streamsize>(requested)) {
@@ -1557,6 +1559,24 @@ bool copy_disk_record(std::istream &source, std::ostream &destination,
   }
   return true;
 }
+
+class TemporaryPathCleanup {
+public:
+  TemporaryPathCleanup() = default;
+  TemporaryPathCleanup(const TemporaryPathCleanup &) = delete;
+  TemporaryPathCleanup &operator=(const TemporaryPathCleanup &) = delete;
+  ~TemporaryPathCleanup() {
+    if (path_.empty()) return;
+    std::error_code error;
+    std::filesystem::remove(path_, error);
+  }
+
+  void set(std::filesystem::path path) { path_ = std::move(path); }
+  void release() noexcept { path_.clear(); }
+
+private:
+  std::filesystem::path path_;
+};
 
 } // namespace
 
@@ -2469,7 +2489,16 @@ bool JitArtifactStore::compaction_needed() const noexcept {
 }
 
 bool JitArtifactStore::compact() const noexcept {
+  return compact({});
+}
+
+bool JitArtifactStore::compact(CancellationCheck cancellation_check) const
+    noexcept {
   try {
+    const auto cancelled = [&cancellation_check] {
+      return cancellation_check && cancellation_check();
+    };
+    if (cancelled()) return false;
     if (!limits_.persistence_enabled || limits_.compaction_bytes == 0U) {
       return true;
     }
@@ -2481,6 +2510,7 @@ bool JitArtifactStore::compact() const noexcept {
     }
     if (disk_path.empty()) return true;
     {
+      if (cancelled()) return false;
       const std::lock_guard persistence_lock{persistence_mutex_};
       auto file_lock = ArtifactFileLock::acquire(
           disk_path, ArtifactFileLock::Mode::Exclusive);
@@ -2493,6 +2523,7 @@ bool JitArtifactStore::compact() const noexcept {
         known_generation = external_writer_generation_;
       }
       if (known_generation != *writer_generation) {
+        if (cancelled()) return false;
         if (!load_coordinated(disk_path)) return false;
         const std::lock_guard lock{mutex_};
         external_writer_generation_ = *writer_generation;
@@ -2501,14 +2532,16 @@ bool JitArtifactStore::compact() const noexcept {
       const auto append_bytes = std::filesystem::file_size(
           append_path_for(disk_path), error);
       if (error || append_bytes < limits_.compaction_bytes) return true;
+      if (cancelled()) return false;
       const auto next_writer_generation = file_lock->begin_write();
       if (!next_writer_generation) return false;
       {
         const std::lock_guard lock{mutex_};
         external_writer_generation_ = *next_writer_generation;
       }
-      if (!save_full(disk_path)) return false;
+      if (!save_full(disk_path, cancellation_check)) return false;
     }
+    if (cancelled()) return false;
     const std::lock_guard lock{mutex_};
     ++stats_.compactions;
     return true;
@@ -2985,7 +3018,17 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
 
 bool JitArtifactStore::save_full(
     const std::filesystem::path &path) const noexcept {
+  return save_full(path, {});
+}
+
+bool JitArtifactStore::save_full(
+    const std::filesystem::path &path,
+    const CancellationCheck &cancellation_check) const noexcept {
   try {
+    const auto cancelled = [&cancellation_check] {
+      return cancellation_check && cancellation_check();
+    };
+    if (cancelled()) return false;
     if (path.empty()) return false;
     struct SaveEntry {
       const JitArtifactKey *key;
@@ -3101,10 +3144,12 @@ bool JitArtifactStore::save_full(
       append_source_path = disk_append_path_;
     }
 
+    if (cancelled()) return false;
     if (entries.size() > maximum_artifacts) return false;
     std::vector<std::uint64_t> record_bytes;
     record_bytes.reserve(entries.size());
     for (const auto &entry : entries) {
+      if (cancelled()) return false;
       std::uint64_t bytes = 0;
       if (entry.resident) {
         const auto artifact_size =
@@ -3146,6 +3191,7 @@ bool JitArtifactStore::save_full(
     std::uint64_t candidate_total = artifact_header_bytes + index_size +
                                     artifact_footer_bytes;
     for (const auto bytes : record_bytes) {
+      if (cancelled()) return false;
       if (bytes > std::numeric_limits<std::uint64_t>::max() -
                       candidate_total) {
         return false;
@@ -3157,6 +3203,7 @@ bool JitArtifactStore::save_full(
       std::vector<std::size_t> candidates;
       candidates.reserve(entries.size());
       for (std::size_t index = 0; index < entries.size(); ++index) {
+        if (cancelled()) return false;
         candidates.push_back(index);
       }
       std::stable_sort(
@@ -3198,6 +3245,7 @@ bool JitArtifactStore::save_full(
       std::vector<bool> selected(entries.size());
       std::uint64_t selected_bytes = fixed_snapshot_bytes;
       for (const auto index : candidates) {
+        if (cancelled()) return false;
         const auto image = index_image_for(*entries[index].key);
         const auto profile = index_profile_for(*entries[index].key);
         const bool new_image = !selected_images.contains(image);
@@ -3261,6 +3309,7 @@ bool JitArtifactStore::save_full(
     bool needs_source = false;
     bool needs_append_source = false;
     for (std::size_t index = 0; index < entries.size(); ++index) {
+      if (cancelled()) return false;
       const auto bytes = record_bytes[index];
       if (bytes > std::numeric_limits<std::size_t>::max() ||
           static_cast<std::size_t>(bytes) >
@@ -3315,6 +3364,8 @@ bool JitArtifactStore::save_full(
         "-" + std::to_string(std::chrono::steady_clock::now()
                                  .time_since_epoch()
                                  .count())};
+    TemporaryPathCleanup temporary_cleanup;
+    temporary_cleanup.set(temporary);
     {
       std::ofstream stream{temporary, std::ios::binary | std::ios::trunc};
       if (!stream) return false;
@@ -3326,6 +3377,7 @@ bool JitArtifactStore::save_full(
       std::vector<DiskArtifactRecord> output_records;
       output_records.reserve(entries.size());
       for (std::size_t index = 0; index < entries.size(); ++index) {
+        if (cancelled()) return false;
         const auto &entry = entries[index];
         const auto bytes = record_bytes[index];
         auto &source_stream = entry.disk_record.append_log ? append_source
@@ -3336,6 +3388,7 @@ bool JitArtifactStore::save_full(
                                           : source_path;
           const auto source_checksum = sha256_file(
               record_source, entry.disk_record.offset, bytes);
+          if (cancelled()) return false;
           if (!source_checksum ||
               *source_checksum != entry.disk_record.checksum) {
             return false;
@@ -3345,7 +3398,8 @@ bool JitArtifactStore::save_full(
                                  ? write_artifact(stream, *entry.artifact)
                                  : copy_disk_record(
                                        source_stream, stream,
-                                       entry.disk_record.offset, bytes);
+                                       entry.disk_record.offset, bytes,
+                                       cancellation_check);
         if (!written) return false;
         auto output_record = DiskArtifactRecord{
             output_offset, bytes, false, {}, false, 0U};
@@ -3371,6 +3425,7 @@ bool JitArtifactStore::save_full(
       if (!stream || output_offset != serialized_size) return false;
 
       for (std::size_t index = 0; index < entries.size(); ++index) {
+        if (cancelled()) return false;
         const auto checksum = sha256_file(
             temporary, output_records[index].offset,
             output_records[index].serialized_bytes);
@@ -3390,6 +3445,7 @@ bool JitArtifactStore::save_full(
       }
       const auto encoded_index =
           encode_compact_index(*index_layout, indexed_entries);
+      if (cancelled()) return false;
       if (!encoded_index || encoded_index->size() != index_size) return false;
       std::ofstream index_stream{temporary, std::ios::binary | std::ios::app};
       if (!index_stream) return false;
@@ -3436,6 +3492,7 @@ bool JitArtifactStore::save_full(
       }
 
       const std::lock_guard lock{mutex_};
+      if (cancelled()) return false;
       if (disk_source_path_ != source_path ||
           disk_append_path_ != append_source_path) {
         std::error_code stale_error;
@@ -3449,6 +3506,7 @@ bool JitArtifactStore::save_full(
         std::filesystem::remove(temporary, error);
         return false;
       }
+      temporary_cleanup.release();
       for (auto &entry : output_index) {
         const auto current_disk = disk_artifacts_.find(entry.first);
         const auto resident = artifacts_.find(entry.first);

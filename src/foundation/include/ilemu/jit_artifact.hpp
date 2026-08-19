@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -168,6 +169,8 @@ struct BlockArtifact {
 
 class JitArtifactStore {
 public:
+  using CancellationCheck = std::function<bool()>;
+
   explicit JitArtifactStore(
       std::filesystem::path persistence_path = {},
       JitArtifactLimits limits = {});
@@ -199,6 +202,8 @@ public:
   void cancel_writeback() noexcept;
   [[nodiscard]] bool compaction_needed() const noexcept;
   [[nodiscard]] bool compact() const noexcept;
+  [[nodiscard]] bool compact(CancellationCheck cancellation_check) const
+      noexcept;
 
   // Persistence is metadata-only. Initial snapshots carry an authenticated
   // tail index and per-record checksums; incremental publications use a
@@ -319,6 +324,9 @@ private:
       const std::filesystem::path &path) const noexcept;
   [[nodiscard]] bool save_full(
       const std::filesystem::path &path) const noexcept;
+  [[nodiscard]] bool save_full(
+      const std::filesystem::path &path,
+      const CancellationCheck &cancellation_check) const noexcept;
 
   mutable std::mutex mutex_;
   // Pointer-keyed resident and pending metadata is anchored by the immutable
