@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <cctype>
@@ -83,6 +84,189 @@ constexpr std::size_t jit_profile_precompile_queue_entry_capacity =
 constexpr std::size_t jit_catalog_precompile_queue_entry_capacity = 512U;
 constexpr std::size_t jit_completed_precompile_entry_capacity = 2048U;
 static_assert(sizeof(void *) == sizeof(std::uint64_t));
+
+// Queue memory statistics are published while the queue mutex is held, then
+// read by observers without taking that mutex or walking any queue container.
+// A short seqlock keeps the fixed-size payload coherent while all payload
+// values remain atomic, so readers never race with a state-change publisher.
+class AtomicJitPrecompileMemorySnapshot {
+public:
+    static constexpr std::size_t top_value_count = 27U;
+    static constexpr std::size_t source_value_count = 18U;
+
+    void publish(
+        const JitPrecompileMemoryStats &current,
+        const JitPrecompileMemoryStats &peak) noexcept {
+        sequence_.fetch_add(1U, std::memory_order_acq_rel);
+
+        const std::array<std::size_t, top_value_count> top_values{
+            current.profile_queue_entries,
+            current.profile_queue_capacity_entries,
+            current.catalog_queue_entries,
+            current.generic_queue_entries,
+            current.pending_entries,
+            current.inflight_entries,
+            current.deferred_entries,
+            current.completed_entries,
+            current.estimated_queue_entry_bytes,
+            current.queue_bucket_bytes,
+            current.queue_node_bytes,
+            current.queue_block_bytes,
+            current.profile_recorder_bytes,
+            current.native_preimport_tracker_bytes,
+            peak.profile_queue_entries_peak,
+            peak.catalog_queue_entries_peak,
+            peak.generic_queue_entries_peak,
+            peak.pending_entries_peak,
+            peak.inflight_entries_peak,
+            peak.deferred_entries_peak,
+            peak.completed_entries_peak,
+            peak.estimated_queue_entry_bytes_peak,
+            peak.queue_bucket_bytes_peak,
+            peak.queue_node_bytes_peak,
+            peak.queue_block_bytes_peak,
+            peak.profile_recorder_bytes_peak,
+            peak.native_preimport_tracker_bytes_peak,
+        };
+        for (std::size_t index = 0; index < top_values.size(); ++index)
+            top_[index].store(to_uint64(top_values[index]),
+                              std::memory_order_relaxed);
+
+        for (std::size_t source_index = 0;
+             source_index < jit_precompile_source_count; ++source_index) {
+            const auto &now = current.by_source[source_index];
+            const auto &source_peak = peak.by_source[source_index];
+            const std::array<std::size_t, source_value_count> source_values{
+                now.queued_entries,
+                now.pending_entries,
+                now.inflight_entries,
+                now.deferred_entries,
+                now.completed_entries,
+                now.estimated_queue_entry_bytes,
+                now.queue_bucket_bytes,
+                now.queue_node_bytes,
+                now.queue_block_bytes,
+                source_peak.queued_entries_peak,
+                source_peak.pending_entries_peak,
+                source_peak.inflight_entries_peak,
+                source_peak.deferred_entries_peak,
+                source_peak.completed_entries_peak,
+                source_peak.estimated_queue_entry_bytes_peak,
+                source_peak.queue_bucket_bytes_peak,
+                source_peak.queue_node_bytes_peak,
+                source_peak.queue_block_bytes_peak,
+            };
+            for (std::size_t value_index = 0;
+                 value_index < source_values.size(); ++value_index) {
+                by_source_[source_index][value_index].store(
+                    to_uint64(source_values[value_index]),
+                    std::memory_order_relaxed);
+            }
+        }
+
+        sequence_.fetch_add(1U, std::memory_order_release);
+    }
+
+    [[nodiscard]] JitPrecompileMemoryStats read() const noexcept {
+        for (;;) {
+            const auto before = sequence_.load(std::memory_order_acquire);
+            if ((before & 1U) != 0U) continue;
+
+            JitPrecompileMemoryStats result;
+            const auto load = [&](
+                                const std::atomic<std::uint64_t> &value) {
+                return to_size(value.load(std::memory_order_relaxed));
+            };
+            result.profile_queue_entries = load(top_[0]);
+            result.profile_queue_capacity_entries = load(top_[1]);
+            result.catalog_queue_entries = load(top_[2]);
+            result.generic_queue_entries = load(top_[3]);
+            result.pending_entries = load(top_[4]);
+            result.inflight_entries = load(top_[5]);
+            result.deferred_entries = load(top_[6]);
+            result.completed_entries = load(top_[7]);
+            result.estimated_queue_entry_bytes = load(top_[8]);
+            result.queue_bucket_bytes = load(top_[9]);
+            result.queue_node_bytes = load(top_[10]);
+            result.queue_block_bytes = load(top_[11]);
+            result.profile_recorder_bytes = load(top_[12]);
+            result.native_preimport_tracker_bytes = load(top_[13]);
+            result.profile_queue_entries_peak = load(top_[14]);
+            result.catalog_queue_entries_peak = load(top_[15]);
+            result.generic_queue_entries_peak = load(top_[16]);
+            result.pending_entries_peak = load(top_[17]);
+            result.inflight_entries_peak = load(top_[18]);
+            result.deferred_entries_peak = load(top_[19]);
+            result.completed_entries_peak = load(top_[20]);
+            result.estimated_queue_entry_bytes_peak = load(top_[21]);
+            result.queue_bucket_bytes_peak = load(top_[22]);
+            result.queue_node_bytes_peak = load(top_[23]);
+            result.queue_block_bytes_peak = load(top_[24]);
+            result.profile_recorder_bytes_peak = load(top_[25]);
+            result.native_preimport_tracker_bytes_peak = load(top_[26]);
+            for (std::size_t source_index = 0;
+                 source_index < jit_precompile_source_count; ++source_index) {
+                auto &source = result.by_source[source_index];
+                source.queued_entries = load(by_source_[source_index][0]);
+                source.pending_entries = load(by_source_[source_index][1]);
+                source.inflight_entries = load(by_source_[source_index][2]);
+                source.deferred_entries = load(by_source_[source_index][3]);
+                source.completed_entries = load(by_source_[source_index][4]);
+                source.estimated_queue_entry_bytes =
+                    load(by_source_[source_index][5]);
+                source.queue_bucket_bytes = load(by_source_[source_index][6]);
+                source.queue_node_bytes = load(by_source_[source_index][7]);
+                source.queue_block_bytes = load(by_source_[source_index][8]);
+                source.queued_entries_peak =
+                    load(by_source_[source_index][9]);
+                source.pending_entries_peak =
+                    load(by_source_[source_index][10]);
+                source.inflight_entries_peak =
+                    load(by_source_[source_index][11]);
+                source.deferred_entries_peak =
+                    load(by_source_[source_index][12]);
+                source.completed_entries_peak =
+                    load(by_source_[source_index][13]);
+                source.estimated_queue_entry_bytes_peak =
+                    load(by_source_[source_index][14]);
+                source.queue_bucket_bytes_peak =
+                    load(by_source_[source_index][15]);
+                source.queue_node_bytes_peak =
+                    load(by_source_[source_index][16]);
+                source.queue_block_bytes_peak =
+                    load(by_source_[source_index][17]);
+            }
+
+            const auto after = sequence_.load(std::memory_order_acquire);
+            if (before == after) return result;
+        }
+    }
+
+private:
+    static std::uint64_t to_uint64(std::size_t value) noexcept {
+        if constexpr (sizeof(std::size_t) > sizeof(std::uint64_t)) {
+            return std::min<std::size_t>(
+                       value, std::numeric_limits<std::uint64_t>::max());
+        } else {
+            return static_cast<std::uint64_t>(value);
+        }
+    }
+
+    static std::size_t to_size(std::uint64_t value) noexcept {
+        if constexpr (sizeof(std::size_t) < sizeof(std::uint64_t)) {
+            return static_cast<std::size_t>(std::min<std::uint64_t>(
+                value, std::numeric_limits<std::size_t>::max()));
+        } else {
+            return static_cast<std::size_t>(value);
+        }
+    }
+
+    std::atomic<std::uint64_t> sequence_{};
+    std::array<std::atomic<std::uint64_t>, top_value_count> top_{};
+    std::array<std::array<std::atomic<std::uint64_t>, source_value_count>,
+               jit_precompile_source_count>
+        by_source_{};
+};
 
 class CpuRunPhaseDiagnostics {
 public:
@@ -2433,44 +2617,7 @@ public:
     }
 
     [[nodiscard]] JitPrecompileMemoryStats precompile_memory_stats() const {
-        const std::lock_guard queue_lock{precompile_queue_mutex_};
-        JitPrecompileMemoryStats result;
-        fill_memory_stats_locked(result);
-        update_memory_peaks_locked(result);
-        result.profile_queue_entries_peak = memory_peak_.profile_queue_entries_peak;
-        result.catalog_queue_entries_peak =
-            memory_peak_.catalog_queue_entries_peak;
-        result.generic_queue_entries_peak =
-            memory_peak_.generic_queue_entries_peak;
-        result.pending_entries_peak = memory_peak_.pending_entries_peak;
-        result.inflight_entries_peak = memory_peak_.inflight_entries_peak;
-        result.deferred_entries_peak = memory_peak_.deferred_entries_peak;
-        result.completed_entries_peak = memory_peak_.completed_entries_peak;
-        result.estimated_queue_entry_bytes_peak =
-            memory_peak_.estimated_queue_entry_bytes_peak;
-        result.queue_bucket_bytes_peak = memory_peak_.queue_bucket_bytes_peak;
-        result.queue_node_bytes_peak = memory_peak_.queue_node_bytes_peak;
-        result.queue_block_bytes_peak = memory_peak_.queue_block_bytes_peak;
-        result.profile_recorder_bytes_peak =
-            memory_peak_.profile_recorder_bytes_peak;
-        result.native_preimport_tracker_bytes_peak =
-            memory_peak_.native_preimport_tracker_bytes_peak;
-        for (std::size_t source_index = 0;
-             source_index < jit_precompile_source_count; ++source_index) {
-            const auto &peak = memory_peak_.by_source[source_index];
-            auto &current = result.by_source[source_index];
-            current.queued_entries_peak = peak.queued_entries_peak;
-            current.pending_entries_peak = peak.pending_entries_peak;
-            current.inflight_entries_peak = peak.inflight_entries_peak;
-            current.deferred_entries_peak = peak.deferred_entries_peak;
-            current.completed_entries_peak = peak.completed_entries_peak;
-            current.estimated_queue_entry_bytes_peak =
-                peak.estimated_queue_entry_bytes_peak;
-            current.queue_bucket_bytes_peak = peak.queue_bucket_bytes_peak;
-            current.queue_node_bytes_peak = peak.queue_node_bytes_peak;
-            current.queue_block_bytes_peak = peak.queue_block_bytes_peak;
-        }
-        return result;
+        return memory_snapshot_.read();
     }
 
     void set_artifact_retention(JitArtifactRetention retention) {
@@ -2540,6 +2687,7 @@ public:
                 decrement_profile_queue_entries_locked(entry);
             }
             owned_inflight_entries.clear();
+            update_memory_peaks_locked();
             assert_queue_counter_invariants_locked();
         };
         const auto finish = [&]() {
@@ -2972,9 +3120,10 @@ private:
                 peak.queue_bucket_bytes_peak, now.queue_bucket_bytes);
             peak.queue_node_bytes_peak = std::max(
                 peak.queue_node_bytes_peak, now.queue_node_bytes);
-            peak.queue_block_bytes_peak = std::max(
+                peak.queue_block_bytes_peak = std::max(
                 peak.queue_block_bytes_peak, now.queue_block_bytes);
         }
+        memory_snapshot_.publish(current, memory_peak_);
     }
 
     void update_memory_peaks_locked() const noexcept {
@@ -3446,6 +3595,7 @@ private:
     std::condition_variable precompile_idle_;
     mutable std::mutex precompile_queue_mutex_;
     mutable JitPrecompileMemoryStats memory_peak_{};
+    mutable AtomicJitPrecompileMemorySnapshot memory_snapshot_{};
 };
 
 Cpu::Cpu(
