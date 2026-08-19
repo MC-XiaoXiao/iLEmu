@@ -166,9 +166,12 @@ struct Candidate {
   std::filesystem::path path;
   ExecutableCatalogFileGeneration generation;
   std::shared_ptr<JitTranslationProfile> profile;
+  std::vector<std::uint64_t> catalog_entry_points;
+  std::vector<std::uint64_t> profile_entry_points;
   std::vector<std::uint64_t> reliable_entry_points;
   bool critical_closure{};
   bool historical_profile{};
+  bool boot_working_set{};
   unsigned priority{};
   JitPrecompilePhase phase{JitPrecompilePhase::Remaining};
 };
@@ -341,6 +344,12 @@ FirmwarePrepareStats FirmwarePreparer::run() {
   artifact_limits.minimum_free_bytes = limits_.artifact_minimum_free_bytes;
   artifact_limits.writeback_bytes = 0U;
   artifact_limits.compaction_bytes = 0U;
+  if (limits_.artifact_seed_mode == FirmwareArtifactSeedMode::CatalogOnly) {
+    // Catalog-only comparison runs must not load, rewrite, or otherwise
+    // perturb an existing artifact seed.
+    artifact_limits.persistence_enabled = false;
+    artifact_limits.persistence_bytes = 0U;
+  }
   auto artifacts = std::make_shared<JitArtifactStore>(
       host_cache_ / "jit-artifacts.bin", artifact_limits);
   JitTranslationProfileStore profiles{host_cache_ / "jit-translation-profiles"};
@@ -362,7 +371,12 @@ FirmwarePrepareStats FirmwarePreparer::run() {
                             generation.path,
                             generation.generation,
                             profiles.profile_for(entry.content_identity),
-                            entry.reliable_entry_points};
+                            entry.reliable_entry_points,
+                            {},
+                            {},
+                            false,
+                            false,
+                            false};
       break;
     }
     if (!candidate) {
@@ -370,6 +384,7 @@ FirmwarePrepareStats FirmwarePreparer::run() {
       continue;
     }
     const auto profile_locations = candidate->profile->snapshot();
+    candidate->profile_entry_points = profile_locations;
     candidate->historical_profile = !profile_locations.empty();
     const auto loader = is_loader_path(candidate->path);
     const auto springboard = is_springboard_path(candidate->path);
@@ -386,8 +401,13 @@ FirmwarePrepareStats FirmwarePreparer::run() {
                                                    : foreground
                                                          ? JitPrecompilePhase::ForegroundApplication
                                                          : JitPrecompilePhase::Remaining;
-    if (candidate->reliable_entry_points.empty() &&
-        !candidate->historical_profile) {
+    const bool has_seed_candidate =
+        limits_.artifact_seed_mode == FirmwareArtifactSeedMode::CatalogOnly ||
+        (limits_.artifact_seed_mode == FirmwareArtifactSeedMode::StaticCatalog
+             ? !candidate->catalog_entry_points.empty()
+             : !candidate->catalog_entry_points.empty() ||
+                   !candidate->profile_entry_points.empty());
+    if (!has_seed_candidate) {
       continue;
     }
     candidates.push_back(std::move(*candidate));
@@ -431,6 +451,49 @@ FirmwarePrepareStats FirmwarePreparer::run() {
               return left.path < right.path;
             });
   stats.candidates = candidates.size();
+
+  // Value selection is intentionally deterministic and identity-safe. The
+  // catalog remains the source of boot-critical points; a bounded historical
+  // profile can replace catalog points for non-critical service/application
+  // images, where it represents the observed first-frame/main-page path.
+  std::size_t profile_blocks_remaining = limits_.max_profile_hotset_blocks;
+  for (auto &candidate : candidates) {
+    switch (limits_.artifact_seed_mode) {
+    case FirmwareArtifactSeedMode::CatalogOnly:
+      ++stats.catalog_only_candidates;
+      break;
+    case FirmwareArtifactSeedMode::StaticCatalog:
+      candidate.reliable_entry_points = candidate.catalog_entry_points;
+      stats.static_seed_selected += candidate.reliable_entry_points.size();
+      break;
+    case FirmwareArtifactSeedMode::ProfileHotset: {
+      const bool use_profile =
+          !candidate.critical_closure &&
+          !candidate.profile_entry_points.empty() &&
+          profile_blocks_remaining != 0U;
+      if (use_profile) {
+        const auto selected = std::min(
+            profile_blocks_remaining, candidate.profile_entry_points.size());
+        candidate.reliable_entry_points.assign(
+            candidate.profile_entry_points.begin(),
+            candidate.profile_entry_points.begin() +
+                static_cast<std::ptrdiff_t>(selected));
+        profile_blocks_remaining -= selected;
+        stats.profile_hotset_selected += selected;
+      } else {
+        candidate.reliable_entry_points = candidate.catalog_entry_points;
+        stats.static_seed_selected += candidate.reliable_entry_points.size();
+      }
+      candidate.boot_working_set = candidate.critical_closure || use_profile;
+      break;
+    }
+    }
+  }
+
+  if (limits_.artifact_seed_mode == FirmwareArtifactSeedMode::CatalogOnly) {
+    stats.artifact_stats = artifacts->stats();
+    return stats;
+  }
 
   const auto started = std::chrono::steady_clock::now();
   const auto firmware_deadline =
@@ -506,7 +569,9 @@ FirmwarePrepareStats FirmwarePreparer::run() {
           maximum_prepare_jit_slab_bytes);
       cluster.set_jit_code_cache_size(slab_bytes);
       cluster.set_process_id(static_cast<std::uint32_t>(file_sequence));
-      cluster.set_jit_artifact_retention(JitArtifactRetention::Normal);
+      cluster.set_jit_artifact_retention(
+          candidate.boot_working_set ? JitArtifactRetention::BootWorkingSet
+                                     : JitArtifactRetention::Normal);
       cluster.set_translation_profile(candidate.profile, candidate.phase);
       cluster.add_precompile_entries(candidate.reliable_entry_points,
                                      candidate.phase);
@@ -586,6 +651,10 @@ FirmwarePrepareStats FirmwarePreparer::run() {
     } catch (...) {
       ++stats.preparation_failures;
     }
+  }
+  stats.artifact_finalized = artifacts->finalize();
+  if (!stats.artifact_finalized) {
+    ++stats.preparation_failures;
   }
   stats.artifact_stats = artifacts->stats();
   return stats;

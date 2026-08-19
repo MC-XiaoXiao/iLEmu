@@ -1412,6 +1412,8 @@ std::string usage() {
          "[--prepare-file-blocks N] [--prepare-image-blocks N] "
          "[--prepare-firmware-blocks N] [--prepare-file-ms N] "
          "[--prepare-image-ms N] [--prepare-firmware-ms N] "
+         "[--prepare-artifact-mode catalog-only|static-catalog|profile-hotset] "
+         "[--prepare-profile-hotset-blocks N] "
          "[--jit-artifact-memory-mib 1..4096] "
          "[--jit-artifact-disk-mib 0..4096] [--output FILE]\n"
          "  ilemu disasm --rootfs DIR --binary PATH "
@@ -1656,6 +1658,22 @@ std::size_t parse_prepare_count(const std::vector<std::string> &args,
                              std::to_string(maximum)};
   }
   return static_cast<std::size_t>(parsed);
+}
+
+FirmwareArtifactSeedMode parse_prepare_artifact_mode(
+    const std::vector<std::string> &args) {
+  const auto value =
+      option(args, "--prepare-artifact-mode").value_or("profile-hotset");
+  if (value == "catalog-only") return FirmwareArtifactSeedMode::CatalogOnly;
+  if (value == "static-catalog") {
+    return FirmwareArtifactSeedMode::StaticCatalog;
+  }
+  if (value == "profile-hotset") {
+    return FirmwareArtifactSeedMode::ProfileHotset;
+  }
+  throw std::runtime_error{
+      "--prepare-artifact-mode must be catalog-only, static-catalog, or "
+      "profile-hotset"};
 }
 
 std::chrono::milliseconds parse_prepare_time(
@@ -1961,6 +1979,9 @@ void firmware_prepare(const std::vector<std::string> &args, Output &output) {
   limits.max_firmware_time =
       parse_prepare_time(args, "--prepare-firmware-ms", 30'000U,
                          86'400'000U);
+  limits.artifact_seed_mode = parse_prepare_artifact_mode(args);
+  limits.max_profile_hotset_blocks = parse_prepare_count(
+      args, "--prepare-profile-hotset-blocks", 256U, 4096U);
   const auto file_memory = parse_mib_value(
       option(args, "--prepare-file-memory-mib").value_or("128"),
       "--prepare-file-memory-mib", 1U, 4096U);
@@ -2022,7 +2043,19 @@ void firmware_prepare(const std::vector<std::string> &args, Output &output) {
       " failed-files=" + std::to_string(stats.catalog_scan.failed_files) +
       " reliable-entry-points=" +
       std::to_string(stats.reliable_entry_points) +
+      " artifact-seed-mode=" +
+      std::string{firmware_artifact_seed_mode_name(limits.artifact_seed_mode)} +
       " status=" + status);
+  output.line(
+      "[firmware-prepare-seed] profile-hotset-selected=" +
+      std::to_string(stats.profile_hotset_selected) +
+      " static-selected=" + std::to_string(stats.static_seed_selected) +
+      " catalog-only-candidates=" +
+      std::to_string(stats.catalog_only_candidates) +
+      " hotset-block-limit=" +
+      std::to_string(limits.max_profile_hotset_blocks) +
+      " artifact-finalized=" +
+      std::to_string(stats.artifact_finalized ? 1 : 0));
   output.line(
       "[firmware-prepare-work] candidates=" +
       std::to_string(stats.candidates) + " skipped-dynamic=" +
@@ -2057,6 +2090,21 @@ void firmware_prepare(const std::vector<std::string> &args, Output &output) {
       " disk-bytes=" + std::to_string(stats.artifact_stats.disk_bytes) +
       " disk-hits=" + std::to_string(stats.artifact_stats.disk_hits) +
       " memory-hits=" + std::to_string(stats.artifact_stats.memory_hits) +
+      " disk-indexed=" +
+      std::to_string(stats.artifact_stats.disk_records_indexed) +
+      " index-bytes=" + std::to_string(stats.artifact_stats.index_bytes) +
+      " startup-prefetch=" +
+      std::to_string(stats.artifact_stats.startup_payloads_prefetched) +
+      " startup-prefetch-bytes=" +
+      std::to_string(stats.artifact_stats.startup_prefetch_bytes) +
+      " demand-payload-loads=" +
+      std::to_string(stats.artifact_stats.demand_payload_disk_loads) +
+      " finalizations=" +
+      std::to_string(stats.artifact_stats.finalizations) +
+      " finalization-failures=" +
+      std::to_string(stats.artifact_stats.finalization_failures) +
+      " boot-working-set=" +
+      std::to_string(stats.artifact_stats.boot_working_set_artifacts) +
       " evictions=" + std::to_string(stats.artifact_stats.evictions) +
       " quota-evictions=" +
       std::to_string(stats.artifact_stats.quota_evictions));

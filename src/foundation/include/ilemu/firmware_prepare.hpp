@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <string_view>
 
 #include "ilemu/arm_cpu_model.hpp"
 #include "ilemu/executable_catalog.hpp"
@@ -12,6 +13,25 @@
 #include "ilemu/macho.hpp"
 
 namespace ilemu {
+
+enum class FirmwareArtifactSeedMode : std::uint8_t {
+  CatalogOnly,
+  StaticCatalog,
+  ProfileHotset,
+};
+
+[[nodiscard]] constexpr std::string_view firmware_artifact_seed_mode_name(
+    FirmwareArtifactSeedMode mode) noexcept {
+  switch (mode) {
+  case FirmwareArtifactSeedMode::CatalogOnly:
+    return "catalog-only";
+  case FirmwareArtifactSeedMode::StaticCatalog:
+    return "static-catalog";
+  case FirmwareArtifactSeedMode::ProfileHotset:
+    return "profile-hotset";
+  }
+  return "catalog-only";
+}
 
 // All limits are host-side preparation limits. They bound optional work only;
 // a runtime can always fall back to demand JIT when preparation is incomplete.
@@ -32,6 +52,9 @@ struct FirmwarePrepareLimits {
   std::size_t artifact_persistence_bytes{256U * 1024U * 1024U};
   std::uintmax_t artifact_minimum_free_bytes{1U * 1024U * 1024U * 1024U};
   bool artifact_persistence_enabled{true};
+  FirmwareArtifactSeedMode artifact_seed_mode{
+      FirmwareArtifactSeedMode::ProfileHotset};
+  std::size_t max_profile_hotset_blocks{256U};
   bool force{};
 };
 
@@ -39,6 +62,9 @@ struct FirmwarePrepareStats {
   ExecutableCatalogScanSummary catalog_scan;
   std::size_t catalog_entries{};
   std::size_t reliable_entry_points{};
+  std::size_t profile_hotset_selected{};
+  std::size_t static_seed_selected{};
+  std::size_t catalog_only_candidates{};
   std::size_t candidates{};
   std::size_t skipped_dynamic_mappings{};
   std::size_t skipped_without_generation{};
@@ -58,6 +84,7 @@ struct FirmwarePrepareStats {
   std::size_t deadline_stops{};
   std::size_t state_writes{};
   std::size_t prepared_memory_bytes{};
+  bool artifact_finalized{};
   bool interrupted{};
   bool storage_limited{};
   JitArtifactStoreStats artifact_stats;
