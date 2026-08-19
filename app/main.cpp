@@ -722,46 +722,176 @@ private:
 struct RuntimeJitMemoryAggregate {
   std::size_t runtime_count{};
   JitPrecompileMemoryStats final_before_retirement{};
-  JitPrecompileMemoryStats live_peak{};
+  JitPrecompileMemoryStats concurrent_live_current{};
+  JitPrecompileMemoryStats concurrent_live_peak{};
+  JitPrecompileMemoryStats per_runtime_peak_sum_upper_bound{};
 
-  void add(const JitPrecompileMemoryStats &stats) noexcept {
-    ++runtime_count;
-    const auto add = [](std::size_t &target, std::size_t value) {
-      target = value > std::numeric_limits<std::size_t>::max() - target
-                   ? std::numeric_limits<std::size_t>::max()
-                   : target + value;
-    };
-    add(final_before_retirement.profile_queue_capacity_entries,
-        stats.profile_queue_capacity_entries);
-    add(final_before_retirement.profile_queue_entries,
-        stats.profile_queue_entries);
-    add(final_before_retirement.pending_entries, stats.pending_entries);
-    add(final_before_retirement.inflight_entries, stats.inflight_entries);
-    add(final_before_retirement.deferred_entries, stats.deferred_entries);
-    add(final_before_retirement.completed_entries, stats.completed_entries);
-    add(final_before_retirement.estimated_queue_entry_bytes,
-        stats.estimated_queue_entry_bytes);
-    add(final_before_retirement.queue_bucket_bytes, stats.queue_bucket_bytes);
-    add(final_before_retirement.queue_node_bytes, stats.queue_node_bytes);
-    add(final_before_retirement.queue_block_bytes, stats.queue_block_bytes);
-    add(final_before_retirement.profile_recorder_bytes,
-        stats.profile_recorder_bytes);
-    add(final_before_retirement.native_preimport_tracker_bytes,
-        stats.native_preimport_tracker_bytes);
-    add(live_peak.profile_queue_entries, stats.profile_queue_entries_peak);
-    add(live_peak.pending_entries, stats.pending_entries_peak);
-    add(live_peak.inflight_entries, stats.inflight_entries_peak);
-    add(live_peak.deferred_entries, stats.deferred_entries_peak);
-    add(live_peak.completed_entries, stats.completed_entries_peak);
-    add(live_peak.estimated_queue_entry_bytes,
-        stats.estimated_queue_entry_bytes_peak);
-    add(live_peak.queue_bucket_bytes, stats.queue_bucket_bytes_peak);
-    add(live_peak.queue_node_bytes, stats.queue_node_bytes_peak);
-    add(live_peak.queue_block_bytes, stats.queue_block_bytes_peak);
-    add(live_peak.profile_recorder_bytes, stats.profile_recorder_bytes_peak);
-    add(live_peak.native_preimport_tracker_bytes,
-        stats.native_preimport_tracker_bytes_peak);
+  static void add_saturating(std::size_t &target, std::size_t value) noexcept {
+    target = value > std::numeric_limits<std::size_t>::max() - target
+                 ? std::numeric_limits<std::size_t>::max()
+                 : target + value;
   }
+
+  static void add_current(JitPrecompileMemoryStats &target,
+                          const JitPrecompileMemoryStats &stats) noexcept {
+    add_saturating(target.profile_queue_capacity_entries,
+                   stats.profile_queue_capacity_entries);
+    add_saturating(target.profile_queue_entries, stats.profile_queue_entries);
+    add_saturating(target.catalog_queue_entries, stats.catalog_queue_entries);
+    add_saturating(target.generic_queue_entries, stats.generic_queue_entries);
+    add_saturating(target.pending_entries, stats.pending_entries);
+    add_saturating(target.inflight_entries, stats.inflight_entries);
+    add_saturating(target.deferred_entries, stats.deferred_entries);
+    add_saturating(target.completed_entries, stats.completed_entries);
+    add_saturating(target.estimated_queue_entry_bytes,
+                   stats.estimated_queue_entry_bytes);
+    add_saturating(target.queue_bucket_bytes, stats.queue_bucket_bytes);
+    add_saturating(target.queue_node_bytes, stats.queue_node_bytes);
+    add_saturating(target.queue_block_bytes, stats.queue_block_bytes);
+    add_saturating(target.profile_recorder_bytes, stats.profile_recorder_bytes);
+    add_saturating(target.native_preimport_tracker_bytes,
+                   stats.native_preimport_tracker_bytes);
+    for (std::size_t index = 0; index < jit_precompile_source_count; ++index) {
+      const auto &source = stats.by_source[index];
+      auto &destination = target.by_source[index];
+      add_saturating(destination.queued_entries, source.queued_entries);
+      add_saturating(destination.pending_entries, source.pending_entries);
+      add_saturating(destination.inflight_entries, source.inflight_entries);
+      add_saturating(destination.deferred_entries, source.deferred_entries);
+      add_saturating(destination.completed_entries, source.completed_entries);
+      add_saturating(destination.estimated_queue_entry_bytes,
+                     source.estimated_queue_entry_bytes);
+      add_saturating(destination.queue_bucket_bytes,
+                     source.queue_bucket_bytes);
+      add_saturating(destination.queue_node_bytes, source.queue_node_bytes);
+      add_saturating(destination.queue_block_bytes, source.queue_block_bytes);
+    }
+  }
+
+  static void add_runtime_peak(JitPrecompileMemoryStats &target,
+                               const JitPrecompileMemoryStats &stats) noexcept {
+    add_saturating(target.profile_queue_entries,
+                   stats.profile_queue_entries_peak);
+    add_saturating(target.catalog_queue_entries,
+                   stats.catalog_queue_entries_peak);
+    add_saturating(target.generic_queue_entries,
+                   stats.generic_queue_entries_peak);
+    add_saturating(target.pending_entries, stats.pending_entries_peak);
+    add_saturating(target.inflight_entries, stats.inflight_entries_peak);
+    add_saturating(target.deferred_entries, stats.deferred_entries_peak);
+    add_saturating(target.completed_entries, stats.completed_entries_peak);
+    add_saturating(target.estimated_queue_entry_bytes,
+                   stats.estimated_queue_entry_bytes_peak);
+    add_saturating(target.queue_bucket_bytes, stats.queue_bucket_bytes_peak);
+    add_saturating(target.queue_node_bytes, stats.queue_node_bytes_peak);
+    add_saturating(target.queue_block_bytes, stats.queue_block_bytes_peak);
+    add_saturating(target.profile_recorder_bytes,
+                   stats.profile_recorder_bytes_peak);
+    add_saturating(target.native_preimport_tracker_bytes,
+                   stats.native_preimport_tracker_bytes_peak);
+    for (std::size_t index = 0; index < jit_precompile_source_count; ++index) {
+      const auto &source = stats.by_source[index];
+      auto &destination = target.by_source[index];
+      add_saturating(destination.queued_entries, source.queued_entries_peak);
+      add_saturating(destination.pending_entries, source.pending_entries_peak);
+      add_saturating(destination.inflight_entries,
+                     source.inflight_entries_peak);
+      add_saturating(destination.deferred_entries,
+                     source.deferred_entries_peak);
+      add_saturating(destination.completed_entries,
+                     source.completed_entries_peak);
+      add_saturating(destination.estimated_queue_entry_bytes,
+                     source.estimated_queue_entry_bytes_peak);
+      add_saturating(destination.queue_bucket_bytes,
+                     source.queue_bucket_bytes_peak);
+      add_saturating(destination.queue_node_bytes,
+                     source.queue_node_bytes_peak);
+      add_saturating(destination.queue_block_bytes,
+                     source.queue_block_bytes_peak);
+    }
+  }
+
+  static void max_current(JitPrecompileMemoryStats &target,
+                          const JitPrecompileMemoryStats &current) noexcept {
+    target.profile_queue_entries =
+        std::max(target.profile_queue_entries, current.profile_queue_entries);
+    target.catalog_queue_entries =
+        std::max(target.catalog_queue_entries, current.catalog_queue_entries);
+    target.generic_queue_entries =
+        std::max(target.generic_queue_entries, current.generic_queue_entries);
+    target.pending_entries = std::max(target.pending_entries,
+                                      current.pending_entries);
+    target.inflight_entries = std::max(target.inflight_entries,
+                                       current.inflight_entries);
+    target.deferred_entries = std::max(target.deferred_entries,
+                                       current.deferred_entries);
+    target.completed_entries = std::max(target.completed_entries,
+                                        current.completed_entries);
+    target.estimated_queue_entry_bytes = std::max(
+        target.estimated_queue_entry_bytes, current.estimated_queue_entry_bytes);
+    target.queue_bucket_bytes =
+        std::max(target.queue_bucket_bytes, current.queue_bucket_bytes);
+    target.queue_node_bytes =
+        std::max(target.queue_node_bytes, current.queue_node_bytes);
+    target.queue_block_bytes =
+        std::max(target.queue_block_bytes, current.queue_block_bytes);
+    target.profile_recorder_bytes = std::max(
+        target.profile_recorder_bytes, current.profile_recorder_bytes);
+    target.native_preimport_tracker_bytes = std::max(
+        target.native_preimport_tracker_bytes,
+        current.native_preimport_tracker_bytes);
+    for (std::size_t index = 0; index < jit_precompile_source_count; ++index) {
+      const auto &source = current.by_source[index];
+      auto &peak = target.by_source[index];
+      peak.queued_entries = std::max(peak.queued_entries, source.queued_entries);
+      peak.pending_entries =
+          std::max(peak.pending_entries, source.pending_entries);
+      peak.inflight_entries =
+          std::max(peak.inflight_entries, source.inflight_entries);
+      peak.deferred_entries =
+          std::max(peak.deferred_entries, source.deferred_entries);
+      peak.completed_entries =
+          std::max(peak.completed_entries, source.completed_entries);
+      peak.estimated_queue_entry_bytes = std::max(
+          peak.estimated_queue_entry_bytes, source.estimated_queue_entry_bytes);
+      peak.queue_bucket_bytes =
+          std::max(peak.queue_bucket_bytes, source.queue_bucket_bytes);
+      peak.queue_node_bytes =
+          std::max(peak.queue_node_bytes, source.queue_node_bytes);
+      peak.queue_block_bytes =
+          std::max(peak.queue_block_bytes, source.queue_block_bytes);
+    }
+  }
+
+  void rebuild_concurrent_current() noexcept {
+    concurrent_live_current = {};
+    for (const auto &[key, stats] : live_by_runtime) {
+      static_cast<void>(key);
+      add_current(concurrent_live_current, stats);
+    }
+  }
+
+  void observe(const void *runtime_key,
+               const JitPrecompileMemoryStats &stats) {
+    live_by_runtime.insert_or_assign(runtime_key, stats);
+    rebuild_concurrent_current();
+    max_current(concurrent_live_peak, concurrent_live_current);
+  }
+
+  void retire(const void *runtime_key,
+              const JitPrecompileMemoryStats &stats) noexcept {
+    const auto found = live_by_runtime.find(runtime_key);
+    const auto &final_stats = found == live_by_runtime.end() ? stats
+                                                               : found->second;
+    add_current(final_before_retirement, final_stats);
+    add_runtime_peak(per_runtime_peak_sum_upper_bound, final_stats);
+    if (found != live_by_runtime.end()) live_by_runtime.erase(found);
+    ++runtime_count;
+    rebuild_concurrent_current();
+  }
+
+ private:
+  std::unordered_map<const void *, JitPrecompileMemoryStats> live_by_runtime;
 };
 
 struct Runtime {
@@ -1255,9 +1385,10 @@ std::string usage() {
          "[--perf-summary] [--perf-frame-content] [--perf-cpu-phases] "
          "[--perf-jit-native-lookups] "
          "[--jit-profile-mode off|record-only|load-only|idle|startup] "
-         "[--jit-startup-profile] [--jit-startup-profile-adaptive] "
+         "[--jit-startup-profile] "
          "[--jit-startup-profile-blocks N] "
          "[--jit-startup-profile-budget-us N] "
+         "[--jit-catalog-warming no-enqueue|idle] "
          "[--output FILE]\n"
          "  ilemu smoke [--cores N] [--jit-cache-mib 8..128] "
          "[--perf-summary] [--output FILE]\n"
@@ -1331,6 +1462,46 @@ enum class JitProfileMode : std::uint8_t {
   Startup,
 };
 
+enum class JitCatalogWarmingMode : std::uint8_t {
+  NoEnqueue,
+  Idle,
+};
+
+[[nodiscard]] std::string_view jit_precompile_source_name(
+    JitPrecompileSource source) noexcept {
+  switch (source) {
+  case JitPrecompileSource::DemandProfile:
+    return "DemandProfile";
+  case JitPrecompileSource::ExecutableCatalog:
+    return "ExecutableCatalog";
+  case JitPrecompileSource::Other:
+    return "Other";
+  }
+  return "Unknown";
+}
+
+[[nodiscard]] std::string_view jit_catalog_warming_mode_name(
+    JitCatalogWarmingMode mode) noexcept {
+  switch (mode) {
+  case JitCatalogWarmingMode::NoEnqueue:
+    return "no-enqueue";
+  case JitCatalogWarmingMode::Idle:
+    return "idle";
+  }
+  return "no-enqueue";
+}
+
+[[nodiscard]] JitCatalogWarmingMode parse_jit_catalog_warming_mode(
+    const std::vector<std::string> &args) {
+  const auto configured = option(args, "--jit-catalog-warming");
+  if (!configured || *configured == "no-enqueue") {
+    return JitCatalogWarmingMode::NoEnqueue;
+  }
+  if (*configured == "idle") return JitCatalogWarmingMode::Idle;
+  throw std::runtime_error{
+      "--jit-catalog-warming must be no-enqueue or idle"};
+}
+
 [[nodiscard]] std::string_view jit_profile_mode_name(
     JitProfileMode mode) noexcept {
   switch (mode) {
@@ -1370,10 +1541,9 @@ enum class JitProfileMode : std::uint8_t {
     }
     mode = JitProfileMode::Startup;
   }
-  if (flag(args, "--jit-startup-profile-adaptive") &&
-      mode != JitProfileMode::Startup) {
+  if (flag(args, "--jit-startup-profile-adaptive")) {
     throw std::runtime_error{
-        "--jit-startup-profile-adaptive requires startup profile mode"};
+        "--jit-startup-profile-adaptive is unsupported: no persisted cross-run history exists"};
   }
   return mode;
 }
@@ -2161,6 +2331,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const bool disable_scheduler_preemption =
       flag(args, "--disable-scheduler-preemption");
   const auto jit_profile_mode = parse_jit_profile_mode(args);
+  const auto jit_catalog_warming_mode = parse_jit_catalog_warming_mode(args);
   const bool profile_enabled = jit_profile_mode != JitProfileMode::Off;
   const bool profile_recording_enabled =
       jit_profile_records(jit_profile_mode);
@@ -2171,8 +2342,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const bool startup_profile_enabled =
       jit_profile_startup_work(jit_profile_mode);
   const bool idle_profile_enabled = jit_profile_idle_work(jit_profile_mode);
-  const bool startup_profile_adaptive =
-      flag(args, "--jit-startup-profile-adaptive");
+  const bool profile_background_warming_enabled =
+      idle_profile_enabled || startup_profile_enabled;
   const auto startup_profile_blocks_value =
       option(args, "--jit-startup-profile-blocks");
   const auto startup_profile_budget_us_value =
@@ -2206,10 +2377,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
               " idle=" + (idle_profile_enabled ? "enabled" : "disabled") +
               " startup-sync=" +
               (startup_profile_enabled ? "enabled" : "disabled") +
+              " catalog-warming=" +
+              std::string{jit_catalog_warming_mode_name(
+                  jit_catalog_warming_mode)} +
               " blocks=" + std::to_string(startup_profile_blocks) +
-              " budget-us=" + std::to_string(startup_profile_budget_us) +
-              " adaptive=" +
-              (startup_profile_adaptive ? "true" : "false"));
+              " budget-us=" + std::to_string(startup_profile_budget_us));
   if (disable_scheduler_preemption) {
     output.line(
         "[scheduler] semantic-preemption=disabled host-cooperation=enabled");
@@ -2492,10 +2664,24 @@ void boot(const std::vector<std::string> &args, Output &output) {
   RuntimeReaper runtime_reaper;
   std::vector<std::unique_ptr<Runtime>> runtimes;
   RuntimeJitMemoryAggregate runtime_jit_memory;
-  const auto account_runtime_jit_memory =
+  JitPrecompileMemoryStats concurrent_live_current_at_stop{};
+  const auto observe_runtime_jit_memory =
       [&runtime_jit_memory](Runtime &runtime) {
-        if (runtime.jit_memory_accounted || !runtime.cpus) return;
-        runtime_jit_memory.add(runtime.cpus->precompile_memory_stats());
+        if (!runtime.cpus || !runtime.cpus->has_execution_resources()) return;
+        runtime_jit_memory.observe(
+            static_cast<const void *>(&runtime),
+            runtime.cpus->precompile_memory_stats());
+      };
+  const auto account_runtime_jit_memory =
+      [&runtime_jit_memory, &observe_runtime_jit_memory](Runtime &runtime) {
+        if (runtime.jit_memory_accounted || !runtime.cpus ||
+            !runtime.cpus->has_execution_resources()) {
+          return;
+        }
+        observe_runtime_jit_memory(runtime);
+        runtime_jit_memory.retire(
+            static_cast<const void *>(&runtime),
+            runtime.cpus->precompile_memory_stats());
         runtime.jit_memory_accounted = true;
       };
   RuntimeIndex runtime_index;
@@ -2580,8 +2766,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
         return JitPrecompilePhase::StartupService;
       };
   constexpr std::size_t maximum_catalog_offline_compile_queue = 64;
+  constexpr std::size_t maximum_catalog_warming_entries = 256;
   constexpr std::size_t maximum_catalog_preexec_blocks = 64;
   constexpr std::uint64_t catalog_preexec_budget_nanoseconds = 4'000'000;
+  const bool catalog_idle_warming_enabled =
+      jit_catalog_warming_mode == JitCatalogWarmingMode::Idle;
   std::deque<ContentIdentity> pending_catalog_compiles;
   struct PrecompileOutcomeCounters {
     std::atomic<std::uint64_t> elapsed_nanoseconds{};
@@ -2596,8 +2785,26 @@ void boot(const std::vector<std::string> &args, Output &output) {
     std::atomic<std::uint64_t> unstable{};
     std::atomic<std::uint64_t> cache_full{};
     std::atomic<std::uint64_t> failed{};
+    std::atomic<std::uint64_t> cancelled{};
     std::atomic<std::uint64_t> deadline_stops{};
   } precompile_outcomes;
+  struct PrecompileSourceOutcomeCounters {
+    std::atomic<std::uint64_t> elapsed_nanoseconds{};
+    std::atomic<std::uint64_t> attempted{};
+    std::atomic<std::uint64_t> native_compiled{};
+    std::atomic<std::uint64_t> portable_generated{};
+    std::atomic<std::uint64_t> portable_artifact_hits{};
+    std::atomic<std::uint64_t> artifact_imported{};
+    std::atomic<std::uint64_t> artifact_probe_hits{};
+    std::atomic<std::uint64_t> shared_slab_hits{};
+    std::atomic<std::uint64_t> deferred{};
+    std::atomic<std::uint64_t> unstable{};
+    std::atomic<std::uint64_t> cache_full{};
+    std::atomic<std::uint64_t> failed{};
+    std::atomic<std::uint64_t> cancelled{};
+  };
+  std::array<PrecompileSourceOutcomeCounters, jit_precompile_source_count>
+      precompile_source_outcomes{};
   enum class PrecompileScheduleSkip : std::uint8_t {
     NoRuntime,
     TaskBusy,
@@ -2623,7 +2830,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         ++precompile_schedule_skips[static_cast<std::size_t>(reason)];
       };
   const auto record_precompile_outcomes =
-      [&precompile_outcomes](const JitPrecompileBatchResult &result) {
+      [&precompile_outcomes, &precompile_source_outcomes](
+          const JitPrecompileBatchResult &result, JitPrecompileSource source) {
         precompile_outcomes.elapsed_nanoseconds.fetch_add(
             result.elapsed_nanoseconds, std::memory_order_relaxed);
         precompile_outcomes.attempted.fetch_add(result.attempted,
@@ -2648,15 +2856,46 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                                   std::memory_order_relaxed);
         precompile_outcomes.failed.fetch_add(result.failed,
                                               std::memory_order_relaxed);
+        precompile_outcomes.cancelled.fetch_add(result.cancelled,
+                                                  std::memory_order_relaxed);
         precompile_outcomes.deadline_stops.fetch_add(
             result.deadline_stops, std::memory_order_relaxed);
+        auto &source_outcome = precompile_source_outcomes[
+            static_cast<std::size_t>(source)];
+        source_outcome.elapsed_nanoseconds.fetch_add(
+            result.elapsed_nanoseconds, std::memory_order_relaxed);
+        source_outcome.attempted.fetch_add(result.attempted,
+                                            std::memory_order_relaxed);
+        source_outcome.native_compiled.fetch_add(
+            result.native_compiled, std::memory_order_relaxed);
+        source_outcome.portable_generated.fetch_add(
+            result.portable_generated, std::memory_order_relaxed);
+        source_outcome.portable_artifact_hits.fetch_add(
+            result.portable_artifact_hits, std::memory_order_relaxed);
+        source_outcome.artifact_imported.fetch_add(
+            result.artifact_imported, std::memory_order_relaxed);
+        source_outcome.artifact_probe_hits.fetch_add(
+            result.artifact_probe_hits, std::memory_order_relaxed);
+        source_outcome.shared_slab_hits.fetch_add(
+            result.shared_slab_hits, std::memory_order_relaxed);
+        source_outcome.deferred.fetch_add(result.deferred,
+                                           std::memory_order_relaxed);
+        source_outcome.unstable.fetch_add(result.unstable,
+                                           std::memory_order_relaxed);
+        source_outcome.cache_full.fetch_add(result.cache_full,
+                                              std::memory_order_relaxed);
+        source_outcome.failed.fetch_add(result.failed,
+                                         std::memory_order_relaxed);
+        source_outcome.cancelled.fetch_add(result.cancelled,
+                                            std::memory_order_relaxed);
       };
   const auto assign_jit_process_profile =
       [&translation_profiles, &catalog_index, &boot_image_identities,
        &pending_catalog_compiles, &output,
        &jit_code_cache_governor, springboard_boot_path, profile_enabled,
        profile_recording_enabled, profile_loading_enabled,
-       profile_precompile_enabled](
+       profile_precompile_enabled, catalog_idle_warming_enabled,
+       maximum_catalog_warming_entries](
           Runtime &runtime, const LoadedProcess &loaded,
           JitPrecompilePhase phase) {
         runtime.precompile_phase = phase;
@@ -2711,8 +2950,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
         };
         append_entry_points(loaded.executable);
         append_entry_points(loaded.dynamic_linker);
-        runtime.cpus->add_precompile_entries(
-            entry_points, phase, JitPrecompileSource::ExecutableCatalog);
+        if (catalog_idle_warming_enabled) {
+          if (entry_points.size() > maximum_catalog_warming_entries) {
+            entry_points.resize(maximum_catalog_warming_entries);
+          }
+          runtime.cpus->add_precompile_entries(
+              entry_points, phase, JitPrecompileSource::ExecutableCatalog);
+        }
         const auto consume_pending_identity = [&](const ContentIdentity &identity) {
           const auto pending = std::find(pending_catalog_compiles.begin(),
                                          pending_catalog_compiles.end(), identity);
@@ -2740,7 +2984,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
             catalog_preexec_budget_nanoseconds,
             JitPrecompileTarget::NativeCode, {},
             JitPrecompileSource::ExecutableCatalog);
-        record_precompile_outcomes(result);
+        record_precompile_outcomes(result,
+                                   JitPrecompileSource::ExecutableCatalog);
         output.line("[catalog] exec-precompile executable=" +
                     std::string{executable_path} +
                     " blocks=" + std::to_string(result.native_compiled) +
@@ -2754,8 +2999,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       };
   const auto precompile_startup_profile =
       [&output, &record_precompile_outcomes, startup_profile_enabled,
-       startup_profile_adaptive, startup_profile_blocks,
-       startup_profile_budget_us](
+       startup_profile_blocks, startup_profile_budget_us](
           Runtime &runtime, std::string_view executable_path) {
         if (!startup_profile_enabled) return;
         if (!runtime.cpus->next_precompile_phase(
@@ -2763,43 +3007,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 JitPrecompileSource::DemandProfile)) {
           return;
         }
-        if (startup_profile_adaptive) {
-          const auto profile = runtime.jit_translation_profile;
-          const auto profile_stats = profile ? profile->stats()
-                                             : JitTranslationProfileStats{};
-          const auto imported =
-              profile_stats.native_preimport_imported +
-              profile_stats.native_preimport_already_present;
-          const auto minimum_use_count = (imported + 3U) / 4U;
-          if (imported < 8U ||
-              profile_stats.native_preimport_used < minimum_use_count) {
-            output.line("[jit-profile] startup-native-warm executable=" +
-                        std::string{executable_path} +
-                        " skipped=adaptive-history imported=" +
-                        std::to_string(imported) + " used=" +
-                        std::to_string(profile_stats.native_preimport_used));
-            return;
-          }
-          if (host_memory_is_pressured(host_memory_budget_snapshot())) {
-            output.line("[jit-profile] startup-native-warm executable=" +
-                        std::string{executable_path} +
-                        " skipped=adaptive-memory-pressure");
-            return;
-          }
-        }
-        const auto blocks = startup_profile_adaptive
-                                ? std::min<std::uint64_t>(
-                                      startup_profile_blocks, 16U)
-                                : startup_profile_blocks;
-        const auto budget_us = startup_profile_adaptive
-                                   ? std::min<std::uint64_t>(
-                                         startup_profile_budget_us, 1'000U)
-                                   : startup_profile_budget_us;
         const auto result = runtime.cpus->precompile_pending(
-            static_cast<std::size_t>(blocks), budget_us * 1'000U,
+            static_cast<std::size_t>(startup_profile_blocks),
+            startup_profile_budget_us * 1'000U,
             JitPrecompileTarget::NativeCode, {},
             JitPrecompileSource::DemandProfile);
-        record_precompile_outcomes(result);
+        record_precompile_outcomes(result, JitPrecompileSource::DemandProfile);
         output.line("[jit-profile] startup-native-warm executable=" +
                     std::string{executable_path} +
                     " blocks=" + std::to_string(result.native_compiled) +
@@ -2885,6 +3098,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       process.executable_path,
       process.executable.code_signature_entitlements());
   precompile_startup_profile(*initial, process.executable_path);
+  observe_runtime_jit_memory(*initial);
   initial->kernel->enqueue_baseband_input(baseband_input);
   initial->kernel->set_baseband_receive_eof(baseband_input_path.has_value());
   if (baseband_input_path) {
@@ -3055,19 +3269,21 @@ void boot(const std::vector<std::string> &args, Output &output) {
             executable_catalog = std::move(*catalog_completion->catalog);
             catalog_loaded = true;
             catalog_index = &executable_catalog;
-            for (const auto &identity :
-                 executable_catalog.content_identities()) {
-              if (previous.contains(identity) ||
-                  std::find(pending_catalog_compiles.begin(),
-                            pending_catalog_compiles.end(), identity) !=
-                      pending_catalog_compiles.end()) {
-                continue;
+            if (catalog_idle_warming_enabled) {
+              for (const auto &identity :
+                   executable_catalog.content_identities()) {
+                if (previous.contains(identity) ||
+                    std::find(pending_catalog_compiles.begin(),
+                              pending_catalog_compiles.end(), identity) !=
+                        pending_catalog_compiles.end()) {
+                  continue;
+                }
+                if (pending_catalog_compiles.size() >=
+                    maximum_catalog_offline_compile_queue) {
+                  pending_catalog_compiles.pop_front();
+                }
+                pending_catalog_compiles.push_back(identity);
               }
-              if (pending_catalog_compiles.size() >=
-                  maximum_catalog_offline_compile_queue) {
-                pending_catalog_compiles.pop_front();
-              }
-              pending_catalog_compiles.push_back(identity);
             }
             bool manifest_published = false;
             if (catalog_completion->manifest_staged) {
@@ -3306,7 +3522,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
     runtime.kernel->set_host_network_policy(*network_policy);
     runtime.kernel->set_mapped_executable_handler(
         [runtime_ptr, &catalog_index, &catalog_mapped_executable_ranges,
-         &catalog_mapped_entry_hints, &catalog_mapped_entry_hints_by_phase](
+         &catalog_mapped_entry_hints, &catalog_mapped_entry_hints_by_phase,
+         catalog_idle_warming_enabled](
             const std::filesystem::path &path, std::uint32_t mapping_address,
             std::uint32_t mapping_size, std::uint64_t file_offset) {
           if (catalog_index == nullptr) return;
@@ -3317,9 +3534,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
           catalog_mapped_entry_hints += entry_points.size();
           catalog_mapped_entry_hints_by_phase[static_cast<std::size_t>(
               runtime_ptr->precompile_phase)] += entry_points.size();
-          runtime_ptr->cpus->add_precompile_entries(
-              entry_points, runtime_ptr->precompile_phase,
-              JitPrecompileSource::ExecutableCatalog);
+          if (catalog_idle_warming_enabled) {
+            if (entry_points.size() > maximum_catalog_warming_entries) {
+              entry_points.resize(maximum_catalog_warming_entries);
+            }
+            runtime_ptr->cpus->add_precompile_entries(
+                entry_points, runtime_ptr->precompile_phase,
+                JitPrecompileSource::ExecutableCatalog);
+          }
         });
     if (!runtime.kernel->set_virtual_processor_count(guest_processor_count)) {
       throw std::runtime_error{"invalid virtual processor topology"};
@@ -3560,6 +3782,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           static_cast<void>(scheduler.register_thread(
               XnuThreadId{child_pid, 0},
               child->kernel->process().thread_base_priority));
+          observe_runtime_jit_memory(*child);
           runtime_index.insert(*child);
           runtimes.push_back(std::move(child));
           return child_pid;
@@ -3647,6 +3870,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
               precompile_catalog_generation(
                   *child_runtime, catalog_generation_pending,
                   loaded.executable_path);
+              observe_runtime_jit_memory(*child_runtime);
             }
             child_runtime->activate_image_epoch(image_epoch);
             child_runtime->fresh_spawn_address_space = false;
@@ -4690,6 +4914,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           precompile_startup_profile(runtime, loaded.executable_path);
           precompile_catalog_generation(runtime, catalog_generation_pending,
                                         loaded.executable_path);
+          observe_runtime_jit_memory(runtime);
           runtime.activate_image_epoch(image_epoch);
           static_cast<void>(scheduler.complete_slice(
               scheduled->thread, result.ticks_consumed,
@@ -4938,6 +5163,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
         continue;
       }
+      // Sample every live execution pool after guest work, image transitions,
+      // pressure cancellation, and resource reclamation.  The aggregate then
+      // records a true concurrent sum and its same-sample maximum; the
+      // per-runtime historical upper bound is accumulated only at retirement.
+      for (auto &runtime : runtimes) {
+        observe_runtime_jit_memory(*runtime);
+      }
       std::optional<std::uint64_t> next_deadline;
       for (const auto &runtime : runtimes) {
         const auto process_id = runtime->kernel->process().pid;
@@ -5080,7 +5312,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
                            runtime->precompile_stop_requested(expected_epoch);
                   },
                   source);
-              record_precompile_outcomes(result);
+              record_precompile_outcomes(
+                  result, source.value_or(JitPrecompileSource::Other));
               const auto compiled = target == JitPrecompileTarget::NativeCode
                                         ? result.native_compiled
                                         : result.portable_generated;
@@ -5099,8 +5332,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
       };
       const auto schedule_profile_warm =
-          [&, idle_profile_enabled](Runtime *runtime) {
-            if (!idle_profile_enabled) return;
+          [&, profile_background_warming_enabled](Runtime *runtime) {
+            if (!profile_background_warming_enabled) return;
             if (runtime == nullptr || runtime->kernel->process().exited) {
                 return;
             }
@@ -5123,7 +5356,43 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                           JitPrecompileSource::DemandProfile);
             }
           };
+      const auto schedule_catalog_warm =
+          [&, catalog_idle_warming_enabled](Runtime *runtime) {
+            if (!catalog_idle_warming_enabled) return;
+            if (runtime == nullptr || runtime->kernel->process().exited) {
+              return;
+            }
+            // Catalog warming is advisory background work. Never let it
+            // compete with the active or scanout owner for the first frame or
+            // for interactive animation; background runtimes get the
+            // source-isolated opportunity below.
+            if (runtime == active_runtime || runtime == display_scanout_owner) {
+              return;
+            }
+            if (runtime == initial_runtime &&
+                initial_runtime->kernel->display_submitted_frames() == 0U) {
+              return;
+            }
+            // Catalog warming has its own source filter and scheduler entry;
+            // it never relies on profile mode being enabled or on a profile
+            // queue consumer happening to run.
+            const auto native_phase = runtime->cpus->next_precompile_phase(
+                JitPrecompileTarget::NativeCode,
+                JitPrecompileSource::ExecutableCatalog);
+            if (native_phase) {
+              schedule_precompile_runtime(runtime,
+                                          HostWorkKind::BackgroundCompile,
+                                          JitPrecompileTarget::NativeCode,
+                                          JitPrecompileSource::ExecutableCatalog);
+            } else {
+              schedule_precompile_runtime(runtime,
+                                          HostWorkKind::OfflineCompile,
+                                          JitPrecompileTarget::PortableIr,
+                                          JitPrecompileSource::ExecutableCatalog);
+            }
+          };
       schedule_profile_warm(active_runtime);
+      schedule_catalog_warm(active_runtime);
       const auto schedule_artifact_compaction = [&]() {
         if (artifact_compaction_task) {
           if (!artifact_compaction_task->finished()) {
@@ -5151,9 +5420,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // every guest thread is idle.
       if (display_scanout_owner != active_runtime) {
         schedule_profile_warm(display_scanout_owner);
+        schedule_catalog_warm(display_scanout_owner);
       }
       Runtime *offline_precompile_runtime = nullptr;
       std::optional<JitPrecompilePhase> offline_precompile_phase;
+      Runtime *offline_catalog_precompile_runtime = nullptr;
+      std::optional<JitPrecompilePhase> offline_catalog_precompile_phase;
       // Active and scanout owners were submitted above for native warming.
       // Use one remaining worker slot to generate reusable portable IR for the
       // earliest phase across every other live process; creation order breaks
@@ -5182,6 +5454,37 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                   HostWorkKind::OfflineCompile,
                                   JitPrecompileTarget::PortableIr,
                                   JitPrecompileSource::DemandProfile);
+      // Give catalog entries in every other live process a bounded consumer
+      // as well.  The active and scanout owners were handled above; this
+      // selection prevents a background runtime's catalog from becoming a
+      // permanently pending source when profile warming is off.
+      for (const auto &runtime : runtimes) {
+        if (runtime.get() == active_runtime ||
+            runtime.get() == display_scanout_owner ||
+            runtime->kernel->process().exited ||
+            (runtime->precompile_task &&
+             !runtime->precompile_task->finished())) {
+          continue;
+        }
+        const auto native_phase = runtime->cpus->next_precompile_phase(
+            JitPrecompileTarget::NativeCode,
+            JitPrecompileSource::ExecutableCatalog);
+        const auto portable_phase = native_phase
+                                        ? std::nullopt
+                                        : runtime->cpus->next_precompile_phase(
+                                              JitPrecompileTarget::PortableIr,
+                                              JitPrecompileSource::ExecutableCatalog);
+        const auto phase = native_phase ? native_phase : portable_phase;
+        if (phase &&
+            (!offline_catalog_precompile_phase ||
+             static_cast<std::uint8_t>(*phase) <
+                 static_cast<std::uint8_t>(
+                     *offline_catalog_precompile_phase))) {
+          offline_catalog_precompile_runtime = runtime.get();
+          offline_catalog_precompile_phase = phase;
+        }
+      }
+      schedule_catalog_warm(offline_catalog_precompile_runtime);
       if (next_deadline) {
         if (realtime_pacer) {
           const auto guest_ahead_delay =
@@ -5490,6 +5793,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
       " failed=" +
       std::to_string(precompile_outcomes.failed.load(
           std::memory_order_relaxed)) +
+      " cancelled=" +
+      std::to_string(precompile_outcomes.cancelled.load(
+          std::memory_order_relaxed)) +
       " deadline-stops=" +
       std::to_string(precompile_outcomes.deadline_stops.load(
           std::memory_order_relaxed)));
@@ -5548,6 +5854,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
   if (catalog_loaded && !executable_catalog.save(catalog_manifest)) {
     output.line("[catalog] manifest-save=failed");
   }
+  for (auto &runtime : runtimes) {
+    observe_runtime_jit_memory(*runtime);
+  }
+  concurrent_live_current_at_stop = runtime_jit_memory.concurrent_live_current;
   for (auto &runtime : runtimes) {
     account_runtime_jit_memory(*runtime);
     runtime_index.erase(*runtime);
@@ -5615,9 +5925,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                    : JitTranslationProfileStats{};
     const auto demand_latency = stopped_guest.latencies[static_cast<std::size_t>(
         PerfLatencyKind::JitDemandTranslation)];
-    const auto avoided_demand_translations =
-        profile_stats.native_preimport_used +
-        profile_stats.demand_artifact_consumed;
+    const auto saturating_add = [](std::uint64_t left,
+                                   std::uint64_t right) noexcept {
+      return right > std::numeric_limits<std::uint64_t>::max() - left
+                 ? std::numeric_limits<std::uint64_t>::max()
+                 : left + right;
+    };
+    const auto profile_native_used = profile_stats.native_preimport_used;
+    const auto profile_portable_used =
+        profile_stats.profile_portable_artifact_consumed;
+    const auto ordinary_artifact_used =
+        profile_stats.ordinary_demand_artifact_consumed;
+    const auto profile_avoided_demand_translations =
+        saturating_add(profile_native_used, profile_portable_used);
+    const auto avoided_demand_translations = saturating_add(
+        profile_avoided_demand_translations, ordinary_artifact_used);
+    const auto actually_used_total = avoided_demand_translations;
     const auto estimated_avoided_demand_total_ns =
         demand_latency.p50_nanoseconds != 0U &&
                 avoided_demand_translations >
@@ -5667,14 +5990,28 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(profile_stats.native_preimport_before_first_demand) +
         " native-preimport-used=" +
         std::to_string(profile_stats.native_preimport_used) +
-        " actually-used=" + std::to_string(avoided_demand_translations) +
+        " actually-used-profile-native-preimport=" +
+        std::to_string(profile_native_used) +
+        " actually-used-demandprofile-portable-ir=" +
+        std::to_string(profile_portable_used) +
+        " actually-used-ordinary-demand-artifact=" +
+        std::to_string(ordinary_artifact_used) +
+        " actually-used-total=" + std::to_string(actually_used_total) +
         " first-use-distance-samples=" +
         std::to_string(profile_stats.native_preimport_first_use_distance_samples) +
         " first-use-distance-total=" +
         std::to_string(profile_stats.native_preimport_first_use_distance_total) +
         " demand-translation-p50-ns=" +
         std::to_string(demand_latency.p50_nanoseconds) +
-        " avoided-demand-translations=" +
+        " avoided-demand-translations-profile-native=" +
+        std::to_string(profile_native_used) +
+        " avoided-demand-translations-demandprofile-portable-ir=" +
+        std::to_string(profile_portable_used) +
+        " avoided-demand-translations-ordinary-demand-artifact=" +
+        std::to_string(ordinary_artifact_used) +
+        " profile-avoided-demand-translations=" +
+        std::to_string(profile_avoided_demand_translations) +
+        " avoided-demand-translations-total=" +
         std::to_string(avoided_demand_translations) +
         " estimated-avoided-demand-total-ns=" +
         std::to_string(estimated_avoided_demand_total_ns) +
@@ -5682,6 +6019,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(profile_stats.demand_artifact_staged) +
         " demand-artifact-consumed=" +
         std::to_string(profile_stats.demand_artifact_consumed) +
+        " profile-portable-artifact-consumed=" +
+        std::to_string(profile_stats.profile_portable_artifact_consumed) +
+        " ordinary-demand-artifact-consumed=" +
+        std::to_string(profile_stats.ordinary_demand_artifact_consumed) +
         " demand-artifact-stage-unused=" +
         std::to_string(profile_stats.demand_artifact_stage_unused) +
         " imported-before-first-run=" +
@@ -5698,7 +6039,121 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(profile_stats.profile_save_failures));
     const auto &runtime_final_memory =
         runtime_jit_memory.final_before_retirement;
-    const auto &runtime_peak_memory = runtime_jit_memory.live_peak;
+    const auto &concurrent_live_current = concurrent_live_current_at_stop;
+    const auto &concurrent_live_peak = runtime_jit_memory.concurrent_live_peak;
+    const auto &per_runtime_peak_sum_upper_bound =
+        runtime_jit_memory.per_runtime_peak_sum_upper_bound;
+    const auto format_queue_memory = [](
+        std::string_view prefix,
+        const JitPrecompileMemoryStats &stats) {
+      return std::string{prefix} +
+             "-profile-entries=" +
+             std::to_string(stats.profile_queue_entries) +
+             "-profile-capacity-entries=" +
+             std::to_string(stats.profile_queue_capacity_entries) +
+             "-catalog-entries=" +
+             std::to_string(stats.catalog_queue_entries) +
+             "-generic-entries=" +
+             std::to_string(stats.generic_queue_entries) +
+             "-pending-entries=" + std::to_string(stats.pending_entries) +
+             "-inflight-entries=" +
+             std::to_string(stats.inflight_entries) +
+             "-deferred-entries=" +
+             std::to_string(stats.deferred_entries) +
+             "-completed-entries=" +
+             std::to_string(stats.completed_entries) +
+             "-queue-bytes-est=" +
+             std::to_string(stats.estimated_queue_entry_bytes) +
+             "-queue-bucket-bytes-est=" +
+             std::to_string(stats.queue_bucket_bytes) +
+             "-queue-node-bytes-est=" +
+             std::to_string(stats.queue_node_bytes) +
+             "-queue-block-bytes-est=" +
+             std::to_string(stats.queue_block_bytes) +
+             "-recorder-bytes=" +
+             std::to_string(stats.profile_recorder_bytes) +
+             "-tracker-bytes=" +
+             std::to_string(stats.native_preimport_tracker_bytes);
+    };
+    for (std::size_t source_index = 0;
+         source_index < jit_precompile_source_count; ++source_index) {
+      const auto source = static_cast<JitPrecompileSource>(source_index);
+      const auto &final_source = runtime_final_memory.by_source[source_index];
+      const auto &current_source =
+          concurrent_live_current.by_source[source_index];
+      const auto &peak_source = concurrent_live_peak.by_source[source_index];
+      const auto &upper_bound_source =
+          per_runtime_peak_sum_upper_bound.by_source[source_index];
+      output.line(
+          "[perf-jit-queue-source] source=" +
+          std::string{jit_precompile_source_name(source)} +
+          " final-queued=" + std::to_string(final_source.queued_entries) +
+          " final-pending=" + std::to_string(final_source.pending_entries) +
+          " final-inflight=" +
+          std::to_string(final_source.inflight_entries) +
+          " final-deferred=" +
+          std::to_string(final_source.deferred_entries) +
+          " final-completed=" +
+          std::to_string(final_source.completed_entries) +
+          " final-bytes-est=" +
+          std::to_string(final_source.estimated_queue_entry_bytes) +
+          " concurrent-live-current-queued=" +
+          std::to_string(current_source.queued_entries) +
+          " concurrent-live-current-pending=" +
+          std::to_string(current_source.pending_entries) +
+          " concurrent-live-current-inflight=" +
+          std::to_string(current_source.inflight_entries) +
+          " concurrent-live-current-deferred=" +
+          std::to_string(current_source.deferred_entries) +
+          " concurrent-live-current-completed=" +
+          std::to_string(current_source.completed_entries) +
+          " concurrent-live-current-bytes-est=" +
+          std::to_string(current_source.estimated_queue_entry_bytes) +
+          " concurrent-live-peak-queued=" +
+          std::to_string(peak_source.queued_entries) +
+          " concurrent-live-peak-bytes-est=" +
+          std::to_string(peak_source.estimated_queue_entry_bytes) +
+          " per-runtime-peak-sum-upper-bound-queued=" +
+          std::to_string(upper_bound_source.queued_entries) +
+          " per-runtime-peak-sum-upper-bound-bytes-est=" +
+          std::to_string(upper_bound_source.estimated_queue_entry_bytes) +
+          " attempted=" +
+          std::to_string(precompile_source_outcomes[source_index]
+                             .attempted.load(std::memory_order_relaxed)) +
+          " executed=" +
+          std::to_string(saturating_add(
+              saturating_add(
+                  saturating_add(
+                      precompile_source_outcomes[source_index]
+                          .native_compiled.load(std::memory_order_relaxed),
+                      precompile_source_outcomes[source_index]
+                          .portable_generated.load(
+                              std::memory_order_relaxed)),
+                  precompile_source_outcomes[source_index]
+                      .portable_artifact_hits.load(std::memory_order_relaxed)),
+              saturating_add(
+                  saturating_add(
+                      precompile_source_outcomes[source_index]
+                          .artifact_imported.load(std::memory_order_relaxed),
+                      precompile_source_outcomes[source_index]
+                          .artifact_probe_hits.load(
+                              std::memory_order_relaxed)),
+                  precompile_source_outcomes[source_index]
+                      .shared_slab_hits.load(std::memory_order_relaxed)))) +
+          " used=" +
+          std::to_string(source == JitPrecompileSource::DemandProfile
+                             ? profile_avoided_demand_translations
+                             : 0U) +
+          " cancelled=" +
+          std::to_string(precompile_source_outcomes[source_index]
+                             .cancelled.load(std::memory_order_relaxed)) +
+          " deferred=" +
+          std::to_string(precompile_source_outcomes[source_index]
+                             .deferred.load(std::memory_order_relaxed)) +
+          " failed=" +
+          std::to_string(precompile_source_outcomes[source_index]
+                             .failed.load(std::memory_order_relaxed)));
+    }
     output.line(
         "[perf-jit-memory] profile-object-bytes=" +
         std::to_string(profile_stats.profile_object_bytes) +
@@ -5712,56 +6167,21 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(profile_stats.discarded_set_bucket_bytes) +
         " profile-discarded-nodes-est-bytes=" +
         std::to_string(profile_stats.discarded_set_node_bytes) +
+        " profile-portable-ready-buckets-bytes=" +
+        std::to_string(profile_stats.portable_ready_set_bucket_bytes) +
+        " profile-portable-ready-nodes-est-bytes=" +
+        std::to_string(profile_stats.portable_ready_set_node_bytes) +
         " catalog-bytes-est=" +
         std::to_string(executable_catalog.resident_bytes_estimate()) +
         " runtime-count=" + std::to_string(runtime_jit_memory.runtime_count) +
-        " queue-profile-entries=" +
-        std::to_string(runtime_final_memory.profile_queue_entries) +
-        " queue-profile-capacity-entries=" +
-        std::to_string(
-            runtime_final_memory.profile_queue_capacity_entries) +
-        " queue-pending-entries=" +
-        std::to_string(runtime_final_memory.pending_entries) +
-        " queue-inflight-entries=" +
-        std::to_string(runtime_final_memory.inflight_entries) +
-        " queue-deferred-entries=" +
-        std::to_string(runtime_final_memory.deferred_entries) +
-        " queue-completed-entries=" +
-        std::to_string(runtime_final_memory.completed_entries) +
-        " queue-entry-bytes-est=" +
-        std::to_string(runtime_final_memory.estimated_queue_entry_bytes) +
-        " queue-bucket-bytes-est=" +
-        std::to_string(runtime_final_memory.queue_bucket_bytes) +
-        " queue-node-bytes-est=" +
-        std::to_string(runtime_final_memory.queue_node_bytes) +
-        " queue-block-bytes-est=" +
-        std::to_string(runtime_final_memory.queue_block_bytes) +
-        " recorder-bytes=" +
-        std::to_string(runtime_final_memory.profile_recorder_bytes) +
-        " tracker-bytes=" +
-        std::to_string(runtime_final_memory.native_preimport_tracker_bytes) +
-        " runtime-peak-profile-entries=" +
-        std::to_string(runtime_peak_memory.profile_queue_entries) +
-        " runtime-peak-pending-entries=" +
-        std::to_string(runtime_peak_memory.pending_entries) +
-        " runtime-peak-inflight-entries=" +
-        std::to_string(runtime_peak_memory.inflight_entries) +
-        " runtime-peak-deferred-entries=" +
-        std::to_string(runtime_peak_memory.deferred_entries) +
-        " runtime-peak-completed-entries=" +
-        std::to_string(runtime_peak_memory.completed_entries) +
-        " runtime-peak-queue-bytes-est=" +
-        std::to_string(runtime_peak_memory.estimated_queue_entry_bytes) +
-        " runtime-peak-queue-bucket-bytes-est=" +
-        std::to_string(runtime_peak_memory.queue_bucket_bytes) +
-        " runtime-peak-queue-node-bytes-est=" +
-        std::to_string(runtime_peak_memory.queue_node_bytes) +
-        " runtime-peak-queue-block-bytes-est=" +
-        std::to_string(runtime_peak_memory.queue_block_bytes) +
-        " runtime-peak-recorder-bytes=" +
-        std::to_string(runtime_peak_memory.profile_recorder_bytes) +
-        " runtime-peak-tracker-bytes=" +
-        std::to_string(runtime_peak_memory.native_preimport_tracker_bytes) +
+        " " + format_queue_memory("final-before-retirement",
+                                   runtime_final_memory) +
+        " " + format_queue_memory("concurrent-live-current",
+                                   concurrent_live_current) +
+        " " + format_queue_memory("concurrent-live-peak",
+                                   concurrent_live_peak) +
+        " " + format_queue_memory("per-runtime-peak-sum-upper-bound",
+                                   per_runtime_peak_sum_upper_bound) +
         " native-slab-used-bytes=" +
         std::to_string(stopped_guest.jit_shared_used_bytes));
     const auto &validation = artifact_stats.validation_rejections;
