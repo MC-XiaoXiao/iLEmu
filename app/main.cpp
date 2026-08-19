@@ -5903,9 +5903,24 @@ void boot(const std::vector<std::string> &args, Output &output) {
         " publish=" + std::to_string(artifact_stats.publish_calls) +
         " dedup=" +
         std::to_string(artifact_stats.deduplicated_publishes) +
+        " disk-indexed=" +
+        std::to_string(artifact_stats.disk_records_indexed) +
+        " index-bytes=" + std::to_string(artifact_stats.index_bytes) +
+        " startup-prefetch=" +
+        std::to_string(artifact_stats.startup_payloads_prefetched) +
+        " startup-prefetch-bytes=" +
+        std::to_string(artifact_stats.startup_prefetch_bytes) +
+        " demand-payload-loads=" +
+        std::to_string(artifact_stats.demand_payload_disk_loads) +
+        " demand-deserialization-ns=" +
+        std::to_string(artifact_stats.demand_deserialization_nanoseconds) +
+        " initialization-ns=" +
+        std::to_string(artifact_stats.initialization_nanoseconds) +
         " disk-load=" +
         std::to_string(artifact_stats.disk_loaded_entries) +
         " evict=" + std::to_string(artifact_stats.evictions) +
+        " payload-evict=" +
+        std::to_string(artifact_stats.payload_evictions) +
         " compactions=" + std::to_string(artifact_stats.compactions) +
         " quota-evictions=" +
         std::to_string(artifact_stats.quota_evictions) +

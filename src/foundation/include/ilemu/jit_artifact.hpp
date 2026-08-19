@@ -145,8 +145,16 @@ struct JitArtifactStoreStats {
   std::uint64_t misses{};
   std::uint64_t publish_calls{};
   std::uint64_t deduplicated_publishes{};
+  std::uint64_t disk_records_indexed{};
+  std::uint64_t index_bytes{};
+  std::uint64_t startup_payloads_prefetched{};
+  std::uint64_t startup_prefetch_bytes{};
+  std::uint64_t demand_payload_disk_loads{};
+  std::uint64_t demand_deserialization_nanoseconds{};
+  std::uint64_t initialization_nanoseconds{};
   std::uint64_t disk_loaded_entries{};
   std::uint64_t evictions{};
+  std::uint64_t payload_evictions{};
   std::uint64_t compactions{};
   std::uint64_t quota_evictions{};
   std::uint64_t boot_working_set_artifacts{};

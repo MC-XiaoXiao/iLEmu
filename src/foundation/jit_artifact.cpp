@@ -393,6 +393,11 @@ struct SnapshotArtifactWriteEntry {
   ContentIdentity checksum;
 };
 
+struct SnapshotIndexRead {
+  std::vector<SnapshotArtifactEntry> entries;
+  std::uint64_t index_bytes{};
+};
+
 [[nodiscard]] const JitArtifactKey *snapshot_artifact_key(
     const SnapshotArtifactEntry &entry) noexcept {
   return &entry.key;
@@ -980,7 +985,7 @@ read_artifact_index(std::istream &stream, std::uint64_t index_offset,
   return entries;
 }
 
-[[nodiscard]] std::optional<std::vector<SnapshotArtifactEntry>>
+[[nodiscard]] std::optional<SnapshotIndexRead>
 read_snapshot_index(const std::filesystem::path &path,
                     std::uint64_t file_size) {
   if (file_size < artifact_header_bytes + artifact_index_v1_header_bytes +
@@ -1032,9 +1037,11 @@ read_snapshot_index(const std::filesystem::path &path,
     return std::nullopt;
   }
 
-  return read_artifact_index(stream, *index_offset, *index_bytes,
-                             *header_count, artifact_header_bytes,
-                             *index_offset);
+  const auto entries = read_artifact_index(
+      stream, *index_offset, *index_bytes, *header_count,
+      artifact_header_bytes, *index_offset);
+  if (!entries) return std::nullopt;
+  return SnapshotIndexRead{std::move(*entries), *index_bytes};
 }
 
 [[nodiscard]] std::filesystem::path current_snapshot_path(
@@ -1094,6 +1101,7 @@ struct ArtifactJournalScan {
   bool indexed{};
   std::uint64_t file_size{};
   std::uint64_t valid_bytes{};
+  std::uint64_t index_bytes{};
   std::vector<JournalArtifactEntry> entries;
 };
 
@@ -1182,6 +1190,11 @@ struct ArtifactJournalScan {
           segment_offset + artifact_segment_header_bytes,
           absolute_index_offset);
       if (!entries) break;
+      if (*index_bytes >
+          std::numeric_limits<std::uint64_t>::max() - result.index_bytes) {
+        break;
+      }
+      result.index_bytes += *index_bytes;
       for (const auto &entry : *entries) {
         result.entries.push_back(JournalArtifactEntry{
             entry.key, entry.offset, entry.serialized_bytes, entry.checksum,
@@ -1606,6 +1619,7 @@ std::size_t JitArtifactKeyHash::operator()(
 JitArtifactStore::JitArtifactStore(
     std::filesystem::path persistence_path, JitArtifactLimits limits)
     : limits_{std::move(limits)}, persistence_path_{std::move(persistence_path)} {
+  const auto initialization_started = std::chrono::steady_clock::now();
   boot_lru_begin_ = lru_.end();
   bool persistence_ready = false;
   if (!persistence_path_.empty() && limits_.persistence_enabled) {
@@ -1615,6 +1629,10 @@ JitArtifactStore::JitArtifactStore(
       persistence_ready = save(persistence_path_);
     }
   }
+  stats_.initialization_nanoseconds = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::steady_clock::now() - initialization_started)
+          .count());
   writeback_disabled_ = !persistence_ready || limits_.writeback_bytes == 0U;
   if (!writeback_disabled_) {
     writeback_thread_ = std::thread{[this] { writeback_loop(); }};
@@ -1763,11 +1781,25 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
 
       // The per-key flight owns retries while disk latency and deserialization
       // remain outside the global store mutex.
+      const auto demand_started = std::chrono::steady_clock::now();
       const auto loaded = read_artifact_at(
           source_path, record.offset, record.serialized_bytes,
           record.checksum_valid ? &record.checksum : nullptr);
+      const auto demand_elapsed = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - demand_started)
+              .count());
 
       std::unique_lock lock{mutex_};
+      ++stats_.demand_payload_disk_loads;
+      if (demand_elapsed <=
+          std::numeric_limits<std::uint64_t>::max() -
+              stats_.demand_deserialization_nanoseconds) {
+        stats_.demand_deserialization_nanoseconds += demand_elapsed;
+      } else {
+        stats_.demand_deserialization_nanoseconds =
+            std::numeric_limits<std::uint64_t>::max();
+      }
       promote_retention_locked(key, retention);
       if (auto artifact = artifacts_.find(key);
           artifact != artifacts_.end()) {
@@ -1929,6 +1961,7 @@ void JitArtifactStore::evict_until_fit_locked(
     if (iterator == artifacts_.end()) continue;
     resident_bytes_ -= iterator->second.serialized_bytes;
     ++stats_.evictions;
+    ++stats_.payload_evictions;
     artifacts_.erase(iterator);
   }
 }
@@ -2187,6 +2220,7 @@ std::size_t JitArtifactStore::trim_resident_bytes(
       resident_bytes_ -= artifact->second.serialized_bytes;
       retire_writeback_locked(*key);
       ++stats_.evictions;
+      ++stats_.payload_evictions;
       ++stats_.quota_evictions;
       artifacts_.erase(artifact);
       if (lru_.empty()) boot_lru_begin_ = lru_.end();
@@ -2587,10 +2621,10 @@ bool JitArtifactStore::load_coordinated(
     if (!indexed) return false;
 
     DiskArtifactMap loaded_index;
-    loaded_index.reserve(indexed->size());
+    loaded_index.reserve(indexed->entries.size());
     std::vector<DiskEntry> scanned;
-    scanned.reserve(indexed->size());
-    for (const auto &entry : *indexed) {
+    scanned.reserve(indexed->entries.size());
+    for (const auto &entry : indexed->entries) {
       const DiskArtifactRecord record{entry.offset,
                                       entry.serialized_bytes,
                                       false,
@@ -2631,39 +2665,6 @@ bool JitArtifactStore::load_coordinated(
       }
     }
 
-    std::vector<DiskEntry> preload;
-    std::size_t preload_bytes = 0;
-    for (auto iterator = unique.rbegin(); iterator != unique.rend();
-         ++iterator) {
-      if (iterator->record.serialized_bytes >
-          std::numeric_limits<std::size_t>::max()) {
-        continue;
-      }
-      const auto bytes = static_cast<std::size_t>(
-          iterator->record.serialized_bytes);
-      if (limits_.resident_bytes != 0U &&
-          (bytes > limits_.resident_bytes ||
-           preload_bytes > limits_.resident_bytes - bytes)) {
-        continue;
-      }
-      if (bytes > std::numeric_limits<std::size_t>::max() - preload_bytes) {
-        return false;
-      }
-      preload_bytes += bytes;
-      preload.push_back(*iterator);
-    }
-    std::reverse(preload.begin(), preload.end());
-    std::vector<std::shared_ptr<const BlockArtifact>> loaded;
-    loaded.reserve(preload.size());
-    for (const auto &entry : preload) {
-      const auto &source_path =
-          entry.record.append_log ? append_path : path;
-      const auto artifact = read_artifact_at(
-          source_path, entry.record.offset, entry.record.serialized_bytes,
-          entry.record.checksum_valid ? &entry.record.checksum : nullptr);
-      if (!artifact || (*artifact)->key != *entry.key) return false;
-      loaded.push_back(*artifact);
-    }
     std::vector<const JitArtifactKey *> loaded_order;
     loaded_order.reserve(unique.size());
     for (const auto &entry : unique) {
@@ -2673,12 +2674,11 @@ bool JitArtifactStore::load_coordinated(
     std::filesystem::path loaded_append_path{append_path};
 
     const std::lock_guard lock{mutex_};
-    for (const auto &artifact : loaded) {
-      const auto record = loaded_index.find(artifact->key);
-      if (record != loaded_index.end()) {
-        record->second.translation_nanoseconds =
-            artifact->data.translation_nanoseconds;
-      }
+    stats_.disk_records_indexed = loaded_index.size();
+    stats_.index_bytes = indexed->index_bytes;
+    if (journal.index_bytes <=
+        std::numeric_limits<std::uint64_t>::max() - stats_.index_bytes) {
+      stats_.index_bytes += journal.index_bytes;
     }
     for (auto &entry : loaded_index) {
       const auto previous = disk_artifacts_.find(entry.first);
@@ -2721,18 +2721,6 @@ bool JitArtifactStore::load_coordinated(
     disk_append_valid_bytes_ =
         journal.header_valid ? journal.valid_bytes : 0U;
     disk_append_indexed_ = !journal.header_valid || journal.indexed;
-    for (auto &artifact : loaded) {
-      const auto artifact_bytes = serialized_artifact_bytes(artifact->data);
-      if (artifact_bytes) {
-        const auto record = disk_artifacts_.find(artifact->key);
-        insert_locked(
-            std::move(artifact), *artifact_bytes, true,
-            record != disk_artifacts_.end() &&
-                    record->second.boot_working_set
-                ? JitArtifactRetention::BootWorkingSet
-                : JitArtifactRetention::Normal);
-      }
-    }
     return true;
   } catch (...) {
     return false;
