@@ -1431,7 +1431,7 @@ std::string usage() {
          "[--frame-output FILE] [--touch-replay FILE] [--control-stdin] "
          "[--baseband-input FILE] [--baseband-output FILE] "
          "[--disable-scheduler-preemption] "
-         "[--perf-summary] [--perf-frame-content] [--perf-cpu-phases] "
+         "[--perf-summary] [--jit-observer-only] [--perf-frame-content] [--perf-cpu-phases] "
          "[--perf-jit-native-lookups] "
          "[--jit-profile-mode off|record-only|load-only|idle|startup] "
          "[--jit-startup-profile] "
@@ -2373,6 +2373,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                   : std::numeric_limits<std::uint64_t>::max();
   const bool disable_scheduler_preemption =
       flag(args, "--disable-scheduler-preemption");
+  const bool jit_observer_only = flag(args, "--jit-observer-only");
   const auto jit_profile_mode = parse_jit_profile_mode(args);
   const auto jit_catalog_warming_mode = parse_jit_catalog_warming_mode(args);
   const bool profile_enabled = jit_profile_mode != JitProfileMode::Off;
@@ -2706,7 +2707,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   RuntimeReaper runtime_reaper;
   std::vector<std::unique_ptr<Runtime>> runtimes;
   std::optional<RuntimeJitMemoryAggregate> runtime_jit_memory;
-  if (performance_counters().enabled()) runtime_jit_memory.emplace();
+  if (performance_counters().enabled() || jit_observer_only)
+    runtime_jit_memory.emplace();
   JitPrecompileMemoryStats concurrent_live_current_at_stop{};
   const auto observe_runtime_jit_memory =
       [&runtime_jit_memory](Runtime &runtime) {
@@ -4151,6 +4153,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
   auto latest_host_memory_budget = jit_cache_budget.memory;
   bool pressure_reclamation_applied{};
   std::optional<std::chrono::steady_clock::time_point> guest_idle_since;
+  std::uint64_t guest_timer_overshoot_samples{};
+  std::uint64_t guest_timer_overshoot_total_nanoseconds{};
+  std::uint64_t guest_timer_overshoot_max_nanoseconds{};
+  std::optional<std::uint64_t> observed_guest_timer_deadline;
   DeadlineQueue<std::uint32_t, std::uint64_t> guest_deadlines;
   if (!bounded_execution) {
     realtime_pacer.emplace(initial_runtime->kernel->current_absolute_time());
@@ -5471,6 +5477,26 @@ void boot(const std::vector<std::string> &args, Output &output) {
         if (realtime_pacer) {
           const auto guest_ahead_delay =
               realtime_pacer->delay_until(*next_deadline);
+          if (guest_ahead_delay <= std::chrono::nanoseconds::zero()) {
+            if (!observed_guest_timer_deadline ||
+                *observed_guest_timer_deadline != *next_deadline) {
+              const auto allowed = realtime_pacer->allowed_virtual_time();
+              if (allowed > *next_deadline) {
+                const auto overshoot = allowed - *next_deadline;
+                ++guest_timer_overshoot_samples;
+                guest_timer_overshoot_total_nanoseconds =
+                    overshoot > std::numeric_limits<std::uint64_t>::max() -
+                                   guest_timer_overshoot_total_nanoseconds
+                        ? std::numeric_limits<std::uint64_t>::max()
+                        : guest_timer_overshoot_total_nanoseconds + overshoot;
+                guest_timer_overshoot_max_nanoseconds = std::max(
+                    guest_timer_overshoot_max_nanoseconds, overshoot);
+              }
+              observed_guest_timer_deadline = *next_deadline;
+            }
+          } else {
+            observed_guest_timer_deadline.reset();
+          }
           if (guest_ahead_delay > std::chrono::nanoseconds::zero()) {
             const auto sleep_delay = realtime_pacer->limit_delay(
                 guest_ahead_delay, next_host_control_deadline());
@@ -5736,6 +5762,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
                          .load(std::memory_order_relaxed)) +
       " controller-rejected=" + std::to_string(host_resources.rejected()) +
       " controller-completed=" + std::to_string(host_resources.completed()));
+  output.line(
+      "[host-timing] guest-timer-overshoot-samples=" +
+      std::to_string(guest_timer_overshoot_samples) +
+      " guest-timer-overshoot-total-ns=" +
+      std::to_string(guest_timer_overshoot_total_nanoseconds) +
+      " guest-timer-overshoot-max-ns=" +
+      std::to_string(guest_timer_overshoot_max_nanoseconds));
   output.line(
       "[precompile] loader=" +
       std::to_string(precompile_tasks_by_phase[0]) + "/" +
@@ -6177,11 +6210,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
                              .failed.load(std::memory_order_relaxed)));
     }
     output.line(
-        "[perf-jit-observer] runtime-scan-iterations=" +
+        "[perf-jit-observer] mode=full-summary runtime-scan-iterations=" +
         std::to_string(runtime_jit_memory->runtime_scan_iterations) +
         " stats-samples=" +
         std::to_string(runtime_jit_memory->stats_samples) +
-        " queue-lock-acquisitions=" +
+        " queue-lock-acquisitions-invariant=" +
         std::to_string(runtime_jit_memory->queue_lock_acquisitions) +
         " queue-container-scans-invariant=0 queue-entry-visits-invariant=0");
     output.line(
@@ -6314,6 +6347,38 @@ void boot(const std::vector<std::string> &args, Output &output) {
     final_snapshot.jit_cache_slots = stopped_guest.jit_cache_slots;
     output.line(format_performance_summary(final_snapshot));
   }
+  if (jit_observer_only && runtime_jit_memory) {
+    const auto &queue = concurrent_live_current_at_stop;
+    output.line(
+        "[perf-jit-observer] mode=observer-only runtime-count=" +
+        std::to_string(runtime_jit_memory->runtime_count) +
+        " runtime-scan-iterations=" +
+        std::to_string(runtime_jit_memory->runtime_scan_iterations) +
+        " stats-samples=" +
+        std::to_string(runtime_jit_memory->stats_samples) +
+        " queue-lock-acquisitions-invariant=0 "
+        "queue-container-scans-invariant=0 queue-entry-visits-invariant=0 "
+        "atomic-queue-snapshot-profile-entries=" +
+        std::to_string(queue.profile_queue_entries) +
+        " atomic-queue-snapshot-catalog-entries=" +
+        std::to_string(queue.catalog_queue_entries) +
+        " atomic-queue-snapshot-generic-entries=" +
+        std::to_string(queue.generic_queue_entries) +
+        " atomic-queue-snapshot-pending-entries=" +
+        std::to_string(queue.pending_entries) +
+        " atomic-queue-snapshot-inflight-entries=" +
+        std::to_string(queue.inflight_entries) +
+        " atomic-queue-snapshot-deferred-entries=" +
+        std::to_string(queue.deferred_entries) +
+        " atomic-queue-snapshot-completed-entries=" +
+        std::to_string(queue.completed_entries) +
+        " atomic-queue-snapshot-bytes=" +
+        std::to_string(queue.estimated_queue_entry_bytes) +
+        " atomic-queue-snapshot-recorder-bytes=" +
+        std::to_string(queue.profile_recorder_bytes) +
+        " atomic-queue-snapshot-tracker-bytes=" +
+        std::to_string(queue.native_preimport_tracker_bytes));
+  }
 }
 
 } // namespace
@@ -6330,6 +6395,11 @@ int main(int argc, char **argv) {
     }
     auto output = make_output(args);
     const auto perf_summary = flag(args, "--perf-summary");
+    const auto jit_observer_only = flag(args, "--jit-observer-only");
+    if (perf_summary && jit_observer_only) {
+      throw std::runtime_error{
+          "--perf-summary and --jit-observer-only are mutually exclusive"};
+    }
     performance_counters().reset(perf_summary);
     const auto perf_frame_content = flag(args, "--perf-frame-content");
     const auto perf_cpu_phases = flag(args, "--perf-cpu-phases");
