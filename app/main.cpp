@@ -5166,11 +5166,34 @@ void boot(const std::vector<std::string> &args, Output &output) {
           guest_deadlines.erase(process_id);
       }
       next_deadline = guest_deadlines.next_deadline();
-      Runtime *active_runtime = nullptr;
-      if (const auto active_process =
-              initial_runtime->kernel->active_client_process_id()) {
-        active_runtime = runtime_index.find(*active_process);
-      }
+      std::optional<HostResourceController::Clock::time_point>
+          host_compile_deadline;
+      const auto schedule_artifact_compaction = [&]() {
+        if (artifact_compaction_task) {
+          if (!artifact_compaction_task->finished()) {
+            if (scheduler.runnable_count() != 0) {
+              artifact_compaction_task->cancel();
+              host_resources.wake();
+            }
+            return;
+          }
+          artifact_compaction_task.reset();
+        }
+        if (scheduler.runnable_count() != 0 ||
+            !jit_artifacts->compaction_needed()) {
+          return;
+        }
+        artifact_compaction_task = host_resources.submit(
+            HostWorkKind::ArtifactCompaction, host_compile_deadline,
+            [jit_artifacts] { static_cast<void>(jit_artifacts->compact()); },
+            std::chrono::milliseconds{100});
+      };
+      if (profile_background_warming_enabled) {
+        Runtime *active_runtime = nullptr;
+        if (const auto active_process =
+                initial_runtime->kernel->active_client_process_id()) {
+          active_runtime = runtime_index.find(*active_process);
+        }
       constexpr std::size_t idle_precompile_block_budget = 32;
       constexpr std::size_t idle_precompile_portable_block_budget = 16;
       constexpr std::uint64_t idle_precompile_time_budget_ns = 500000;
@@ -5239,8 +5262,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
             PrecompileScheduleSkip::ZeroBudget};
       };
       const auto next_host_deadline = next_host_control_deadline();
-      std::optional<HostResourceController::Clock::time_point>
-          host_compile_deadline;
       if (realtime_pacer && next_deadline) {
         const auto delay = realtime_pacer->delay_until(*next_deadline);
         if (delay > std::chrono::nanoseconds::zero()) {
@@ -5343,26 +5364,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
             }
           };
       schedule_profile_warm(active_runtime);
-      const auto schedule_artifact_compaction = [&]() {
-        if (artifact_compaction_task) {
-          if (!artifact_compaction_task->finished()) {
-            if (scheduler.runnable_count() != 0) {
-              artifact_compaction_task->cancel();
-              host_resources.wake();
-            }
-            return;
-          }
-          artifact_compaction_task.reset();
-        }
-        if (scheduler.runnable_count() != 0 ||
-            !jit_artifacts->compaction_needed()) {
-          return;
-        }
-        artifact_compaction_task = host_resources.submit(
-            HostWorkKind::ArtifactCompaction, host_compile_deadline,
-            [jit_artifacts] { static_cast<void>(jit_artifacts->compact()); },
-            std::chrono::milliseconds{100});
-      };
       schedule_artifact_compaction();
       // The scanout publisher may be a background compositor while an App is
       // active. Its cached exit/unlock paths are just as latency-sensitive as
@@ -5403,6 +5404,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                   HostWorkKind::OfflineCompile,
                                   JitPrecompileTarget::PortableIr,
                                   JitPrecompileSource::DemandProfile);
+      } else {
+        // Profile-off remains a demand-JIT run: do not resolve active
+        // runtimes, refresh profile phases, compute compile reserves, or
+        // submit a null-runtime precompile task. Artifact maintenance is
+        // independent of profile warming and remains eligible here.
+        schedule_artifact_compaction();
+      }
       if (next_deadline) {
         if (realtime_pacer) {
           const auto guest_ahead_delay =
