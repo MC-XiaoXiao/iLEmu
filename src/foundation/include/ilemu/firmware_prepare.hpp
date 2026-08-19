@@ -53,7 +53,7 @@ struct FirmwarePrepareLimits {
   std::uintmax_t artifact_minimum_free_bytes{1U * 1024U * 1024U * 1024U};
   bool artifact_persistence_enabled{true};
   FirmwareArtifactSeedMode artifact_seed_mode{
-      FirmwareArtifactSeedMode::ProfileHotset};
+      FirmwareArtifactSeedMode::CatalogOnly};
   std::size_t max_profile_hotset_blocks{256U};
   bool force{};
 };

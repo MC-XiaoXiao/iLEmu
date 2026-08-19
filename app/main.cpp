@@ -1663,7 +1663,7 @@ std::size_t parse_prepare_count(const std::vector<std::string> &args,
 FirmwareArtifactSeedMode parse_prepare_artifact_mode(
     const std::vector<std::string> &args) {
   const auto value =
-      option(args, "--prepare-artifact-mode").value_or("profile-hotset");
+      option(args, "--prepare-artifact-mode").value_or("catalog-only");
   if (value == "catalog-only") return FirmwareArtifactSeedMode::CatalogOnly;
   if (value == "static-catalog") {
     return FirmwareArtifactSeedMode::StaticCatalog;
