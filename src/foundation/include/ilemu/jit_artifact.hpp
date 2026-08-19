@@ -134,6 +134,11 @@ struct JitArtifactLimits {
   // Newly translated artifacts enter this bounded queue before the resident
   // LRU can evict them. Zero disables asynchronous writeback.
   std::size_t writeback_bytes{16U * 1024U * 1024U};
+  // Only persisted boot-working-set marks are eligible for startup payload
+  // prefetch. Both limits are hard caps so a seed cannot turn index startup
+  // back into an unbounded payload load.
+  std::size_t startup_prefetch_entries{256U};
+  std::size_t startup_prefetch_bytes{8U * 1024U * 1024U};
 };
 
 struct JitArtifactStoreStats {
@@ -360,6 +365,7 @@ private:
   mutable std::uint64_t disk_index_generation_{};
   mutable std::uint64_t benefit_generation_{};
   mutable std::uint64_t external_writer_generation_{};
+  mutable bool hotset_dirty_{};
   mutable std::mutex persistence_mutex_;
   mutable std::condition_variable writeback_condition_;
   mutable bool writeback_stopping_{};
