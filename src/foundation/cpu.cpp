@@ -76,6 +76,10 @@ constexpr auto host_yield_slow_translation_threshold =
 constexpr std::size_t jit_profile_precompile_batch_size = 16U;
 constexpr std::size_t jit_profile_precompile_queue_entry_capacity =
     jit_profile_precompile_batch_size * 2U;
+// Catalog warming is an optional background hint. Keep its per-runtime
+// admission bounded so a large catalog cannot turn an explicit experiment
+// into a resident queue of every entry point in the image set.
+constexpr std::size_t jit_catalog_precompile_queue_entry_capacity = 512U;
 static_assert(sizeof(void *) == sizeof(std::uint64_t));
 
 class CpuRunPhaseDiagnostics {
@@ -469,6 +473,10 @@ public:
         demand_artifact_consumed_ = true;
         if (translation_profile_) {
             translation_profile_->note_demand_artifact_consumed();
+            if (!translation_profile_->consume_profile_portable_artifact(
+                    location_descriptor)) {
+                translation_profile_->note_ordinary_demand_artifact_consumed();
+            }
         }
         return &*demand_artifact_;
     }
@@ -2376,7 +2384,8 @@ public:
         inflight_precompile_entries_.clear();
         completed_precompile_entries_.clear();
         deferred_precompile_entries_.clear();
-        cache_full_generation_observed_.reset();
+        cache_full_generation_observed_.fill(std::nullopt);
+        active_precompile_entries_by_source_.fill(0U);
         next_precompile_executor_ = 0;
         translation_profile_ = profile;
         translation_profile_phase_ = phase;
@@ -2566,7 +2575,18 @@ public:
                            profile_queue_entries_ != 0U) {
                     --profile_queue_entries_;
                 }
-                ++result.failed;
+                if (cancelled) {
+                    auto &active_count =
+                        active_precompile_entries_by_source_[static_cast<std::size_t>(
+                            precompile_entry.source)];
+                    if (active_count != 0U) --active_count;
+                }
+                update_memory_peaks_locked();
+                if (cancelled) {
+                    ++result.cancelled;
+                } else {
+                    ++result.failed;
+                }
                 break;
             }
             const auto cancelled = stop_requested();
@@ -2583,6 +2603,10 @@ public:
                         profile_queue_entries_ != 0U) {
                         --profile_queue_entries_;
                     }
+                    auto &active_count =
+                        active_precompile_entries_by_source_[static_cast<std::size_t>(
+                            precompile_entry.source)];
+                    if (active_count != 0U) --active_count;
                 } else if (disposition ==
                            JitExecutor::PrecompileDisposition::Deferred) {
                     deferred_precompile_entries_[precompile_entry] =
@@ -2600,10 +2624,17 @@ public:
                         profile_queue_entries_ != 0U) {
                         --profile_queue_entries_;
                     }
+                    auto &active_count =
+                        active_precompile_entries_by_source_[static_cast<std::size_t>(
+                            precompile_entry.source)];
+                    if (active_count != 0U) --active_count;
                 }
                 update_memory_peaks_locked();
             }
-            if (cancelled) break;
+            if (cancelled) {
+                ++result.cancelled;
+                break;
+            }
             if (profile_derived && profile_for_stats) {
                 const bool completed =
                     target == JitPrecompileTarget::NativeCode
@@ -2624,6 +2655,8 @@ public:
                         profile_for_stats->note_profile_native_executed();
                     } else {
                         profile_for_stats->note_profile_portable_executed();
+                        profile_for_stats->note_profile_portable_artifact_ready(
+                            descriptor);
                     }
                 }
             }
@@ -2687,7 +2720,8 @@ public:
             pending_precompile_phases_.clear();
             deferred_precompile_entries_.clear();
             completed_precompile_entries_.clear();
-            cache_full_generation_observed_.reset();
+            cache_full_generation_observed_.fill(std::nullopt);
+            active_precompile_entries_by_source_.fill(0U);
             next_precompile_executor_ = 0;
             profile_queue_entries_ = 0U;
         }
@@ -2923,6 +2957,26 @@ private:
         Rejected,
     };
 
+    [[nodiscard]] std::size_t active_precompile_entries_for_source_locked(
+        JitPrecompileSource source) const noexcept {
+        return active_precompile_entries_by_source_[static_cast<std::size_t>(
+            source)];
+    }
+
+    [[nodiscard]] static constexpr std::size_t
+    active_precompile_source_capacity(JitPrecompileSource source) noexcept {
+        switch (source) {
+        case JitPrecompileSource::DemandProfile:
+            return jit_profile_precompile_queue_entry_capacity;
+        case JitPrecompileSource::ExecutableCatalog:
+            return jit_catalog_precompile_queue_entry_capacity;
+        case JitPrecompileSource::Other:
+            return jit_translation_profile_maximum_locations *
+                   jit_precompile_target_count;
+        }
+        return 0U;
+    }
+
     static constexpr std::size_t phase_index(JitPrecompilePhase phase) {
         return static_cast<std::size_t>(phase);
     }
@@ -2952,16 +3006,17 @@ private:
             }
             return PrecompileEnqueueResult::Existing;
         }
-        if (pending_precompile_phases_.size() +
-                inflight_precompile_entries_.size() +
-                deferred_precompile_entries_.size() +
-                completed_precompile_entries_.size() >=
-            jit_translation_profile_maximum_locations *
-                jit_precompile_target_count) {
+        if (!was_deferred &&
+            active_precompile_entries_for_source_locked(entry.source) >=
+            active_precompile_source_capacity(entry.source)) {
             return PrecompileEnqueueResult::Rejected;
         }
         pending_precompile_phases_.emplace(entry, phase);
         pending_precompile_entries_[phase_index(phase)].push_back(entry);
+        if (!was_deferred) {
+            ++active_precompile_entries_by_source_[static_cast<std::size_t>(
+                entry.source)];
+        }
         if (entry.source == JitPrecompileSource::DemandProfile) {
             ++profile_queue_entries_;
             if (!was_deferred && translation_profile_) {
@@ -3015,38 +3070,47 @@ private:
     void promote_cache_full_entries_locked(
         std::optional<JitPrecompileSource> source = std::nullopt) {
         if (deferred_precompile_entries_.empty()) return;
-        if (source) {
+        const auto current_generation =
+            execution_context_->native_code_slab()->generation();
+        const auto promote_source = [&](JitPrecompileSource selected_source) {
+            const auto source_index = static_cast<std::size_t>(selected_source);
+            auto &observed_generation =
+                cache_full_generation_observed_[source_index];
             const auto relevant = std::find_if(
                 deferred_precompile_entries_.begin(),
                 deferred_precompile_entries_.end(),
-                [source](const auto &entry) {
-                    return entry.first.source == *source;
+                [selected_source](const auto &entry) {
+                    return entry.first.source == selected_source;
                 });
-            if (relevant == deferred_precompile_entries_.end()) return;
-        }
-        const auto current_generation =
-            execution_context_->native_code_slab()->generation();
-        if (cache_full_generation_observed_ &&
-            *cache_full_generation_observed_ == current_generation) {
-            return;
-        }
-        cache_full_generation_observed_ = current_generation;
-        for (auto iterator = deferred_precompile_entries_.begin();
-             iterator != deferred_precompile_entries_.end();) {
-            if (source && iterator->first.source != *source) {
-                ++iterator;
-                continue;
+            if (relevant == deferred_precompile_entries_.end() ||
+                (observed_generation &&
+                 *observed_generation == current_generation)) {
+                return;
             }
-            if (!iterator->second.cache_full_generation ||
-                *iterator->second.cache_full_generation == current_generation) {
-                ++iterator;
-                continue;
+            observed_generation = current_generation;
+            for (auto iterator = deferred_precompile_entries_.begin();
+                 iterator != deferred_precompile_entries_.end();) {
+                if (iterator->first.source != selected_source ||
+                    !iterator->second.cache_full_generation ||
+                    *iterator->second.cache_full_generation ==
+                        current_generation) {
+                    ++iterator;
+                    continue;
+                }
+                const auto entry = iterator->first;
+                const auto phase = iterator->second.phase;
+                pending_precompile_phases_.emplace(entry, phase);
+                pending_precompile_entries_[phase_index(phase)].push_back(entry);
+                iterator = deferred_precompile_entries_.erase(iterator);
             }
-            const auto entry = iterator->first;
-            const auto phase = iterator->second.phase;
-            pending_precompile_phases_.emplace(entry, phase);
-            pending_precompile_entries_[phase_index(phase)].push_back(entry);
-            iterator = deferred_precompile_entries_.erase(iterator);
+        };
+        if (source) {
+            promote_source(*source);
+        } else {
+            for (std::size_t source_index = 0;
+                 source_index < jit_precompile_source_count; ++source_index) {
+                promote_source(static_cast<JitPrecompileSource>(source_index));
+            }
         }
         update_memory_peaks_locked();
     }
@@ -3134,7 +3198,10 @@ private:
     bool profile_precompile_enabled_{};
     std::size_t profile_location_cursor_{};
     std::size_t profile_queue_entries_{};
-    std::optional<std::uint64_t> cache_full_generation_observed_;
+    std::array<std::size_t, jit_precompile_source_count>
+        active_precompile_entries_by_source_{};
+    std::array<std::optional<std::uint64_t>, jit_precompile_source_count>
+        cache_full_generation_observed_{};
     std::size_t next_precompile_executor_{};
     std::uint64_t precompile_cancellation_generation_{1};
     std::uint64_t active_precompile_tasks_{};

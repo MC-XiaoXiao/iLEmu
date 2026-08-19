@@ -63,6 +63,7 @@ struct JitPrecompileBatchResult {
     std::uint64_t unstable{};
     std::uint64_t cache_full{};
     std::uint64_t failed{};
+    std::uint64_t cancelled{};
     std::uint64_t deadline_stops{};
 };
 
