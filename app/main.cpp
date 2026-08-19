@@ -907,9 +907,8 @@ struct RuntimeJitMemoryAggregate {
 
   void note_stats_sample() noexcept {
     ++stats_samples;
-    // CpuCluster::precompile_memory_stats() takes one queue mutex and the
-    // optimized snapshot performs no container-node scan.
-    ++queue_lock_acquisitions;
+    // CpuCluster::precompile_memory_stats() reads the published fixed-size
+    // snapshot without taking the queue mutex or walking any container node.
   }
 
   void observe(const void *runtime_key,
@@ -2719,6 +2718,32 @@ void boot(const std::vector<std::string> &args, Output &output) {
             static_cast<const void *>(&runtime),
             runtime.cpus->precompile_memory_stats());
       };
+  const auto observe_runtime_jit_memory_counted =
+      [&runtime_jit_memory, &observe_runtime_jit_memory](Runtime &runtime) {
+        if (!runtime_jit_memory) return;
+        ++runtime_jit_memory->runtime_scan_iterations;
+        observe_runtime_jit_memory(runtime);
+      };
+  std::optional<std::chrono::steady_clock::time_point>
+      next_runtime_jit_sample;
+  if (runtime_jit_memory) {
+    next_runtime_jit_sample =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds{50};
+  }
+  const auto observe_all_runtime_jit_memory = [&]() {
+    if (!runtime_jit_memory) return;
+    runtime_jit_memory->runtime_scan_iterations += runtimes.size();
+    for (auto &runtime : runtimes) observe_runtime_jit_memory(*runtime);
+    next_runtime_jit_sample =
+        std::chrono::steady_clock::now() + std::chrono::milliseconds{50};
+  };
+  const auto observe_runtime_jit_memory_if_due = [&]() {
+    if (!runtime_jit_memory || !next_runtime_jit_sample ||
+        std::chrono::steady_clock::now() < *next_runtime_jit_sample) {
+      return;
+    }
+    observe_all_runtime_jit_memory();
+  };
   const auto account_runtime_jit_memory =
       [&runtime_jit_memory](Runtime &runtime, bool already_observed = false) {
         if (!runtime_jit_memory || runtime.jit_memory_accounted || !runtime.cpus ||
@@ -3102,7 +3127,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       process.executable_path,
       process.executable.code_signature_entitlements());
   precompile_startup_profile(*initial, process.executable_path);
-  observe_runtime_jit_memory(*initial);
+  observe_runtime_jit_memory_counted(*initial);
   initial->kernel->enqueue_baseband_input(baseband_input);
   initial->kernel->set_baseband_receive_eof(baseband_input_path.has_value());
   if (baseband_input_path) {
@@ -3752,7 +3777,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           static_cast<void>(scheduler.register_thread(
               XnuThreadId{child_pid, 0},
               child->kernel->process().thread_base_priority));
-          observe_runtime_jit_memory(*child);
+          observe_runtime_jit_memory_counted(*child);
           runtime_index.insert(*child);
           runtimes.push_back(std::move(child));
           return child_pid;
@@ -3836,7 +3861,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   child_cpu, loaded.executable_path);
               precompile_startup_profile(*child_runtime,
                                          loaded.executable_path);
-              observe_runtime_jit_memory(*child_runtime);
+          observe_runtime_jit_memory_counted(*child_runtime);
             }
             child_runtime->activate_image_epoch(image_epoch);
             child_runtime->fresh_spawn_address_space = false;
@@ -4878,7 +4903,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           runtime.kernel->install_main_image_hle(exec_cpu,
                                                  loaded.executable_path);
           precompile_startup_profile(runtime, loaded.executable_path);
-          observe_runtime_jit_memory(runtime);
+          observe_runtime_jit_memory_counted(runtime);
           runtime.activate_image_epoch(image_epoch);
           static_cast<void>(scheduler.complete_slice(
               scheduled->thread, result.ticks_consumed,
@@ -5127,16 +5152,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
         continue;
       }
-      // Sample every live execution pool after guest work, image transitions,
-      // pressure cancellation, and resource reclamation.  The aggregate then
-      // records a true concurrent sum and its same-sample maximum; the
-      // per-runtime historical upper bound is accumulated only at retirement.
-      if (runtime_jit_memory) {
-        runtime_jit_memory->runtime_scan_iterations += runtimes.size();
-        for (auto &runtime : runtimes) {
-          observe_runtime_jit_memory(*runtime);
-        }
-      }
+      // Sample live execution pools at most 20 Hz. Lifecycle transitions and
+      // final retirement take immediate snapshots so short-lived runtimes are
+      // still represented without turning the idle loop into a queue probe.
+      observe_runtime_jit_memory_if_due();
       std::optional<std::uint64_t> next_deadline;
       for (const auto &runtime : runtimes) {
         const auto process_id = runtime->kernel->process().pid;
@@ -5753,10 +5772,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
     output.line("[catalog] manifest-save=failed");
   }
   if (runtime_jit_memory) {
-    runtime_jit_memory->runtime_scan_iterations += runtimes.size();
-    for (auto &runtime : runtimes) {
-      observe_runtime_jit_memory(*runtime);
-    }
+    observe_all_runtime_jit_memory();
     concurrent_live_current_at_stop =
         runtime_jit_memory->concurrent_live_current;
   }
@@ -6064,7 +6080,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(runtime_jit_memory->stats_samples) +
         " queue-lock-acquisitions=" +
         std::to_string(runtime_jit_memory->queue_lock_acquisitions) +
-        " queue-container-scans=0 queue-entry-visits=0");
+        " queue-container-scans-invariant=0 queue-entry-visits-invariant=0");
     output.line(
         "[perf-jit-memory] profile-object-bytes=" +
         std::to_string(profile_stats.profile_object_bytes) +
