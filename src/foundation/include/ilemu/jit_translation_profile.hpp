@@ -110,6 +110,8 @@ struct JitTranslationProfileStats {
     std::uint64_t native_preimport_first_use_distance_total{};
     std::uint64_t demand_artifact_staged{};
     std::uint64_t demand_artifact_consumed{};
+    std::uint64_t profile_portable_artifact_consumed{};
+    std::uint64_t ordinary_demand_artifact_consumed{};
     std::uint64_t demand_artifact_stage_unused{};
     std::uint64_t profile_imported_before_first_run{};
     std::uint64_t merge_calls{};
@@ -125,6 +127,8 @@ struct JitTranslationProfileStats {
     std::size_t known_set_node_bytes{};
     std::size_t discarded_set_bucket_bytes{};
     std::size_t discarded_set_node_bytes{};
+    std::size_t portable_ready_set_bucket_bytes{};
+    std::size_t portable_ready_set_node_bytes{};
     std::size_t resident_bytes{};
 };
 
@@ -165,6 +169,8 @@ public:
     void note_profile_portable_executed() noexcept;
     void note_portable_existence_hit() noexcept;
     void note_profile_portable_generated() noexcept;
+    void note_profile_portable_artifact_ready(
+        std::uint64_t location_descriptor) noexcept;
     void note_native_preimport_attempted() noexcept;
     void note_native_preimport_before_first_demand() noexcept;
     void note_native_preimport_imported() noexcept;
@@ -172,6 +178,9 @@ public:
     void note_native_preimport_used(std::uint64_t first_use_distance = 0U) noexcept;
     void note_demand_artifact_staged() noexcept;
     void note_demand_artifact_consumed() noexcept;
+    [[nodiscard]] bool consume_profile_portable_artifact(
+        std::uint64_t location_descriptor) noexcept;
+    void note_ordinary_demand_artifact_consumed() noexcept;
     void note_demand_artifact_stage_unused() noexcept;
     void note_profile_imported_before_first_run() noexcept;
     void note_unstable_dropped(std::uint64_t count = 1) noexcept;
@@ -210,6 +219,8 @@ private:
     std::atomic<std::uint64_t> native_preimport_first_use_distance_total_{};
     std::atomic<std::uint64_t> demand_artifact_staged_{};
     std::atomic<std::uint64_t> demand_artifact_consumed_{};
+    std::atomic<std::uint64_t> profile_portable_artifact_consumed_{};
+    std::atomic<std::uint64_t> ordinary_demand_artifact_consumed_{};
     std::atomic<std::uint64_t> demand_artifact_stage_unused_{};
     std::atomic<std::uint64_t> profile_imported_before_first_run_{};
     std::atomic<std::uint64_t> merge_calls_{};
@@ -219,6 +230,7 @@ private:
     std::atomic<std::uint64_t> load_nanoseconds_{};
     std::atomic<std::uint64_t> profile_bytes_{};
     std::atomic<std::uint64_t> profile_save_failures_{};
+    std::unordered_set<std::uint64_t> profile_portable_artifact_locations_;
 };
 
 // Profiles are host cache hints stored outside the guest root filesystem.

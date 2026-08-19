@@ -487,6 +487,7 @@ void JitTranslationProfile::discard(
     if (location_descriptor == 0) return;
     try {
         const std::lock_guard lock{mutex_};
+        profile_portable_artifact_locations_.erase(location_descriptor);
         if (!known_locations_.contains(location_descriptor)) return;
         discarded_locations_.insert(location_descriptor);
         known_locations_.erase(location_descriptor);
@@ -579,6 +580,10 @@ JitTranslationProfileStats JitTranslationProfile::stats() const noexcept {
         demand_artifact_staged_.load(std::memory_order_relaxed);
     result.demand_artifact_consumed =
         demand_artifact_consumed_.load(std::memory_order_relaxed);
+    result.profile_portable_artifact_consumed =
+        profile_portable_artifact_consumed_.load(std::memory_order_relaxed);
+    result.ordinary_demand_artifact_consumed =
+        ordinary_demand_artifact_consumed_.load(std::memory_order_relaxed);
     result.demand_artifact_stage_unused =
         demand_artifact_stage_unused_.load(std::memory_order_relaxed);
     result.profile_imported_before_first_run =
@@ -608,12 +613,19 @@ JitTranslationProfileStats JitTranslationProfile::stats() const noexcept {
             discarded_locations_.bucket_count() * sizeof(void*);
         result.discarded_set_node_bytes =
             discarded_locations_.size() * estimated_unordered_node_bytes;
+        result.portable_ready_set_bucket_bytes =
+            profile_portable_artifact_locations_.bucket_count() * sizeof(void*);
+        result.portable_ready_set_node_bytes =
+            profile_portable_artifact_locations_.size() *
+            estimated_unordered_node_bytes;
         result.resident_bytes = result.profile_object_bytes +
                                 result.location_vector_bytes +
                                 result.known_set_bucket_bytes +
                                 result.known_set_node_bytes +
                                 result.discarded_set_bucket_bytes +
-                                result.discarded_set_node_bytes;
+                                result.discarded_set_node_bytes +
+                                result.portable_ready_set_bucket_bytes +
+                                result.portable_ready_set_node_bytes;
     }
     return result;
 }
@@ -651,6 +663,20 @@ void JitTranslationProfile::note_portable_existence_hit() noexcept {
 void JitTranslationProfile::note_profile_portable_generated() noexcept {
     profile_portable_generated_.fetch_add(1, std::memory_order_relaxed);
 }
+void JitTranslationProfile::note_profile_portable_artifact_ready(
+    std::uint64_t location_descriptor) noexcept {
+    const std::lock_guard lock{mutex_};
+    if (profile_portable_artifact_locations_.contains(location_descriptor) ||
+        profile_portable_artifact_locations_.size() >=
+            jit_translation_profile_maximum_locations) {
+        return;
+    }
+    try {
+        profile_portable_artifact_locations_.insert(location_descriptor);
+    } catch (...) {
+        // Attribution is advisory and must never break translation.
+    }
+}
 void JitTranslationProfile::note_native_preimport_attempted() noexcept {
     native_preimport_attempted_.fetch_add(1, std::memory_order_relaxed);
 }
@@ -677,6 +703,21 @@ void JitTranslationProfile::note_demand_artifact_staged() noexcept {
 }
 void JitTranslationProfile::note_demand_artifact_consumed() noexcept {
     demand_artifact_consumed_.fetch_add(1, std::memory_order_relaxed);
+}
+bool JitTranslationProfile::consume_profile_portable_artifact(
+    std::uint64_t location_descriptor) noexcept {
+    const std::lock_guard lock{mutex_};
+    const auto found = profile_portable_artifact_locations_.find(
+        location_descriptor);
+    if (found == profile_portable_artifact_locations_.end()) return false;
+    profile_portable_artifact_locations_.erase(found);
+    profile_portable_artifact_consumed_.fetch_add(1,
+                                                   std::memory_order_relaxed);
+    return true;
+}
+void JitTranslationProfile::note_ordinary_demand_artifact_consumed() noexcept {
+    ordinary_demand_artifact_consumed_.fetch_add(1,
+                                                 std::memory_order_relaxed);
 }
 void JitTranslationProfile::note_demand_artifact_stage_unused() noexcept {
     demand_artifact_stage_unused_.fetch_add(1, std::memory_order_relaxed);
@@ -885,6 +926,10 @@ JitTranslationProfileStats JitTranslationProfileStore::stats() const noexcept {
             current.native_preimport_first_use_distance_total;
         result.demand_artifact_staged += current.demand_artifact_staged;
         result.demand_artifact_consumed += current.demand_artifact_consumed;
+        result.profile_portable_artifact_consumed +=
+            current.profile_portable_artifact_consumed;
+        result.ordinary_demand_artifact_consumed +=
+            current.ordinary_demand_artifact_consumed;
         result.demand_artifact_stage_unused +=
             current.demand_artifact_stage_unused;
         result.profile_imported_before_first_run +=
@@ -902,6 +947,10 @@ JitTranslationProfileStats JitTranslationProfileStore::stats() const noexcept {
         result.discarded_set_bucket_bytes +=
             current.discarded_set_bucket_bytes;
         result.discarded_set_node_bytes += current.discarded_set_node_bytes;
+        result.portable_ready_set_bucket_bytes +=
+            current.portable_ready_set_bucket_bytes;
+        result.portable_ready_set_node_bytes +=
+            current.portable_ready_set_node_bytes;
         result.resident_bytes += current.resident_bytes;
     }
     result.recorded_descriptors = result.recorded;
