@@ -399,6 +399,12 @@ public:
   // observation so metrics are not multiplied by executor count.
   [[nodiscard]] bool observe_slab_generation(
       std::uint64_t generation) noexcept;
+  // The last generation observed at a safe executor boundary. Unlike the
+  // Dynarmic NativeCodeSlab::generation() query, this snapshot never waits
+  // for an outstanding invalidation to finish.
+  [[nodiscard]] std::uint64_t observed_slab_generation() const noexcept {
+    return observed_slab_generation_.load(std::memory_order_acquire);
+  }
 
 private:
   struct LinkCell {

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cctype>
 #include <condition_variable>
@@ -80,6 +81,7 @@ constexpr std::size_t jit_profile_precompile_queue_entry_capacity =
 // admission bounded so a large catalog cannot turn an explicit experiment
 // into a resident queue of every entry point in the image set.
 constexpr std::size_t jit_catalog_precompile_queue_entry_capacity = 512U;
+constexpr std::size_t jit_completed_precompile_entry_capacity = 2048U;
 static_assert(sizeof(void *) == sizeof(std::uint64_t));
 
 class CpuRunPhaseDiagnostics {
@@ -1938,6 +1940,11 @@ private:
         observe_shared_invalidation_epoch();
         const auto slab_generation =
             execution_context_->native_code_slab()->generation();
+        // Publish the safe-boundary snapshot without taking the slab mutex
+        // from the precompile queue. This also covers internal slab
+        // generation transitions that are not guest invalidation events.
+        static_cast<void>(
+            execution_context_->observe_slab_generation(slab_generation));
         if (observed_slab_generation_ == 0U) {
             // The slab starts at generation one. Each executor observes the
             // shared slab lazily, so its first observation is initialization,
@@ -2268,10 +2275,18 @@ class CpuExecutionPool {
 
     struct DeferredPrecompileEntry {
         JitPrecompilePhase phase{JitPrecompilePhase::Remaining};
-        // CacheFull is retryable only after the shared slab advances to a new
-        // generation. Ordinary Deferred entries leave this empty and are
-        // retried when the profile is refreshed or the mapping is re-added.
-        std::optional<std::uint64_t> cache_full_generation;
+        // CacheFull is retryable only after a new invalidation event. The
+        // epoch is an atomic, non-blocking signal; reading the slab generation
+        // while holding the queue mutex can wait for an active executor.
+        // Ordinary Deferred entries leave this empty and are retried when the
+        // profile is refreshed or the mapping is re-added.
+        std::optional<std::uint64_t> cache_full_invalidation_epoch;
+    };
+
+    struct CompletedPrecompileEntry {
+        std::uint64_t cache_invalidation_epoch{};
+        std::uint64_t slab_generation{};
+        std::uint64_t profile_generation{};
     };
 
 public:
@@ -2383,15 +2398,20 @@ public:
         pending_precompile_phases_.clear();
         inflight_precompile_entries_.clear();
         completed_precompile_entries_.clear();
+        completed_precompile_lru_.clear();
         deferred_precompile_entries_.clear();
-        cache_full_generation_observed_.fill(std::nullopt);
-        active_precompile_entries_by_source_.fill(0U);
+        cache_full_epoch_observed_.fill(std::nullopt);
+        pending_precompile_entries_by_source_.fill(0U);
+        inflight_precompile_entries_by_source_.fill(0U);
+        deferred_precompile_entries_by_source_.fill(0U);
+        completed_precompile_entries_by_source_.fill(0U);
         next_precompile_executor_ = 0;
         translation_profile_ = profile;
         translation_profile_phase_ = phase;
         profile_recording_enabled_ = record;
         profile_location_cursor_ = 0U;
         profile_queue_entries_ = 0U;
+        if (++profile_generation_ == 0U) profile_generation_ = 1U;
         profile_precompile_enabled_ = precompile;
         if (precompile) refill_profile_entries_locked();
         update_memory_peaks_locked();
@@ -2399,16 +2419,24 @@ public:
 
     void refresh_translation_profile() {
         const std::lock_guard queue_lock{precompile_queue_mutex_};
-        if (!translation_profile_ || !profile_precompile_enabled_) return;
+        if (precompile_quiescing_ || !translation_profile_ ||
+            !profile_precompile_enabled_)
+            return;
+        // Ordinary Deferred entries are retried only on this explicit profile
+        // refresh. CacheFull entries remain parked until a new invalidation
+        // event promotes them without waiting on the slab mutex.
+        promote_retryable_deferred_entries_locked(
+            JitPrecompileSource::DemandProfile);
         refill_profile_entries_locked();
         update_memory_peaks_locked();
+        assert_queue_counter_invariants_locked();
     }
 
     [[nodiscard]] JitPrecompileMemoryStats precompile_memory_stats() const {
         const std::lock_guard queue_lock{precompile_queue_mutex_};
         JitPrecompileMemoryStats result;
         fill_memory_stats_locked(result);
-        update_memory_peaks_locked();
+        update_memory_peaks_locked(result);
         result.profile_queue_entries_peak = memory_peak_.profile_queue_entries_peak;
         result.catalog_queue_entries_peak =
             memory_peak_.catalog_queue_entries_peak;
@@ -2455,6 +2483,7 @@ public:
         const std::vector<std::uint64_t> &location_descriptors,
         JitPrecompilePhase phase, JitPrecompileSource source) {
         const std::lock_guard queue_lock{precompile_queue_mutex_};
+        if (precompile_quiescing_) return;
         for (const auto entry : location_descriptors) {
             if (enqueue_precompile_entry_locked(
                     PrecompileEntry{entry, JitPrecompileTarget::NativeCode,
@@ -2475,6 +2504,7 @@ public:
         JitPrecompileTarget target,
         std::optional<JitPrecompileSource> source = std::nullopt) {
         const std::lock_guard queue_lock{precompile_queue_mutex_};
+        if (precompile_quiescing_) return std::nullopt;
         return next_precompile_phase_locked(target, source);
     }
 
@@ -2491,6 +2521,7 @@ public:
         std::uint64_t cancellation_generation{};
         {
             const std::lock_guard queue_lock{precompile_queue_mutex_};
+            if (precompile_quiescing_) return result;
             cancellation_generation = precompile_cancellation_generation_;
             ++active_precompile_tasks_;
         }
@@ -2504,9 +2535,12 @@ public:
         };
         const auto cleanup = [&]() {
             const std::lock_guard queue_lock{precompile_queue_mutex_};
-            for (const auto &entry : owned_inflight_entries)
-                inflight_precompile_entries_.erase(entry);
+            for (const auto &entry : owned_inflight_entries) {
+                remove_inflight_entry_locked(entry);
+                decrement_profile_queue_entries_locked(entry);
+            }
             owned_inflight_entries.clear();
+            assert_queue_counter_invariants_locked();
         };
         const auto finish = [&]() {
             const std::lock_guard queue_lock{precompile_queue_mutex_};
@@ -2565,23 +2599,17 @@ public:
             } catch (...) {
                 const auto cancelled = stop_requested();
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
-                inflight_precompile_entries_.erase(precompile_entry);
+                remove_inflight_entry_locked(precompile_entry);
                 owned_inflight_entries.erase(precompile_entry);
                 if (!cancelled) {
-                    deferred_precompile_entries_[precompile_entry] =
-                        DeferredPrecompileEntry{entry->second, std::nullopt};
-                } else if (precompile_entry.source ==
-                               JitPrecompileSource::DemandProfile &&
-                           profile_queue_entries_ != 0U) {
-                    --profile_queue_entries_;
-                }
-                if (cancelled) {
-                    auto &active_count =
-                        active_precompile_entries_by_source_[static_cast<std::size_t>(
-                            precompile_entry.source)];
-                    if (active_count != 0U) --active_count;
+                    defer_inflight_entry_locked(
+                        precompile_entry,
+                        DeferredPrecompileEntry{entry->second, std::nullopt});
+                } else {
+                    decrement_profile_queue_entries_locked(precompile_entry);
                 }
                 update_memory_peaks_locked();
+                assert_queue_counter_invariants_locked();
                 if (cancelled) {
                     ++result.cancelled;
                 } else {
@@ -2592,44 +2620,32 @@ public:
             const auto cancelled = stop_requested();
             {
                 const std::lock_guard queue_lock{precompile_queue_mutex_};
-                inflight_precompile_entries_.erase(precompile_entry);
+                remove_inflight_entry_locked(precompile_entry);
                 owned_inflight_entries.erase(precompile_entry);
                 if (cancelled) {
                     // The block may have finished after the epoch changed.
                     // It belongs to the old work generation and must not be
                     // published into the replacement profile's sets.
-                    if (precompile_entry.source ==
-                            JitPrecompileSource::DemandProfile &&
-                        profile_queue_entries_ != 0U) {
-                        --profile_queue_entries_;
-                    }
-                    auto &active_count =
-                        active_precompile_entries_by_source_[static_cast<std::size_t>(
-                            precompile_entry.source)];
-                    if (active_count != 0U) --active_count;
+                    decrement_profile_queue_entries_locked(precompile_entry);
                 } else if (disposition ==
                            JitExecutor::PrecompileDisposition::Deferred) {
-                    deferred_precompile_entries_[precompile_entry] =
-                        DeferredPrecompileEntry{entry->second, std::nullopt};
+                    defer_inflight_entry_locked(
+                        precompile_entry,
+                        DeferredPrecompileEntry{entry->second, std::nullopt});
                 } else if (disposition ==
                            JitExecutor::PrecompileDisposition::CacheFull) {
-                    deferred_precompile_entries_[precompile_entry] =
+                    defer_inflight_entry_locked(
+                        precompile_entry,
                         DeferredPrecompileEntry{
                             entry->second,
-                            execution_context_->native_code_slab()->generation()};
+                            execution_context_->cache_invalidation_epoch()});
                 } else {
-                    completed_precompile_entries_.insert(precompile_entry);
-                    if (precompile_entry.source ==
-                            JitPrecompileSource::DemandProfile &&
-                        profile_queue_entries_ != 0U) {
-                        --profile_queue_entries_;
-                    }
-                    auto &active_count =
-                        active_precompile_entries_by_source_[static_cast<std::size_t>(
-                            precompile_entry.source)];
-                    if (active_count != 0U) --active_count;
+                    finish_inflight_entry_locked(
+                        precompile_entry,
+                        precompile_disposition_completed(disposition));
                 }
                 update_memory_peaks_locked();
+                assert_queue_counter_invariants_locked();
             }
             if (cancelled) {
                 ++result.cancelled;
@@ -2714,22 +2730,41 @@ public:
     void quiesce_precompilation() {
         {
             const std::lock_guard queue_lock{precompile_queue_mutex_};
+            precompile_quiescing_ = true;
             update_memory_peaks_locked();
-            ++precompile_cancellation_generation_;
+            if (++precompile_cancellation_generation_ == 0U)
+                precompile_cancellation_generation_ = 1U;
+            const auto profile_source = static_cast<std::size_t>(
+                JitPrecompileSource::DemandProfile);
+            const auto non_inflight_profile_entries =
+                pending_precompile_entries_by_source_[profile_source] +
+                deferred_precompile_entries_by_source_[profile_source];
+            profile_queue_entries_ =
+                non_inflight_profile_entries > profile_queue_entries_
+                    ? 0U
+                    : profile_queue_entries_ - non_inflight_profile_entries;
             for (auto &queue : pending_precompile_entries_) queue.clear();
             pending_precompile_phases_.clear();
+            pending_precompile_entries_by_source_.fill(0U);
             deferred_precompile_entries_.clear();
+            deferred_precompile_entries_by_source_.fill(0U);
             completed_precompile_entries_.clear();
-            cache_full_generation_observed_.fill(std::nullopt);
-            active_precompile_entries_by_source_.fill(0U);
+            completed_precompile_lru_.clear();
+            completed_precompile_entries_by_source_.fill(0U);
+            cache_full_epoch_observed_.fill(std::nullopt);
             next_precompile_executor_ = 0;
-            profile_queue_entries_ = 0U;
+            assert_queue_counter_invariants_locked();
         }
         std::unique_lock queue_lock{precompile_queue_mutex_};
         precompile_idle_.wait(queue_lock, [this] {
             return active_precompile_tasks_ == 0U;
         });
         inflight_precompile_entries_.clear();
+        inflight_precompile_entries_by_source_.fill(0U);
+        profile_queue_entries_ = 0U;
+        assert_queue_counter_invariants_locked();
+        update_memory_peaks_locked();
+        precompile_quiescing_ = false;
     }
 
 private:
@@ -2762,12 +2797,6 @@ private:
                (blocks + 2U) * sizeof(void *);
     }
 
-    template <typename T>
-    [[nodiscard]] static std::size_t estimate_deque_blocks(
-        const std::deque<T> &container) noexcept {
-        return estimate_deque_blocks_for_count<T>(container.size());
-    }
-
     template <typename Container>
     [[nodiscard]] static std::size_t estimate_unordered_buckets_for_count(
         const Container &container, std::size_t count) noexcept {
@@ -2792,37 +2821,28 @@ private:
         result.native_preimport_tracker_bytes =
             native_preimport_tracker_ ? jit_native_preimport_tracker_object_bytes
                                       : 0U;
-        result.pending_entries = pending_precompile_phases_.size();
-        result.inflight_entries = inflight_precompile_entries_.size();
-        result.deferred_entries = deferred_precompile_entries_.size();
-        result.completed_entries = completed_precompile_entries_.size();
         result.profile_queue_capacity_entries = profile_precompile_enabled_
                                                     ? jit_profile_precompile_queue_entry_capacity
                                                     : 0U;
-        std::array<std::size_t, jit_precompile_source_count> pending_by_source{};
-        std::array<std::size_t, jit_precompile_source_count> inflight_by_source{};
-        std::array<std::size_t, jit_precompile_source_count> deferred_by_source{};
-        std::array<std::size_t, jit_precompile_source_count> completed_by_source{};
-        std::array<std::size_t, jit_precompile_source_count>
-            pending_deque_by_source{};
-        for (const auto &[entry, phase] : pending_precompile_phases_) {
-            static_cast<void>(phase);
-            ++pending_by_source[static_cast<std::size_t>(entry.source)];
-        }
-        for (const auto &entry : inflight_precompile_entries_)
-            ++inflight_by_source[static_cast<std::size_t>(entry.source)];
-        for (const auto &[entry, deferred] : deferred_precompile_entries_) {
-            static_cast<void>(deferred);
-            ++deferred_by_source[static_cast<std::size_t>(entry.source)];
-        }
-        for (const auto &entry : completed_precompile_entries_)
-            ++completed_by_source[static_cast<std::size_t>(entry.source)];
-        for (const auto &queue : pending_precompile_entries_) {
-            result.queue_block_bytes += estimate_deque_blocks(queue);
-            for (const auto &entry : queue)
-                ++pending_deque_by_source[
-                    static_cast<std::size_t>(entry.source)];
-        }
+        const auto sum = [](const auto &counts) {
+            std::size_t total{};
+            for (const auto count : counts) total += count;
+            return total;
+        };
+        const auto &pending_by_source = pending_precompile_entries_by_source_;
+        const auto &inflight_by_source = inflight_precompile_entries_by_source_;
+        const auto &deferred_by_source = deferred_precompile_entries_by_source_;
+        const auto &completed_by_source = completed_precompile_entries_by_source_;
+        result.pending_entries = sum(pending_by_source);
+        result.inflight_entries = sum(inflight_by_source);
+        result.deferred_entries = sum(deferred_by_source);
+        result.completed_entries = sum(completed_by_source);
+        // The deque topology is intentionally estimated from O(1) logical
+        // counts. A stats sample must never walk every pending node merely to
+        // account for its blocks.
+        result.queue_block_bytes =
+            estimate_deque_blocks_for_count<PrecompileEntry>(
+                result.pending_entries);
         result.queue_bucket_bytes =
             estimate_unordered_buckets(pending_precompile_phases_) +
             estimate_unordered_buckets(inflight_precompile_entries_) +
@@ -2848,7 +2868,7 @@ private:
                                     source.deferred_entries;
             source.queue_block_bytes =
                 estimate_deque_blocks_for_count<PrecompileEntry>(
-                    pending_deque_by_source[source_index]);
+                    pending_by_source[source_index]);
             source.queue_bucket_bytes =
                 estimate_unordered_buckets_for_count(
                     pending_precompile_phases_, pending_by_source[source_index]) +
@@ -2878,21 +2898,27 @@ private:
                                                  source.queue_node_bytes +
                                                  source.queue_block_bytes;
         }
-        const auto profile_source = static_cast<std::size_t>(
-            JitPrecompileSource::DemandProfile);
         const auto catalog_source = static_cast<std::size_t>(
             JitPrecompileSource::ExecutableCatalog);
-        result.profile_queue_entries =
-            result.by_source[profile_source].queued_entries;
+        result.profile_queue_entries = profile_queue_entries_;
         result.catalog_queue_entries =
             result.by_source[catalog_source].queued_entries;
         for (const auto &source : result.by_source)
             result.generic_queue_entries += source.queued_entries;
+#ifndef NDEBUG
+        const auto profile_source = static_cast<std::size_t>(
+            JitPrecompileSource::DemandProfile);
+        assert(result.profile_queue_entries ==
+               result.by_source[profile_source].queued_entries);
+        assert(result.pending_entries == pending_precompile_phases_.size());
+        assert(result.inflight_entries == inflight_precompile_entries_.size());
+        assert(result.deferred_entries == deferred_precompile_entries_.size());
+        assert(result.completed_entries == completed_precompile_entries_.size());
+#endif
     }
 
-    void update_memory_peaks_locked() const noexcept {
-        JitPrecompileMemoryStats current;
-        fill_memory_stats_locked(current);
+    void update_memory_peaks_locked(
+        const JitPrecompileMemoryStats &current) const noexcept {
         memory_peak_.profile_queue_entries_peak = std::max(
             memory_peak_.profile_queue_entries_peak,
             current.profile_queue_entries);
@@ -2951,16 +2977,207 @@ private:
         }
     }
 
+    void update_memory_peaks_locked() const noexcept {
+        JitPrecompileMemoryStats current;
+        fill_memory_stats_locked(current);
+        update_memory_peaks_locked(current);
+    }
+
     enum class PrecompileEnqueueResult : std::uint8_t {
         Existing,
         Inserted,
         Rejected,
     };
 
+    static void decrement_counter_locked(std::size_t &counter) noexcept {
+        assert(counter != 0U);
+        if (counter != 0U) --counter;
+    }
+
+    void decrement_profile_queue_entries_locked(
+        const PrecompileEntry &entry) noexcept {
+        if (entry.source == JitPrecompileSource::DemandProfile) {
+            decrement_counter_locked(profile_queue_entries_);
+        }
+    }
+
+    [[nodiscard]] std::size_t pending_entry_count_locked() const noexcept {
+        std::size_t result{};
+        for (const auto &queue : pending_precompile_entries_)
+            result += queue.size();
+        return result;
+    }
+
+    void assert_queue_counter_invariants_locked() const noexcept {
+#ifndef NDEBUG
+        const auto pending = pending_entry_count_locked();
+        const auto pending_by_source = [&] {
+            std::size_t result{};
+            for (const auto count : pending_precompile_entries_by_source_)
+                result += count;
+            return result;
+        }();
+        const auto inflight_by_source = [&] {
+            std::size_t result{};
+            for (const auto count : inflight_precompile_entries_by_source_)
+                result += count;
+            return result;
+        }();
+        const auto deferred_by_source = [&] {
+            std::size_t result{};
+            for (const auto count : deferred_precompile_entries_by_source_)
+                result += count;
+            return result;
+        }();
+        const auto completed_by_source = [&] {
+            std::size_t result{};
+            for (const auto count : completed_precompile_entries_by_source_)
+                result += count;
+            return result;
+        }();
+        assert(pending == pending_precompile_phases_.size());
+        assert(pending == pending_by_source);
+        assert(inflight_by_source == inflight_precompile_entries_.size());
+        assert(deferred_by_source == deferred_precompile_entries_.size());
+        assert(completed_by_source == completed_precompile_entries_.size());
+        assert(profile_queue_entries_ ==
+               pending_precompile_entries_by_source_[static_cast<std::size_t>(
+                   JitPrecompileSource::DemandProfile)] +
+                   inflight_precompile_entries_by_source_[static_cast<std::size_t>(
+                       JitPrecompileSource::DemandProfile)] +
+                   deferred_precompile_entries_by_source_[static_cast<std::size_t>(
+                       JitPrecompileSource::DemandProfile)]);
+#endif
+    }
+
+    [[nodiscard]] CompletedPrecompileEntry current_completed_generation_locked()
+        const noexcept {
+        return CompletedPrecompileEntry{
+            execution_context_->cache_invalidation_epoch(),
+            execution_context_->observed_slab_generation(),
+            profile_generation_};
+    }
+
+    void remove_completed_entry_locked(
+        const PrecompileEntry &entry) noexcept {
+        const auto found = completed_precompile_entries_.find(entry);
+        if (found == completed_precompile_entries_.end()) return;
+        decrement_counter_locked(
+            completed_precompile_entries_by_source_[static_cast<std::size_t>(
+                entry.source)]);
+        completed_precompile_entries_.erase(found);
+        std::erase(completed_precompile_lru_, entry);
+    }
+
+    [[nodiscard]] bool completed_entry_is_current_locked(
+        const PrecompileEntry &entry) noexcept {
+        const auto found = completed_precompile_entries_.find(entry);
+        if (found == completed_precompile_entries_.end()) return false;
+        const auto current = current_completed_generation_locked();
+        if (found->second.cache_invalidation_epoch ==
+                current.cache_invalidation_epoch &&
+            found->second.slab_generation == current.slab_generation &&
+            found->second.profile_generation == current.profile_generation) {
+            return true;
+        }
+        remove_completed_entry_locked(entry);
+        return false;
+    }
+
+    void record_completed_entry_locked(const PrecompileEntry &entry) noexcept {
+        if (completed_precompile_entries_.contains(entry)) {
+            remove_completed_entry_locked(entry);
+        }
+        while (completed_precompile_entries_.size() >=
+               jit_completed_precompile_entry_capacity &&
+               !completed_precompile_lru_.empty()) {
+            remove_completed_entry_locked(completed_precompile_lru_.front());
+        }
+        completed_precompile_entries_.insert_or_assign(
+            entry, current_completed_generation_locked());
+        completed_precompile_lru_.push_back(entry);
+        ++completed_precompile_entries_by_source_[static_cast<std::size_t>(
+            entry.source)];
+    }
+
+    void move_deferred_to_pending_locked(const PrecompileEntry &entry,
+                                         JitPrecompilePhase phase) noexcept {
+        pending_precompile_phases_.emplace(entry, phase);
+        pending_precompile_entries_[phase_index(phase)].push_back(entry);
+        decrement_counter_locked(
+            deferred_precompile_entries_by_source_[static_cast<std::size_t>(
+                entry.source)]);
+        ++pending_precompile_entries_by_source_[static_cast<std::size_t>(
+            entry.source)];
+    }
+
+    void promote_retryable_deferred_entries_locked(
+        JitPrecompileSource source) noexcept {
+        for (auto iterator = deferred_precompile_entries_.begin();
+             iterator != deferred_precompile_entries_.end();) {
+            if (iterator->first.source != source ||
+                iterator->second.cache_full_invalidation_epoch) {
+                ++iterator;
+                continue;
+            }
+            const auto entry = iterator->first;
+            const auto phase = iterator->second.phase;
+            move_deferred_to_pending_locked(entry, phase);
+            iterator = deferred_precompile_entries_.erase(iterator);
+        }
+    }
+
+    void remove_inflight_entry_locked(const PrecompileEntry &entry) noexcept {
+        if (inflight_precompile_entries_.erase(entry) == 0U) return;
+        decrement_counter_locked(
+            inflight_precompile_entries_by_source_[static_cast<std::size_t>(
+                entry.source)]);
+    }
+
+    void defer_inflight_entry_locked(
+        const PrecompileEntry &entry, DeferredPrecompileEntry deferred) noexcept {
+        remove_inflight_entry_locked(entry);
+        const auto [iterator, inserted] =
+            deferred_precompile_entries_.insert_or_assign(entry, deferred);
+        static_cast<void>(iterator);
+        if (inserted) {
+            ++deferred_precompile_entries_by_source_[static_cast<std::size_t>(
+                entry.source)];
+        }
+    }
+
+    void finish_inflight_entry_locked(const PrecompileEntry &entry,
+                                      bool completed) noexcept {
+        remove_inflight_entry_locked(entry);
+        if (completed) record_completed_entry_locked(entry);
+        decrement_profile_queue_entries_locked(entry);
+    }
+
+    static bool precompile_disposition_completed(
+        JitExecutor::PrecompileDisposition disposition) noexcept {
+        switch (disposition) {
+        case JitExecutor::PrecompileDisposition::NativeCompiled:
+        case JitExecutor::PrecompileDisposition::PortableGenerated:
+        case JitExecutor::PrecompileDisposition::PortableArtifactHit:
+        case JitExecutor::PrecompileDisposition::ArtifactImported:
+        case JitExecutor::PrecompileDisposition::ArtifactProbeHit:
+        case JitExecutor::PrecompileDisposition::SharedSlabHit:
+            return true;
+        case JitExecutor::PrecompileDisposition::Deferred:
+        case JitExecutor::PrecompileDisposition::Unstable:
+        case JitExecutor::PrecompileDisposition::CacheFull:
+        case JitExecutor::PrecompileDisposition::Failed:
+            return false;
+        }
+        return false;
+    }
+
     [[nodiscard]] std::size_t active_precompile_entries_for_source_locked(
         JitPrecompileSource source) const noexcept {
-        return active_precompile_entries_by_source_[static_cast<std::size_t>(
-            source)];
+        const auto source_index = static_cast<std::size_t>(source);
+        return pending_precompile_entries_by_source_[source_index] +
+               inflight_precompile_entries_by_source_[source_index] +
+               deferred_precompile_entries_by_source_[source_index];
     }
 
     [[nodiscard]] static constexpr std::size_t
@@ -2991,34 +3208,40 @@ private:
                 phase = deferred->second.phase;
             }
             deferred_precompile_entries_.erase(deferred);
+            decrement_counter_locked(
+                deferred_precompile_entries_by_source_[static_cast<std::size_t>(
+                    entry.source)]);
         }
         if (entry.descriptor == 0 ||
-            completed_precompile_entries_.contains(entry) ||
+            completed_entry_is_current_locked(entry) ||
             inflight_precompile_entries_.contains(entry)) {
+            assert_queue_counter_invariants_locked();
             return PrecompileEnqueueResult::Existing;
         }
         if (const auto pending = pending_precompile_phases_.find(entry);
             pending != pending_precompile_phases_.end()) {
             if (phase_index(phase) < phase_index(pending->second)) {
                 pending->second = phase;
+                for (auto &queue : pending_precompile_entries_)
+                    std::erase(queue, entry);
                 pending_precompile_entries_[phase_index(phase)].push_back(
                     entry);
             }
+            assert_queue_counter_invariants_locked();
             return PrecompileEnqueueResult::Existing;
         }
         if (!was_deferred &&
             active_precompile_entries_for_source_locked(entry.source) >=
             active_precompile_source_capacity(entry.source)) {
+            assert_queue_counter_invariants_locked();
             return PrecompileEnqueueResult::Rejected;
         }
         pending_precompile_phases_.emplace(entry, phase);
         pending_precompile_entries_[phase_index(phase)].push_back(entry);
-        if (!was_deferred) {
-            ++active_precompile_entries_by_source_[static_cast<std::size_t>(
-                entry.source)];
-        }
+        ++pending_precompile_entries_by_source_[static_cast<std::size_t>(
+            entry.source)];
         if (entry.source == JitPrecompileSource::DemandProfile) {
-            ++profile_queue_entries_;
+            if (!was_deferred) ++profile_queue_entries_;
             if (!was_deferred && translation_profile_) {
                 if (entry.target == JitPrecompileTarget::NativeCode) {
                     translation_profile_->note_profile_native_enqueued();
@@ -3028,6 +3251,7 @@ private:
             }
         }
         update_memory_peaks_locked();
+        assert_queue_counter_invariants_locked();
         return PrecompileEnqueueResult::Inserted;
     }
 
@@ -3070,12 +3294,11 @@ private:
     void promote_cache_full_entries_locked(
         std::optional<JitPrecompileSource> source = std::nullopt) {
         if (deferred_precompile_entries_.empty()) return;
-        const auto current_generation =
-            execution_context_->native_code_slab()->generation();
+        const auto current_epoch =
+            execution_context_->cache_invalidation_epoch();
         const auto promote_source = [&](JitPrecompileSource selected_source) {
             const auto source_index = static_cast<std::size_t>(selected_source);
-            auto &observed_generation =
-                cache_full_generation_observed_[source_index];
+            auto &observed_epoch = cache_full_epoch_observed_[source_index];
             const auto relevant = std::find_if(
                 deferred_precompile_entries_.begin(),
                 deferred_precompile_entries_.end(),
@@ -3083,24 +3306,22 @@ private:
                     return entry.first.source == selected_source;
                 });
             if (relevant == deferred_precompile_entries_.end() ||
-                (observed_generation &&
-                 *observed_generation == current_generation)) {
+                (observed_epoch && *observed_epoch == current_epoch)) {
                 return;
             }
-            observed_generation = current_generation;
+            observed_epoch = current_epoch;
             for (auto iterator = deferred_precompile_entries_.begin();
                  iterator != deferred_precompile_entries_.end();) {
                 if (iterator->first.source != selected_source ||
-                    !iterator->second.cache_full_generation ||
-                    *iterator->second.cache_full_generation ==
-                        current_generation) {
+                    !iterator->second.cache_full_invalidation_epoch ||
+                    *iterator->second.cache_full_invalidation_epoch ==
+                        current_epoch) {
                     ++iterator;
                     continue;
                 }
                 const auto entry = iterator->first;
                 const auto phase = iterator->second.phase;
-                pending_precompile_phases_.emplace(entry, phase);
-                pending_precompile_entries_[phase_index(phase)].push_back(entry);
+                move_deferred_to_pending_locked(entry, phase);
                 iterator = deferred_precompile_entries_.erase(iterator);
             }
         };
@@ -3113,6 +3334,7 @@ private:
             }
         }
         update_memory_peaks_locked();
+        assert_queue_counter_invariants_locked();
     }
 
     [[nodiscard]] std::optional<JitPrecompilePhase>
@@ -3168,8 +3390,14 @@ private:
             }
             queue.erase(iterator);
             pending_precompile_phases_.erase(entry);
+            decrement_counter_locked(
+                pending_precompile_entries_by_source_[static_cast<std::size_t>(
+                    entry.source)]);
             inflight_precompile_entries_.insert(entry);
+            ++inflight_precompile_entries_by_source_[static_cast<std::size_t>(
+                entry.source)];
             update_memory_peaks_locked();
+            assert_queue_counter_invariants_locked();
             return std::pair{entry, *phase};
         }
         return std::nullopt;
@@ -3189,8 +3417,10 @@ private:
     std::unordered_map<PrecompileEntry, DeferredPrecompileEntry,
                        PrecompileEntryHash>
         deferred_precompile_entries_;
-    std::unordered_set<PrecompileEntry, PrecompileEntryHash>
+    std::unordered_map<PrecompileEntry, CompletedPrecompileEntry,
+                       PrecompileEntryHash>
         completed_precompile_entries_;
+    std::deque<PrecompileEntry> completed_precompile_lru_;
     std::shared_ptr<JitTranslationProfile> translation_profile_;
     JitPrecompilePhase translation_profile_phase_{
         JitPrecompilePhase::Remaining};
@@ -3199,10 +3429,18 @@ private:
     std::size_t profile_location_cursor_{};
     std::size_t profile_queue_entries_{};
     std::array<std::size_t, jit_precompile_source_count>
-        active_precompile_entries_by_source_{};
+        pending_precompile_entries_by_source_{};
+    std::array<std::size_t, jit_precompile_source_count>
+        inflight_precompile_entries_by_source_{};
+    std::array<std::size_t, jit_precompile_source_count>
+        deferred_precompile_entries_by_source_{};
+    std::array<std::size_t, jit_precompile_source_count>
+        completed_precompile_entries_by_source_{};
     std::array<std::optional<std::uint64_t>, jit_precompile_source_count>
-        cache_full_generation_observed_{};
+        cache_full_epoch_observed_{};
     std::size_t next_precompile_executor_{};
+    std::uint64_t profile_generation_{};
+    bool precompile_quiescing_{};
     std::uint64_t precompile_cancellation_generation_{1};
     std::uint64_t active_precompile_tasks_{};
     std::condition_variable precompile_idle_;

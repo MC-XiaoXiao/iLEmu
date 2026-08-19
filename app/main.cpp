@@ -721,6 +721,9 @@ private:
 
 struct RuntimeJitMemoryAggregate {
   std::size_t runtime_count{};
+  std::size_t runtime_scan_iterations{};
+  std::size_t stats_samples{};
+  std::size_t queue_lock_acquisitions{};
   JitPrecompileMemoryStats final_before_retirement{};
   JitPrecompileMemoryStats concurrent_live_current{};
   JitPrecompileMemoryStats concurrent_live_peak{};
@@ -902,8 +905,16 @@ struct RuntimeJitMemoryAggregate {
     }
   }
 
+  void note_stats_sample() noexcept {
+    ++stats_samples;
+    // CpuCluster::precompile_memory_stats() takes one queue mutex and the
+    // optimized snapshot performs no container-node scan.
+    ++queue_lock_acquisitions;
+  }
+
   void observe(const void *runtime_key,
                const JitPrecompileMemoryStats &stats) {
+    note_stats_sample();
     const auto [entry, inserted] =
         live_by_runtime.try_emplace(runtime_key, stats);
     if (!inserted) {
@@ -1427,7 +1438,7 @@ std::string usage() {
          "[--jit-startup-profile] "
          "[--jit-startup-profile-blocks N] "
          "[--jit-startup-profile-budget-us N] "
-         "[--jit-catalog-warming no-enqueue|idle] "
+         "[--jit-catalog-warming no-enqueue] "
          "[--output FILE]\n"
          "  ilemu smoke [--cores N] [--jit-cache-mib 8..128] "
          "[--perf-summary] [--output FILE]\n"
@@ -1501,10 +1512,7 @@ enum class JitProfileMode : std::uint8_t {
   Startup,
 };
 
-enum class JitCatalogWarmingMode : std::uint8_t {
-  NoEnqueue,
-  Idle,
-};
+enum class JitCatalogWarmingMode : std::uint8_t { NoEnqueue };
 
 [[nodiscard]] std::string_view jit_precompile_source_name(
     JitPrecompileSource source) noexcept {
@@ -1524,8 +1532,6 @@ enum class JitCatalogWarmingMode : std::uint8_t {
   switch (mode) {
   case JitCatalogWarmingMode::NoEnqueue:
     return "no-enqueue";
-  case JitCatalogWarmingMode::Idle:
-    return "idle";
   }
   return "no-enqueue";
 }
@@ -1536,9 +1542,8 @@ enum class JitCatalogWarmingMode : std::uint8_t {
   if (!configured || *configured == "no-enqueue") {
     return JitCatalogWarmingMode::NoEnqueue;
   }
-  if (*configured == "idle") return JitCatalogWarmingMode::Idle;
   throw std::runtime_error{
-      "--jit-catalog-warming must be no-enqueue or idle"};
+      "--jit-catalog-warming only supports no-enqueue; idle warming was removed"};
 }
 
 [[nodiscard]] std::string_view jit_profile_mode_name(
@@ -2381,8 +2386,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const bool startup_profile_enabled =
       jit_profile_startup_work(jit_profile_mode);
   const bool idle_profile_enabled = jit_profile_idle_work(jit_profile_mode);
-  const bool profile_background_warming_enabled =
-      idle_profile_enabled || startup_profile_enabled;
+  const bool profile_background_warming_enabled = idle_profile_enabled;
   const auto startup_profile_blocks_value =
       option(args, "--jit-startup-profile-blocks");
   const auto startup_profile_budget_us_value =
@@ -2725,6 +2729,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         if (already_observed) {
           runtime_jit_memory->retire(key);
         } else {
+          runtime_jit_memory->note_stats_sample();
           runtime_jit_memory->retire(
               key, runtime.cpus->precompile_memory_stats());
         }
@@ -2811,13 +2816,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
         }
         return JitPrecompilePhase::StartupService;
       };
-  constexpr std::size_t maximum_catalog_offline_compile_queue = 64;
-  constexpr std::size_t maximum_catalog_warming_entries = 256;
-  constexpr std::size_t maximum_catalog_preexec_blocks = 64;
-  constexpr std::uint64_t catalog_preexec_budget_nanoseconds = 4'000'000;
-  const bool catalog_idle_warming_enabled =
-      jit_catalog_warming_mode == JitCatalogWarmingMode::Idle;
-  std::deque<ContentIdentity> pending_catalog_compiles;
   struct PrecompileOutcomeCounters {
     std::atomic<std::uint64_t> elapsed_nanoseconds{};
     std::atomic<std::uint64_t> attempted{};
@@ -2937,11 +2935,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
       };
   const auto assign_jit_process_profile =
       [&translation_profiles, &catalog_index, &boot_image_identities,
-       &pending_catalog_compiles, &output,
        &jit_code_cache_governor, springboard_boot_path, profile_enabled,
        profile_recording_enabled, profile_loading_enabled,
-       profile_precompile_enabled, catalog_idle_warming_enabled,
-       maximum_catalog_warming_entries](
+       profile_precompile_enabled](
           Runtime &runtime, const LoadedProcess &loaded,
           JitPrecompilePhase phase) {
         runtime.precompile_phase = phase;
@@ -2986,91 +2982,53 @@ void boot(const std::vector<std::string> &args, Output &output) {
           runtime.cpus->set_translation_profile(nullptr, phase, false, false);
         }
         if (catalog_index == nullptr) return false;
-        std::vector<std::uint64_t> entry_points;
-        const auto append_entry_points = [&](const MachOImage &image) {
-          const auto *entry = catalog_index->find(image.content_identity());
-          if (entry == nullptr) return;
-          entry_points.insert(entry_points.end(),
-                              entry->reliable_entry_points.begin(),
-                              entry->reliable_entry_points.end());
-        };
-        append_entry_points(loaded.executable);
-        append_entry_points(loaded.dynamic_linker);
-        if (catalog_idle_warming_enabled) {
-          if (entry_points.size() > maximum_catalog_warming_entries) {
-            entry_points.resize(maximum_catalog_warming_entries);
-          }
-          runtime.cpus->add_precompile_entries(
-              entry_points, phase, JitPrecompileSource::ExecutableCatalog);
-        }
-        const auto consume_pending_identity = [&](const ContentIdentity &identity) {
-          const auto pending = std::find(pending_catalog_compiles.begin(),
-                                         pending_catalog_compiles.end(), identity);
-          if (pending == pending_catalog_compiles.end()) return false;
-          pending_catalog_compiles.erase(pending);
-          return true;
-        };
-        const auto executable_pending =
-            consume_pending_identity(loaded.executable.content_identity());
-        const auto linker_pending =
-            consume_pending_identity(loaded.dynamic_linker.content_identity());
-        if (executable_pending || linker_pending) {
-          output.line("[catalog] offline-compile-queue consumed executable=" +
-                      loaded.executable_path + " pending=" +
-                      std::to_string(pending_catalog_compiles.size()));
-        }
-        return executable_pending || linker_pending;
-      };
-  const auto precompile_catalog_generation =
-      [&output, &record_precompile_outcomes](
-          Runtime &runtime, bool pending, std::string_view executable_path) {
-        if (!pending) return;
-        const auto result = runtime.cpus->precompile_pending(
-            maximum_catalog_preexec_blocks,
-            catalog_preexec_budget_nanoseconds,
-            JitPrecompileTarget::NativeCode, {},
-            JitPrecompileSource::ExecutableCatalog);
-        record_precompile_outcomes(result,
-                                   JitPrecompileSource::ExecutableCatalog);
-        output.line("[catalog] exec-precompile executable=" +
-                    std::string{executable_path} +
-                    " blocks=" + std::to_string(result.native_compiled) +
-                    " attempted=" + std::to_string(result.attempted) +
-                    " shared-slab=" +
-                    std::to_string(result.shared_slab_hits) +
-                    " artifact-imported=" +
-                    std::to_string(result.artifact_imported) +
-                    " deferred=" + std::to_string(result.deferred) +
-                    " failed=" + std::to_string(result.failed));
+        // The catalog remains a metadata/identity source. Its former idle
+        // precompile producer was removed because it admitted work faster
+        // than the scheduler could consume it and permanently retained
+        // pending entries on active/scanout runtimes.
+        return false;
       };
   const auto precompile_startup_profile =
       [&output, &record_precompile_outcomes, startup_profile_enabled,
        startup_profile_blocks, startup_profile_budget_us](
           Runtime &runtime, std::string_view executable_path) {
         if (!startup_profile_enabled) return;
-        if (!runtime.cpus->next_precompile_phase(
+        if (runtime.cpus->next_precompile_phase(
                 JitPrecompileTarget::NativeCode,
                 JitPrecompileSource::DemandProfile)) {
-          return;
+          const auto result = runtime.cpus->precompile_pending(
+              static_cast<std::size_t>(startup_profile_blocks),
+              startup_profile_budget_us * 1'000U,
+              JitPrecompileTarget::NativeCode, {},
+              JitPrecompileSource::DemandProfile);
+          record_precompile_outcomes(result,
+                                     JitPrecompileSource::DemandProfile);
+          output.line("[jit-profile] startup-native-warm executable=" +
+                      std::string{executable_path} +
+                      " blocks=" + std::to_string(result.native_compiled) +
+                      " attempted=" + std::to_string(result.attempted) +
+                      " elapsed-ns=" +
+                      std::to_string(result.elapsed_nanoseconds) +
+                      " artifact-imported=" +
+                      std::to_string(result.artifact_imported) +
+                      " shared-slab=" +
+                      std::to_string(result.shared_slab_hits) +
+                      " deferred=" + std::to_string(result.deferred) +
+                      " failed=" + std::to_string(result.failed));
         }
-        const auto result = runtime.cpus->precompile_pending(
-            static_cast<std::size_t>(startup_profile_blocks),
-            startup_profile_budget_us * 1'000U,
-            JitPrecompileTarget::NativeCode, {},
+        const auto native_remaining = runtime.cpus->next_precompile_phase(
+            JitPrecompileTarget::NativeCode,
             JitPrecompileSource::DemandProfile);
-        record_precompile_outcomes(result, JitPrecompileSource::DemandProfile);
-        output.line("[jit-profile] startup-native-warm executable=" +
-                    std::string{executable_path} +
-                    " blocks=" + std::to_string(result.native_compiled) +
-                    " attempted=" + std::to_string(result.attempted) +
-                    " elapsed-ns=" +
-                    std::to_string(result.elapsed_nanoseconds) +
-                    " artifact-imported=" +
-                    std::to_string(result.artifact_imported) +
-                    " shared-slab=" +
-                    std::to_string(result.shared_slab_hits) +
-                    " deferred=" + std::to_string(result.deferred) +
-                    " failed=" + std::to_string(result.failed));
+        const auto portable_remaining = runtime.cpus->next_precompile_phase(
+            JitPrecompileTarget::PortableIr,
+            JitPrecompileSource::DemandProfile);
+        if (native_remaining || portable_remaining) {
+          output.line("[jit-profile] startup-remaining-cancelled=1");
+          // Startup mode has a synchronous, bounded contract. Any remainder
+          // is an explicit terminal cancellation; it must not leak into the
+          // idle scheduler after the startup window closes.
+          runtime.cpus->quiesce_precompilation();
+        }
       };
   auto initial = std::make_unique<Runtime>();
   initial->memory = std::move(initial_memory);
@@ -3305,32 +3263,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
             std::filesystem::remove(catalog_completion->staged_manifest,
                                     remove_error);
           } else {
-            std::unordered_set<ContentIdentity, ContentIdentityHash> previous;
-            if (catalog_index != nullptr) {
-              for (const auto &identity :
-                   executable_catalog.content_identities()) {
-                previous.insert(identity);
-              }
-            }
             executable_catalog = std::move(*catalog_completion->catalog);
             catalog_loaded = true;
             catalog_index = &executable_catalog;
-            if (catalog_idle_warming_enabled) {
-              for (const auto &identity :
-                   executable_catalog.content_identities()) {
-                if (previous.contains(identity) ||
-                    std::find(pending_catalog_compiles.begin(),
-                              pending_catalog_compiles.end(), identity) !=
-                        pending_catalog_compiles.end()) {
-                  continue;
-                }
-                if (pending_catalog_compiles.size() >=
-                    maximum_catalog_offline_compile_queue) {
-                  pending_catalog_compiles.pop_front();
-                }
-                pending_catalog_compiles.push_back(identity);
-              }
-            }
             bool manifest_published = false;
             if (catalog_completion->manifest_staged) {
               std::error_code rename_error;
@@ -3356,9 +3291,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 std::to_string(catalog_completion->summary.failed_files) +
                 " paths=" +
                 std::to_string(catalog_completion->paths.size()) +
-                " new-offline-queue=" +
-                std::to_string(pending_catalog_compiles.size()) +
-                " async=true");
+                " warming=no-enqueue async=true");
             ++catalog_refresh_count;
           }
         }
@@ -3568,8 +3501,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
     runtime.kernel->set_host_network_policy(*network_policy);
     runtime.kernel->set_mapped_executable_handler(
         [runtime_ptr, &catalog_index, &catalog_mapped_executable_ranges,
-         &catalog_mapped_entry_hints, &catalog_mapped_entry_hints_by_phase,
-         catalog_idle_warming_enabled](
+         &catalog_mapped_entry_hints, &catalog_mapped_entry_hints_by_phase](
             const std::filesystem::path &path, std::uint32_t mapping_address,
             std::uint32_t mapping_size, std::uint64_t file_offset) {
           if (catalog_index == nullptr) return;
@@ -3580,14 +3512,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
           catalog_mapped_entry_hints += entry_points.size();
           catalog_mapped_entry_hints_by_phase[static_cast<std::size_t>(
               runtime_ptr->precompile_phase)] += entry_points.size();
-          if (catalog_idle_warming_enabled) {
-            if (entry_points.size() > maximum_catalog_warming_entries) {
-              entry_points.resize(maximum_catalog_warming_entries);
-            }
-            runtime_ptr->cpus->add_precompile_entries(
-                entry_points, runtime_ptr->precompile_phase,
-                JitPrecompileSource::ExecutableCatalog);
-          }
         });
     if (!runtime.kernel->set_virtual_processor_count(guest_processor_count)) {
       throw std::runtime_error{"invalid virtual processor topology"};
@@ -3897,10 +3821,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                                            environment);
               child_runtime->kernel->set_process_image(
                   path, loaded.executable.code_signature_entitlements());
-              const auto catalog_generation_pending =
-                  assign_jit_process_profile(
-                      *child_runtime, loaded,
-                      precompile_phase_for_process(loaded.executable_path));
+              assign_jit_process_profile(
+                  *child_runtime, loaded,
+                  precompile_phase_for_process(loaded.executable_path));
               child_runtime->kernel->prepare_exec(0);
               auto &child_cpu = child_runtime->cpus->cpu(0);
               child_cpu.reset();
@@ -3913,9 +3836,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   child_cpu, loaded.executable_path);
               precompile_startup_profile(*child_runtime,
                                          loaded.executable_path);
-              precompile_catalog_generation(
-                  *child_runtime, catalog_generation_pending,
-                  loaded.executable_path);
               observe_runtime_jit_memory(*child_runtime);
             }
             child_runtime->activate_image_epoch(image_epoch);
@@ -4944,7 +4864,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                                 pending.environment);
           runtime.kernel->set_process_image(
               pending.path, loaded.executable.code_signature_entitlements());
-          const auto catalog_generation_pending = assign_jit_process_profile(
+          assign_jit_process_profile(
               runtime, loaded,
               precompile_phase_for_process(loaded.executable_path));
           runtime.kernel->prepare_exec(pending.processor);
@@ -4958,8 +4878,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
           runtime.kernel->install_main_image_hle(exec_cpu,
                                                  loaded.executable_path);
           precompile_startup_profile(runtime, loaded.executable_path);
-          precompile_catalog_generation(runtime, catalog_generation_pending,
-                                        loaded.executable_path);
           observe_runtime_jit_memory(runtime);
           runtime.activate_image_epoch(image_epoch);
           static_cast<void>(scheduler.complete_slice(
@@ -5214,6 +5132,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // records a true concurrent sum and its same-sample maximum; the
       // per-runtime historical upper bound is accumulated only at retirement.
       if (runtime_jit_memory) {
+        runtime_jit_memory->runtime_scan_iterations += runtimes.size();
         for (auto &runtime : runtimes) {
           observe_runtime_jit_memory(*runtime);
         }
@@ -5404,43 +5323,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                           JitPrecompileSource::DemandProfile);
             }
           };
-      const auto schedule_catalog_warm =
-          [&, catalog_idle_warming_enabled](Runtime *runtime) {
-            if (!catalog_idle_warming_enabled) return;
-            if (runtime == nullptr || runtime->kernel->process().exited) {
-              return;
-            }
-            // Catalog warming is advisory background work. Never let it
-            // compete with the active or scanout owner for the first frame or
-            // for interactive animation; background runtimes get the
-            // source-isolated opportunity below.
-            if (runtime == active_runtime || runtime == display_scanout_owner) {
-              return;
-            }
-            if (runtime == initial_runtime &&
-                initial_runtime->kernel->display_submitted_frames() == 0U) {
-              return;
-            }
-            // Catalog warming has its own source filter and scheduler entry;
-            // it never relies on profile mode being enabled or on a profile
-            // queue consumer happening to run.
-            const auto native_phase = runtime->cpus->next_precompile_phase(
-                JitPrecompileTarget::NativeCode,
-                JitPrecompileSource::ExecutableCatalog);
-            if (native_phase) {
-              schedule_precompile_runtime(runtime,
-                                          HostWorkKind::BackgroundCompile,
-                                          JitPrecompileTarget::NativeCode,
-                                          JitPrecompileSource::ExecutableCatalog);
-            } else {
-              schedule_precompile_runtime(runtime,
-                                          HostWorkKind::OfflineCompile,
-                                          JitPrecompileTarget::PortableIr,
-                                          JitPrecompileSource::ExecutableCatalog);
-            }
-          };
       schedule_profile_warm(active_runtime);
-      schedule_catalog_warm(active_runtime);
       const auto schedule_artifact_compaction = [&]() {
         if (artifact_compaction_task) {
           if (!artifact_compaction_task->finished()) {
@@ -5468,12 +5351,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // every guest thread is idle.
       if (display_scanout_owner != active_runtime) {
         schedule_profile_warm(display_scanout_owner);
-        schedule_catalog_warm(display_scanout_owner);
       }
       Runtime *offline_precompile_runtime = nullptr;
       std::optional<JitPrecompilePhase> offline_precompile_phase;
-      Runtime *offline_catalog_precompile_runtime = nullptr;
-      std::optional<JitPrecompilePhase> offline_catalog_precompile_phase;
       // Active and scanout owners were submitted above for native warming.
       // Use one remaining worker slot to generate reusable portable IR for the
       // earliest phase across every other live process; creation order breaks
@@ -5504,39 +5384,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                   HostWorkKind::OfflineCompile,
                                   JitPrecompileTarget::PortableIr,
                                   JitPrecompileSource::DemandProfile);
-      // Give catalog entries in every other live process a bounded consumer
-      // as well.  The active and scanout owners were handled above; this
-      // selection prevents a background runtime's catalog from becoming a
-      // permanently pending source when profile warming is off.
-      if (catalog_idle_warming_enabled) {
-        for (const auto &runtime : runtimes) {
-          if (runtime.get() == active_runtime ||
-              runtime.get() == display_scanout_owner ||
-              runtime->kernel->process().exited ||
-              (runtime->precompile_task &&
-               !runtime->precompile_task->finished())) {
-            continue;
-          }
-          const auto native_phase = runtime->cpus->next_precompile_phase(
-              JitPrecompileTarget::NativeCode,
-              JitPrecompileSource::ExecutableCatalog);
-          const auto portable_phase = native_phase
-                                          ? std::nullopt
-                                          : runtime->cpus->next_precompile_phase(
-                                                JitPrecompileTarget::PortableIr,
-                                                JitPrecompileSource::ExecutableCatalog);
-          const auto phase = native_phase ? native_phase : portable_phase;
-          if (phase &&
-              (!offline_catalog_precompile_phase ||
-               static_cast<std::uint8_t>(*phase) <
-                   static_cast<std::uint8_t>(
-                       *offline_catalog_precompile_phase))) {
-            offline_catalog_precompile_runtime = runtime.get();
-            offline_catalog_precompile_phase = phase;
-          }
-        }
-      }
-      schedule_catalog_warm(offline_catalog_precompile_runtime);
       if (next_deadline) {
         if (realtime_pacer) {
           const auto guest_ahead_delay =
@@ -5877,8 +5724,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
     output.line(
         "[catalog] mutation-events=" +
         std::to_string(catalog_refresh_events) + " refreshes=" +
-        std::to_string(catalog_refresh_count) + " offline-queue-pending=" +
-        std::to_string(pending_catalog_compiles.size()) +
+        std::to_string(catalog_refresh_count) + " warming=no-enqueue"
         " async-scheduled=" +
         std::to_string(catalog_refresh_scheduled) +
         " async-rejected=" +
@@ -5907,6 +5753,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
     output.line("[catalog] manifest-save=failed");
   }
   if (runtime_jit_memory) {
+    runtime_jit_memory->runtime_scan_iterations += runtimes.size();
     for (auto &runtime : runtimes) {
       observe_runtime_jit_memory(*runtime);
     }
@@ -6139,6 +5986,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
       const auto &peak_source = concurrent_live_peak.by_source[source_index];
       const auto &upper_bound_source =
           per_runtime_peak_sum_upper_bound.by_source[source_index];
+      const auto used = source == JitPrecompileSource::DemandProfile
+                            ? std::to_string(profile_avoided_demand_translations)
+                            : std::string{"unavailable"};
       output.line(
           "[perf-jit-queue-source] source=" +
           std::string{jit_precompile_source_name(source)} +
@@ -6196,9 +6046,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   precompile_source_outcomes[source_index]
                       .shared_slab_hits.load(std::memory_order_relaxed)))) +
           " used=" +
-          std::to_string(source == JitPrecompileSource::DemandProfile
-                             ? profile_avoided_demand_translations
-                             : 0U) +
+          used +
           " cancelled=" +
           std::to_string(precompile_source_outcomes[source_index]
                              .cancelled.load(std::memory_order_relaxed)) +
@@ -6209,6 +6057,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
           std::to_string(precompile_source_outcomes[source_index]
                              .failed.load(std::memory_order_relaxed)));
     }
+    output.line(
+        "[perf-jit-observer] runtime-scan-iterations=" +
+        std::to_string(runtime_jit_memory->runtime_scan_iterations) +
+        " stats-samples=" +
+        std::to_string(runtime_jit_memory->stats_samples) +
+        " queue-lock-acquisitions=" +
+        std::to_string(runtime_jit_memory->queue_lock_acquisitions) +
+        " queue-container-scans=0 queue-entry-visits=0");
     output.line(
         "[perf-jit-memory] profile-object-bytes=" +
         std::to_string(profile_stats.profile_object_bytes) +
