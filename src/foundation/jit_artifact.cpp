@@ -3198,6 +3198,53 @@ bool JitArtifactStore::save(const std::filesystem::path &path) const noexcept {
   return save_full(path);
 }
 
+bool JitArtifactStore::finalize() const noexcept {
+  const auto finish = [this](bool success) {
+    const std::lock_guard lock{mutex_};
+    if (success) {
+      ++stats_.finalizations;
+    } else {
+      ++stats_.finalization_failures;
+    }
+    return success;
+  };
+  try {
+    if (!limits_.persistence_enabled || persistence_path_.empty()) {
+      return finish(true);
+    }
+    const auto path = persistence_path_;
+    const std::lock_guard persistence_lock{persistence_mutex_};
+    auto file_lock = ArtifactFileLock::acquire(
+        path, ArtifactFileLock::Mode::Exclusive);
+    if (!file_lock) return finish(false);
+    const auto writer_generation = file_lock->generation();
+    if (!writer_generation) return finish(false);
+    std::uint64_t known_generation = 0;
+    {
+      const std::lock_guard lock{mutex_};
+      known_generation = external_writer_generation_;
+    }
+    if (known_generation != *writer_generation) {
+      std::error_code exists_error;
+      const auto cache_exists = std::filesystem::exists(path, exists_error);
+      if (exists_error || (cache_exists && !load_coordinated(path))) {
+        return finish(false);
+      }
+      const std::lock_guard lock{mutex_};
+      external_writer_generation_ = *writer_generation;
+    }
+    const auto next_writer_generation = file_lock->begin_write();
+    if (!next_writer_generation) return finish(false);
+    {
+      const std::lock_guard lock{mutex_};
+      external_writer_generation_ = *next_writer_generation;
+    }
+    return finish(save_full(path));
+  } catch (...) {
+    return finish(false);
+  }
+}
+
 bool JitArtifactStore::save_full(
     const std::filesystem::path &path) const noexcept {
   return save_full(path, {});

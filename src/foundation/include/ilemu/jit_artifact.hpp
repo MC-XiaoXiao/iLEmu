@@ -157,6 +157,8 @@ struct JitArtifactStoreStats {
   std::uint64_t demand_payload_disk_loads{};
   std::uint64_t demand_deserialization_nanoseconds{};
   std::uint64_t initialization_nanoseconds{};
+  std::uint64_t finalizations{};
+  std::uint64_t finalization_failures{};
   std::uint64_t disk_loaded_entries{};
   std::uint64_t evictions{};
   std::uint64_t payload_evictions{};
@@ -226,6 +228,9 @@ public:
   [[nodiscard]] bool load(const std::filesystem::path &path) noexcept;
   [[nodiscard]] bool save() const noexcept;
   [[nodiscard]] bool save(const std::filesystem::path &path) const noexcept;
+  // Force a complete authenticated snapshot. Unlike save(), this never
+  // leaves a newly prepared seed dependent on an append journal.
+  [[nodiscard]] bool finalize() const noexcept;
 
 private:
   struct DiskArtifactRecord {
