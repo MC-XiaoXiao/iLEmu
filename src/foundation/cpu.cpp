@@ -3120,7 +3120,7 @@ private:
                 peak.queue_bucket_bytes_peak, now.queue_bucket_bytes);
             peak.queue_node_bytes_peak = std::max(
                 peak.queue_node_bytes_peak, now.queue_node_bytes);
-                peak.queue_block_bytes_peak = std::max(
+            peak.queue_block_bytes_peak = std::max(
                 peak.queue_block_bytes_peak, now.queue_block_bytes);
         }
         memory_snapshot_.publish(current, memory_peak_);
@@ -3442,6 +3442,11 @@ private:
 
     void promote_cache_full_entries_locked(
         std::optional<JitPrecompileSource> source = std::nullopt) {
+        // Readmission policy is deliberately bounded: ordinary Deferred work
+        // returns only on an explicit profile refresh or re-add, while
+        // CacheFull work returns only after a newer cache-invalidation epoch
+        // and the next scheduler phase query. Profile/image switches instead
+        // quiesce, cancel the old generation, and discard its queues.
         if (deferred_precompile_entries_.empty()) return;
         const auto current_epoch =
             execution_context_->cache_invalidation_epoch();
