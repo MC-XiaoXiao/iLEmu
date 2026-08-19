@@ -5166,8 +5166,24 @@ void boot(const std::vector<std::string> &args, Output &output) {
           guest_deadlines.erase(process_id);
       }
       next_deadline = guest_deadlines.next_deadline();
+      const auto next_host_deadline = next_host_control_deadline();
       std::optional<HostResourceController::Clock::time_point>
           host_compile_deadline;
+      if (realtime_pacer && next_deadline) {
+        const auto delay = realtime_pacer->delay_until(*next_deadline);
+        if (delay > std::chrono::nanoseconds::zero()) {
+          host_compile_deadline = HostResourceController::Clock::now() + delay;
+        }
+      }
+      if (next_host_deadline &&
+          (!host_compile_deadline ||
+           *next_host_deadline < *host_compile_deadline)) {
+        host_compile_deadline = *next_host_deadline;
+      }
+      // Host maintenance remains deadline-aware even when profile warming is
+      // disabled. The profile branch may submit optional compile work, but it
+      // must not own publication of the deadline used by the controller.
+      host_resources.set_next_deadline(host_compile_deadline);
       const auto schedule_artifact_compaction = [&]() {
         if (artifact_compaction_task) {
           if (!artifact_compaction_task->finished()) {
@@ -5261,19 +5277,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
             memory_pressure ? paced_budget / 4U : paced_budget,
             PrecompileScheduleSkip::ZeroBudget};
       };
-      const auto next_host_deadline = next_host_control_deadline();
-      if (realtime_pacer && next_deadline) {
-        const auto delay = realtime_pacer->delay_until(*next_deadline);
-        if (delay > std::chrono::nanoseconds::zero()) {
-          host_compile_deadline = HostResourceController::Clock::now() + delay;
-        }
-      }
-      if (next_host_deadline &&
-          (!host_compile_deadline ||
-           *next_host_deadline < *host_compile_deadline)) {
-        host_compile_deadline = *next_host_deadline;
-      }
-      host_resources.set_next_deadline(host_compile_deadline);
       const auto schedule_precompile_runtime =
           [&](Runtime *runtime, HostWorkKind work_kind,
               JitPrecompileTarget target,
