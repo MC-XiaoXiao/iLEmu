@@ -47,6 +47,9 @@ enum class JitPrecompileSource : std::uint8_t {
     Other,
 };
 
+inline constexpr std::size_t jit_precompile_source_count =
+    static_cast<std::size_t>(JitPrecompileSource::Other) + 1U;
+
 struct JitPrecompileBatchResult {
     std::uint64_t elapsed_nanoseconds{};
     std::uint64_t attempted{};
@@ -63,9 +66,42 @@ struct JitPrecompileBatchResult {
     std::uint64_t deadline_stops{};
 };
 
+// Queue memory is attributed to the source carried by each entry.  The
+// container estimates are explanatory working-set estimates, not allocator
+// or OS RSS measurements.  The *_peak fields are lifecycle peaks for this
+// CpuExecutionPool, not a sum across runtimes.
+struct JitPrecompileSourceMemoryStats {
+    std::size_t queued_entries{};
+    std::size_t pending_entries{};
+    std::size_t inflight_entries{};
+    std::size_t deferred_entries{};
+    std::size_t completed_entries{};
+    std::size_t estimated_queue_entry_bytes{};
+    std::size_t queue_bucket_bytes{};
+    std::size_t queue_node_bytes{};
+    std::size_t queue_block_bytes{};
+    std::size_t queued_entries_peak{};
+    std::size_t pending_entries_peak{};
+    std::size_t inflight_entries_peak{};
+    std::size_t deferred_entries_peak{};
+    std::size_t completed_entries_peak{};
+    std::size_t estimated_queue_entry_bytes_peak{};
+    std::size_t queue_bucket_bytes_peak{};
+    std::size_t queue_node_bytes_peak{};
+    std::size_t queue_block_bytes_peak{};
+};
+
 struct JitPrecompileMemoryStats {
+    // One record for each JitPrecompileSource.  Index with the enum's
+    // underlying value; profile_queue_entries below is retained as a
+    // DemandProfile-only compatibility alias.
+    std::array<JitPrecompileSourceMemoryStats,
+               jit_precompile_source_count>
+        by_source{};
     std::size_t profile_queue_entries{};
     std::size_t profile_queue_capacity_entries{};
+    std::size_t catalog_queue_entries{};
+    std::size_t generic_queue_entries{};
     std::size_t pending_entries{};
     std::size_t inflight_entries{};
     std::size_t deferred_entries{};
@@ -81,6 +117,8 @@ struct JitPrecompileMemoryStats {
     std::size_t profile_recorder_bytes{};
     std::size_t native_preimport_tracker_bytes{};
     std::size_t profile_queue_entries_peak{};
+    std::size_t catalog_queue_entries_peak{};
+    std::size_t generic_queue_entries_peak{};
     std::size_t pending_entries_peak{};
     std::size_t inflight_entries_peak{};
     std::size_t deferred_entries_peak{};

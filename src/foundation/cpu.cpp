@@ -2401,6 +2401,10 @@ public:
         fill_memory_stats_locked(result);
         update_memory_peaks_locked();
         result.profile_queue_entries_peak = memory_peak_.profile_queue_entries_peak;
+        result.catalog_queue_entries_peak =
+            memory_peak_.catalog_queue_entries_peak;
+        result.generic_queue_entries_peak =
+            memory_peak_.generic_queue_entries_peak;
         result.pending_entries_peak = memory_peak_.pending_entries_peak;
         result.inflight_entries_peak = memory_peak_.inflight_entries_peak;
         result.deferred_entries_peak = memory_peak_.deferred_entries_peak;
@@ -2414,6 +2418,21 @@ public:
             memory_peak_.profile_recorder_bytes_peak;
         result.native_preimport_tracker_bytes_peak =
             memory_peak_.native_preimport_tracker_bytes_peak;
+        for (std::size_t source_index = 0;
+             source_index < jit_precompile_source_count; ++source_index) {
+            const auto &peak = memory_peak_.by_source[source_index];
+            auto &current = result.by_source[source_index];
+            current.queued_entries_peak = peak.queued_entries_peak;
+            current.pending_entries_peak = peak.pending_entries_peak;
+            current.inflight_entries_peak = peak.inflight_entries_peak;
+            current.deferred_entries_peak = peak.deferred_entries_peak;
+            current.completed_entries_peak = peak.completed_entries_peak;
+            current.estimated_queue_entry_bytes_peak =
+                peak.estimated_queue_entry_bytes_peak;
+            current.queue_bucket_bytes_peak = peak.queue_bucket_bytes_peak;
+            current.queue_node_bytes_peak = peak.queue_node_bytes_peak;
+            current.queue_block_bytes_peak = peak.queue_block_bytes_peak;
+        }
         return result;
     }
 
@@ -2683,7 +2702,7 @@ private:
     template <typename Container>
     [[nodiscard]] static std::size_t estimate_unordered_buckets(
         const Container &container) noexcept {
-        return container.bucket_count() * sizeof(void *);
+        return container.empty() ? 0U : container.bucket_count() * sizeof(void *);
     }
 
     template <typename Container>
@@ -2697,17 +2716,37 @@ private:
     }
 
     template <typename T>
-    [[nodiscard]] static std::size_t estimate_deque_blocks(
-        const std::deque<T> &container) noexcept {
-        if (container.empty()) return 0U;
+    [[nodiscard]] static std::size_t estimate_deque_blocks_for_count(
+        std::size_t count) noexcept {
+        if (count == 0U) return 0U;
         constexpr auto elements_per_block =
             std::size_t{4096U} / (sizeof(T) == 0U ? 1U : sizeof(T));
         constexpr auto block_elements =
             elements_per_block == 0U ? std::size_t{1U} : elements_per_block;
-        const auto blocks =
-            (container.size() + block_elements - 1U) / block_elements;
+        const auto blocks = (count + block_elements - 1U) / block_elements;
         return blocks * block_elements * sizeof(T) +
                (blocks + 2U) * sizeof(void *);
+    }
+
+    template <typename T>
+    [[nodiscard]] static std::size_t estimate_deque_blocks(
+        const std::deque<T> &container) noexcept {
+        return estimate_deque_blocks_for_count<T>(container.size());
+    }
+
+    template <typename Container>
+    [[nodiscard]] static std::size_t estimate_unordered_buckets_for_count(
+        const Container &container, std::size_t count) noexcept {
+        if (count == 0U || container.size() == 0U) return 0U;
+        const auto bytes = estimate_unordered_buckets(container);
+        return (bytes * count + container.size() - 1U) / container.size();
+    }
+
+    template <typename Container>
+    [[nodiscard]] static std::size_t estimate_unordered_nodes_for_count(
+        std::size_t count) noexcept {
+        return count *
+               (sizeof(typename Container::value_type) + 2U * sizeof(void *));
     }
 
     void fill_memory_stats_locked(JitPrecompileMemoryStats &result) const
@@ -2719,16 +2758,36 @@ private:
         result.native_preimport_tracker_bytes =
             native_preimport_tracker_ ? jit_native_preimport_tracker_object_bytes
                                       : 0U;
-        if (!profile_precompile_enabled_) return;
-        result.profile_queue_entries = profile_queue_entries_;
-        result.profile_queue_capacity_entries =
-            jit_profile_precompile_queue_entry_capacity;
         result.pending_entries = pending_precompile_phases_.size();
         result.inflight_entries = inflight_precompile_entries_.size();
         result.deferred_entries = deferred_precompile_entries_.size();
         result.completed_entries = completed_precompile_entries_.size();
+        result.profile_queue_capacity_entries = profile_precompile_enabled_
+                                                    ? jit_profile_precompile_queue_entry_capacity
+                                                    : 0U;
+        std::array<std::size_t, jit_precompile_source_count> pending_by_source{};
+        std::array<std::size_t, jit_precompile_source_count> inflight_by_source{};
+        std::array<std::size_t, jit_precompile_source_count> deferred_by_source{};
+        std::array<std::size_t, jit_precompile_source_count> completed_by_source{};
+        std::array<std::size_t, jit_precompile_source_count>
+            pending_deque_by_source{};
+        for (const auto &[entry, phase] : pending_precompile_phases_) {
+            static_cast<void>(phase);
+            ++pending_by_source[static_cast<std::size_t>(entry.source)];
+        }
+        for (const auto &entry : inflight_precompile_entries_)
+            ++inflight_by_source[static_cast<std::size_t>(entry.source)];
+        for (const auto &[entry, deferred] : deferred_precompile_entries_) {
+            static_cast<void>(deferred);
+            ++deferred_by_source[static_cast<std::size_t>(entry.source)];
+        }
+        for (const auto &entry : completed_precompile_entries_)
+            ++completed_by_source[static_cast<std::size_t>(entry.source)];
         for (const auto &queue : pending_precompile_entries_) {
             result.queue_block_bytes += estimate_deque_blocks(queue);
+            for (const auto &entry : queue)
+                ++pending_deque_by_source[
+                    static_cast<std::size_t>(entry.source)];
         }
         result.queue_bucket_bytes =
             estimate_unordered_buckets(pending_precompile_phases_) +
@@ -2743,6 +2802,58 @@ private:
         result.estimated_queue_entry_bytes = result.queue_bucket_bytes +
                                              result.queue_node_bytes +
                                              result.queue_block_bytes;
+        for (std::size_t source_index = 0;
+             source_index < jit_precompile_source_count; ++source_index) {
+            auto &source = result.by_source[source_index];
+            source.pending_entries = pending_by_source[source_index];
+            source.inflight_entries = inflight_by_source[source_index];
+            source.deferred_entries = deferred_by_source[source_index];
+            source.completed_entries = completed_by_source[source_index];
+            source.queued_entries = source.pending_entries +
+                                    source.inflight_entries +
+                                    source.deferred_entries;
+            source.queue_block_bytes =
+                estimate_deque_blocks_for_count<PrecompileEntry>(
+                    pending_deque_by_source[source_index]);
+            source.queue_bucket_bytes =
+                estimate_unordered_buckets_for_count(
+                    pending_precompile_phases_, pending_by_source[source_index]) +
+                estimate_unordered_buckets_for_count(
+                    inflight_precompile_entries_,
+                    inflight_by_source[source_index]) +
+                estimate_unordered_buckets_for_count(
+                    deferred_precompile_entries_,
+                    deferred_by_source[source_index]) +
+                estimate_unordered_buckets_for_count(
+                    completed_precompile_entries_,
+                    completed_by_source[source_index]);
+            source.queue_node_bytes =
+                estimate_unordered_nodes_for_count<
+                    decltype(pending_precompile_phases_)>(
+                    pending_by_source[source_index]) +
+                estimate_unordered_nodes_for_count<
+                    decltype(inflight_precompile_entries_)>(
+                    inflight_by_source[source_index]) +
+                estimate_unordered_nodes_for_count<
+                    decltype(deferred_precompile_entries_)>(
+                    deferred_by_source[source_index]) +
+                estimate_unordered_nodes_for_count<
+                    decltype(completed_precompile_entries_)>(
+                    completed_by_source[source_index]);
+            source.estimated_queue_entry_bytes = source.queue_bucket_bytes +
+                                                 source.queue_node_bytes +
+                                                 source.queue_block_bytes;
+        }
+        const auto profile_source = static_cast<std::size_t>(
+            JitPrecompileSource::DemandProfile);
+        const auto catalog_source = static_cast<std::size_t>(
+            JitPrecompileSource::ExecutableCatalog);
+        result.profile_queue_entries =
+            result.by_source[profile_source].queued_entries;
+        result.catalog_queue_entries =
+            result.by_source[catalog_source].queued_entries;
+        for (const auto &source : result.by_source)
+            result.generic_queue_entries += source.queued_entries;
     }
 
     void update_memory_peaks_locked() const noexcept {
@@ -2751,6 +2862,12 @@ private:
         memory_peak_.profile_queue_entries_peak = std::max(
             memory_peak_.profile_queue_entries_peak,
             current.profile_queue_entries);
+        memory_peak_.catalog_queue_entries_peak = std::max(
+            memory_peak_.catalog_queue_entries_peak,
+            current.catalog_queue_entries);
+        memory_peak_.generic_queue_entries_peak = std::max(
+            memory_peak_.generic_queue_entries_peak,
+            current.generic_queue_entries);
         memory_peak_.pending_entries_peak = std::max(
             memory_peak_.pending_entries_peak, current.pending_entries);
         memory_peak_.inflight_entries_peak = std::max(
@@ -2774,6 +2891,30 @@ private:
         memory_peak_.native_preimport_tracker_bytes_peak = std::max(
             memory_peak_.native_preimport_tracker_bytes_peak,
             current.native_preimport_tracker_bytes);
+        for (std::size_t source_index = 0;
+             source_index < jit_precompile_source_count; ++source_index) {
+            const auto &now = current.by_source[source_index];
+            auto &peak = memory_peak_.by_source[source_index];
+            peak.queued_entries_peak = std::max(
+                peak.queued_entries_peak, now.queued_entries);
+            peak.pending_entries_peak = std::max(
+                peak.pending_entries_peak, now.pending_entries);
+            peak.inflight_entries_peak = std::max(
+                peak.inflight_entries_peak, now.inflight_entries);
+            peak.deferred_entries_peak = std::max(
+                peak.deferred_entries_peak, now.deferred_entries);
+            peak.completed_entries_peak = std::max(
+                peak.completed_entries_peak, now.completed_entries);
+            peak.estimated_queue_entry_bytes_peak = std::max(
+                peak.estimated_queue_entry_bytes_peak,
+                now.estimated_queue_entry_bytes);
+            peak.queue_bucket_bytes_peak = std::max(
+                peak.queue_bucket_bytes_peak, now.queue_bucket_bytes);
+            peak.queue_node_bytes_peak = std::max(
+                peak.queue_node_bytes_peak, now.queue_node_bytes);
+            peak.queue_block_bytes_peak = std::max(
+                peak.queue_block_bytes_peak, now.queue_block_bytes);
+        }
     }
 
     enum class PrecompileEnqueueResult : std::uint8_t {
