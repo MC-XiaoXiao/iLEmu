@@ -2290,22 +2290,88 @@ void JitArtifactStore::note_artifact_consumed_locked(
   }
 }
 
+void JitArtifactStore::mark_hotset_dirty_locked() const noexcept {
+  hotset_dirty_ = true;
+  if (hotset_mutation_generation_ !=
+      std::numeric_limits<std::uint64_t>::max()) {
+    ++hotset_mutation_generation_;
+  }
+}
+
+std::optional<JitArtifactStore::HotsetSnapshot>
+JitArtifactStore::hotset_snapshot_locked() const {
+  if (!hotset_dirty_ || disk_snapshot_id_.empty()) return std::nullopt;
+  HotsetSnapshot snapshot;
+  snapshot.snapshot_id = disk_snapshot_id_;
+  snapshot.disk_index_generation = disk_index_generation_;
+  snapshot.benefit_generation = benefit_generation_;
+  snapshot.mutation_generation = hotset_mutation_generation_;
+  snapshot.keys.reserve(disk_artifacts_.size());
+  std::unordered_set<JitArtifactKey, JitArtifactKeyHash> seen;
+  seen.reserve(disk_artifacts_.size());
+  const auto add = [&snapshot, &seen, this](const JitArtifactKey &key) {
+    const auto entry = disk_artifacts_.find(key);
+    if (entry == disk_artifacts_.end() || !entry->second.boot_working_set ||
+        !seen.insert(key).second) {
+      return;
+    }
+    snapshot.keys.push_back(key);
+  };
+  for (const auto *key : disk_order_) add(*key);
+  for (const auto &entry : disk_artifacts_) add(entry.first);
+  std::sort(snapshot.keys.begin(), snapshot.keys.end(),
+            [this](const auto &left, const auto &right) {
+              const auto left_entry = disk_artifacts_.find(left);
+              const auto right_entry = disk_artifacts_.find(right);
+              if (left_entry->second.benefit_hits !=
+                  right_entry->second.benefit_hits) {
+                return left_entry->second.benefit_hits >
+                       right_entry->second.benefit_hits;
+              }
+              if (left_entry->second.translation_nanoseconds !=
+                  right_entry->second.translation_nanoseconds) {
+                return left_entry->second.translation_nanoseconds >
+                       right_entry->second.translation_nanoseconds;
+              }
+              if (left_entry->second.benefit_generation !=
+                  right_entry->second.benefit_generation) {
+                return left_entry->second.benefit_generation >
+                       right_entry->second.benefit_generation;
+              }
+              return key_order_token(left) < key_order_token(right);
+            });
+  if (snapshot.keys.size() > maximum_hotset_entries) {
+    snapshot.keys.resize(maximum_hotset_entries);
+  }
+  return snapshot;
+}
+
 void JitArtifactStore::promote_retention_locked(
     const JitArtifactKey &key, JitArtifactRetention retention) const {
   if (retention != JitArtifactRetention::BootWorkingSet) return;
-  hotset_dirty_ = true;
+  bool changed = false;
   if (const auto disk = disk_artifacts_.find(key);
       disk != disk_artifacts_.end()) {
-    disk->second.boot_working_set = true;
+    if (!disk->second.boot_working_set) {
+      disk->second.boot_working_set = true;
+      changed = true;
+    }
   }
   if (const auto resident = artifacts_.find(key);
       resident != artifacts_.end()) {
-    promote_resident_retention_locked(resident);
+    if (!resident->second.boot_working_set) {
+      promote_resident_retention_locked(resident);
+      changed = true;
+    }
   }
   if (const auto pending = pending_writebacks_.find(key);
       pending != pending_writebacks_.end()) {
-    pending->second.boot_working_set = true;
+    if (!pending->second.boot_working_set) {
+      pending->second.boot_working_set = true;
+      changed = true;
+    }
   }
+  if (changed) mark_hotset_dirty_locked();
 }
 
 void JitArtifactStore::promote_resident_retention_locked(
@@ -2315,7 +2381,6 @@ void JitArtifactStore::promote_resident_retention_locked(
   lru_.splice(lru_.end(), lru_, iterator->second.lru_position);
   iterator->second.lru_position = std::prev(lru_.end());
   iterator->second.boot_working_set = true;
-  hotset_dirty_ = true;
   if (!had_boot_records) {
     boot_lru_begin_ = iterator->second.lru_position;
   }
@@ -2352,8 +2417,10 @@ void JitArtifactStore::insert_locked(
   const auto &key = artifact->key;
   const auto *key_pointer = &key;
   if (const auto existing = artifacts_.find(key); existing != artifacts_.end()) {
-    if (retention == JitArtifactRetention::BootWorkingSet) {
+    if (retention == JitArtifactRetention::BootWorkingSet &&
+        !existing->second.boot_working_set) {
       promote_resident_retention_locked(existing);
+      mark_hotset_dirty_locked();
     }
     touch_locked(existing);
     return;
@@ -2375,7 +2442,7 @@ void JitArtifactStore::insert_locked(
   const bool boot_working_set =
       retention == JitArtifactRetention::BootWorkingSet ||
       (disk != disk_artifacts_.end() && disk->second.boot_working_set);
-  if (boot_working_set) hotset_dirty_ = true;
+  if (boot_working_set) mark_hotset_dirty_locked();
   const bool had_boot_records = boot_lru_begin_ != lru_.end();
   const auto lru_position =
       boot_working_set ? lru_.insert(lru_.end(), key_pointer)
@@ -2585,6 +2652,16 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
                       std::numeric_limits<std::uintmax_t>::max() -
                           result.disk_bytes) {
       result.disk_bytes += append_bytes;
+    } else if (!error) {
+      result.disk_bytes = std::numeric_limits<std::uintmax_t>::max();
+    }
+    error.clear();
+    const auto hotset_bytes =
+        std::filesystem::file_size(hotset_path_for(disk_path), error);
+    if (!error && hotset_bytes <=
+                      std::numeric_limits<std::uintmax_t>::max() -
+                          result.disk_bytes) {
+      result.disk_bytes += hotset_bytes;
     } else if (!error) {
       result.disk_bytes = std::numeric_limits<std::uintmax_t>::max();
     }
@@ -3256,23 +3333,11 @@ bool JitArtifactStore::load_coordinated(
         std::numeric_limits<std::uint64_t>::max() - stats_.index_bytes) {
       stats_.index_bytes += journal.index_bytes;
     }
-    stats_.startup_payloads_prefetched = loaded.size();
     stats_.hotset_candidates = persisted_hotset_order.size();
-    stats_.hotset_selected = loaded.size();
     stats_.hotset_skipped_byte_limit = hotset_skipped_byte_limit;
+    stats_.startup_payloads_prefetched = 0U;
+    stats_.hotset_selected = 0U;
     stats_.startup_prefetch_bytes = 0U;
-    for (const auto &artifact : loaded) {
-      const auto artifact_bytes = serialized_artifact_bytes(artifact->data);
-      if (artifact_bytes &&
-          *artifact_bytes <=
-              std::numeric_limits<std::uint64_t>::max() -
-                  stats_.startup_prefetch_bytes) {
-        stats_.startup_prefetch_bytes += *artifact_bytes;
-      } else if (artifact_bytes) {
-        stats_.startup_prefetch_bytes =
-            std::numeric_limits<std::uint64_t>::max();
-      }
-    }
     for (auto &entry : loaded_index) {
       const auto previous = disk_artifacts_.find(entry.first);
       if (previous != disk_artifacts_.end()) {
@@ -3314,15 +3379,31 @@ bool JitArtifactStore::load_coordinated(
         journal.header_valid ? journal.valid_bytes : 0U;
     disk_append_indexed_ = !journal.header_valid || journal.indexed;
     for (auto &artifact : loaded) {
+      const auto key = artifact->key;
       const auto artifact_bytes = serialized_artifact_bytes(artifact->data);
       if (artifact_bytes) {
         const auto record = disk_artifacts_.find(artifact->key);
+        const auto was_resident = artifacts_.contains(key);
         insert_locked(
             std::move(artifact), *artifact_bytes, true, true,
             record != disk_artifacts_.end() &&
                     record->second.boot_working_set
                 ? JitArtifactRetention::BootWorkingSet
                 : JitArtifactRetention::Normal);
+        const auto resident = artifacts_.find(key);
+        if (!was_resident && resident != artifacts_.end() &&
+            resident->second.startup_prefetched) {
+          ++stats_.startup_payloads_prefetched;
+          ++stats_.hotset_selected;
+          if (*artifact_bytes <=
+              std::numeric_limits<std::uint64_t>::max() -
+                  stats_.startup_prefetch_bytes) {
+            stats_.startup_prefetch_bytes += *artifact_bytes;
+          } else {
+            stats_.startup_prefetch_bytes =
+                std::numeric_limits<std::uint64_t>::max();
+          }
+        }
       }
     }
     hotset_dirty_ = false;
@@ -3457,60 +3538,33 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
     if (journal.header_valid && !journal.indexed) {
       return AppendResult::NotApplicable;
     }
-    if (new_artifacts.empty()) {
-      std::vector<const JitArtifactKey *> hotset_keys;
+    const auto publish_hotset_if_dirty = [&]() -> AppendResult {
+      std::optional<HotsetSnapshot> snapshot;
       {
         const std::lock_guard lock{mutex_};
-        if (hotset_dirty_) {
-          hotset_keys.reserve(std::min<std::size_t>(
-              disk_artifacts_.size(), static_cast<std::size_t>(
-                                         maximum_hotset_entries)));
-          const auto add_hotset_key = [&hotset_keys, this](
-                                          const JitArtifactKey *key) {
-            const auto entry = disk_artifacts_.find(*key);
-            if (entry != disk_artifacts_.end() &&
-                entry->second.boot_working_set &&
-                hotset_keys.size() < maximum_hotset_entries &&
-                std::find_if(hotset_keys.begin(), hotset_keys.end(),
-                             [key](const auto *existing) {
-                               return *existing == *key;
-                             }) == hotset_keys.end()) {
-              hotset_keys.push_back(&entry->first);
-            }
-          };
-          for (const auto *key : disk_order_) add_hotset_key(key);
-          for (const auto &entry : disk_artifacts_) {
-            add_hotset_key(&entry.first);
-          }
-          std::sort(hotset_keys.begin(), hotset_keys.end(),
-                    [this](const auto *left, const auto *right) {
-                      const auto left_entry = disk_artifacts_.find(*left);
-                      const auto right_entry = disk_artifacts_.find(*right);
-                      if (left_entry->second.benefit_hits !=
-                          right_entry->second.benefit_hits) {
-                        return left_entry->second.benefit_hits >
-                               right_entry->second.benefit_hits;
-                      }
-                      if (left_entry->second.translation_nanoseconds !=
-                          right_entry->second.translation_nanoseconds) {
-                        return left_entry->second.translation_nanoseconds >
-                               right_entry->second.translation_nanoseconds;
-                      }
-                      if (left_entry->second.benefit_generation !=
-                          right_entry->second.benefit_generation) {
-                        return left_entry->second.benefit_generation >
-                               right_entry->second.benefit_generation;
-                      }
-                      return key_order_token(*left) < key_order_token(*right);
-                    });
-          if (!write_hotset_file(hotset_path_for(path), hotset_keys,
-                                 disk_snapshot_id_)) {
-            return AppendResult::Failed;
-          }
+        snapshot = hotset_snapshot_locked();
+      }
+      if (!snapshot) return AppendResult::Saved;
+      std::vector<const JitArtifactKey *> keys;
+      keys.reserve(snapshot->keys.size());
+      for (const auto &key : snapshot->keys) keys.push_back(&key);
+      if (!write_hotset_file(hotset_path_for(path), keys,
+                             snapshot->snapshot_id)) {
+        return AppendResult::Failed;
+      }
+      {
+        const std::lock_guard lock{mutex_};
+        if (hotset_mutation_generation_ == snapshot->mutation_generation &&
+            disk_index_generation_ == snapshot->disk_index_generation &&
+            benefit_generation_ == snapshot->benefit_generation &&
+            disk_snapshot_id_ == snapshot->snapshot_id) {
           hotset_dirty_ = false;
         }
       }
       return AppendResult::Saved;
+    };
+    if (new_artifacts.empty()) {
+      return publish_hotset_if_dirty();
     }
 
     if (!journal.header_valid) {
@@ -3615,55 +3669,8 @@ JitArtifactStore::AppendResult JitArtifactStore::append_new_artifacts(
       }
       disk_append_valid_bytes_ = journal_end;
       disk_append_indexed_ = true;
-      if (hotset_dirty_) {
-        std::vector<const JitArtifactKey *> hotset_keys;
-        hotset_keys.reserve(std::min<std::size_t>(
-            disk_artifacts_.size(), static_cast<std::size_t>(
-                                       maximum_hotset_entries)));
-        const auto add_hotset_key = [&hotset_keys, this](
-                                        const JitArtifactKey *key) {
-          const auto entry = disk_artifacts_.find(*key);
-          if (entry != disk_artifacts_.end() &&
-              entry->second.boot_working_set &&
-              hotset_keys.size() < maximum_hotset_entries &&
-              std::find_if(hotset_keys.begin(), hotset_keys.end(),
-                           [key](const auto *existing) {
-                             return *existing == *key;
-                           }) == hotset_keys.end()) {
-            hotset_keys.push_back(&entry->first);
-          }
-        };
-        for (const auto *key : disk_order_) add_hotset_key(key);
-        for (const auto &entry : disk_artifacts_) add_hotset_key(&entry.first);
-        std::sort(hotset_keys.begin(), hotset_keys.end(),
-                  [this](const auto *left, const auto *right) {
-                    const auto left_entry = disk_artifacts_.find(*left);
-                    const auto right_entry = disk_artifacts_.find(*right);
-                    if (left_entry->second.benefit_hits !=
-                        right_entry->second.benefit_hits) {
-                      return left_entry->second.benefit_hits >
-                             right_entry->second.benefit_hits;
-                    }
-                    if (left_entry->second.translation_nanoseconds !=
-                        right_entry->second.translation_nanoseconds) {
-                      return left_entry->second.translation_nanoseconds >
-                             right_entry->second.translation_nanoseconds;
-                    }
-                    if (left_entry->second.benefit_generation !=
-                        right_entry->second.benefit_generation) {
-                      return left_entry->second.benefit_generation >
-                             right_entry->second.benefit_generation;
-                    }
-                    return key_order_token(*left) < key_order_token(*right);
-                  });
-        if (!write_hotset_file(hotset_path_for(path), hotset_keys,
-                               disk_snapshot_id_)) {
-          return AppendResult::Failed;
-        }
-        hotset_dirty_ = false;
-      }
     }
-    return AppendResult::Saved;
+    return publish_hotset_if_dirty();
   } catch (...) {
     return AppendResult::Failed;
   }

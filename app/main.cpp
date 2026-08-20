@@ -2090,6 +2090,25 @@ void firmware_prepare(const std::vector<std::string> &args, Output &output) {
       " disk-bytes=" + std::to_string(stats.artifact_stats.disk_bytes) +
       " disk-hits=" + std::to_string(stats.artifact_stats.disk_hits) +
       " memory-hits=" + std::to_string(stats.artifact_stats.memory_hits) +
+      " lookup-memory-published=" +
+      std::to_string(stats.artifact_stats.memory_published_lookups) +
+      " lookup-disk-demand=" +
+      std::to_string(stats.artifact_stats.disk_demand_lookups) +
+      " lookup-disk-prefetched=" +
+      std::to_string(stats.artifact_stats.disk_prefetched_lookups) +
+      " validation-successes=" +
+      std::to_string(stats.artifact_stats.validation_successes) +
+      " staged=" + std::to_string(stats.artifact_stats.staged) +
+      " native-imported=" +
+      std::to_string(stats.artifact_stats.native_imported) +
+      " already-present=" +
+      std::to_string(stats.artifact_stats.already_present) +
+      " demand-consumed=" +
+      std::to_string(stats.artifact_stats.demand_consumed) +
+      " staged-unused=" +
+      std::to_string(stats.artifact_stats.staged_unused) +
+      " duplicate-consumptions=" +
+      std::to_string(stats.artifact_stats.duplicate_consumptions) +
       " disk-indexed=" +
       std::to_string(stats.artifact_stats.disk_records_indexed) +
       " index-bytes=" + std::to_string(stats.artifact_stats.index_bytes) +
@@ -6151,6 +6170,25 @@ void boot(const std::vector<std::string> &args, Output &output) {
         "[perf-artifact] lookup=" + std::to_string(artifact_stats.lookups) +
         " memory-hit=" + std::to_string(artifact_stats.memory_hits) +
         " disk-hit=" + std::to_string(artifact_stats.disk_hits) +
+        " lookup-memory-published=" +
+        std::to_string(artifact_stats.memory_published_lookups) +
+        " lookup-disk-demand=" +
+        std::to_string(artifact_stats.disk_demand_lookups) +
+        " lookup-disk-prefetched=" +
+        std::to_string(artifact_stats.disk_prefetched_lookups) +
+        " validation-successes=" +
+        std::to_string(artifact_stats.validation_successes) +
+        " staged=" + std::to_string(artifact_stats.staged) +
+        " native-imported=" +
+        std::to_string(artifact_stats.native_imported) +
+        " already-present=" +
+        std::to_string(artifact_stats.already_present) +
+        " demand-consumed=" +
+        std::to_string(artifact_stats.demand_consumed) +
+        " staged-unused=" +
+        std::to_string(artifact_stats.staged_unused) +
+        " duplicate-consumptions=" +
+        std::to_string(artifact_stats.duplicate_consumptions) +
         " disk-retry=" +
         std::to_string(artifact_stats.disk_read_retries) +
         " disk-wait=" + std::to_string(artifact_stats.disk_read_waits) +

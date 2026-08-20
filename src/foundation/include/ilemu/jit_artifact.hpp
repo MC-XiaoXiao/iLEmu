@@ -332,6 +332,13 @@ private:
     bool complete{};
     bool disk_hit{};
   };
+  struct HotsetSnapshot {
+    std::vector<JitArtifactKey> keys;
+    ContentIdentity snapshot_id;
+    std::uint64_t disk_index_generation{};
+    std::uint64_t benefit_generation{};
+    std::uint64_t mutation_generation{};
+  };
   struct JitArtifactKeyPointerHash {
     using is_transparent = void;
     [[nodiscard]] std::size_t operator()(
@@ -386,6 +393,9 @@ private:
       const BlockArtifact *artifact = nullptr) const noexcept;
   void note_artifact_consumed_locked(
       const JitArtifactLookup &lookup) const noexcept;
+  void mark_hotset_dirty_locked() const noexcept;
+  [[nodiscard]] std::optional<HotsetSnapshot>
+  hotset_snapshot_locked() const;
   void promote_retention_locked(
       const JitArtifactKey &key, JitArtifactRetention retention) const;
   void promote_resident_retention_locked(
@@ -445,6 +455,7 @@ private:
   mutable std::uint64_t external_writer_generation_{};
   mutable ContentIdentity disk_snapshot_id_;
   mutable bool hotset_dirty_{};
+  mutable std::uint64_t hotset_mutation_generation_{};
   mutable std::mutex persistence_mutex_;
   mutable std::condition_variable writeback_condition_;
   mutable bool writeback_stopping_{};
