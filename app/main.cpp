@@ -2923,7 +2923,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::shared_ptr<ArtifactCompactionTaskRecord> artifact_compaction_record;
   ArtifactCompactionAdmission artifact_compaction_admission{
       ArtifactCompactionAdmission::Config{
-          std::chrono::milliseconds{2}, std::chrono::milliseconds{250},
+          std::chrono::milliseconds{2}, std::chrono::seconds{15},
           std::chrono::milliseconds{250}}};
   constexpr auto artifact_compaction_deadline_reserve =
       std::chrono::milliseconds{2};
