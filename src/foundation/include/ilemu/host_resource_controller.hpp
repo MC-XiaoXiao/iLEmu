@@ -87,6 +87,58 @@ private:
   std::chrono::steady_clock::time_point next_store_probe_{};
 };
 
+enum class ArtifactCompactionTaskState : std::uint8_t {
+  Queued,
+  Running,
+  Completed,
+  CancelledBeforeStart,
+  CancelledInProgress,
+  Failed,
+};
+
+class ArtifactCompactionTaskRecord {
+public:
+  ArtifactCompactionTaskRecord(std::uint64_t id,
+                               std::uint64_t admitted_nanoseconds) noexcept
+      : id_{id}, admitted_nanoseconds_{admitted_nanoseconds} {}
+
+  [[nodiscard]] bool mark_running(
+      std::uint64_t started_nanoseconds) noexcept;
+  [[nodiscard]] bool request_cancellation(
+      std::uint64_t requested_nanoseconds) noexcept;
+  [[nodiscard]] bool publish_terminal(
+      ArtifactCompactionTaskState terminal,
+      std::uint64_t terminal_nanoseconds) noexcept;
+
+  [[nodiscard]] std::uint64_t id() const noexcept { return id_; }
+  [[nodiscard]] std::uint64_t admitted_nanoseconds() const noexcept {
+    return admitted_nanoseconds_;
+  }
+  [[nodiscard]] std::uint64_t started_nanoseconds() const noexcept {
+    return started_nanoseconds_.load(std::memory_order_acquire);
+  }
+  [[nodiscard]] std::uint64_t cancellation_requested_nanoseconds() const
+      noexcept {
+    return cancellation_requested_nanoseconds_.load(
+        std::memory_order_acquire);
+  }
+  [[nodiscard]] std::uint64_t terminal_nanoseconds() const noexcept {
+    return terminal_nanoseconds_.load(std::memory_order_acquire);
+  }
+  [[nodiscard]] ArtifactCompactionTaskState state() const noexcept {
+    return state_.load(std::memory_order_acquire);
+  }
+
+private:
+  std::uint64_t id_{};
+  std::uint64_t admitted_nanoseconds_{};
+  std::atomic<std::uint64_t> started_nanoseconds_{};
+  std::atomic<std::uint64_t> cancellation_requested_nanoseconds_{};
+  std::atomic<std::uint64_t> terminal_nanoseconds_{};
+  std::atomic<ArtifactCompactionTaskState> state_{
+      ArtifactCompactionTaskState::Queued};
+};
+
 class HostWorkToken {
 public:
   void cancel() noexcept { cancelled_.store(true, std::memory_order_release); }

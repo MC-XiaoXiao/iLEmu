@@ -2920,9 +2920,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   auto jit_artifacts = std::make_shared<JitArtifactStore>(
       host_cache / "jit-artifacts.bin", jit_artifact_limits);
   std::shared_ptr<HostWorkToken> artifact_compaction_task;
-  std::uint64_t artifact_compaction_generation{};
-  std::optional<std::chrono::steady_clock::time_point>
-      artifact_compaction_admitted_at;
+  std::shared_ptr<ArtifactCompactionTaskRecord> artifact_compaction_record;
   ArtifactCompactionAdmission artifact_compaction_admission{
       ArtifactCompactionAdmission::Config{
           std::chrono::milliseconds{2}, std::chrono::milliseconds{250},
@@ -2930,15 +2928,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
   constexpr auto artifact_compaction_deadline_reserve =
       std::chrono::milliseconds{2};
   struct ArtifactCompactionTelemetry {
-    std::atomic<std::uint64_t> next_generation{1U};
+    std::atomic<std::uint64_t> next_task_id{1U};
     std::atomic<std::uint64_t> admitted{};
     std::atomic<std::uint64_t> rejected{};
     std::atomic<std::uint64_t> cancellation_requests{};
-    std::atomic<std::uint64_t> cancellations_observed{};
     std::atomic<std::uint64_t> completed{};
+    std::atomic<std::uint64_t> cancelled_before_start{};
+    std::atomic<std::uint64_t> cancelled_in_progress{};
     std::atomic<std::uint64_t> failures{};
-    std::atomic<std::uint64_t> total_duration_nanoseconds{};
-    std::atomic<std::uint64_t> max_single_task_duration_nanoseconds{};
+    std::atomic<std::uint64_t> outstanding{};
+    std::atomic<std::uint64_t> worker_execution_count{};
+    std::atomic<std::uint64_t> worker_execution_total_nanoseconds{};
+    std::atomic<std::uint64_t> worker_execution_max_nanoseconds{};
+    std::atomic<std::uint64_t> lifecycle_count{};
+    std::atomic<std::uint64_t> lifecycle_total_nanoseconds{};
+    std::atomic<std::uint64_t> lifecycle_max_nanoseconds{};
+    std::atomic<std::uint64_t> cancellation_observed_count{};
     std::atomic<std::uint64_t> cancellation_request_to_observed_nanoseconds{};
     std::atomic<std::uint64_t> cancellation_request_to_observed_max_nanoseconds{};
     std::atomic<std::uint64_t> bytes_before_cancel{};
@@ -2947,9 +2952,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
     std::atomic<std::uint64_t> temporary_cleanup_succeeded{};
     std::atomic<std::uint64_t> temporary_cleanup_failed{};
     std::atomic<std::uint64_t> temporary_residue_found{};
-    std::atomic<std::uint64_t> observed_generation{};
-    std::atomic<std::uint64_t> last_cancellation_request_generation{};
-    std::atomic<std::uint64_t> last_cancellation_request_nanoseconds{};
   } artifact_compaction_telemetry;
   const auto atomic_max = [](std::atomic<std::uint64_t> &target,
                              std::uint64_t value) {
@@ -2960,41 +2962,85 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                           std::memory_order_relaxed)) {
     }
   };
-  const auto observe_compaction_duration =
+  const auto steady_nanoseconds = [] {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+  };
+  const auto observe_compaction_execution =
       [&artifact_compaction_telemetry, &atomic_max](std::uint64_t elapsed) {
-        artifact_compaction_telemetry.total_duration_nanoseconds.fetch_add(
-            elapsed, std::memory_order_relaxed);
-        atomic_max(artifact_compaction_telemetry
-                       .max_single_task_duration_nanoseconds,
-                   elapsed);
+        artifact_compaction_telemetry.worker_execution_count.fetch_add(
+            1U, std::memory_order_relaxed);
+        artifact_compaction_telemetry.worker_execution_total_nanoseconds
+            .fetch_add(elapsed, std::memory_order_relaxed);
+        atomic_max(
+            artifact_compaction_telemetry.worker_execution_max_nanoseconds,
+            elapsed);
       };
-  const auto observe_compaction_cancellation =
+  const auto observe_compaction_terminal =
       [&artifact_compaction_telemetry, &atomic_max](
-          std::uint64_t generation, std::uint64_t observed,
+          const ArtifactCompactionTaskRecord &record,
+          ArtifactCompactionTaskState terminal, std::uint64_t terminal_time,
+          std::uint64_t cancellation_observed,
           std::uint64_t bytes_before_cancel,
-          std::uint64_t records_before_cancel) {
-        auto expected = std::uint64_t{};
-        if (!artifact_compaction_telemetry.observed_generation
-                 .compare_exchange_strong(expected, generation,
-                                          std::memory_order_acq_rel,
-                                          std::memory_order_relaxed)) {
+          std::uint64_t records_before_cancel,
+          std::uint64_t cleanup_attempted,
+          std::uint64_t cleanup_succeeded,
+          std::uint64_t cleanup_failed,
+          std::uint64_t cleanup_residue) {
+        switch (terminal) {
+        case ArtifactCompactionTaskState::Completed:
+          artifact_compaction_telemetry.completed.fetch_add(
+              1U, std::memory_order_relaxed);
+          break;
+        case ArtifactCompactionTaskState::CancelledBeforeStart:
+          artifact_compaction_telemetry.cancelled_before_start.fetch_add(
+              1U, std::memory_order_relaxed);
+          break;
+        case ArtifactCompactionTaskState::CancelledInProgress:
+          artifact_compaction_telemetry.cancelled_in_progress.fetch_add(
+              1U, std::memory_order_relaxed);
+          break;
+        case ArtifactCompactionTaskState::Failed:
+          artifact_compaction_telemetry.failures.fetch_add(
+              1U, std::memory_order_relaxed);
+          break;
+        case ArtifactCompactionTaskState::Queued:
+        case ArtifactCompactionTaskState::Running:
           return;
         }
-        artifact_compaction_telemetry.cancellations_observed.fetch_add(
+        artifact_compaction_telemetry.outstanding.fetch_sub(
             1U, std::memory_order_relaxed);
+        const auto lifecycle = terminal_time >= record.admitted_nanoseconds()
+                                   ? terminal_time -
+                                         record.admitted_nanoseconds()
+                                   : 0U;
+        artifact_compaction_telemetry.lifecycle_count.fetch_add(
+            1U, std::memory_order_relaxed);
+        artifact_compaction_telemetry.lifecycle_total_nanoseconds.fetch_add(
+            lifecycle, std::memory_order_relaxed);
+        atomic_max(artifact_compaction_telemetry.lifecycle_max_nanoseconds,
+                   lifecycle);
         artifact_compaction_telemetry.bytes_before_cancel.fetch_add(
             bytes_before_cancel, std::memory_order_relaxed);
         artifact_compaction_telemetry.records_before_cancel.fetch_add(
             records_before_cancel, std::memory_order_relaxed);
-        const auto requested_generation =
-            artifact_compaction_telemetry.last_cancellation_request_generation
-                .load(std::memory_order_acquire);
-        const auto requested = artifact_compaction_telemetry
-                                   .last_cancellation_request_nanoseconds
-                                   .load(std::memory_order_acquire);
-        if (requested_generation == generation && requested != 0U &&
-            observed >= requested) {
-          const auto elapsed = observed - requested;
+        artifact_compaction_telemetry.temporary_cleanup_attempted.fetch_add(
+            cleanup_attempted, std::memory_order_relaxed);
+        artifact_compaction_telemetry.temporary_cleanup_succeeded.fetch_add(
+            cleanup_succeeded, std::memory_order_relaxed);
+        artifact_compaction_telemetry.temporary_cleanup_failed.fetch_add(
+            cleanup_failed, std::memory_order_relaxed);
+        artifact_compaction_telemetry.temporary_residue_found.fetch_add(
+            cleanup_residue, std::memory_order_relaxed);
+        const auto requested = record.cancellation_requested_nanoseconds();
+        if ((terminal == ArtifactCompactionTaskState::CancelledBeforeStart ||
+             terminal == ArtifactCompactionTaskState::CancelledInProgress) &&
+            requested != 0U && cancellation_observed >= requested) {
+          const auto elapsed = cancellation_observed - requested;
+          artifact_compaction_telemetry.cancellation_observed_count.fetch_add(
+              1U, std::memory_order_relaxed);
           artifact_compaction_telemetry
               .cancellation_request_to_observed_nanoseconds.fetch_add(
                   elapsed, std::memory_order_relaxed);
@@ -5382,47 +5428,36 @@ void boot(const std::vector<std::string> &args, Output &output) {
                     admission_snapshot, true) ==
                 ArtifactCompactionAdmissionDecision::CancelActive) {
               if (!artifact_compaction_task->cancelled()) {
-                const auto requested = static_cast<std::uint64_t>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        std::chrono::steady_clock::now().time_since_epoch())
-                        .count());
-                artifact_compaction_telemetry
-                    .last_cancellation_request_generation.store(
-                        artifact_compaction_generation,
-                        std::memory_order_release);
-                artifact_compaction_telemetry
-                    .last_cancellation_request_nanoseconds.store(
-                        requested, std::memory_order_release);
-                artifact_compaction_task->cancel();
-                artifact_compaction_admission.note_cancellation_request(now);
-                artifact_compaction_telemetry.cancellation_requests.fetch_add(
-                    1U, std::memory_order_relaxed);
+                const auto requested = steady_nanoseconds();
+                if (artifact_compaction_record &&
+                    artifact_compaction_record->request_cancellation(
+                        requested)) {
+                  artifact_compaction_task->cancel();
+                  artifact_compaction_admission.note_cancellation_request(now);
+                  artifact_compaction_telemetry.cancellation_requests.fetch_add(
+                      1U, std::memory_order_relaxed);
+                }
               }
               host_resources.wake();
             }
             return;
           }
-          if (artifact_compaction_task->cancelled()) {
-            const auto observed = static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now().time_since_epoch())
-                    .count());
-            observe_compaction_cancellation(
-                artifact_compaction_generation, observed, 0U, 0U);
-          }
-          if (artifact_compaction_admitted_at) {
-            const auto elapsed = static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::steady_clock::now() -
-                    *artifact_compaction_admitted_at)
-                    .count());
-            atomic_max(artifact_compaction_telemetry
-                           .max_single_task_duration_nanoseconds,
-                       elapsed);
+          if (artifact_compaction_record &&
+              artifact_compaction_record->state() ==
+                  ArtifactCompactionTaskState::Queued &&
+              artifact_compaction_task->cancelled()) {
+            const auto terminal_time = steady_nanoseconds();
+            if (artifact_compaction_record->publish_terminal(
+                    ArtifactCompactionTaskState::CancelledBeforeStart,
+                    terminal_time)) {
+              observe_compaction_terminal(
+                  *artifact_compaction_record,
+                  ArtifactCompactionTaskState::CancelledBeforeStart,
+                  terminal_time, terminal_time, 0U, 0U, 0U, 0U, 0U, 0U);
+            }
           }
           artifact_compaction_task.reset();
-          artifact_compaction_generation = 0U;
-          artifact_compaction_admitted_at.reset();
+          artifact_compaction_record.reset();
           artifact_compaction_admission.note_task_terminal(now);
         }
         if (artifact_compaction_admission.observe(
@@ -5435,15 +5470,23 @@ void boot(const std::vector<std::string> &args, Output &output) {
           artifact_compaction_admission.note_store_probe_miss(now);
           return;
         }
-        const auto task_generation = artifact_compaction_telemetry
-                                         .next_generation.fetch_add(
-                                             1U, std::memory_order_relaxed);
+        const auto task_id = artifact_compaction_telemetry.next_task_id.fetch_add(
+            1U, std::memory_order_relaxed);
+        const auto task_record =
+            std::make_shared<ArtifactCompactionTaskRecord>(
+                task_id, steady_nanoseconds());
+        artifact_compaction_telemetry.admitted.fetch_add(
+            1U, std::memory_order_relaxed);
+        artifact_compaction_telemetry.outstanding.fetch_add(
+            1U, std::memory_order_relaxed);
         const auto task = host_resources.submit_cancellable(
             HostWorkKind::ArtifactCompaction, host_compile_deadline,
             [jit_artifacts, &artifact_compaction_telemetry,
-             &observe_compaction_duration, &observe_compaction_cancellation,
-             task_generation](const HostWorkToken &token) {
+             &observe_compaction_execution, &observe_compaction_terminal,
+             &steady_nanoseconds, task_record](const HostWorkToken &token) {
               const auto started = std::chrono::steady_clock::now();
+              const auto started_nanoseconds = steady_nanoseconds();
+              if (!task_record->mark_running(started_nanoseconds)) return;
               const auto result = jit_artifacts->compact_with_result([&token] {
                 return token.cancelled();
               });
@@ -5451,52 +5494,38 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   std::chrono::duration_cast<std::chrono::nanoseconds>(
                       std::chrono::steady_clock::now() - started)
                       .count());
-              observe_compaction_duration(elapsed);
-              if (result.temporary_cleanup_attempted) {
-                artifact_compaction_telemetry.temporary_cleanup_attempted.fetch_add(
-                    1U, std::memory_order_relaxed);
-              }
-              if (result.temporary_cleanup_succeeded) {
-                artifact_compaction_telemetry.temporary_cleanup_succeeded.fetch_add(
-                    1U, std::memory_order_relaxed);
-              }
-              if (result.temporary_cleanup_failed) {
-                artifact_compaction_telemetry.temporary_cleanup_failed.fetch_add(
-                    1U, std::memory_order_relaxed);
-              }
-              if (result.temporary_residue_found) {
-                artifact_compaction_telemetry.temporary_residue_found.fetch_add(
-                    1U, std::memory_order_relaxed);
-              }
-              if (result.cancelled) {
-                const auto observed = static_cast<std::uint64_t>(
+              observe_compaction_execution(elapsed);
+              const auto terminal_time = steady_nanoseconds();
+              const auto terminal =
+                  result.cancelled
+                      ? ArtifactCompactionTaskState::CancelledInProgress
+                      : (result.completed
+                             ? ArtifactCompactionTaskState::Completed
+                             : ArtifactCompactionTaskState::Failed);
+              if (task_record->publish_terminal(terminal, terminal_time)) {
+                const auto cancellation_observed =
                     result.first_cancellation_observed_nanoseconds != 0U
                         ? result.first_cancellation_observed_nanoseconds
-                        : static_cast<std::uint64_t>(
-                              std::chrono::duration_cast<
-                                  std::chrono::nanoseconds>(
-                                  std::chrono::steady_clock::now()
-                                      .time_since_epoch())
-                                  .count()));
-                observe_compaction_cancellation(
-                    task_generation, observed, result.bytes_before_cancel,
-                    result.records_before_cancel);
-              } else if (result.completed) {
-                artifact_compaction_telemetry.completed.fetch_add(
-                    1U, std::memory_order_relaxed);
-              } else {
-                artifact_compaction_telemetry.failures.fetch_add(
-                    1U, std::memory_order_relaxed);
+                        : terminal_time;
+                observe_compaction_terminal(
+                    *task_record, terminal, terminal_time,
+                    cancellation_observed, result.bytes_before_cancel,
+                    result.records_before_cancel,
+                    result.temporary_cleanup_attempts,
+                    result.temporary_cleanup_successes,
+                    result.temporary_cleanup_failures,
+                    result.temporary_residues);
               }
             },
             artifact_compaction_deadline_reserve);
         if (task) {
           artifact_compaction_task = task;
-          artifact_compaction_generation = task_generation;
-          artifact_compaction_admitted_at = std::chrono::steady_clock::now();
-          artifact_compaction_telemetry.admitted.fetch_add(
-              1U, std::memory_order_relaxed);
+          artifact_compaction_record = task_record;
         } else {
+          artifact_compaction_telemetry.admitted.fetch_sub(
+              1U, std::memory_order_relaxed);
+          artifact_compaction_telemetry.outstanding.fetch_sub(
+              1U, std::memory_order_relaxed);
           artifact_compaction_admission.note_submission_rejected(now);
           artifact_compaction_telemetry.rejected.fetch_add(
               1U, std::memory_order_relaxed);
@@ -5959,6 +5988,39 @@ void boot(const std::vector<std::string> &args, Output &output) {
       host_resources,
       *initial_runtime->kernel->guest_file_generation_registry(), 0, false));
   host_resources.wait_idle();
+  if (artifact_compaction_task && artifact_compaction_record &&
+      artifact_compaction_record->state() ==
+          ArtifactCompactionTaskState::Queued &&
+      artifact_compaction_task->cancelled()) {
+    const auto terminal_time = steady_nanoseconds();
+    if (artifact_compaction_record->publish_terminal(
+            ArtifactCompactionTaskState::CancelledBeforeStart,
+            terminal_time)) {
+      observe_compaction_terminal(
+          *artifact_compaction_record,
+          ArtifactCompactionTaskState::CancelledBeforeStart, terminal_time,
+          terminal_time, 0U, 0U, 0U, 0U, 0U, 0U);
+    }
+  }
+  artifact_compaction_task.reset();
+  artifact_compaction_record.reset();
+  const auto compaction_terminal_count =
+      artifact_compaction_telemetry.completed.load(std::memory_order_relaxed) +
+      artifact_compaction_telemetry.cancelled_before_start.load(
+          std::memory_order_relaxed) +
+      artifact_compaction_telemetry.cancelled_in_progress.load(
+          std::memory_order_relaxed) +
+      artifact_compaction_telemetry.failures.load(std::memory_order_relaxed);
+  const auto compaction_admitted =
+      artifact_compaction_telemetry.admitted.load(std::memory_order_relaxed);
+  const auto compaction_outstanding =
+      artifact_compaction_telemetry.outstanding.load(
+          std::memory_order_relaxed);
+  if (compaction_admitted != compaction_terminal_count ||
+      compaction_outstanding != 0U) {
+    throw std::runtime_error{
+        "artifact compaction terminal accounting invariant failed"};
+  }
   if (report_performance) {
     stopped_guest = performance_counters().snapshot();
     file_cache_stats = initial_runtime->memory->file_page_cache_stats();
@@ -5988,21 +6050,60 @@ void boot(const std::vector<std::string> &args, Output &output) {
       std::to_string(artifact_compaction_telemetry.cancellation_requests.load(
           std::memory_order_relaxed)) +
       " artifact-compaction-cancelled=" +
-      std::to_string(artifact_compaction_telemetry.cancellations_observed.load(
-          std::memory_order_relaxed)) +
+      std::to_string(
+          artifact_compaction_telemetry.cancelled_before_start.load(
+              std::memory_order_relaxed) +
+          artifact_compaction_telemetry.cancelled_in_progress.load(
+              std::memory_order_relaxed)) +
+      " artifact-compaction-cancelled-before-start=" +
+      std::to_string(
+          artifact_compaction_telemetry.cancelled_before_start.load(
+              std::memory_order_relaxed)) +
+      " artifact-compaction-cancelled-in-progress=" +
+      std::to_string(
+          artifact_compaction_telemetry.cancelled_in_progress.load(
+              std::memory_order_relaxed)) +
       " artifact-compaction-completed=" +
       std::to_string(artifact_compaction_telemetry.completed.load(
           std::memory_order_relaxed)) +
       " artifact-compaction-failures=" +
       std::to_string(artifact_compaction_telemetry.failures.load(
           std::memory_order_relaxed)) +
-      " artifact-compaction-total-duration-ns=" +
-      std::to_string(artifact_compaction_telemetry.total_duration_nanoseconds
-                         .load(std::memory_order_relaxed)) +
-      " artifact-compaction-max-single-task-duration-ns=" +
+      " artifact-compaction-outstanding=" +
+      std::to_string(artifact_compaction_telemetry.outstanding.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-terminal-conserved=" +
+      std::to_string(compaction_admitted == compaction_terminal_count &&
+                             compaction_outstanding == 0U
+                         ? 1U
+                         : 0U) +
+      " artifact-compaction-worker-execution-count=" +
+      std::to_string(
+          artifact_compaction_telemetry.worker_execution_count.load(
+              std::memory_order_relaxed)) +
+      " artifact-compaction-worker-execution-total-ns=" +
       std::to_string(artifact_compaction_telemetry
-                         .max_single_task_duration_nanoseconds.load(
+                         .worker_execution_total_nanoseconds.load(
                              std::memory_order_relaxed)) +
+      " artifact-compaction-worker-execution-max-ns=" +
+      std::to_string(artifact_compaction_telemetry
+                         .worker_execution_max_nanoseconds.load(
+                             std::memory_order_relaxed)) +
+      " artifact-compaction-lifecycle-count=" +
+      std::to_string(artifact_compaction_telemetry.lifecycle_count.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-lifecycle-total-ns=" +
+      std::to_string(artifact_compaction_telemetry
+                         .lifecycle_total_nanoseconds.load(
+                             std::memory_order_relaxed)) +
+      " artifact-compaction-lifecycle-max-ns=" +
+      std::to_string(artifact_compaction_telemetry
+                         .lifecycle_max_nanoseconds.load(
+                             std::memory_order_relaxed)) +
+      " artifact-compaction-cancel-observed-count=" +
+      std::to_string(
+          artifact_compaction_telemetry.cancellation_observed_count.load(
+              std::memory_order_relaxed)) +
       " artifact-compaction-cancel-request-to-observed-ns=" +
       std::to_string(
           artifact_compaction_telemetry

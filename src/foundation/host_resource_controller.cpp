@@ -123,6 +123,55 @@ void ArtifactCompactionAdmission::note_task_terminal(
   next_store_probe_ = now + config_.negative_probe_interval;
 }
 
+bool ArtifactCompactionTaskRecord::mark_running(
+    std::uint64_t started_nanoseconds) noexcept {
+  auto expected = ArtifactCompactionTaskState::Queued;
+  if (!state_.compare_exchange_strong(
+          expected, ArtifactCompactionTaskState::Running,
+          std::memory_order_acq_rel, std::memory_order_acquire)) {
+    return false;
+  }
+  started_nanoseconds_.store(started_nanoseconds,
+                             std::memory_order_release);
+  return true;
+}
+
+bool ArtifactCompactionTaskRecord::request_cancellation(
+    std::uint64_t requested_nanoseconds) noexcept {
+  const auto state = state_.load(std::memory_order_acquire);
+  if (state != ArtifactCompactionTaskState::Queued &&
+      state != ArtifactCompactionTaskState::Running) {
+    return false;
+  }
+  auto expected = std::uint64_t{};
+  return cancellation_requested_nanoseconds_.compare_exchange_strong(
+      expected, requested_nanoseconds, std::memory_order_acq_rel,
+      std::memory_order_acquire);
+}
+
+bool ArtifactCompactionTaskRecord::publish_terminal(
+    ArtifactCompactionTaskState terminal,
+    std::uint64_t terminal_nanoseconds) noexcept {
+  const auto before_start =
+      terminal == ArtifactCompactionTaskState::CancelledBeforeStart;
+  if (terminal != ArtifactCompactionTaskState::Completed &&
+      terminal != ArtifactCompactionTaskState::CancelledBeforeStart &&
+      terminal != ArtifactCompactionTaskState::CancelledInProgress &&
+      terminal != ArtifactCompactionTaskState::Failed) {
+    return false;
+  }
+  auto expected = before_start ? ArtifactCompactionTaskState::Queued
+                               : ArtifactCompactionTaskState::Running;
+  if (!state_.compare_exchange_strong(expected, terminal,
+                                      std::memory_order_acq_rel,
+                                      std::memory_order_acquire)) {
+    return false;
+  }
+  terminal_nanoseconds_.store(terminal_nanoseconds,
+                              std::memory_order_release);
+  return true;
+}
+
 void HostWorkToken::wait_finished() const {
   if (finished()) return;
   std::unique_lock lock{finished_mutex_};

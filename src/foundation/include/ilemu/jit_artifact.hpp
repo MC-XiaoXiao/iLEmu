@@ -279,6 +279,10 @@ struct JitArtifactCompactionResult {
   bool temporary_cleanup_succeeded{};
   bool temporary_cleanup_failed{};
   bool temporary_residue_found{};
+  std::uint64_t temporary_cleanup_attempts{};
+  std::uint64_t temporary_cleanup_successes{};
+  std::uint64_t temporary_cleanup_failures{};
+  std::uint64_t temporary_residues{};
   std::uint64_t first_cancellation_observed_nanoseconds{};
   std::uint64_t bytes_before_cancel{};
   std::uint64_t records_before_cancel{};

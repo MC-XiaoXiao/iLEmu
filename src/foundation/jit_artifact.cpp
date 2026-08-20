@@ -1796,12 +1796,16 @@ public:
   TemporaryPathCleanup &operator=(const TemporaryPathCleanup &) = delete;
   ~TemporaryPathCleanup() {
     if (path_.empty()) return;
-    if (result_ != nullptr) result_->temporary_cleanup_attempted = true;
+    if (result_ != nullptr) {
+      result_->temporary_cleanup_attempted = true;
+      ++result_->temporary_cleanup_attempts;
+    }
     std::error_code error;
     std::filesystem::remove(path_, error);
     if (result_ == nullptr) return;
     if (error) {
       result_->temporary_cleanup_failed = true;
+      ++result_->temporary_cleanup_failures;
       result_->temporary_cleanup = false;
       return;
     }
@@ -1810,10 +1814,13 @@ public:
     if (residue_error || residue) {
       result_->temporary_residue_found = true;
       result_->temporary_cleanup_failed = true;
+      ++result_->temporary_residues;
+      ++result_->temporary_cleanup_failures;
       result_->temporary_cleanup = false;
       return;
     }
     result_->temporary_cleanup_succeeded = true;
+    ++result_->temporary_cleanup_successes;
     result_->temporary_cleanup = true;
   }
 
