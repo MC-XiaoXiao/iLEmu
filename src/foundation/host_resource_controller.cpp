@@ -254,6 +254,11 @@ std::size_t HostResourceController::active() const {
   return static_cast<std::size_t>(active_tasks_);
 }
 
+bool HostResourceController::accepting_work() const {
+  const std::lock_guard lock{mutex_};
+  return !stopping_ && !workers_.empty();
+}
+
 std::uint64_t HostResourceController::completed() const {
   const std::lock_guard lock{mutex_};
   return completed_;

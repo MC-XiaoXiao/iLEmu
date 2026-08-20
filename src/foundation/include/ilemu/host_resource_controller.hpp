@@ -150,6 +150,7 @@ public:
 
   [[nodiscard]] std::size_t queued() const;
   [[nodiscard]] std::size_t active() const;
+  [[nodiscard]] bool accepting_work() const;
   [[nodiscard]] std::uint64_t completed() const;
   [[nodiscard]] std::uint64_t rejected() const;
 

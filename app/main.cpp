@@ -5364,10 +5364,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
             (touch_replay && touch_replay->next_deadline().has_value()) ||
             live_button_scheduler.next_deadline().has_value() ||
             live_touch_scheduler.next_deadline().has_value();
-        const auto task_pending = artifact_compaction_task &&
-                                  !artifact_compaction_task->finished();
-        const auto controller_work =
-            host_resources.queued() + host_resources.active();
         const ArtifactCompactionAdmissionSnapshot admission_snapshot{
             now,
             scheduler.runnable_count(),
@@ -5376,7 +5372,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 *host_compile_deadline <=
                     now + artifact_compaction_deadline_reserve,
             host_memory_is_pressured(latest_host_memory_budget),
-            controller_work <= (task_pending ? 1U : 0U)};
+            host_resources.accepting_work()};
         if (artifact_compaction_task) {
           if (!artifact_compaction_task->finished()) {
             if (artifact_compaction_admission.observe(
