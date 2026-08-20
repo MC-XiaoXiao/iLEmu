@@ -38,9 +38,11 @@ struct ContentIdentityHash {
 [[nodiscard]] ContentIdentity sha256(std::span<const std::byte> bytes);
 [[nodiscard]] std::optional<ContentIdentity> sha256_file(
     int descriptor, std::uint64_t file_offset = 0,
-    std::optional<std::uint64_t> byte_count = std::nullopt);
+    std::optional<std::uint64_t> byte_count = std::nullopt,
+    const std::function<bool()> &cancellation_check = {});
 [[nodiscard]] std::optional<ContentIdentity> sha256_file(
     const std::filesystem::path &path, std::uint64_t file_offset = 0,
-    std::optional<std::uint64_t> byte_count = std::nullopt);
+    std::optional<std::uint64_t> byte_count = std::nullopt,
+    const std::function<bool()> &cancellation_check = {});
 
 } // namespace ilemu

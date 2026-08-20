@@ -398,7 +398,8 @@ ContentIdentity sha256(std::span<const std::byte> bytes) {
 
 std::optional<ContentIdentity> sha256_file(
     int descriptor, std::uint64_t file_offset,
-    std::optional<std::uint64_t> byte_count) {
+    std::optional<std::uint64_t> byte_count,
+    const std::function<bool()> &cancellation_check) {
   if (descriptor < 0 ||
       file_offset >
           static_cast<std::uint64_t>(std::numeric_limits<off_t>::max())) {
@@ -410,6 +411,7 @@ std::optional<ContentIdentity> sha256_file(
   std::uint64_t current_offset = file_offset;
   auto remaining = byte_count;
   while (!remaining || *remaining != 0U) {
+    if (cancellation_check && cancellation_check()) return std::nullopt;
     const auto requested = remaining
                                ? std::min<std::uint64_t>(
                                      *remaining, buffer.size())
@@ -440,7 +442,8 @@ std::optional<ContentIdentity> sha256_file(
 
 std::optional<ContentIdentity> sha256_file(
     const std::filesystem::path &path, std::uint64_t file_offset,
-    std::optional<std::uint64_t> byte_count) {
+    std::optional<std::uint64_t> byte_count,
+    const std::function<bool()> &cancellation_check) {
   std::ifstream input{path, std::ios::binary};
   if (!input) return std::nullopt;
   if (file_offset >
@@ -454,6 +457,7 @@ std::optional<ContentIdentity> sha256_file(
   std::array<char, 64U * 1024U> buffer{};
   auto remaining = byte_count;
   while (!remaining || *remaining != 0U) {
+    if (cancellation_check && cancellation_check()) return std::nullopt;
     const auto requested = remaining
                                ? std::min<std::uint64_t>(
                                      *remaining, buffer.size())

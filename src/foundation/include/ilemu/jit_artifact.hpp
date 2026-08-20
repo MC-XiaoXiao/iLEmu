@@ -154,6 +154,14 @@ struct JitArtifactStoreStats {
   std::uint64_t index_bytes{};
   std::uint64_t startup_payloads_prefetched{};
   std::uint64_t startup_prefetch_bytes{};
+  std::uint64_t hotset_candidates{};
+  std::uint64_t hotset_selected{};
+  std::uint64_t hotset_skipped_byte_limit{};
+  std::uint64_t prefetched_useful{};
+  std::uint64_t prefetched_unused{};
+  std::uint64_t saved_translation_nanoseconds{};
+  std::uint64_t load_cost_nanoseconds{};
+  std::int64_t net_benefit_nanoseconds{};
   std::uint64_t demand_payload_disk_loads{};
   std::uint64_t demand_deserialization_nanoseconds{};
   std::uint64_t initialization_nanoseconds{};
@@ -180,6 +188,15 @@ struct JitArtifactStoreStats {
 struct BlockArtifact {
   JitArtifactKey key;
   JitArtifactData data;
+};
+
+struct JitArtifactCompactionResult {
+  bool completed{};
+  bool cancelled{};
+  bool failed{};
+  bool temporary_cleanup{true};
+  std::uint64_t bytes_before_cancel{};
+  std::uint64_t records_before_cancel{};
 };
 
 class JitArtifactStore {
@@ -216,6 +233,8 @@ public:
   // Guest execution and resident-cache lookups remain available.
   void cancel_writeback() noexcept;
   [[nodiscard]] bool compaction_needed() const noexcept;
+  [[nodiscard]] JitArtifactCompactionResult compact_with_result(
+      CancellationCheck cancellation_check) const noexcept;
   [[nodiscard]] bool compact() const noexcept;
   [[nodiscard]] bool compact(CancellationCheck cancellation_check) const
       noexcept;
@@ -250,6 +269,8 @@ private:
     std::size_t serialized_bytes{};
     std::list<const JitArtifactKey *>::iterator lru_position;
     bool loaded_from_disk{};
+    bool startup_prefetched{};
+    bool startup_prefetch_used{};
     std::uint64_t benefit_generation{};
     bool boot_working_set{};
   };
@@ -318,6 +339,8 @@ private:
   void note_disk_benefit_locked(
       const JitArtifactKey &key,
       const BlockArtifact *artifact = nullptr) const noexcept;
+  void note_disk_load_use_locked(const JitArtifactKey &key,
+                                 ArtifactRecord &record) const noexcept;
   void promote_retention_locked(
       const JitArtifactKey &key, JitArtifactRetention retention) const;
   void promote_resident_retention_locked(
@@ -326,6 +349,7 @@ private:
   void insert_locked(std::shared_ptr<const BlockArtifact> artifact,
                      std::size_t serialized_bytes,
                      bool loaded_from_disk = false,
+                     bool startup_prefetched = false,
                      JitArtifactRetention retention =
                          JitArtifactRetention::Normal) const;
   [[nodiscard]] bool enqueue_writeback_locked(
@@ -345,6 +369,10 @@ private:
   [[nodiscard]] bool save_full(
       const std::filesystem::path &path,
       const CancellationCheck &cancellation_check) const noexcept;
+  [[nodiscard]] bool save_full(
+      const std::filesystem::path &path,
+      const CancellationCheck &cancellation_check,
+      JitArtifactCompactionResult *compaction_result) const noexcept;
 
   mutable std::mutex mutex_;
   // Pointer-keyed resident and pending metadata is anchored by the immutable
@@ -370,6 +398,7 @@ private:
   mutable std::uint64_t disk_index_generation_{};
   mutable std::uint64_t benefit_generation_{};
   mutable std::uint64_t external_writer_generation_{};
+  mutable ContentIdentity disk_snapshot_id_;
   mutable bool hotset_dirty_{};
   mutable std::mutex persistence_mutex_;
   mutable std::condition_variable writeback_condition_;
