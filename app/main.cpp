@@ -2792,20 +2792,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
       };
   std::optional<std::chrono::steady_clock::time_point>
       next_runtime_jit_sample;
-  if (runtime_jit_memory) {
-    // Observer-only mode is a bounded diagnostic stream, not the full
-    // performance report. Keep its runtime walk sparse enough that a firmware
-    // with many short-lived runtimes does not pay the full-summary sampling
-    // cadence during ordinary execution.
-    const auto sample_interval =
-        jit_observer_only ? std::chrono::milliseconds{250}
-                          : std::chrono::milliseconds{50};
+  if (runtime_jit_memory && !jit_observer_only) {
+    // Observer-only mode is lifecycle-accounted and takes one final atomic
+    // snapshot. It must not periodically walk every live Runtime just to
+    // produce a diagnostic line whose queue fields are final-state values.
     next_runtime_jit_sample =
-        std::chrono::steady_clock::now() + sample_interval;
+        std::chrono::steady_clock::now() + std::chrono::milliseconds{50};
   }
-  const auto runtime_jit_sample_interval =
-      jit_observer_only ? std::chrono::milliseconds{250}
-                        : std::chrono::milliseconds{50};
+  constexpr auto runtime_jit_sample_interval = std::chrono::milliseconds{50};
   const auto observe_all_runtime_jit_memory = [&]() {
     if (!runtime_jit_memory) return;
     runtime_jit_memory->runtime_scan_iterations += runtimes.size();
@@ -2814,7 +2808,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::chrono::steady_clock::now() + runtime_jit_sample_interval;
   };
   const auto observe_runtime_jit_memory_if_due = [&]() {
-    if (!runtime_jit_memory || !next_runtime_jit_sample ||
+    if (jit_observer_only || !runtime_jit_memory || !next_runtime_jit_sample ||
         std::chrono::steady_clock::now() < *next_runtime_jit_sample) {
       return;
     }
@@ -6482,7 +6476,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   if (jit_observer_only && runtime_jit_memory) {
     const auto &queue = concurrent_live_current_at_stop;
     output.line(
-        "[perf-jit-observer] mode=observer-only runtime-count=" +
+        "[perf-jit-observer] mode=observer-only sampling=lifecycle-final "
+        "runtime-count=" +
         std::to_string(runtime_jit_memory->runtime_count) +
         " runtime-scan-iterations=" +
         std::to_string(runtime_jit_memory->runtime_scan_iterations) +
