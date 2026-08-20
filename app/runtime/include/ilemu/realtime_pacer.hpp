@@ -16,6 +16,11 @@ public:
   [[nodiscard]] std::uint64_t allowed_virtual_time() const;
   [[nodiscard]] std::chrono::nanoseconds
   delay_until(std::uint64_t virtual_time) const;
+  // Return the stable host deadline corresponding to a future virtual time.
+  // Unlike now()+delay_until(), this does not drift when the caller refreshes
+  // the same guest deadline on every idle-loop iteration.
+  [[nodiscard]] std::chrono::steady_clock::time_point
+  host_deadline_for(std::uint64_t virtual_time) const;
   [[nodiscard]] std::chrono::nanoseconds limit_delay(
       std::chrono::nanoseconds delay,
       std::optional<std::chrono::steady_clock::time_point> host_deadline) const;

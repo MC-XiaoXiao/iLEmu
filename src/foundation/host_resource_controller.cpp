@@ -142,6 +142,7 @@ void HostResourceController::set_next_deadline(
     std::optional<Clock::time_point> deadline) {
   {
     const std::lock_guard lock{mutex_};
+    if (next_deadline_ == deadline) return;
     next_deadline_ = deadline;
   }
   work_available_.notify_all();

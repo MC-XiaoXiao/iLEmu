@@ -40,6 +40,17 @@ RealtimePacer::delay_until(std::uint64_t virtual_time) const {
       static_cast<std::chrono::nanoseconds::rep>(std::min(delay, maximum))};
 }
 
+std::chrono::steady_clock::time_point RealtimePacer::host_deadline_for(
+    std::uint64_t virtual_time) const {
+  if (virtual_time <= initial_virtual_time_) return initial_host_time_;
+  const auto delta = virtual_time - initial_virtual_time_;
+  const auto maximum = static_cast<std::uint64_t>(
+      std::chrono::steady_clock::duration::max().count());
+  if (delta >= maximum) return std::chrono::steady_clock::time_point::max();
+  return initial_host_time_ + std::chrono::nanoseconds{
+                                  static_cast<std::int64_t>(delta)};
+}
+
 std::chrono::nanoseconds RealtimePacer::limit_delay(
     std::chrono::nanoseconds delay,
     std::optional<std::chrono::steady_clock::time_point> host_deadline) const {

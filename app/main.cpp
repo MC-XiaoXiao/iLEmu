@@ -5271,7 +5271,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
       if (realtime_pacer && next_deadline) {
         const auto delay = realtime_pacer->delay_until(*next_deadline);
         if (delay > std::chrono::nanoseconds::zero()) {
-          host_compile_deadline = HostResourceController::Clock::now() + delay;
+          host_compile_deadline =
+              realtime_pacer->host_deadline_for(*next_deadline);
         }
       }
       if (next_host_deadline &&
