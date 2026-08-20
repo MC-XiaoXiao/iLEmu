@@ -2924,7 +2924,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   ArtifactCompactionAdmission artifact_compaction_admission{
       ArtifactCompactionAdmission::Config{
           std::chrono::milliseconds{2}, std::chrono::seconds{30},
-          std::chrono::milliseconds{250}}};
+          std::chrono::milliseconds{250}, std::chrono::seconds{2}}};
   constexpr auto artifact_compaction_deadline_reserve =
       std::chrono::milliseconds{2};
   struct ArtifactCompactionTelemetry {
@@ -5519,6 +5519,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
             },
             artifact_compaction_deadline_reserve);
         if (task) {
+          artifact_compaction_admission.note_task_admitted();
           artifact_compaction_task = task;
           artifact_compaction_record = task_record;
         } else {

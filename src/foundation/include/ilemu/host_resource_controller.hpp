@@ -58,6 +58,8 @@ public:
         std::chrono::milliseconds{250}};
     std::chrono::nanoseconds negative_probe_interval{
         std::chrono::milliseconds{250}};
+    std::chrono::nanoseconds recovery_quiet_period{
+        std::chrono::milliseconds{25}};
   };
 
   ArtifactCompactionAdmission();
@@ -74,6 +76,7 @@ public:
       std::chrono::steady_clock::time_point now) noexcept;
   void note_submission_rejected(
       std::chrono::steady_clock::time_point now) noexcept;
+  void note_task_admitted() noexcept;
   void note_task_terminal(
       std::chrono::steady_clock::time_point now) noexcept;
 
@@ -85,6 +88,7 @@ private:
   std::optional<std::chrono::steady_clock::time_point> quiet_since_;
   std::chrono::steady_clock::time_point cooldown_until_{};
   std::chrono::steady_clock::time_point next_store_probe_{};
+  bool recovering_{};
 };
 
 enum class ArtifactCompactionTaskState : std::uint8_t {

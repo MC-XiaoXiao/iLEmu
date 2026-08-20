@@ -57,7 +57,8 @@ ArtifactCompactionAdmission::ArtifactCompactionAdmission(Config config)
     : config_{config} {
   if (config_.quiet_period < std::chrono::nanoseconds::zero() ||
       config_.cancellation_cooldown < std::chrono::nanoseconds::zero() ||
-      config_.negative_probe_interval < std::chrono::nanoseconds::zero()) {
+      config_.negative_probe_interval < std::chrono::nanoseconds::zero() ||
+      config_.recovery_quiet_period < std::chrono::nanoseconds::zero()) {
     throw std::invalid_argument{"invalid artifact compaction admission"};
   }
 }
@@ -84,11 +85,15 @@ ArtifactCompactionAdmissionDecision ArtifactCompactionAdmission::observe(
   }
   if (!quiet_since_) {
     quiet_since_ = snapshot.now;
-    return config_.quiet_period == std::chrono::nanoseconds::zero()
+    const auto required_quiet =
+        recovering_ ? config_.recovery_quiet_period : config_.quiet_period;
+    return required_quiet == std::chrono::nanoseconds::zero()
                ? ArtifactCompactionAdmissionDecision::Eligible
                : ArtifactCompactionAdmissionDecision::WaitingForQuiet;
   }
-  return snapshot.now - *quiet_since_ >= config_.quiet_period
+  const auto required_quiet =
+      recovering_ ? config_.recovery_quiet_period : config_.quiet_period;
+  return snapshot.now - *quiet_since_ >= required_quiet
              ? ArtifactCompactionAdmissionDecision::Eligible
              : ArtifactCompactionAdmissionDecision::WaitingForQuiet;
 }
@@ -106,6 +111,7 @@ void ArtifactCompactionAdmission::note_store_probe_miss(
 void ArtifactCompactionAdmission::note_cancellation_request(
     std::chrono::steady_clock::time_point now) noexcept {
   quiet_since_.reset();
+  recovering_ = true;
   cooldown_until_ = now + config_.cancellation_cooldown;
   next_store_probe_ = cooldown_until_;
 }
@@ -115,6 +121,10 @@ void ArtifactCompactionAdmission::note_submission_rejected(
   quiet_since_.reset();
   cooldown_until_ = now + config_.cancellation_cooldown;
   next_store_probe_ = cooldown_until_;
+}
+
+void ArtifactCompactionAdmission::note_task_admitted() noexcept {
+  recovering_ = false;
 }
 
 void ArtifactCompactionAdmission::note_task_terminal(
