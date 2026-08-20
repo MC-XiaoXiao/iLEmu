@@ -405,8 +405,7 @@ FirmwarePrepareStats FirmwarePreparer::run() {
         limits_.artifact_seed_mode == FirmwareArtifactSeedMode::CatalogOnly ||
         (limits_.artifact_seed_mode == FirmwareArtifactSeedMode::StaticCatalog
              ? !candidate->catalog_entry_points.empty()
-             : !candidate->catalog_entry_points.empty() ||
-                   !candidate->profile_entry_points.empty());
+             : !candidate->profile_entry_points.empty());
     if (!has_seed_candidate) {
       continue;
     }
@@ -468,7 +467,6 @@ FirmwarePrepareStats FirmwarePreparer::run() {
       break;
     case FirmwareArtifactSeedMode::ProfileHotset: {
       const bool use_profile =
-          !candidate.critical_closure &&
           !candidate.profile_entry_points.empty() &&
           profile_blocks_remaining != 0U;
       if (use_profile) {
@@ -481,10 +479,13 @@ FirmwarePrepareStats FirmwarePreparer::run() {
         profile_blocks_remaining -= selected;
         stats.profile_hotset_selected += selected;
       } else {
-        candidate.reliable_entry_points = candidate.catalog_entry_points;
-        stats.static_seed_selected += candidate.reliable_entry_points.size();
+        // ProfileHotset is deliberately profile-only. A catalog fallback would
+        // silently turn a bounded experiment into a broad static seed and
+        // recreate the critical-closure startup cost this mode is intended to
+        // measure.
+        candidate.reliable_entry_points.clear();
       }
-      candidate.boot_working_set = candidate.critical_closure || use_profile;
+      candidate.boot_working_set = use_profile;
       break;
     }
     }
