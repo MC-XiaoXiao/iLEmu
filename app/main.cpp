@@ -2923,12 +2923,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::shared_ptr<ArtifactCompactionTaskRecord> artifact_compaction_record;
   ArtifactCompactionAdmission artifact_compaction_admission{
       ArtifactCompactionAdmission::Config{
-          std::chrono::milliseconds{2}, std::chrono::seconds{30},
-          std::chrono::milliseconds{250}, std::chrono::seconds{2}}};
+          std::chrono::milliseconds{2}, std::chrono::seconds{15},
+          std::chrono::milliseconds{250}, std::chrono::milliseconds{2}}};
   constexpr auto artifact_compaction_deadline_reserve =
       std::chrono::milliseconds{2};
-  constexpr auto artifact_compaction_recovery_deadline_reserve =
-      std::chrono::seconds{15};
   struct ArtifactCompactionTelemetry {
     std::atomic<std::uint64_t> next_task_id{1U};
     std::atomic<std::uint64_t> admitted{};
@@ -5415,21 +5413,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
             (touch_replay && touch_replay->next_deadline().has_value()) ||
             live_button_scheduler.next_deadline().has_value() ||
             live_touch_scheduler.next_deadline().has_value();
-        const auto active_compaction =
-            artifact_compaction_task &&
-            !artifact_compaction_task->finished();
-        const auto admission_deadline_reserve =
-            !active_compaction &&
-                    artifact_compaction_admission.recovery_pending()
-                ? artifact_compaction_recovery_deadline_reserve
-                : artifact_compaction_deadline_reserve;
         const ArtifactCompactionAdmissionSnapshot admission_snapshot{
             now,
             scheduler.runnable_count(),
             input_deadline_pending,
             host_compile_deadline &&
                 *host_compile_deadline <=
-                    now + admission_deadline_reserve,
+                    now + artifact_compaction_deadline_reserve,
             host_memory_is_pressured(latest_host_memory_budget),
             host_resources.accepting_work()};
         if (artifact_compaction_task) {

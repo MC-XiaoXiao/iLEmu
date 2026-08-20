@@ -70,9 +70,6 @@ public:
       bool task_active) noexcept;
   [[nodiscard]] bool store_probe_due(
       std::chrono::steady_clock::time_point now) const noexcept;
-  [[nodiscard]] bool recovery_pending() const noexcept {
-    return recovering_;
-  }
   void note_store_probe_miss(
       std::chrono::steady_clock::time_point now) noexcept;
   void note_cancellation_request(
