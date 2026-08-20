@@ -80,6 +80,40 @@ constexpr std::uint8_t lookup_state_staged = 1U << 1U;
 constexpr std::uint8_t lookup_state_unused = 1U << 2U;
 std::atomic<std::uint64_t> next_context_id{1};
 
+template <typename T, typename Compare>
+[[nodiscard]] bool stable_sort_cancellable(
+    std::vector<T> &values, Compare compare,
+    const std::function<bool()> &cancelled) {
+  if (values.size() < 2U) return !cancelled();
+  std::vector<T> source = values;
+  std::vector<T> output(values.size());
+  for (std::size_t width = 1U; width < source.size();) {
+    for (std::size_t left = 0U; left < source.size(); left += width * 2U) {
+      if (cancelled()) return false;
+      const auto middle = std::min(left + width, source.size());
+      const auto right = std::min(left + width * 2U, source.size());
+      auto first = left;
+      auto second = middle;
+      auto destination = left;
+      while (first < middle || second < right) {
+        if (cancelled()) return false;
+        if (first == middle) {
+          output[destination++] = source[second++];
+        } else if (second == right || !compare(source[second], source[first])) {
+          output[destination++] = source[first++];
+        } else {
+          output[destination++] = source[second++];
+        }
+      }
+    }
+    source.swap(output);
+    if (width > source.size() / 2U) break;
+    width *= 2U;
+  }
+  values = std::move(source);
+  return !cancelled();
+}
+
 [[nodiscard]] bool artifact_key_shape_valid(
     const JitArtifactKey &key) noexcept {
   const auto descriptor_pc =
@@ -1762,9 +1796,25 @@ public:
   TemporaryPathCleanup &operator=(const TemporaryPathCleanup &) = delete;
   ~TemporaryPathCleanup() {
     if (path_.empty()) return;
+    if (result_ != nullptr) result_->temporary_cleanup_attempted = true;
     std::error_code error;
     std::filesystem::remove(path_, error);
-    if (result_ != nullptr && error) result_->temporary_cleanup = false;
+    if (result_ == nullptr) return;
+    if (error) {
+      result_->temporary_cleanup_failed = true;
+      result_->temporary_cleanup = false;
+      return;
+    }
+    std::error_code residue_error;
+    const auto residue = std::filesystem::exists(path_, residue_error);
+    if (residue_error || residue) {
+      result_->temporary_residue_found = true;
+      result_->temporary_cleanup_failed = true;
+      result_->temporary_cleanup = false;
+      return;
+    }
+    result_->temporary_cleanup_succeeded = true;
+    result_->temporary_cleanup = true;
   }
 
   void set(std::filesystem::path path) { path_ = std::move(path); }
@@ -2979,6 +3029,12 @@ JitArtifactCompactionResult JitArtifactStore::compact_with_result(
     const auto cancelled = [&] {
       if (!cancellation_check || !cancellation_check()) return false;
       result.cancelled = true;
+      if (result.first_cancellation_observed_nanoseconds == 0U) {
+        result.first_cancellation_observed_nanoseconds = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+      }
       return true;
     };
     const auto failed = [&] {
@@ -3722,6 +3778,13 @@ bool JitArtifactStore::save_full(
       if (!cancellation_check || !cancellation_check()) return false;
       if (compaction_result != nullptr) {
         compaction_result->cancelled = true;
+        if (compaction_result->first_cancellation_observed_nanoseconds == 0U) {
+          compaction_result->first_cancellation_observed_nanoseconds =
+              static_cast<std::uint64_t>(
+                  std::chrono::duration_cast<std::chrono::nanoseconds>(
+                      std::chrono::steady_clock::now().time_since_epoch())
+                      .count());
+        }
         compaction_result->bytes_before_cancel = progress.bytes_written;
         compaction_result->records_before_cancel = progress.records_written;
       }
@@ -3905,42 +3968,38 @@ bool JitArtifactStore::save_full(
         if (cancelled()) return false;
         candidates.push_back(index);
       }
-      bool candidate_sort_cancelled = false;
-      std::size_t candidate_comparisons = 0;
-      std::stable_sort(
-          candidates.begin(), candidates.end(),
-          [&entries, &record_bytes, &cancelled, &candidate_sort_cancelled,
-           &candidate_comparisons](std::size_t left, std::size_t right) {
-            if ((++candidate_comparisons % 256U) == 0U && cancelled()) {
-              candidate_sort_cancelled = true;
-            }
-            const auto &left_entry = entries[left];
-            const auto &right_entry = entries[right];
-            if (left_entry.boot_working_set !=
-                right_entry.boot_working_set) {
-              return left_entry.boot_working_set;
-            }
-            if (left_entry.resident != right_entry.resident) {
-              return left_entry.resident;
-            }
-            if (left_entry.disk_record.benefit_hits !=
-                right_entry.disk_record.benefit_hits) {
-              return left_entry.disk_record.benefit_hits >
-                     right_entry.disk_record.benefit_hits;
-            }
-            if (left_entry.disk_record.translation_nanoseconds !=
-                right_entry.disk_record.translation_nanoseconds) {
-              return left_entry.disk_record.translation_nanoseconds >
-                     right_entry.disk_record.translation_nanoseconds;
-            }
-            if (left_entry.disk_record.benefit_generation !=
-                right_entry.disk_record.benefit_generation) {
-              return left_entry.disk_record.benefit_generation >
-                     right_entry.disk_record.benefit_generation;
-            }
-            return record_bytes[left] < record_bytes[right];
-          });
-      if (candidate_sort_cancelled || cancelled()) return false;
+      if (!stable_sort_cancellable(
+              candidates,
+              [&entries, &record_bytes](std::size_t left, std::size_t right) {
+                const auto &left_entry = entries[left];
+                const auto &right_entry = entries[right];
+                if (left_entry.boot_working_set !=
+                    right_entry.boot_working_set) {
+                  return left_entry.boot_working_set;
+                }
+                if (left_entry.resident != right_entry.resident) {
+                  return left_entry.resident;
+                }
+                if (left_entry.disk_record.benefit_hits !=
+                    right_entry.disk_record.benefit_hits) {
+                  return left_entry.disk_record.benefit_hits >
+                         right_entry.disk_record.benefit_hits;
+                }
+                if (left_entry.disk_record.translation_nanoseconds !=
+                    right_entry.disk_record.translation_nanoseconds) {
+                  return left_entry.disk_record.translation_nanoseconds >
+                         right_entry.disk_record.translation_nanoseconds;
+                }
+                if (left_entry.disk_record.benefit_generation !=
+                    right_entry.disk_record.benefit_generation) {
+                  return left_entry.disk_record.benefit_generation >
+                         right_entry.disk_record.benefit_generation;
+                }
+                return record_bytes[left] < record_bytes[right];
+              },
+              cancelled)) {
+        return false;
+      }
 
       std::unordered_set<ArtifactIndexImage, ArtifactIndexImageHash>
           selected_images;
@@ -3978,25 +4037,22 @@ bool JitArtifactStore::save_full(
               QuotaEvictedKey{entries[index].key, entries[index].artifact});
         }
       }
-      bool retained_sort_cancelled = false;
-      std::size_t retained_comparisons = 0;
-      std::stable_sort(
-          retained_indices.begin(), retained_indices.end(),
-          [&entries, &cancelled, &retained_sort_cancelled,
-           &retained_comparisons](std::size_t left, std::size_t right) {
-            if ((++retained_comparisons % 256U) == 0U && cancelled()) {
-              retained_sort_cancelled = true;
-            }
-            if (entries[left].boot_working_set !=
-                entries[right].boot_working_set) {
-              // The on-disk order is the restart recency proxy. Keep protected
-              // records at the recent end even before their process next runs.
-              return !entries[left].boot_working_set;
-            }
-            return entries[left].disk_record.benefit_generation <
-                   entries[right].disk_record.benefit_generation;
-          });
-      if (retained_sort_cancelled || cancelled()) return false;
+      if (!stable_sort_cancellable(
+              retained_indices,
+              [&entries](std::size_t left, std::size_t right) {
+                if (entries[left].boot_working_set !=
+                    entries[right].boot_working_set) {
+                  // The on-disk order is the restart recency proxy. Keep
+                  // protected records at the recent end even before their
+                  // process next runs.
+                  return !entries[left].boot_working_set;
+                }
+                return entries[left].disk_record.benefit_generation <
+                       entries[right].disk_record.benefit_generation;
+              },
+              cancelled)) {
+        return false;
+      }
       std::vector<SaveEntry> retained_entries;
       std::vector<std::uint64_t> retained_record_bytes;
       retained_entries.reserve(retained_indices.size());
@@ -4025,14 +4081,9 @@ bool JitArtifactStore::save_full(
         hotset_entries.push_back(&entry);
       }
     }
-    bool hotset_sort_cancelled = false;
-    std::size_t hotset_comparisons = 0;
-    std::sort(hotset_entries.begin(), hotset_entries.end(),
-              [&cancelled, &hotset_sort_cancelled, &hotset_comparisons](
-                  const auto *left, const auto *right) {
-                if ((++hotset_comparisons % 256U) == 0U && cancelled()) {
-                  hotset_sort_cancelled = true;
-                }
+    if (!stable_sort_cancellable(
+            hotset_entries,
+            [](const auto *left, const auto *right) {
                 if (left->disk_record.benefit_hits !=
                     right->disk_record.benefit_hits) {
                   return left->disk_record.benefit_hits >
@@ -4050,8 +4101,10 @@ bool JitArtifactStore::save_full(
                 }
                 return key_order_token(*left->key) <
                        key_order_token(*right->key);
-              });
-    if (hotset_sort_cancelled || cancelled()) return false;
+            },
+            cancelled)) {
+      return false;
+    }
     if (hotset_entries.size() > maximum_hotset_entries) {
       hotset_entries.resize(maximum_hotset_entries);
     }
