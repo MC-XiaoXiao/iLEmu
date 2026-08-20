@@ -41,7 +41,7 @@ set(ILEMU_DYNARMIC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/dynarmic" CACHE PAT
 set(ILEMU_BOOST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/ext-boost" CACHE PATH
     "Path to the matching ext-boost checkout")
 set(ILEMU_DYNARMIC_PATCHED_REVISION
-    "9e4fe8dd93b202840722f282501634e8b1989013" CACHE STRING
+    "4b64c60bdedaf414c788b5a304c63e80b746ec3d" CACHE STRING
     "Expected Dynarmic revision for the x86_64/A32 iLEmu backend")
 
 if(NOT EXISTS "${ILEMU_DYNARMIC_DIR}/CMakeLists.txt")
