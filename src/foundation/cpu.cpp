@@ -2117,10 +2117,11 @@ private:
                 *key, publication_generation, slab_generation)) {
             return;
         }
-        callbacks_->stage_demand_artifact(location, slab_generation);
-        demand_artifact_probes_.insert_or_assign(
-            location, DemandArtifactProbe{
-                          *key, publication_generation, slab_generation});
+        if (callbacks_->stage_demand_artifact(location, slab_generation)) {
+            demand_artifact_probes_.insert_or_assign(
+                location, DemandArtifactProbe{
+                              *key, publication_generation, slab_generation});
+        }
     }
 
     void observe_shared_invalidation_epoch() {
