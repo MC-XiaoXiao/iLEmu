@@ -2793,15 +2793,25 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::optional<std::chrono::steady_clock::time_point>
       next_runtime_jit_sample;
   if (runtime_jit_memory) {
+    // Observer-only mode is a bounded diagnostic stream, not the full
+    // performance report. Keep its runtime walk sparse enough that a firmware
+    // with many short-lived runtimes does not pay the full-summary sampling
+    // cadence during ordinary execution.
+    const auto sample_interval =
+        jit_observer_only ? std::chrono::milliseconds{250}
+                          : std::chrono::milliseconds{50};
     next_runtime_jit_sample =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds{50};
+        std::chrono::steady_clock::now() + sample_interval;
   }
+  const auto runtime_jit_sample_interval =
+      jit_observer_only ? std::chrono::milliseconds{250}
+                        : std::chrono::milliseconds{50};
   const auto observe_all_runtime_jit_memory = [&]() {
     if (!runtime_jit_memory) return;
     runtime_jit_memory->runtime_scan_iterations += runtimes.size();
     for (auto &runtime : runtimes) observe_runtime_jit_memory(*runtime);
     next_runtime_jit_sample =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds{50};
+        std::chrono::steady_clock::now() + runtime_jit_sample_interval;
   };
   const auto observe_runtime_jit_memory_if_due = [&]() {
     if (!runtime_jit_memory || !next_runtime_jit_sample ||
