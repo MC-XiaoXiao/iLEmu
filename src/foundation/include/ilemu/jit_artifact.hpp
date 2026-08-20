@@ -160,6 +160,16 @@ struct JitArtifactStoreStats {
   std::uint64_t prefetched_useful{};
   std::uint64_t prefetched_unused{};
   std::uint64_t saved_translation_nanoseconds{};
+  std::uint64_t validation_successes{};
+  std::uint64_t staged{};
+  std::uint64_t native_imported{};
+  std::uint64_t already_present{};
+  std::uint64_t demand_consumed{};
+  std::uint64_t staged_unused{};
+  std::uint64_t duplicate_consumptions{};
+  std::uint64_t memory_published_lookups{};
+  std::uint64_t disk_demand_lookups{};
+  std::uint64_t disk_prefetched_lookups{};
   std::uint64_t load_cost_nanoseconds{};
   std::int64_t net_benefit_nanoseconds{};
   std::uint64_t demand_payload_disk_loads{};
@@ -190,11 +200,37 @@ struct BlockArtifact {
   JitArtifactData data;
 };
 
+enum class JitArtifactLookupProvenance : std::uint8_t {
+  MemoryPublished,
+  DiskDemand,
+  DiskPrefetched,
+};
+
+struct JitArtifactLookupToken {
+  std::atomic<std::uint8_t> state{};
+};
+
+struct JitArtifactLookup {
+  std::shared_ptr<const BlockArtifact> artifact;
+  JitArtifactLookupProvenance provenance{
+      JitArtifactLookupProvenance::MemoryPublished};
+  std::shared_ptr<JitArtifactLookupToken> token;
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return artifact != nullptr;
+  }
+};
+
 struct JitArtifactCompactionResult {
   bool completed{};
   bool cancelled{};
   bool failed{};
-  bool temporary_cleanup{true};
+  bool temporary_cleanup{};
+  bool temporary_cleanup_attempted{};
+  bool temporary_cleanup_succeeded{};
+  bool temporary_cleanup_failed{};
+  bool temporary_residue_found{};
+  std::uint64_t first_cancellation_observed_nanoseconds{};
   std::uint64_t bytes_before_cancel{};
   std::uint64_t records_before_cancel{};
 };
@@ -211,9 +247,18 @@ public:
   JitArtifactStore(const JitArtifactStore &) = delete;
   JitArtifactStore &operator=(const JitArtifactStore &) = delete;
 
+  [[nodiscard]] JitArtifactLookup lookup(
+      const JitArtifactKey &key,
+      JitArtifactRetention retention = JitArtifactRetention::Normal) const;
   [[nodiscard]] std::shared_ptr<const BlockArtifact> find(
       const JitArtifactKey &key,
       JitArtifactRetention retention = JitArtifactRetention::Normal) const;
+  void record_validation_success() const noexcept;
+  void record_staged(const JitArtifactLookup &lookup) const noexcept;
+  void record_native_imported(const JitArtifactLookup &lookup) const noexcept;
+  void record_already_present(const JitArtifactLookup &lookup) const noexcept;
+  void record_demand_consumed(const JitArtifactLookup &lookup) const noexcept;
+  void record_staged_unused(const JitArtifactLookup &lookup) const noexcept;
   [[nodiscard]] std::shared_ptr<const BlockArtifact> publish(
       JitArtifactKey key, JitArtifactData data,
       JitArtifactRetention retention = JitArtifactRetention::Normal);
@@ -339,8 +384,8 @@ private:
   void note_disk_benefit_locked(
       const JitArtifactKey &key,
       const BlockArtifact *artifact = nullptr) const noexcept;
-  void note_disk_load_use_locked(const JitArtifactKey &key,
-                                 ArtifactRecord &record) const noexcept;
+  void note_artifact_consumed_locked(
+      const JitArtifactLookup &lookup) const noexcept;
   void promote_retention_locked(
       const JitArtifactKey &key, JitArtifactRetention retention) const;
   void promote_resident_retention_locked(

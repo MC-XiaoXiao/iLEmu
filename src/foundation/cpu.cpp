@@ -448,6 +448,11 @@ constexpr bool jit_artifact_producer_fingerprint_available =
 
 class JitCallbacks final : public Dynarmic::A32::UserCallbacks {
 public:
+    struct ValidatedArtifactBlock {
+        Dynarmic::IR::Block block;
+        JitArtifactLookup lookup;
+    };
+
     enum class ArtifactImportOutcome : std::uint8_t {
         Unavailable,
         Imported,
@@ -513,12 +518,19 @@ public:
     [[nodiscard]] ArtifactImportOutcome import_artifact(
         Dynarmic::A32::Jit& jit,
         std::uint64_t location_descriptor) const noexcept {
-        auto block = validated_artifact_block(location_descriptor);
-        if (!block) return ArtifactImportOutcome::Unavailable;
+        auto validated = validated_artifact_block(location_descriptor);
+        if (!validated) return ArtifactImportOutcome::Unavailable;
         try {
-            return jit.Precompile(std::move(*block))
-                       ? ArtifactImportOutcome::Imported
-                       : ArtifactImportOutcome::AlreadyPresent;
+            const auto imported = jit.Precompile(std::move(validated->block));
+            if (artifact_store_) {
+                if (imported) {
+                    artifact_store_->record_native_imported(validated->lookup);
+                } else {
+                    artifact_store_->record_already_present(validated->lookup);
+                }
+            }
+            return imported ? ArtifactImportOutcome::Imported
+                            : ArtifactImportOutcome::AlreadyPresent;
         } catch (...) {
             return ArtifactImportOutcome::Failed;
         }
@@ -553,12 +565,12 @@ public:
         explicit_artifact_publication_ = enabled;
     }
 
-    [[nodiscard]] std::shared_ptr<const BlockArtifact> find_artifact(
+    [[nodiscard]] JitArtifactLookup find_artifact(
         std::uint64_t location_descriptor) const noexcept {
-        if (!artifact_store_) return nullptr;
+        if (!artifact_store_) return {};
         const auto key = make_artifact_key(location_descriptor);
-        return key ? artifact_store_->find(*key, artifact_retention_)
-                   : nullptr;
+        return key ? artifact_store_->lookup(*key, artifact_retention_)
+                   : JitArtifactLookup{};
     }
 
     [[nodiscard]] std::optional<JitArtifactKey> artifact_key(
@@ -588,14 +600,19 @@ public:
 
             const auto key = make_artifact_key(location_descriptor);
             if (!key) return false;
-            auto block = validated_artifact_block(location_descriptor);
-            if (!block || block->Location().Value() != location_descriptor) {
+            auto validated = validated_artifact_block(location_descriptor);
+            if (!validated || validated->block.Location().Value() !=
+                                  location_descriptor) {
                 return false;
             }
             demand_artifact_key_ = *key;
             demand_artifact_location_ = location_descriptor;
             demand_artifact_slab_generation_ = slab_generation;
-            demand_artifact_.emplace(std::move(*block));
+            demand_artifact_lookup_ = validated->lookup;
+            demand_artifact_.emplace(std::move(validated->block));
+            if (artifact_store_) {
+                artifact_store_->record_staged(demand_artifact_lookup_);
+            }
             if (translation_profile_) {
                 translation_profile_->note_demand_artifact_staged();
             }
@@ -628,7 +645,11 @@ public:
             translation_profile_) {
             translation_profile_->note_demand_artifact_stage_unused();
         }
+        if (demand_artifact_ && !demand_artifact_consumed_ && artifact_store_) {
+            artifact_store_->record_staged_unused(demand_artifact_lookup_);
+        }
         demand_artifact_.reset();
+        demand_artifact_lookup_ = {};
         demand_artifact_key_ = {};
         demand_artifact_location_ = 0;
         demand_artifact_slab_generation_ = 0;
@@ -657,6 +678,9 @@ public:
         performance_counters().record_jit_demand_artifact_probe(hit);
         if (!hit) return nullptr;
         demand_artifact_consumed_ = true;
+        if (artifact_store_) {
+            artifact_store_->record_demand_consumed(demand_artifact_lookup_);
+        }
         if (translation_profile_) {
             translation_profile_->note_demand_artifact_consumed();
             if (!translation_profile_->consume_profile_portable_artifact(
@@ -675,7 +699,7 @@ public:
     }
 
 private:
-    [[nodiscard]] std::optional<Dynarmic::IR::Block>
+    [[nodiscard]] std::optional<ValidatedArtifactBlock>
     validated_artifact_block(
         std::uint64_t location_descriptor) const noexcept {
         if (!artifact_store_ || !portable_artifact_import_supported() ||
@@ -687,23 +711,24 @@ private:
             return std::nullopt;
         }
         try {
-            const auto artifact = find_artifact(location_descriptor);
-            if (!artifact) {
+            const auto lookup = find_artifact(location_descriptor);
+            if (!lookup) {
                 artifact_store_->record_validation_rejection(
                     JitArtifactValidationRejection::NoExactArtifact);
                 return std::nullopt;
             }
-            if (artifact->data.normalized_ir.empty()) {
+            const auto &artifact = *lookup.artifact;
+            if (artifact.data.normalized_ir.empty()) {
                 artifact_store_->record_validation_rejection(
                     JitArtifactValidationRejection::EmptyIr);
                 return std::nullopt;
             }
-            if (!dependencies_match(*artifact)) {
+            if (!dependencies_match(artifact)) {
                 artifact_store_->record_validation_rejection(
                     JitArtifactValidationRejection::DependencyMismatch);
                 return std::nullopt;
             }
-            auto block = deserialize_dynarmic_ir(artifact->data.normalized_ir);
+            auto block = deserialize_dynarmic_ir(artifact.data.normalized_ir);
             if (!block) {
                 artifact_store_->record_validation_rejection(
                     JitArtifactValidationRejection::DeserializeFailed);
@@ -714,7 +739,8 @@ private:
                     JitArtifactValidationRejection::DescriptorMismatch);
                 return std::nullopt;
             }
-            return block;
+            artifact_store_->record_validation_success();
+            return ValidatedArtifactBlock{std::move(*block), lookup};
         } catch (...) {
             artifact_store_->record_validation_rejection(
                 JitArtifactValidationRejection::Exception);
@@ -1442,6 +1468,7 @@ private:
     std::vector<JitConstantDependency> translation_constant_dependencies_;
     bool constant_dependency_failed_{};
     std::optional<Dynarmic::IR::Block> demand_artifact_;
+    JitArtifactLookup demand_artifact_lookup_;
     JitArtifactKey demand_artifact_key_{};
     std::uint64_t demand_artifact_location_{};
     std::uint64_t demand_artifact_slab_generation_{};

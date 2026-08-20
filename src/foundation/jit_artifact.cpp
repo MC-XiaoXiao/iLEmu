@@ -75,6 +75,9 @@ constexpr std::uint32_t maximum_metadata_entries = 1'000'000;
 constexpr std::uint32_t maximum_hotset_entries = 4096;
 constexpr std::uintmax_t maximum_persistence_bytes =
     std::uintmax_t{4U} * 1024U * 1024U * 1024U;
+constexpr std::uint8_t lookup_state_consumed = 1U << 0U;
+constexpr std::uint8_t lookup_state_staged = 1U << 1U;
+constexpr std::uint8_t lookup_state_unused = 1U << 2U;
 std::atomic<std::uint64_t> next_context_id{1};
 
 [[nodiscard]] bool artifact_key_shape_valid(
@@ -1917,7 +1920,7 @@ JitArtifactStore::~JitArtifactStore() {
   static_cast<void>(save());
 }
 
-std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
+JitArtifactLookup JitArtifactStore::lookup(
     const JitArtifactKey &key, JitArtifactRetention retention) const {
   const auto record_matches = [](const DiskArtifactRecord &left,
                                  const DiskArtifactRecord &right) {
@@ -1929,6 +1932,33 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
            (!left.checksum_valid || left.checksum == right.checksum);
   };
   constexpr unsigned maximum_record_attempts = 3U;
+  const auto make_lookup = [this, &key](
+                               std::shared_ptr<const BlockArtifact> artifact,
+                               bool disk_hit) {
+    JitArtifactLookup result;
+    result.artifact = std::move(artifact);
+    if (!result.artifact) return result;
+    if (disk_hit) {
+      result.provenance = JitArtifactLookupProvenance::DiskDemand;
+      if (const auto resident = artifacts_.find(key);
+          resident != artifacts_.end() && resident->second.startup_prefetched) {
+        result.provenance = JitArtifactLookupProvenance::DiskPrefetched;
+      }
+    }
+    switch (result.provenance) {
+    case JitArtifactLookupProvenance::MemoryPublished:
+      ++stats_.memory_published_lookups;
+      break;
+    case JitArtifactLookupProvenance::DiskDemand:
+      ++stats_.disk_demand_lookups;
+      break;
+    case JitArtifactLookupProvenance::DiskPrefetched:
+      ++stats_.disk_prefetched_lookups;
+      break;
+    }
+    result.token = std::make_shared<JitArtifactLookupToken>();
+    return result;
+  };
   std::shared_ptr<DiskReadFlight> flight;
   {
     std::unique_lock lock{mutex_};
@@ -1936,30 +1966,26 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
     promote_retention_locked(key, retention);
     if (auto artifact = artifacts_.find(key);
         artifact != artifacts_.end()) {
-      note_disk_benefit_locked(key, artifact->second.artifact.get());
-      if (artifact->second.loaded_from_disk) {
+      const auto disk_hit = artifact->second.loaded_from_disk;
+      if (disk_hit) {
         ++stats_.disk_hits;
-        note_disk_load_use_locked(key, artifact->second);
       } else {
         ++stats_.memory_hits;
       }
       touch_locked(artifact);
-      return artifact->second.artifact;
+      return make_lookup(artifact->second.artifact, disk_hit);
     }
     if (const auto pending = pending_writebacks_.find(key);
         pending != pending_writebacks_.end()) {
-      pending->second.benefit_generation =
-          next_benefit_generation_locked();
-      note_disk_benefit_locked(key, pending->second.artifact.get());
       ++stats_.memory_hits;
-      return pending->second.artifact;
+      return make_lookup(pending->second.artifact, false);
     }
     const auto disk_artifact = disk_artifacts_.find(key);
     if (disk_artifact == disk_artifacts_.end() ||
         disk_artifact->second.serialized_bytes >
             std::numeric_limits<std::size_t>::max()) {
       ++stats_.misses;
-      return nullptr;
+      return {};
     }
     if (const auto active = disk_read_flights_.find(key);
         active != disk_read_flights_.end()) {
@@ -1969,9 +1995,8 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
       const auto result = flight->artifact;
       if (!result) {
         ++stats_.misses;
-        return nullptr;
+        return {};
       }
-      note_disk_benefit_locked(key, result.get());
       if (flight->disk_hit) {
         ++stats_.disk_hits;
       } else {
@@ -1984,16 +2009,16 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
         }
         touch_locked(resident);
       }
-      return result;
+      return make_lookup(result, flight->disk_hit);
     }
     flight = std::make_shared<DiskReadFlight>();
     disk_read_flights_.emplace(key, flight);
   }
 
   const auto finish_locked =
-      [this, &key, &flight](std::unique_lock<std::mutex> &lock,
-                            std::shared_ptr<const BlockArtifact> artifact,
-                            bool disk_hit) {
+      [this, &key, &flight, &make_lookup](
+          std::unique_lock<std::mutex> &lock,
+          std::shared_ptr<const BlockArtifact> artifact, bool disk_hit) {
         flight->artifact = artifact;
         flight->disk_hit = disk_hit;
         flight->complete = true;
@@ -2002,9 +2027,10 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
             active->second == flight) {
           disk_read_flights_.erase(active);
         }
+        auto result = make_lookup(std::move(artifact), disk_hit);
         lock.unlock();
         flight->condition.notify_all();
-        return artifact;
+        return result;
       };
 
   try {
@@ -2016,11 +2042,9 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
         promote_retention_locked(key, retention);
         if (auto artifact = artifacts_.find(key);
             artifact != artifacts_.end()) {
-          note_disk_benefit_locked(key, artifact->second.artifact.get());
           const auto disk_hit = artifact->second.loaded_from_disk;
           if (disk_hit) {
             ++stats_.disk_hits;
-            note_disk_load_use_locked(key, artifact->second);
           } else {
             ++stats_.memory_hits;
           }
@@ -2029,9 +2053,6 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
         }
         if (const auto pending = pending_writebacks_.find(key);
             pending != pending_writebacks_.end()) {
-          pending->second.benefit_generation =
-              next_benefit_generation_locked();
-          note_disk_benefit_locked(key, pending->second.artifact.get());
           ++stats_.memory_hits;
           return finish_locked(lock, pending->second.artifact, false);
         }
@@ -2071,11 +2092,9 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
       promote_retention_locked(key, retention);
       if (auto artifact = artifacts_.find(key);
           artifact != artifacts_.end()) {
-        note_disk_benefit_locked(key, artifact->second.artifact.get());
         const auto disk_hit = artifact->second.loaded_from_disk;
         if (disk_hit) {
           ++stats_.disk_hits;
-          note_disk_load_use_locked(key, artifact->second);
         } else {
           ++stats_.memory_hits;
         }
@@ -2084,9 +2103,6 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
       }
       if (const auto pending = pending_writebacks_.find(key);
           pending != pending_writebacks_.end()) {
-        pending->second.benefit_generation =
-            next_benefit_generation_locked();
-        note_disk_benefit_locked(key, pending->second.artifact.get());
         ++stats_.memory_hits;
         return finish_locked(lock, pending->second.artifact, false);
       }
@@ -2110,7 +2126,6 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
         ++stats_.misses;
         return finish_locked(lock, nullptr, false);
       }
-      note_disk_benefit_locked(key, loaded->get());
       insert_locked(*loaded, static_cast<std::size_t>(record.serialized_bytes),
                     true, false,
                     current->second.boot_working_set
@@ -2122,7 +2137,6 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
         return finish_locked(lock, nullptr, false);
       }
       ++stats_.disk_hits;
-      note_disk_load_use_locked(key, artifact->second);
       touch_locked(artifact);
       return finish_locked(lock, artifact->second.artifact, true);
     }
@@ -2134,6 +2148,11 @@ std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
   std::unique_lock lock{mutex_};
   ++stats_.misses;
   return finish_locked(lock, nullptr, false);
+}
+
+std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
+    const JitArtifactKey &key, JitArtifactRetention retention) const {
+  return lookup(key, retention).artifact;
 }
 
 void JitArtifactStore::touch_locked(ArtifactMap::iterator iterator) const {
@@ -2182,15 +2201,19 @@ void JitArtifactStore::note_disk_benefit_locked(
   }
 }
 
-void JitArtifactStore::note_disk_load_use_locked(
-    const JitArtifactKey &key, ArtifactRecord &record) const noexcept {
-  if (!record.loaded_from_disk) return;
+void JitArtifactStore::note_artifact_consumed_locked(
+    const JitArtifactLookup &lookup) const noexcept {
+  if (!lookup.artifact) return;
+  const auto &key = lookup.artifact->key;
   const auto disk = disk_artifacts_.find(key);
+  if (lookup.provenance != JitArtifactLookupProvenance::MemoryPublished) {
+    note_disk_benefit_locked(key, lookup.artifact.get());
+  }
   const auto translation_nanoseconds =
       disk == disk_artifacts_.end()
-          ? record.artifact->data.translation_nanoseconds
+          ? lookup.artifact->data.translation_nanoseconds
           : std::max(disk->second.translation_nanoseconds,
-                     record.artifact->data.translation_nanoseconds);
+                     lookup.artifact->data.translation_nanoseconds);
   if (stats_.saved_translation_nanoseconds <=
       std::numeric_limits<std::uint64_t>::max() - translation_nanoseconds) {
     stats_.saved_translation_nanoseconds += translation_nanoseconds;
@@ -2198,13 +2221,23 @@ void JitArtifactStore::note_disk_load_use_locked(
     stats_.saved_translation_nanoseconds =
         std::numeric_limits<std::uint64_t>::max();
   }
-  if (record.startup_prefetched && !record.startup_prefetch_used) {
-    if (stats_.prefetched_useful != std::numeric_limits<std::uint64_t>::max()) {
-      ++stats_.prefetched_useful;
+  if (lookup.provenance == JitArtifactLookupProvenance::DiskPrefetched) {
+    if (const auto resident = artifacts_.find(key);
+        resident != artifacts_.end() && resident->second.startup_prefetched &&
+        !resident->second.startup_prefetch_used) {
+      if (stats_.prefetched_useful !=
+          std::numeric_limits<std::uint64_t>::max()) {
+        ++stats_.prefetched_useful;
+      }
+      resident->second.startup_prefetch_used = true;
+      resident->second.loaded_from_disk = false;
     }
-    record.startup_prefetch_used = true;
   }
-  record.loaded_from_disk = false;
+  if (const auto resident = artifacts_.find(key);
+      resident != artifacts_.end() &&
+      resident->second.artifact == lookup.artifact) {
+    resident->second.loaded_from_disk = false;
+  }
 }
 
 void JitArtifactStore::promote_retention_locked(
@@ -2519,6 +2552,96 @@ void JitArtifactStore::record_validation_rejection(
   if (index >= jit_artifact_validation_rejection_count) return;
   const std::lock_guard lock{mutex_};
   ++stats_.validation_rejections[index];
+}
+
+void JitArtifactStore::record_validation_success() const noexcept {
+  const std::lock_guard lock{mutex_};
+  ++stats_.validation_successes;
+}
+
+void JitArtifactStore::record_staged(
+    const JitArtifactLookup &lookup) const noexcept {
+  if (!lookup.artifact || !lookup.token) return;
+  auto state = lookup.token->state.load(std::memory_order_relaxed);
+  for (;;) {
+    if ((state & lookup_state_staged) != 0U) return;
+    if (lookup.token->state.compare_exchange_weak(
+            state, static_cast<std::uint8_t>(state | lookup_state_staged),
+            std::memory_order_acq_rel, std::memory_order_relaxed)) {
+      const std::lock_guard lock{mutex_};
+      ++stats_.staged;
+      return;
+    }
+  }
+}
+
+void JitArtifactStore::record_native_imported(
+    const JitArtifactLookup &lookup) const noexcept {
+  if (!lookup.artifact || !lookup.token) return;
+  auto state = lookup.token->state.load(std::memory_order_relaxed);
+  for (;;) {
+    if ((state & lookup_state_consumed) != 0U) {
+      const std::lock_guard lock{mutex_};
+      ++stats_.duplicate_consumptions;
+      return;
+    }
+    if (lookup.token->state.compare_exchange_weak(
+            state, static_cast<std::uint8_t>(state | lookup_state_consumed),
+            std::memory_order_acq_rel, std::memory_order_relaxed)) {
+      const std::lock_guard lock{mutex_};
+      ++stats_.native_imported;
+      note_artifact_consumed_locked(lookup);
+      return;
+    }
+  }
+}
+
+void JitArtifactStore::record_already_present(
+    const JitArtifactLookup &lookup) const noexcept {
+  if (!lookup.artifact) return;
+  const std::lock_guard lock{mutex_};
+  ++stats_.already_present;
+}
+
+void JitArtifactStore::record_demand_consumed(
+    const JitArtifactLookup &lookup) const noexcept {
+  if (!lookup.artifact || !lookup.token) return;
+  auto state = lookup.token->state.load(std::memory_order_relaxed);
+  for (;;) {
+    if ((state & lookup_state_consumed) != 0U) {
+      const std::lock_guard lock{mutex_};
+      ++stats_.duplicate_consumptions;
+      return;
+    }
+    if (lookup.token->state.compare_exchange_weak(
+            state, static_cast<std::uint8_t>(state | lookup_state_consumed),
+            std::memory_order_acq_rel, std::memory_order_relaxed)) {
+      const std::lock_guard lock{mutex_};
+      ++stats_.demand_consumed;
+      note_artifact_consumed_locked(lookup);
+      return;
+    }
+  }
+}
+
+void JitArtifactStore::record_staged_unused(
+    const JitArtifactLookup &lookup) const noexcept {
+  if (!lookup.artifact || !lookup.token) return;
+  auto state = lookup.token->state.load(std::memory_order_relaxed);
+  for (;;) {
+    if ((state & lookup_state_consumed) != 0U ||
+        (state & lookup_state_unused) != 0U) {
+      return;
+    }
+    const auto next = static_cast<std::uint8_t>(state | lookup_state_unused);
+    if (lookup.token->state.compare_exchange_weak(
+            state, next, std::memory_order_acq_rel,
+            std::memory_order_relaxed)) {
+      const std::lock_guard lock{mutex_};
+      ++stats_.staged_unused;
+      return;
+    }
+  }
 }
 
 std::size_t JitArtifactStore::trim_resident_bytes(
