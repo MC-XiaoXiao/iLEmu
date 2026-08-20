@@ -6193,6 +6193,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(artifact_stats.staged_unused) +
         " duplicate-consumptions=" +
         std::to_string(artifact_stats.duplicate_consumptions) +
+        " unique-stage-attempt=" +
+        std::to_string(artifact_stats.unique_stage_attempts) +
+        " negative-probe-hit=" +
+        std::to_string(artifact_stats.negative_probe_hits) +
+        " generation-retry=" +
+        std::to_string(artifact_stats.generation_retries) +
+        " transient-retry=" +
+        std::to_string(artifact_stats.transient_retries) +
         " disk-retry=" +
         std::to_string(artifact_stats.disk_read_retries) +
         " disk-wait=" + std::to_string(artifact_stats.disk_read_waits) +

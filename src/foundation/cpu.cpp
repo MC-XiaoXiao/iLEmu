@@ -587,40 +587,61 @@ public:
     // store lookup, dependency validation, and IR deserialization all happen
     // before Jit::Run. The miss callback only consumes this executor-local
     // slot after NativeCodeSlab::find_block has failed.
-    bool stage_demand_artifact(
+    JitDemandArtifactStageResult stage_demand_artifact(
         std::uint64_t location_descriptor,
-        std::uint64_t slab_generation) {
+        std::uint64_t slab_generation,
+        const JitArtifactKey& key) {
         try {
             if (demand_artifact_location_ == location_descriptor &&
                 demand_artifact_slab_generation_ == slab_generation &&
                 demand_artifact_ && !demand_artifact_consumed_) {
-                return true;
+                return JitDemandArtifactStageResult::Staged;
             }
             discard_demand_artifact();
 
-            const auto key = make_artifact_key(location_descriptor);
-            if (!key) return false;
-            auto validated = validated_artifact_block(location_descriptor);
-            if (!validated || validated->block.Location().Value() !=
-                                  location_descriptor) {
-                return false;
+            auto validated = validate_artifact_block(location_descriptor, &key);
+            if (!validated.block) {
+                return validated.result;
             }
-            demand_artifact_key_ = *key;
+            if (validated.block->block.Location().Value() !=
+                location_descriptor) {
+                return JitDemandArtifactStageResult::PermanentValidationFailure;
+            }
+            demand_artifact_key_ = key;
             demand_artifact_location_ = location_descriptor;
             demand_artifact_slab_generation_ = slab_generation;
-            demand_artifact_lookup_ = validated->lookup;
-            demand_artifact_.emplace(std::move(validated->block));
+            demand_artifact_lookup_ = validated.block->lookup;
+            demand_artifact_.emplace(std::move(validated.block->block));
             if (artifact_store_) {
                 artifact_store_->record_staged(demand_artifact_lookup_);
             }
             if (translation_profile_) {
                 translation_profile_->note_demand_artifact_staged();
             }
-            return true;
+            return JitDemandArtifactStageResult::Staged;
         } catch (...) {
             discard_demand_artifact();
-            return false;
+            return JitDemandArtifactStageResult::TransientFailure;
         }
+    }
+
+    void record_demand_stage_attempt() const noexcept {
+        if (artifact_store_) artifact_store_->record_demand_stage_attempt();
+    }
+
+    void record_demand_negative_probe_hit() const noexcept {
+        if (artifact_store_)
+            artifact_store_->record_demand_negative_probe_hit();
+    }
+
+    void record_demand_generation_retry() const noexcept {
+        if (artifact_store_)
+            artifact_store_->record_demand_generation_retry();
+    }
+
+    void record_demand_transient_retry() const noexcept {
+        if (artifact_store_)
+            artifact_store_->record_demand_transient_retry();
     }
 
     [[nodiscard]] bool demand_artifact_staged(
@@ -699,53 +720,85 @@ public:
     }
 
 private:
-    [[nodiscard]] std::optional<ValidatedArtifactBlock>
-    validated_artifact_block(
-        std::uint64_t location_descriptor) const noexcept {
+    struct ArtifactValidationResult {
+        JitDemandArtifactStageResult result{
+            JitDemandArtifactStageResult::TransientFailure};
+        std::optional<ValidatedArtifactBlock> block;
+    };
+
+    [[nodiscard]] ArtifactValidationResult validate_artifact_block(
+        std::uint64_t location_descriptor,
+        const JitArtifactKey* known_key = nullptr) const noexcept {
         if (!artifact_store_ || !portable_artifact_import_supported() ||
             !jit_artifact_producer_fingerprint_available) {
             if (artifact_store_) {
                 artifact_store_->record_validation_rejection(
                     JitArtifactValidationRejection::Unavailable);
             }
-            return std::nullopt;
+            return {JitDemandArtifactStageResult::PermanentValidationFailure,
+                    std::nullopt};
         }
         try {
-            const auto lookup = find_artifact(location_descriptor);
+            const auto lookup = known_key
+                                    ? artifact_store_->lookup(
+                                          *known_key, artifact_retention_)
+                                    : find_artifact(location_descriptor);
             if (!lookup) {
+                if (lookup.transient_failure) {
+                    artifact_store_->record_validation_rejection(
+                        JitArtifactValidationRejection::Exception);
+                    return {JitDemandArtifactStageResult::TransientFailure,
+                            std::nullopt};
+                }
                 artifact_store_->record_validation_rejection(
                     JitArtifactValidationRejection::NoExactArtifact);
-                return std::nullopt;
+                return {JitDemandArtifactStageResult::ExactMiss, std::nullopt};
             }
             const auto &artifact = *lookup.artifact;
             if (artifact.data.normalized_ir.empty()) {
                 artifact_store_->record_validation_rejection(
                     JitArtifactValidationRejection::EmptyIr);
-                return std::nullopt;
+                return {
+                    JitDemandArtifactStageResult::PermanentValidationFailure,
+                    std::nullopt};
             }
             if (!dependencies_match(artifact)) {
                 artifact_store_->record_validation_rejection(
                     JitArtifactValidationRejection::DependencyMismatch);
-                return std::nullopt;
+                return {
+                    JitDemandArtifactStageResult::PermanentValidationFailure,
+                    std::nullopt};
             }
             auto block = deserialize_dynarmic_ir(artifact.data.normalized_ir);
             if (!block) {
                 artifact_store_->record_validation_rejection(
                     JitArtifactValidationRejection::DeserializeFailed);
-                return std::nullopt;
+                return {
+                    JitDemandArtifactStageResult::PermanentValidationFailure,
+                    std::nullopt};
             }
             if (block->Location().Value() != location_descriptor) {
                 artifact_store_->record_validation_rejection(
                     JitArtifactValidationRejection::DescriptorMismatch);
-                return std::nullopt;
+                return {
+                    JitDemandArtifactStageResult::PermanentValidationFailure,
+                    std::nullopt};
             }
             artifact_store_->record_validation_success();
-            return ValidatedArtifactBlock{std::move(*block), lookup};
+            return {JitDemandArtifactStageResult::Staged,
+                    ValidatedArtifactBlock{std::move(*block), lookup}};
         } catch (...) {
             artifact_store_->record_validation_rejection(
                 JitArtifactValidationRejection::Exception);
-            return std::nullopt;
+            return {JitDemandArtifactStageResult::TransientFailure,
+                    std::nullopt};
         }
+    }
+
+    [[nodiscard]] std::optional<ValidatedArtifactBlock>
+    validated_artifact_block(
+        std::uint64_t location_descriptor) const noexcept {
+        return validate_artifact_block(location_descriptor).block;
     }
 
     void record_constant_dependency(
@@ -2054,6 +2107,19 @@ private:
         JitArtifactKey key;
         std::uint64_t publication_generation{};
         std::uint64_t slab_generation{};
+        std::uint64_t invalidation_epoch{};
+        JitDemandArtifactStageResult result{
+            JitDemandArtifactStageResult::ExactMiss};
+        JitDemandArtifactTransientBackoff transient_backoff;
+
+        [[nodiscard]] bool cheap_matches(
+            std::uint64_t candidate_publication_generation,
+            std::uint64_t candidate_slab_generation,
+            std::uint64_t candidate_invalidation_epoch) const noexcept {
+            return publication_generation == candidate_publication_generation &&
+                   slab_generation == candidate_slab_generation &&
+                   invalidation_epoch == candidate_invalidation_epoch;
+        }
 
         [[nodiscard]] bool matches(
             const JitArtifactKey& candidate,
@@ -2099,11 +2165,13 @@ private:
     }
 
     void preload_current_artifact() {
+        if (demand_artifact_attempt_generation_ !=
+            std::numeric_limits<std::uint64_t>::max()) {
+            ++demand_artifact_attempt_generation_;
+        }
         const auto location = current_location_descriptor();
-        const auto key = callbacks_->artifact_key(location);
-        if (!key) return;
         const auto slab_generation =
-            execution_context_->native_code_slab()->generation();
+            execution_context_->native_code_slab()->generation_snapshot();
         if (callbacks_->demand_artifact_staged(location, slab_generation) ||
             callbacks_->demand_artifact_native_ready(
                 location, slab_generation)) {
@@ -2111,17 +2179,58 @@ private:
         }
         const auto publication_generation =
             callbacks_->artifact_publication_generation();
-        if (const auto probe = demand_artifact_probes_.find(location);
-            probe != demand_artifact_probes_.end() &&
-            probe->second.matches(
+        const auto invalidation_epoch =
+            execution_context_->cache_invalidation_epoch();
+        const auto probe = demand_artifact_probes_.find(location);
+        JitDemandArtifactTransientBackoff transient_backoff;
+        if (probe != demand_artifact_probes_.end()) {
+            if (probe->second.cheap_matches(
+                    publication_generation, slab_generation,
+                    invalidation_epoch)) {
+                if (probe->second.result !=
+                        JitDemandArtifactStageResult::TransientFailure ||
+                    !probe->second.transient_backoff.retry_due(
+                        demand_artifact_attempt_generation_)) {
+                    callbacks_->record_demand_negative_probe_hit();
+                    return;
+                }
+                transient_backoff = probe->second.transient_backoff;
+                callbacks_->record_demand_transient_retry();
+            } else {
+                callbacks_->record_demand_generation_retry();
+            }
+        }
+        const auto key = callbacks_->artifact_key(location);
+        if (!key) return;
+        if (probe != demand_artifact_probes_.end() &&
+            probe->second.cheap_matches(
+                publication_generation, slab_generation,
+                invalidation_epoch) &&
+            !probe->second.matches(
                 *key, publication_generation, slab_generation)) {
-            return;
+            callbacks_->record_demand_generation_retry();
         }
-        if (callbacks_->stage_demand_artifact(location, slab_generation)) {
-            demand_artifact_probes_.insert_or_assign(
-                location, DemandArtifactProbe{
-                              *key, publication_generation, slab_generation});
+        callbacks_->record_demand_stage_attempt();
+        const auto result =
+            callbacks_->stage_demand_artifact(
+                location, slab_generation, *key);
+        if (result == JitDemandArtifactStageResult::Staged) {
+            transient_backoff.reset();
         }
+        if (result == JitDemandArtifactStageResult::TransientFailure) {
+            transient_backoff.record_failure(
+                demand_artifact_attempt_generation_);
+        }
+        constexpr std::size_t maximum_demand_artifact_probes = 4096U;
+        if (demand_artifact_probes_.size() >=
+                maximum_demand_artifact_probes &&
+            probe == demand_artifact_probes_.end()) {
+            demand_artifact_probes_.clear();
+        }
+        demand_artifact_probes_.insert_or_assign(
+            location, DemandArtifactProbe{
+                          *key, publication_generation, slab_generation,
+                          invalidation_epoch, result, transient_backoff});
     }
 
     void observe_shared_invalidation_epoch() {
@@ -2450,6 +2559,7 @@ private:
     std::unordered_map<std::uint64_t, ArtifactProbe> artifact_probes_;
     std::unordered_map<std::uint64_t, DemandArtifactProbe>
         demand_artifact_probes_;
+    std::uint64_t demand_artifact_attempt_generation_{};
     std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker_;
     std::uint64_t native_lookup_sequence_{};
     bool guest_preemption_requested_{};

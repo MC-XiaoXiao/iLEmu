@@ -1984,9 +1984,11 @@ JitArtifactLookup JitArtifactStore::lookup(
   constexpr unsigned maximum_record_attempts = 3U;
   const auto make_lookup = [this, &key](
                                std::shared_ptr<const BlockArtifact> artifact,
-                               bool disk_hit) {
+                               bool disk_hit,
+                               bool transient_failure = false) {
     JitArtifactLookup result;
     result.artifact = std::move(artifact);
+    result.transient_failure = transient_failure;
     if (!result.artifact) return result;
     if (disk_hit) {
       result.provenance = JitArtifactLookupProvenance::DiskDemand;
@@ -2045,7 +2047,9 @@ JitArtifactLookup JitArtifactStore::lookup(
       const auto result = flight->artifact;
       if (!result) {
         ++stats_.misses;
-        return {};
+        JitArtifactLookup missed;
+        missed.transient_failure = flight->transient_failure;
+        return missed;
       }
       if (flight->disk_hit) {
         ++stats_.disk_hits;
@@ -2068,16 +2072,19 @@ JitArtifactLookup JitArtifactStore::lookup(
   const auto finish_locked =
       [this, &key, &flight, &make_lookup](
           std::unique_lock<std::mutex> &lock,
-          std::shared_ptr<const BlockArtifact> artifact, bool disk_hit) {
+          std::shared_ptr<const BlockArtifact> artifact, bool disk_hit,
+          bool transient_failure = false) {
         flight->artifact = artifact;
         flight->disk_hit = disk_hit;
+        flight->transient_failure = transient_failure;
         flight->complete = true;
         if (const auto active = disk_read_flights_.find(key);
             active != disk_read_flights_.end() &&
             active->second == flight) {
           disk_read_flights_.erase(active);
         }
-        auto result = make_lookup(std::move(artifact), disk_hit);
+        auto result = make_lookup(
+            std::move(artifact), disk_hit, transient_failure);
         lock.unlock();
         flight->condition.notify_all();
         return result;
@@ -2170,11 +2177,11 @@ JitArtifactLookup JitArtifactStore::lookup(
           continue;
         }
         ++stats_.misses;
-        return finish_locked(lock, nullptr, false);
+        return finish_locked(lock, nullptr, false, true);
       }
       if (!loaded || (*loaded)->key != key) {
         ++stats_.misses;
-        return finish_locked(lock, nullptr, false);
+        return finish_locked(lock, nullptr, false, true);
       }
       insert_locked(*loaded, static_cast<std::size_t>(record.serialized_bytes),
                     true, false,
@@ -2184,7 +2191,7 @@ JitArtifactLookup JitArtifactStore::lookup(
       auto artifact = artifacts_.find(key);
       if (artifact == artifacts_.end()) {
         ++stats_.misses;
-        return finish_locked(lock, nullptr, false);
+        return finish_locked(lock, nullptr, false, true);
       }
       ++stats_.disk_hits;
       touch_locked(artifact);
@@ -2193,11 +2200,11 @@ JitArtifactLookup JitArtifactStore::lookup(
   } catch (...) {
     std::unique_lock lock{mutex_};
     ++stats_.misses;
-    return finish_locked(lock, nullptr, false);
+    return finish_locked(lock, nullptr, false, true);
   }
   std::unique_lock lock{mutex_};
   ++stats_.misses;
-  return finish_locked(lock, nullptr, false);
+  return finish_locked(lock, nullptr, false, true);
 }
 
 std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
@@ -2595,6 +2602,14 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
   {
     const std::lock_guard lock{mutex_};
     result = stats_;
+    result.unique_stage_attempts =
+        unique_stage_attempts_.load(std::memory_order_relaxed);
+    result.negative_probe_hits =
+        negative_probe_hits_.load(std::memory_order_relaxed);
+    result.generation_retries =
+        generation_retries_.load(std::memory_order_relaxed);
+    result.transient_retries =
+        transient_retries_.load(std::memory_order_relaxed);
     for (const auto &[key, record] : disk_artifacts_) {
       static_cast<void>(key);
       if (record.boot_working_set) {
@@ -2769,6 +2784,22 @@ void JitArtifactStore::record_staged_unused(
       return;
     }
   }
+}
+
+void JitArtifactStore::record_demand_stage_attempt() const noexcept {
+  unique_stage_attempts_.fetch_add(1U, std::memory_order_relaxed);
+}
+
+void JitArtifactStore::record_demand_negative_probe_hit() const noexcept {
+  negative_probe_hits_.fetch_add(1U, std::memory_order_relaxed);
+}
+
+void JitArtifactStore::record_demand_generation_retry() const noexcept {
+  generation_retries_.fetch_add(1U, std::memory_order_relaxed);
+}
+
+void JitArtifactStore::record_demand_transient_retry() const noexcept {
+  transient_retries_.fetch_add(1U, std::memory_order_relaxed);
 }
 
 std::size_t JitArtifactStore::trim_resident_bytes(
@@ -3407,6 +3438,7 @@ bool JitArtifactStore::load_coordinated(
       }
     }
     hotset_dirty_ = false;
+    publication_generation_.fetch_add(1U, std::memory_order_release);
     return true;
   } catch (...) {
     return false;

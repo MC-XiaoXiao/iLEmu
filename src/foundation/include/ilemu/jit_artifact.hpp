@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <condition_variable>
@@ -8,6 +9,7 @@
 #include <filesystem>
 #include <functional>
 #include <list>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -167,6 +169,10 @@ struct JitArtifactStoreStats {
   std::uint64_t demand_consumed{};
   std::uint64_t staged_unused{};
   std::uint64_t duplicate_consumptions{};
+  std::uint64_t unique_stage_attempts{};
+  std::uint64_t negative_probe_hits{};
+  std::uint64_t generation_retries{};
+  std::uint64_t transient_retries{};
   std::uint64_t memory_published_lookups{};
   std::uint64_t disk_demand_lookups{};
   std::uint64_t disk_prefetched_lookups{};
@@ -195,6 +201,48 @@ struct JitArtifactStoreStats {
   std::uintmax_t disk_bytes{};
 };
 
+enum class JitDemandArtifactStageResult : std::uint8_t {
+  Staged,
+  ExactMiss,
+  PermanentValidationFailure,
+  TransientFailure,
+};
+
+// Executor-local retry state. The caller supplies a monotonically increasing
+// slice/attempt generation, so transient recovery never requires a clock read
+// or store access on a suppressed slice.
+class JitDemandArtifactTransientBackoff {
+public:
+  [[nodiscard]] bool retry_due(std::uint64_t attempt_generation) const
+      noexcept {
+    return attempt_generation >= next_attempt_generation_;
+  }
+
+  void record_failure(std::uint64_t attempt_generation) noexcept {
+    retry_count_ = static_cast<std::uint8_t>(
+        std::min<unsigned>(static_cast<unsigned>(retry_count_) + 1U, 7U));
+    const auto delay = std::uint64_t{1}
+                       << std::min<unsigned>(retry_count_ - 1U, 6U);
+    next_attempt_generation_ =
+        attempt_generation > std::numeric_limits<std::uint64_t>::max() - delay
+            ? std::numeric_limits<std::uint64_t>::max()
+            : attempt_generation + delay;
+  }
+
+  void reset() noexcept {
+    retry_count_ = 0U;
+    next_attempt_generation_ = 0U;
+  }
+
+  [[nodiscard]] std::uint8_t retry_count() const noexcept {
+    return retry_count_;
+  }
+
+private:
+  std::uint64_t next_attempt_generation_{};
+  std::uint8_t retry_count_{};
+};
+
 struct BlockArtifact {
   JitArtifactKey key;
   JitArtifactData data;
@@ -215,6 +263,7 @@ struct JitArtifactLookup {
   JitArtifactLookupProvenance provenance{
       JitArtifactLookupProvenance::MemoryPublished};
   std::shared_ptr<JitArtifactLookupToken> token;
+  bool transient_failure{};
 
   [[nodiscard]] explicit operator bool() const noexcept {
     return artifact != nullptr;
@@ -259,6 +308,10 @@ public:
   void record_already_present(const JitArtifactLookup &lookup) const noexcept;
   void record_demand_consumed(const JitArtifactLookup &lookup) const noexcept;
   void record_staged_unused(const JitArtifactLookup &lookup) const noexcept;
+  void record_demand_stage_attempt() const noexcept;
+  void record_demand_negative_probe_hit() const noexcept;
+  void record_demand_generation_retry() const noexcept;
+  void record_demand_transient_retry() const noexcept;
   [[nodiscard]] std::shared_ptr<const BlockArtifact> publish(
       JitArtifactKey key, JitArtifactData data,
       JitArtifactRetention retention = JitArtifactRetention::Normal);
@@ -331,6 +384,7 @@ private:
     std::shared_ptr<const BlockArtifact> artifact;
     bool complete{};
     bool disk_hit{};
+    bool transient_failure{};
   };
   struct HotsetSnapshot {
     std::vector<JitArtifactKey> keys;
@@ -461,7 +515,11 @@ private:
   mutable bool writeback_stopping_{};
   mutable bool writeback_disabled_{};
   mutable std::atomic<bool> writeback_cancel_requested_{};
-  std::atomic<std::uint64_t> publication_generation_{};
+  mutable std::atomic<std::uint64_t> publication_generation_{};
+  mutable std::atomic<std::uint64_t> unique_stage_attempts_{};
+  mutable std::atomic<std::uint64_t> negative_probe_hits_{};
+  mutable std::atomic<std::uint64_t> generation_retries_{};
+  mutable std::atomic<std::uint64_t> transient_retries_{};
   std::thread writeback_thread_;
   mutable JitArtifactStoreStats stats_;
 };
