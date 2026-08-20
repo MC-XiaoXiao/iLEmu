@@ -166,6 +166,8 @@ struct JitArtifactStoreStats {
   std::uint64_t staged{};
   std::uint64_t native_imported{};
   std::uint64_t already_present{};
+  std::uint64_t demand_native_emitted{};
+  std::uint64_t demand_emit_failed{};
   std::uint64_t demand_consumed{};
   std::uint64_t staged_unused{};
   std::uint64_t duplicate_consumptions{};
@@ -310,6 +312,8 @@ public:
   void record_staged(const JitArtifactLookup &lookup) const noexcept;
   void record_native_imported(const JitArtifactLookup &lookup) const noexcept;
   void record_already_present(const JitArtifactLookup &lookup) const noexcept;
+  void record_demand_native_emitted() const noexcept;
+  void record_demand_emit_failed() const noexcept;
   void record_demand_consumed(const JitArtifactLookup &lookup) const noexcept;
   void record_staged_unused(const JitArtifactLookup &lookup) const noexcept;
   void record_demand_stage_attempt() const noexcept;
@@ -374,6 +378,7 @@ private:
     bool startup_prefetched{};
     bool startup_prefetch_used{};
     std::uint64_t benefit_generation{};
+    std::uint64_t benefit_hits{};
     bool boot_working_set{};
   };
   struct PendingWriteback {
@@ -381,6 +386,7 @@ private:
     std::size_t serialized_bytes{};
     std::list<const JitArtifactKey *>::iterator queue_position;
     std::uint64_t benefit_generation{};
+    std::uint64_t benefit_hits{};
     bool boot_working_set{};
   };
   struct DiskReadFlight {
@@ -390,8 +396,14 @@ private:
     bool disk_hit{};
     bool transient_failure{};
   };
+  struct HotsetCandidate {
+    JitArtifactKey key;
+    std::uint64_t benefit_generation{};
+    std::uint64_t benefit_hits{};
+    std::uint64_t translation_nanoseconds{};
+  };
   struct HotsetSnapshot {
-    std::vector<JitArtifactKey> keys;
+    std::vector<HotsetCandidate> candidates;
     ContentIdentity snapshot_id;
     std::uint64_t disk_index_generation{};
     std::uint64_t benefit_generation{};
@@ -446,9 +458,6 @@ private:
   void touch_locked(ArtifactMap::iterator iterator) const;
   [[nodiscard]] std::uint64_t next_disk_generation_locked() const noexcept;
   [[nodiscard]] std::uint64_t next_benefit_generation_locked() const noexcept;
-  void note_disk_benefit_locked(
-      const JitArtifactKey &key,
-      const BlockArtifact *artifact = nullptr) const noexcept;
   void note_artifact_consumed_locked(
       const JitArtifactLookup &lookup) const noexcept;
   void mark_hotset_dirty_locked() const noexcept;

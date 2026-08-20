@@ -2103,6 +2103,10 @@ void firmware_prepare(const std::vector<std::string> &args, Output &output) {
       std::to_string(stats.artifact_stats.native_imported) +
       " already-present=" +
       std::to_string(stats.artifact_stats.already_present) +
+      " demand-native-emitted=" +
+      std::to_string(stats.artifact_stats.demand_native_emitted) +
+      " demand-emit-failed=" +
+      std::to_string(stats.artifact_stats.demand_emit_failed) +
       " demand-consumed=" +
       std::to_string(stats.artifact_stats.demand_consumed) +
       " staged-unused=" +
@@ -6316,6 +6320,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(artifact_stats.native_imported) +
         " already-present=" +
         std::to_string(artifact_stats.already_present) +
+        " demand-native-emitted=" +
+        std::to_string(artifact_stats.demand_native_emitted) +
+        " demand-emit-failed=" +
+        std::to_string(artifact_stats.demand_emit_failed) +
         " demand-consumed=" +
         std::to_string(artifact_stats.demand_consumed) +
         " staged-unused=" +

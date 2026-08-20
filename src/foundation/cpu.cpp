@@ -460,6 +460,13 @@ public:
         Failed,
     };
 
+    enum class DemandArtifactState : std::uint8_t {
+        Empty,
+        Staged,
+        HandedOff,
+        NativeEmitted,
+    };
+
     JitCallbacks(
         AddressSpace& memory,
         const ArmCpuModel& cpu_model,
@@ -521,16 +528,27 @@ public:
         auto validated = validated_artifact_block(location_descriptor);
         if (!validated) return ArtifactImportOutcome::Unavailable;
         try {
-            const auto imported = jit.Precompile(std::move(validated->block));
+            const auto emitted =
+                jit.PrecompileWithResult(std::move(validated->block));
             if (artifact_store_) {
-                if (imported) {
+                if (emitted == Dynarmic::A32::Jit::PortableIREmitOutcome::
+                                   NativeEmitted) {
                     artifact_store_->record_native_imported(validated->lookup);
-                } else {
+                } else if (
+                    emitted == Dynarmic::A32::Jit::PortableIREmitOutcome::
+                                   AlreadyPresent) {
                     artifact_store_->record_already_present(validated->lookup);
                 }
             }
-            return imported ? ArtifactImportOutcome::Imported
-                            : ArtifactImportOutcome::AlreadyPresent;
+            switch (emitted) {
+            case Dynarmic::A32::Jit::PortableIREmitOutcome::NativeEmitted:
+                return ArtifactImportOutcome::Imported;
+            case Dynarmic::A32::Jit::PortableIREmitOutcome::AlreadyPresent:
+                return ArtifactImportOutcome::AlreadyPresent;
+            case Dynarmic::A32::Jit::PortableIREmitOutcome::EmitFailed:
+                return ArtifactImportOutcome::Failed;
+            }
+            return ArtifactImportOutcome::Failed;
         } catch (...) {
             return ArtifactImportOutcome::Failed;
         }
@@ -594,7 +612,8 @@ public:
         try {
             if (demand_artifact_location_ == location_descriptor &&
                 demand_artifact_slab_generation_ == slab_generation &&
-                demand_artifact_ && !demand_artifact_consumed_) {
+                demand_artifact_ &&
+                demand_artifact_state_ == DemandArtifactState::Staged) {
                 return JitDemandArtifactStageResult::Staged;
             }
             discard_demand_artifact();
@@ -612,6 +631,7 @@ public:
             demand_artifact_slab_generation_ = slab_generation;
             demand_artifact_lookup_ = validated.block->lookup;
             demand_artifact_.emplace(std::move(validated.block->block));
+            demand_artifact_state_ = DemandArtifactState::Staged;
             if (artifact_store_) {
                 artifact_store_->record_staged(demand_artifact_lookup_);
             }
@@ -650,7 +670,7 @@ public:
         return demand_artifact_location_ == location_descriptor &&
                demand_artifact_slab_generation_ == slab_generation &&
                demand_artifact_.has_value() &&
-               !demand_artifact_consumed_;
+               demand_artifact_state_ == DemandArtifactState::Staged;
     }
 
     [[nodiscard]] bool demand_artifact_native_ready(
@@ -658,30 +678,83 @@ public:
         std::uint64_t slab_generation) const noexcept {
         return demand_artifact_location_ == location_descriptor &&
                demand_artifact_slab_generation_ == slab_generation &&
-               demand_artifact_consumed_;
+               demand_artifact_state_ == DemandArtifactState::NativeEmitted;
     }
 
-    void discard_demand_artifact() noexcept {
-        if (demand_artifact_ && !demand_artifact_consumed_ &&
-            translation_profile_) {
-            translation_profile_->note_demand_artifact_stage_unused();
-        }
-        if (demand_artifact_ && !demand_artifact_consumed_ && artifact_store_) {
-            artifact_store_->record_staged_unused(demand_artifact_lookup_);
-        }
+    void clear_demand_artifact() noexcept {
         demand_artifact_.reset();
         demand_artifact_lookup_ = {};
         demand_artifact_key_ = {};
         demand_artifact_location_ = 0;
         demand_artifact_slab_generation_ = 0;
-        demand_artifact_consumed_ = false;
+        demand_artifact_state_ = DemandArtifactState::Empty;
+    }
+
+    void discard_demand_artifact() noexcept {
+        if (demand_artifact_state_ != DemandArtifactState::Empty &&
+            translation_profile_) {
+            translation_profile_->note_demand_artifact_stage_unused();
+        }
+        if (demand_artifact_state_ != DemandArtifactState::Empty &&
+            artifact_store_) {
+            artifact_store_->record_staged_unused(demand_artifact_lookup_);
+        }
+        clear_demand_artifact();
     }
 
     void finish_demand_artifact(std::uint64_t location_descriptor) noexcept {
-        if (demand_artifact_ && !demand_artifact_consumed_ &&
-            demand_artifact_location_ == location_descriptor) {
-            discard_demand_artifact();
+        if (demand_artifact_location_ != location_descriptor) return;
+        if (demand_artifact_state_ == DemandArtifactState::NativeEmitted) {
+            if (artifact_store_) {
+                artifact_store_->record_demand_consumed(
+                    demand_artifact_lookup_);
+            }
+            if (translation_profile_) {
+                translation_profile_->note_demand_artifact_consumed();
+                if (!translation_profile_->consume_profile_portable_artifact(
+                        location_descriptor)) {
+                    translation_profile_->
+                        note_ordinary_demand_artifact_consumed();
+                }
+            }
+            clear_demand_artifact();
+            return;
         }
+        discard_demand_artifact();
+    }
+
+    [[nodiscard]] bool complete_demand_artifact_emit(
+        std::uint64_t location_descriptor,
+        std::uint64_t slab_generation,
+        Dynarmic::A32::Jit::PortableIREmitOutcome outcome) noexcept {
+        if (demand_artifact_state_ != DemandArtifactState::HandedOff ||
+            demand_artifact_location_ != location_descriptor ||
+            demand_artifact_slab_generation_ != slab_generation) {
+            return false;
+        }
+        demand_artifact_.reset();
+        switch (outcome) {
+        case Dynarmic::A32::Jit::PortableIREmitOutcome::NativeEmitted:
+            demand_artifact_state_ = DemandArtifactState::NativeEmitted;
+            if (artifact_store_) {
+                artifact_store_->record_demand_native_emitted();
+            }
+            return false;
+        case Dynarmic::A32::Jit::PortableIREmitOutcome::AlreadyPresent:
+            if (artifact_store_) {
+                artifact_store_->record_already_present(
+                    demand_artifact_lookup_);
+            }
+            discard_demand_artifact();
+            return false;
+        case Dynarmic::A32::Jit::PortableIREmitOutcome::EmitFailed:
+            if (artifact_store_) {
+                artifact_store_->record_demand_emit_failed();
+            }
+            discard_demand_artifact();
+            return true;
+        }
+        return true;
     }
 
     // Called by Dynarmic only after NativeCodeSlab::find_block misses. This
@@ -689,7 +762,9 @@ public:
     [[nodiscard]] Dynarmic::IR::Block* take_demand_artifact(
         std::uint64_t location_descriptor,
         std::uint64_t slab_generation) noexcept {
-        const bool hit = demand_artifact_ && !demand_artifact_consumed_ &&
+        const bool hit = demand_artifact_ &&
+                         demand_artifact_state_ ==
+                             DemandArtifactState::Staged &&
                          demand_artifact_location_ == location_descriptor &&
                          demand_artifact_slab_generation_ == slab_generation &&
                          demand_artifact_key_.location_descriptor ==
@@ -698,17 +773,7 @@ public:
                              location_descriptor;
         performance_counters().record_jit_demand_artifact_probe(hit);
         if (!hit) return nullptr;
-        demand_artifact_consumed_ = true;
-        if (artifact_store_) {
-            artifact_store_->record_demand_consumed(demand_artifact_lookup_);
-        }
-        if (translation_profile_) {
-            translation_profile_->note_demand_artifact_consumed();
-            if (!translation_profile_->consume_profile_portable_artifact(
-                    location_descriptor)) {
-                translation_profile_->note_ordinary_demand_artifact_consumed();
-            }
-        }
+        demand_artifact_state_ = DemandArtifactState::HandedOff;
         return &*demand_artifact_;
     }
 
@@ -1525,7 +1590,7 @@ private:
     JitArtifactKey demand_artifact_key_{};
     std::uint64_t demand_artifact_location_{};
     std::uint64_t demand_artifact_slab_generation_{};
-    bool demand_artifact_consumed_{};
+    DemandArtifactState demand_artifact_state_{DemandArtifactState::Empty};
     bool cooperative_execution_{};
     bool host_yield_requested_{};
     std::uint32_t host_yield_probe_count_{};
@@ -1987,18 +2052,11 @@ public:
         if (imported == JitCallbacks::ArtifactImportOutcome::AlreadyPresent) {
             if (profile_derived) {
                 callbacks_->note_native_preimport_already_present();
-                if (before_first_demand) {
-                    callbacks_->note_native_preimport_before_first_demand();
-                    callbacks_->note_profile_imported_before_first_run();
-                }
             }
             if (key) {
                 artifact_probes_[descriptor] = ArtifactProbe{
                     key->content_identity, key->layout_identity, true,
                     callbacks_->artifact_publication_generation()};
-            }
-            if (profile_derived && before_first_demand) {
-                mark_native_preimported(descriptor);
             }
             record_code_cache_usage();
             return PrecompileDisposition::SharedSlabHit;
@@ -2089,6 +2147,26 @@ private:
         auto& executor = *static_cast<JitExecutor*>(user_arg);
         return executor.callbacks_->take_demand_artifact(
             location_descriptor, slab_generation);
+    }
+
+    static void portable_ir_emit_completion(
+        void* user_arg, std::uint64_t location_descriptor,
+        std::uint64_t slab_generation,
+        Dynarmic::A32::Jit::PortableIREmitOutcome outcome) noexcept {
+        auto& executor = *static_cast<JitExecutor*>(user_arg);
+        if (!executor.callbacks_->complete_demand_artifact_emit(
+                location_descriptor, slab_generation, outcome)) {
+            return;
+        }
+        const auto probe =
+            executor.demand_artifact_probes_.find(location_descriptor);
+        if (probe == executor.demand_artifact_probes_.end() ||
+            probe->second.slab_generation != slab_generation) {
+            return;
+        }
+        probe->second.result = JitDemandArtifactStageResult::TransientFailure;
+        probe->second.transient_backoff.record_failure(
+            executor.demand_artifact_attempt_generation_);
     }
 
     struct ArtifactProbe {
@@ -2373,6 +2451,8 @@ private:
         jit_ = std::make_unique<Dynarmic::A32::Jit>(config);
         jit_->SetPortableIRDemandProvider(
             &JitExecutor::portable_ir_demand_provider, this);
+        jit_->SetPortableIREmitCompletion(
+            &JitExecutor::portable_ir_emit_completion, this);
         recorded_dispatch_counters_ = {};
         recorded_shared_cache_state_ = false;
         recorded_shared_range_count_ = 0;
