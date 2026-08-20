@@ -2923,9 +2923,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::uint64_t artifact_compaction_generation{};
   std::optional<std::chrono::steady_clock::time_point>
       artifact_compaction_admitted_at;
-  ArtifactCompactionAdmission artifact_compaction_admission;
+  ArtifactCompactionAdmission artifact_compaction_admission{
+      ArtifactCompactionAdmission::Config{
+          std::chrono::milliseconds{2}, std::chrono::milliseconds{250},
+          std::chrono::milliseconds{250}}};
   constexpr auto artifact_compaction_deadline_reserve =
-      std::chrono::milliseconds{100};
+      std::chrono::milliseconds{2};
   struct ArtifactCompactionTelemetry {
     std::atomic<std::uint64_t> next_generation{1U};
     std::atomic<std::uint64_t> admitted{};
@@ -5486,7 +5489,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                     1U, std::memory_order_relaxed);
               }
             },
-            std::chrono::milliseconds{100});
+            artifact_compaction_deadline_reserve);
         if (task) {
           artifact_compaction_task = task;
           artifact_compaction_generation = task_generation;
