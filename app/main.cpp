@@ -2093,10 +2093,26 @@ void firmware_prepare(const std::vector<std::string> &args, Output &output) {
       " disk-indexed=" +
       std::to_string(stats.artifact_stats.disk_records_indexed) +
       " index-bytes=" + std::to_string(stats.artifact_stats.index_bytes) +
+      " hotset-candidates=" +
+      std::to_string(stats.artifact_stats.hotset_candidates) +
+      " hotset-selected=" +
+      std::to_string(stats.artifact_stats.hotset_selected) +
+      " hotset-skipped-byte-limit=" +
+      std::to_string(stats.artifact_stats.hotset_skipped_byte_limit) +
       " startup-prefetch=" +
       std::to_string(stats.artifact_stats.startup_payloads_prefetched) +
       " startup-prefetch-bytes=" +
       std::to_string(stats.artifact_stats.startup_prefetch_bytes) +
+      " prefetched-useful=" +
+      std::to_string(stats.artifact_stats.prefetched_useful) +
+      " prefetched-unused=" +
+      std::to_string(stats.artifact_stats.prefetched_unused) +
+      " saved-translation-ns=" +
+      std::to_string(stats.artifact_stats.saved_translation_nanoseconds) +
+      " load-cost-ns=" +
+      std::to_string(stats.artifact_stats.load_cost_nanoseconds) +
+      " net-benefit-ns=" +
+      std::to_string(stats.artifact_stats.net_benefit_nanoseconds) +
       " demand-payload-loads=" +
       std::to_string(stats.artifact_stats.demand_payload_disk_loads) +
       " finalizations=" +
@@ -2888,18 +2904,17 @@ void boot(const std::vector<std::string> &args, Output &output) {
     std::atomic<std::uint64_t> cancellations_observed{};
     std::atomic<std::uint64_t> completed{};
     std::atomic<std::uint64_t> failures{};
-    std::atomic<std::uint64_t> max_continuous_nanoseconds{};
+    std::atomic<std::uint64_t> total_duration_nanoseconds{};
+    std::atomic<std::uint64_t> cancellation_request_to_observed_nanoseconds{};
+    std::atomic<std::uint64_t> bytes_before_cancel{};
+    std::atomic<std::uint64_t> records_before_cancel{};
+    std::atomic<std::uint64_t> temporary_cleanup{};
+    std::atomic<std::uint64_t> last_cancellation_request_nanoseconds{};
   } artifact_compaction_telemetry;
   const auto observe_compaction_duration =
       [&artifact_compaction_telemetry](std::uint64_t elapsed) {
-        auto observed = artifact_compaction_telemetry.max_continuous_nanoseconds
-                            .load(std::memory_order_relaxed);
-        while (observed < elapsed &&
-               !artifact_compaction_telemetry.max_continuous_nanoseconds
-                    .compare_exchange_weak(observed, elapsed,
-                                            std::memory_order_relaxed,
-                                            std::memory_order_relaxed)) {
-        }
+        artifact_compaction_telemetry.total_duration_nanoseconds.fetch_add(
+            elapsed, std::memory_order_relaxed);
       };
   const auto precompile_phase_for_process =
       [springboard_boot_path](std::string_view executable_path) {
@@ -5266,6 +5281,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 artifact_compaction_task->cancel();
                 artifact_compaction_telemetry.cancellation_requests.fetch_add(
                     1U, std::memory_order_relaxed);
+                artifact_compaction_telemetry
+                    .last_cancellation_request_nanoseconds.store(
+                        static_cast<std::uint64_t>(
+                            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                std::chrono::steady_clock::now()
+                                    .time_since_epoch())
+                                .count()),
+                        std::memory_order_relaxed);
               }
               host_resources.wake();
             }
@@ -5282,7 +5305,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
             [jit_artifacts, &artifact_compaction_telemetry,
              &observe_compaction_duration](const HostWorkToken &token) {
               const auto started = std::chrono::steady_clock::now();
-              const auto completed = jit_artifacts->compact([&token] {
+              const auto result = jit_artifacts->compact_with_result([&token] {
                 return token.cancelled();
               });
               const auto elapsed = static_cast<std::uint64_t>(
@@ -5290,10 +5313,30 @@ void boot(const std::vector<std::string> &args, Output &output) {
                       std::chrono::steady_clock::now() - started)
                       .count());
               observe_compaction_duration(elapsed);
-              if (token.cancelled()) {
+              if (result.temporary_cleanup) {
+                artifact_compaction_telemetry.temporary_cleanup.fetch_add(
+                    1U, std::memory_order_relaxed);
+              }
+              if (result.cancelled) {
                 artifact_compaction_telemetry.cancellations_observed.fetch_add(
                     1U, std::memory_order_relaxed);
-              } else if (completed) {
+                artifact_compaction_telemetry.bytes_before_cancel.fetch_add(
+                    result.bytes_before_cancel, std::memory_order_relaxed);
+                artifact_compaction_telemetry.records_before_cancel.fetch_add(
+                    result.records_before_cancel, std::memory_order_relaxed);
+                const auto requested = artifact_compaction_telemetry
+                                           .last_cancellation_request_nanoseconds
+                                           .load(std::memory_order_relaxed);
+                const auto observed = static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::steady_clock::now().time_since_epoch())
+                        .count());
+                if (requested != 0U && observed >= requested) {
+                  artifact_compaction_telemetry
+                      .cancellation_request_to_observed_nanoseconds.fetch_add(
+                          observed - requested, std::memory_order_relaxed);
+                }
+              } else if (result.completed) {
                 artifact_compaction_telemetry.completed.fetch_add(
                     1U, std::memory_order_relaxed);
               } else {
@@ -5805,9 +5848,23 @@ void boot(const std::vector<std::string> &args, Output &output) {
       " artifact-compaction-failures=" +
       std::to_string(artifact_compaction_telemetry.failures.load(
           std::memory_order_relaxed)) +
-      " artifact-compaction-max-continuous-ns=" +
-      std::to_string(artifact_compaction_telemetry.max_continuous_nanoseconds
+      " artifact-compaction-total-duration-ns=" +
+      std::to_string(artifact_compaction_telemetry.total_duration_nanoseconds
                          .load(std::memory_order_relaxed)) +
+      " artifact-compaction-cancel-request-to-observed-ns=" +
+      std::to_string(
+          artifact_compaction_telemetry
+              .cancellation_request_to_observed_nanoseconds.load(
+                  std::memory_order_relaxed)) +
+      " artifact-compaction-bytes-before-cancel=" +
+      std::to_string(artifact_compaction_telemetry.bytes_before_cancel.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-records-before-cancel=" +
+      std::to_string(artifact_compaction_telemetry.records_before_cancel.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-temporary-cleanup=" +
+      std::to_string(artifact_compaction_telemetry.temporary_cleanup.load(
+          std::memory_order_relaxed)) +
       " controller-rejected=" + std::to_string(host_resources.rejected()) +
       " controller-completed=" + std::to_string(host_resources.completed()));
   output.line(
@@ -5987,10 +6044,26 @@ void boot(const std::vector<std::string> &args, Output &output) {
         " disk-indexed=" +
         std::to_string(artifact_stats.disk_records_indexed) +
         " index-bytes=" + std::to_string(artifact_stats.index_bytes) +
+        " hotset-candidates=" +
+        std::to_string(artifact_stats.hotset_candidates) +
+        " hotset-selected=" +
+        std::to_string(artifact_stats.hotset_selected) +
+        " hotset-skipped-byte-limit=" +
+        std::to_string(artifact_stats.hotset_skipped_byte_limit) +
         " startup-prefetch=" +
         std::to_string(artifact_stats.startup_payloads_prefetched) +
         " startup-prefetch-bytes=" +
         std::to_string(artifact_stats.startup_prefetch_bytes) +
+        " prefetched-useful=" +
+        std::to_string(artifact_stats.prefetched_useful) +
+        " prefetched-unused=" +
+        std::to_string(artifact_stats.prefetched_unused) +
+        " saved-translation-ns=" +
+        std::to_string(artifact_stats.saved_translation_nanoseconds) +
+        " load-cost-ns=" +
+        std::to_string(artifact_stats.load_cost_nanoseconds) +
+        " net-benefit-ns=" +
+        std::to_string(artifact_stats.net_benefit_nanoseconds) +
         " demand-payload-loads=" +
         std::to_string(artifact_stats.demand_payload_disk_loads) +
         " demand-deserialization-ns=" +
