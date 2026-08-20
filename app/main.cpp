@@ -5356,9 +5356,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // must not own publication of the deadline used by the controller.
       host_resources.set_next_deadline(host_compile_deadline);
       const auto schedule_artifact_compaction = [&]() {
+        const auto input_deadline_pending =
+            (touch_replay && touch_replay->next_deadline().has_value()) ||
+            live_button_scheduler.next_deadline().has_value() ||
+            live_touch_scheduler.next_deadline().has_value();
         if (artifact_compaction_task) {
           if (!artifact_compaction_task->finished()) {
-            if (scheduler.runnable_count() != 0) {
+            if (scheduler.runnable_count() != 0 || input_deadline_pending) {
               if (!artifact_compaction_task->cancelled()) {
                 const auto requested = static_cast<std::uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
