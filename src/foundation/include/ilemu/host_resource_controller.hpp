@@ -33,6 +33,60 @@ struct HostResourceBudget {
       std::chrono::milliseconds{2}};
 };
 
+struct ArtifactCompactionAdmissionSnapshot {
+  std::chrono::steady_clock::time_point now;
+  std::size_t runnable_count{};
+  bool pending_input{};
+  bool deadline_within_reserve{};
+  bool memory_pressure{};
+  bool controller_available{true};
+};
+
+enum class ArtifactCompactionAdmissionDecision : std::uint8_t {
+  Blocked,
+  WaitingForQuiet,
+  Eligible,
+  KeepActive,
+  CancelActive,
+};
+
+class ArtifactCompactionAdmission {
+public:
+  struct Config {
+    std::chrono::nanoseconds quiet_period{std::chrono::milliseconds{25}};
+    std::chrono::nanoseconds cancellation_cooldown{
+        std::chrono::milliseconds{250}};
+    std::chrono::nanoseconds negative_probe_interval{
+        std::chrono::milliseconds{250}};
+  };
+
+  ArtifactCompactionAdmission();
+  explicit ArtifactCompactionAdmission(Config config);
+
+  [[nodiscard]] ArtifactCompactionAdmissionDecision observe(
+      const ArtifactCompactionAdmissionSnapshot &snapshot,
+      bool task_active) noexcept;
+  [[nodiscard]] bool store_probe_due(
+      std::chrono::steady_clock::time_point now) const noexcept;
+  void note_store_probe_miss(
+      std::chrono::steady_clock::time_point now) noexcept;
+  void note_cancellation_request(
+      std::chrono::steady_clock::time_point now) noexcept;
+  void note_submission_rejected(
+      std::chrono::steady_clock::time_point now) noexcept;
+  void note_task_terminal(
+      std::chrono::steady_clock::time_point now) noexcept;
+
+private:
+  [[nodiscard]] static bool blocked(
+      const ArtifactCompactionAdmissionSnapshot &snapshot) noexcept;
+
+  Config config_;
+  std::optional<std::chrono::steady_clock::time_point> quiet_since_;
+  std::chrono::steady_clock::time_point cooldown_until_{};
+  std::chrono::steady_clock::time_point next_store_probe_{};
+};
+
 class HostWorkToken {
 public:
   void cancel() noexcept { cancelled_.store(true, std::memory_order_release); }

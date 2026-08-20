@@ -39,7 +39,89 @@ namespace {
          kind == HostWorkKind::ArtifactCompaction;
 }
 
+[[nodiscard]] std::chrono::nanoseconds deadline_reserve_for(
+    HostWorkKind kind, std::chrono::nanoseconds estimated_cost,
+    std::chrono::nanoseconds configured_reserve) noexcept {
+  if (kind == HostWorkKind::ArtifactCompaction) {
+    return std::max(configured_reserve, estimated_cost);
+  }
+  return configured_reserve;
+}
+
 } // namespace
+
+ArtifactCompactionAdmission::ArtifactCompactionAdmission()
+    : ArtifactCompactionAdmission{Config{}} {}
+
+ArtifactCompactionAdmission::ArtifactCompactionAdmission(Config config)
+    : config_{config} {
+  if (config_.quiet_period < std::chrono::nanoseconds::zero() ||
+      config_.cancellation_cooldown < std::chrono::nanoseconds::zero() ||
+      config_.negative_probe_interval < std::chrono::nanoseconds::zero()) {
+    throw std::invalid_argument{"invalid artifact compaction admission"};
+  }
+}
+
+bool ArtifactCompactionAdmission::blocked(
+    const ArtifactCompactionAdmissionSnapshot &snapshot) noexcept {
+  return snapshot.runnable_count != 0U || snapshot.pending_input ||
+         snapshot.deadline_within_reserve || snapshot.memory_pressure ||
+         !snapshot.controller_available;
+}
+
+ArtifactCompactionAdmissionDecision ArtifactCompactionAdmission::observe(
+    const ArtifactCompactionAdmissionSnapshot &snapshot,
+    bool task_active) noexcept {
+  if (blocked(snapshot)) {
+    quiet_since_.reset();
+    return task_active ? ArtifactCompactionAdmissionDecision::CancelActive
+                       : ArtifactCompactionAdmissionDecision::Blocked;
+  }
+  if (task_active) return ArtifactCompactionAdmissionDecision::KeepActive;
+  if (snapshot.now < cooldown_until_) {
+    quiet_since_.reset();
+    return ArtifactCompactionAdmissionDecision::Blocked;
+  }
+  if (!quiet_since_) {
+    quiet_since_ = snapshot.now;
+    return config_.quiet_period == std::chrono::nanoseconds::zero()
+               ? ArtifactCompactionAdmissionDecision::Eligible
+               : ArtifactCompactionAdmissionDecision::WaitingForQuiet;
+  }
+  return snapshot.now - *quiet_since_ >= config_.quiet_period
+             ? ArtifactCompactionAdmissionDecision::Eligible
+             : ArtifactCompactionAdmissionDecision::WaitingForQuiet;
+}
+
+bool ArtifactCompactionAdmission::store_probe_due(
+    std::chrono::steady_clock::time_point now) const noexcept {
+  return now >= next_store_probe_;
+}
+
+void ArtifactCompactionAdmission::note_store_probe_miss(
+    std::chrono::steady_clock::time_point now) noexcept {
+  next_store_probe_ = now + config_.negative_probe_interval;
+}
+
+void ArtifactCompactionAdmission::note_cancellation_request(
+    std::chrono::steady_clock::time_point now) noexcept {
+  quiet_since_.reset();
+  cooldown_until_ = now + config_.cancellation_cooldown;
+  next_store_probe_ = cooldown_until_;
+}
+
+void ArtifactCompactionAdmission::note_submission_rejected(
+    std::chrono::steady_clock::time_point now) noexcept {
+  quiet_since_.reset();
+  cooldown_until_ = now + config_.cancellation_cooldown;
+  next_store_probe_ = cooldown_until_;
+}
+
+void ArtifactCompactionAdmission::note_task_terminal(
+    std::chrono::steady_clock::time_point now) noexcept {
+  quiet_since_.reset();
+  next_store_probe_ = now + config_.negative_probe_interval;
+}
 
 void HostWorkToken::wait_finished() const {
   if (finished()) return;
@@ -98,9 +180,11 @@ std::shared_ptr<HostWorkToken> HostResourceController::submit_impl(
   const auto token = std::make_shared<HostWorkToken>();
   const auto now = Clock::now();
   const std::lock_guard lock{mutex_};
+  const auto deadline_reserve = deadline_reserve_for(
+      kind, estimated_cost, budget_.deadline_reserve);
   if (stopping_ || workers_.empty() ||
       (is_best_effort_work(kind) && next_deadline_ &&
-       *next_deadline_ <= now + budget_.deadline_reserve)) {
+       *next_deadline_ <= now + deadline_reserve)) {
     ++rejected_;
     return nullptr;
   }
@@ -119,8 +203,11 @@ std::shared_ptr<HostWorkToken> HostResourceController::submit_impl(
       ++rejected_;
       return nullptr;
     }
-  } else {
+  } else if (kind != HostWorkKind::ArtifactCompaction) {
     estimated_cost = std::chrono::nanoseconds::zero();
+  } else if (estimated_cost < std::chrono::nanoseconds::zero()) {
+    ++rejected_;
+    return nullptr;
   }
   Work task_work;
   if (cancellable_work) {
@@ -195,9 +282,6 @@ void HostResourceController::worker_loop() {
           interactive_work_ = std::chrono::nanoseconds::zero();
           offline_work_ = std::chrono::nanoseconds::zero();
         }
-        const auto background_deadline_too_close =
-            next_deadline_ &&
-            *next_deadline_ <= now + budget_.deadline_reserve;
         auto iterator = tasks_.end();
         for (auto candidate = tasks_.begin(); candidate != tasks_.end();
              ++candidate) {
@@ -207,7 +291,10 @@ void HostResourceController::worker_loop() {
           }
           const auto budgeted = is_budgeted_compile(candidate->second.kind);
           if (!stopping_ && is_best_effort_work(candidate->second.kind)) {
-            if (background_deadline_too_close)
+            const auto reserve = deadline_reserve_for(
+                candidate->second.kind, candidate->second.estimated_cost,
+                budget_.deadline_reserve);
+            if (next_deadline_ && *next_deadline_ <= now + reserve)
               continue;
           }
           if (!stopping_ && budgeted) {

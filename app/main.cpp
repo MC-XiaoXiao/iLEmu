@@ -2923,6 +2923,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::uint64_t artifact_compaction_generation{};
   std::optional<std::chrono::steady_clock::time_point>
       artifact_compaction_admitted_at;
+  ArtifactCompactionAdmission artifact_compaction_admission;
+  constexpr auto artifact_compaction_deadline_reserve =
+      std::chrono::milliseconds{100};
   struct ArtifactCompactionTelemetry {
     std::atomic<std::uint64_t> next_generation{1U};
     std::atomic<std::uint64_t> admitted{};
@@ -5356,13 +5359,29 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // must not own publication of the deadline used by the controller.
       host_resources.set_next_deadline(host_compile_deadline);
       const auto schedule_artifact_compaction = [&]() {
+        const auto now = std::chrono::steady_clock::now();
         const auto input_deadline_pending =
             (touch_replay && touch_replay->next_deadline().has_value()) ||
             live_button_scheduler.next_deadline().has_value() ||
             live_touch_scheduler.next_deadline().has_value();
+        const auto task_pending = artifact_compaction_task &&
+                                  !artifact_compaction_task->finished();
+        const auto controller_work =
+            host_resources.queued() + host_resources.active();
+        const ArtifactCompactionAdmissionSnapshot admission_snapshot{
+            now,
+            scheduler.runnable_count(),
+            input_deadline_pending,
+            host_compile_deadline &&
+                *host_compile_deadline <=
+                    now + artifact_compaction_deadline_reserve,
+            host_memory_is_pressured(latest_host_memory_budget),
+            controller_work <= (task_pending ? 1U : 0U)};
         if (artifact_compaction_task) {
           if (!artifact_compaction_task->finished()) {
-            if (scheduler.runnable_count() != 0 || input_deadline_pending) {
+            if (artifact_compaction_admission.observe(
+                    admission_snapshot, true) ==
+                ArtifactCompactionAdmissionDecision::CancelActive) {
               if (!artifact_compaction_task->cancelled()) {
                 const auto requested = static_cast<std::uint64_t>(
                     std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -5376,6 +5395,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                     .last_cancellation_request_nanoseconds.store(
                         requested, std::memory_order_release);
                 artifact_compaction_task->cancel();
+                artifact_compaction_admission.note_cancellation_request(now);
                 artifact_compaction_telemetry.cancellation_requests.fetch_add(
                     1U, std::memory_order_relaxed);
               }
@@ -5404,9 +5424,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
           artifact_compaction_task.reset();
           artifact_compaction_generation = 0U;
           artifact_compaction_admitted_at.reset();
+          artifact_compaction_admission.note_task_terminal(now);
         }
-        if (scheduler.runnable_count() != 0 ||
-            !jit_artifacts->compaction_needed()) {
+        if (artifact_compaction_admission.observe(
+                admission_snapshot, false) !=
+                ArtifactCompactionAdmissionDecision::Eligible ||
+            !artifact_compaction_admission.store_probe_due(now)) {
+          return;
+        }
+        if (!jit_artifacts->compaction_needed()) {
+          artifact_compaction_admission.note_store_probe_miss(now);
           return;
         }
         const auto task_generation = artifact_compaction_telemetry
@@ -5471,6 +5498,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           artifact_compaction_telemetry.admitted.fetch_add(
               1U, std::memory_order_relaxed);
         } else {
+          artifact_compaction_admission.note_submission_rejected(now);
           artifact_compaction_telemetry.rejected.fetch_add(
               1U, std::memory_order_relaxed);
         }
