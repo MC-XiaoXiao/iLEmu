@@ -413,6 +413,9 @@ const DyldSharedCache *CompatibilityKernel::dyld_shared_cache_for(
                     std::to_string(dyld_shared_cache_->images().size()) +
                     "\n");
     }
+    userland_hle_.prepare_shared_cache_plan(
+        *dyld_shared_cache_,
+        arm_architecture_for_model(device_profile_.cpu_model));
   }
   return dyld_shared_cache_ ? dyld_shared_cache_.get() : nullptr;
 }

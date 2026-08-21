@@ -21,6 +21,7 @@ namespace ilemu {
 
 class AddressSpace;
 class Cpu;
+class DyldSharedCache;
 class MachOImage;
 class Output;
 
@@ -147,6 +148,13 @@ public:
   // contribute an HLE/profile lookup.
   [[nodiscard]] bool needs_image_metadata(std::string_view image_path) const;
 
+  // Build or acquire the immutable HLE lookup plan for one published dyld
+  // cache generation. The plan contains semantic rule descriptors only;
+  // process-local handlers and SVC IDs are bound when a mapping is installed.
+  void prepare_shared_cache_plan(
+      const DyldSharedCache &cache,
+      ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
+
   // Called after dyld has copied one file range into guest memory. Returns
   // the number of newly patched ARM entry points.
   [[nodiscard]] std::size_t
@@ -168,7 +176,9 @@ public:
       std::uint32_t mapping_size, std::uint64_t file_offset,
       const ContentIdentity &cache_identity,
       ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
-      std::shared_ptr<const MachOImage> parsed_image = {});
+      std::shared_ptr<const MachOImage> parsed_image = {},
+      std::optional<std::uint32_t> cache_file_index = {},
+      std::optional<std::uint32_t> cache_image_index = {});
 
   // Returns true only for a registered HLE SVC. The guest return path is
   // completed with ARM BX lr semantics after the handler returns.
@@ -227,6 +237,35 @@ private:
     std::uint8_t patch_size{};
     bool guest_function{};
   };
+  struct HleRuleKey {
+    std::string image_suffix;
+    std::string symbol;
+    bool prefix{};
+    std::optional<std::uint32_t> virtual_address;
+    std::optional<std::pair<std::string, std::string>> objc_method;
+    bool objc_class_method{};
+    bool guest_function{};
+
+    friend bool operator==(const HleRuleKey &, const HleRuleKey &) = default;
+  };
+  struct SharedHlePatch {
+    std::uint32_t image_index{};
+    std::uint32_t file_index{};
+    std::uint64_t file_offset{};
+    std::uint8_t patch_size{};
+    bool thumb{};
+    bool guest_function{};
+    std::string symbol;
+    std::optional<HleRuleKey> rule;
+  };
+  struct SharedHlePlan {
+    ContentIdentity generation_identity;
+    ArmArchitectureVersion architecture{};
+    std::vector<SharedHlePatch> patches;
+    // Sorted [begin,end) ranges in patches for each cache file. Consumers
+    // lower-bound by file offset and never rescan unrelated images/files.
+    std::map<std::uint32_t, std::pair<std::size_t, std::size_t>> file_ranges;
+  };
   struct ParsedImageCacheEntry {
     ArmArchitectureVersion architecture{};
     ContentIdentity content_identity;
@@ -238,6 +277,10 @@ private:
   [[nodiscard]] Registration *select_registration(std::string_view image_path,
                                                   std::string_view symbol);
   [[nodiscard]] const Registration *find_registration(std::uint16_t id) const;
+  [[nodiscard]] const Registration *find_registration(
+      const HleRuleKey &key) const;
+  [[nodiscard]] HleRuleKey rule_key(const Registration &registration) const;
+  [[nodiscard]] static std::string rule_key_text(const HleRuleKey &key);
   [[nodiscard]] ParsedImageCacheEntry &cached_image(
       std::string_view logical_image_path,
       const std::filesystem::path &source_path,
@@ -252,7 +295,9 @@ private:
       std::optional<ContentIdentity> source_identity,
       std::uint32_t mapping_address, std::uint32_t mapping_size,
       std::uint64_t file_offset, ArmArchitectureVersion architecture,
-      std::shared_ptr<const MachOImage> parsed_image = {});
+      std::shared_ptr<const MachOImage> parsed_image = {},
+      std::optional<std::uint32_t> cache_file_index = {},
+      std::optional<std::uint32_t> cache_image_index = {});
   [[nodiscard]] std::uint32_t ensure_string_page();
   [[nodiscard]] std::optional<std::uint32_t>
   install_continuation(Cpu &cpu, std::uint32_t return_address,
@@ -284,6 +329,10 @@ private:
   std::uint64_t registration_generation_{};
   std::map<std::string, ParsedImageCacheEntry, std::less<>>
       parsed_image_cache_;
+  std::shared_ptr<const SharedHlePlan> shared_hle_plan_;
+  ContentIdentity shared_hle_plan_generation_identity_;
+  ArmArchitectureVersion shared_hle_plan_architecture_{};
+  std::uint64_t shared_hle_plan_registration_generation_{};
   std::map<std::uint32_t, InstalledCall> installed_calls_;
   std::map<std::string, std::uint32_t, std::less<>> installed_symbols_;
   std::map<std::string, bool, std::less<>> installed_symbol_thumb_;
@@ -308,6 +357,8 @@ private:
 };
 
 struct UserlandHleStats {
+  std::uint64_t generation_plan_builds{};
+  std::uint64_t generation_plan_hits{};
   std::uint64_t image_plan_builds{};
   std::uint64_t image_plan_hits{};
   std::uint64_t relevant_images{};

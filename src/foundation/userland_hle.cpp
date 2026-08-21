@@ -15,6 +15,7 @@
 
 #include "ilemu/address_space.hpp"
 #include "ilemu/cpu.hpp"
+#include "ilemu/dyld_shared_cache.hpp"
 #include "ilemu/macho.hpp"
 #include "ilemu/output.hpp"
 #include "ilemu/performance.hpp"
@@ -37,6 +38,8 @@ constexpr std::size_t maximum_traced_hle_symbols = 512;
 
 std::atomic<std::uint64_t> hle_image_plan_builds{};
 std::atomic<std::uint64_t> hle_image_plan_hits{};
+std::atomic<std::uint64_t> hle_generation_plan_builds{};
+std::atomic<std::uint64_t> hle_generation_plan_hits{};
 std::atomic<std::uint64_t> hle_relevant_images{};
 std::atomic<std::uint64_t> hle_expected_patches{};
 std::atomic<std::uint64_t> hle_installed_patches{};
@@ -681,6 +684,258 @@ UserlandHleRegistry::find_registration(std::uint16_t id) const {
   return registration.id == id ? &registration : nullptr;
 }
 
+UserlandHleRegistry::HleRuleKey UserlandHleRegistry::rule_key(
+    const Registration &registration) const {
+  return HleRuleKey{registration.image_suffix,
+                    registration.symbol,
+                    registration.prefix,
+                    registration.virtual_address,
+                    registration.objc_instance_method,
+                    registration.objc_class_method,
+                    false};
+}
+
+std::string UserlandHleRegistry::rule_key_text(const HleRuleKey &key) {
+  std::string text;
+  const auto append = [&text](std::string_view value) {
+    text += std::to_string(value.size());
+    text.push_back(':');
+    text.append(value);
+    text.push_back('|');
+  };
+  append(key.image_suffix);
+  append(key.symbol);
+  text += key.prefix ? "p1|" : "p0|";
+  text += key.virtual_address
+              ? "a" + std::to_string(*key.virtual_address) + "|"
+              : "a-|";
+  if (key.objc_method) {
+    text += "o";
+    append(key.objc_method->first);
+    append(key.objc_method->second);
+  } else {
+    text += "o-|";
+  }
+  text += key.objc_class_method ? "c1|" : "c0|";
+  text += key.guest_function ? "g1|" : "g0|";
+  return text;
+}
+
+const UserlandHleRegistry::Registration *
+UserlandHleRegistry::find_registration(const HleRuleKey &key) const {
+  if (key.guest_function) return nullptr;
+  const auto registration = std::find_if(
+      registrations_.begin(), registrations_.end(),
+      [&](const Registration &candidate) {
+        return rule_key(candidate) == key;
+      });
+  return registration == registrations_.end() ? nullptr : &*registration;
+}
+
+void UserlandHleRegistry::prepare_shared_cache_plan(
+    const DyldSharedCache &cache, ArmArchitectureVersion architecture) {
+  std::string plan_key = cache.generation_identity().hex();
+  plan_key.push_back('\n');
+  plan_key += std::to_string(static_cast<unsigned>(architecture));
+  plan_key.push_back('\n');
+  for (const auto &registration : registrations_) {
+    plan_key += rule_key_text(rule_key(registration));
+    plan_key.push_back('\n');
+  }
+  for (const auto &dependency : guest_functions_) {
+    plan_key += rule_key_text(HleRuleKey{dependency.first,
+                                         dependency.second,
+                                         false,
+                                         std::nullopt,
+                                         std::nullopt,
+                                         false,
+                                         true});
+    plan_key.push_back('\n');
+  }
+
+  if (shared_hle_plan_ &&
+      shared_hle_plan_generation_identity_ == cache.generation_identity() &&
+      shared_hle_plan_architecture_ == architecture &&
+      shared_hle_plan_registration_generation_ == registration_generation_) {
+    return;
+  }
+
+  static std::mutex shared_plan_mutex;
+  static std::map<std::string, std::weak_ptr<const SharedHlePlan>, std::less<>>
+      shared_plans;
+  std::lock_guard plan_lock{shared_plan_mutex};
+  if (const auto cached = shared_plans.find(plan_key);
+      cached != shared_plans.end()) {
+    if (const auto plan = cached->second.lock()) {
+      shared_hle_plan_ = plan;
+      shared_hle_plan_generation_identity_ = cache.generation_identity();
+      shared_hle_plan_architecture_ = architecture;
+      shared_hle_plan_registration_generation_ = registration_generation_;
+      hle_generation_plan_hits.fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+  }
+
+  auto plan = std::make_shared<SharedHlePlan>();
+  plan->generation_identity = cache.generation_identity();
+  plan->architecture = architecture;
+  const auto file_index_for = [&](const DyldCacheImage &image,
+                                  std::uint64_t file_offset,
+                                  std::size_t patch_size)
+      -> std::optional<std::uint32_t> {
+    if (file_offset > std::numeric_limits<std::uint64_t>::max() -
+                          patch_size) {
+      return std::nullopt;
+    }
+    const auto file_end = file_offset + patch_size;
+    for (const auto &range : image.executable_ranges) {
+      const auto range_end =
+          range.file_offset > std::numeric_limits<std::uint64_t>::max() -
+                                  range.size
+              ? std::numeric_limits<std::uint64_t>::max()
+              : range.file_offset + range.size;
+      if (file_offset < range.file_offset || file_offset > range_end ||
+          file_end > range_end) {
+        continue;
+      }
+      return range.file_index;
+    }
+    return std::nullopt;
+  };
+  const auto add_patch = [&](const DyldCacheImage &image,
+                             std::uint64_t file_offset, std::size_t patch_size,
+                             bool thumb, std::string symbol,
+                             std::optional<HleRuleKey> rule,
+                             bool guest_function) {
+    if (!rule && !guest_function) return;
+    const auto file_index = file_index_for(image, file_offset, patch_size);
+    if (!file_index) return;
+    plan->patches.push_back(SharedHlePatch{
+        image.index,
+        *file_index,
+        file_offset,
+        static_cast<std::uint8_t>(patch_size),
+        thumb,
+        guest_function,
+        std::move(symbol),
+        std::move(rule)});
+  };
+
+  for (const auto &image : cache.images()) {
+    if (!needs_image_metadata(image.path)) continue;
+    const auto parsed = cache.parse_image(image.index, architecture);
+    if (!parsed) continue;
+
+    for (const auto &location : parsed->symbol_file_locations()) {
+      if (location.symbol_index >= parsed->symbols().size()) continue;
+      const auto &symbol = parsed->symbols()[location.symbol_index];
+      const auto *registration = select_registration(image.path, symbol.name);
+      const auto guest_function = std::any_of(
+          guest_functions_.begin(), guest_functions_.end(),
+          [&](const auto &dependency) {
+            return path_has_suffix(image.path, dependency.first) &&
+                   dependency.second == symbol.name;
+          });
+      if (registration == nullptr && !guest_function) continue;
+      const auto patch_size = registration == nullptr
+                                  ? std::size_t{0}
+                                  : symbol.thumb_definition()
+                                        ? thumb_patch_size(*parsed, symbol.value,
+                                                           architecture)
+                                        : sizeof(std::uint32_t);
+      add_patch(image, location.file_offset, patch_size,
+                symbol.thumb_definition(), symbol.name,
+                registration ? std::optional{rule_key(*registration)}
+                             : std::nullopt,
+                guest_function);
+    }
+
+    for (const auto &registration : registrations_) {
+      if (!registration.virtual_address ||
+          !path_has_suffix(image.path, registration.image_suffix)) {
+        continue;
+      }
+      const bool thumb = (*registration.virtual_address & 1U) != 0;
+      const auto preferred_address = *registration.virtual_address & ~1U;
+      const auto segment = std::find_if(
+          parsed->segments().begin(), parsed->segments().end(),
+          [&](const MachSegment &candidate) {
+            return preferred_address >= candidate.vm_address &&
+                   preferred_address - candidate.vm_address <
+                       candidate.file_size;
+          });
+      if (segment == parsed->segments().end()) continue;
+      const auto file_offset = static_cast<std::uint64_t>(segment->file_offset) +
+                               (preferred_address - segment->vm_address);
+      const auto patch_size = thumb
+                                  ? thumb_patch_size(*parsed, preferred_address,
+                                                     architecture)
+                                  : sizeof(std::uint32_t);
+      add_patch(image, file_offset, patch_size, thumb, registration.symbol,
+                rule_key(registration), false);
+    }
+
+    for (const auto &registration : registrations_) {
+      if (!registration.objc_instance_method ||
+          !path_has_suffix(image.path, registration.image_suffix)) {
+        continue;
+      }
+      const auto &[class_name, selector] = *registration.objc_instance_method;
+      const auto method =
+          registration.objc_class_method
+              ? parsed->find_objc_class_method(class_name, selector)
+              : parsed->find_objc_instance_method(class_name, selector);
+      if (!method) continue;
+      const bool thumb = (*method & 1U) != 0;
+      const auto preferred_address = *method & ~1U;
+      const auto segment = std::find_if(
+          parsed->segments().begin(), parsed->segments().end(),
+          [&](const MachSegment &candidate) {
+            return preferred_address >= candidate.vm_address &&
+                   preferred_address - candidate.vm_address <
+                       candidate.file_size;
+          });
+      if (segment == parsed->segments().end()) continue;
+      const auto file_offset = static_cast<std::uint64_t>(segment->file_offset) +
+                               (preferred_address - segment->vm_address);
+      const auto patch_size = thumb
+                                  ? thumb_patch_size(*parsed, preferred_address,
+                                                     architecture)
+                                  : sizeof(std::uint32_t);
+      add_patch(image, file_offset, patch_size, thumb, registration.symbol,
+                rule_key(registration), false);
+    }
+  }
+
+  std::sort(plan->patches.begin(), plan->patches.end(),
+            [](const SharedHlePatch &left, const SharedHlePatch &right) {
+              if (left.file_index != right.file_index)
+                return left.file_index < right.file_index;
+              if (left.file_offset != right.file_offset)
+                return left.file_offset < right.file_offset;
+              if (left.image_index != right.image_index)
+                return left.image_index < right.image_index;
+              return left.symbol < right.symbol;
+            });
+  for (std::size_t index = 0; index < plan->patches.size();) {
+    const auto file_index = plan->patches[index].file_index;
+    const auto begin = index;
+    while (index < plan->patches.size() &&
+           plan->patches[index].file_index == file_index) {
+      ++index;
+    }
+    plan->file_ranges.emplace(file_index, std::pair{begin, index});
+  }
+
+  std::shared_ptr<const SharedHlePlan> immutable_plan = std::move(plan);
+  shared_plans.insert_or_assign(plan_key, immutable_plan);
+  shared_hle_plan_ = immutable_plan;
+  shared_hle_plan_generation_identity_ = cache.generation_identity();
+  shared_hle_plan_architecture_ = architecture;
+  shared_hle_plan_registration_generation_ = registration_generation_;
+  hle_generation_plan_builds.fetch_add(1, std::memory_order_relaxed);
+}
+
 UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
     std::string_view logical_image_path,
     const std::filesystem::path &source_path,
@@ -771,7 +1026,9 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
     std::optional<ContentIdentity> source_identity,
     std::uint32_t mapping_address, std::uint32_t mapping_size,
     std::uint64_t file_offset, ArmArchitectureVersion architecture,
-    std::shared_ptr<const MachOImage> parsed_image) {
+    std::shared_ptr<const MachOImage> parsed_image,
+    std::optional<std::uint32_t> cache_file_index,
+    std::optional<std::uint32_t> cache_image_index) {
   const std::string path{logical_image_path};
   loaded_images_.insert(path);
   if (mapping_size == 0 ||
@@ -792,25 +1049,29 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
     return 0;
   if (performance_counters().enabled())
     hle_relevant_images.fetch_add(1, std::memory_order_relaxed);
+  const auto use_shared_plan =
+      cache_file_index && cache_image_index && shared_hle_plan_ != nullptr;
   // Do not fall back to a full shared-cache container parse when the immutable
   // generation did not provide image metadata.
-  if (image_header_offset && !parsed_image)
+  if (image_header_offset && !parsed_image && !use_shared_plan)
     return 0;
 
-  auto &cached = cached_image(logical_image_path, source_path,
-                              image_header_offset, std::move(source_identity),
-                              architecture, std::move(parsed_image));
-  const auto &image = *cached.image;
   struct PendingPatch {
     std::uint32_t address{};
     std::vector<std::byte> instruction;
     std::optional<InstalledCall> installed_call;
     std::optional<std::pair<std::string, std::uint32_t>> installed_symbol;
   };
+  struct PendingPlanSymbol {
+    std::string symbol;
+    std::uint32_t address{};
+    bool thumb{};
+  };
   const auto mapping_offset = file_offset;
   const auto mapping_file_end = file_offset + mapping_size;
   std::size_t patched = 0;
   std::vector<PendingPatch> pending_patches;
+  std::vector<PendingPlanSymbol> pending_plan_symbols;
   std::unordered_set<std::uint32_t> pending_addresses;
   const auto queue_patch = [&](std::uint32_t address,
                                std::span<const std::byte> instruction,
@@ -837,6 +1098,78 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
         arm_svc_opcode | userland_hle_svc_namespace | installed.id);
     static_cast<void>(queue_patch(address, instruction, std::nullopt));
   };
+  if (use_shared_plan) {
+    const auto file_range =
+        shared_hle_plan_->file_ranges.find(*cache_file_index);
+    if (file_range != shared_hle_plan_->file_ranges.end()) {
+      const auto begin = shared_hle_plan_->patches.begin() +
+                         static_cast<std::ptrdiff_t>(file_range->second.first);
+      const auto end = shared_hle_plan_->patches.begin() +
+                       static_cast<std::ptrdiff_t>(file_range->second.second);
+      const auto first_patch = std::lower_bound(
+          begin, end, mapping_offset,
+          [](const SharedHlePatch &patch, std::uint64_t offset) {
+            return patch.file_offset < offset;
+          });
+      const auto after_patch = std::lower_bound(
+          first_patch, end, mapping_file_end,
+          [](const SharedHlePatch &patch, std::uint64_t offset) {
+            return patch.file_offset < offset;
+          });
+      for (auto patch_iterator = first_patch; patch_iterator != after_patch;
+           ++patch_iterator) {
+        const auto &patch = *patch_iterator;
+        if (patch.image_index != *cache_image_index) continue;
+        if (patch.file_offset >
+            std::numeric_limits<std::uint64_t>::max() - patch.patch_size) {
+          continue;
+        }
+        const auto patch_end =
+            patch.file_offset + static_cast<std::uint64_t>(patch.patch_size);
+        if (patch_end > mapping_file_end) continue;
+        const auto mapping_delta = patch.file_offset - mapping_offset;
+        if (mapping_delta >
+            std::numeric_limits<std::uint32_t>::max() - mapping_address) {
+          continue;
+        }
+        const auto runtime_address =
+            mapping_address + static_cast<std::uint32_t>(mapping_delta);
+        if (patch.rule || patch.guest_function) {
+          pending_plan_symbols.push_back(
+              PendingPlanSymbol{patch.symbol, runtime_address, patch.thumb});
+        }
+        const auto *registration = patch.rule
+                                       ? find_registration(*patch.rule)
+                                       : nullptr;
+        if (registration == nullptr || patch.patch_size == 0U) continue;
+        if (const auto installed = installed_calls_.find(runtime_address);
+            installed != installed_calls_.end()) {
+          reapply_installed_patch(runtime_address, installed->second);
+          continue;
+        }
+        const auto original =
+            memory_.read_bytes(runtime_address, patch.patch_size);
+        if (!original) continue;
+        std::vector<std::byte> instruction;
+        if (patch.thumb) {
+          instruction = make_thumb_hle_patch(patch.patch_size);
+        } else {
+          const auto arm_instruction = little_endian_word(
+              arm_svc_opcode | userland_hle_svc_namespace | registration->id);
+          instruction.assign(arm_instruction.begin(), arm_instruction.end());
+        }
+        static_cast<void>(queue_patch(
+            runtime_address, instruction,
+            InstalledCall{registration->id, patch.symbol, patch.thumb,
+                          *original}));
+      }
+    }
+  } else {
+    auto &cached = cached_image(logical_image_path, source_path,
+                                image_header_offset,
+                                std::move(source_identity), architecture,
+                                std::move(parsed_image));
+    const auto &image = *cached.image;
   const auto first_symbol = std::lower_bound(
       cached.mapped_symbols.begin(), cached.mapped_symbols.end(), mapping_offset,
       [](const CachedMappedSymbol &symbol, std::uint64_t offset) {
@@ -1025,6 +1358,7 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
     if (!queued)
       continue;
   }
+  }
   if (!pending_patches.empty()) {
     const bool collect_stats = performance_counters().enabled();
     if (collect_stats)
@@ -1070,6 +1404,10 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
     }
     cpu.invalidate_cache_ranges(invalidations);
   }
+  for (const auto &symbol : pending_plan_symbols) {
+    installed_symbols_.insert_or_assign(symbol.symbol, symbol.address);
+    installed_symbol_thumb_.insert_or_assign(symbol.symbol, symbol.thumb);
+  }
   if (patched != 0) {
     output_.write("[hle] installed pid=" + std::to_string(process_id) +
                   " image=" + std::filesystem::path{path}.filename().string() +
@@ -1080,6 +1418,8 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
 
 UserlandHleStats userland_hle_stats() noexcept {
   return UserlandHleStats{
+      hle_generation_plan_builds.load(std::memory_order_relaxed),
+      hle_generation_plan_hits.load(std::memory_order_relaxed),
       hle_image_plan_builds.load(std::memory_order_relaxed),
       hle_image_plan_hits.load(std::memory_order_relaxed),
       hle_relevant_images.load(std::memory_order_relaxed),
@@ -1107,11 +1447,13 @@ std::size_t UserlandHleRegistry::install_mapped_shared_cache_image(
     std::uint32_t mapping_size, std::uint64_t file_offset,
     const ContentIdentity &cache_identity,
     ArmArchitectureVersion architecture,
-    std::shared_ptr<const MachOImage> parsed_image) {
+    std::shared_ptr<const MachOImage> parsed_image,
+    std::optional<std::uint32_t> cache_file_index,
+    std::optional<std::uint32_t> cache_image_index) {
   return install_mapped_image_impl(
       cpu, process_id, image_path, cache_path, image_header_offset,
       cache_identity, mapping_address, mapping_size, file_offset, architecture,
-      std::move(parsed_image));
+      std::move(parsed_image), cache_file_index, cache_image_index);
 }
 
 bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,

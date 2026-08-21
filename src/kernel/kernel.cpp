@@ -910,13 +910,13 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
           image.path.ends_with(graphics_services_image) ||
           image.path.ends_with(quartz_core_image);
       std::shared_ptr<const MachOImage> parsed_image;
-      if (userland_hle_.needs_image_metadata(image.path) || profile_relevant) {
+      if (profile_relevant) {
         parsed_image = cache->parse_image(image.index, architecture);
       }
       installed += userland_hle_.install_mapped_shared_cache_image(
           cpu, process_.pid, image.path, source.path, header->file_offset,
           mapping_address, mapping_size, file_offset, source.content_identity,
-          architecture, parsed_image);
+          architecture, parsed_image, source_file_index, image.index);
       apply_image_profile(image.path, source.path, header->file_offset,
                           source.content_identity, std::move(parsed_image));
     }

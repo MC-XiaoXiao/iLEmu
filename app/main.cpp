@@ -7112,7 +7112,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
         " image-hits=" + std::to_string(dyld_stats.image_hits));
     const auto hle_stats = userland_hle_stats();
     output.line(
-        "[perf-hle] image-plan-builds=" +
+        "[perf-hle] generation-plan-builds=" +
+        std::to_string(hle_stats.generation_plan_builds) +
+        " generation-plan-hits=" +
+        std::to_string(hle_stats.generation_plan_hits) +
+        " image-plan-builds=" +
         std::to_string(hle_stats.image_plan_builds) +
         " image-plan-hits=" + std::to_string(hle_stats.image_plan_hits) +
         " relevant-images=" + std::to_string(hle_stats.relevant_images) +
