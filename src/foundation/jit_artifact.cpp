@@ -4282,6 +4282,16 @@ bool JitArtifactStore::save_full(
           emitted;
       emitted.reserve(disk_artifacts_.size() + artifacts_.size() +
                       pending_writebacks_.size());
+      std::size_t snapshot_entries_examined{};
+      const auto snapshot_cancelled = [&] {
+        // Keep cancellation latency bounded while this potentially large
+        // metadata snapshot holds mutex_. A 64-entry interval avoids an
+        // atomic token read on every map/list visit.
+        constexpr std::size_t cancellation_interval = 64U;
+        const bool check =
+            snapshot_entries_examined++ % cancellation_interval == 0U;
+        return check && cancelled();
+      };
       const auto append_disk_entry = [&entries, &emitted, this](
                                          const JitArtifactKey &key) {
         const auto disk = disk_artifacts_.find(key);
@@ -4324,8 +4334,12 @@ bool JitArtifactStore::save_full(
                                       disk->second.boot_working_set});
         }
       };
-      for (const auto *key : disk_order_) append_disk_entry(*key);
+      for (const auto *key : disk_order_) {
+        if (snapshot_cancelled()) return false;
+        append_disk_entry(*key);
+      }
       for (const auto &entry : disk_artifacts_) {
+        if (snapshot_cancelled()) return false;
         append_disk_entry(entry.first);
       }
       const auto append_resident_entry = [&entries, &emitted, this](
@@ -4359,17 +4373,24 @@ bool JitArtifactStore::save_full(
               record.boot_working_set});
         }
       };
-      for (const auto *key : lru_) append_resident_entry(*key);
+      for (const auto *key : lru_) {
+        if (snapshot_cancelled()) return false;
+        append_resident_entry(*key);
+      }
       for (const auto &entry : artifacts_) {
+        if (snapshot_cancelled()) return false;
         append_resident_entry(*entry.first);
       }
       for (const auto *key : writeback_order_) {
+        if (snapshot_cancelled()) return false;
         append_resident_entry(*key);
       }
       for (const auto &entry : pending_writebacks_) {
+        if (snapshot_cancelled()) return false;
         append_resident_entry(*entry.first);
       }
       for (auto &entry : entries) {
+        if (snapshot_cancelled()) return false;
         if (entry.disk_record.benefit_generation == 0U &&
             entry.boot_working_set) {
           entry.disk_record.benefit_generation =
