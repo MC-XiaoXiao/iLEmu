@@ -44,7 +44,7 @@ set(ILEMU_BOOST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/ext-boost" CACHE PATH
 # from the developer escape hatch so reusing an old build directory cannot
 # make a former -D... value look like the repository's current pin.
 set(ILEMU_DYNARMIC_PINNED_REVISION
-    "8cacf31b31418c149f4d240f0c7d4fe2ac81bf31" CACHE INTERNAL
+    "41543ee9ae7649abbaf47ddb4e85ce379142f50f" CACHE INTERNAL
     "Product-pinned Dynarmic revision" FORCE)
 set(ILEMU_DYNARMIC_REVISION_OVERRIDE "" CACHE STRING
     "Developer-selected Dynarmic revision; empty uses the product pin")
