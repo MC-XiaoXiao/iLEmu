@@ -2095,7 +2095,7 @@ public:
         guest_preemption_requested_ = false;
         guest_preemption_requested_at_.reset();
         callbacks_->discard_demand_artifact();
-        demand_artifact_probes_.clear();
+        clear_demand_artifact_probes();
         if (native_preimport_tracker_) native_preimport_tracker_->clear();
         callbacks_->clear_demand_locations();
         jit_->Reset();
@@ -2300,15 +2300,27 @@ private:
                 demand_artifact_attempt_generation_);
         }
         constexpr std::size_t maximum_demand_artifact_probes = 4096U;
-        if (demand_artifact_probes_.size() >=
-                maximum_demand_artifact_probes &&
-            probe == demand_artifact_probes_.end()) {
-            demand_artifact_probes_.clear();
+        if (probe == demand_artifact_probes_.end()) {
+            // Keep a bounded FIFO/clock-like admission order. Unlike the old
+            // whole-table clear, this preserves useful negative probes while
+            // evicting one entry in O(1) when the cap is reached.
+            if (demand_artifact_probes_.size() >=
+                maximum_demand_artifact_probes) {
+                const auto victim = demand_artifact_probe_order_.front();
+                demand_artifact_probe_order_.pop_front();
+                demand_artifact_probes_.erase(victim);
+            }
+            demand_artifact_probe_order_.push_back(location);
         }
         demand_artifact_probes_.insert_or_assign(
-            location, DemandArtifactProbe{
-                          *key, publication_generation, slab_generation,
-                          invalidation_epoch, result, transient_backoff});
+            location, DemandArtifactProbe{*key, publication_generation,
+                                          slab_generation, invalidation_epoch,
+                                          result, transient_backoff});
+    }
+
+    void clear_demand_artifact_probes() {
+        demand_artifact_probes_.clear();
+        demand_artifact_probe_order_.clear();
     }
 
     void observe_shared_invalidation_epoch() {
@@ -2316,7 +2328,7 @@ private:
             execution_context_->cache_invalidation_epoch();
         if (invalidation_epoch == observed_invalidation_epoch_) return;
         artifact_probes_.clear();
-        demand_artifact_probes_.clear();
+        clear_demand_artifact_probes();
         callbacks_->clear_demand_locations();
         callbacks_->discard_demand_artifact();
         observed_invalidation_epoch_ = invalidation_epoch;
@@ -2357,7 +2369,7 @@ private:
         // publish a guest invalidation epoch. Retire probes when a
         // precompile operation reaches this slower, serialized boundary.
         artifact_probes_.clear();
-        demand_artifact_probes_.clear();
+        clear_demand_artifact_probes();
         if (native_preimport_tracker_) native_preimport_tracker_->clear();
         callbacks_->clear_demand_locations();
         callbacks_->discard_demand_artifact();
@@ -2639,6 +2651,7 @@ private:
     std::unordered_map<std::uint64_t, ArtifactProbe> artifact_probes_;
     std::unordered_map<std::uint64_t, DemandArtifactProbe>
         demand_artifact_probes_;
+    std::deque<std::uint64_t> demand_artifact_probe_order_;
     std::uint64_t demand_artifact_attempt_generation_{};
     std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker_;
     std::uint64_t native_lookup_sequence_{};
