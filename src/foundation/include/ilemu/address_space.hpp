@@ -38,6 +38,16 @@ struct ExecutableBackingIdentity {
       default;
 };
 
+struct AddressSpaceWriteStats {
+  std::uint64_t batch_calls{};
+  std::uint64_t batch_operations{};
+  std::uint64_t batch_failures{};
+  std::uint64_t touched_pages{};
+  std::uint64_t copy_on_write_detaches{};
+};
+
+[[nodiscard]] AddressSpaceWriteStats address_space_write_stats() noexcept;
+
 class AddressSpace {
 public:
   using MappingRegion = VmMap::MappingRegion;

@@ -66,6 +66,7 @@
 #include "ilemu/touch_replay.hpp"
 #include "ilemu/virtual_network.hpp"
 #include "ilemu/wifi_state.hpp"
+#include "ilemu/userland_hle.hpp"
 #include "ilemu/xnu_scheduler.hpp"
 #include "ffmpeg_audio_decoder.hpp"
 #include "sdl_audio_sink.hpp"
@@ -7046,6 +7047,28 @@ void boot(const std::vector<std::string> &args, Output &output) {
         " generation-hits=" + std::to_string(dyld_stats.generation_hits) +
         " image-builds=" + std::to_string(dyld_stats.image_builds) +
         " image-hits=" + std::to_string(dyld_stats.image_hits));
+    const auto hle_stats = userland_hle_stats();
+    output.line(
+        "[perf-hle] image-plan-builds=" +
+        std::to_string(hle_stats.image_plan_builds) +
+        " image-plan-hits=" + std::to_string(hle_stats.image_plan_hits) +
+        " relevant-images=" + std::to_string(hle_stats.relevant_images) +
+        " expected-patches=" + std::to_string(hle_stats.expected_patches) +
+        " installed-patches=" +
+        std::to_string(hle_stats.installed_patches) +
+        " batch-applies=" + std::to_string(hle_stats.batch_applies) +
+        " invalidation-ranges=" +
+        std::to_string(hle_stats.invalidation_ranges) +
+        " batch-failures=" + std::to_string(hle_stats.batch_failures));
+    const auto write_stats = address_space_write_stats();
+    output.line(
+        "[perf-memory-writes] batch-calls=" +
+        std::to_string(write_stats.batch_calls) +
+        " batch-operations=" + std::to_string(write_stats.batch_operations) +
+        " batch-failures=" + std::to_string(write_stats.batch_failures) +
+        " touched-pages=" + std::to_string(write_stats.touched_pages) +
+        " copy-on-write-detaches=" +
+        std::to_string(write_stats.copy_on_write_detaches));
     // Preserve stopped-guest live/current values, then include Runtime
     // destructor latency measured by the reaper in the final snapshot.
     auto final_snapshot = performance_counters().snapshot();

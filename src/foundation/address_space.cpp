@@ -16,6 +16,12 @@
 namespace ilemu {
 namespace {
 
+std::atomic<std::uint64_t> write_batch_calls{};
+std::atomic<std::uint64_t> write_batch_operations{};
+std::atomic<std::uint64_t> write_batch_failures{};
+std::atomic<std::uint64_t> write_touched_pages{};
+std::atomic<std::uint64_t> write_copy_on_write_detaches{};
+
 constexpr std::uint32_t page_base(std::uint32_t address) {
   return address & ~(AddressSpace::page_size - 1U);
 }
@@ -388,12 +394,20 @@ bool AddressSpace::copy_in(std::uint32_t address,
 bool AddressSpace::copy_in_batch(
     std::span<const CopyInOperation> operations) {
   if (operations.empty()) return true;
+  const bool collect_stats = performance_counters().enabled();
+  if (collect_stats) {
+    write_batch_calls.fetch_add(1, std::memory_order_relaxed);
+    write_batch_operations.fetch_add(operations.size(),
+                                    std::memory_order_relaxed);
+  }
   auto lock = write_lock();
   for (const auto &operation : operations) {
     if (operation.data.size() > std::numeric_limits<std::uint32_t>::max() ||
         range_overflows(operation.address, operation.data.size()) ||
         !range_accessible_locked(operation.address, operation.data.size(),
                                  MemoryPermission::None)) {
+      if (collect_stats)
+        write_batch_failures.fetch_add(1, std::memory_order_relaxed);
       return false;
     }
   }
@@ -425,6 +439,9 @@ bool AddressSpace::copy_in_batch(
   touched_pages.erase(
       std::unique(touched_pages.begin(), touched_pages.end()),
       touched_pages.end());
+  if (collect_stats)
+    write_touched_pages.fetch_add(touched_pages.size(),
+                                  std::memory_order_relaxed);
   for (const auto page_address : touched_pages) {
     auto *page = find_page_locked(page_address);
     if (page == nullptr) continue;
@@ -1076,12 +1093,23 @@ AddressSpace::writable_backing_locked(Page &page) {
     if (page.file_cached ||
         (page.copy_on_write_possible && !page.shared_writable &&
          !page.backing.unique())) {
+      if (performance_counters().enabled())
+        write_copy_on_write_detaches.fetch_add(1, std::memory_order_relaxed);
       page.backing = std::make_shared<GuestPageBacking>(*page.backing);
     }
   }
   page.file_cached = false;
   page.copy_on_write_possible = false;
   return *page.backing;
+}
+
+AddressSpaceWriteStats address_space_write_stats() noexcept {
+  return AddressSpaceWriteStats{
+      write_batch_calls.load(std::memory_order_relaxed),
+      write_batch_operations.load(std::memory_order_relaxed),
+      write_batch_failures.load(std::memory_order_relaxed),
+      write_touched_pages.load(std::memory_order_relaxed),
+      write_copy_on_write_detaches.load(std::memory_order_relaxed)};
 }
 
 void AddressSpace::mark_shared_backing_written_locked(Page &page) {

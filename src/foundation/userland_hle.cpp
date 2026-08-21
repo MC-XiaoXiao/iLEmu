@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -33,6 +34,15 @@ constexpr std::uint32_t lowest_string_page_candidate = 0x3f000000U;
 constexpr std::uint32_t first_data_page_candidate = 0x50000000U;
 constexpr std::uint32_t data_region_end = 0x60000000U;
 constexpr std::size_t maximum_traced_hle_symbols = 512;
+
+std::atomic<std::uint64_t> hle_image_plan_builds{};
+std::atomic<std::uint64_t> hle_image_plan_hits{};
+std::atomic<std::uint64_t> hle_relevant_images{};
+std::atomic<std::uint64_t> hle_expected_patches{};
+std::atomic<std::uint64_t> hle_installed_patches{};
+std::atomic<std::uint64_t> hle_batch_applies{};
+std::atomic<std::uint64_t> hle_invalidation_ranges{};
+std::atomic<std::uint64_t> hle_batch_failures{};
 
 bool path_has_suffix(std::string_view path, std::string_view suffix) {
   return path.size() >= suffix.size() &&
@@ -694,12 +704,16 @@ UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
     // cache before reusing their local registry entry.
     if (parsed_image &&
         parsed_image->content_identity() == cached->second.content_identity) {
+      if (performance_counters().enabled())
+        hle_image_plan_hits.fetch_add(1, std::memory_order_relaxed);
       return cached->second;
     }
     if (!parsed_image) {
       const auto current = shared_file_identity(source_path);
       if (current.content_identity &&
           *current.content_identity == cached->second.content_identity) {
+        if (performance_counters().enabled())
+          hle_image_plan_hits.fetch_add(1, std::memory_order_relaxed);
         return cached->second;
       }
     }
@@ -715,6 +729,8 @@ UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
       key, ParsedImageCacheEntry{architecture, image->content_identity(), image,
                                  registration_generation_, {}});
   static_cast<void>(inserted);
+  if (performance_counters().enabled())
+    hle_image_plan_builds.fetch_add(1, std::memory_order_relaxed);
   auto &entry = iterator->second;
   entry.mapped_symbols.reserve(entry.image->symbol_file_locations().size());
   for (const auto &location : entry.image->symbol_file_locations()) {
@@ -774,6 +790,8 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
                   });
   if (!hle_relevant && !guest_relevant)
     return 0;
+  if (performance_counters().enabled())
+    hle_relevant_images.fetch_add(1, std::memory_order_relaxed);
   // Do not fall back to a full shared-cache container parse when the immutable
   // generation did not provide image metadata.
   if (image_header_offset && !parsed_image)
@@ -1008,6 +1026,10 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
       continue;
   }
   if (!pending_patches.empty()) {
+    const bool collect_stats = performance_counters().enabled();
+    if (collect_stats)
+      hle_expected_patches.fetch_add(pending_patches.size(),
+                                     std::memory_order_relaxed);
     std::vector<AddressSpace::CopyInOperation> writes;
     writes.reserve(pending_patches.size());
     std::vector<Cpu::CacheInvalidationRange> invalidations;
@@ -1019,12 +1041,21 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
           pending.address, pending.instruction.size()});
     }
     if (!memory_.copy_in_batch(writes)) {
+      if (collect_stats)
+        hle_batch_failures.fetch_add(1, std::memory_order_relaxed);
       // The batch preflight is the atomic boundary for MAP_PRIVATE/COW HLE
       // installation. A partial per-patch fallback could expose a mixed
       // image to guest execution and would make invalidation accounting
       // depend on the failure order, so fail the mapping transaction instead.
       throw std::runtime_error{
           "shared-cache HLE patch batch preflight failed"};
+    }
+    if (collect_stats) {
+      hle_batch_applies.fetch_add(1, std::memory_order_relaxed);
+      hle_installed_patches.fetch_add(pending_patches.size(),
+                                      std::memory_order_relaxed);
+      hle_invalidation_ranges.fetch_add(invalidations.size(),
+                                        std::memory_order_relaxed);
     }
     for (auto &pending : pending_patches) {
       if (pending.installed_symbol) {
@@ -1045,6 +1076,18 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
                   " functions=" + std::to_string(patched) + "\n");
   }
   return patched;
+}
+
+UserlandHleStats userland_hle_stats() noexcept {
+  return UserlandHleStats{
+      hle_image_plan_builds.load(std::memory_order_relaxed),
+      hle_image_plan_hits.load(std::memory_order_relaxed),
+      hle_relevant_images.load(std::memory_order_relaxed),
+      hle_expected_patches.load(std::memory_order_relaxed),
+      hle_installed_patches.load(std::memory_order_relaxed),
+      hle_batch_applies.load(std::memory_order_relaxed),
+      hle_invalidation_ranges.load(std::memory_order_relaxed),
+      hle_batch_failures.load(std::memory_order_relaxed)};
 }
 
 std::size_t UserlandHleRegistry::install_mapped_image(

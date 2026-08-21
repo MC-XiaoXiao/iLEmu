@@ -307,4 +307,17 @@ private:
   std::set<std::string, std::less<>> traced_symbols_;
 };
 
+struct UserlandHleStats {
+  std::uint64_t image_plan_builds{};
+  std::uint64_t image_plan_hits{};
+  std::uint64_t relevant_images{};
+  std::uint64_t expected_patches{};
+  std::uint64_t installed_patches{};
+  std::uint64_t batch_applies{};
+  std::uint64_t invalidation_ranges{};
+  std::uint64_t batch_failures{};
+};
+
+[[nodiscard]] UserlandHleStats userland_hle_stats() noexcept;
+
 } // namespace ilemu
