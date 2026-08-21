@@ -564,7 +564,9 @@ const ExecutableCatalogEntry &ExecutableCatalog::register_path_alias(
   const auto alias_path = normalize_path(alias);
   const auto &target_entry = register_image(image);
   if (alias_path == target_path) return target_entry;
-
+  // Removing an existing alias can erase an earlier vector element and move
+  // the target entry. Copy the identity before that mutation invalidates the
+  // reference returned by register_image.
   const auto identity = target_entry.content_identity;
   remove_path(alias_path);
   auto &entry = upsert(identity, alias_path, classify(image, alias_path));
