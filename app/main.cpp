@@ -3002,6 +3002,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
     std::atomic<std::uint64_t> cancellation_observed_count{};
     std::atomic<std::uint64_t> cancellation_request_to_observed_nanoseconds{};
     std::atomic<std::uint64_t> cancellation_request_to_observed_max_nanoseconds{};
+    std::atomic<std::uint64_t> lock_wait_total_nanoseconds{};
+    std::atomic<std::uint64_t> lock_wait_max_nanoseconds{};
+    std::atomic<std::uint64_t> save_total_nanoseconds{};
+    std::atomic<std::uint64_t> save_max_nanoseconds{};
+    std::atomic<std::uint64_t> cleanup_total_nanoseconds{};
+    std::atomic<std::uint64_t> cleanup_max_nanoseconds{};
+    std::atomic<std::uint64_t> rename_total_nanoseconds{};
+    std::atomic<std::uint64_t> rename_max_nanoseconds{};
     std::atomic<std::uint64_t> bytes_before_cancel{};
     std::atomic<std::uint64_t> records_before_cancel{};
     std::atomic<std::uint64_t> temporary_cleanup_attempted{};
@@ -3044,7 +3052,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
           std::uint64_t cleanup_attempted,
           std::uint64_t cleanup_succeeded,
           std::uint64_t cleanup_failed,
-          std::uint64_t cleanup_residue) {
+          std::uint64_t cleanup_residue,
+          std::uint64_t lock_wait_nanoseconds,
+          std::uint64_t save_nanoseconds,
+          std::uint64_t cleanup_nanoseconds,
+          std::uint64_t rename_nanoseconds) {
         switch (terminal) {
         case ArtifactCompactionTaskState::Completed:
           artifact_compaction_telemetry.completed.fetch_add(
@@ -3090,6 +3102,22 @@ void boot(const std::vector<std::string> &args, Output &output) {
             cleanup_failed, std::memory_order_relaxed);
         artifact_compaction_telemetry.temporary_residue_found.fetch_add(
             cleanup_residue, std::memory_order_relaxed);
+        artifact_compaction_telemetry.lock_wait_total_nanoseconds.fetch_add(
+            lock_wait_nanoseconds, std::memory_order_relaxed);
+        atomic_max(artifact_compaction_telemetry.lock_wait_max_nanoseconds,
+                   lock_wait_nanoseconds);
+        artifact_compaction_telemetry.save_total_nanoseconds.fetch_add(
+            save_nanoseconds, std::memory_order_relaxed);
+        atomic_max(artifact_compaction_telemetry.save_max_nanoseconds,
+                   save_nanoseconds);
+        artifact_compaction_telemetry.cleanup_total_nanoseconds.fetch_add(
+            cleanup_nanoseconds, std::memory_order_relaxed);
+        atomic_max(artifact_compaction_telemetry.cleanup_max_nanoseconds,
+                   cleanup_nanoseconds);
+        artifact_compaction_telemetry.rename_total_nanoseconds.fetch_add(
+            rename_nanoseconds, std::memory_order_relaxed);
+        atomic_max(artifact_compaction_telemetry.rename_max_nanoseconds,
+                   rename_nanoseconds);
         const auto requested = record.cancellation_requested_nanoseconds();
         if ((terminal == ArtifactCompactionTaskState::CancelledBeforeStart ||
              terminal == ArtifactCompactionTaskState::CancelledInProgress) &&
@@ -5509,7 +5537,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
               observe_compaction_terminal(
                   *artifact_compaction_record,
                   ArtifactCompactionTaskState::CancelledBeforeStart,
-                  terminal_time, terminal_time, 0U, 0U, 0U, 0U, 0U, 0U);
+                  terminal_time, terminal_time, 0U, 0U, 0U, 0U, 0U, 0U,
+                  0U, 0U, 0U, 0U);
             }
           }
           artifact_compaction_task.reset();
@@ -5570,7 +5599,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
                     result.temporary_cleanup_attempts,
                     result.temporary_cleanup_successes,
                     result.temporary_cleanup_failures,
-                    result.temporary_residues);
+                    result.temporary_residues,
+                    result.lock_wait_nanoseconds,
+                    result.save_nanoseconds,
+                    result.cleanup_nanoseconds,
+                    result.rename_nanoseconds);
               }
             },
             artifact_compaction_deadline_reserve);
@@ -6056,7 +6089,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       observe_compaction_terminal(
           *artifact_compaction_record,
           ArtifactCompactionTaskState::CancelledBeforeStart, terminal_time,
-          terminal_time, 0U, 0U, 0U, 0U, 0U, 0U);
+          terminal_time, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U, 0U);
     }
   }
   artifact_compaction_task.reset();
@@ -6189,6 +6222,33 @@ void boot(const std::vector<std::string> &args, Output &output) {
           std::memory_order_relaxed)) +
       " artifact-compaction-temporary-residue-found=" +
       std::to_string(artifact_compaction_telemetry.temporary_residue_found.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-lock-wait-total-ns=" +
+      std::to_string(artifact_compaction_telemetry
+                         .lock_wait_total_nanoseconds.load(
+                             std::memory_order_relaxed)) +
+      " artifact-compaction-lock-wait-max-ns=" +
+      std::to_string(artifact_compaction_telemetry
+                         .lock_wait_max_nanoseconds.load(
+                             std::memory_order_relaxed)) +
+      " artifact-compaction-save-total-ns=" +
+      std::to_string(artifact_compaction_telemetry.save_total_nanoseconds.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-save-max-ns=" +
+      std::to_string(artifact_compaction_telemetry.save_max_nanoseconds.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-cleanup-total-ns=" +
+      std::to_string(
+          artifact_compaction_telemetry.cleanup_total_nanoseconds.load(
+              std::memory_order_relaxed)) +
+      " artifact-compaction-cleanup-max-ns=" +
+      std::to_string(artifact_compaction_telemetry.cleanup_max_nanoseconds.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-rename-total-ns=" +
+      std::to_string(artifact_compaction_telemetry.rename_total_nanoseconds.load(
+          std::memory_order_relaxed)) +
+      " artifact-compaction-rename-max-ns=" +
+      std::to_string(artifact_compaction_telemetry.rename_max_nanoseconds.load(
           std::memory_order_relaxed)) +
       " controller-rejected=" + std::to_string(host_resources.rejected()) +
       " controller-completed=" + std::to_string(host_resources.completed()));
