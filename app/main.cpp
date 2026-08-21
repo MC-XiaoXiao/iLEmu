@@ -2703,8 +2703,21 @@ void boot(const std::vector<std::string> &args, Output &output) {
   LiveTouchScheduler live_touch_scheduler;
   struct TransitionAttribution {
     std::mutex mutex;
+    std::atomic<bool> internal_stability_active{false};
+    std::uint64_t next_transition_id{};
+    std::uint64_t active_transition_id{};
     bool awaiting_first_submission{};
+    bool internal_stability_marker_emitted{};
+    bool stability_baseline_set{};
     std::uint64_t input_complete_nanoseconds{};
+    std::uint64_t first_submission_sequence{};
+    std::uint64_t latest_content_revision{};
+    std::uint64_t stability_baseline_vsync_pulses{};
+    std::uint64_t stability_baseline_display_time{};
+    std::uint64_t stability_observation_count{};
+    std::uint64_t stability_content_reset_count{};
+    std::uint64_t stability_last_observed_content_revision{};
+    std::uint64_t stability_last_observed_vsync_pulses{};
   } transition_attribution;
   std::optional<std::string> pending_touch_input_completion;
   std::optional<std::string> pending_button_input_completion;
@@ -3068,9 +3081,25 @@ void boot(const std::vector<std::string> &args, Output &output) {
       [&](std::string_view kind) {
         const auto completed_at = steady_nanoseconds();
         std::lock_guard lock{transition_attribution.mutex};
+        transition_attribution.active_transition_id =
+            ++transition_attribution.next_transition_id;
+        transition_attribution.internal_stability_active.store(
+            true, std::memory_order_release);
         transition_attribution.input_complete_nanoseconds = completed_at;
         transition_attribution.awaiting_first_submission = true;
-        output.marker("[transition] input-complete kind=" +
+        transition_attribution.internal_stability_marker_emitted = false;
+        transition_attribution.stability_baseline_set = false;
+        transition_attribution.first_submission_sequence = 0;
+        transition_attribution.latest_content_revision = 0;
+        transition_attribution.stability_baseline_vsync_pulses = 0;
+        transition_attribution.stability_baseline_display_time = 0;
+        transition_attribution.stability_observation_count = 0;
+        transition_attribution.stability_content_reset_count = 0;
+        transition_attribution.stability_last_observed_content_revision = 0;
+        transition_attribution.stability_last_observed_vsync_pulses = 0;
+        output.marker("[transition] input-complete id=" +
+                      std::to_string(transition_attribution.active_transition_id) +
+                      " kind=" +
                       std::string{kind} +
                       " completed-ns=" + std::to_string(completed_at));
       };
@@ -3553,6 +3582,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
             std::lock_guard lock{transition_attribution.mutex};
             if (transition_attribution.awaiting_first_submission) {
               transition_attribution.awaiting_first_submission = false;
+              transition_attribution.first_submission_sequence =
+                  frame.sequence;
+              transition_attribution.stability_baseline_set = false;
+              transition_attribution.stability_baseline_display_time = 0;
+              transition_attribution.internal_stability_marker_emitted =
+                  false;
               const auto submitted_nanoseconds =
                   frame.submitted_at ==
                           std::chrono::steady_clock::time_point{}
@@ -3563,7 +3598,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                 frame.submitted_at.time_since_epoch())
                                 .count());
               output.marker(
-                  "[transition] frame-submit sequence=" +
+                  "[transition] frame-submit id=" +
+                  std::to_string(transition_attribution.active_transition_id) +
+                  " sequence=" +
                   std::to_string(frame.sequence) +
                   " submitted-ns=" + std::to_string(submitted_nanoseconds) +
                   " input-complete-ns=" +
@@ -4555,6 +4592,78 @@ void boot(const std::vector<std::string> &args, Output &output) {
   auto observed_display_submissions =
       initial_runtime->kernel->display_submitted_frames();
   auto last_display_submission = std::chrono::steady_clock::now();
+  constexpr std::uint64_t internal_stability_vsync_pulses = 60;
+  const auto observe_transition_stability = [&]() {
+    if (!transition_attribution.internal_stability_active.load(
+            std::memory_order_acquire)) {
+      return;
+    }
+    const auto vsync_pulses =
+        initial_runtime->kernel->display_vsync_pulse_count();
+    const auto content_revision =
+        initial_runtime->kernel->display_content_revision();
+    const auto display_time = initial_runtime->kernel->current_absolute_time();
+    std::lock_guard lock{transition_attribution.mutex};
+    ++transition_attribution.stability_observation_count;
+    transition_attribution.stability_last_observed_content_revision =
+        content_revision;
+    transition_attribution.stability_last_observed_vsync_pulses = vsync_pulses;
+    if (!transition_attribution.internal_stability_active.load(
+            std::memory_order_relaxed) ||
+        transition_attribution.awaiting_first_submission ||
+        transition_attribution.first_submission_sequence == 0 ||
+        transition_attribution.internal_stability_marker_emitted) {
+      return;
+    }
+    if (!transition_attribution.stability_baseline_set) {
+      transition_attribution.latest_content_revision = content_revision;
+      transition_attribution.stability_baseline_vsync_pulses = vsync_pulses;
+      transition_attribution.stability_baseline_display_time = display_time;
+      transition_attribution.stability_baseline_set = true;
+      return;
+    }
+    if (content_revision != transition_attribution.latest_content_revision) {
+      transition_attribution.latest_content_revision = content_revision;
+      ++transition_attribution.stability_content_reset_count;
+      transition_attribution.stability_baseline_set = false;
+      transition_attribution.stability_baseline_display_time = 0;
+    }
+    if (!transition_attribution.stability_baseline_set) {
+      transition_attribution.stability_baseline_vsync_pulses = vsync_pulses;
+      transition_attribution.stability_baseline_display_time = display_time;
+      transition_attribution.stability_baseline_set = true;
+      return;
+    }
+    constexpr auto display_period =
+        iokit_abi::display_vsync::period_absolute_time;
+    constexpr auto internal_stability_display_time =
+        internal_stability_vsync_pulses * display_period;
+    if (display_time < transition_attribution.stability_baseline_display_time ||
+        display_time - transition_attribution.stability_baseline_display_time <
+            internal_stability_display_time) {
+      return;
+    }
+    transition_attribution.internal_stability_marker_emitted = true;
+    transition_attribution.internal_stability_active.store(
+        false, std::memory_order_release);
+    const auto stable_nanoseconds = steady_nanoseconds();
+    output.marker(
+        "[transition] internal-stable id=" +
+        std::to_string(transition_attribution.active_transition_id) +
+        " sequence=" +
+        std::to_string(transition_attribution.first_submission_sequence) +
+        " content-revision=" +
+        std::to_string(transition_attribution.latest_content_revision) +
+        " delivered-vsync-pulses=" + std::to_string(vsync_pulses) +
+        " stable-display-periods=" +
+        std::to_string(
+            (display_time -
+             transition_attribution.stability_baseline_display_time) /
+            display_period) +
+        " stable-ns=" + std::to_string(stable_nanoseconds) +
+        " input-complete-ns=" +
+        std::to_string(transition_attribution.input_complete_nanoseconds));
+  };
   auto last_jit_quota_refresh = last_display_submission;
   auto latest_host_memory_budget = jit_cache_budget.memory;
   bool pressure_reclamation_applied{};
@@ -4579,6 +4688,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   }
   while ((!bounded_execution || remaining_ticks != 0) &&
          !initial_runtime->kernel->process().exited && !hard_stop) {
+    observe_transition_stability();
     std::optional<XnuThreadId> input_preferred_thread;
     refresh_catalog_after_file_mutations(scheduler.runnable_count() == 0);
     if (sdl_display && !sdl_display->poll_events()) {
@@ -6074,6 +6184,33 @@ void boot(const std::vector<std::string> &args, Output &output) {
       wait_for_host_activity(delay);
     }
   }
+  output.line(
+      "[display-attribution] vsync-pulses=" +
+      std::to_string(initial_runtime->kernel->display_vsync_pulse_count()) +
+      " content-revision=" +
+      std::to_string(initial_runtime->kernel->display_content_revision()) +
+      " submitted-frames=" +
+      std::to_string(initial_runtime->kernel->display_submitted_frames()) +
+      " stability-active=" +
+      (transition_attribution.internal_stability_active.load(
+           std::memory_order_relaxed)
+           ? "1"
+           : "0") +
+      " active-transition-id=" +
+      std::to_string(transition_attribution.active_transition_id) +
+      " stability-observations=" +
+      std::to_string(transition_attribution.stability_observation_count) +
+      " stability-resets=" +
+      std::to_string(transition_attribution.stability_content_reset_count) +
+      " stability-baseline-vsync=" +
+      std::to_string(transition_attribution.stability_baseline_vsync_pulses) +
+      " stability-baseline-display-time=" +
+      std::to_string(transition_attribution.stability_baseline_display_time) +
+      " stability-last-vsync=" +
+      std::to_string(transition_attribution.stability_last_observed_vsync_pulses) +
+      " stability-last-content=" +
+      std::to_string(
+          transition_attribution.stability_last_observed_content_revision));
   const auto checked_in_services =
       initial_runtime->kernel->bootstrap_checked_in_service_count();
   output.line("[boot] milestone=service-check-in service-state=" +
