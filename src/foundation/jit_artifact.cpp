@@ -3130,6 +3130,11 @@ void JitArtifactStore::writeback_loop() {
   static_cast<void>(setpriority(PRIO_PROCESS, 0, 10));
 #endif
   constexpr std::size_t maximum_batch_bytes = 4U * 1024U * 1024U;
+  // Background prepare is optional and may be replenished continuously by
+  // Guest demand. Keep it ahead of idle work, but never let a hot prepare
+  // queue postpone persistence indefinitely once a writeback is pending.
+  constexpr std::size_t maximum_consecutive_background_prepares = 16U;
+  std::size_t consecutive_background_prepares{};
   for (;;) {
     std::vector<std::shared_ptr<const BlockArtifact>> batch;
     std::optional<std::pair<JitArtifactKey, JitArtifactRetention>>
@@ -3146,13 +3151,21 @@ void JitArtifactStore::writeback_loop() {
         return;
       }
 
-      while (!background_prepare_queue_.empty()) {
-        auto key = std::move(background_prepare_queue_.front());
-        background_prepare_queue_.pop_front();
-        const auto pending = background_prepare_pending_.find(key);
-        if (pending == background_prepare_pending_.end()) continue;
-        background_prepare.emplace(std::move(key), pending->second);
-        break;
+      const bool writeback_pending =
+          !writeback_disabled_ && !pending_writebacks_.empty();
+      const bool yield_to_writeback =
+          writeback_pending &&
+          consecutive_background_prepares >=
+              maximum_consecutive_background_prepares;
+      if (!yield_to_writeback) {
+        while (!background_prepare_queue_.empty()) {
+          auto key = std::move(background_prepare_queue_.front());
+          background_prepare_queue_.pop_front();
+          const auto pending = background_prepare_pending_.find(key);
+          if (pending == background_prepare_pending_.end()) continue;
+          background_prepare.emplace(std::move(key), pending->second);
+          break;
+        }
       }
       if (background_prepare) {
         stats_.background_prepare_queue_entries =
@@ -3200,10 +3213,15 @@ void JitArtifactStore::writeback_loop() {
     if (background_prepare) {
       perform_background_prepare(std::move(background_prepare->first),
                                  background_prepare->second);
+      if (consecutive_background_prepares <
+          maximum_consecutive_background_prepares) {
+        ++consecutive_background_prepares;
+      }
       continue;
     }
 
     const auto saved = append_writeback_batch(batch);
+    consecutive_background_prepares = 0U;
     const std::lock_guard lock{mutex_};
     if (!saved) {
       if (writeback_cancel_requested_.load(std::memory_order_acquire)) {
