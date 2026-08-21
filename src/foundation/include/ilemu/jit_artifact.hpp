@@ -304,7 +304,8 @@ public:
 
   [[nodiscard]] JitArtifactLookup lookup(
       const JitArtifactKey &key,
-      JitArtifactRetention retention = JitArtifactRetention::Normal) const;
+      JitArtifactRetention retention = JitArtifactRetention::Normal,
+      bool allow_disk_payload = true) const;
   [[nodiscard]] std::shared_ptr<const BlockArtifact> find(
       const JitArtifactKey &key,
       JitArtifactRetention retention = JitArtifactRetention::Normal) const;

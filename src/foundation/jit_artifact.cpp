@@ -1978,7 +1978,8 @@ JitArtifactStore::~JitArtifactStore() {
 }
 
 JitArtifactLookup JitArtifactStore::lookup(
-    const JitArtifactKey &key, JitArtifactRetention retention) const {
+    const JitArtifactKey &key, JitArtifactRetention retention,
+    bool allow_disk_payload) const {
   const auto record_matches = [](const DiskArtifactRecord &left,
                                  const DiskArtifactRecord &right) {
     return left.generation == right.generation &&
@@ -2043,6 +2044,13 @@ JitArtifactLookup JitArtifactStore::lookup(
     if (disk_artifact == disk_artifacts_.end() ||
         disk_artifact->second.serialized_bytes >
             std::numeric_limits<std::size_t>::max()) {
+      ++stats_.misses;
+      return {};
+    }
+    // Guest execution may opt into memory/hotset-only admission. Do not
+    // start or wait on a disk flight on that path; a later background pass
+    // can perform the full lookup without extending the CPU slice.
+    if (!allow_disk_payload) {
       ++stats_.misses;
       return {};
     }

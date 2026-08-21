@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cctype>
 #include <condition_variable>
+#include <cstdlib>
 #include <deque>
 #include <limits>
 #include <mutex>
@@ -40,6 +41,14 @@
 
 namespace ilemu {
 namespace {
+
+[[nodiscard]] bool jit_memory_only_lookup_enabled() noexcept {
+    static const bool enabled = [] {
+        const char *value = std::getenv("ILEMU_JIT_MEMORY_ONLY_LOOKUP");
+        return value != nullptr && value[0] == '1';
+    }();
+    return enabled;
+}
 
 [[nodiscard]] Dynarmic::A32::ArchVersion dynarmic_architecture_version(
     ArmArchitectureVersion version) {
@@ -806,7 +815,8 @@ private:
         try {
             const auto lookup = known_key
                                     ? artifact_store_->lookup(
-                                          *known_key, artifact_retention_)
+                                          *known_key, artifact_retention_,
+                                          !jit_memory_only_lookup_enabled())
                                     : find_artifact(location_descriptor);
             if (!lookup) {
                 if (lookup.transient_failure) {
