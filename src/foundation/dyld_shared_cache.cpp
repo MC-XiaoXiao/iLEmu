@@ -538,6 +538,159 @@ void append_generation(std::vector<std::byte> &bytes,
              static_cast<std::uint64_t>(generation.changed_nanoseconds));
 }
 
+void append_u8(std::vector<std::byte> &bytes, std::uint8_t value) {
+  bytes.push_back(static_cast<std::byte>(value));
+}
+
+void append_presence(std::vector<std::byte> &bytes, bool present) {
+  append_u8(bytes, present ? 1U : 0U);
+}
+
+void append_string(std::vector<std::byte> &bytes, std::string_view value) {
+  append_u32(bytes, static_cast<std::uint32_t>(value.size()));
+  bytes.insert(bytes.end(), reinterpret_cast<const std::byte *>(value.data()),
+               reinterpret_cast<const std::byte *>(value.data() + value.size()));
+}
+
+void append_optional_generation(
+    std::vector<std::byte> &bytes,
+    const std::optional<GuestFileGeneration> &generation) {
+  append_presence(bytes, generation.has_value());
+  if (generation) append_generation(bytes, *generation);
+}
+
+void append_optional_identity(
+    std::vector<std::byte> &bytes,
+    const std::optional<ContentIdentity> &identity) {
+  append_presence(bytes, identity.has_value());
+  if (identity) append_identity(bytes, *identity);
+}
+
+void append_optional_uuid(std::vector<std::byte> &bytes,
+                          const std::optional<DyldCacheUuid> &uuid) {
+  append_presence(bytes, uuid.has_value());
+  if (uuid) append_uuid(bytes, *uuid);
+}
+
+class ArtifactReader {
+public:
+  explicit ArtifactReader(std::span<const std::byte> bytes) : bytes_{bytes} {}
+
+  [[nodiscard]] bool ok() const noexcept { return ok_; }
+
+  [[nodiscard]] std::optional<std::uint8_t> u8() {
+    if (!take(sizeof(std::uint8_t))) return std::nullopt;
+    return std::to_integer<std::uint8_t>(bytes_[offset_++]);
+  }
+
+  [[nodiscard]] std::optional<std::uint32_t> u32() {
+    if (!take(sizeof(std::uint32_t))) return std::nullopt;
+    std::uint32_t value = 0;
+    for (std::size_t index = 0; index < sizeof(value); ++index) {
+      value |= static_cast<std::uint32_t>(
+                   std::to_integer<std::uint8_t>(bytes_[offset_ + index]))
+               << static_cast<unsigned>(index * 8U);
+    }
+    offset_ += sizeof(value);
+    return value;
+  }
+
+  [[nodiscard]] std::optional<std::uint64_t> u64() {
+    if (!take(sizeof(std::uint64_t))) return std::nullopt;
+    std::uint64_t value = 0;
+    for (std::size_t index = 0; index < sizeof(value); ++index) {
+      value |= static_cast<std::uint64_t>(
+                   std::to_integer<std::uint8_t>(bytes_[offset_ + index]))
+               << static_cast<unsigned>(index * 8U);
+    }
+    offset_ += sizeof(value);
+    return value;
+  }
+
+  [[nodiscard]] std::optional<std::string> string(
+      std::size_t maximum_size = 1U << 20U) {
+    const auto size = u32();
+    if (!size || *size > maximum_size || !take(*size)) return std::nullopt;
+    std::string value{reinterpret_cast<const char *>(bytes_.data() + offset_),
+                      *size};
+    offset_ += *size;
+    return value;
+  }
+
+  [[nodiscard]] std::optional<ContentIdentity> identity() {
+    if (!take(32U)) return std::nullopt;
+    ContentIdentity identity;
+    std::copy_n(bytes_.begin() + static_cast<std::ptrdiff_t>(offset_),
+                identity.digest.size(), identity.digest.begin());
+    offset_ += identity.digest.size();
+    return identity;
+  }
+
+  [[nodiscard]] std::optional<DyldCacheUuid> uuid() {
+    if (!take(16U)) return std::nullopt;
+    DyldCacheUuid uuid;
+    std::copy_n(bytes_.begin() + static_cast<std::ptrdiff_t>(offset_),
+                uuid.size(), uuid.begin());
+    offset_ += uuid.size();
+    return uuid;
+  }
+
+  [[nodiscard]] std::optional<std::span<const std::byte>> fixed(
+      std::size_t size) {
+    if (!take(size)) return std::nullopt;
+    const auto result = bytes_.subspan(offset_, size);
+    offset_ += size;
+    return result;
+  }
+
+private:
+  [[nodiscard]] bool take(std::size_t size) {
+    if (size > bytes_.size() - std::min(offset_, bytes_.size())) {
+      ok_ = false;
+      return false;
+    }
+    return true;
+  }
+
+  std::span<const std::byte> bytes_;
+  std::size_t offset_{};
+  bool ok_{true};
+};
+
+[[nodiscard]] std::string normalize_cache_path(
+    const std::filesystem::path &path);
+
+[[nodiscard]] std::string generation_artifact_name(
+    const std::filesystem::path &path,
+    const DyldSharedCacheOptions &options,
+    const GuestFileGeneration &main_generation,
+    const ContentIdentity &main_identity) {
+  std::vector<std::byte> key;
+  const auto append_key_string = [&key](std::string_view value) {
+    append_u32(key, static_cast<std::uint32_t>(value.size()));
+    key.insert(key.end(), reinterpret_cast<const std::byte *>(value.data()),
+               reinterpret_cast<const std::byte *>(value.data() + value.size()));
+  };
+  append_key_string("ilemu-dyld-generation-v1");
+  append_u32(key, DyldSharedCache::parser_schema_version);
+  append_u32(key, DyldSharedCache::hle_profile_schema_version);
+  append_key_string(normalize_cache_path(path));
+  append_key_string(options.architecture);
+  for (const auto &subcache : options.subcache_paths)
+    append_key_string(normalize_cache_path(subcache));
+  append_identity(key, main_identity);
+  append_generation(key, main_generation);
+  return "dyld-generation-" + sha256(key).hex() + ".artifact";
+}
+
+[[nodiscard]] bool artifact_magic(ArtifactReader &reader,
+                                  std::string_view expected) {
+  const auto bytes = reader.fixed(expected.size());
+  return bytes && std::string_view{
+                         reinterpret_cast<const char *>(bytes->data()),
+                         bytes->size()} == expected;
+}
+
 [[nodiscard]] std::string normalize_cache_path(
     const std::filesystem::path &path) {
   std::error_code error;
@@ -554,6 +707,8 @@ std::mutex generation_cache_mutex;
 std::map<std::string, GenerationCacheEntry, std::less<>> generation_cache;
 std::uint64_t generation_builds{};
 std::uint64_t generation_hits{};
+std::uint64_t generation_artifact_builds{};
+std::uint64_t generation_artifact_hits{};
 std::uint64_t image_builds{};
 std::uint64_t image_hits{};
 
@@ -636,6 +791,339 @@ DyldSharedCache::DyldSharedCache(DyldSharedCache &&other) noexcept = default;
 DyldSharedCache &DyldSharedCache::operator=(DyldSharedCache &&other) noexcept =
     default;
 
+std::shared_ptr<const DyldSharedCache>
+DyldSharedCache::load_shared_generation_artifact(
+    const std::filesystem::path &path, const DyldSharedCacheOptions &options,
+    const GuestFileGeneration &main_generation,
+    const ContentIdentity &main_identity) {
+  const auto artifact = read_shared_immutable_artifact(
+      shared_immutable_artifact_named_path(generation_artifact_name(
+          path, options, main_generation, main_identity)));
+  if (!artifact) return {};
+
+  ArtifactReader reader{*artifact};
+  if (!artifact_magic(reader, "ILEMU-DYLD-GEN")) return {};
+  const auto version = reader.u32();
+  if (!version || *version != 1U) return {};
+  const auto file_count = reader.u32();
+  if (!file_count || *file_count == 0U || *file_count > maximum_subcache_count +
+                                                1U) {
+    return {};
+  }
+
+  DyldSharedCache result;
+  result.files_.reserve(*file_count);
+  for (std::uint32_t file_index = 0; file_index < *file_count;
+       ++file_index) {
+    const auto file_path = reader.string();
+    const auto file_size = reader.u64();
+    const auto generation_present = reader.u8();
+    if (!file_path || !file_size || !generation_present ||
+        *generation_present > 1U) {
+      return {};
+    }
+    std::optional<GuestFileGeneration> generation;
+    if (*generation_present != 0U) {
+      const auto device = reader.u64();
+      const auto inode = reader.u64();
+      const auto size = reader.u64();
+      const auto modified_seconds = reader.u64();
+      const auto modified_nanoseconds = reader.u64();
+      const auto changed_seconds = reader.u64();
+      const auto changed_nanoseconds = reader.u64();
+      if (!device || !inode || !size || !modified_seconds ||
+          !modified_nanoseconds || !changed_seconds || !changed_nanoseconds) {
+        return {};
+      }
+      generation = GuestFileGeneration{
+          *device,
+          *inode,
+          *size,
+          static_cast<std::int64_t>(*modified_seconds),
+          static_cast<std::int64_t>(*modified_nanoseconds),
+          static_cast<std::int64_t>(*changed_seconds),
+          static_cast<std::int64_t>(*changed_nanoseconds)};
+    }
+    const auto identity = reader.identity();
+    const auto uuid = reader.uuid();
+    const auto cache_vm_offset = reader.u64();
+    const auto suffix = reader.string(4096U);
+    const auto mapping_count = reader.u32();
+    if (!identity || !uuid || !cache_vm_offset || !suffix || !mapping_count ||
+        *mapping_count > maximum_mapping_count || !generation) {
+      return {};
+    }
+
+    DyldCacheFile file;
+    file.path = std::filesystem::path{*file_path};
+    file.file_size = static_cast<std::uintmax_t>(*file_size);
+    file.file_generation = *generation;
+    file.content_identity = *identity;
+    file.uuid = *uuid;
+    file.cache_vm_offset = *cache_vm_offset;
+    file.file_suffix = *suffix;
+    file.mappings.reserve(*mapping_count);
+    for (std::uint32_t mapping_index = 0; mapping_index < *mapping_count;
+         ++mapping_index) {
+      const auto address = reader.u64();
+      const auto size = reader.u64();
+      const auto file_offset = reader.u64();
+      const auto serialized_file_index = reader.u32();
+      const auto initial_protection = reader.u32();
+      const auto maximum_protection = reader.u32();
+      const auto slide_info_offset = reader.u64();
+      const auto slide_info_size = reader.u64();
+      const auto flags = reader.u64();
+      const auto slide_version_present = reader.u8();
+      if (!address || !size || !file_offset || !serialized_file_index ||
+          !initial_protection || !maximum_protection || !slide_info_offset ||
+          !slide_info_size || !flags || !slide_version_present ||
+          *slide_version_present > 1U ||
+          *serialized_file_index != file_index || *size == 0U ||
+          add_overflows(*address, *size) ||
+          add_overflows(*file_offset, *size) ||
+          *file_offset + *size > *file_size) {
+        return {};
+      }
+      DyldCacheMapping mapping;
+      mapping.address = *address;
+      mapping.size = *size;
+      mapping.file_offset = *file_offset;
+      mapping.file_index = *serialized_file_index;
+      mapping.initial_protection = *initial_protection;
+      mapping.maximum_protection = *maximum_protection;
+      mapping.slide_info_offset = *slide_info_offset;
+      mapping.slide_info_size = *slide_info_size;
+      mapping.flags = *flags;
+      if (*slide_version_present != 0U) {
+        const auto slide_version = reader.u32();
+        if (!slide_version) return {};
+        mapping.slide_info_version = *slide_version;
+      }
+      file.mappings.push_back(std::move(mapping));
+    }
+    result.files_.push_back(std::move(file));
+  }
+
+  if (normalize_cache_path(result.files_.front().path) !=
+      normalize_cache_path(path)) {
+    return {};
+  }
+  if (!options.subcache_paths.empty() &&
+      options.subcache_paths.size() + 1U != result.files_.size()) {
+    return {};
+  }
+  for (std::size_t index = 1; index < result.files_.size(); ++index) {
+    if (!options.subcache_paths.empty() &&
+        normalize_cache_path(options.subcache_paths[index - 1U]) !=
+            normalize_cache_path(result.files_[index].path)) {
+      return {};
+    }
+  }
+
+  const auto platform = reader.u32();
+  const auto format = reader.u8();
+  const auto shared_region_start = reader.u64();
+  const auto shared_region_size = reader.u64();
+  const auto max_slide = reader.u64();
+  const auto image_count = reader.u32();
+  if (!platform || !format || !shared_region_start || !shared_region_size ||
+      !max_slide || !image_count || *image_count > maximum_image_count) {
+    return {};
+  }
+  result.platform_ = *platform;
+  result.format_version_ = *format;
+  result.shared_region_start_ = *shared_region_start;
+  result.shared_region_size_ = *shared_region_size;
+  result.max_slide_ = *max_slide;
+  result.images_.reserve(*image_count);
+  for (std::uint32_t image_index = 0; image_index < *image_count;
+       ++image_index) {
+    const auto serialized_index = reader.u32();
+    const auto image_path = reader.string(4096U);
+    const auto load_address = reader.u64();
+    const auto text_uuid_present = reader.u8();
+    if (!serialized_index || !image_path || !load_address ||
+        !text_uuid_present || *text_uuid_present > 1U ||
+        *serialized_index != image_index) {
+      return {};
+    }
+    std::optional<DyldCacheUuid> text_uuid;
+    if (*text_uuid_present != 0U) {
+      const auto uuid = reader.uuid();
+      if (!uuid) {
+        return {};
+      }
+      text_uuid = *uuid;
+    }
+    const auto text_segment_size = reader.u64();
+    const auto range_count = reader.u32();
+    if (!text_segment_size ||
+        !range_count || *range_count > maximum_mapping_count * 16U ||
+        !reader.ok()) {
+      return {};
+    }
+    DyldCacheImage image;
+    image.index = *serialized_index;
+    image.path = *image_path;
+    image.unslid_load_address = *load_address;
+    image.text_segment_size = *text_segment_size;
+    image.text_uuid = text_uuid;
+    image.executable_ranges.reserve(*range_count);
+    for (std::uint32_t range_index = 0; range_index < *range_count;
+         ++range_index) {
+      const auto address = reader.u64();
+      const auto size = reader.u64();
+      const auto file_offset = reader.u64();
+      const auto file_index = reader.u32();
+      const auto initial_protection = reader.u32();
+      const auto maximum_protection = reader.u32();
+      if (!address || !size || !file_offset || !file_index ||
+          !initial_protection || !maximum_protection ||
+          *file_index >= result.files_.size() ||
+          *size == 0U || add_overflows(*file_offset, *size) ||
+          *file_offset + *size > result.files_[*file_index].file_size) {
+        return {};
+      }
+      image.executable_ranges.push_back(DyldCacheRange{
+          *address, *size, *file_offset, *file_index, *initial_protection,
+          *maximum_protection});
+    }
+    const auto image_identity_present = reader.u8();
+    if (!image_identity_present || *image_identity_present > 1U) {
+      return {};
+    }
+    if (*image_identity_present != 0U) {
+      const auto identity = reader.identity();
+      if (!identity) {
+        return {};
+      }
+      image.text_identity = *identity;
+    }
+    result.images_.push_back(std::move(image));
+  }
+  const auto generation_identity = reader.identity();
+  if (!generation_identity || !reader.ok()) {
+    return {};
+  }
+  result.generation_identity_ = *generation_identity;
+
+  for (auto &file : result.files_) {
+    const auto current_generation = read_file_generation(file.path);
+    const auto current_identity = shared_file_identity(file.path).content_identity;
+    if (!current_generation || !current_identity ||
+        *current_generation != *file.file_generation ||
+        *current_identity != file.content_identity ||
+        current_generation->file_size != file.file_size) {
+      return {};
+    }
+    file.immutable_file_view = ImmutableFileView::open(
+        file.path, *file.file_generation, file.content_identity,
+        static_cast<std::uint64_t>(file.file_size));
+    if (!file.immutable_file_view) return {};
+  }
+  result.main_cache_ = result.files_.front();
+
+  result.image_range_index_.resize(result.files_.size());
+  for (const auto &image : result.images_) {
+    for (const auto &range : image.executable_ranges) {
+      if (range.file_index >= result.image_range_index_.size() ||
+          add_overflows(range.file_offset, range.size)) {
+        continue;
+      }
+      result.image_range_index_[range.file_index].push_back(
+          ImageRangeIndexEntry{range.file_offset,
+                               range.file_offset + range.size, 0,
+                               image.index});
+    }
+  }
+  for (auto &entries : result.image_range_index_) {
+    std::sort(entries.begin(), entries.end(),
+              [](const ImageRangeIndexEntry &left,
+                 const ImageRangeIndexEntry &right) {
+                if (left.file_offset != right.file_offset)
+                  return left.file_offset < right.file_offset;
+                return left.image_index < right.image_index;
+              });
+    std::uint64_t prefix_file_end = 0;
+    for (auto &entry : entries) {
+      prefix_file_end = std::max(prefix_file_end, entry.file_end);
+      entry.prefix_file_end = prefix_file_end;
+    }
+  }
+  return std::make_shared<const DyldSharedCache>(std::move(result));
+}
+
+void DyldSharedCache::publish_shared_generation_artifact(
+    const std::filesystem::path &path, const DyldSharedCacheOptions &options,
+    const GuestFileGeneration &main_generation,
+    const ContentIdentity &main_identity) const {
+  std::vector<std::byte> bytes;
+  bytes.reserve(1024U + images_.size() * 128U);
+  const auto append_mapping = [&bytes](const DyldCacheMapping &mapping) {
+    append_u64(bytes, mapping.address);
+    append_u64(bytes, mapping.size);
+    append_u64(bytes, mapping.file_offset);
+    append_u32(bytes, mapping.file_index);
+    append_u32(bytes, mapping.initial_protection);
+    append_u32(bytes, mapping.maximum_protection);
+    append_u64(bytes, mapping.slide_info_offset);
+    append_u64(bytes, mapping.slide_info_size);
+    append_u64(bytes, mapping.flags);
+    append_presence(bytes, mapping.slide_info_version.has_value());
+    if (mapping.slide_info_version) append_u32(bytes, *mapping.slide_info_version);
+  };
+  const auto append_range = [&bytes](const DyldCacheRange &range) {
+    append_u64(bytes, range.address);
+    append_u64(bytes, range.size);
+    append_u64(bytes, range.file_offset);
+    append_u32(bytes, range.file_index);
+    append_u32(bytes, range.initial_protection);
+    append_u32(bytes, range.maximum_protection);
+  };
+
+  const std::string_view magic{"ILEMU-DYLD-GEN"};
+  bytes.insert(bytes.end(), reinterpret_cast<const std::byte *>(magic.data()),
+               reinterpret_cast<const std::byte *>(magic.data() + magic.size()));
+  append_u32(bytes, 1U);
+  append_u32(bytes, static_cast<std::uint32_t>(files_.size()));
+  for (const auto &file : files_) {
+    append_string(bytes, file.path.generic_string());
+    append_u64(bytes, static_cast<std::uint64_t>(file.file_size));
+    append_optional_generation(bytes, file.file_generation);
+    append_identity(bytes, file.content_identity);
+    append_uuid(bytes, file.uuid);
+    append_u64(bytes, file.cache_vm_offset);
+    append_string(bytes, file.file_suffix);
+    append_u32(bytes, static_cast<std::uint32_t>(file.mappings.size()));
+    for (const auto &mapping : file.mappings) append_mapping(mapping);
+  }
+  append_u32(bytes, platform_);
+  append_u8(bytes, format_version_);
+  append_u64(bytes, shared_region_start_);
+  append_u64(bytes, shared_region_size_);
+  append_u64(bytes, max_slide_);
+  append_u32(bytes, static_cast<std::uint32_t>(images_.size()));
+  for (const auto &image : images_) {
+    append_u32(bytes, image.index);
+    append_string(bytes, image.path);
+    append_u64(bytes, image.unslid_load_address);
+    append_optional_uuid(bytes, image.text_uuid);
+    append_u64(bytes, image.text_segment_size);
+    append_u32(bytes, static_cast<std::uint32_t>(image.executable_ranges.size()));
+    for (const auto &range : image.executable_ranges) append_range(range);
+    append_optional_identity(bytes, image.text_identity);
+  }
+  append_identity(bytes, generation_identity_);
+  static_cast<void>(options);
+  static_cast<void>(main_generation);
+  static_cast<void>(main_identity);
+  static_cast<void>(publish_shared_immutable_artifact(
+      shared_immutable_artifact_named_path(generation_artifact_name(
+          path, options, main_generation, main_identity)),
+      bytes));
+}
+
 DyldSharedCache::ParseResult
 DyldSharedCache::parse(const std::filesystem::path &path,
                        DyldSharedCacheOptions options) {
@@ -649,6 +1137,27 @@ DyldSharedCache::parse(const std::filesystem::path &path,
           generation_files_are_current(cached->second)) {
     if (const auto generation = cached->second.generation.lock()) {
       ++generation_hits;
+      return generation;
+    }
+  }
+
+  // A process-local weak pointer is only the fast path.  Independent
+  // emulator processes acquire the same read-only serialized generation
+  // metadata after validating the current main member's generation and
+  // content identity; the loader then validates every subcache before
+  // publishing the local handle.
+  const auto main_generation = read_file_generation(path);
+  const auto main_identity = shared_file_identity(path).content_identity;
+  if (main_generation && main_identity) {
+    if (const auto generation = load_shared_generation_artifact(
+            path, options, *main_generation, *main_identity)) {
+      generation_cache[cache_key] =
+          GenerationCacheEntry{generation,
+                               std::vector<DyldCacheFile>(
+                                   generation->files().begin(),
+                                   generation->files().end())};
+      ++generation_hits;
+      ++generation_artifact_hits;
       return generation;
     }
   }
@@ -901,13 +1410,20 @@ DyldSharedCache::parse(const std::filesystem::path &path,
       GenerationCacheEntry{generation,
                            std::vector<DyldCacheFile>(generation->files().begin(),
                                                       generation->files().end())};
+  generation->publish_shared_generation_artifact(
+      path, options, *main->file.file_generation, main->file.content_identity);
+  ++generation_artifact_builds;
   ++generation_builds;
   return generation;
 }
 
 DyldSharedCache::ParseStats DyldSharedCache::parse_stats() noexcept {
   std::lock_guard lock{generation_cache_mutex};
-  return ParseStats{generation_builds, generation_hits, image_builds,
+  return ParseStats{generation_builds,
+                    generation_hits,
+                    generation_artifact_builds,
+                    generation_artifact_hits,
+                    image_builds,
                     image_hits};
 }
 

@@ -340,6 +340,20 @@ void seed_shared_file_identity(
     const ContentIdentity &content_identity,
     std::optional<std::uint64_t> generation_revision = std::nullopt);
 
+// Small immutable metadata artifacts use the same owner-only shared-cache
+// directory as immutable file views.  The named path is deterministic across
+// emulator processes; publishing is atomic and readers accept only regular,
+// read-only files.  Large guest-file bytes continue to use ImmutableFileView
+// and its lease/reclamation policy.
+[[nodiscard]] std::filesystem::path shared_immutable_artifact_root();
+[[nodiscard]] std::filesystem::path
+shared_immutable_artifact_named_path(std::string_view name);
+[[nodiscard]] bool publish_shared_immutable_artifact(
+    const std::filesystem::path &path, std::span<const std::byte> bytes);
+[[nodiscard]] std::optional<std::vector<std::byte>>
+read_shared_immutable_artifact(const std::filesystem::path &path,
+                               std::size_t maximum_size = 256U * 1024U * 1024U);
+
 // Interns immutable Mach-O byte snapshots by content identity, host file
 // generation, and parser layout tag. The bounded LRU only drops its own
 // reference: mappings and page-cache entries retain the old generation until

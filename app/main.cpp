@@ -7108,6 +7108,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
         "[perf-dyld] generation-builds=" +
         std::to_string(dyld_stats.generation_builds) +
         " generation-hits=" + std::to_string(dyld_stats.generation_hits) +
+        " generation-artifact-builds=" +
+        std::to_string(dyld_stats.generation_artifact_builds) +
+        " generation-artifact-hits=" +
+        std::to_string(dyld_stats.generation_artifact_hits) +
         " image-builds=" + std::to_string(dyld_stats.image_builds) +
         " image-hits=" + std::to_string(dyld_stats.image_hits));
     const auto hle_stats = userland_hle_stats();
@@ -7116,6 +7120,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(hle_stats.generation_plan_builds) +
         " generation-plan-hits=" +
         std::to_string(hle_stats.generation_plan_hits) +
+        " generation-plan-artifact-builds=" +
+        std::to_string(hle_stats.generation_plan_artifact_builds) +
+        " generation-plan-artifact-hits=" +
+        std::to_string(hle_stats.generation_plan_artifact_hits) +
         " image-plan-builds=" +
         std::to_string(hle_stats.image_plan_builds) +
         " image-plan-hits=" + std::to_string(hle_stats.image_plan_hits) +

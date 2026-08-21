@@ -266,6 +266,14 @@ private:
     // lower-bound by file offset and never rescan unrelated images/files.
     std::map<std::uint32_t, std::pair<std::size_t, std::size_t>> file_ranges;
   };
+
+  [[nodiscard]] static std::shared_ptr<const SharedHlePlan>
+  load_shared_plan_artifact(std::string_view plan_key,
+                            const ContentIdentity &generation_identity,
+                            ArmArchitectureVersion architecture);
+  static void publish_shared_plan_artifact(std::string_view plan_key,
+                                           const SharedHlePlan &plan);
+
   struct ParsedImageCacheEntry {
     ArmArchitectureVersion architecture{};
     ContentIdentity content_identity;
@@ -359,6 +367,8 @@ private:
 struct UserlandHleStats {
   std::uint64_t generation_plan_builds{};
   std::uint64_t generation_plan_hits{};
+  std::uint64_t generation_plan_artifact_builds{};
+  std::uint64_t generation_plan_artifact_hits{};
   std::uint64_t image_plan_builds{};
   std::uint64_t image_plan_hits{};
   std::uint64_t relevant_images{};

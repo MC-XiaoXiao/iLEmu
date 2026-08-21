@@ -796,6 +796,96 @@ void seed_shared_file_identity(
                           std::move(generation_revision), content_identity);
 }
 
+std::filesystem::path shared_immutable_artifact_root() {
+  return shared_immutable_file_root();
+}
+
+std::filesystem::path
+shared_immutable_artifact_named_path(std::string_view name) {
+  return shared_immutable_artifact_root() / std::string{name};
+}
+
+bool publish_shared_immutable_artifact(
+    const std::filesystem::path &path, std::span<const std::byte> bytes) {
+  if (path.filename().empty() || bytes.empty()) return false;
+
+  std::error_code error;
+  std::filesystem::create_directories(path.parent_path(), error);
+  if (error) return false;
+  std::filesystem::permissions(
+      path.parent_path(), std::filesystem::perms::owner_all,
+      std::filesystem::perm_options::replace, error);
+  error.clear();
+
+  const auto existing = ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (existing >= 0) {
+    struct stat existing_stat {};
+    const bool valid = ::fstat(existing, &existing_stat) == 0 &&
+                       S_ISREG(existing_stat.st_mode) &&
+                       (existing_stat.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) ==
+                           0 &&
+                       static_cast<std::uint64_t>(existing_stat.st_size) ==
+                           bytes.size();
+    static_cast<void>(::close(existing));
+    if (valid) return true;
+  }
+
+  const auto temporary = std::filesystem::path{
+      path.string() + ".tmp-artifact-" + std::to_string(::getpid()) + "-" +
+      std::to_string(next_reservation_identity.fetch_add(
+          1, std::memory_order_relaxed))};
+  const auto descriptor =
+      ::open(temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (descriptor < 0) return false;
+
+  bool published = write_all(descriptor, bytes.data(), bytes.size()) &&
+                   ::fsync(descriptor) == 0;
+  if (published) static_cast<void>(::fchmod(descriptor, 0444));
+  static_cast<void>(::close(descriptor));
+  if (!published) {
+    std::filesystem::remove(temporary, error);
+    return false;
+  }
+
+  if (::rename(temporary.c_str(), path.c_str()) != 0) {
+    std::filesystem::remove(temporary, error);
+    return false;
+  }
+  return true;
+}
+
+std::optional<std::vector<std::byte>> read_shared_immutable_artifact(
+    const std::filesystem::path &path, std::size_t maximum_size) {
+  const auto descriptor =
+      ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0) return std::nullopt;
+  struct stat artifact_stat {};
+  if (::fstat(descriptor, &artifact_stat) != 0 ||
+      !S_ISREG(artifact_stat.st_mode) ||
+      (artifact_stat.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0 ||
+      artifact_stat.st_size <= 0 ||
+      static_cast<std::uint64_t>(artifact_stat.st_size) > maximum_size) {
+    static_cast<void>(::close(descriptor));
+    return std::nullopt;
+  }
+
+  std::vector<std::byte> bytes(static_cast<std::size_t>(artifact_stat.st_size));
+  std::size_t offset = 0;
+  while (offset < bytes.size()) {
+    const auto count = ::pread(
+        descriptor, bytes.data() + static_cast<std::ptrdiff_t>(offset),
+        bytes.size() - offset, static_cast<off_t>(offset));
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) {
+      static_cast<void>(::close(descriptor));
+      return std::nullopt;
+    }
+    offset += static_cast<std::size_t>(count);
+  }
+  static_cast<void>(::close(descriptor));
+  return bytes;
+}
+
 std::shared_ptr<const std::vector<std::byte>> share_immutable_snapshot(
     const GuestFileGeneration &generation, const ContentIdentity &identity,
     std::shared_ptr<const std::vector<std::byte>> snapshot,

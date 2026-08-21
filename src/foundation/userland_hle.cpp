@@ -40,12 +40,120 @@ std::atomic<std::uint64_t> hle_image_plan_builds{};
 std::atomic<std::uint64_t> hle_image_plan_hits{};
 std::atomic<std::uint64_t> hle_generation_plan_builds{};
 std::atomic<std::uint64_t> hle_generation_plan_hits{};
+std::atomic<std::uint64_t> hle_generation_plan_artifact_builds{};
+std::atomic<std::uint64_t> hle_generation_plan_artifact_hits{};
 std::atomic<std::uint64_t> hle_relevant_images{};
 std::atomic<std::uint64_t> hle_expected_patches{};
 std::atomic<std::uint64_t> hle_installed_patches{};
 std::atomic<std::uint64_t> hle_batch_applies{};
 std::atomic<std::uint64_t> hle_invalidation_ranges{};
 std::atomic<std::uint64_t> hle_batch_failures{};
+
+void append_plan_u8(std::vector<std::byte> &bytes, std::uint8_t value) {
+  bytes.push_back(static_cast<std::byte>(value));
+}
+
+void append_plan_u32(std::vector<std::byte> &bytes, std::uint32_t value) {
+  for (std::size_t index = 0; index < sizeof(value); ++index)
+    bytes.push_back(static_cast<std::byte>(value >> (index * 8U)));
+}
+
+void append_plan_u64(std::vector<std::byte> &bytes, std::uint64_t value) {
+  for (std::size_t index = 0; index < sizeof(value); ++index)
+    bytes.push_back(static_cast<std::byte>(value >> (index * 8U)));
+}
+
+void append_plan_string(std::vector<std::byte> &bytes, std::string_view value) {
+  append_plan_u32(bytes, static_cast<std::uint32_t>(value.size()));
+  bytes.insert(bytes.end(), reinterpret_cast<const std::byte *>(value.data()),
+               reinterpret_cast<const std::byte *>(value.data() + value.size()));
+}
+
+void append_plan_identity(std::vector<std::byte> &bytes,
+                          const ContentIdentity &identity) {
+  bytes.insert(bytes.end(), identity.digest.begin(), identity.digest.end());
+}
+
+class PlanArtifactReader {
+public:
+  explicit PlanArtifactReader(std::span<const std::byte> bytes) : bytes_{bytes} {}
+
+  [[nodiscard]] bool ok() const noexcept { return ok_; }
+
+  [[nodiscard]] std::optional<std::uint8_t> u8() {
+    if (!take(1U)) return std::nullopt;
+    return std::to_integer<std::uint8_t>(bytes_[offset_++]);
+  }
+
+  [[nodiscard]] std::optional<std::uint32_t> u32() {
+    if (!take(sizeof(std::uint32_t))) return std::nullopt;
+    std::uint32_t value = 0;
+    for (std::size_t index = 0; index < sizeof(value); ++index)
+      value |= static_cast<std::uint32_t>(
+                   std::to_integer<std::uint8_t>(bytes_[offset_ + index]))
+               << static_cast<unsigned>(index * 8U);
+    offset_ += sizeof(value);
+    return value;
+  }
+
+  [[nodiscard]] std::optional<std::uint64_t> u64() {
+    if (!take(sizeof(std::uint64_t))) return std::nullopt;
+    std::uint64_t value = 0;
+    for (std::size_t index = 0; index < sizeof(value); ++index)
+      value |= static_cast<std::uint64_t>(
+                   std::to_integer<std::uint8_t>(bytes_[offset_ + index]))
+               << static_cast<unsigned>(index * 8U);
+    offset_ += sizeof(value);
+    return value;
+  }
+
+  [[nodiscard]] std::optional<std::string> string(
+      std::size_t maximum_size = 1U << 20U) {
+    const auto size = u32();
+    if (!size || *size > maximum_size || !take(*size)) return std::nullopt;
+    std::string value{reinterpret_cast<const char *>(bytes_.data() + offset_),
+                      *size};
+    offset_ += *size;
+    return value;
+  }
+
+  [[nodiscard]] std::optional<ContentIdentity> identity() {
+    if (!take(32U)) return std::nullopt;
+    ContentIdentity identity;
+    std::copy_n(bytes_.begin() + static_cast<std::ptrdiff_t>(offset_),
+                identity.digest.size(), identity.digest.begin());
+    offset_ += identity.digest.size();
+    return identity;
+  }
+
+  [[nodiscard]] bool magic(std::string_view expected) {
+    if (!take(expected.size())) return false;
+    const auto matches = std::string_view{
+                             reinterpret_cast<const char *>(bytes_.data() + offset_),
+                             expected.size()} == expected;
+    offset_ += expected.size();
+    return matches;
+  }
+
+private:
+  [[nodiscard]] bool take(std::size_t size) {
+    if (offset_ > bytes_.size() || size > bytes_.size() - offset_) {
+      ok_ = false;
+      return false;
+    }
+    return true;
+  }
+
+  std::span<const std::byte> bytes_;
+  std::size_t offset_{};
+  bool ok_{true};
+};
+
+[[nodiscard]] std::string hle_plan_artifact_name(std::string_view plan_key) {
+  const auto key_bytes = std::span<const std::byte>{
+      reinterpret_cast<const std::byte *>(plan_key.data()), plan_key.size()};
+  return "hle-plan-" + sha256(key_bytes).hex() + ".artifact";
+}
 
 bool path_has_suffix(std::string_view path, std::string_view suffix) {
   return path.size() >= suffix.size() &&
@@ -721,6 +829,157 @@ std::string UserlandHleRegistry::rule_key_text(const HleRuleKey &key) {
   return text;
 }
 
+std::shared_ptr<const UserlandHleRegistry::SharedHlePlan>
+UserlandHleRegistry::load_shared_plan_artifact(
+    std::string_view plan_key, const ContentIdentity &generation_identity,
+    ArmArchitectureVersion architecture) {
+  const auto artifact = read_shared_immutable_artifact(
+      shared_immutable_artifact_named_path(hle_plan_artifact_name(plan_key)));
+  if (!artifact) return {};
+
+  PlanArtifactReader reader{*artifact};
+  if (!reader.magic("ILEMU-HLE-PLAN")) return {};
+  const auto version = reader.u32();
+  const auto serialized_generation = reader.identity();
+  const auto serialized_key = reader.identity();
+  const auto serialized_architecture = reader.u8();
+  const auto patch_count = reader.u32();
+  if (!version || *version != 1U || !serialized_generation ||
+      !serialized_key || !serialized_architecture || !patch_count ||
+      *patch_count > 1'000'000U ||
+      *serialized_generation != generation_identity ||
+      *serialized_architecture != static_cast<std::uint8_t>(architecture)) {
+    return {};
+  }
+  const auto key_bytes = std::span<const std::byte>{
+      reinterpret_cast<const std::byte *>(plan_key.data()), plan_key.size()};
+  if (*serialized_key != sha256(key_bytes)) return {};
+
+  auto plan = std::make_shared<SharedHlePlan>();
+  plan->generation_identity = *serialized_generation;
+  plan->architecture = architecture;
+  plan->patches.reserve(*patch_count);
+  for (std::uint32_t index = 0; index < *patch_count; ++index) {
+    const auto image_index = reader.u32();
+    const auto file_index = reader.u32();
+    const auto file_offset = reader.u64();
+    const auto patch_size = reader.u8();
+    const auto thumb = reader.u8();
+    const auto guest_function = reader.u8();
+    const auto symbol = reader.string(4096U);
+    const auto rule_present = reader.u8();
+    if (!image_index || !file_index || !file_offset || !patch_size ||
+        !thumb || !guest_function || !symbol || !rule_present ||
+        *thumb > 1U || *guest_function > 1U || *rule_present > 1U ||
+        (*patch_size == 0U && *guest_function == 0U) ||
+        (*patch_size != 0U && *patch_size > 16U)) {
+      return {};
+    }
+    std::optional<HleRuleKey> rule;
+    if (*rule_present != 0U) {
+      const auto image_suffix = reader.string(4096U);
+      const auto rule_symbol = reader.string(4096U);
+      const auto prefix = reader.u8();
+      const auto address_present = reader.u8();
+      if (!image_suffix || !rule_symbol || !prefix || !address_present ||
+          *prefix > 1U || *address_present > 1U) {
+        return {};
+      }
+      HleRuleKey parsed_rule;
+      parsed_rule.image_suffix = *image_suffix;
+      parsed_rule.symbol = *rule_symbol;
+      parsed_rule.prefix = *prefix != 0U;
+      if (*address_present != 0U) {
+        const auto address = reader.u32();
+        if (!address) return {};
+        parsed_rule.virtual_address = *address;
+      }
+      const auto objc_present = reader.u8();
+      if (!objc_present || *objc_present > 1U) return {};
+      if (*objc_present != 0U) {
+        const auto class_name = reader.string(4096U);
+        const auto selector = reader.string(4096U);
+        if (!class_name || !selector) return {};
+        parsed_rule.objc_method = std::pair{*class_name, *selector};
+      }
+      const auto class_method = reader.u8();
+      const auto rule_guest_function = reader.u8();
+      if (!class_method || !rule_guest_function || *class_method > 1U ||
+          *rule_guest_function > 1U) {
+        return {};
+      }
+      parsed_rule.objc_class_method = *class_method != 0U;
+      parsed_rule.guest_function = *rule_guest_function != 0U;
+      rule = std::move(parsed_rule);
+    }
+    plan->patches.push_back(SharedHlePatch{
+        *image_index,
+        *file_index,
+        *file_offset,
+        *patch_size,
+        *thumb != 0U,
+        *guest_function != 0U,
+        *symbol,
+        std::move(rule)});
+  }
+  if (!reader.ok()) return {};
+  for (std::size_t index = 0; index < plan->patches.size();) {
+    const auto file_index = plan->patches[index].file_index;
+    const auto begin = index;
+    while (index < plan->patches.size() &&
+           plan->patches[index].file_index == file_index) {
+      ++index;
+    }
+    plan->file_ranges.emplace(file_index, std::pair{begin, index});
+  }
+  return std::shared_ptr<const SharedHlePlan>{std::move(plan)};
+}
+
+void UserlandHleRegistry::publish_shared_plan_artifact(
+    std::string_view plan_key, const SharedHlePlan &plan) {
+  std::vector<std::byte> bytes;
+  bytes.reserve(128U + plan.patches.size() * 64U);
+  const std::string_view magic{"ILEMU-HLE-PLAN"};
+  bytes.insert(bytes.end(), reinterpret_cast<const std::byte *>(magic.data()),
+               reinterpret_cast<const std::byte *>(magic.data() + magic.size()));
+  append_plan_u32(bytes, 1U);
+  append_plan_identity(bytes, plan.generation_identity);
+  const auto key_bytes = std::span<const std::byte>{
+      reinterpret_cast<const std::byte *>(plan_key.data()), plan_key.size()};
+  append_plan_identity(bytes, sha256(key_bytes));
+  append_plan_u8(bytes, static_cast<std::uint8_t>(plan.architecture));
+  append_plan_u32(bytes, static_cast<std::uint32_t>(plan.patches.size()));
+
+  const auto append_rule = [&bytes](const HleRuleKey &rule) {
+    append_plan_string(bytes, rule.image_suffix);
+    append_plan_string(bytes, rule.symbol);
+    append_plan_u8(bytes, rule.prefix ? 1U : 0U);
+    append_plan_u8(bytes, rule.virtual_address ? 1U : 0U);
+    if (rule.virtual_address) append_plan_u32(bytes, *rule.virtual_address);
+    append_plan_u8(bytes, rule.objc_method ? 1U : 0U);
+    if (rule.objc_method) {
+      append_plan_string(bytes, rule.objc_method->first);
+      append_plan_string(bytes, rule.objc_method->second);
+    }
+    append_plan_u8(bytes, rule.objc_class_method ? 1U : 0U);
+    append_plan_u8(bytes, rule.guest_function ? 1U : 0U);
+  };
+  for (const auto &patch : plan.patches) {
+    append_plan_u32(bytes, patch.image_index);
+    append_plan_u32(bytes, patch.file_index);
+    append_plan_u64(bytes, patch.file_offset);
+    append_plan_u8(bytes, patch.patch_size);
+    append_plan_u8(bytes, patch.thumb ? 1U : 0U);
+    append_plan_u8(bytes, patch.guest_function ? 1U : 0U);
+    append_plan_string(bytes, patch.symbol);
+    append_plan_u8(bytes, patch.rule ? 1U : 0U);
+    if (patch.rule) append_rule(*patch.rule);
+  }
+  static_cast<void>(publish_shared_immutable_artifact(
+      shared_immutable_artifact_named_path(hle_plan_artifact_name(plan_key)),
+      bytes));
+}
+
 const UserlandHleRegistry::Registration *
 UserlandHleRegistry::find_registration(const HleRuleKey &key) const {
   if (key.guest_function) return nullptr;
@@ -774,6 +1033,18 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
       hle_generation_plan_hits.fetch_add(1, std::memory_order_relaxed);
       return;
     }
+  }
+
+  if (const auto persisted = load_shared_plan_artifact(
+          plan_key, cache.generation_identity(), architecture)) {
+    shared_plans.insert_or_assign(plan_key, persisted);
+    shared_hle_plan_ = persisted;
+    shared_hle_plan_generation_identity_ = cache.generation_identity();
+    shared_hle_plan_architecture_ = architecture;
+    shared_hle_plan_registration_generation_ = registration_generation_;
+    hle_generation_plan_hits.fetch_add(1, std::memory_order_relaxed);
+    hle_generation_plan_artifact_hits.fetch_add(1, std::memory_order_relaxed);
+    return;
   }
 
   auto plan = std::make_shared<SharedHlePlan>();
@@ -929,6 +1200,8 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
 
   std::shared_ptr<const SharedHlePlan> immutable_plan = std::move(plan);
   shared_plans.insert_or_assign(plan_key, immutable_plan);
+  publish_shared_plan_artifact(plan_key, *immutable_plan);
+  hle_generation_plan_artifact_builds.fetch_add(1, std::memory_order_relaxed);
   shared_hle_plan_ = immutable_plan;
   shared_hle_plan_generation_identity_ = cache.generation_identity();
   shared_hle_plan_architecture_ = architecture;
@@ -1444,6 +1717,8 @@ UserlandHleStats userland_hle_stats() noexcept {
   return UserlandHleStats{
       hle_generation_plan_builds.load(std::memory_order_relaxed),
       hle_generation_plan_hits.load(std::memory_order_relaxed),
+      hle_generation_plan_artifact_builds.load(std::memory_order_relaxed),
+      hle_generation_plan_artifact_hits.load(std::memory_order_relaxed),
       hle_image_plan_builds.load(std::memory_order_relaxed),
       hle_image_plan_hits.load(std::memory_order_relaxed),
       hle_relevant_images.load(std::memory_order_relaxed),

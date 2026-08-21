@@ -114,6 +114,8 @@ public:
   struct ParseStats {
     std::uint64_t generation_builds{};
     std::uint64_t generation_hits{};
+    std::uint64_t generation_artifact_builds{};
+    std::uint64_t generation_artifact_hits{};
     std::uint64_t image_builds{};
     std::uint64_t image_hits{};
   };
@@ -145,6 +147,18 @@ public:
       std::string_view install_name) const noexcept;
 
 private:
+  [[nodiscard]] static std::shared_ptr<const DyldSharedCache>
+  load_shared_generation_artifact(
+      const std::filesystem::path &path,
+      const DyldSharedCacheOptions &options,
+      const GuestFileGeneration &main_generation,
+      const ContentIdentity &main_identity);
+  void publish_shared_generation_artifact(
+      const std::filesystem::path &path,
+      const DyldSharedCacheOptions &options,
+      const GuestFileGeneration &main_generation,
+      const ContentIdentity &main_identity) const;
+
   struct ImageStore;
   struct ImageRangeIndexEntry {
     std::uint64_t file_offset{};
