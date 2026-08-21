@@ -1018,40 +1018,26 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
       invalidations.push_back(Cpu::CacheInvalidationRange{
           pending.address, pending.instruction.size()});
     }
-    if (memory_.copy_in_batch(writes)) {
-      for (auto &pending : pending_patches) {
-        if (pending.installed_symbol) {
-          installed_symbols_.insert_or_assign(
-              pending.installed_symbol->first,
-              pending.installed_symbol->second);
-        }
-        if (!pending.installed_call) continue;
-        installed_calls_.emplace(pending.address,
-                                 std::move(*pending.installed_call));
-        ++patched;
-      }
-      cpu.invalidate_cache_ranges(invalidations);
-    } else {
-      // copy_in_batch is all-or-nothing after its preflight. Retain the old
-      // per-patch failure semantics as a defensive fallback for a concurrent
-      // mapping change outside the serialized guest path.
-      invalidations.clear();
-      for (auto &pending : pending_patches) {
-        if (!memory_.copy_in(pending.address, pending.instruction)) continue;
-        invalidations.push_back(Cpu::CacheInvalidationRange{
-            pending.address, pending.instruction.size()});
-        if (pending.installed_symbol) {
-          installed_symbols_.insert_or_assign(
-              pending.installed_symbol->first,
-              pending.installed_symbol->second);
-        }
-        if (!pending.installed_call) continue;
-        installed_calls_.emplace(pending.address,
-                                 std::move(*pending.installed_call));
-        ++patched;
-      }
-      cpu.invalidate_cache_ranges(invalidations);
+    if (!memory_.copy_in_batch(writes)) {
+      // The batch preflight is the atomic boundary for MAP_PRIVATE/COW HLE
+      // installation. A partial per-patch fallback could expose a mixed
+      // image to guest execution and would make invalidation accounting
+      // depend on the failure order, so fail the mapping transaction instead.
+      throw std::runtime_error{
+          "shared-cache HLE patch batch preflight failed"};
     }
+    for (auto &pending : pending_patches) {
+      if (pending.installed_symbol) {
+        installed_symbols_.insert_or_assign(
+            pending.installed_symbol->first,
+            pending.installed_symbol->second);
+      }
+      if (!pending.installed_call) continue;
+      installed_calls_.emplace(pending.address,
+                               std::move(*pending.installed_call));
+      ++patched;
+    }
+    cpu.invalidate_cache_ranges(invalidations);
   }
   if (patched != 0) {
     output_.write("[hle] installed pid=" + std::to_string(process_id) +
