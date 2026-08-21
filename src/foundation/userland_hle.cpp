@@ -1374,6 +1374,30 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
       invalidations.push_back(Cpu::CacheInvalidationRange{
           pending.address, pending.instruction.size()});
     }
+    std::sort(invalidations.begin(), invalidations.end(),
+              [](const auto &left, const auto &right) {
+                return left.address < right.address;
+              });
+    std::vector<Cpu::CacheInvalidationRange> coalesced_invalidations;
+    coalesced_invalidations.reserve(invalidations.size());
+    for (const auto &range : invalidations) {
+      if (range.length == 0U) continue;
+      if (coalesced_invalidations.empty()) {
+        coalesced_invalidations.push_back(range);
+        continue;
+      }
+      auto &last = coalesced_invalidations.back();
+      const auto last_end = static_cast<std::uint64_t>(last.address) +
+                            last.length;
+      const auto range_end = static_cast<std::uint64_t>(range.address) +
+                             range.length;
+      if (static_cast<std::uint64_t>(range.address) <= last_end) {
+        const auto merged_end = std::max(last_end, range_end);
+        last.length = static_cast<std::size_t>(merged_end - last.address);
+      } else {
+        coalesced_invalidations.push_back(range);
+      }
+    }
     if (!memory_.copy_in_batch(writes)) {
       if (collect_stats)
         hle_batch_failures.fetch_add(1, std::memory_order_relaxed);
@@ -1388,7 +1412,7 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
       hle_batch_applies.fetch_add(1, std::memory_order_relaxed);
       hle_installed_patches.fetch_add(pending_patches.size(),
                                       std::memory_order_relaxed);
-      hle_invalidation_ranges.fetch_add(invalidations.size(),
+      hle_invalidation_ranges.fetch_add(coalesced_invalidations.size(),
                                         std::memory_order_relaxed);
     }
     for (auto &pending : pending_patches) {
@@ -1402,7 +1426,7 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
                                std::move(*pending.installed_call));
       ++patched;
     }
-    cpu.invalidate_cache_ranges(invalidations);
+    cpu.invalidate_cache_ranges(coalesced_invalidations);
   }
   for (const auto &symbol : pending_plan_symbols) {
     installed_symbols_.insert_or_assign(symbol.symbol, symbol.address);
