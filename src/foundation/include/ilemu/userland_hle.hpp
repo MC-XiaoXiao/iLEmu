@@ -143,6 +143,10 @@ public:
   void register_address(std::string image_suffix, std::uint32_t virtual_address,
                         std::string diagnostic_name, Handler handler);
 
+  // Used by shared-cache mapping code to avoid parsing images that cannot
+  // contribute an HLE/profile lookup.
+  [[nodiscard]] bool needs_image_metadata(std::string_view image_path) const;
+
   // Called after dyld has copied one file range into guest memory. Returns
   // the number of newly patched ARM entry points.
   [[nodiscard]] std::size_t
@@ -163,7 +167,8 @@ public:
       std::uint64_t image_header_offset, std::uint32_t mapping_address,
       std::uint32_t mapping_size, std::uint64_t file_offset,
       const ContentIdentity &cache_identity,
-      ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
+      ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
+      std::shared_ptr<const MachOImage> parsed_image = {});
 
   // Returns true only for a registered HLE SVC. The guest return path is
   // completed with ARM BX lr semantics after the handler returns.
@@ -238,14 +243,16 @@ private:
       const std::filesystem::path &source_path,
       std::optional<std::uint64_t> image_header_offset,
       std::optional<ContentIdentity> source_identity,
-      ArmArchitectureVersion architecture);
+      ArmArchitectureVersion architecture,
+      std::shared_ptr<const MachOImage> parsed_image = {});
   [[nodiscard]] std::size_t install_mapped_image_impl(
       Cpu &cpu, std::uint32_t process_id, std::string_view logical_image_path,
       const std::filesystem::path &source_path,
       std::optional<std::uint64_t> image_header_offset,
       std::optional<ContentIdentity> source_identity,
       std::uint32_t mapping_address, std::uint32_t mapping_size,
-      std::uint64_t file_offset, ArmArchitectureVersion architecture);
+      std::uint64_t file_offset, ArmArchitectureVersion architecture,
+      std::shared_ptr<const MachOImage> parsed_image = {});
   [[nodiscard]] std::uint32_t ensure_string_page();
   [[nodiscard]] std::optional<std::uint32_t>
   install_continuation(Cpu &cpu, std::uint32_t return_address,

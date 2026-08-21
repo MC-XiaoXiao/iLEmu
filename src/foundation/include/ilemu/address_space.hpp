@@ -96,7 +96,15 @@ public:
   void clear();
   bool protect(std::uint32_t address, std::uint32_t size,
                MemoryPermission permissions);
+  struct CopyInOperation {
+    std::uint32_t address{};
+    std::span<const std::byte> data;
+  };
   bool copy_in(std::uint32_t address, std::span<const std::byte> data);
+  // Applies a preflighted set of writes under one address-space lock. File
+  // backed pages are detached at most once per touched page and executable
+  // generation/JIT write bookkeeping is coalesced across the batch.
+  bool copy_in_batch(std::span<const CopyInOperation> operations);
   [[nodiscard]] bool copy_out(std::uint32_t address,
                               std::span<std::byte> data) const;
   // Installs page-aligned immutable file backing. A guest write automatically
@@ -337,6 +345,7 @@ private:
   [[nodiscard]] bool tracks_write_locked(std::uint32_t address,
                                          std::size_t size) const;
   void mark_written_locked(std::uint32_t address, std::size_t size);
+  void mark_written_batch_locked(std::span<const WrittenRange> ranges);
   void bump_executable_content_generation_locked() noexcept;
   void add_page_permissions_locked(std::uint32_t address, std::uint64_t end,
                                    MemoryPermission permissions);

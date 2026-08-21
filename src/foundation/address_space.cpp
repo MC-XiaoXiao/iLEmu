@@ -381,29 +381,57 @@ bool AddressSpace::translation_profile_stable(std::uint32_t address,
 
 bool AddressSpace::copy_in(std::uint32_t address,
                            std::span<const std::byte> data) {
-  if (range_overflows(address, data.size())) {
-    return false;
-  }
-  if (data.empty()) return true;
+  const CopyInOperation operation{address, data};
+  return copy_in_batch(std::span<const CopyInOperation>{&operation, 1U});
+}
+
+bool AddressSpace::copy_in_batch(
+    std::span<const CopyInOperation> operations) {
+  if (operations.empty()) return true;
   auto lock = write_lock();
-  if (!range_accessible_locked(address, data.size(), MemoryPermission::None)) {
-    return false;
+  for (const auto &operation : operations) {
+    if (operation.data.size() > std::numeric_limits<std::uint32_t>::max() ||
+        range_overflows(operation.address, operation.data.size()) ||
+        !range_accessible_locked(operation.address, operation.data.size(),
+                                 MemoryPermission::None)) {
+      return false;
+    }
   }
-  std::size_t copied = 0;
-  while (copied < data.size()) {
-    const auto current = address + static_cast<std::uint32_t>(copied);
-    auto &page = ensure_page_locked(current);
-    const auto offset = current & (page_size - 1U);
-    const auto chunk = std::min<std::size_t>(
-        page_size - offset, data.size() - copied);
-    auto &backing = writable_backing_locked(page);
-    std::copy_n(data.begin() + static_cast<std::ptrdiff_t>(copied), chunk,
-                backing.bytes.begin() + offset);
-    mark_shared_backing_written_locked(page);
-    refresh_jit_page_locked(current);
-    copied += chunk;
+
+  std::vector<std::uint32_t> touched_pages;
+  touched_pages.reserve(operations.size());
+  std::vector<WrittenRange> written_ranges;
+  written_ranges.reserve(operations.size());
+  for (const auto &operation : operations) {
+    if (operation.data.empty()) continue;
+    written_ranges.push_back(WrittenRange{
+        operation.address, static_cast<std::uint32_t>(operation.data.size())});
+    std::size_t copied = 0;
+    while (copied < operation.data.size()) {
+      const auto current =
+          operation.address + static_cast<std::uint32_t>(copied);
+      auto &page = ensure_page_locked(current);
+      const auto offset = current & (page_size - 1U);
+      const auto chunk = std::min<std::size_t>(
+          page_size - offset, operation.data.size() - copied);
+      auto &backing = writable_backing_locked(page);
+      std::copy_n(operation.data.begin() + static_cast<std::ptrdiff_t>(copied),
+                  chunk, backing.bytes.begin() + offset);
+      touched_pages.push_back(page_base(current));
+      copied += chunk;
+    }
   }
-  mark_written_locked(address, data.size());
+  std::sort(touched_pages.begin(), touched_pages.end());
+  touched_pages.erase(
+      std::unique(touched_pages.begin(), touched_pages.end()),
+      touched_pages.end());
+  for (const auto page_address : touched_pages) {
+    auto *page = find_page_locked(page_address);
+    if (page == nullptr) continue;
+    mark_shared_backing_written_locked(*page);
+    refresh_jit_page_locked(page_address);
+  }
+  mark_written_batch_locked(written_ranges);
   return true;
 }
 
@@ -1078,19 +1106,31 @@ bool AddressSpace::tracks_write_locked(std::uint32_t address,
 
 void AddressSpace::mark_written_locked(std::uint32_t address,
                                        std::size_t size) {
-  const auto end = static_cast<std::uint64_t>(address) + size;
-  if (vm_map_.accessible(address, end, MemoryPermission::Execute)) {
-    bump_executable_content_generation_locked();
+  if (size == 0) return;
+  const auto range = WrittenRange{address, static_cast<std::uint32_t>(size)};
+  mark_written_batch_locked(std::span<const WrittenRange>{&range, 1U});
+}
+
+void AddressSpace::mark_written_batch_locked(
+    std::span<const WrittenRange> ranges) {
+  bool executable_write = false;
+  for (const auto &range : ranges) {
+    if (range.size == 0U) continue;
+    const auto end = static_cast<std::uint64_t>(range.address) + range.size;
+    if (vm_map_.accessible(range.address, end, MemoryPermission::Execute)) {
+      executable_write = true;
+    }
+    if (!tracks_write_locked(range.address, range.size)) continue;
+    ++write_generation_;
+    const auto first = page_base(range.address);
+    const auto last = page_base(
+        range.address + static_cast<std::uint32_t>(range.size - 1U));
+    for (std::uint64_t base = first; base <= last; base += page_size) {
+      auto *page = find_page_locked(static_cast<std::uint32_t>(base));
+      if (page != nullptr) page->write_generation = write_generation_;
+    }
   }
-  if (!tracks_write_locked(address, size)) return;
-  ++write_generation_;
-  const auto first = page_base(address);
-  const auto last = page_base(
-      address + static_cast<std::uint32_t>(size - 1U));
-  for (std::uint64_t base = first; base <= last; base += page_size) {
-    auto *page = find_page_locked(static_cast<std::uint32_t>(base));
-    if (page != nullptr) page->write_generation = write_generation_;
-  }
+  if (executable_write) bump_executable_content_generation_locked();
 }
 
 void AddressSpace::bump_executable_content_generation_locked() noexcept {

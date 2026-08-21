@@ -8,6 +8,7 @@
 #include <limits>
 #include <span>
 #include <stdexcept>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -626,6 +627,19 @@ void UserlandHleRegistry::register_address(std::string image_suffix,
   ++registration_generation_;
 }
 
+bool UserlandHleRegistry::needs_image_metadata(
+    std::string_view image_path) const {
+  return std::any_of(
+             registrations_.begin(), registrations_.end(),
+             [&](const Registration &registration) {
+               return path_has_suffix(image_path, registration.image_suffix);
+             }) ||
+         std::any_of(guest_functions_.begin(), guest_functions_.end(),
+                     [&](const auto &dependency) {
+                       return path_has_suffix(image_path, dependency.first);
+                     });
+}
+
 UserlandHleRegistry::Registration *
 UserlandHleRegistry::select_registration(std::string_view image_path,
                                          std::string_view symbol) {
@@ -662,7 +676,8 @@ UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
     const std::filesystem::path &source_path,
     std::optional<std::uint64_t> image_header_offset,
     std::optional<ContentIdentity> source_identity,
-    ArmArchitectureVersion architecture) {
+    ArmArchitectureVersion architecture,
+    std::shared_ptr<const MachOImage> parsed_image) {
   std::string key{logical_image_path};
   key.push_back('\n');
   key += source_path.generic_string();
@@ -674,42 +689,36 @@ UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
   if (cached != parsed_image_cache_.end() &&
       cached->second.architecture == architecture &&
       cached->second.registration_generation == registration_generation_) {
-    // Mach-O parsing is cached only while the pathname still names the same
-    // content. shared_file_identity() normally resolves from the parser's
-    // generation-aware process cache; if a file was replaced, it recomputes
-    // the identity and the next branch refreshes the parsed image.
-    const auto current = shared_file_identity(source_path);
-    if (current.content_identity &&
-        *current.content_identity == cached->second.content_identity) {
+    // Shared-cache callers supply the already parsed immutable image. Standalone
+    // callers validate the pathname through the generation-aware file identity
+    // cache before reusing their local registry entry.
+    if (parsed_image &&
+        parsed_image->content_identity() == cached->second.content_identity) {
       return cached->second;
+    }
+    if (!parsed_image) {
+      const auto current = shared_file_identity(source_path);
+      if (current.content_identity &&
+          *current.content_identity == cached->second.content_identity) {
+        return cached->second;
+      }
     }
   }
 
-  auto image = std::make_shared<MachOImage>(
-      MachOImage::parse(source_path, architecture, source_identity,
-                        ImmutableSnapshotKind::RuntimeHot,
-                        image_header_offset));
+  auto image = parsed_image
+                   ? std::move(parsed_image)
+                   : std::make_shared<MachOImage>(MachOImage::parse(
+                         source_path, architecture, source_identity,
+                         ImmutableSnapshotKind::RuntimeHot,
+                         image_header_offset));
   auto [iterator, inserted] = parsed_image_cache_.insert_or_assign(
       key, ParsedImageCacheEntry{architecture, image->content_identity(), image,
                                  registration_generation_, {}});
   static_cast<void>(inserted);
   auto &entry = iterator->second;
-  entry.mapped_symbols.reserve(entry.image->symbols().size());
-  for (std::size_t index = 0; index < entry.image->symbols().size(); ++index) {
-    const auto &symbol = entry.image->symbols()[index];
-    if (symbol.value == 0)
-      continue;
-    const auto segment = std::find_if(
-        entry.image->segments().begin(), entry.image->segments().end(),
-        [&](const MachSegment &candidate) {
-          return symbol.value >= candidate.vm_address &&
-                 symbol.value - candidate.vm_address < candidate.file_size;
-        });
-    if (segment == entry.image->segments().end())
-      continue;
-    const auto symbol_file_offset =
-        static_cast<std::uint64_t>(segment->file_offset) +
-        (symbol.value - segment->vm_address);
+  entry.mapped_symbols.reserve(entry.image->symbol_file_locations().size());
+  for (const auto &location : entry.image->symbol_file_locations()) {
+    const auto &symbol = entry.image->symbols()[location.symbol_index];
     const auto *registration =
         select_registration(logical_image_path, symbol.name);
     const auto guest_function = std::any_of(
@@ -730,8 +739,8 @@ UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
                                           : sizeof(std::uint32_t))
                                 : std::uint8_t{0};
     entry.mapped_symbols.push_back(CachedMappedSymbol{
-        static_cast<std::uint32_t>(index),
-        symbol_file_offset,
+        location.symbol_index,
+        location.file_offset,
         registration_id,
         patch_size,
         guest_function});
@@ -745,7 +754,8 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
     std::optional<std::uint64_t> image_header_offset,
     std::optional<ContentIdentity> source_identity,
     std::uint32_t mapping_address, std::uint32_t mapping_size,
-    std::uint64_t file_offset, ArmArchitectureVersion architecture) {
+    std::uint64_t file_offset, ArmArchitectureVersion architecture,
+    std::shared_ptr<const MachOImage> parsed_image) {
   const std::string path{logical_image_path};
   loaded_images_.insert(path);
   if (mapping_size == 0 ||
@@ -764,34 +774,66 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
                   });
   if (!hle_relevant && !guest_relevant)
     return 0;
+  // Do not fall back to a full shared-cache container parse when the immutable
+  // generation did not provide image metadata.
+  if (image_header_offset && !parsed_image)
+    return 0;
 
   auto &cached = cached_image(logical_image_path, source_path,
                               image_header_offset, std::move(source_identity),
-                              architecture);
+                              architecture, std::move(parsed_image));
   const auto &image = *cached.image;
-  const auto reapply_installed_patch = [&](std::uint32_t address,
-                                           const InstalledCall &installed) {
-    if (installed.thumb) {
-      const auto instruction = make_thumb_hle_patch(installed.original.size());
-      if (memory_.copy_in(address, instruction))
-        cpu.invalidate_cache_range(address, instruction.size());
-      return;
-    }
-    const auto instruction = little_endian_word(
-        arm_svc_opcode | userland_hle_svc_namespace | installed.id);
-    if (memory_.copy_in(address, instruction))
-      cpu.invalidate_cache_range(address, instruction.size());
+  struct PendingPatch {
+    std::uint32_t address{};
+    std::vector<std::byte> instruction;
+    std::optional<InstalledCall> installed_call;
+    std::optional<std::pair<std::string, std::uint32_t>> installed_symbol;
   };
   const auto mapping_offset = file_offset;
   const auto mapping_file_end = file_offset + mapping_size;
   std::size_t patched = 0;
-  for (const auto &cached_symbol : cached.mapped_symbols) {
+  std::vector<PendingPatch> pending_patches;
+  std::unordered_set<std::uint32_t> pending_addresses;
+  const auto queue_patch = [&](std::uint32_t address,
+                               std::span<const std::byte> instruction,
+                               std::optional<InstalledCall> installed_call,
+                               std::optional<std::pair<std::string,
+                                                       std::uint32_t>>
+                                   installed_symbol = std::nullopt) {
+    if (instruction.empty() || !pending_addresses.insert(address).second)
+      return false;
+    pending_patches.push_back(PendingPatch{
+        address,
+        std::vector<std::byte>{instruction.begin(), instruction.end()},
+        std::move(installed_call), std::move(installed_symbol)});
+    return true;
+  };
+  const auto reapply_installed_patch = [&](std::uint32_t address,
+                                           const InstalledCall &installed) {
+    if (installed.thumb) {
+      const auto instruction = make_thumb_hle_patch(installed.original.size());
+      static_cast<void>(queue_patch(address, instruction, std::nullopt));
+      return;
+    }
+    const auto instruction = little_endian_word(
+        arm_svc_opcode | userland_hle_svc_namespace | installed.id);
+    static_cast<void>(queue_patch(address, instruction, std::nullopt));
+  };
+  const auto first_symbol = std::lower_bound(
+      cached.mapped_symbols.begin(), cached.mapped_symbols.end(), mapping_offset,
+      [](const CachedMappedSymbol &symbol, std::uint64_t offset) {
+        return symbol.file_offset < offset;
+      });
+  const auto after_symbol = std::lower_bound(
+      first_symbol, cached.mapped_symbols.end(), mapping_file_end,
+      [](const CachedMappedSymbol &symbol, std::uint64_t offset) {
+        return symbol.file_offset < offset;
+      });
+  for (auto symbol_iterator = first_symbol; symbol_iterator != after_symbol;
+       ++symbol_iterator) {
+    const auto &cached_symbol = *symbol_iterator;
     const auto &symbol = image.symbols()[cached_symbol.symbol_index];
     const auto symbol_file_offset = cached_symbol.file_offset;
-    if (symbol_file_offset < mapping_offset ||
-        symbol_file_offset >= mapping_file_end) {
-      continue;
-    }
     const auto mapping_delta = symbol_file_offset - mapping_offset;
     if (mapping_delta >
         std::numeric_limits<std::uint32_t>::max() - mapping_address) {
@@ -822,27 +864,25 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
     const auto original = memory_.read_bytes(runtime_address, patch_size);
     if (!original)
       continue;
-    bool copied = false;
+    bool queued = false;
     if (symbol.thumb_definition()) {
       // Thumb SVC has only an eight-bit immediate. The concrete handler
       // is recovered from installed_calls_ using PC-2 during dispatch.
       const auto instruction = make_thumb_hle_patch(patch_size);
-      copied = memory_.copy_in(runtime_address, instruction);
-      if (copied)
-        cpu.invalidate_cache_range(runtime_address, instruction.size());
+      queued = queue_patch(
+          runtime_address, instruction,
+          InstalledCall{registration->id, symbol.name,
+                        symbol.thumb_definition(), *original});
     } else {
       const auto instruction = little_endian_word(
           arm_svc_opcode | userland_hle_svc_namespace | registration->id);
-      copied = memory_.copy_in(runtime_address, instruction);
-      if (copied)
-        cpu.invalidate_cache_range(runtime_address, instruction.size());
+      queued = queue_patch(
+          runtime_address, instruction,
+          InstalledCall{registration->id, symbol.name,
+                        symbol.thumb_definition(), *original});
     }
-    if (!copied)
+    if (!queued)
       continue;
-    installed_calls_.emplace(
-        runtime_address, InstalledCall{registration->id, symbol.name,
-                                       symbol.thumb_definition(), *original});
-    ++patched;
   }
   for (const auto &registration : registrations_) {
     if (!registration.virtual_address ||
@@ -885,27 +925,21 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
     const auto original = memory_.read_bytes(runtime_address, patch_size);
     if (!original)
       continue;
-    bool copied = false;
+    bool queued = false;
     if (thumb) {
       const auto instruction = make_thumb_hle_patch(patch_size);
-      copied = memory_.copy_in(runtime_address, instruction);
-      if (copied) {
-        cpu.invalidate_cache_range(runtime_address, instruction.size());
-      }
+      queued = queue_patch(
+          runtime_address, instruction,
+          InstalledCall{registration.id, registration.symbol, thumb, *original});
     } else {
       const auto instruction = little_endian_word(
           arm_svc_opcode | userland_hle_svc_namespace | registration.id);
-      copied = memory_.copy_in(runtime_address, instruction);
-      if (copied) {
-        cpu.invalidate_cache_range(runtime_address, instruction.size());
-      }
+      queued = queue_patch(
+          runtime_address, instruction,
+          InstalledCall{registration.id, registration.symbol, thumb, *original});
     }
-    if (!copied)
+    if (!queued)
       continue;
-    installed_calls_.emplace(
-        runtime_address,
-        InstalledCall{registration.id, registration.symbol, thumb, *original});
-    ++patched;
   }
   for (const auto &registration : registrations_) {
     if (!registration.objc_instance_method ||
@@ -955,26 +989,69 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
     const auto original = memory_.read_bytes(runtime_address, patch_size);
     if (!original)
       continue;
-    bool copied = false;
+    bool queued = false;
     if (thumb) {
       const auto instruction = make_thumb_hle_patch(patch_size);
-      copied = memory_.copy_in(runtime_address, instruction);
-      if (copied)
-        cpu.invalidate_cache_range(runtime_address, instruction.size());
+      queued = queue_patch(
+          runtime_address, instruction,
+          InstalledCall{registration.id, registration.symbol, thumb, *original},
+          std::pair{registration.symbol, runtime_address});
     } else {
       const auto instruction = little_endian_word(
           arm_svc_opcode | userland_hle_svc_namespace | registration.id);
-      copied = memory_.copy_in(runtime_address, instruction);
-      if (copied)
-        cpu.invalidate_cache_range(runtime_address, instruction.size());
+      queued = queue_patch(
+          runtime_address, instruction,
+          InstalledCall{registration.id, registration.symbol, thumb, *original},
+          std::pair{registration.symbol, runtime_address});
     }
-    if (!copied)
+    if (!queued)
       continue;
-    installed_calls_.emplace(
-        runtime_address,
-        InstalledCall{registration.id, registration.symbol, thumb, *original});
-    installed_symbols_.insert_or_assign(registration.symbol, runtime_address);
-    ++patched;
+  }
+  if (!pending_patches.empty()) {
+    std::vector<AddressSpace::CopyInOperation> writes;
+    writes.reserve(pending_patches.size());
+    std::vector<Cpu::CacheInvalidationRange> invalidations;
+    invalidations.reserve(pending_patches.size());
+    for (const auto &pending : pending_patches) {
+      writes.push_back(AddressSpace::CopyInOperation{
+          pending.address, std::span<const std::byte>{pending.instruction}});
+      invalidations.push_back(Cpu::CacheInvalidationRange{
+          pending.address, pending.instruction.size()});
+    }
+    if (memory_.copy_in_batch(writes)) {
+      for (auto &pending : pending_patches) {
+        if (pending.installed_symbol) {
+          installed_symbols_.insert_or_assign(
+              pending.installed_symbol->first,
+              pending.installed_symbol->second);
+        }
+        if (!pending.installed_call) continue;
+        installed_calls_.emplace(pending.address,
+                                 std::move(*pending.installed_call));
+        ++patched;
+      }
+      cpu.invalidate_cache_ranges(invalidations);
+    } else {
+      // copy_in_batch is all-or-nothing after its preflight. Retain the old
+      // per-patch failure semantics as a defensive fallback for a concurrent
+      // mapping change outside the serialized guest path.
+      invalidations.clear();
+      for (auto &pending : pending_patches) {
+        if (!memory_.copy_in(pending.address, pending.instruction)) continue;
+        invalidations.push_back(Cpu::CacheInvalidationRange{
+            pending.address, pending.instruction.size()});
+        if (pending.installed_symbol) {
+          installed_symbols_.insert_or_assign(
+              pending.installed_symbol->first,
+              pending.installed_symbol->second);
+        }
+        if (!pending.installed_call) continue;
+        installed_calls_.emplace(pending.address,
+                                 std::move(*pending.installed_call));
+        ++patched;
+      }
+      cpu.invalidate_cache_ranges(invalidations);
+    }
   }
   if (patched != 0) {
     output_.write("[hle] installed pid=" + std::to_string(process_id) +
@@ -1000,10 +1077,12 @@ std::size_t UserlandHleRegistry::install_mapped_shared_cache_image(
     std::uint64_t image_header_offset, std::uint32_t mapping_address,
     std::uint32_t mapping_size, std::uint64_t file_offset,
     const ContentIdentity &cache_identity,
-    ArmArchitectureVersion architecture) {
+    ArmArchitectureVersion architecture,
+    std::shared_ptr<const MachOImage> parsed_image) {
   return install_mapped_image_impl(
       cpu, process_id, image_path, cache_path, image_header_offset,
-      cache_identity, mapping_address, mapping_size, file_offset, architecture);
+      cache_identity, mapping_address, mapping_size, file_offset, architecture,
+      std::move(parsed_image));
 }
 
 bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,

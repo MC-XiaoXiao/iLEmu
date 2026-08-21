@@ -3010,6 +3010,46 @@ public:
         performance_counters().record_jit_shared_invalidation(false);
     }
 
+    void invalidate_cache_ranges(
+        std::span<const Cpu::CacheInvalidationRange> ranges) {
+        if (ranges.empty()) return;
+        std::vector<Cpu::CacheInvalidationRange> merged;
+        merged.reserve(ranges.size());
+        for (const auto &range : ranges) {
+            if (range.length == 0U) continue;
+            const auto begin = static_cast<std::uint64_t>(range.address);
+            const auto end = begin + range.length;
+            if (end > (std::uint64_t{1} << 32U)) continue;
+            merged.push_back(range);
+        }
+        if (merged.empty()) return;
+        std::sort(merged.begin(), merged.end(),
+                  [](const auto &left, const auto &right) {
+                      return left.address < right.address;
+                  });
+        std::vector<Cpu::CacheInvalidationRange> coalesced;
+        coalesced.reserve(merged.size());
+        for (const auto &range : merged) {
+            if (coalesced.empty()) {
+                coalesced.push_back(range);
+                continue;
+            }
+            auto &last = coalesced.back();
+            const auto last_end = static_cast<std::uint64_t>(last.address) +
+                                  last.length;
+            const auto range_end = static_cast<std::uint64_t>(range.address) +
+                                   range.length;
+            if (static_cast<std::uint64_t>(range.address) <= last_end) {
+                const auto merged_end = std::max(last_end, range_end);
+                last.length = static_cast<std::size_t>(merged_end - last.address);
+            } else {
+                coalesced.push_back(range);
+            }
+        }
+        for (const auto &range : coalesced)
+            invalidate_cache_range(range.address, range.length);
+    }
+
     void disable_jit_page_table() {
         memory_.disable_jit_page_table();
     }
@@ -4115,6 +4155,12 @@ void Cpu::clear_cache() {
 void Cpu::invalidate_cache_range(std::uint32_t address, std::size_t length) {
     if (execution_pool_) {
         execution_pool_->invalidate_cache_range(address, length);
+    }
+}
+void Cpu::invalidate_cache_ranges(
+    std::span<const CacheInvalidationRange> ranges) {
+    if (execution_pool_) {
+        execution_pool_->invalidate_cache_ranges(ranges);
     }
 }
 void Cpu::raise_memory_fault(std::uint32_t address, std::size_t size,

@@ -7,6 +7,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -191,7 +192,13 @@ public:
     CpuRunResult step(std::size_t execution_slot = 0);
     void reset();
     void clear_cache();
+    struct CacheInvalidationRange {
+        std::uint32_t address{};
+        std::size_t length{};
+    };
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
+    void invalidate_cache_ranges(
+        std::span<const CacheInvalidationRange> ranges);
     // Kernel-side traps that touch an invalid guest range use the same
     // Dynarmic memory-abort result as an ordinary load/store fault. When the
     // trap is dispatched outside a running executor, this also records the

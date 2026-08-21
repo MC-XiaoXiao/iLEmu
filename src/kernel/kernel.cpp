@@ -822,7 +822,8 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
       [&](std::string_view logical_image_path,
           const std::filesystem::path &source_path,
           std::optional<std::uint64_t> image_header_offset,
-          std::optional<ContentIdentity> source_identity) {
+          std::optional<ContentIdentity> source_identity,
+          std::shared_ptr<const MachOImage> parsed_image = {}) {
         const auto path = std::string{logical_image_path};
         if (path.ends_with(uikit_image)) {
           std::lock_guard mach_lock{shared_state_->mach_mutex};
@@ -840,11 +841,16 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
           return;
         }
 
-        const auto image = MachOImage::parse(
-            source_path, architecture, std::move(source_identity),
-            ImmutableSnapshotKind::RuntimeHot, image_header_offset);
+        if (image_header_offset && !parsed_image) return;
+        const auto image = parsed_image
+                               ? std::move(parsed_image)
+                               : std::make_shared<MachOImage>(MachOImage::parse(
+                                     source_path, architecture,
+                                     std::move(source_identity),
+                                     ImmutableSnapshotKind::RuntimeHot,
+                                     image_header_offset));
         if (path.ends_with(graphics_services_image)) {
-          const auto profile = GraphicsServicesInputProfile::detect(image);
+          const auto profile = GraphicsServicesInputProfile::detect(*image);
           if (!profile) return;
           std::lock_guard mach_lock{shared_state_->mach_mutex};
           if (const auto process = shared_state_->processes.find(process_.pid);
@@ -860,7 +866,7 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
           return;
         }
 
-        const auto profile = CoreAnimationRemoteProfile::detect(image);
+        const auto profile = CoreAnimationRemoteProfile::detect(*image);
         if (!profile) return;
         std::lock_guard mach_lock{shared_state_->mach_mutex};
         if (const auto process = shared_state_->processes.find(process_.pid);
@@ -876,40 +882,43 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
   std::size_t installed = 0;
   const auto *cache = dyld_shared_cache_for(image_path);
   if (cache != nullptr) {
-    const auto mapping_end = file_offset + mapping_size;
-    for (const auto &image : cache->images()) {
+    if (mapping_size == 0U ||
+        file_offset > std::numeric_limits<std::uint64_t>::max() -
+                           mapping_size) {
+      return 0;
+    }
+    const auto source_file = std::find_if(
+        cache->files().begin(), cache->files().end(),
+        [&](const DyldCacheFile &file) { return file.path == image_path; });
+    if (source_file == cache->files().end()) return 0;
+    const auto source_file_index = static_cast<std::uint32_t>(
+        std::distance(cache->files().begin(), source_file));
+    const auto image_indices = cache->images_intersecting_file_range(
+        source_file_index, file_offset, mapping_size);
+    for (const auto image_index : image_indices) {
+      if (image_index >= cache->images().size()) continue;
+      const auto &image = cache->images()[image_index];
       const auto header = std::find_if(
           image.executable_ranges.begin(), image.executable_ranges.end(),
           [&](const DyldCacheRange &range) {
             return range.address == image.unslid_load_address &&
-                   range.file_index < cache->files().size() &&
-                   cache->files()[range.file_index].path == image_path;
+                   range.file_index == source_file_index;
           });
-      if (header == image.executable_ranges.end() ||
-          header->file_index >= cache->files().size()) {
-        continue;
+      if (header == image.executable_ranges.end()) continue;
+      const auto &source = *source_file;
+      const auto profile_relevant =
+          image.path.ends_with(graphics_services_image) ||
+          image.path.ends_with(quartz_core_image);
+      std::shared_ptr<const MachOImage> parsed_image;
+      if (userland_hle_.needs_image_metadata(image.path) || profile_relevant) {
+        parsed_image = cache->parse_image(image.index, architecture);
       }
-      const auto mapped = std::any_of(
-          image.executable_ranges.begin(), image.executable_ranges.end(),
-          [&](const DyldCacheRange &range) {
-            if (range.file_index >= cache->files().size() ||
-                cache->files()[range.file_index].path != image_path) {
-              return false;
-            }
-            const auto range_end = range.file_offset + range.size;
-            return range.file_offset < mapping_end &&
-                   file_offset < range_end;
-          });
-      if (!mapped) {
-        continue;
-      }
-      const auto &source = cache->files()[header->file_index];
       installed += userland_hle_.install_mapped_shared_cache_image(
           cpu, process_.pid, image.path, source.path, header->file_offset,
           mapping_address, mapping_size, file_offset, source.content_identity,
-          architecture);
+          architecture, parsed_image);
       apply_image_profile(image.path, source.path, header->file_offset,
-                          source.content_identity);
+                          source.content_identity, std::move(parsed_image));
     }
   } else if (!shared_cache_mapping) {
     installed = userland_hle_.install_mapped_image(
