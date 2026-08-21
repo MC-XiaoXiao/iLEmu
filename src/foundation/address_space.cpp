@@ -260,6 +260,7 @@ bool AddressSpace::map(std::uint32_t address, std::uint32_t size,
   vm_map_.map_or(first, end, permissions);
   add_page_permissions_locked(first, end, permissions);
   refresh_jit_page_range_locked(first, end);
+  bump_executable_content_generation_locked();
   return true;
 }
 
@@ -292,6 +293,7 @@ void AddressSpace::unmap_range_locked(std::uint32_t address,
   }
   clear_page_permissions_locked(address, end);
   refresh_jit_page_range_locked(address, end);
+  bump_executable_content_generation_locked();
 }
 
 void AddressSpace::flush_shared_file_pages_locked(std::uint32_t address,
@@ -329,6 +331,7 @@ void AddressSpace::clear() {
   exclusive_write_tracked_pages_.clear();
   tracked_write_ranges_.clear();
   mapping_leases_.clear();
+  bump_executable_content_generation_locked();
 }
 
 bool AddressSpace::protect(std::uint32_t address, std::uint32_t size,
@@ -352,6 +355,7 @@ bool AddressSpace::protect(std::uint32_t address, std::uint32_t size,
     }
   }
   refresh_jit_page_range_locked(first, end);
+  bump_executable_content_generation_locked();
   return true;
 }
 
@@ -476,6 +480,7 @@ bool AddressSpace::map_file(std::uint32_t address, std::uint32_t size,
   if (!inserted) return false;
   vm_map_.map_or(address, end, permissions);
   add_page_permissions_locked(address, end, permissions);
+  bump_executable_content_generation_locked();
   return true;
 }
 
@@ -528,6 +533,7 @@ AddressSpace::share_pages(std::uint32_t address, std::uint32_t size) {
         initial_tracking_epoch, tracking_transitions,
         tracked_backing_may_have_aliases);
   }
+  bump_executable_content_generation_locked();
   return result;
 }
 
@@ -591,6 +597,7 @@ bool AddressSpace::map_page_backings(
                                         tracking_transitions, true);
   }
   refresh_jit_page_range_locked(address, end);
+  bump_executable_content_generation_locked();
   if (mapping_lease_token) {
     auto token = next_mapping_lease_token_++;
     if (token == 0U)
@@ -1071,6 +1078,10 @@ bool AddressSpace::tracks_write_locked(std::uint32_t address,
 
 void AddressSpace::mark_written_locked(std::uint32_t address,
                                        std::size_t size) {
+  const auto end = static_cast<std::uint64_t>(address) + size;
+  if (vm_map_.accessible(address, end, MemoryPermission::Execute)) {
+    bump_executable_content_generation_locked();
+  }
   if (!tracks_write_locked(address, size)) return;
   ++write_generation_;
   const auto first = page_base(address);
@@ -1079,6 +1090,14 @@ void AddressSpace::mark_written_locked(std::uint32_t address,
   for (std::uint64_t base = first; base <= last; base += page_size) {
     auto *page = find_page_locked(static_cast<std::uint32_t>(base));
     if (page != nullptr) page->write_generation = write_generation_;
+  }
+}
+
+void AddressSpace::bump_executable_content_generation_locked() noexcept {
+  const auto previous = executable_content_generation_.fetch_add(
+      1U, std::memory_order_release);
+  if (previous == std::numeric_limits<std::uint64_t>::max()) {
+    executable_content_generation_.store(1U, std::memory_order_release);
   }
 }
 
@@ -1444,6 +1463,10 @@ AddressSpace::executable_backing_identity(std::uint32_t address,
       sha256(content_material), sha256(layout_material)};
 }
 
+std::uint64_t AddressSpace::executable_content_generation() const noexcept {
+  return executable_content_generation_.load(std::memory_order_acquire);
+}
+
 bool AddressSpace::compare_exchange8(std::uint32_t address,
                                      std::uint8_t expected,
                                      std::uint8_t value) {
@@ -1711,6 +1734,9 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const {
   result->page_permissions_ = page_permissions_;
   result->tracked_write_ranges_ = tracked_write_ranges_;
   result->write_generation_ = write_generation_;
+  result->executable_content_generation_.store(
+      executable_content_generation_.load(std::memory_order_acquire),
+      std::memory_order_release);
   result->mapping_leases_ = mapping_leases_;
   result->next_mapping_lease_token_ = next_mapping_lease_token_;
   result->file_page_cache_ = file_page_cache_;

@@ -171,6 +171,10 @@ public:
   [[nodiscard]] std::optional<ExecutableBackingIdentity>
   executable_backing_identity(std::uint32_t address,
                               std::size_t size) const;
+  // Monotonic, lock-free content/mapping stamp for cheap JIT probe validity.
+  // It changes on mapping mutations and writes to executable ranges; it is a
+  // validity token only, never an artifact identity or a hash filter.
+  [[nodiscard]] std::uint64_t executable_content_generation() const noexcept;
   // Resolves an exclusive-access address to the physical GuestPageBacking
   // identity when resident. Shared aliases therefore reserve the same
   // monitor granule, while unmapped/lazy pages conservatively retain a
@@ -333,6 +337,7 @@ private:
   [[nodiscard]] bool tracks_write_locked(std::uint32_t address,
                                          std::size_t size) const;
   void mark_written_locked(std::uint32_t address, std::size_t size);
+  void bump_executable_content_generation_locked() noexcept;
   void add_page_permissions_locked(std::uint32_t address, std::uint64_t end,
                                    MemoryPermission permissions);
   void set_page_permissions_locked(std::uint32_t address, std::uint64_t end,
@@ -380,6 +385,7 @@ private:
   std::atomic<std::uint64_t> observed_shared_write_tracking_epoch_{};
   std::vector<TrackedWriteRange> tracked_write_ranges_;
   std::uint64_t write_generation_{};
+  std::atomic<std::uint64_t> executable_content_generation_{1U};
   std::map<std::uint64_t, MappingLease> mapping_leases_;
   std::uint64_t next_mapping_lease_token_{1};
   std::shared_ptr<FilePageCache> file_page_cache_;

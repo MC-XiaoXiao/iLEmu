@@ -72,6 +72,23 @@ namespace {
     return enabled;
 }
 
+[[nodiscard]] std::uint64_t demand_probe_fingerprint(
+    const JitArtifactKey &key) noexcept {
+    // Workspace collision tests can force two deliberately different keys to
+    // share the diagnostic filter. The full key comparison below remains the
+    // correctness check; this hook is never enabled in normal runs.
+    static const bool force_test_collision =
+        jit_env_flag("ILEMU_TEST_DEMAND_PROBE_FINGERPRINT_COLLISION");
+    if (force_test_collision) return 0x9e3779b97f4a7c15ULL;
+    return static_cast<std::uint64_t>(JitArtifactKeyHash{}(key));
+}
+
+[[nodiscard]] bool jit_test_ignore_demand_probe_content_generation() noexcept {
+    static const bool enabled = jit_env_flag(
+        "ILEMU_TEST_DEMAND_PROBE_IGNORE_CONTENT_GENERATION");
+    return enabled;
+}
+
 [[nodiscard]] Dynarmic::A32::ArchVersion dynarmic_architecture_version(
     ArmArchitectureVersion version) {
     switch (version) {
@@ -2333,11 +2350,18 @@ private:
     };
 
     struct DemandArtifactProbe {
+        // The cheap tuple is a validity stamp, not an artifact identity. A
+        // RX mapping's content/layout can change independently of this pool's
+        // invalidation request, so the address-space content stamp is part of
+        // the cheap validity tuple. The complete key is still compared before
+        // a probe is accepted; the fingerprint below is diagnostic only and
+        // never participates in that decision.
         JitArtifactKey key;
         std::uint64_t key_fingerprint{};
         std::uint64_t publication_generation{};
         std::uint64_t slab_generation{};
         std::uint64_t invalidation_epoch{};
+        std::uint64_t executable_content_generation{};
         JitDemandArtifactStageResult result{
             JitDemandArtifactStageResult::ExactMiss};
         JitDemandArtifactTransientBackoff transient_backoff;
@@ -2345,25 +2369,35 @@ private:
         [[nodiscard]] bool cheap_matches(
             std::uint64_t candidate_publication_generation,
             std::uint64_t candidate_slab_generation,
-            std::uint64_t candidate_invalidation_epoch) const noexcept {
+            std::uint64_t candidate_invalidation_epoch,
+            std::uint64_t candidate_executable_content_generation) const
+            noexcept {
             return publication_generation == candidate_publication_generation &&
                    slab_generation == candidate_slab_generation &&
-                   invalidation_epoch == candidate_invalidation_epoch;
+                   invalidation_epoch == candidate_invalidation_epoch &&
+                   (executable_content_generation ==
+                        candidate_executable_content_generation ||
+                    jit_test_ignore_demand_probe_content_generation());
         }
 
         [[nodiscard]] bool matches(
             const JitArtifactKey& candidate,
             std::uint64_t candidate_publication_generation,
-            std::uint64_t candidate_slab_generation) const noexcept {
+            std::uint64_t candidate_slab_generation,
+            std::uint64_t candidate_invalidation_epoch,
+            std::uint64_t candidate_executable_content_generation) const
+            noexcept {
             return key == candidate &&
                    publication_generation == candidate_publication_generation &&
-                   slab_generation == candidate_slab_generation;
+                   slab_generation == candidate_slab_generation &&
+                   invalidation_epoch == candidate_invalidation_epoch &&
+                   executable_content_generation ==
+                       candidate_executable_content_generation;
         }
 
         [[nodiscard]] bool fingerprint_matches(
             const JitArtifactKey& candidate) const noexcept {
-            return key_fingerprint ==
-                   static_cast<std::uint64_t>(JitArtifactKeyHash{}(candidate));
+            return key_fingerprint == demand_probe_fingerprint(candidate);
         }
     };
 
@@ -2417,12 +2451,16 @@ private:
             callbacks_->artifact_publication_generation();
         const auto invalidation_epoch =
             execution_context_->cache_invalidation_epoch();
+        const auto executable_content_generation =
+            memory_.executable_content_generation();
         const auto probe = demand_artifact_probes_.find(location);
         JitDemandArtifactTransientBackoff transient_backoff;
         if (probe != demand_artifact_probes_.end()) {
-            if (probe->second.cheap_matches(
-                    publication_generation, slab_generation,
-                    invalidation_epoch)) {
+            const auto cheap_match = probe->second.cheap_matches(
+                publication_generation, slab_generation, invalidation_epoch,
+                executable_content_generation);
+            if (cheap_match &&
+                !jit_test_ignore_demand_probe_content_generation()) {
                 if (probe->second.result !=
                         JitDemandArtifactStageResult::TransientFailure ||
                     !probe->second.transient_backoff.retry_due(
@@ -2432,7 +2470,7 @@ private:
                 }
                 transient_backoff = probe->second.transient_backoff;
                 callbacks_->record_demand_transient_retry();
-            } else {
+            } else if (!cheap_match) {
                 callbacks_->record_demand_generation_retry();
             }
         }
@@ -2446,9 +2484,10 @@ private:
         if (probe != demand_artifact_probes_.end() &&
             probe->second.cheap_matches(
                 publication_generation, slab_generation,
-                invalidation_epoch) &&
+                invalidation_epoch, executable_content_generation) &&
             !probe->second.matches(
-                *key, publication_generation, slab_generation)) {
+                *key, publication_generation, slab_generation,
+                invalidation_epoch, executable_content_generation)) {
             if (probe->second.fingerprint_matches(*key)) {
                 callbacks_->record_demand_probe_fingerprint_collision();
             }
@@ -2479,12 +2518,12 @@ private:
             }
             demand_artifact_probe_order_.push_back(location);
         }
-        const auto key_fingerprint =
-            static_cast<std::uint64_t>(JitArtifactKeyHash{}(*key));
+        const auto key_fingerprint = demand_probe_fingerprint(*key);
         demand_artifact_probes_.insert_or_assign(
             location,
             DemandArtifactProbe{*key, key_fingerprint, publication_generation,
-                                slab_generation, invalidation_epoch, result,
+                                slab_generation, invalidation_epoch,
+                                executable_content_generation, result,
                                 transient_backoff});
         callbacks_->record_demand_probe_size(demand_artifact_probes_.size());
     }
