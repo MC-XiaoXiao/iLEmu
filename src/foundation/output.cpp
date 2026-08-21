@@ -11,6 +11,7 @@ bool concise_prefix(std::string_view text) {
         "[control]", "[device-state]", "[loader]", "[clock]",
         "[process]", "[display]", "[baseband]", "[watch]", "[gles]",
         "[perf]", "[perf-display]", "[perf-clock]", "[boot]", "[benchmark]",
+        "[transition]",
     };
     for (const auto prefix : prefixes) {
         if (text.starts_with(prefix)) return true;
@@ -47,6 +48,14 @@ void Output::line(std::string_view text) {
     // controller evaluate it before starting the next window.
     if (flush_each_write_ || text.starts_with("[perf-display]"))
         stream_->flush();
+}
+
+void Output::marker(std::string_view text) {
+    if (!should_emit(text)) return;
+    std::lock_guard lock{mutex_};
+    stream_->write(text.data(), static_cast<std::streamsize>(text.size()));
+    stream_->put('\n');
+    stream_->flush();
 }
 
 bool Output::should_emit(std::string_view text) const {

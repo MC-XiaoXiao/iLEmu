@@ -2701,6 +2701,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::unique_ptr<LiveControl> live_control;
   LiveButtonScheduler live_button_scheduler;
   LiveTouchScheduler live_touch_scheduler;
+  struct TransitionAttribution {
+    std::mutex mutex;
+    bool awaiting_first_submission{};
+    std::uint64_t input_complete_nanoseconds{};
+  } transition_attribution;
+  std::optional<std::string> pending_touch_input_completion;
+  std::optional<std::string> pending_button_input_completion;
   if (display_mode == "sdl") {
     if (!SdlDisplay::available()) {
       throw std::runtime_error{
@@ -3057,6 +3064,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
             std::chrono::steady_clock::now().time_since_epoch())
             .count());
   };
+  const auto mark_transition_input_complete =
+      [&](std::string_view kind) {
+        const auto completed_at = steady_nanoseconds();
+        std::lock_guard lock{transition_attribution.mutex};
+        transition_attribution.input_complete_nanoseconds = completed_at;
+        transition_attribution.awaiting_first_submission = true;
+        output.marker("[transition] input-complete kind=" +
+                      std::string{kind} +
+                      " completed-ns=" + std::to_string(completed_at));
+      };
   const auto timing_p95 =
       [&artifact_compaction_telemetry](
           std::vector<std::uint64_t> ArtifactCompactionTelemetry::*field) {
@@ -3530,7 +3547,30 @@ void boot(const std::vector<std::string> &args, Output &output) {
   } else if (frame_file_presenter) {
     initial->kernel->set_display_presenter(
         [backend = frame_file_presenter.get(),
-         &output](DisplayFrame frame) {
+         &output, &steady_nanoseconds, &transition_attribution](
+            DisplayFrame frame) {
+          {
+            std::lock_guard lock{transition_attribution.mutex};
+            if (transition_attribution.awaiting_first_submission) {
+              transition_attribution.awaiting_first_submission = false;
+              const auto submitted_nanoseconds =
+                  frame.submitted_at ==
+                          std::chrono::steady_clock::time_point{}
+                      ? steady_nanoseconds()
+                      : static_cast<std::uint64_t>(
+                            std::chrono::duration_cast<
+                                std::chrono::nanoseconds>(
+                                frame.submitted_at.time_since_epoch())
+                                .count());
+              output.marker(
+                  "[transition] frame-submit sequence=" +
+                  std::to_string(frame.sequence) +
+                  " submitted-ns=" + std::to_string(submitted_nanoseconds) +
+                  " input-complete-ns=" +
+                  std::to_string(
+                      transition_attribution.input_complete_nanoseconds));
+            }
+          }
           // Animation diagnostics must not turn the measured window into a
           // PNG-writing benchmark. The presenter callback is still the
           // actual CPU-present boundary for the headless sink; retain pixels
@@ -4565,9 +4605,17 @@ void boot(const std::vector<std::string> &args, Output &output) {
     for (const auto &input : live_touch_scheduler.poll()) {
       initial_runtime->kernel->enqueue_touch_input(input);
     }
+    if (pending_touch_input_completion && live_touch_scheduler.empty()) {
+      mark_transition_input_complete(*pending_touch_input_completion);
+      pending_touch_input_completion.reset();
+    }
     for (const auto &input : live_button_scheduler.poll()) {
       initial_runtime->kernel->enqueue_system_button(input);
       output.line("[control] button=up scheduled event queued");
+    }
+    if (pending_button_input_completion && live_button_scheduler.empty()) {
+      mark_transition_input_complete(*pending_button_input_completion);
+      pending_button_input_completion.reset();
     }
     if (live_control) {
       for (const auto &command : live_control->poll()) {
@@ -4575,6 +4623,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
         case LiveControlCommandKind::Touch:
           initial_runtime->kernel->enqueue_touch_input(command.touch);
           output.line("[control] touch queued");
+          mark_transition_input_complete("touch");
           break;
         case LiveControlCommandKind::Gesture:
           if (command.wake_display) {
@@ -4584,6 +4633,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 SystemButtonInput{SystemButton::Home, SystemButtonPhase::Up});
             output.line("[control] home requested before unlock gesture");
           }
+          pending_touch_input_completion = "gesture";
           live_touch_scheduler.schedule(command.gesture);
           // Preserve stdin command order. In particular, "tap" followed by
           // "lock" begins the touch before the button barrier even though the
@@ -4594,10 +4644,15 @@ void boot(const std::vector<std::string> &args, Output &output) {
           output.line(
               "[control] gesture=" + command.message +
               " scheduled events=" + std::to_string(command.gesture.size()));
+          if (live_touch_scheduler.empty()) {
+            mark_transition_input_complete(*pending_touch_input_completion);
+            pending_touch_input_completion.reset();
+          }
           break;
         case LiveControlCommandKind::Button:
           initial_runtime->kernel->enqueue_system_button(command.system_button);
           output.line("[control] button event queued");
+          mark_transition_input_complete("button");
           break;
         case LiveControlCommandKind::ButtonHold:
           initial_runtime->kernel->enqueue_system_button(
@@ -4605,8 +4660,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
                                 SystemButtonPhase::Down});
           live_button_scheduler.schedule(command.system_button,
                                          command.button_hold);
+          pending_button_input_completion = "button-hold";
           output.line("[control] button hold scheduled duration-ms=" +
                       std::to_string(command.button_hold.count()));
+          if (live_button_scheduler.empty()) {
+            mark_transition_input_complete(*pending_button_input_completion);
+            pending_button_input_completion.reset();
+          }
           break;
         case LiveControlCommandKind::Home:
           initial_runtime->kernel->enqueue_system_button(
@@ -4614,6 +4674,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           initial_runtime->kernel->enqueue_system_button(
               SystemButtonInput{SystemButton::Home, SystemButtonPhase::Up});
           output.line("[control] home requested");
+          mark_transition_input_complete("home");
           break;
         case LiveControlCommandKind::Lock:
           initial_runtime->kernel->enqueue_system_button(
@@ -4621,6 +4682,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           initial_runtime->kernel->enqueue_system_button(
               SystemButtonInput{SystemButton::Lock, SystemButtonPhase::Up});
           output.line("[control] display lock requested");
+          mark_transition_input_complete("lock");
           break;
         case LiveControlCommandKind::VolumeUp:
         case LiveControlCommandKind::VolumeDown: {
@@ -4634,6 +4696,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
           output.line(command.kind == LiveControlCommandKind::VolumeUp
                           ? "[control] volume up requested"
                           : "[control] volume down requested");
+          mark_transition_input_complete("volume");
           break;
         }
         case LiveControlCommandKind::RingerRing:
@@ -4704,7 +4767,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                     initial_runtime->kernel->current_absolute_time(),
                     realtime_pacer->allowed_virtual_time()};
               }
-              output.line("[control] perf-begin label=" + command.message);
+              output.marker("[control] perf-begin label=" + command.message);
             }
           }
           break;

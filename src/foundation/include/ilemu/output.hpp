@@ -20,6 +20,11 @@ public:
     void set_verbose(bool verbose) { verbose_ = verbose; }
     void write(std::string_view text);
     void line(std::string_view text);
+    // Emit one explicitly requested low-volume control/attribution marker.
+    // Unlike ordinary file output, markers are flushed so an external
+    // controller can use them as a causality boundary without flushing the
+    // emulation log or every frame.
+    void marker(std::string_view text);
 
 private:
     [[nodiscard]] bool should_emit(std::string_view text) const;
