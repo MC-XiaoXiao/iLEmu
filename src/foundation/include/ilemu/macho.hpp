@@ -81,7 +81,9 @@ public:
         // offsets in the cache container. Standalone images use the default
         // zero offset; cache callers provide the file offset of the image
         // header while retaining the container's absolute file offsets.
-        std::optional<std::uint64_t> image_header_offset = std::nullopt);
+        std::optional<std::uint64_t> image_header_offset = std::nullopt,
+        std::shared_ptr<const std::vector<std::byte>> immutable_snapshot = {},
+        std::optional<GuestFileGeneration> known_generation = std::nullopt);
 
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
     [[nodiscard]] std::uint32_t cpu_type() const { return cpu_type_; }

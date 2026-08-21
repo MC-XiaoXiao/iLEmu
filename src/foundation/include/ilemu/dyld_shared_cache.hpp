@@ -54,6 +54,9 @@ struct DyldCacheFile {
   std::uintmax_t file_size{};
   std::optional<GuestFileGeneration> file_generation;
   ContentIdentity content_identity;
+  // A published generation owns the exact bytes used to build its metadata.
+  // Lazy image parsing must not reopen path after a rootfs replacement.
+  std::shared_ptr<const std::vector<std::byte>> immutable_snapshot;
   DyldCacheUuid uuid{};
   std::uint64_t cache_vm_offset{};
   std::string file_suffix;

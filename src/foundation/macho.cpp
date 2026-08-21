@@ -321,57 +321,73 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
                              ArmArchitectureVersion architecture,
                              std::optional<ContentIdentity> known_identity,
                              ImmutableSnapshotKind snapshot_kind,
-                             std::optional<std::uint64_t> image_header_offset) {
-    ScopedFileDescriptor input;
-    do {
-        input.value = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
-    } while (input.value < 0 && errno == EINTR);
-    if (input.value < 0) {
-        throw std::runtime_error{"cannot open Mach-O: " + path.string()};
-    }
-    struct stat file_stat {};
-    if (::fstat(input.value, &file_stat) != 0 || !S_ISREG(file_stat.st_mode) ||
-        file_stat.st_size < 0 ||
-        static_cast<std::uintmax_t>(file_stat.st_size) >
-            std::numeric_limits<std::size_t>::max()) {
-        throw std::runtime_error{"cannot determine Mach-O size: " +
-                                 path.string()};
-    }
+                             std::optional<std::uint64_t> image_header_offset,
+                             std::shared_ptr<const std::vector<std::byte>>
+                                 immutable_snapshot,
+                             std::optional<GuestFileGeneration> known_generation) {
     MachOImage image;
     image.path_ = path;
-    image.file_generation_ = file_generation_from_stat(file_stat);
-    std::shared_ptr<const std::vector<std::byte>> image_bytes;
-    if (known_identity) {
-        image_bytes = find_immutable_snapshot(
-            *image.file_generation_, *known_identity,
-            static_cast<std::uint64_t>(file_stat.st_size),
-            static_cast<std::uint64_t>(architecture), snapshot_kind);
-    }
-    if (!image_bytes) {
-        auto loaded_bytes = std::make_shared<std::vector<std::byte>>(
-            static_cast<std::size_t>(file_stat.st_size));
-        std::size_t received = 0;
-        while (received < loaded_bytes->size()) {
-            const auto remaining = loaded_bytes->size() - received;
-            const auto requested = std::min<std::size_t>(remaining, 64U * 1024U);
-            ssize_t count = -1;
-            do {
-                count = ::pread(input.value, loaded_bytes->data() + received,
-                                requested, static_cast<off_t>(received));
-            } while (count < 0 && errno == EINTR);
-            if (count <= 0) {
-                throw std::runtime_error{"failed to read Mach-O: " +
-                                         path.string()};
-            }
-            received += static_cast<std::size_t>(count);
+    std::shared_ptr<const std::vector<std::byte>> image_bytes =
+        std::move(immutable_snapshot);
+    if (image_bytes) {
+        if (!known_identity || !known_generation) {
+            throw std::runtime_error{
+                "immutable Mach-O snapshot requires identity and generation"};
         }
-        image_bytes = std::move(loaded_bytes);
+        image.file_generation_ = *known_generation;
     }
-    struct stat final_file_stat {};
-    if (::fstat(input.value, &final_file_stat) != 0 ||
-        file_generation_from_stat(final_file_stat) != *image.file_generation_) {
-        throw std::runtime_error{"Mach-O changed while reading: " +
-                                 path.string()};
+
+    ScopedFileDescriptor input;
+    if (!image_bytes) {
+        do {
+            input.value = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+        } while (input.value < 0 && errno == EINTR);
+        if (input.value < 0) {
+            throw std::runtime_error{"cannot open Mach-O: " + path.string()};
+        }
+        struct stat file_stat {};
+        if (::fstat(input.value, &file_stat) != 0 ||
+            !S_ISREG(file_stat.st_mode) || file_stat.st_size < 0 ||
+            static_cast<std::uintmax_t>(file_stat.st_size) >
+                std::numeric_limits<std::size_t>::max()) {
+            throw std::runtime_error{"cannot determine Mach-O size: " +
+                                     path.string()};
+        }
+        image.file_generation_ = file_generation_from_stat(file_stat);
+        if (known_identity) {
+            image_bytes = find_immutable_snapshot(
+                *image.file_generation_, *known_identity,
+                static_cast<std::uint64_t>(file_stat.st_size),
+                static_cast<std::uint64_t>(architecture), snapshot_kind);
+        }
+        if (!image_bytes) {
+            auto loaded_bytes = std::make_shared<std::vector<std::byte>>(
+                static_cast<std::size_t>(file_stat.st_size));
+            std::size_t received = 0;
+            while (received < loaded_bytes->size()) {
+                const auto remaining = loaded_bytes->size() - received;
+                const auto requested =
+                    std::min<std::size_t>(remaining, 64U * 1024U);
+                ssize_t count = -1;
+                do {
+                    count = ::pread(input.value, loaded_bytes->data() + received,
+                                    requested, static_cast<off_t>(received));
+                } while (count < 0 && errno == EINTR);
+                if (count <= 0) {
+                    throw std::runtime_error{"failed to read Mach-O: " +
+                                             path.string()};
+                }
+                received += static_cast<std::size_t>(count);
+            }
+            image_bytes = std::move(loaded_bytes);
+        }
+        struct stat final_file_stat {};
+        if (::fstat(input.value, &final_file_stat) != 0 ||
+            file_generation_from_stat(final_file_stat) !=
+                *image.file_generation_) {
+            throw std::runtime_error{"Mach-O changed while reading: " +
+                                     path.string()};
+        }
     }
 
     const auto header_offset = image_header_offset.value_or(0U);
