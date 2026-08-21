@@ -154,9 +154,26 @@ bool ArtifactCompactionTaskRecord::request_cancellation(
     return false;
   }
   auto expected = std::uint64_t{};
-  return cancellation_requested_nanoseconds_.compare_exchange_strong(
-      expected, requested_nanoseconds, std::memory_order_acq_rel,
-      std::memory_order_acquire);
+  if (!cancellation_requested_nanoseconds_.compare_exchange_strong(
+          expected, requested_nanoseconds, std::memory_order_acq_rel,
+          std::memory_order_acquire)) {
+    return false;
+  }
+  // A terminal publisher can win between the active-state observation and
+  // the timestamp CAS above. Recheck and roll back so cancellation never
+  // reports success after terminal publication. If terminal publication wins
+  // after this acquire, the request linearizes first and remains valid.
+  const auto confirmed = state_.load(std::memory_order_acquire);
+  if (confirmed == ArtifactCompactionTaskState::Queued ||
+      confirmed == ArtifactCompactionTaskState::Running) {
+    return true;
+  }
+  auto rollback = requested_nanoseconds;
+  static_cast<void>(
+      cancellation_requested_nanoseconds_.compare_exchange_strong(
+          rollback, 0U, std::memory_order_acq_rel,
+          std::memory_order_acquire));
+  return false;
 }
 
 bool ArtifactCompactionTaskRecord::publish_terminal(
