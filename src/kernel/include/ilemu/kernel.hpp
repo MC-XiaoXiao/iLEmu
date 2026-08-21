@@ -50,6 +50,7 @@
 #include "ilemu/ringer_switch_state.hpp"
 #include "ilemu/scene_coordinator.hpp"
 #include "ilemu/surface_store.hpp"
+#include "ilemu/system_configuration_hle.hpp"
 #include "ilemu/system_button_input.hpp"
 #include "ilemu/touch_input.hpp"
 #include "ilemu/userland_hle.hpp"
@@ -611,6 +612,7 @@ private:
   std::shared_ptr<RingerSwitchState> ringer_switch_state_{
       std::make_shared<RingerSwitchState>()};
   UserlandHleRegistry userland_hle_;
+  SystemConfigurationHle system_configuration_hle_;
   DarwinNotifyStateHle darwin_notify_state_hle_;
   AudioToolboxHle audio_toolbox_hle_;
   CoreMediaHle core_media_hle_;
