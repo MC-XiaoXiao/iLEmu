@@ -37,8 +37,11 @@ void DisplayState::clear(std::uint32_t argb) {
   std::fill(pixels_.begin(), pixels_.end(), argb);
   host_surface_.reset();
   surface_reader_ = {};
+  surface_content_revision_reader_ = {};
+  surface_content_generation_ = 0;
   content_owner_process_id_ = 0;
   content_orientation_ = DisplayOrientation::Portrait;
+  ++content_revision_;
 }
 
 void DisplayState::replace_pixels(std::vector<std::uint32_t> pixels,
@@ -50,27 +53,43 @@ void DisplayState::replace_pixels(std::vector<std::uint32_t> pixels,
   pixels_ = std::move(pixels);
   host_surface_.reset();
   surface_reader_ = {};
+  surface_content_revision_reader_ = {};
+  surface_content_generation_ = 0;
   if (owner_process_id != 0) {
     content_owner_process_id_ = owner_process_id;
     if (orientation_resolver_)
       content_orientation_ = orientation_resolver_(owner_process_id);
   }
+  ++content_revision_;
 }
 
 void DisplayState::replace_surface(
     std::shared_ptr<HostSurface> surface,
     std::function<std::vector<std::uint32_t>()> read_pixels,
-    std::uint32_t owner_process_id) {
+    std::uint32_t owner_process_id,
+    std::function<std::uint64_t()> content_revision_reader) {
   if (!surface || !read_pixels)
     return;
+  const auto content_generation =
+      content_revision_reader ? content_revision_reader() : 0U;
   std::lock_guard lock{mutex_};
+  const auto owner_changed = owner_process_id != 0 &&
+                             content_owner_process_id_ != owner_process_id;
+  const auto content_changed =
+      host_surface_ != surface || !surface_content_revision_reader_ ||
+      !content_revision_reader ||
+      surface_content_generation_ != content_generation;
   host_surface_ = std::move(surface);
   surface_reader_ = std::move(read_pixels);
+  surface_content_revision_reader_ = std::move(content_revision_reader);
+  surface_content_generation_ = content_generation;
   if (owner_process_id != 0) {
     content_owner_process_id_ = owner_process_id;
     if (orientation_resolver_)
       content_orientation_ = orientation_resolver_(owner_process_id);
   }
+  if (owner_changed || content_changed)
+    ++content_revision_;
 }
 
 void DisplayState::set_powered_on(bool powered_on) {
@@ -81,6 +100,7 @@ void DisplayState::set_powered_on(bool powered_on) {
     if (powered_on_ == powered_on)
       return;
     powered_on_ = powered_on;
+    ++content_revision_;
     ++sequence_;
     presenter = presenter_;
     if (!presenter)
@@ -106,7 +126,27 @@ void DisplayState::set_powered_on(bool powered_on) {
   presenter(std::move(frame));
 }
 
+void DisplayState::refresh_surface_content_revision() {
+  std::function<std::uint64_t()> reader;
+  std::shared_ptr<HostSurface> surface;
+  {
+    std::lock_guard lock{mutex_};
+    reader = surface_content_revision_reader_;
+    surface = host_surface_;
+  }
+  if (!reader || !surface)
+    return;
+  const auto content_generation = reader();
+  std::lock_guard lock{mutex_};
+  if (host_surface_ != surface || !surface_content_revision_reader_ ||
+      content_generation == surface_content_generation_)
+    return;
+  surface_content_generation_ = content_generation;
+  ++content_revision_;
+}
+
 void DisplayState::present(std::uint32_t owner_process_id) {
+  refresh_surface_content_revision();
   Presenter presenter;
   DisplayFrame frame;
   {
@@ -153,8 +193,11 @@ bool DisplayState::clear_if_owner(std::uint32_t owner_process_id) {
     std::fill(pixels_.begin(), pixels_.end(), 0xff000000U);
     host_surface_.reset();
     surface_reader_ = {};
+    surface_content_revision_reader_ = {};
+    surface_content_generation_ = 0;
     content_owner_process_id_ = 0;
     content_orientation_ = DisplayOrientation::Portrait;
+    ++content_revision_;
     ++sequence_;
     presenter = presenter_;
     if (!presenter)
@@ -209,6 +252,11 @@ DisplayFrame DisplayState::snapshot() const {
 std::uint64_t DisplayState::presented_frames() const {
   std::lock_guard lock{mutex_};
   return sequence_;
+}
+
+std::uint64_t DisplayState::content_revision() const {
+  std::lock_guard lock{mutex_};
+  return content_revision_;
 }
 
 bool DisplayState::powered_on() const {

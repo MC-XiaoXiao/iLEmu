@@ -1329,7 +1329,11 @@ void Mbx2dHle::submit_destination(UserlandHleCall &call, bool context_api) {
               false, PerfCpuMapReason::DeferredDisplayRead);
           return mapping.frame().pixels;
         },
-        call.process_id());
+        call.process_id(),
+        [surface] {
+          return std::max(surface->cpu_generation(),
+                          surface->gpu_generation());
+        });
     return;
   }
   const auto pixels = read_region(*destination, 0, 0, destination->width,

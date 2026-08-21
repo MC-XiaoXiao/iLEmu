@@ -619,7 +619,10 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall &call) {
             false, PerfCpuMapReason::DeferredDisplayRead);
         return mapping.frame().pixels;
       },
-      call.process_id());
+      call.process_id(),
+      [scanout] {
+        return std::max(scanout->cpu_generation(), scanout->gpu_generation());
+      });
   return true;
 }
 

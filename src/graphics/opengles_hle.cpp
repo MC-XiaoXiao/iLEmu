@@ -784,7 +784,11 @@ bool OpenGlesHle::publish_display_surface(
                 false, PerfCpuMapReason::DeferredDisplayRead);
             return mapping.frame().pixels;
         },
-        call.process_id());
+        call.process_id(),
+        [surface] {
+          return std::max(surface->cpu_generation(),
+                          surface->gpu_generation());
+        });
     return true;
 }
 

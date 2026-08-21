@@ -78,7 +78,8 @@ public:
   void replace_surface(
       std::shared_ptr<HostSurface> surface,
       std::function<std::vector<std::uint32_t>()> read_pixels,
-      std::uint32_t owner_process_id = 0);
+      std::uint32_t owner_process_id = 0,
+      std::function<std::uint64_t()> content_revision_reader = {});
   // The framebuffer keeps its last scanout contents while the LCD is off.
   // Presenters and snapshots expose a black panel until power is restored.
   void set_powered_on(bool powered_on);
@@ -89,21 +90,27 @@ public:
 
   [[nodiscard]] DisplayFrame snapshot() const;
   [[nodiscard]] std::uint64_t presented_frames() const;
+  [[nodiscard]] std::uint64_t content_revision() const;
   [[nodiscard]] bool powered_on() const;
   [[nodiscard]] DisplayGeometry geometry() const { return geometry_; }
   [[nodiscard]] std::uint32_t width() const { return geometry_.width; }
   [[nodiscard]] std::uint32_t height() const { return geometry_.height; }
 
 private:
+  void refresh_surface_content_revision();
+
   DisplayGeometry geometry_;
   mutable std::mutex mutex_;
   std::vector<std::uint32_t> pixels_;
   std::shared_ptr<HostSurface> host_surface_;
   std::function<std::vector<std::uint32_t>()> surface_reader_;
+  std::function<std::uint64_t()> surface_content_revision_reader_;
+  std::uint64_t surface_content_generation_{};
   std::uint32_t content_owner_process_id_{};
   Presenter presenter_;
   OrientationResolver orientation_resolver_;
   std::uint64_t sequence_{};
+  std::uint64_t content_revision_{};
   bool powered_on_{true};
   DisplayOrientation content_orientation_{DisplayOrientation::Portrait};
 };
