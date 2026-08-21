@@ -175,6 +175,11 @@ struct JitArtifactStoreStats {
   std::uint64_t negative_probe_hits{};
   std::uint64_t generation_retries{};
   std::uint64_t transient_retries{};
+  std::uint64_t probe_fingerprint_hits{};
+  std::uint64_t probe_fingerprint_collisions{};
+  std::uint64_t probe_evictions{};
+  std::uint64_t probe_table_entries{};
+  std::uint64_t probe_table_peak_entries{};
   std::uint64_t memory_published_lookups{};
   std::uint64_t disk_demand_lookups{};
   std::uint64_t disk_prefetched_lookups{};
@@ -183,6 +188,12 @@ struct JitArtifactStoreStats {
   std::uint64_t demand_payload_disk_loads{};
   std::uint64_t demand_deserialization_nanoseconds{};
   std::uint64_t initialization_nanoseconds{};
+  std::uint64_t admission_attempts{};
+  std::uint64_t admission_rejected{};
+  std::uint64_t admission_positive{};
+  std::uint64_t admission_low_confidence{};
+  std::uint64_t admission_estimated_load_nanoseconds{};
+  std::uint64_t admission_estimated_saved_nanoseconds{};
   std::uint64_t finalizations{};
   std::uint64_t finalization_failures{};
   std::uint64_t disk_loaded_entries{};
@@ -321,6 +332,17 @@ public:
   void record_demand_negative_probe_hit() const noexcept;
   void record_demand_generation_retry() const noexcept;
   void record_demand_transient_retry() const noexcept;
+  void record_demand_probe_fingerprint_hit() const noexcept;
+  void record_demand_probe_fingerprint_collision() const noexcept;
+  void record_demand_probe_eviction() const noexcept;
+  void record_demand_probe_size(std::size_t entries) const noexcept;
+  // Benefit-driven admission for runtime demand artifacts. The caller has
+  // already validated the payload; this method only records the estimate and
+  // rejects entries whose predicted saved translation cannot pay for loading.
+  [[nodiscard]] bool admit_demand_artifact(
+      std::uint64_t estimated_load_nanoseconds,
+      std::uint64_t estimated_saved_nanoseconds,
+      std::uint8_t confidence) const noexcept;
   [[nodiscard]] std::shared_ptr<const BlockArtifact> publish(
       JitArtifactKey key, JitArtifactData data,
       JitArtifactRetention retention = JitArtifactRetention::Normal);

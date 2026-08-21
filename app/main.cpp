@@ -2138,6 +2138,18 @@ void firmware_prepare(const std::vector<std::string> &args, Output &output) {
       std::to_string(stats.artifact_stats.net_benefit_nanoseconds) +
       " demand-payload-loads=" +
       std::to_string(stats.artifact_stats.demand_payload_disk_loads) +
+      " admission-attempts=" +
+      std::to_string(stats.artifact_stats.admission_attempts) +
+      " admission-rejected=" +
+      std::to_string(stats.artifact_stats.admission_rejected) +
+      " admission-positive=" +
+      std::to_string(stats.artifact_stats.admission_positive) +
+      " admission-low-confidence=" +
+      std::to_string(stats.artifact_stats.admission_low_confidence) +
+      " admission-estimated-load-ns=" +
+      std::to_string(stats.artifact_stats.admission_estimated_load_nanoseconds) +
+      " admission-estimated-saved-ns=" +
+      std::to_string(stats.artifact_stats.admission_estimated_saved_nanoseconds) +
       " finalizations=" +
       std::to_string(stats.artifact_stats.finalizations) +
       " finalization-failures=" +
@@ -6338,6 +6350,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(artifact_stats.generation_retries) +
         " transient-retry=" +
         std::to_string(artifact_stats.transient_retries) +
+        " probe-fingerprint-hit=" +
+        std::to_string(artifact_stats.probe_fingerprint_hits) +
+        " probe-fingerprint-collision=" +
+        std::to_string(artifact_stats.probe_fingerprint_collisions) +
+        " probe-evictions=" +
+        std::to_string(artifact_stats.probe_evictions) +
+        " probe-entries=" +
+        std::to_string(artifact_stats.probe_table_entries) +
+        " probe-peak-entries=" +
+        std::to_string(artifact_stats.probe_table_peak_entries) +
         " disk-retry=" +
         std::to_string(artifact_stats.disk_read_retries) +
         " disk-wait=" + std::to_string(artifact_stats.disk_read_waits) +
@@ -6370,6 +6392,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(artifact_stats.net_benefit_nanoseconds) +
         " demand-payload-loads=" +
         std::to_string(artifact_stats.demand_payload_disk_loads) +
+        " admission-attempts=" +
+        std::to_string(artifact_stats.admission_attempts) +
+        " admission-rejected=" +
+        std::to_string(artifact_stats.admission_rejected) +
+        " admission-positive=" +
+        std::to_string(artifact_stats.admission_positive) +
+        " admission-low-confidence=" +
+        std::to_string(artifact_stats.admission_low_confidence) +
+        " admission-estimated-load-ns=" +
+        std::to_string(artifact_stats.admission_estimated_load_nanoseconds) +
+        " admission-estimated-saved-ns=" +
+        std::to_string(artifact_stats.admission_estimated_saved_nanoseconds) +
         " demand-deserialization-ns=" +
         std::to_string(artifact_stats.demand_deserialization_nanoseconds) +
         " initialization-ns=" +

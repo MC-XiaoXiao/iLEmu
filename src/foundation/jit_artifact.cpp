@@ -78,6 +78,7 @@ constexpr std::uintmax_t maximum_persistence_bytes =
 constexpr std::uint8_t lookup_state_consumed = 1U << 0U;
 constexpr std::uint8_t lookup_state_staged = 1U << 1U;
 constexpr std::uint8_t lookup_state_unused = 1U << 2U;
+constexpr std::uint8_t lookup_state_imported = 1U << 3U;
 std::atomic<std::uint64_t> next_context_id{1};
 
 template <typename T, typename Compare>
@@ -2778,17 +2779,12 @@ void JitArtifactStore::record_native_imported(
   if (!lookup.artifact || !lookup.token) return;
   auto state = lookup.token->state.load(std::memory_order_relaxed);
   for (;;) {
-    if ((state & lookup_state_consumed) != 0U) {
-      const std::lock_guard lock{mutex_};
-      ++stats_.duplicate_consumptions;
-      return;
-    }
+    if ((state & lookup_state_imported) != 0U) return;
     if (lookup.token->state.compare_exchange_weak(
-            state, static_cast<std::uint8_t>(state | lookup_state_consumed),
+            state, static_cast<std::uint8_t>(state | lookup_state_imported),
             std::memory_order_acq_rel, std::memory_order_relaxed)) {
       const std::lock_guard lock{mutex_};
       ++stats_.native_imported;
-      note_artifact_consumed_locked(lookup);
       return;
     }
   }
@@ -2866,6 +2862,69 @@ void JitArtifactStore::record_demand_generation_retry() const noexcept {
 
 void JitArtifactStore::record_demand_transient_retry() const noexcept {
   transient_retries_.fetch_add(1U, std::memory_order_relaxed);
+}
+
+void JitArtifactStore::record_demand_probe_fingerprint_hit() const noexcept {
+  const std::lock_guard lock{mutex_};
+  ++stats_.probe_fingerprint_hits;
+}
+
+void JitArtifactStore::record_demand_probe_fingerprint_collision() const
+    noexcept {
+  const std::lock_guard lock{mutex_};
+  ++stats_.probe_fingerprint_collisions;
+}
+
+void JitArtifactStore::record_demand_probe_eviction() const noexcept {
+  const std::lock_guard lock{mutex_};
+  ++stats_.probe_evictions;
+}
+
+void JitArtifactStore::record_demand_probe_size(
+    std::size_t entries) const noexcept {
+  const std::lock_guard lock{mutex_};
+  stats_.probe_table_entries = static_cast<std::uint64_t>(entries);
+  stats_.probe_table_peak_entries = std::max(
+      stats_.probe_table_peak_entries,
+      static_cast<std::uint64_t>(entries));
+}
+
+bool JitArtifactStore::admit_demand_artifact(
+    std::uint64_t estimated_load_nanoseconds,
+    std::uint64_t estimated_saved_nanoseconds,
+    std::uint8_t confidence) const noexcept {
+  const std::lock_guard lock{mutex_};
+  ++stats_.admission_attempts;
+  if (stats_.admission_estimated_load_nanoseconds <=
+      std::numeric_limits<std::uint64_t>::max() -
+          estimated_load_nanoseconds) {
+    stats_.admission_estimated_load_nanoseconds +=
+        estimated_load_nanoseconds;
+  } else {
+    stats_.admission_estimated_load_nanoseconds =
+        std::numeric_limits<std::uint64_t>::max();
+  }
+  if (stats_.admission_estimated_saved_nanoseconds <=
+      std::numeric_limits<std::uint64_t>::max() -
+          estimated_saved_nanoseconds) {
+    stats_.admission_estimated_saved_nanoseconds +=
+        estimated_saved_nanoseconds;
+  } else {
+    stats_.admission_estimated_saved_nanoseconds =
+        std::numeric_limits<std::uint64_t>::max();
+  }
+  constexpr std::uint8_t minimum_confidence = 80U;
+  if (confidence < minimum_confidence) {
+    ++stats_.admission_low_confidence;
+    ++stats_.admission_rejected;
+    return false;
+  }
+  if (estimated_saved_nanoseconds <= estimated_load_nanoseconds) {
+    ++stats_.admission_rejected;
+    return false;
+  }
+  ++stats_.admission_positive;
+  return true;
 }
 
 std::size_t JitArtifactStore::trim_resident_bytes(

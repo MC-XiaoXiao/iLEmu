@@ -42,11 +42,33 @@
 namespace ilemu {
 namespace {
 
-[[nodiscard]] bool jit_memory_only_lookup_enabled() noexcept {
-    static const bool enabled = [] {
-        const char *value = std::getenv("ILEMU_JIT_MEMORY_ONLY_LOOKUP");
-        return value != nullptr && value[0] == '1';
-    }();
+[[nodiscard]] bool jit_env_flag(const char *name) noexcept {
+    const char *value = std::getenv(name);
+    return value != nullptr && value[0] == '1';
+}
+
+[[nodiscard]] bool jit_demand_disabled() noexcept {
+    static const bool disabled = jit_env_flag("ILEMU_JIT_DISABLE_DEMAND_ARTIFACT");
+    return disabled;
+}
+
+[[nodiscard]] bool jit_sync_preload_disabled() noexcept {
+    static const bool disabled = jit_env_flag("ILEMU_JIT_DISABLE_SYNC_PRELOAD");
+    return disabled;
+}
+
+[[nodiscard]] bool jit_portable_handoff_disabled() noexcept {
+    static const bool disabled = jit_env_flag("ILEMU_JIT_DISABLE_PORTABLE_HANDOFF");
+    return disabled;
+}
+
+[[nodiscard]] bool jit_sync_disk_lookup_enabled() noexcept {
+    // Guest demand admission is memory/hotset-only by default. A synchronous
+    // disk payload is reserved for explicit experiments and background-style
+    // acceptance runs; it must never extend the normal CPU slice.
+    static const bool enabled =
+        jit_env_flag("ILEMU_JIT_ALLOW_SYNC_DISK_LOOKUP") &&
+        !jit_env_flag("ILEMU_JIT_MEMORY_ONLY_LOOKUP");
     return enabled;
 }
 
@@ -610,6 +632,10 @@ public:
         return artifact_store_ ? artifact_store_->publication_generation() : 0U;
     }
 
+    [[nodiscard]] bool demand_artifact_catalog_nonempty() const noexcept {
+        return artifact_store_ && artifact_store_->size() != 0U;
+    }
+
     // Preparation is deliberately separate from the Dynarmic miss callback:
     // store lookup, dependency validation, and IR deserialization all happen
     // before Jit::Run. The miss callback only consumes this executor-local
@@ -634,6 +660,40 @@ public:
             if (validated.block->block.Location().Value() !=
                 location_descriptor) {
                 return JitDemandArtifactStageResult::PermanentValidationFailure;
+            }
+            if (artifact_store_) {
+                const auto &artifact = *validated.block->lookup.artifact;
+                const auto ir_bytes = artifact.data.normalized_ir.size();
+                constexpr std::uint64_t base_load_nanoseconds = 35'000U;
+                constexpr std::uint64_t bytes_cost_divisor = 2U;
+                auto estimated_load = base_load_nanoseconds;
+                const auto size_cost = static_cast<std::uint64_t>(
+                    std::min<std::size_t>(
+                        ir_bytes / bytes_cost_divisor,
+                        std::numeric_limits<std::uint64_t>::max() -
+                            base_load_nanoseconds));
+                estimated_load += size_cost;
+                switch (validated.block->lookup.provenance) {
+                case JitArtifactLookupProvenance::DiskDemand:
+                    estimated_load += 150'000U;
+                    break;
+                case JitArtifactLookupProvenance::DiskPrefetched:
+                    estimated_load += 45'000U;
+                    break;
+                case JitArtifactLookupProvenance::MemoryPublished:
+                    break;
+                }
+                const auto estimated_saved =
+                    artifact.data.translation_nanoseconds;
+                const auto confidence =
+                    artifact.data.translation_nanoseconds != 0U &&
+                            !artifact.data.code_dependencies.empty()
+                        ? static_cast<std::uint8_t>(100U)
+                        : static_cast<std::uint8_t>(0U);
+                if (!artifact_store_->admit_demand_artifact(
+                        estimated_load, estimated_saved, confidence)) {
+                    return JitDemandArtifactStageResult::ExactMiss;
+                }
             }
             demand_artifact_key_ = key;
             demand_artifact_location_ = location_descriptor;
@@ -671,6 +731,24 @@ public:
     void record_demand_transient_retry() const noexcept {
         if (artifact_store_)
             artifact_store_->record_demand_transient_retry();
+    }
+
+    void record_demand_probe_fingerprint_hit() const noexcept {
+        if (artifact_store_)
+            artifact_store_->record_demand_probe_fingerprint_hit();
+    }
+
+    void record_demand_probe_fingerprint_collision() const noexcept {
+        if (artifact_store_)
+            artifact_store_->record_demand_probe_fingerprint_collision();
+    }
+
+    void record_demand_probe_eviction() const noexcept {
+        if (artifact_store_) artifact_store_->record_demand_probe_eviction();
+    }
+
+    void record_demand_probe_size(std::size_t entries) const noexcept {
+        if (artifact_store_) artifact_store_->record_demand_probe_size(entries);
     }
 
     [[nodiscard]] bool demand_artifact_staged(
@@ -816,7 +894,7 @@ private:
             const auto lookup = known_key
                                     ? artifact_store_->lookup(
                                           *known_key, artifact_retention_,
-                                          !jit_memory_only_lookup_enabled())
+                                          jit_sync_disk_lookup_enabled())
                                     : find_artifact(location_descriptor);
             if (!lookup) {
                 if (lookup.transient_failure) {
@@ -1844,6 +1922,18 @@ public:
         memory_.synchronize_shared_write_tracking();
         diagnostics.checkpoint(PerfLatencyKind::CpuRunSharedWriteSync);
         ensure_jit();
+        if (!demand_artifact_enabled_ &&
+            callbacks_->artifact_publication_generation() != 0U &&
+            callbacks_->demand_artifact_catalog_nonempty()) {
+            demand_artifact_enabled_ = true;
+            if (!jit_demand_disabled() &&
+                !jit_portable_handoff_disabled()) {
+                jit_->SetPortableIRDemandProvider(
+                    &JitExecutor::portable_ir_demand_provider, this);
+                jit_->SetPortableIREmitCompletion(
+                    &JitExecutor::portable_ir_emit_completion, this);
+            }
+        }
         diagnostics.checkpoint(PerfLatencyKind::CpuRunEnsureJit);
         service_pending_shared_invalidation();
         observe_shared_invalidation_epoch();
@@ -1861,7 +1951,9 @@ public:
             const auto entry_location = single_step
                                              ? 0U
                                              : current_location_descriptor();
-            if (!single_step) {
+            if (!single_step && demand_artifact_enabled_ &&
+                !jit_demand_disabled() &&
+                !jit_sync_preload_disabled()) {
                 preload_current_artifact();
             }
             diagnostics.checkpoint(PerfLatencyKind::CpuRunArtifactPreload);
@@ -2193,6 +2285,7 @@ private:
 
     struct DemandArtifactProbe {
         JitArtifactKey key;
+        std::uint64_t key_fingerprint{};
         std::uint64_t publication_generation{};
         std::uint64_t slab_generation{};
         std::uint64_t invalidation_epoch{};
@@ -2216,6 +2309,12 @@ private:
             return key == candidate &&
                    publication_generation == candidate_publication_generation &&
                    slab_generation == candidate_slab_generation;
+        }
+
+        [[nodiscard]] bool fingerprint_matches(
+            const JitArtifactKey& candidate) const noexcept {
+            return key_fingerprint ==
+                   static_cast<std::uint64_t>(JitArtifactKeyHash{}(candidate));
         }
     };
 
@@ -2290,12 +2389,20 @@ private:
         }
         const auto key = callbacks_->artifact_key(location);
         if (!key) return;
+        if (probe != demand_artifact_probes_.end()) {
+            if (probe->second.fingerprint_matches(*key)) {
+                callbacks_->record_demand_probe_fingerprint_hit();
+            }
+        }
         if (probe != demand_artifact_probes_.end() &&
             probe->second.cheap_matches(
                 publication_generation, slab_generation,
                 invalidation_epoch) &&
             !probe->second.matches(
                 *key, publication_generation, slab_generation)) {
+            if (probe->second.fingerprint_matches(*key)) {
+                callbacks_->record_demand_probe_fingerprint_collision();
+            }
             callbacks_->record_demand_generation_retry();
         }
         callbacks_->record_demand_stage_attempt();
@@ -2319,18 +2426,24 @@ private:
                 const auto victim = demand_artifact_probe_order_.front();
                 demand_artifact_probe_order_.pop_front();
                 demand_artifact_probes_.erase(victim);
+                callbacks_->record_demand_probe_eviction();
             }
             demand_artifact_probe_order_.push_back(location);
         }
+        const auto key_fingerprint =
+            static_cast<std::uint64_t>(JitArtifactKeyHash{}(*key));
         demand_artifact_probes_.insert_or_assign(
-            location, DemandArtifactProbe{*key, publication_generation,
-                                          slab_generation, invalidation_epoch,
-                                          result, transient_backoff});
+            location,
+            DemandArtifactProbe{*key, key_fingerprint, publication_generation,
+                                slab_generation, invalidation_epoch, result,
+                                transient_backoff});
+        callbacks_->record_demand_probe_size(demand_artifact_probes_.size());
     }
 
     void clear_demand_artifact_probes() {
         demand_artifact_probes_.clear();
         demand_artifact_probe_order_.clear();
+        callbacks_->record_demand_probe_size(0U);
     }
 
     void observe_shared_invalidation_epoch() {
@@ -2471,10 +2584,15 @@ private:
                                  ? std::chrono::steady_clock::now()
                                  : std::chrono::steady_clock::time_point{};
         jit_ = std::make_unique<Dynarmic::A32::Jit>(config);
-        jit_->SetPortableIRDemandProvider(
-            &JitExecutor::portable_ir_demand_provider, this);
-        jit_->SetPortableIREmitCompletion(
-            &JitExecutor::portable_ir_emit_completion, this);
+        demand_artifact_enabled_ =
+            callbacks_->demand_artifact_catalog_nonempty();
+        if (demand_artifact_enabled_ && !jit_demand_disabled() &&
+            !jit_portable_handoff_disabled()) {
+            jit_->SetPortableIRDemandProvider(
+                &JitExecutor::portable_ir_demand_provider, this);
+            jit_->SetPortableIREmitCompletion(
+                &JitExecutor::portable_ir_emit_completion, this);
+        }
         recorded_dispatch_counters_ = {};
         recorded_shared_cache_state_ = false;
         recorded_shared_range_count_ = 0;
@@ -2665,6 +2783,7 @@ private:
     std::uint64_t demand_artifact_attempt_generation_{};
     std::shared_ptr<JitNativePreimportTracker> native_preimport_tracker_;
     std::uint64_t native_lookup_sequence_{};
+    bool demand_artifact_enabled_{};
     bool guest_preemption_requested_{};
     std::optional<std::chrono::steady_clock::time_point>
         guest_preemption_requested_at_;
