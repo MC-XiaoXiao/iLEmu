@@ -12,6 +12,7 @@
 #include <span>
 #include <stdexcept>
 #include <sys/file.h>
+#include <sys/resource.h>
 #include <system_error>
 #include <thread>
 #include <unordered_set>
@@ -19,6 +20,8 @@
 #include <utility>
 
 #include <dynarmic/interface/A32/a32.h>
+
+#include "dynarmic_ir_artifact.hpp"
 
 namespace ilemu {
 namespace {
@@ -73,6 +76,8 @@ constexpr std::uint32_t maximum_artifacts = 1'000'000;
 constexpr std::uint32_t maximum_ir_bytes = 16U * 1024U * 1024U;
 constexpr std::uint32_t maximum_metadata_entries = 1'000'000;
 constexpr std::uint32_t maximum_hotset_entries = 4096;
+constexpr std::size_t maximum_background_prepare_entries = 256U;
+constexpr std::size_t maximum_background_prepared_entries = 256U;
 constexpr std::uintmax_t maximum_persistence_bytes =
     std::uintmax_t{4U} * 1024U * 1024U * 1024U;
 constexpr std::uint8_t lookup_state_consumed = 1U << 0U;
@@ -1983,15 +1988,21 @@ JitArtifactStore::JitArtifactStore(
           std::chrono::steady_clock::now() - initialization_started)
           .count());
   writeback_disabled_ = !persistence_ready || limits_.writeback_bytes == 0U;
-  if (!writeback_disabled_) {
-    writeback_thread_ = std::thread{[this] { writeback_loop(); }};
-  }
+  background_worker_started_ = true;
+  writeback_thread_ = std::thread{[this] { writeback_loop(); }};
 }
 
 JitArtifactStore::~JitArtifactStore() {
   {
     const std::lock_guard lock{mutex_};
     writeback_stopping_ = true;
+    stats_.background_prepare_unused += background_prepared_.size();
+    background_prepare_queue_.clear();
+    background_prepare_pending_.clear();
+    background_prepared_.clear();
+    background_prepared_order_.clear();
+    stats_.background_prepare_queue_entries = 0U;
+    stats_.background_prepared_entries = 0U;
   }
   writeback_condition_.notify_all();
   if (writeback_thread_.joinable()) writeback_thread_.join();
@@ -2252,6 +2263,86 @@ JitArtifactLookup JitArtifactStore::lookup(
   return finish_locked(lock, nullptr, false, true);
 }
 
+JitArtifactBackgroundPrepareResult
+JitArtifactStore::request_background_prepare(
+    const JitArtifactKey &key, JitArtifactRetention retention) const noexcept {
+  try {
+    std::unique_lock lock{mutex_, std::try_to_lock};
+    if (!lock.owns_lock()) {
+      return JitArtifactBackgroundPrepareResult::Unavailable;
+    }
+    ++stats_.background_prepare_requests;
+    if (background_prepared_.contains(key)) {
+      return JitArtifactBackgroundPrepareResult::Ready;
+    }
+    if (background_prepare_pending_.contains(key)) {
+      ++stats_.background_prepare_deduplicated;
+      return JitArtifactBackgroundPrepareResult::Pending;
+    }
+    const bool available = artifacts_.contains(key) ||
+                           pending_writebacks_.contains(key) ||
+                           disk_artifacts_.contains(key);
+    if (!available) return JitArtifactBackgroundPrepareResult::ExactMiss;
+    if (!background_worker_started_ || writeback_stopping_ ||
+        background_prepare_pending_.size() >=
+            maximum_background_prepare_entries) {
+      ++stats_.background_prepare_rejected;
+      return JitArtifactBackgroundPrepareResult::Unavailable;
+    }
+    background_prepare_pending_.emplace(key, retention);
+    background_prepare_queue_.push_back(key);
+    stats_.background_prepare_queue_entries =
+        background_prepare_pending_.size();
+    stats_.background_prepare_queue_peak_entries = std::max(
+        stats_.background_prepare_queue_peak_entries,
+        stats_.background_prepare_queue_entries);
+    lock.unlock();
+    writeback_condition_.notify_one();
+    return JitArtifactBackgroundPrepareResult::Queued;
+  } catch (...) {
+    return JitArtifactBackgroundPrepareResult::Unavailable;
+  }
+}
+
+std::optional<JitArtifactPreparedLookup>
+JitArtifactStore::take_background_prepared(
+    const JitArtifactKey &key) const noexcept {
+  try {
+    std::unique_lock lock{mutex_, std::try_to_lock};
+    if (!lock.owns_lock()) return std::nullopt;
+    const auto prepared = background_prepared_.find(key);
+    if (prepared == background_prepared_.end()) return std::nullopt;
+    auto result = std::move(prepared->second.prepared);
+    background_prepared_order_.erase(prepared->second.order_position);
+    background_prepared_.erase(prepared);
+    stats_.background_prepared_entries = background_prepared_.size();
+    const auto disk = disk_artifacts_.find(key);
+    const bool replenish = static_cast<bool>(result) &&
+                           disk != disk_artifacts_.end() &&
+                           disk->second.boot_working_set &&
+                           !writeback_stopping_ &&
+                           !background_prepare_pending_.contains(key) &&
+                           background_prepare_pending_.size() <
+                               maximum_background_prepare_entries;
+    if (replenish) {
+      background_prepare_pending_.emplace(
+          key, JitArtifactRetention::BootWorkingSet);
+      background_prepare_queue_.push_back(key);
+      ++stats_.background_prepare_requests;
+      stats_.background_prepare_queue_entries =
+          background_prepare_pending_.size();
+      stats_.background_prepare_queue_peak_entries = std::max(
+          stats_.background_prepare_queue_peak_entries,
+          stats_.background_prepare_queue_entries);
+      lock.unlock();
+      writeback_condition_.notify_one();
+    }
+    return result;
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
 std::shared_ptr<const BlockArtifact> JitArtifactStore::find(
     const JitArtifactKey &key, JitArtifactRetention retention) const {
   return lookup(key, retention).artifact;
@@ -2323,6 +2414,10 @@ void JitArtifactStore::note_artifact_consumed_locked(
   } else {
     stats_.saved_translation_nanoseconds =
         std::numeric_limits<std::uint64_t>::max();
+  }
+  if (disk != disk_artifacts_.end() && disk->second.boot_working_set &&
+      stats_.prefetched_useful < stats_.hotset_selected) {
+    ++stats_.prefetched_useful;
   }
   if (lookup.provenance == JitArtifactLookupProvenance::DiskPrefetched) {
     if (resident != artifacts_.end() && resident->second.startup_prefetched &&
@@ -2709,12 +2804,17 @@ JitArtifactStoreStats JitArtifactStore::stats() const {
         result.hotset_selected >= result.prefetched_useful
             ? result.hotset_selected - result.prefetched_useful
             : 0U;
+    const auto disk_and_ir_cost =
+        result.demand_deserialization_nanoseconds <=
+                std::numeric_limits<std::uint64_t>::max() -
+                    result.background_ir_deserialization_nanoseconds
+            ? result.demand_deserialization_nanoseconds +
+                  result.background_ir_deserialization_nanoseconds
+            : std::numeric_limits<std::uint64_t>::max();
     result.load_cost_nanoseconds =
         result.initialization_nanoseconds <=
-                std::numeric_limits<std::uint64_t>::max() -
-                    result.demand_deserialization_nanoseconds
-            ? result.initialization_nanoseconds +
-                  result.demand_deserialization_nanoseconds
+                std::numeric_limits<std::uint64_t>::max() - disk_and_ir_cost
+            ? result.initialization_nanoseconds + disk_and_ir_cost
             : std::numeric_limits<std::uint64_t>::max();
     const auto signed_limit = static_cast<std::uint64_t>(
         std::numeric_limits<std::int64_t>::max());
@@ -2992,56 +3092,83 @@ void JitArtifactStore::cancel_writeback() noexcept {
 }
 
 void JitArtifactStore::writeback_loop() {
+#if defined(__linux__)
+  // This shared persistence/prepare worker must yield to Guest execution and
+  // display work. Linux applies PRIO_PROCESS/0 to the calling thread.
+  static_cast<void>(setpriority(PRIO_PROCESS, 0, 10));
+#endif
   constexpr std::size_t maximum_batch_bytes = 4U * 1024U * 1024U;
   for (;;) {
     std::vector<std::shared_ptr<const BlockArtifact>> batch;
+    std::optional<std::pair<JitArtifactKey, JitArtifactRetention>>
+        background_prepare;
     {
       std::unique_lock lock{mutex_};
       writeback_condition_.wait(lock, [this] {
         return writeback_stopping_ ||
+               !background_prepare_queue_.empty() ||
                (!writeback_disabled_ && !pending_writebacks_.empty());
       });
-      if (writeback_stopping_ &&
+      if (writeback_stopping_ && background_prepare_queue_.empty() &&
           (pending_writebacks_.empty() || writeback_disabled_)) {
         return;
       }
 
-      for (auto key = writeback_order_.begin();
-           key != writeback_order_.end();) {
-        const auto pending = pending_writebacks_.find(*key);
-        if (pending == pending_writebacks_.end()) {
-          key = writeback_order_.erase(key);
-          continue;
-        }
-        if (disk_artifacts_.contains(**key)) {
-          const auto *persisted_key = *key;
-          ++key;
-          retire_writeback_locked(*persisted_key);
-          continue;
-        }
-        std::size_t batch_bytes = 0;
-        for (auto candidate = key; candidate != writeback_order_.end();
-             ++candidate) {
-          const auto entry = pending_writebacks_.find(*candidate);
-          if (entry == pending_writebacks_.end() ||
-              disk_artifacts_.contains(**candidate)) {
-            continue;
-          }
-          const auto bytes = entry->second.serialized_bytes;
-          if (!batch.empty() &&
-              (bytes > maximum_batch_bytes ||
-               batch_bytes > maximum_batch_bytes - bytes)) {
-            break;
-          }
-          batch.push_back(entry->second.artifact);
-          batch_bytes += bytes;
-        }
+      while (!background_prepare_queue_.empty()) {
+        auto key = std::move(background_prepare_queue_.front());
+        background_prepare_queue_.pop_front();
+        const auto pending = background_prepare_pending_.find(key);
+        if (pending == background_prepare_pending_.end()) continue;
+        background_prepare.emplace(std::move(key), pending->second);
         break;
       }
-      if (batch.empty()) {
+      if (background_prepare) {
+        stats_.background_prepare_queue_entries =
+            background_prepare_pending_.size();
+      } else {
+        for (auto key = writeback_order_.begin();
+             key != writeback_order_.end();) {
+          const auto pending = pending_writebacks_.find(*key);
+          if (pending == pending_writebacks_.end()) {
+            key = writeback_order_.erase(key);
+            continue;
+          }
+          if (disk_artifacts_.contains(**key)) {
+            const auto *persisted_key = *key;
+            ++key;
+            retire_writeback_locked(*persisted_key);
+            continue;
+          }
+          std::size_t batch_bytes = 0;
+          for (auto candidate = key; candidate != writeback_order_.end();
+               ++candidate) {
+            const auto entry = pending_writebacks_.find(*candidate);
+            if (entry == pending_writebacks_.end() ||
+                disk_artifacts_.contains(**candidate)) {
+              continue;
+            }
+            const auto bytes = entry->second.serialized_bytes;
+            if (!batch.empty() &&
+                (bytes > maximum_batch_bytes ||
+                 batch_bytes > maximum_batch_bytes - bytes)) {
+              break;
+            }
+            batch.push_back(entry->second.artifact);
+            batch_bytes += bytes;
+          }
+          break;
+        }
+      }
+      if (batch.empty() && !background_prepare) {
         if (writeback_stopping_ && pending_writebacks_.empty()) return;
         continue;
       }
+    }
+
+    if (background_prepare) {
+      perform_background_prepare(std::move(background_prepare->first),
+                                 background_prepare->second);
+      continue;
     }
 
     const auto saved = append_writeback_batch(batch);
@@ -3065,6 +3192,106 @@ void JitArtifactStore::writeback_loop() {
       }
     }
   }
+}
+
+void JitArtifactStore::perform_background_prepare(
+    JitArtifactKey key, JitArtifactRetention retention) noexcept {
+  const auto started = std::chrono::steady_clock::now();
+  std::uint64_t ir_deserialization_nanoseconds{};
+  JitArtifactPreparedLookup prepared;
+  try {
+    prepared.lookup = lookup(key, retention, true);
+    if (!prepared.lookup) {
+      prepared.result = prepared.lookup.transient_failure
+                            ? JitDemandArtifactStageResult::TransientFailure
+                            : JitDemandArtifactStageResult::ExactMiss;
+      prepared.rejection = prepared.lookup.transient_failure
+                               ? JitArtifactValidationRejection::Exception
+                               : JitArtifactValidationRejection::NoExactArtifact;
+    } else if (prepared.lookup.artifact->data.normalized_ir.empty()) {
+      prepared.result =
+          JitDemandArtifactStageResult::PermanentValidationFailure;
+      prepared.rejection = JitArtifactValidationRejection::EmptyIr;
+    } else {
+      const auto ir_started = std::chrono::steady_clock::now();
+      auto block = deserialize_dynarmic_ir(
+          prepared.lookup.artifact->data.normalized_ir);
+      ir_deserialization_nanoseconds = static_cast<std::uint64_t>(
+          std::max<std::int64_t>(
+              0, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                     std::chrono::steady_clock::now() - ir_started)
+                     .count()));
+      if (block && block->Location().Value() == key.location_descriptor) {
+        prepared.block = std::make_shared<Dynarmic::IR::Block>(
+            std::move(*block));
+        prepared.result = JitDemandArtifactStageResult::Staged;
+      } else if (!block) {
+        prepared.result =
+            JitDemandArtifactStageResult::PermanentValidationFailure;
+        prepared.rejection =
+            JitArtifactValidationRejection::DeserializeFailed;
+      } else {
+        prepared.result =
+            JitDemandArtifactStageResult::PermanentValidationFailure;
+        prepared.rejection =
+            JitArtifactValidationRejection::DescriptorMismatch;
+      }
+    }
+  } catch (...) {
+    prepared.result = JitDemandArtifactStageResult::TransientFailure;
+  }
+  prepared.preparation_nanoseconds = static_cast<std::uint64_t>(
+      std::max<std::int64_t>(
+          0, std::chrono::duration_cast<std::chrono::nanoseconds>(
+                 std::chrono::steady_clock::now() - started)
+                 .count()));
+
+  const std::lock_guard lock{mutex_};
+  background_prepare_pending_.erase(key);
+  stats_.background_prepare_queue_entries =
+      background_prepare_pending_.size();
+  if (stats_.background_ir_deserialization_nanoseconds <=
+      std::numeric_limits<std::uint64_t>::max() -
+          ir_deserialization_nanoseconds) {
+    stats_.background_ir_deserialization_nanoseconds +=
+        ir_deserialization_nanoseconds;
+  } else {
+    stats_.background_ir_deserialization_nanoseconds =
+        std::numeric_limits<std::uint64_t>::max();
+  }
+  if (writeback_stopping_) {
+    ++stats_.background_prepare_failed;
+    return;
+  }
+  while (background_prepared_.size() >=
+             maximum_background_prepared_entries &&
+         !background_prepared_order_.empty()) {
+    const auto victim = background_prepared_order_.front();
+    background_prepared_order_.pop_front();
+    if (background_prepared_.erase(victim) != 0U) {
+      ++stats_.background_prepare_unused;
+    }
+  }
+  const auto existing = background_prepared_.find(key);
+  if (existing != background_prepared_.end()) {
+    background_prepared_order_.erase(existing->second.order_position);
+    background_prepared_.erase(existing);
+    ++stats_.background_prepare_unused;
+  }
+  const bool completed = static_cast<bool>(prepared);
+  background_prepared_order_.push_back(key);
+  const auto order = std::prev(background_prepared_order_.end());
+  background_prepared_.emplace(
+      key, BackgroundPreparedRecord{std::move(prepared), order});
+  if (completed) {
+    ++stats_.background_prepare_completed;
+  } else {
+    ++stats_.background_prepare_failed;
+  }
+  stats_.background_prepared_entries = background_prepared_.size();
+  stats_.background_prepared_peak_entries = std::max(
+      stats_.background_prepared_peak_entries,
+      stats_.background_prepared_entries);
 }
 
 bool JitArtifactStore::append_writeback_batch(
@@ -3516,18 +3743,10 @@ bool JitArtifactStore::load_coordinated(
         prefetch_bytes += bytes;
       }
     }
-    std::vector<std::shared_ptr<const BlockArtifact>> loaded;
-    loaded.reserve(prefetch.size());
+    std::vector<JitArtifactKey> background_hotset_keys;
+    background_hotset_keys.reserve(prefetch.size());
     for (const auto &entry : prefetch) {
-      const auto &source_path =
-          entry.record.append_log ? append_path : path;
-      const auto artifact = read_artifact_at(
-          source_path, entry.record.offset, entry.record.serialized_bytes,
-          entry.record.checksum_valid ? &entry.record.checksum : nullptr);
-      // A stale hotset mark must not make an otherwise valid index unusable;
-      // the exact lookup path will still validate the same record on demand.
-      if (!artifact || (*artifact)->key != *entry.key) continue;
-      loaded.push_back(*artifact);
+      background_hotset_keys.push_back(*entry.key);
     }
 
     std::vector<const JitArtifactKey *> loaded_order;
@@ -3582,35 +3801,26 @@ bool JitArtifactStore::load_coordinated(
     disk_append_valid_bytes_ =
         journal.header_valid ? journal.valid_bytes : 0U;
     disk_append_indexed_ = !journal.header_valid || journal.indexed;
-    for (auto &artifact : loaded) {
-      const auto key = artifact->key;
-      const auto artifact_bytes = serialized_artifact_bytes(artifact->data);
-      if (artifact_bytes) {
-        const auto record = disk_artifacts_.find(artifact->key);
-        const auto was_resident = artifacts_.contains(key);
-        insert_locked(
-            std::move(artifact), *artifact_bytes, true, true,
-            record != disk_artifacts_.end() &&
-                    record->second.boot_working_set
-                ? JitArtifactRetention::BootWorkingSet
-                : JitArtifactRetention::Normal);
-        const auto resident = artifacts_.find(key);
-        if (!was_resident && resident != artifacts_.end() &&
-            resident->second.startup_prefetched) {
-          ++stats_.startup_payloads_prefetched;
-          ++stats_.hotset_selected;
-          if (*artifact_bytes <=
-              std::numeric_limits<std::uint64_t>::max() -
-                  stats_.startup_prefetch_bytes) {
-            stats_.startup_prefetch_bytes += *artifact_bytes;
-          } else {
-            stats_.startup_prefetch_bytes =
-                std::numeric_limits<std::uint64_t>::max();
-          }
-        }
+    for (const auto &key : background_hotset_keys) {
+      if (background_prepare_pending_.size() >=
+              maximum_background_prepare_entries ||
+          background_prepare_pending_.contains(key) ||
+          background_prepared_.contains(key)) {
+        continue;
       }
+      background_prepare_pending_.emplace(
+          key, JitArtifactRetention::BootWorkingSet);
+      background_prepare_queue_.push_back(key);
+      ++stats_.background_prepare_requests;
+      ++stats_.hotset_selected;
     }
+    stats_.background_prepare_queue_entries =
+        background_prepare_pending_.size();
+    stats_.background_prepare_queue_peak_entries = std::max(
+        stats_.background_prepare_queue_peak_entries,
+        stats_.background_prepare_queue_entries);
     publication_generation_.fetch_add(1U, std::memory_order_release);
+    writeback_condition_.notify_one();
     return true;
   } catch (...) {
     return false;

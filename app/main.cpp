@@ -2154,6 +2154,30 @@ void firmware_prepare(const std::vector<std::string> &args, Output &output) {
       std::to_string(stats.artifact_stats.net_benefit_nanoseconds) +
       " demand-payload-loads=" +
       std::to_string(stats.artifact_stats.demand_payload_disk_loads) +
+      " background-prepare-requests=" +
+      std::to_string(stats.artifact_stats.background_prepare_requests) +
+      " background-prepare-deduplicated=" +
+      std::to_string(stats.artifact_stats.background_prepare_deduplicated) +
+      " background-prepare-rejected=" +
+      std::to_string(stats.artifact_stats.background_prepare_rejected) +
+      " background-prepare-completed=" +
+      std::to_string(stats.artifact_stats.background_prepare_completed) +
+      " background-prepare-failed=" +
+      std::to_string(stats.artifact_stats.background_prepare_failed) +
+      " background-prepare-unused=" +
+      std::to_string(stats.artifact_stats.background_prepare_unused) +
+      " background-prepare-queue=" +
+      std::to_string(stats.artifact_stats.background_prepare_queue_entries) +
+      " background-prepare-queue-peak=" +
+      std::to_string(
+          stats.artifact_stats.background_prepare_queue_peak_entries) +
+      " background-prepared=" +
+      std::to_string(stats.artifact_stats.background_prepared_entries) +
+      " background-prepared-peak=" +
+      std::to_string(stats.artifact_stats.background_prepared_peak_entries) +
+      " background-ir-ns=" +
+      std::to_string(
+          stats.artifact_stats.background_ir_deserialization_nanoseconds) +
       " admission-attempts=" +
       std::to_string(stats.artifact_stats.admission_attempts) +
       " admission-rejected=" +
@@ -6410,6 +6434,30 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(artifact_stats.net_benefit_nanoseconds) +
         " demand-payload-loads=" +
         std::to_string(artifact_stats.demand_payload_disk_loads) +
+        " background-prepare-requests=" +
+        std::to_string(artifact_stats.background_prepare_requests) +
+        " background-prepare-deduplicated=" +
+        std::to_string(artifact_stats.background_prepare_deduplicated) +
+        " background-prepare-rejected=" +
+        std::to_string(artifact_stats.background_prepare_rejected) +
+        " background-prepare-completed=" +
+        std::to_string(artifact_stats.background_prepare_completed) +
+        " background-prepare-failed=" +
+        std::to_string(artifact_stats.background_prepare_failed) +
+        " background-prepare-unused=" +
+        std::to_string(artifact_stats.background_prepare_unused) +
+        " background-prepare-queue=" +
+        std::to_string(artifact_stats.background_prepare_queue_entries) +
+        " background-prepare-queue-peak=" +
+        std::to_string(
+            artifact_stats.background_prepare_queue_peak_entries) +
+        " background-prepared=" +
+        std::to_string(artifact_stats.background_prepared_entries) +
+        " background-prepared-peak=" +
+        std::to_string(artifact_stats.background_prepared_peak_entries) +
+        " background-ir-ns=" +
+        std::to_string(
+            artifact_stats.background_ir_deserialization_nanoseconds) +
         " admission-attempts=" +
         std::to_string(artifact_stats.admission_attempts) +
         " admission-rejected=" +

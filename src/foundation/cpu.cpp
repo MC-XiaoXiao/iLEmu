@@ -653,7 +653,53 @@ public:
             }
             discard_demand_artifact();
 
-            auto validated = validate_artifact_block(location_descriptor, &key);
+            ArtifactValidationResult validated;
+            std::uint64_t background_prepare_nanoseconds{};
+            if (jit_sync_disk_lookup_enabled()) {
+                validated = validate_artifact_block(location_descriptor, &key);
+            } else if (!artifact_store_) {
+                return JitDemandArtifactStageResult::ExactMiss;
+            } else if (auto prepared =
+                           artifact_store_->take_background_prepared(key)) {
+                background_prepare_nanoseconds =
+                    prepared->preparation_nanoseconds;
+                if (!*prepared) {
+                    artifact_store_->record_validation_rejection(
+                        prepared->rejection);
+                    return prepared->result;
+                }
+                if (prepared->block->Location().Value() !=
+                    location_descriptor) {
+                    artifact_store_->record_validation_rejection(
+                        JitArtifactValidationRejection::DescriptorMismatch);
+                    return JitDemandArtifactStageResult::
+                        PermanentValidationFailure;
+                }
+                if (!dependencies_match(*prepared->lookup.artifact)) {
+                    artifact_store_->record_validation_rejection(
+                        JitArtifactValidationRejection::DependencyMismatch);
+                    return JitDemandArtifactStageResult::
+                        PermanentValidationFailure;
+                }
+                artifact_store_->record_validation_success();
+                validated = {
+                    JitDemandArtifactStageResult::Staged,
+                    ValidatedArtifactBlock{
+                        std::move(*prepared->block),
+                        std::move(prepared->lookup)}};
+            } else {
+                switch (artifact_store_->request_background_prepare(
+                    key, artifact_retention_)) {
+                case JitArtifactBackgroundPrepareResult::ExactMiss:
+                    return JitDemandArtifactStageResult::ExactMiss;
+                case JitArtifactBackgroundPrepareResult::Queued:
+                case JitArtifactBackgroundPrepareResult::Pending:
+                case JitArtifactBackgroundPrepareResult::Ready:
+                case JitArtifactBackgroundPrepareResult::Unavailable:
+                    return JitDemandArtifactStageResult::TransientFailure;
+                }
+                return JitDemandArtifactStageResult::TransientFailure;
+            }
             if (!validated.block) {
                 return validated.result;
             }
@@ -666,22 +712,25 @@ public:
                 const auto ir_bytes = artifact.data.normalized_ir.size();
                 constexpr std::uint64_t base_load_nanoseconds = 35'000U;
                 constexpr std::uint64_t bytes_cost_divisor = 2U;
-                auto estimated_load = base_load_nanoseconds;
-                const auto size_cost = static_cast<std::uint64_t>(
-                    std::min<std::size_t>(
-                        ir_bytes / bytes_cost_divisor,
-                        std::numeric_limits<std::uint64_t>::max() -
-                            base_load_nanoseconds));
-                estimated_load += size_cost;
-                switch (validated.block->lookup.provenance) {
-                case JitArtifactLookupProvenance::DiskDemand:
-                    estimated_load += 150'000U;
-                    break;
-                case JitArtifactLookupProvenance::DiskPrefetched:
-                    estimated_load += 45'000U;
-                    break;
-                case JitArtifactLookupProvenance::MemoryPublished:
-                    break;
+                auto estimated_load = background_prepare_nanoseconds;
+                if (estimated_load == 0U) {
+                    estimated_load = base_load_nanoseconds;
+                    const auto size_cost = static_cast<std::uint64_t>(
+                        std::min<std::size_t>(
+                            ir_bytes / bytes_cost_divisor,
+                            std::numeric_limits<std::uint64_t>::max() -
+                                base_load_nanoseconds));
+                    estimated_load += size_cost;
+                    switch (validated.block->lookup.provenance) {
+                    case JitArtifactLookupProvenance::DiskDemand:
+                        estimated_load += 150'000U;
+                        break;
+                    case JitArtifactLookupProvenance::DiskPrefetched:
+                        estimated_load += 45'000U;
+                        break;
+                    case JitArtifactLookupProvenance::MemoryPublished:
+                        break;
+                    }
                 }
                 const auto estimated_saved =
                     artifact.data.translation_nanoseconds;

@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <list>
@@ -22,6 +23,10 @@
 
 namespace Dynarmic::A32 {
 class NativeCodeSlab;
+}
+
+namespace Dynarmic::IR {
+class Block;
 }
 
 namespace ilemu {
@@ -192,6 +197,17 @@ struct JitArtifactStoreStats {
   std::int64_t net_benefit_nanoseconds{};
   std::uint64_t demand_payload_disk_loads{};
   std::uint64_t demand_deserialization_nanoseconds{};
+  std::uint64_t background_prepare_requests{};
+  std::uint64_t background_prepare_deduplicated{};
+  std::uint64_t background_prepare_rejected{};
+  std::uint64_t background_prepare_completed{};
+  std::uint64_t background_prepare_failed{};
+  std::uint64_t background_prepare_unused{};
+  std::uint64_t background_prepare_queue_entries{};
+  std::uint64_t background_prepare_queue_peak_entries{};
+  std::uint64_t background_prepared_entries{};
+  std::uint64_t background_prepared_peak_entries{};
+  std::uint64_t background_ir_deserialization_nanoseconds{};
   std::uint64_t initialization_nanoseconds{};
   std::uint64_t admission_attempts{};
   std::uint64_t admission_rejected{};
@@ -217,6 +233,14 @@ struct JitArtifactStoreStats {
   std::size_t resident_bytes{};
   std::size_t writeback_pending_bytes{};
   std::uintmax_t disk_bytes{};
+};
+
+enum class JitArtifactBackgroundPrepareResult : std::uint8_t {
+  Ready,
+  Queued,
+  Pending,
+  ExactMiss,
+  Unavailable,
 };
 
 enum class JitDemandArtifactStageResult : std::uint8_t {
@@ -288,6 +312,20 @@ struct JitArtifactLookup {
   }
 };
 
+struct JitArtifactPreparedLookup {
+  JitArtifactLookup lookup;
+  std::shared_ptr<Dynarmic::IR::Block> block;
+  std::uint64_t preparation_nanoseconds{};
+  JitDemandArtifactStageResult result{
+      JitDemandArtifactStageResult::TransientFailure};
+  JitArtifactValidationRejection rejection{
+      JitArtifactValidationRejection::Exception};
+
+  [[nodiscard]] explicit operator bool() const noexcept {
+    return lookup && block != nullptr;
+  }
+};
+
 struct JitArtifactCompactionResult {
   bool completed{};
   bool cancelled{};
@@ -326,6 +364,17 @@ public:
       const JitArtifactKey &key,
       JitArtifactRetention retention = JitArtifactRetention::Normal,
       bool allow_disk_payload = true) const;
+  // Guest execution only submits and polls this bounded queue. The existing
+  // low-priority persistence worker performs payload I/O and IR
+  // deserialization, then publishes a one-shot prepared block for a later
+  // executor safe boundary.
+  [[nodiscard]] JitArtifactBackgroundPrepareResult
+  request_background_prepare(
+      const JitArtifactKey &key,
+      JitArtifactRetention retention = JitArtifactRetention::Normal) const
+      noexcept;
+  [[nodiscard]] std::optional<JitArtifactPreparedLookup>
+  take_background_prepared(const JitArtifactKey &key) const noexcept;
   [[nodiscard]] std::shared_ptr<const BlockArtifact> find(
       const JitArtifactKey &key,
       JitArtifactRetention retention = JitArtifactRetention::Normal) const;
@@ -428,6 +477,10 @@ private:
     bool disk_hit{};
     bool transient_failure{};
   };
+  struct BackgroundPreparedRecord {
+    JitArtifactPreparedLookup prepared;
+    std::list<JitArtifactKey>::iterator order_position;
+  };
   struct HotsetCandidate {
     JitArtifactKey key;
     std::uint64_t benefit_generation{};
@@ -511,6 +564,8 @@ private:
       std::size_t serialized_bytes, JitArtifactRetention retention) const;
   void retire_writeback_locked(const JitArtifactKey &key) const;
   void writeback_loop();
+  void perform_background_prepare(
+      JitArtifactKey key, JitArtifactRetention retention) noexcept;
   [[nodiscard]] bool append_writeback_batch(
       const std::vector<std::shared_ptr<const BlockArtifact>> &batch) const
       noexcept;
@@ -538,6 +593,14 @@ private:
   mutable std::list<const JitArtifactKey *> writeback_order_;
   mutable DiskReadFlightMap disk_read_flights_;
   mutable DiskArtifactMap disk_artifacts_;
+  mutable std::unordered_map<JitArtifactKey, JitArtifactRetention,
+                             JitArtifactKeyHash>
+      background_prepare_pending_;
+  mutable std::deque<JitArtifactKey> background_prepare_queue_;
+  mutable std::unordered_map<JitArtifactKey, BackgroundPreparedRecord,
+                             JitArtifactKeyHash>
+      background_prepared_;
+  mutable std::list<JitArtifactKey> background_prepared_order_;
   // unordered_map rehash preserves element addresses; wholesale index swaps
   // always install the matching pointer order while holding mutex_.
   mutable std::vector<const JitArtifactKey *> disk_order_;
@@ -559,6 +622,7 @@ private:
   mutable std::condition_variable writeback_condition_;
   mutable bool writeback_stopping_{};
   mutable bool writeback_disabled_{};
+  mutable bool background_worker_started_{};
   mutable std::atomic<bool> writeback_cancel_requested_{};
   mutable std::atomic<std::uint64_t> publication_generation_{};
   mutable std::atomic<std::uint64_t> unique_stage_attempts_{};
