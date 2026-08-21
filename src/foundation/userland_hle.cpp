@@ -658,9 +658,18 @@ UserlandHleRegistry::find_registration(std::uint16_t id) const {
 }
 
 UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
-    const std::filesystem::path &image_path,
+    std::string_view logical_image_path,
+    const std::filesystem::path &source_path,
+    std::optional<std::uint64_t> image_header_offset,
+    std::optional<ContentIdentity> source_identity,
     ArmArchitectureVersion architecture) {
-  const auto key = image_path.generic_string();
+  std::string key{logical_image_path};
+  key.push_back('\n');
+  key += source_path.generic_string();
+  if (image_header_offset) {
+    key.push_back('@');
+    key += std::to_string(*image_header_offset);
+  }
   const auto cached = parsed_image_cache_.find(key);
   if (cached != parsed_image_cache_.end() &&
       cached->second.architecture == architecture &&
@@ -669,7 +678,7 @@ UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
     // content. shared_file_identity() normally resolves from the parser's
     // generation-aware process cache; if a file was replaced, it recomputes
     // the identity and the next branch refreshes the parsed image.
-    const auto current = shared_file_identity(image_path);
+    const auto current = shared_file_identity(source_path);
     if (current.content_identity &&
         *current.content_identity == cached->second.content_identity) {
       return cached->second;
@@ -677,7 +686,9 @@ UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
   }
 
   auto image = std::make_shared<MachOImage>(
-      MachOImage::parse(image_path, architecture));
+      MachOImage::parse(source_path, architecture, source_identity,
+                        ImmutableSnapshotKind::RuntimeHot,
+                        image_header_offset));
   auto [iterator, inserted] = parsed_image_cache_.insert_or_assign(
       key, ParsedImageCacheEntry{architecture, image->content_identity(), image,
                                  registration_generation_, {}});
@@ -699,11 +710,12 @@ UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
     const auto symbol_file_offset =
         static_cast<std::uint64_t>(segment->file_offset) +
         (symbol.value - segment->vm_address);
-    const auto *registration = select_registration(key, symbol.name);
+    const auto *registration =
+        select_registration(logical_image_path, symbol.name);
     const auto guest_function = std::any_of(
         guest_functions_.begin(), guest_functions_.end(),
         [&](const auto &dependency) {
-          return path_has_suffix(key, dependency.first) &&
+          return path_has_suffix(logical_image_path, dependency.first) &&
                  dependency.second == symbol.name;
         });
     const auto registration_id = registration != nullptr
@@ -727,14 +739,17 @@ UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
   return entry;
 }
 
-std::size_t UserlandHleRegistry::install_mapped_image(
-    Cpu &cpu, std::uint32_t process_id, const std::filesystem::path &image_path,
+std::size_t UserlandHleRegistry::install_mapped_image_impl(
+    Cpu &cpu, std::uint32_t process_id, std::string_view logical_image_path,
+    const std::filesystem::path &source_path,
+    std::optional<std::uint64_t> image_header_offset,
+    std::optional<ContentIdentity> source_identity,
     std::uint32_t mapping_address, std::uint32_t mapping_size,
     std::uint64_t file_offset, ArmArchitectureVersion architecture) {
-  const auto path = image_path.generic_string();
+  const std::string path{logical_image_path};
   loaded_images_.insert(path);
   if (mapping_size == 0 ||
-      file_offset > std::numeric_limits<std::uint32_t>::max()) {
+      file_offset > std::numeric_limits<std::uint64_t>::max() - mapping_size) {
     return 0;
   }
   const auto hle_relevant =
@@ -750,11 +765,25 @@ std::size_t UserlandHleRegistry::install_mapped_image(
   if (!hle_relevant && !guest_relevant)
     return 0;
 
-  auto &cached = cached_image(image_path, architecture);
+  auto &cached = cached_image(logical_image_path, source_path,
+                              image_header_offset, std::move(source_identity),
+                              architecture);
   const auto &image = *cached.image;
-  const auto mapping_offset = static_cast<std::uint32_t>(file_offset);
-  const auto mapping_file_end =
-      static_cast<std::uint64_t>(mapping_offset) + mapping_size;
+  const auto reapply_installed_patch = [&](std::uint32_t address,
+                                           const InstalledCall &installed) {
+    if (installed.thumb) {
+      const auto instruction = make_thumb_hle_patch(installed.original.size());
+      if (memory_.copy_in(address, instruction))
+        cpu.invalidate_cache_range(address, instruction.size());
+      return;
+    }
+    const auto instruction = little_endian_word(
+        arm_svc_opcode | userland_hle_svc_namespace | installed.id);
+    if (memory_.copy_in(address, instruction))
+      cpu.invalidate_cache_range(address, instruction.size());
+  };
+  const auto mapping_offset = file_offset;
+  const auto mapping_file_end = file_offset + mapping_size;
   std::size_t patched = 0;
   for (const auto &cached_symbol : cached.mapped_symbols) {
     const auto &symbol = image.symbols()[cached_symbol.symbol_index];
@@ -785,8 +814,11 @@ std::size_t UserlandHleRegistry::install_mapped_image(
     const auto patch_size = cached_symbol.patch_size;
     if (symbol_file_offset + patch_size > mapping_file_end)
       continue;
-    if (installed_calls_.contains(runtime_address))
+    if (const auto installed = installed_calls_.find(runtime_address);
+        installed != installed_calls_.end()) {
+      reapply_installed_patch(runtime_address, installed->second);
       continue;
+    }
     const auto original = memory_.read_bytes(runtime_address, patch_size);
     if (!original)
       continue;
@@ -845,8 +877,11 @@ std::size_t UserlandHleRegistry::install_mapped_image(
     }
     const auto runtime_address =
         mapping_address + static_cast<std::uint32_t>(mapping_delta);
-    if (installed_calls_.contains(runtime_address))
+    if (const auto installed = installed_calls_.find(runtime_address);
+        installed != installed_calls_.end()) {
+      reapply_installed_patch(runtime_address, installed->second);
       continue;
+    }
     const auto original = memory_.read_bytes(runtime_address, patch_size);
     if (!original)
       continue;
@@ -912,8 +947,11 @@ std::size_t UserlandHleRegistry::install_mapped_image(
     }
     const auto runtime_address =
         mapping_address + static_cast<std::uint32_t>(mapping_delta);
-    if (installed_calls_.contains(runtime_address))
+    if (const auto installed = installed_calls_.find(runtime_address);
+        installed != installed_calls_.end()) {
+      reapply_installed_patch(runtime_address, installed->second);
       continue;
+    }
     const auto original = memory_.read_bytes(runtime_address, patch_size);
     if (!original)
       continue;
@@ -940,10 +978,32 @@ std::size_t UserlandHleRegistry::install_mapped_image(
   }
   if (patched != 0) {
     output_.write("[hle] installed pid=" + std::to_string(process_id) +
-                  " image=" + image_path.filename().string() +
+                  " image=" + std::filesystem::path{path}.filename().string() +
                   " functions=" + std::to_string(patched) + "\n");
   }
   return patched;
+}
+
+std::size_t UserlandHleRegistry::install_mapped_image(
+    Cpu &cpu, std::uint32_t process_id,
+    const std::filesystem::path &image_path, std::uint32_t mapping_address,
+    std::uint32_t mapping_size, std::uint64_t file_offset,
+    ArmArchitectureVersion architecture) {
+  return install_mapped_image_impl(
+      cpu, process_id, image_path.generic_string(), image_path, std::nullopt,
+      std::nullopt, mapping_address, mapping_size, file_offset, architecture);
+}
+
+std::size_t UserlandHleRegistry::install_mapped_shared_cache_image(
+    Cpu &cpu, std::uint32_t process_id, std::string_view image_path,
+    const std::filesystem::path &cache_path,
+    std::uint64_t image_header_offset, std::uint32_t mapping_address,
+    std::uint32_t mapping_size, std::uint64_t file_offset,
+    const ContentIdentity &cache_identity,
+    ArmArchitectureVersion architecture) {
+  return install_mapped_image_impl(
+      cpu, process_id, image_path, cache_path, image_header_offset,
+      cache_identity, mapping_address, mapping_size, file_offset, architecture);
 }
 
 bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,

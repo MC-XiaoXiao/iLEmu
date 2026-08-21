@@ -153,6 +153,18 @@ public:
                        ArmArchitectureVersion architecture =
                            ArmArchitectureVersion::Armv6K);
 
+  // Shared-cache images keep their Mach-O header and linkedit data in a
+  // container file, while registration matching must use the image's logical
+  // install name. The mapped cache text is MAP_PRIVATE/COW, so the same HLE
+  // entry patching contract can be used without modifying the firmware file.
+  [[nodiscard]] std::size_t install_mapped_shared_cache_image(
+      Cpu &cpu, std::uint32_t process_id, std::string_view image_path,
+      const std::filesystem::path &cache_path,
+      std::uint64_t image_header_offset, std::uint32_t mapping_address,
+      std::uint32_t mapping_size, std::uint64_t file_offset,
+      const ContentIdentity &cache_identity,
+      ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
+
   // Returns true only for a registered HLE SVC. The guest return path is
   // completed with ARM BX lr semantics after the handler returns.
   [[nodiscard]] bool dispatch(Cpu &cpu, std::uint32_t process_id,
@@ -222,8 +234,18 @@ private:
                                                   std::string_view symbol);
   [[nodiscard]] const Registration *find_registration(std::uint16_t id) const;
   [[nodiscard]] ParsedImageCacheEntry &cached_image(
-      const std::filesystem::path &image_path,
+      std::string_view logical_image_path,
+      const std::filesystem::path &source_path,
+      std::optional<std::uint64_t> image_header_offset,
+      std::optional<ContentIdentity> source_identity,
       ArmArchitectureVersion architecture);
+  [[nodiscard]] std::size_t install_mapped_image_impl(
+      Cpu &cpu, std::uint32_t process_id, std::string_view logical_image_path,
+      const std::filesystem::path &source_path,
+      std::optional<std::uint64_t> image_header_offset,
+      std::optional<ContentIdentity> source_identity,
+      std::uint32_t mapping_address, std::uint32_t mapping_size,
+      std::uint64_t file_offset, ArmArchitectureVersion architecture);
   [[nodiscard]] std::uint32_t ensure_string_page();
   [[nodiscard]] std::optional<std::uint32_t>
   install_continuation(Cpu &cpu, std::uint32_t return_address,
