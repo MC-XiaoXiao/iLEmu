@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <exception>
 #include <fstream>
 #include <iterator>
@@ -13,7 +14,10 @@
 #include <string_view>
 #include <utility>
 
+#include <fcntl.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 namespace ilemu {
 
@@ -21,6 +25,76 @@ struct DyldSharedCache::ImageStore {
   std::mutex mutex;
   std::map<std::pair<std::uint32_t, std::uint8_t>,
            std::shared_ptr<const MachOImage>> images;
+};
+
+struct DyldSharedCache::GenerationArtifactView {
+  static std::shared_ptr<const GenerationArtifactView>
+  open(const std::filesystem::path &path,
+       std::size_t maximum_size = 256U * 1024U * 1024U) {
+    const auto descriptor =
+        ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (descriptor < 0) return {};
+    struct stat artifact_stat {};
+    if (::fstat(descriptor, &artifact_stat) != 0 ||
+        !S_ISREG(artifact_stat.st_mode) ||
+        (artifact_stat.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0 ||
+        artifact_stat.st_size <= 0 ||
+        static_cast<std::uint64_t>(artifact_stat.st_size) > maximum_size) {
+      static_cast<void>(::close(descriptor));
+      return {};
+    }
+    const auto byte_size = static_cast<std::size_t>(artifact_stat.st_size);
+    void *mapping =
+        ::mmap(nullptr, byte_size, PROT_READ, MAP_SHARED, descriptor, 0);
+    if (mapping == MAP_FAILED) {
+      static_cast<void>(::close(descriptor));
+      return {};
+    }
+
+    const auto lease_path = std::filesystem::path{
+        path.string() + ".lease-" + std::to_string(::getpid()) + "-" +
+        std::to_string(next_lease_identity.fetch_add(
+            1, std::memory_order_relaxed))};
+    const auto lease_descriptor = ::open(
+        lease_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+    if (lease_descriptor < 0) {
+      static_cast<void>(::munmap(mapping, byte_size));
+      static_cast<void>(::close(descriptor));
+      return {};
+    }
+    static_cast<void>(::close(lease_descriptor));
+    return std::shared_ptr<const GenerationArtifactView>{
+        new GenerationArtifactView{descriptor, mapping, byte_size,
+                                   lease_path}};
+  }
+
+  ~GenerationArtifactView() {
+    if (mapping != nullptr && byte_size != 0U)
+      static_cast<void>(::munmap(mapping, byte_size));
+    if (descriptor >= 0) static_cast<void>(::close(descriptor));
+    if (!lease_path.empty()) {
+      std::error_code error;
+      std::filesystem::remove(lease_path, error);
+    }
+  }
+
+  [[nodiscard]] std::span<const std::byte> bytes() const noexcept {
+    return {reinterpret_cast<const std::byte *>(mapping), byte_size};
+  }
+
+private:
+  GenerationArtifactView(int descriptor_value, void *mapping_value,
+                         std::size_t byte_size_value,
+                         std::filesystem::path lease_path_value) noexcept
+      : descriptor{descriptor_value}, mapping{mapping_value},
+        byte_size{byte_size_value},
+        lease_path{std::move(lease_path_value)} {}
+
+  inline static std::atomic_uint64_t next_lease_identity{1};
+  int descriptor{-1};
+  void *mapping{};
+  std::size_t byte_size{};
+  std::filesystem::path lease_path;
 };
 
 namespace {
@@ -796,12 +870,12 @@ DyldSharedCache::load_shared_generation_artifact(
     const std::filesystem::path &path, const DyldSharedCacheOptions &options,
     const GuestFileGeneration &main_generation,
     const ContentIdentity &main_identity) {
-  const auto artifact = read_shared_immutable_artifact(
+  const auto artifact = GenerationArtifactView::open(
       shared_immutable_artifact_named_path(generation_artifact_name(
           path, options, main_generation, main_identity)));
   if (!artifact) return {};
 
-  ArtifactReader reader{*artifact};
+  ArtifactReader reader{artifact->bytes()};
   if (!artifact_magic(reader, "ILEMU-DYLD-GEN")) return {};
   const auto version = reader.u32();
   if (!version || *version != 1U) return {};
@@ -812,6 +886,7 @@ DyldSharedCache::load_shared_generation_artifact(
   }
 
   DyldSharedCache result;
+  result.generation_artifact_view_ = artifact;
   result.files_.reserve(*file_count);
   for (std::uint32_t file_index = 0; file_index < *file_count;
        ++file_index) {

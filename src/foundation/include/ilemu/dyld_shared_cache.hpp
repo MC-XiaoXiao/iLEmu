@@ -160,6 +160,7 @@ private:
       const ContentIdentity &main_identity) const;
 
   struct ImageStore;
+  struct GenerationArtifactView;
   struct ImageRangeIndexEntry {
     std::uint64_t file_offset{};
     std::uint64_t file_end{};
@@ -178,6 +179,11 @@ private:
   std::uint64_t max_slide_{};
   std::vector<std::vector<ImageRangeIndexEntry>> image_range_index_;
   std::shared_ptr<ImageStore> image_store_;
+  // Cross-process artifact loads retain the read-only mmap backing for the
+  // lifetime of this generation. Typed lookup records remain a small local
+  // façade for the existing API; the immutable serialized source is never
+  // copied into a process-local byte vector.
+  std::shared_ptr<const GenerationArtifactView> generation_artifact_view_;
 };
 
 } // namespace ilemu
