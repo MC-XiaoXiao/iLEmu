@@ -808,72 +808,126 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
   // by a standalone Mach-O file. Its image header and linkedit data are
   // distributed across cache mappings, so MachOImage::parse(path) cannot be
   // used here. HLE patching also must not write into shared cache __TEXT;
-  // cache targets are resolved by the translator/dispatch path instead.
-  const auto installed = shared_cache_mapping
-                             ? 0U
-                             : userland_hle_.install_mapped_image(
-                                   cpu, process_.pid, image_path,
-                                   mapping_address, mapping_size, file_offset,
-                                   arm_architecture_for_model(
-                                       device_profile_.cpu_model));
-  checkpoint(1U);
-  if (!shared_cache_mapping && mapped_executable_handler_) {
-    mapped_executable_handler_(image_path, mapping_address, mapping_size,
-                               file_offset);
-  }
-  checkpoint(2U);
-  constexpr std::string_view uikit_image{"/UIKit.framework/UIKit"};
+  // the cache image is parsed at its container offset and patched through
+  // MAP_PRIVATE/COW pages instead.
+  const auto architecture =
+      arm_architecture_for_model(device_profile_.cpu_model);
+  constexpr std::string_view uikit_image{ "/UIKit.framework/UIKit" };
   constexpr std::string_view graphics_services_image{
       "/GraphicsServices.framework/GraphicsServices"};
   constexpr std::string_view quartz_core_image{
       "/QuartzCore.framework/QuartzCore"};
-  const auto path = image_path.generic_string();
-  if (shared_cache_mapping) {
+  const auto apply_image_profile =
+      [&](std::string_view logical_image_path,
+          const std::filesystem::path &source_path,
+          std::optional<std::uint64_t> image_header_offset,
+          std::optional<ContentIdentity> source_identity) {
+        const auto path = std::string{logical_image_path};
+        if (path.ends_with(uikit_image)) {
+          std::lock_guard mach_lock{shared_state_->mach_mutex};
+          if (const auto process = shared_state_->processes.find(process_.pid);
+              process != shared_state_->processes.end() &&
+              process->second.graphics_input_abi ==
+                  KernelSharedState::GraphicsInputAbi::LegacyMouse) {
+            process->second.graphics_input_abi =
+                KernelSharedState::GraphicsInputAbi::Darwin9_0;
+          }
+          return;
+        }
+        if (!path.ends_with(graphics_services_image) &&
+            !path.ends_with(quartz_core_image)) {
+          return;
+        }
+
+        const auto image = MachOImage::parse(
+            source_path, architecture, std::move(source_identity),
+            ImmutableSnapshotKind::RuntimeHot, image_header_offset);
+        if (path.ends_with(graphics_services_image)) {
+          const auto profile = GraphicsServicesInputProfile::detect(image);
+          if (!profile) return;
+          std::lock_guard mach_lock{shared_state_->mach_mutex};
+          if (const auto process = shared_state_->processes.find(process_.pid);
+              process != shared_state_->processes.end() &&
+              process->second.graphics_input_abi != *profile) {
+            process->second.graphics_input_abi = *profile;
+            output_.write(
+                "[input] GraphicsServices touch ABI profile=" +
+                std::string{
+                    GraphicsServicesInputProfile::for_abi(*profile).name} +
+                " pid=" + std::to_string(process_.pid) + "\n");
+          }
+          return;
+        }
+
+        const auto profile = CoreAnimationRemoteProfile::detect(image);
+        if (!profile) return;
+        std::lock_guard mach_lock{shared_state_->mach_mutex};
+        if (const auto process = shared_state_->processes.find(process_.pid);
+            process != shared_state_->processes.end() &&
+            process->second.core_animation_remote_profile != profile) {
+          process->second.core_animation_remote_profile = *profile;
+          output_.write(
+              "[scene] CoreAnimation remote profile=" +
+              std::string{profile->name} + " pid=" +
+              std::to_string(process_.pid) + "\n");
+        }
+      };
+  std::size_t installed = 0;
+  const auto *cache = dyld_shared_cache_for(image_path);
+  if (cache != nullptr) {
+    const auto mapping_end = file_offset + mapping_size;
+    for (const auto &image : cache->images()) {
+      const auto header = std::find_if(
+          image.executable_ranges.begin(), image.executable_ranges.end(),
+          [&](const DyldCacheRange &range) {
+            return range.address == image.unslid_load_address &&
+                   range.file_index < cache->files().size() &&
+                   cache->files()[range.file_index].path == image_path;
+          });
+      if (header == image.executable_ranges.end() ||
+          header->file_index >= cache->files().size()) {
+        continue;
+      }
+      const auto mapped = std::any_of(
+          image.executable_ranges.begin(), image.executable_ranges.end(),
+          [&](const DyldCacheRange &range) {
+            if (range.file_index >= cache->files().size() ||
+                cache->files()[range.file_index].path != image_path) {
+              return false;
+            }
+            const auto range_end = range.file_offset + range.size;
+            return range.file_offset < mapping_end &&
+                   file_offset < range_end;
+          });
+      if (!mapped) {
+        continue;
+      }
+      const auto &source = cache->files()[header->file_index];
+      installed += userland_hle_.install_mapped_shared_cache_image(
+          cpu, process_.pid, image.path, source.path, header->file_offset,
+          mapping_address, mapping_size, file_offset, source.content_identity,
+          architecture);
+      apply_image_profile(image.path, source.path, header->file_offset,
+                          source.content_identity);
+    }
+  } else if (!shared_cache_mapping) {
+    installed = userland_hle_.install_mapped_image(
+        cpu, process_.pid, image_path, mapping_address, mapping_size,
+        file_offset, architecture);
+  }
+  const auto cache_mapping = shared_cache_mapping || cache != nullptr;
+  checkpoint(1U);
+  if (!cache_mapping && mapped_executable_handler_) {
+    mapped_executable_handler_(image_path, mapping_address, mapping_size,
+                               file_offset);
+  }
+  checkpoint(2U);
+  if (cache_mapping) {
     checkpoint(3U);
     return installed;
   }
-  if (path.ends_with(uikit_image)) {
-    std::lock_guard mach_lock{shared_state_->mach_mutex};
-    if (const auto process = shared_state_->processes.find(process_.pid);
-        process != shared_state_->processes.end() &&
-        process->second.graphics_input_abi ==
-            KernelSharedState::GraphicsInputAbi::LegacyMouse) {
-      process->second.graphics_input_abi =
-          KernelSharedState::GraphicsInputAbi::Darwin9_0;
-    }
-  } else if (path.ends_with(graphics_services_image)) {
-    const auto profile =
-        GraphicsServicesInputProfile::detect(MachOImage::parse(
-            image_path, arm_architecture_for_model(device_profile_.cpu_model)));
-    if (profile) {
-      std::lock_guard mach_lock{shared_state_->mach_mutex};
-      if (const auto process = shared_state_->processes.find(process_.pid);
-          process != shared_state_->processes.end() &&
-          process->second.graphics_input_abi != *profile) {
-        process->second.graphics_input_abi = *profile;
-        output_.write(
-            "[input] GraphicsServices touch ABI profile=" +
-            std::string{GraphicsServicesInputProfile::for_abi(*profile).name} +
-            " pid=" + std::to_string(process_.pid) + "\n");
-      }
-    }
-  } else if (path.ends_with(quartz_core_image)) {
-    const auto profile =
-        CoreAnimationRemoteProfile::detect(MachOImage::parse(
-            image_path, arm_architecture_for_model(device_profile_.cpu_model)));
-    if (profile) {
-      std::lock_guard mach_lock{shared_state_->mach_mutex};
-      if (const auto process = shared_state_->processes.find(process_.pid);
-          process != shared_state_->processes.end() &&
-          process->second.core_animation_remote_profile != profile) {
-        process->second.core_animation_remote_profile = *profile;
-        output_.write(
-            "[scene] CoreAnimation remote profile=" +
-            std::string{profile->name} + " pid=" +
-            std::to_string(process_.pid) + "\n");
-      }
-    }
-  }
+  apply_image_profile(image_path.generic_string(), image_path, std::nullopt,
+                      std::nullopt);
   checkpoint(3U);
   return installed;
 }

@@ -387,6 +387,9 @@ const DyldSharedCache *CompatibilityKernel::dyld_shared_cache_for(
     const std::filesystem::path &path) {
   if (dyld_shared_cache_attempted_ && dyld_shared_cache_path_ == path)
     return dyld_shared_cache_ ? &*dyld_shared_cache_ : nullptr;
+  if (dyld_shared_cache_attempted_) return nullptr;
+
+  if (!looks_like_dyld_shared_cache(path)) return nullptr;
 
   dyld_shared_cache_attempted_ = true;
   dyld_shared_cache_path_ = path;
