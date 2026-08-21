@@ -101,8 +101,8 @@ if(ILEMU_DYNARMIC_REVISION_RESULT EQUAL 0 AND
     else()
         message(STATUS
             "Using Dynarmic ${ILEMU_DYNARMIC_CHECKED_OUT_REVISION} "
-            "(${_ilemu_dynarmic_revision_source}) with the iLEmu patch "
-            "stack committed in the dependency repository")
+            "(${_ilemu_dynarmic_revision_source}) with the parent-repository "
+            "iLEmu test patch")
     endif()
 else()
     set(ILEMU_DYNARMIC_SELECTED_REVISION "unknown" CACHE INTERNAL
@@ -110,6 +110,48 @@ else()
     set(ILEMU_DYNARMIC_EXPECTED_REVISION
         "${_ilemu_dynarmic_expected_revision}" CACHE INTERNAL
         "Dynarmic revision selected by pin or explicit override" FORCE)
+endif()
+
+# The product pin remains the clean upstream Dynarmic revision. The small
+# iLEmu test hook is carried as a reproducible parent-repository patch so the
+# submodule pointer and build source cannot silently diverge. Applying it is
+# idempotent for reused build directories.
+set(_ilemu_dynarmic_test_patch
+    "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_ilemu_test_emit_failure.patch")
+if(NOT EXISTS "${_ilemu_dynarmic_test_patch}")
+    message(FATAL_ERROR
+        "Missing Dynarmic test patch: ${_ilemu_dynarmic_test_patch}")
+endif()
+execute_process(
+    COMMAND git apply --check --unidiff-zero "${_ilemu_dynarmic_test_patch}"
+    WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+    RESULT_VARIABLE _ilemu_dynarmic_test_patch_check
+    OUTPUT_QUIET ERROR_VARIABLE _ilemu_dynarmic_test_patch_error)
+if(_ilemu_dynarmic_test_patch_check EQUAL 0)
+    execute_process(
+        COMMAND git apply --unidiff-zero "${_ilemu_dynarmic_test_patch}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE _ilemu_dynarmic_test_patch_apply
+        OUTPUT_QUIET ERROR_VARIABLE _ilemu_dynarmic_test_patch_error)
+    if(NOT _ilemu_dynarmic_test_patch_apply EQUAL 0)
+        message(FATAL_ERROR
+            "Failed to apply the Dynarmic test patch: "
+            "${_ilemu_dynarmic_test_patch_error}")
+    endif()
+else()
+    execute_process(
+        COMMAND git apply --check --unidiff-zero --reverse
+                "${_ilemu_dynarmic_test_patch}"
+        WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
+        RESULT_VARIABLE _ilemu_dynarmic_test_patch_reverse_check
+        OUTPUT_QUIET ERROR_VARIABLE _ilemu_dynarmic_test_patch_reverse_error)
+    if(NOT _ilemu_dynarmic_test_patch_reverse_check EQUAL 0)
+        message(FATAL_ERROR
+            "Dynarmic source is neither the pinned checkout nor its "
+            "expected iLEmu test-patched form: "
+            "${_ilemu_dynarmic_test_patch_error}; "
+            "${_ilemu_dynarmic_test_patch_reverse_error}")
+    endif()
 endif()
 
 # Force Dynarmic's FindBoost invocation to use the matching header-only tree.

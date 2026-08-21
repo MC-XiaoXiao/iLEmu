@@ -1,0 +1,60 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index a60b4ec..336a4f0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -21,0 +22,2 @@ option(DYNARMIC_TESTS_USE_UNICORN "Enable fuzzing tests against unicorn" OFF)
++option(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE
++       "Compile iLEmu portable-emit fault injection hooks" OFF)
+diff --git a/src/dynarmic/CMakeLists.txt b/src/dynarmic/CMakeLists.txt
+index 6f0813c..9a53bd0 100644
+--- a/src/dynarmic/CMakeLists.txt
++++ b/src/dynarmic/CMakeLists.txt
+@@ -521,0 +522,4 @@ endif()
++if (DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
++    target_compile_definitions(dynarmic PRIVATE
++        DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE=1)
++endif()
+diff --git a/src/dynarmic/backend/x64/a32_interface.cpp b/src/dynarmic/backend/x64/a32_interface.cpp
+index b615c06..377ec09 100644
+--- a/src/dynarmic/backend/x64/a32_interface.cpp
++++ b/src/dynarmic/backend/x64/a32_interface.cpp
+@@ -9,2 +8,0 @@
+-#include <cstdlib>
+-#include <cstring>
+@@ -18,0 +17,5 @@
++#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
++#include <cstdlib>
++#include <cstring>
++#endif
++
+@@ -125,0 +129 @@ static A32::UserConfig WithFastDispatchTable(A32::UserConfig conf, void* storage
++#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
+@@ -128 +132 @@ static A32::UserConfig WithFastDispatchTable(A32::UserConfig conf, void* storage
+-// It is intentionally inert unless a test sets this variable.
++// The entire implementation is absent from production builds.
+@@ -157,0 +162 @@ enum class TestEmitFailure : std::uint8_t {
++#endif
+@@ -225,0 +231 @@ struct NativeCodeSlab::Impl {
++#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
+@@ -226,0 +233 @@ struct NativeCodeSlab::Impl {
++#endif
+@@ -270,0 +278 @@ struct NativeCodeSlab::Impl {
++#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
+@@ -275,0 +284 @@ struct NativeCodeSlab::Impl {
++#endif
+@@ -284,0 +294 @@ struct NativeCodeSlab::Impl {
++#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
+@@ -294,0 +305 @@ struct NativeCodeSlab::Impl {
++#endif
+@@ -295,0 +307 @@ struct NativeCodeSlab::Impl {
++#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
+@@ -300,0 +313 @@ struct NativeCodeSlab::Impl {
++#endif
+@@ -312,0 +326 @@ struct NativeCodeSlab::Impl {
++#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
+@@ -317,0 +332 @@ struct NativeCodeSlab::Impl {
++#endif
+@@ -592,0 +608 @@ struct NativeCodeSlab::Impl {
++#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
+@@ -594,0 +611 @@ struct NativeCodeSlab::Impl {
++#endif
