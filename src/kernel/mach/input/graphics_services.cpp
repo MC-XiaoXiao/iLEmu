@@ -435,6 +435,10 @@ bool application_fullscreen_publication_locked(
 }
 
 std::optional<KernelSharedState::GraphicsTouchRoute>
+semantic_touch_route_locked(KernelSharedState &state,
+                            SceneCoordinator *scenes);
+
+std::optional<KernelSharedState::GraphicsTouchRoute>
 presentation_touch_route_locked(
     KernelSharedState &state, const PresentationHitTest &presentation,
     SceneCoordinator *scenes) {
@@ -451,6 +455,17 @@ presentation_touch_route_locked(
             scenes)) {
       return route;
     }
+  }
+
+  // Early firmware flattens an application's full-screen scene into a
+  // SpringBoard-owned presentation. In that mode the physical layer list can
+  // name SpringBoard even though the semantic application route is still the
+  // active foreground owner. Prefer that exact route before treating the
+  // compositor's owner as the touch target; system alerts and lock state have
+  // already been excluded by the checks above.
+  if (!springboard_alert_owns_input_locked(state)) {
+    if (const auto route = semantic_touch_route_locked(state, scenes))
+      return route;
   }
 
   for (const auto &layer : presentation.layers_front_to_back) {
@@ -512,7 +527,12 @@ semantic_touch_route_locked(KernelSharedState &state,
   }
   if (scenes) {
     const auto scene = scenes->client_scene(port->receive_owner);
-    if (!scene || scene->state != ClientSceneState::Active)
+    // Some early firmware flattens the App into a SpringBoard-owned
+    // presentation without publishing a ClientScene for the App. The
+    // active event port and foreground route above are still authoritative
+    // in that case. An explicitly published non-active scene remains a
+    // hard rejection so a stale route cannot cross a lifecycle boundary.
+    if (scene && scene->state != ClientSceneState::Active)
       return std::nullopt;
   }
   state.application_event_objects_by_process[port->receive_owner] =
