@@ -1807,6 +1807,7 @@ public:
   TemporaryPathCleanup &operator=(const TemporaryPathCleanup &) = delete;
   ~TemporaryPathCleanup() {
     if (path_.empty()) return;
+    const auto cleanup_started = std::chrono::steady_clock::now();
     if (result_ != nullptr) {
       result_->temporary_cleanup_attempted = true;
       ++result_->temporary_cleanup_attempts;
@@ -1814,6 +1815,15 @@ public:
     std::error_code error;
     std::filesystem::remove(path_, error);
     if (result_ == nullptr) return;
+    const auto cleanup_elapsed = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - cleanup_started)
+            .count());
+    result_->cleanup_nanoseconds =
+        result_->cleanup_nanoseconds >
+                std::numeric_limits<std::uint64_t>::max() - cleanup_elapsed
+            ? std::numeric_limits<std::uint64_t>::max()
+            : result_->cleanup_nanoseconds + cleanup_elapsed;
     if (error) {
       result_->temporary_cleanup_failed = true;
       ++result_->temporary_cleanup_failures;
@@ -3302,6 +3312,7 @@ JitArtifactCompactionResult JitArtifactStore::compact_with_result(
     {
       if (cancelled()) return result;
       const std::lock_guard persistence_lock{persistence_mutex_};
+      const auto lock_started = std::chrono::steady_clock::now();
       std::optional<ArtifactFileLock> file_lock;
       // flock() is deliberately polled in short, cancellable intervals.
       // A compaction request must not leave the guest/UI thread parked behind
@@ -3318,6 +3329,10 @@ JitArtifactCompactionResult JitArtifactStore::compact_with_result(
         }
       }
       if (!file_lock) return failed();
+      result.lock_wait_nanoseconds = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - lock_started)
+              .count());
       const auto writer_generation = file_lock->generation();
       if (!writer_generation) return failed();
       std::uint64_t known_generation = 0;
@@ -3345,9 +3360,18 @@ JitArtifactCompactionResult JitArtifactStore::compact_with_result(
         const std::lock_guard lock{mutex_};
         external_writer_generation_ = *next_writer_generation;
       }
+      const auto save_started = std::chrono::steady_clock::now();
       if (!save_full(disk_path, cancellation_check, &result)) {
+        result.save_nanoseconds = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - save_started)
+                .count());
         return result.cancelled ? result : failed();
       }
+      result.save_nanoseconds = static_cast<std::uint64_t>(
+          std::chrono::duration_cast<std::chrono::nanoseconds>(
+              std::chrono::steady_clock::now() - save_started)
+              .count());
     }
     if (cancelled()) return result;
     const std::lock_guard lock{mutex_};
@@ -4566,13 +4590,26 @@ bool JitArtifactStore::save_full(
         return false;
       }
       std::error_code error;
+      const auto rename_started = std::chrono::steady_clock::now();
       std::filesystem::rename(hotset_temporary, hotset_path, error);
       if (error) {
+        if (compaction_result != nullptr) {
+          compaction_result->rename_nanoseconds = static_cast<std::uint64_t>(
+              std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::steady_clock::now() - rename_started)
+                  .count());
+        }
         error.clear();
         return false;
       }
       hotset_cleanup.release();
       std::filesystem::rename(temporary, path, error);
+      if (compaction_result != nullptr) {
+        compaction_result->rename_nanoseconds = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - rename_started)
+                .count());
+      }
       if (error) {
         error.clear();
         // The old snapshot remains authoritative if its publish fails. Remove
