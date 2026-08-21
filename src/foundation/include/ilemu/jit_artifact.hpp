@@ -340,9 +340,11 @@ struct JitArtifactCompactionResult {
   std::uint64_t temporary_cleanup_failures{};
   std::uint64_t temporary_residues{};
   std::uint64_t lock_wait_nanoseconds{};
+  std::uint64_t snapshot_nanoseconds{};
   std::uint64_t save_nanoseconds{};
   std::uint64_t cleanup_nanoseconds{};
   std::uint64_t rename_nanoseconds{};
+  std::uint64_t return_nanoseconds{};
   std::uint64_t first_cancellation_observed_nanoseconds{};
   std::uint64_t bytes_before_cancel{};
   std::uint64_t records_before_cancel{};

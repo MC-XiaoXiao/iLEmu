@@ -1530,6 +1530,38 @@ struct CompactionProgress {
   std::uint64_t records_written{};
 };
 
+struct CompactionPhaseTimer {
+  JitArtifactCompactionResult *result{};
+  std::uint64_t JitArtifactCompactionResult::*field{};
+  std::chrono::steady_clock::time_point started{
+      std::chrono::steady_clock::now()};
+
+  ~CompactionPhaseTimer() {
+    if (result == nullptr || field == nullptr) return;
+    result->*field = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started)
+            .count());
+  }
+};
+
+[[nodiscard]] std::optional<std::unique_lock<std::mutex>>
+try_lock_cancellable(
+    std::mutex &mutex, const std::function<bool()> &cancellation_check) {
+  if (!cancellation_check) {
+    return std::unique_lock<std::mutex>{mutex};
+  }
+  std::unique_lock lock{mutex, std::defer_lock};
+  while (!lock.owns_lock()) {
+    if (cancellation_check()) return std::nullopt;
+    if (lock.try_lock()) break;
+    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+  }
+  return lock.owns_lock()
+             ? std::optional<std::unique_lock<std::mutex>>{std::move(lock)}
+             : std::nullopt;
+}
+
 bool write_bytes_cancellable(
     std::ostream &stream, const std::byte *data, std::size_t size,
     const std::function<bool()> &cancellation_check,
@@ -3514,6 +3546,14 @@ bool JitArtifactStore::compact(CancellationCheck cancellation_check) const
 JitArtifactCompactionResult JitArtifactStore::compact_with_result(
     CancellationCheck cancellation_check) const noexcept {
   JitArtifactCompactionResult result;
+  const auto return_started = std::chrono::steady_clock::now();
+  const auto finish = [&] {
+    result.return_nanoseconds = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - return_started)
+            .count());
+    return result;
+  };
   try {
     const auto cancelled = [&] {
       if (!cancellation_check || !cancellation_check()) return false;
@@ -3526,14 +3566,17 @@ JitArtifactCompactionResult JitArtifactStore::compact_with_result(
       }
       return true;
     };
+    const CancellationCheck cancellable_check = cancellation_check
+                                                    ? CancellationCheck{cancelled}
+                                                    : CancellationCheck{};
     const auto failed = [&] {
       if (!result.cancelled) result.failed = true;
-      return result;
+      return finish();
     };
-    if (cancelled()) return result;
+    if (cancelled()) return finish();
     if (!limits_.persistence_enabled || limits_.compaction_bytes == 0U) {
       result.completed = true;
-      return result;
+      return finish();
     }
     std::filesystem::path disk_path;
     {
@@ -3543,28 +3586,34 @@ JitArtifactCompactionResult JitArtifactStore::compact_with_result(
     }
     if (disk_path.empty()) {
       result.completed = true;
-      return result;
+      return finish();
     }
     {
-      if (cancelled()) return result;
-      const std::lock_guard persistence_lock{persistence_mutex_};
+      if (cancelled()) return finish();
       const auto lock_started = std::chrono::steady_clock::now();
+      auto persistence_lock = try_lock_cancellable(
+          persistence_mutex_, cancellable_check);
+      if (!persistence_lock) {
+        result.lock_wait_nanoseconds = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - lock_started)
+                .count());
+        return cancelled() ? finish() : failed();
+      }
       std::optional<ArtifactFileLock> file_lock;
       // flock() is deliberately polled in short, cancellable intervals.
       // A compaction request must not leave the guest/UI thread parked behind
       // another writer for hundreds of milliseconds.
       for (unsigned attempt = 0; attempt < 32U && !file_lock; ++attempt) {
-        // The caller already checked cancellation immediately before entering
-        // this section. Only subsequent non-blocking retries consume another
-        // check, preserving the progress granularity of save_full().
-        if (attempt != 0U && cancelled()) return result;
+        if (cancelled()) return finish();
         file_lock = ArtifactFileLock::acquire(
             disk_path, ArtifactFileLock::Mode::Exclusive, true);
         if (!file_lock) {
           std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
       }
-      if (!file_lock) return failed();
+      if (!file_lock) return cancelled() ? finish() : failed();
+      if (cancelled()) return finish();
       result.lock_wait_nanoseconds = static_cast<std::uint64_t>(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
               std::chrono::steady_clock::now() - lock_started)
@@ -3577,7 +3626,7 @@ JitArtifactCompactionResult JitArtifactStore::compact_with_result(
         known_generation = external_writer_generation_;
       }
       if (known_generation != *writer_generation) {
-        if (cancelled()) return result;
+        if (cancelled()) return finish();
         if (!load_coordinated(disk_path)) return failed();
         const std::lock_guard lock{mutex_};
         external_writer_generation_ = *writer_generation;
@@ -3587,9 +3636,9 @@ JitArtifactCompactionResult JitArtifactStore::compact_with_result(
           append_path_for(disk_path), error);
       if (error || append_bytes < limits_.compaction_bytes) {
         result.completed = true;
-        return result;
+        return finish();
       }
-      if (cancelled()) return result;
+      if (cancelled()) return finish();
       const auto next_writer_generation = file_lock->begin_write();
       if (!next_writer_generation) return failed();
       {
@@ -3602,21 +3651,23 @@ JitArtifactCompactionResult JitArtifactStore::compact_with_result(
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::steady_clock::now() - save_started)
                 .count());
-        return result.cancelled ? result : failed();
+        return result.cancelled ? finish() : failed();
       }
       result.save_nanoseconds = static_cast<std::uint64_t>(
           std::chrono::duration_cast<std::chrono::nanoseconds>(
               std::chrono::steady_clock::now() - save_started)
               .count());
     }
-    if (cancelled()) return result;
-    const std::lock_guard lock{mutex_};
+    if (cancelled()) return finish();
+    auto lock = try_lock_cancellable(mutex_, cancellable_check);
+    if (!lock) return cancelled() ? finish() : failed();
+    if (cancelled()) return finish();
     ++stats_.compactions;
     result.completed = true;
-    return result;
+    return finish();
   } catch (...) {
     if (!result.cancelled) result.failed = true;
-    return result;
+    return finish();
   }
 }
 
@@ -4258,6 +4309,9 @@ bool JitArtifactStore::save_full(
       }
       return true;
     };
+    const CancellationCheck cancellable_check = cancellation_check
+                                                    ? CancellationCheck{cancelled}
+                                                    : CancellationCheck{};
     if (cancelled()) return false;
     if (path.empty()) return false;
     struct SaveEntry {
@@ -4274,7 +4328,13 @@ bool JitArtifactStore::save_full(
     std::uint64_t saved_hotset_mutation_generation = 0U;
     std::uint64_t saved_benefit_generation = 0U;
     {
-      const std::lock_guard lock{mutex_};
+      const CompactionPhaseTimer snapshot_timer{
+          compaction_result, &JitArtifactCompactionResult::snapshot_nanoseconds};
+      auto lock = try_lock_cancellable(mutex_, cancellable_check);
+      if (!lock) {
+        static_cast<void>(cancelled());
+        return false;
+      }
       entries.reserve(disk_artifacts_.size() + artifacts_.size() +
                       pending_writebacks_.size());
       std::unordered_set<const JitArtifactKey *, JitArtifactKeyPointerHash,
@@ -4821,7 +4881,11 @@ bool JitArtifactStore::save_full(
         output_order.push_back(&iterator->first);
       }
 
-      const std::lock_guard lock{mutex_};
+      auto lock = try_lock_cancellable(mutex_, cancellable_check);
+      if (!lock) {
+        static_cast<void>(cancelled());
+        return false;
+      }
       if (cancelled()) return false;
       if (disk_source_path_ != source_path ||
           disk_append_path_ != append_source_path) {
