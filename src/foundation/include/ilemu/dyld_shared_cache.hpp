@@ -57,6 +57,10 @@ struct DyldCacheFile {
   // A published generation owns the exact bytes used to build its metadata.
   // Lazy image parsing must not reopen path after a rootfs replacement.
   std::shared_ptr<const std::vector<std::byte>> immutable_snapshot;
+  // Cross-process content-addressed backing for the same immutable file
+  // generation. Shared-cache images prefer this demand-paged view; the
+  // vector remains available for standalone/fallback parser callers.
+  std::shared_ptr<const ImmutableFileView> immutable_file_view;
   DyldCacheUuid uuid{};
   std::uint64_t cache_vm_offset{};
   std::string file_suffix;

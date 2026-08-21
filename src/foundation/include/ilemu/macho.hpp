@@ -83,7 +83,8 @@ public:
         // header while retaining the container's absolute file offsets.
         std::optional<std::uint64_t> image_header_offset = std::nullopt,
         std::shared_ptr<const std::vector<std::byte>> immutable_snapshot = {},
-        std::optional<GuestFileGeneration> known_generation = std::nullopt);
+        std::optional<GuestFileGeneration> known_generation = std::nullopt,
+        std::shared_ptr<const ImmutableFileView> immutable_file_view = {});
 
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
     [[nodiscard]] std::uint32_t cpu_type() const { return cpu_type_; }
@@ -95,7 +96,8 @@ public:
         return content_identity_;
     }
     [[nodiscard]] std::uint64_t file_size() const noexcept {
-        return bytes_ ? bytes_->size() : 0U;
+        return bytes_ ? bytes_->size()
+                      : immutable_file_view_ ? immutable_file_view_->size() : 0U;
     }
     [[nodiscard]] const std::optional<std::array<std::byte, 16>>& uuid() const {
         return uuid_;
@@ -141,11 +143,16 @@ private:
     [[nodiscard]] std::optional<std::uint32_t> find_objc_method(
         std::string_view class_name, std::string_view selector,
         bool class_method) const;
+    [[nodiscard]] std::span<const std::byte> byte_span() const noexcept;
 
     std::filesystem::path path_;
     // Parsing owns one immutable byte snapshot. File-backed executable pages
     // share it so delayed faults cannot observe later in-place host writes.
     std::shared_ptr<const std::vector<std::byte>> bytes_;
+    // Shared-cache images prefer a content-addressed, read-only mmap. Keeping
+    // this owner alive makes lazy parser reads and guest page faults observe
+    // exactly the generation that produced the metadata.
+    std::shared_ptr<const ImmutableFileView> immutable_file_view_;
     std::uint32_t cpu_type_{};
     std::uint32_t cpu_subtype_{};
     std::uint32_t file_type_{};

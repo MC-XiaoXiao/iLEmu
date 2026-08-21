@@ -12,9 +12,17 @@
 #include <tuple>
 
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/stat.h>
 #include <sys/sysinfo.h>
+#include <sys/mman.h>
+#include <sys/types.h>
 #include <unistd.h>
+
+#if defined(__linux__)
+#include <linux/fs.h>
+#include <sys/ioctl.h>
+#endif
 
 namespace ilemu {
 namespace {
@@ -52,6 +60,215 @@ std::atomic<std::uint64_t> next_reservation_identity{1};
       static_cast<std::int64_t>(file_stat.st_mtim.tv_nsec),
       static_cast<std::int64_t>(file_stat.st_ctim.tv_sec),
       static_cast<std::int64_t>(file_stat.st_ctim.tv_nsec)};
+}
+
+constexpr std::uint64_t shared_immutable_file_budget_bytes =
+    std::uint64_t{1} * 1024U * 1024U * 1024U;
+
+[[nodiscard]] std::filesystem::path shared_immutable_file_root() {
+  return std::filesystem::temp_directory_path() /
+         ("ilemu-shared-cache-" + std::to_string(::getuid()));
+}
+
+[[nodiscard]] std::filesystem::path shared_immutable_file_path(
+    const ContentIdentity &content_identity, std::uint64_t byte_size) {
+  return shared_immutable_file_root() /
+         (content_identity.hex() + "-" + std::to_string(byte_size) + ".bin");
+}
+
+[[nodiscard]] bool process_is_alive(std::uint64_t process_id) {
+  if (process_id == 0U || process_id >
+                              static_cast<std::uint64_t>(
+                                  std::numeric_limits<pid_t>::max())) {
+    return false;
+  }
+  if (::kill(static_cast<pid_t>(process_id), 0) == 0) return true;
+  return errno == EPERM;
+}
+
+[[nodiscard]] bool has_live_shared_file_lease(
+    const std::filesystem::path &backing_path) {
+  const auto root = backing_path.parent_path();
+  const auto prefix = backing_path.filename().string() + ".lease-";
+  std::error_code error;
+  for (const auto &entry : std::filesystem::directory_iterator(root, error)) {
+    if (error) return true;
+    const auto name = entry.path().filename().string();
+    if (!name.starts_with(prefix)) continue;
+    const auto process_text = name.substr(prefix.size());
+    const auto process_separator = process_text.find('-');
+    const auto process_end = process_separator == std::string::npos
+                                 ? process_text.size()
+                                 : process_separator;
+    std::uint64_t process_id{};
+    const auto [end, parse_error] = std::from_chars(
+        process_text.data(), process_text.data() + process_end,
+        process_id);
+    if (parse_error == std::errc{} &&
+        end == process_text.data() + process_end &&
+        process_is_alive(process_id)) {
+      return true;
+    }
+    std::filesystem::remove(entry.path(), error);
+    error.clear();
+  }
+  return false;
+}
+
+void reclaim_shared_immutable_files(
+    const std::filesystem::path &root,
+    const std::filesystem::path &preserve_path = {}) {
+  struct Candidate {
+    std::filesystem::path path;
+    std::uint64_t bytes{};
+    std::filesystem::file_time_type modified{};
+  };
+  std::vector<Candidate> candidates;
+  std::uint64_t total_bytes{};
+  std::error_code error;
+  for (const auto &entry : std::filesystem::directory_iterator(root, error)) {
+    if (error) return;
+    if (entry.path().extension() != ".bin") continue;
+    const auto size = entry.file_size(error);
+    if (error) {
+      error.clear();
+      continue;
+    }
+    const auto modified = entry.last_write_time(error);
+    if (error) {
+      error.clear();
+      continue;
+    }
+    candidates.push_back(Candidate{entry.path(), size, modified});
+    total_bytes += size;
+  }
+  if (total_bytes <= shared_immutable_file_budget_bytes) return;
+  std::sort(candidates.begin(), candidates.end(),
+            [](const Candidate &left, const Candidate &right) {
+              return left.modified < right.modified;
+            });
+  for (const auto &candidate : candidates) {
+    if (total_bytes <= shared_immutable_file_budget_bytes) break;
+    if (candidate.path == preserve_path ||
+        has_live_shared_file_lease(candidate.path)) {
+      continue;
+    }
+    if (std::filesystem::remove(candidate.path, error)) {
+      total_bytes -= candidate.bytes;
+    }
+    error.clear();
+  }
+}
+
+[[nodiscard]] bool write_all(int descriptor, const std::byte *data,
+                             std::size_t size) {
+  std::size_t written = 0;
+  while (written < size) {
+    const auto count = ::write(
+        descriptor, reinterpret_cast<const char *>(data + written),
+        size - written);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) return false;
+    written += static_cast<std::size_t>(count);
+  }
+  return true;
+}
+
+[[nodiscard]] bool create_shared_immutable_file(
+    const std::filesystem::path &source_path,
+    const GuestFileGeneration &generation,
+    const std::filesystem::path &backing_path) {
+  int source_descriptor = -1;
+  do {
+    source_descriptor = ::open(source_path.c_str(), O_RDONLY | O_CLOEXEC);
+  } while (source_descriptor < 0 && errno == EINTR);
+  if (source_descriptor < 0) return false;
+
+  struct stat source_stat {};
+  if (::fstat(source_descriptor, &source_stat) != 0 ||
+      !S_ISREG(source_stat.st_mode) ||
+      generation_from_stat(source_stat) != generation) {
+    static_cast<void>(::close(source_descriptor));
+    return false;
+  }
+
+  const auto root = backing_path.parent_path();
+  std::error_code error;
+  std::filesystem::create_directories(root, error);
+  if (error) {
+    static_cast<void>(::close(source_descriptor));
+    return false;
+  }
+  std::filesystem::permissions(
+      root, std::filesystem::perms::owner_all,
+      std::filesystem::perm_options::replace, error);
+  error.clear();
+
+  const auto temporary_path =
+      backing_path.string() + ".tmp-" + std::to_string(::getpid()) + "-" +
+      std::to_string(next_reservation_identity.fetch_add(
+          1, std::memory_order_relaxed));
+  const auto temporary = std::filesystem::path{temporary_path};
+  int temporary_descriptor = ::open(
+      temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (temporary_descriptor < 0) {
+    static_cast<void>(::close(source_descriptor));
+    return false;
+  }
+
+  bool copied = false;
+#if defined(FICLONE)
+  copied = ::ioctl(temporary_descriptor, FICLONE, source_descriptor) == 0;
+#endif
+  if (!copied) {
+    if (::ftruncate(temporary_descriptor, 0) != 0 ||
+        ::lseek(temporary_descriptor, 0, SEEK_SET) < 0) {
+      static_cast<void>(::close(temporary_descriptor));
+      static_cast<void>(::close(source_descriptor));
+      std::filesystem::remove(temporary, error);
+      return false;
+    }
+    std::array<std::byte, 1024U * 1024U> buffer{};
+    std::uint64_t offset = 0;
+    copied = true;
+    while (offset < generation.file_size) {
+      const auto requested = static_cast<std::size_t>(std::min<std::uint64_t>(
+          buffer.size(), generation.file_size - offset));
+      ssize_t count = -1;
+      do {
+        count = ::pread(source_descriptor, buffer.data(), requested,
+                        static_cast<off_t>(offset));
+      } while (count < 0 && errno == EINTR);
+      if (count != static_cast<ssize_t>(requested) ||
+          !write_all(temporary_descriptor, buffer.data(), requested)) {
+        copied = false;
+        break;
+      }
+      offset += requested;
+    }
+  }
+  struct stat final_source_stat {};
+  if (copied && ::fstat(source_descriptor, &final_source_stat) == 0 &&
+      generation_from_stat(final_source_stat) == generation &&
+      ::fsync(temporary_descriptor) == 0) {
+    static_cast<void>(::fchmod(temporary_descriptor, 0444));
+  } else {
+    copied = false;
+  }
+  static_cast<void>(::close(temporary_descriptor));
+  static_cast<void>(::close(source_descriptor));
+  if (!copied) {
+    std::filesystem::remove(temporary, error);
+    return false;
+  }
+
+  if (::rename(temporary.c_str(), backing_path.c_str()) != 0 &&
+      errno != EEXIST) {
+    std::filesystem::remove(temporary, error);
+    return false;
+  }
+  std::filesystem::remove(temporary, error);
+  return true;
 }
 
 [[nodiscard]] bool same_file_stat(const struct stat &first,
@@ -361,6 +578,112 @@ void invalidate_global_identity(const std::string &normalized_path) {
 }
 
 } // namespace
+
+ImmutableFileView::ImmutableFileView(
+    int file_descriptor, void *mapping, std::uint64_t byte_size,
+    std::filesystem::path backing_path, std::filesystem::path lease_path,
+    GuestFileGeneration generation, ContentIdentity content_identity) noexcept
+    : file_descriptor_{file_descriptor},
+      mapping_{mapping},
+      byte_size_{byte_size},
+      backing_path_{std::move(backing_path)},
+      lease_path_{std::move(lease_path)},
+      generation_{generation},
+      content_identity_{content_identity} {}
+
+ImmutableFileView::~ImmutableFileView() {
+  if (mapping_ && byte_size_ != 0U) {
+    static_cast<void>(::munmap(mapping_, static_cast<std::size_t>(byte_size_)));
+  }
+  if (file_descriptor_ >= 0) static_cast<void>(::close(file_descriptor_));
+  if (!lease_path_.empty()) {
+    std::error_code error;
+    std::filesystem::remove(lease_path_, error);
+  }
+}
+
+std::span<const std::byte> ImmutableFileView::bytes() const noexcept {
+  if (!mapping_ || byte_size_ == 0U) return {};
+  return {reinterpret_cast<const std::byte *>(mapping_),
+          static_cast<std::size_t>(byte_size_)};
+}
+
+std::span<const std::byte> ImmutableFileView::range(
+    std::uint64_t offset, std::uint64_t size) const noexcept {
+  if (offset > byte_size_ || size > byte_size_ - offset ||
+      offset > std::numeric_limits<std::size_t>::max() ||
+      size > std::numeric_limits<std::size_t>::max()) {
+    return {};
+  }
+  return bytes().subspan(static_cast<std::size_t>(offset),
+                         static_cast<std::size_t>(size));
+}
+
+std::shared_ptr<const ImmutableFileView> ImmutableFileView::open(
+    const std::filesystem::path &source_path,
+    const GuestFileGeneration &generation,
+    const ContentIdentity &content_identity, std::uint64_t byte_size) {
+  if (byte_size == 0U ||
+      byte_size > std::numeric_limits<std::size_t>::max() ||
+      byte_size != generation.file_size) {
+    return {};
+  }
+
+  const auto backing_path =
+      shared_immutable_file_path(content_identity, byte_size);
+  std::error_code error;
+  std::filesystem::create_directories(backing_path.parent_path(), error);
+  if (error) return {};
+  std::filesystem::permissions(
+      backing_path.parent_path(), std::filesystem::perms::owner_all,
+      std::filesystem::perm_options::replace, error);
+  error.clear();
+
+  int descriptor = ::open(backing_path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (descriptor < 0 && errno == ENOENT) {
+    if (!create_shared_immutable_file(source_path, generation,
+                                      backing_path)) {
+      return {};
+    }
+    descriptor = ::open(backing_path.c_str(), O_RDONLY | O_CLOEXEC);
+  }
+  if (descriptor < 0) return {};
+
+  struct stat backing_stat {};
+  if (::fstat(descriptor, &backing_stat) != 0 ||
+      !S_ISREG(backing_stat.st_mode) ||
+      (backing_stat.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0 ||
+      static_cast<std::uint64_t>(backing_stat.st_size) != byte_size) {
+    static_cast<void>(::close(descriptor));
+    return {};
+  }
+
+  void *mapping = ::mmap(nullptr, static_cast<std::size_t>(byte_size),
+                         PROT_READ, MAP_SHARED, descriptor, 0);
+  if (mapping == MAP_FAILED) {
+    static_cast<void>(::close(descriptor));
+    return {};
+  }
+
+  std::filesystem::path lease_path;
+  const auto candidate_lease =
+      backing_path.string() + ".lease-" + std::to_string(::getpid()) + "-" +
+      std::to_string(next_reservation_identity.fetch_add(
+          1, std::memory_order_relaxed));
+  const auto lease_descriptor = ::open(
+      candidate_lease.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (lease_descriptor < 0) {
+    static_cast<void>(::munmap(mapping, static_cast<std::size_t>(byte_size)));
+    static_cast<void>(::close(descriptor));
+    return {};
+  }
+  static_cast<void>(::close(lease_descriptor));
+  lease_path = candidate_lease;
+  reclaim_shared_immutable_files(backing_path.parent_path(), backing_path);
+  return std::shared_ptr<const ImmutableFileView>{new ImmutableFileView(
+      descriptor, mapping, byte_size, backing_path, std::move(lease_path),
+      generation, content_identity)};
+}
 
 SharedFileIdentityResult shared_file_identity(
     const std::filesystem::path &path, int descriptor,
@@ -881,6 +1204,13 @@ void GuestPageBacking::materialize() const {
 
   const auto file = file_backing_;
   std::fill(bytes.begin(), bytes.end(), std::byte{});
+  if (file->immutable_file_view) {
+    const auto snapshot =
+        file->immutable_file_view->range(file_offset_, file_byte_count_);
+    std::copy(snapshot.begin(), snapshot.end(), bytes.begin());
+    file_backing_.reset();
+    return;
+  }
   if (file->immutable_snapshot) {
     const auto &snapshot = *file->immutable_snapshot;
     if (file_offset_ < snapshot.size()) {
@@ -1125,13 +1455,15 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
                             std::optional<ContentIdentity>
                                 expected_content_identity,
                             std::shared_ptr<const std::vector<std::byte>>
-                                immutable_snapshot) {
+                                immutable_snapshot,
+                            std::shared_ptr<const ImmutableFileView>
+                                immutable_file_view) {
   if (size == 0 || file_offset % guest_memory_page_size != 0) {
     return std::nullopt;
   }
 
-  auto descriptor = open_file_descriptor(path);
-  if (descriptor < 0) return std::nullopt;
+  auto descriptor = immutable_file_view ? -1 : open_file_descriptor(path);
+  if (!immutable_file_view && descriptor < 0) return std::nullopt;
   const auto close_descriptor = [&]() {
     if (descriptor >= 0) {
       static_cast<void>(::close(descriptor));
@@ -1140,13 +1472,22 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   };
 
   struct stat file_stat {};
-  if (::fstat(descriptor, &file_stat) != 0 || !S_ISREG(file_stat.st_mode) ||
-      file_stat.st_size < 0) {
-    close_descriptor();
-    return std::nullopt;
+  std::uintmax_t file_size{};
+  GuestFileGeneration generation{};
+  std::filesystem::file_time_type modified{};
+  if (immutable_file_view) {
+    file_size = immutable_file_view->size();
+    generation = immutable_file_view->generation();
+  } else {
+    if (::fstat(descriptor, &file_stat) != 0 ||
+        !S_ISREG(file_stat.st_mode) || file_stat.st_size < 0) {
+      close_descriptor();
+      return std::nullopt;
+    }
+    file_size = static_cast<std::uintmax_t>(file_stat.st_size);
+    generation = generation_from_stat(file_stat);
+    modified = file_time_from_stat(file_stat);
   }
-  const auto file_size = static_cast<std::uintmax_t>(file_stat.st_size);
-  const auto generation = generation_from_stat(file_stat);
   if (immutable_snapshot && immutable_snapshot->size() != file_size) {
     close_descriptor();
     return std::nullopt;
@@ -1167,25 +1508,33 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     close_descriptor();
     return std::nullopt;
   }
-  const auto modified = file_time_from_stat(file_stat);
   // Keep the pathname used by the guest namespace separate from the
   // canonical object-identity key used for shared hashes and descriptors.
   const auto namespace_key = namespace_path(path);
-  const auto normalized_path = stable_path(path);
+  const auto normalized_path = immutable_file_view ? namespace_key
+                                                   : stable_path(path);
   std::shared_ptr<GuestFileGenerationRegistry> generation_registry;
   std::uint64_t generation_revision = 0;
   {
     const std::scoped_lock lock{mutex_};
     generation_registry = generation_registry_;
   }
-  if (generation_registry) {
+  if (generation_registry && !immutable_file_view) {
     generation_revision =
         generation_registry
             ->observe_normalized(namespace_key, generation)
             .revision;
   }
   std::optional<ContentIdentity> content_identity;
-  {
+  if (immutable_file_view) {
+    content_identity = immutable_file_view->content_identity();
+    const std::scoped_lock lock{mutex_};
+    ++stats_.identity_queries;
+    ++stats_.identity_hits;
+    store_identity_locked(
+        normalized_path,
+        Identity{generation, generation_revision, *content_identity, {}});
+  } else {
     const std::scoped_lock lock{mutex_};
     ++stats_.identity_queries;
     const auto identity = identities_.find(normalized_path);
@@ -1234,11 +1583,13 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
         normalized_path,
         Identity{generation, generation_revision, *content_identity, {}});
   }
-  struct stat final_file_stat {};
-  if (::fstat(descriptor, &final_file_stat) != 0 ||
-      !same_file_stat(file_stat, final_file_stat)) {
-    close_descriptor();
-    return std::nullopt;
+  if (!immutable_file_view) {
+    struct stat final_file_stat {};
+    if (::fstat(descriptor, &final_file_stat) != 0 ||
+        !same_file_stat(file_stat, final_file_stat)) {
+      close_descriptor();
+      return std::nullopt;
+    }
   }
   if (expected_content_identity &&
       *expected_content_identity != *content_identity) {
@@ -1254,7 +1605,7 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   // while existing mappings keep the old vnode alive through their shared
   // state.
   std::shared_ptr<GuestFileIoState> io_state;
-  {
+  if (!immutable_file_view) {
     const std::scoped_lock lock{global_identity_mutex};
     const auto identity = global_identities.find(normalized_path);
     if (identity != global_identities.end() &&
@@ -1289,6 +1640,7 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   mapping->generation_revision = generation_revision;
   mapping->content_identity = *content_identity;
   mapping->immutable_snapshot = std::move(immutable_snapshot);
+  mapping->immutable_file_view = std::move(immutable_file_view);
   mapping->generation_registry = generation_registry;
   mapping->io_state = std::move(io_state);
   return mapping;
@@ -1303,7 +1655,8 @@ std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
                 mapping->content_identity,
                 file_offset,
                 byte_count,
-                static_cast<bool>(mapping->immutable_snapshot)};
+                static_cast<bool>(mapping->immutable_snapshot) ||
+                    static_cast<bool>(mapping->immutable_file_view)};
   {
     const std::scoped_lock lock{mutex_};
     if (const auto cached = pages_.find(key); cached != pages_.end()) {

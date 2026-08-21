@@ -505,14 +505,17 @@ bool AddressSpace::map_file(std::uint32_t address, std::uint32_t size,
                             std::optional<ContentIdentity>
                                 expected_content_identity,
                             std::shared_ptr<const std::vector<std::byte>>
-                                immutable_snapshot) {
+                                immutable_snapshot,
+                            std::shared_ptr<const ImmutableFileView>
+                                immutable_file_view) {
   if (size == 0 || range_overflows(address, size) ||
       address % page_size != 0 || file_offset % page_size != 0) {
     return false;
   }
   const auto backing = file_page_cache_->open_mapping(
       path, file_offset, size, std::move(expected_generation),
-      std::move(expected_content_identity), std::move(immutable_snapshot));
+      std::move(expected_content_identity), std::move(immutable_snapshot),
+      std::move(immutable_file_view));
   if (!backing) return false;
 
   auto lock = write_lock();
@@ -903,6 +906,7 @@ void AddressSpace::unmap_file_mappings_locked(std::uint32_t address,
     backing->generation_revision = source.generation_revision;
     backing->content_identity = source.content_identity;
     backing->immutable_snapshot = source.immutable_snapshot;
+    backing->immutable_file_view = source.immutable_file_view;
     backing->generation_registry = source.generation_registry;
     backing->io_state = source.io_state;
     return backing;

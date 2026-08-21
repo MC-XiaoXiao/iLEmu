@@ -128,7 +128,9 @@ public:
                 std::optional<ContentIdentity> expected_content_identity =
                     std::nullopt,
                 std::shared_ptr<const std::vector<std::byte>>
-                    immutable_snapshot = {});
+                    immutable_snapshot = {},
+                std::shared_ptr<const ImmutableFileView>
+                    immutable_file_view = {});
   enum class PageMappingMode {
     CopyOnWrite,
     Shared,

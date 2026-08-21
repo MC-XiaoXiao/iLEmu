@@ -587,34 +587,15 @@ std::uint64_t image_hits{};
   return true;
 }
 
-[[nodiscard]] std::shared_ptr<const std::vector<std::byte>>
-read_immutable_file_snapshot(const DyldCacheFile &file) {
+[[nodiscard]] std::shared_ptr<const ImmutableFileView>
+read_immutable_file_view(const DyldCacheFile &file) {
   if (!file.file_generation ||
-      file.file_size > std::numeric_limits<std::size_t>::max() ||
-      file.file_size >
-          static_cast<std::uintmax_t>(
-              std::numeric_limits<std::streamsize>::max())) {
+      file.file_size > std::numeric_limits<std::size_t>::max()) {
     return {};
   }
-  auto snapshot = std::make_shared<std::vector<std::byte>>(
-      static_cast<std::size_t>(file.file_size));
-  std::ifstream input{file.path, std::ios::binary};
-  if (!input) return {};
-  if (!snapshot->empty()) {
-    input.read(reinterpret_cast<char *>(snapshot->data()),
-               static_cast<std::streamsize>(snapshot->size()));
-    if (!input || input.gcount() !=
-                      static_cast<std::streamsize>(snapshot->size())) {
-      return {};
-    }
-  }
-  if (read_file_generation(file.path) != file.file_generation ||
-      sha256(std::span<const std::byte>{*snapshot}) != file.content_identity) {
-    return {};
-  }
-  return share_immutable_snapshot(
-      *file.file_generation, file.content_identity, std::move(snapshot), 0,
-      ImmutableSnapshotKind::RuntimeHot);
+  return ImmutableFileView::open(file.path, *file.file_generation,
+                                 file.content_identity,
+                                 static_cast<std::uint64_t>(file.file_size));
 }
 
 } // namespace
@@ -766,8 +747,8 @@ DyldSharedCache::parse(const std::filesystem::path &path,
   // pointer is retained by the generation, so delayed image/HLE consumers
   // cannot accidentally reopen a replacement at the same pathname.
   for (auto &file : result.files_) {
-    file.immutable_snapshot = read_immutable_file_snapshot(file);
-    if (!file.immutable_snapshot) return {};
+    file.immutable_file_view = read_immutable_file_view(file);
+    if (!file.immutable_file_view) return {};
   }
   result.main_cache_ = result.files_.front();
 
@@ -958,7 +939,8 @@ std::shared_ptr<const MachOImage> DyldSharedCache::parse_image(
     auto parsed = std::make_shared<const MachOImage>(MachOImage::parse(
         source.path, architecture, source.content_identity,
         ImmutableSnapshotKind::RuntimeHot, header->file_offset,
-        source.immutable_snapshot, source.file_generation));
+        source.immutable_snapshot, source.file_generation,
+        source.immutable_file_view));
     image_store_->images.emplace(key, parsed);
     ++image_builds;
     return parsed;

@@ -12,6 +12,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,6 +48,57 @@ struct RuntimeBackingGeneration {
 // Keep the existing public spelling source-compatible while callers migrate
 // to the explicit runtime-generation name.
 using GuestFileGeneration = RuntimeBackingGeneration;
+
+// Cross-process immutable backing for a validated file generation. The
+// backing file is content-addressed and opened read-only, then mapped with
+// MAP_SHARED so independent emulator processes fault the same host page-cache
+// pages instead of allocating one heap snapshot per process. The lease keeps
+// the backing pathname alive until every process using it has released its
+// mapping; stale leases are reclaimed after a crashed process exits.
+class ImmutableFileView {
+public:
+  ~ImmutableFileView();
+
+  ImmutableFileView(const ImmutableFileView &) = delete;
+  ImmutableFileView &operator=(const ImmutableFileView &) = delete;
+  ImmutableFileView(ImmutableFileView &&) = delete;
+  ImmutableFileView &operator=(ImmutableFileView &&) = delete;
+
+  [[nodiscard]] static std::shared_ptr<const ImmutableFileView> open(
+      const std::filesystem::path &source_path,
+      const GuestFileGeneration &generation,
+      const ContentIdentity &content_identity, std::uint64_t byte_size);
+
+  [[nodiscard]] std::uint64_t size() const noexcept { return byte_size_; }
+  [[nodiscard]] std::span<const std::byte> bytes() const noexcept;
+  [[nodiscard]] std::span<const std::byte> range(
+      std::uint64_t offset, std::uint64_t size) const noexcept;
+  [[nodiscard]] const std::filesystem::path &backing_path() const noexcept {
+    return backing_path_;
+  }
+  [[nodiscard]] const GuestFileGeneration &generation() const noexcept {
+    return generation_;
+  }
+  [[nodiscard]] const ContentIdentity &content_identity() const noexcept {
+    return content_identity_;
+  }
+
+private:
+  ImmutableFileView(int file_descriptor, void *mapping,
+                    std::uint64_t byte_size,
+                    std::filesystem::path backing_path,
+                    std::filesystem::path lease_path,
+                    GuestFileGeneration generation,
+                    ContentIdentity content_identity) noexcept;
+
+  int file_descriptor_{-1};
+  void *mapping_{};
+  std::uint64_t byte_size_{};
+  std::filesystem::path backing_path_;
+  std::filesystem::path lease_path_;
+  GuestFileGeneration generation_;
+  ContentIdentity content_identity_;
+};
 
 enum class GuestFileMutationKind : std::uint8_t {
   Observation,
@@ -189,6 +241,7 @@ struct GuestFileBacking {
   // retain that immutable image for byte-lazy faults. Ordinary mmap keeps the
   // descriptor-backed path and its normal live-file semantics.
   std::shared_ptr<const std::vector<std::byte>> immutable_snapshot;
+  std::shared_ptr<const ImmutableFileView> immutable_file_view;
   std::weak_ptr<GuestFileGenerationRegistry> generation_registry;
   // The descriptor is opened when the mapping is created and shared by range
   // splits. This preserves the old vnode/file object across atomic rename.
@@ -347,7 +400,9 @@ public:
                std::optional<ContentIdentity> expected_content_identity =
                    std::nullopt,
                std::shared_ptr<const std::vector<std::byte>>
-                   immutable_snapshot = {});
+                   immutable_snapshot = {},
+               std::shared_ptr<const ImmutableFileView> immutable_file_view =
+                   {});
 
   // Creates or reuses one page for an already validated mapping. The page
   // remains byte-lazy; GuestPageBacking::materialize performs clustered I/O.
