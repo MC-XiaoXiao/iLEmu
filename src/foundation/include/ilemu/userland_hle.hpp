@@ -22,6 +22,7 @@ namespace ilemu {
 class AddressSpace;
 class Cpu;
 class DyldSharedCache;
+class ImmutableArtifactView;
 class MachOImage;
 class Output;
 
@@ -258,6 +259,25 @@ private:
     std::string symbol;
     std::optional<HleRuleKey> rule;
   };
+  struct HleRuleView {
+    std::string_view image_suffix;
+    std::string_view symbol;
+    bool prefix{};
+    std::optional<std::uint32_t> virtual_address;
+    std::optional<std::pair<std::string_view, std::string_view>> objc_method;
+    bool objc_class_method{};
+    bool guest_function{};
+  };
+  struct SharedHlePatchView {
+    std::uint32_t image_index{};
+    std::uint32_t file_index{};
+    std::uint64_t file_offset{};
+    std::uint8_t patch_size{};
+    bool thumb{};
+    bool guest_function{};
+    std::string_view symbol;
+    std::optional<HleRuleView> rule;
+  };
   struct SharedHlePlan {
     ContentIdentity generation_identity;
     ArmArchitectureVersion architecture{};
@@ -265,6 +285,24 @@ private:
     // Sorted [begin,end) ranges in patches for each cache file. Consumers
     // lower-bound by file offset and never rescan unrelated images/files.
     std::map<std::uint32_t, std::pair<std::size_t, std::size_t>> file_ranges;
+
+    // Artifact-loaded plans keep only fixed typed records and string/range
+    // views into the read-only mmap. The owning vectors above are used only
+    // while constructing a new plan in this process.
+    [[nodiscard]] std::size_t patch_count() const noexcept;
+    [[nodiscard]] SharedHlePatchView patch_view(std::size_t index) const;
+    [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>>
+    file_range(std::uint32_t file_index) const;
+
+  private:
+    friend class UserlandHleRegistry;
+    std::shared_ptr<const ImmutableArtifactView> artifact_view_;
+    std::uint32_t mapped_patch_count_{};
+    std::uint32_t mapped_range_count_{};
+    std::uint64_t mapped_patch_records_offset_{};
+    std::uint64_t mapped_range_records_offset_{};
+    std::uint64_t mapped_string_offset_{};
+    std::uint64_t mapped_string_size_{};
   };
 
   [[nodiscard]] static std::shared_ptr<const SharedHlePlan>
@@ -287,6 +325,8 @@ private:
   [[nodiscard]] const Registration *find_registration(std::uint16_t id) const;
   [[nodiscard]] const Registration *find_registration(
       const HleRuleKey &key) const;
+  [[nodiscard]] const Registration *find_registration(
+      const HleRuleView &key) const;
   [[nodiscard]] HleRuleKey rule_key(const Registration &registration) const;
   [[nodiscard]] static std::string rule_key_text(const HleRuleKey &key);
   [[nodiscard]] ParsedImageCacheEntry &cached_image(

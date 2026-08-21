@@ -796,6 +796,63 @@ void seed_shared_file_identity(
                           std::move(generation_revision), content_identity);
 }
 
+ImmutableArtifactView::ImmutableArtifactView(
+    int descriptor, void *mapping, std::size_t byte_size,
+    std::filesystem::path lease_path) noexcept
+    : descriptor_{descriptor}, mapping_{mapping}, byte_size_{byte_size},
+      lease_path_{std::move(lease_path)} {}
+
+ImmutableArtifactView::~ImmutableArtifactView() {
+  if (mapping_ != nullptr && byte_size_ != 0U)
+    static_cast<void>(::munmap(mapping_, byte_size_));
+  if (descriptor_ >= 0) static_cast<void>(::close(descriptor_));
+  if (!lease_path_.empty()) {
+    std::error_code error;
+    std::filesystem::remove(lease_path_, error);
+  }
+}
+
+std::shared_ptr<const ImmutableArtifactView> ImmutableArtifactView::open(
+    const std::filesystem::path &path, std::size_t maximum_size) {
+  const auto descriptor =
+      ::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0) return {};
+  struct stat artifact_stat {};
+  if (::fstat(descriptor, &artifact_stat) != 0 ||
+      !S_ISREG(artifact_stat.st_mode) ||
+      (artifact_stat.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0 ||
+      artifact_stat.st_size <= 0 ||
+      static_cast<std::uint64_t>(artifact_stat.st_size) > maximum_size) {
+    static_cast<void>(::close(descriptor));
+    return {};
+  }
+  const auto byte_size = static_cast<std::size_t>(artifact_stat.st_size);
+  void *mapping =
+      ::mmap(nullptr, byte_size, PROT_READ, MAP_SHARED, descriptor, 0);
+  if (mapping == MAP_FAILED) {
+    static_cast<void>(::close(descriptor));
+    return {};
+  }
+  const auto lease_path = std::filesystem::path{
+      path.string() + ".lease-" + std::to_string(::getpid()) + "-" +
+      std::to_string(next_reservation_identity.fetch_add(
+          1, std::memory_order_relaxed))};
+  const auto lease_descriptor = ::open(
+      lease_path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+  if (lease_descriptor < 0) {
+    static_cast<void>(::munmap(mapping, byte_size));
+    static_cast<void>(::close(descriptor));
+    return {};
+  }
+  static_cast<void>(::close(lease_descriptor));
+  return std::shared_ptr<const ImmutableArtifactView>{
+      new ImmutableArtifactView{descriptor, mapping, byte_size, lease_path}};
+}
+
+std::span<const std::byte> ImmutableArtifactView::bytes() const noexcept {
+  return {reinterpret_cast<const std::byte *>(mapping_), byte_size_};
+}
+
 std::filesystem::path shared_immutable_artifact_root() {
   return shared_immutable_file_root();
 }

@@ -553,13 +553,14 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
         }
         const auto source_offset = mapping.file_offset;
         std::error_code source_error;
+        const auto source_path = std::filesystem::path{file.path};
         const auto source_size = std::filesystem::file_size(
-            file.path, source_error);
+            source_path, source_error);
         if (source_error || source_offset > source_size ||
             mapping.size > source_size - source_offset) {
           return std::nullopt;
         }
-        return MappingSource{file.path, source_offset, file.file_generation,
+        return MappingSource{source_path, source_offset, file.file_generation,
                              file.content_identity};
       }
     }

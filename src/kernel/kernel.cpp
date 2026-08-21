@@ -889,7 +889,9 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
     }
     const auto source_file = std::find_if(
         cache->files().begin(), cache->files().end(),
-        [&](const DyldCacheFile &file) { return file.path == image_path; });
+        [&](const DyldCacheFileView &file) {
+          return std::filesystem::path{file.path} == image_path;
+        });
     if (source_file == cache->files().end()) return 0;
     const auto source_file_index = static_cast<std::uint32_t>(
         std::distance(cache->files().begin(), source_file));
@@ -914,10 +916,12 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
         parsed_image = cache->parse_image(image.index, architecture);
       }
       installed += userland_hle_.install_mapped_shared_cache_image(
-          cpu, process_.pid, image.path, source.path, header->file_offset,
+          cpu, process_.pid, image.path, std::filesystem::path{source.path},
+          header->file_offset,
           mapping_address, mapping_size, file_offset, source.content_identity,
           architecture, parsed_image, source_file_index, image.index);
-      apply_image_profile(image.path, source.path, header->file_offset,
+      apply_image_profile(image.path, std::filesystem::path{source.path},
+                          header->file_offset,
                           source.content_identity, std::move(parsed_image));
     }
   } else if (!shared_cache_mapping) {

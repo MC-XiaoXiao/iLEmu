@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -20,6 +21,7 @@
 namespace ilemu {
 
 class MachOImage;
+class DyldSharedCache;
 
 using DyldCacheUuid = std::array<std::byte, 16>;
 
@@ -67,6 +69,134 @@ struct DyldCacheFile {
   std::vector<DyldCacheMapping> mappings;
 };
 
+// Views returned by a published generation.  The scalar records are typed
+// accessors, while strings and range tables point directly into the read-only
+// generation artifact (or into the owning records used while building a new
+// generation).  In particular, artifact loads do not materialize a second
+// vector of DyldCacheImage/DyldCacheFile records in the emulator process.
+struct DyldCacheFileView {
+  std::string_view path;
+  std::uintmax_t file_size{};
+  std::optional<GuestFileGeneration> file_generation;
+  ContentIdentity content_identity;
+  DyldCacheUuid uuid{};
+  std::uint64_t cache_vm_offset{};
+  std::string_view file_suffix;
+  std::span<const DyldCacheMapping> mappings;
+};
+
+struct DyldCacheImageView {
+  std::uint32_t index{};
+  std::string_view path;
+  std::uint64_t unslid_load_address{};
+  std::optional<DyldCacheUuid> text_uuid;
+  std::uint64_t text_segment_size{};
+  std::span<const DyldCacheRange> executable_ranges;
+  std::optional<ContentIdentity> text_identity;
+};
+
+class DyldCacheFileRange {
+public:
+  class iterator {
+  public:
+    using iterator_category = std::random_access_iterator_tag;
+    using value_type = DyldCacheFileView;
+    using difference_type = std::ptrdiff_t;
+    using reference = value_type;
+
+    reference operator*() const;
+    value_type operator[](difference_type offset) const;
+    iterator &operator++();
+    iterator &operator--();
+    iterator &operator+=(difference_type offset);
+    iterator &operator-=(difference_type offset);
+    friend iterator operator+(iterator value, difference_type offset) {
+      return value += offset;
+    }
+    friend iterator operator+(difference_type offset, iterator value) {
+      return value += offset;
+    }
+    friend iterator operator-(iterator value, difference_type offset) {
+      return value -= offset;
+    }
+    friend difference_type operator-(const iterator &left,
+                                     const iterator &right) {
+      return left.index_ - right.index_;
+    }
+    friend bool operator==(const iterator &, const iterator &) = default;
+    friend auto operator<=>(const iterator &, const iterator &) = default;
+
+  private:
+    friend class DyldCacheFileRange;
+    iterator(const DyldSharedCache *cache, std::size_t index) noexcept
+        : cache_{cache}, index_{index} {}
+    const DyldSharedCache *cache_{};
+    std::size_t index_{};
+  };
+
+  iterator begin() const noexcept;
+  iterator end() const noexcept;
+  [[nodiscard]] std::size_t size() const noexcept;
+  DyldCacheFileView operator[](std::size_t index) const;
+
+private:
+  friend class DyldSharedCache;
+  explicit DyldCacheFileRange(const DyldSharedCache *cache) noexcept
+      : cache_{cache} {}
+  const DyldSharedCache *cache_{};
+};
+
+class DyldCacheImageRange {
+public:
+  class iterator {
+  public:
+    using iterator_category = std::random_access_iterator_tag;
+    using value_type = DyldCacheImageView;
+    using difference_type = std::ptrdiff_t;
+    using reference = value_type;
+
+    reference operator*() const;
+    value_type operator[](difference_type offset) const;
+    iterator &operator++();
+    iterator &operator--();
+    iterator &operator+=(difference_type offset);
+    iterator &operator-=(difference_type offset);
+    friend iterator operator+(iterator value, difference_type offset) {
+      return value += offset;
+    }
+    friend iterator operator+(difference_type offset, iterator value) {
+      return value += offset;
+    }
+    friend iterator operator-(iterator value, difference_type offset) {
+      return value -= offset;
+    }
+    friend difference_type operator-(const iterator &left,
+                                     const iterator &right) {
+      return left.index_ - right.index_;
+    }
+    friend bool operator==(const iterator &, const iterator &) = default;
+    friend auto operator<=>(const iterator &, const iterator &) = default;
+
+  private:
+    friend class DyldCacheImageRange;
+    iterator(const DyldSharedCache *cache, std::size_t index) noexcept
+        : cache_{cache}, index_{index} {}
+    const DyldSharedCache *cache_{};
+    std::size_t index_{};
+  };
+
+  iterator begin() const noexcept;
+  iterator end() const noexcept;
+  [[nodiscard]] std::size_t size() const noexcept;
+  DyldCacheImageView operator[](std::size_t index) const;
+
+private:
+  friend class DyldSharedCache;
+  explicit DyldCacheImageRange(const DyldSharedCache *cache) noexcept
+      : cache_{cache} {}
+  const DyldSharedCache *cache_{};
+};
+
 struct DyldSharedCacheOptions {
   // When empty, the 16-byte magic is used as the architecture identity in
   // the generation key. A firmware catalog can provide a normalized Guest
@@ -79,8 +209,8 @@ struct DyldSharedCacheOptions {
 
 class DyldSharedCache {
 public:
-  static constexpr std::uint32_t parser_schema_version = 1;
-  static constexpr std::uint32_t hle_profile_schema_version = 1;
+  static constexpr std::uint32_t parser_schema_version = 2;
+  static constexpr std::uint32_t hle_profile_schema_version = 2;
 
   // Pointer-like parse result retaining the historical optional-style
   // has_value()/operator* API while allowing all successful callers to share
@@ -133,9 +263,9 @@ public:
                                  std::uint64_t file_offset,
                                  std::uint64_t size) const;
 
-  [[nodiscard]] const DyldCacheFile &main_cache() const noexcept;
-  [[nodiscard]] std::span<const DyldCacheFile> files() const noexcept;
-  [[nodiscard]] std::span<const DyldCacheImage> images() const noexcept;
+  [[nodiscard]] DyldCacheFileView main_cache() const;
+  [[nodiscard]] DyldCacheFileRange files() const noexcept;
+  [[nodiscard]] DyldCacheImageRange images() const noexcept;
   [[nodiscard]] const ContentIdentity &generation_identity() const noexcept;
   [[nodiscard]] std::uint32_t platform() const noexcept;
   [[nodiscard]] std::uint8_t format_version() const noexcept;
@@ -143,8 +273,8 @@ public:
   [[nodiscard]] std::uint64_t shared_region_size() const noexcept;
   [[nodiscard]] std::uint64_t max_slide() const noexcept;
 
-  [[nodiscard]] const DyldCacheImage *find_image(
-      std::string_view install_name) const noexcept;
+  [[nodiscard]] std::optional<DyldCacheImageView> find_image(
+      std::string_view install_name) const;
 
 private:
   [[nodiscard]] static std::shared_ptr<const DyldSharedCache>
@@ -166,6 +296,7 @@ private:
     std::uint64_t file_end{};
     std::uint64_t prefix_file_end{};
     std::uint32_t image_index{};
+    std::uint32_t file_index{};
   };
 
   DyldCacheFile main_cache_;
@@ -184,6 +315,12 @@ private:
   // façade for the existing API; the immutable serialized source is never
   // copied into a process-local byte vector.
   std::shared_ptr<const GenerationArtifactView> generation_artifact_view_;
+
+  [[nodiscard]] DyldCacheFileView file_view_at(std::size_t index) const;
+  [[nodiscard]] DyldCacheImageView image_view_at(std::size_t index) const;
+
+  friend class DyldCacheFileRange;
+  friend class DyldCacheImageRange;
 };
 
 } // namespace ilemu

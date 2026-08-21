@@ -20,6 +20,7 @@ namespace {
 
 using ilemu::ContentIdentity;
 using ilemu::DyldCacheImage;
+using ilemu::DyldCacheImageView;
 using ilemu::DyldSharedCache;
 
 constexpr std::array<char, 8> catalog_magic{
@@ -355,7 +356,7 @@ resolve_catalog_symlink(const std::filesystem::path &alias,
 }
 
 ContentIdentity shared_cache_image_identity(const DyldSharedCache &cache,
-                                            const DyldCacheImage &image) {
+                                            const DyldCacheImageView &image) {
   std::vector<std::byte> key;
   key.reserve(128U + image.path.size() +
               image.executable_ranges.size() * 40U);
@@ -643,7 +644,8 @@ std::size_t ExecutableCatalog::register_shared_cache(
         entry.mappings.push_back(mapping);
       }
       if (range.file_index < cache.files().size()) {
-        const auto &file_path = cache.files()[range.file_index].path;
+        const auto file_path =
+            std::filesystem::path{cache.files()[range.file_index].path};
         if (std::find(entry.aliases.begin(), entry.aliases.end(), file_path) ==
             entry.aliases.end()) {
           entry.aliases.push_back(file_path);

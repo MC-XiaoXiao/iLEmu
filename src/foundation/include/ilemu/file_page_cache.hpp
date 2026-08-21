@@ -348,6 +348,33 @@ void seed_shared_file_identity(
 [[nodiscard]] std::filesystem::path shared_immutable_artifact_root();
 [[nodiscard]] std::filesystem::path
 shared_immutable_artifact_named_path(std::string_view name);
+
+// Read-only, lease-backed mmap for cross-process immutable metadata.  The
+// mapping keeps the artifact generation alive until every typed view releases
+// it; callers must not copy the returned bytes into process-local metadata
+// containers.
+class ImmutableArtifactView {
+public:
+  [[nodiscard]] static std::shared_ptr<const ImmutableArtifactView> open(
+      const std::filesystem::path &path,
+      std::size_t maximum_size = 256U * 1024U * 1024U);
+  ~ImmutableArtifactView();
+
+  ImmutableArtifactView(const ImmutableArtifactView &) = delete;
+  ImmutableArtifactView &operator=(const ImmutableArtifactView &) = delete;
+
+  [[nodiscard]] std::span<const std::byte> bytes() const noexcept;
+
+private:
+  ImmutableArtifactView(int descriptor, void *mapping, std::size_t byte_size,
+                        std::filesystem::path lease_path) noexcept;
+
+  int descriptor_{-1};
+  void *mapping_{};
+  std::size_t byte_size_{};
+  std::filesystem::path lease_path_;
+};
+
 [[nodiscard]] bool publish_shared_immutable_artifact(
     const std::filesystem::path &path, std::span<const std::byte> bytes);
 [[nodiscard]] std::optional<std::vector<std::byte>>

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <span>
 #include <stdexcept>
@@ -63,96 +64,75 @@ void append_plan_u64(std::vector<std::byte> &bytes, std::uint64_t value) {
     bytes.push_back(static_cast<std::byte>(value >> (index * 8U)));
 }
 
-void append_plan_string(std::vector<std::byte> &bytes, std::string_view value) {
-  append_plan_u32(bytes, static_cast<std::uint32_t>(value.size()));
-  bytes.insert(bytes.end(), reinterpret_cast<const std::byte *>(value.data()),
-               reinterpret_cast<const std::byte *>(value.data() + value.size()));
+constexpr std::string_view hle_plan_magic_v2{"ILEMU-HLE-PLAN"};
+constexpr std::uint32_t hle_plan_artifact_version_v2 = 2U;
+constexpr std::size_t hle_plan_header_size_v2 = 123U;
+constexpr std::size_t hle_plan_patch_record_size_v2 = 69U;
+constexpr std::size_t hle_plan_range_record_size_v2 = 12U;
+
+[[nodiscard]] std::optional<std::uint32_t>
+plan_artifact_u32(std::span<const std::byte> bytes,
+                  std::uint64_t offset) noexcept {
+  if (offset > bytes.size() || sizeof(std::uint32_t) > bytes.size() - offset)
+    return std::nullopt;
+  std::uint32_t value = 0;
+  for (std::size_t index = 0; index < sizeof(value); ++index)
+    value |= static_cast<std::uint32_t>(
+                 std::to_integer<std::uint8_t>(bytes[offset + index]))
+             << static_cast<unsigned>(index * 8U);
+  return value;
 }
 
-void append_plan_identity(std::vector<std::byte> &bytes,
-                          const ContentIdentity &identity) {
-  bytes.insert(bytes.end(), identity.digest.begin(), identity.digest.end());
+[[nodiscard]] std::optional<std::uint64_t>
+plan_artifact_u64(std::span<const std::byte> bytes,
+                  std::uint64_t offset) noexcept {
+  if (offset > bytes.size() || sizeof(std::uint64_t) > bytes.size() - offset)
+    return std::nullopt;
+  std::uint64_t value = 0;
+  for (std::size_t index = 0; index < sizeof(value); ++index)
+    value |= static_cast<std::uint64_t>(
+                 std::to_integer<std::uint8_t>(bytes[offset + index]))
+             << static_cast<unsigned>(index * 8U);
+  return value;
 }
 
-class PlanArtifactReader {
-public:
-  explicit PlanArtifactReader(std::span<const std::byte> bytes) : bytes_{bytes} {}
+[[nodiscard]] bool plan_artifact_table_fits(
+    std::span<const std::byte> bytes, std::uint64_t offset,
+    std::uint64_t count, std::uint64_t element_size) noexcept {
+  return element_size != 0U && count <= bytes.size() / element_size &&
+         offset <= bytes.size() &&
+         count * element_size <= bytes.size() - offset;
+}
 
-  [[nodiscard]] bool ok() const noexcept { return ok_; }
+void write_plan_u32(std::vector<std::byte> &bytes, std::size_t offset,
+                    std::uint32_t value) {
+  for (std::size_t index = 0; index < sizeof(value); ++index)
+    bytes[offset + index] = static_cast<std::byte>(value >> (index * 8U));
+}
 
-  [[nodiscard]] std::optional<std::uint8_t> u8() {
-    if (!take(1U)) return std::nullopt;
-    return std::to_integer<std::uint8_t>(bytes_[offset_++]);
-  }
+void write_plan_u64(std::vector<std::byte> &bytes, std::size_t offset,
+                    std::uint64_t value) {
+  for (std::size_t index = 0; index < sizeof(value); ++index)
+    bytes[offset + index] = static_cast<std::byte>(value >> (index * 8U));
+}
 
-  [[nodiscard]] std::optional<std::uint32_t> u32() {
-    if (!take(sizeof(std::uint32_t))) return std::nullopt;
-    std::uint32_t value = 0;
-    for (std::size_t index = 0; index < sizeof(value); ++index)
-      value |= static_cast<std::uint32_t>(
-                   std::to_integer<std::uint8_t>(bytes_[offset_ + index]))
-               << static_cast<unsigned>(index * 8U);
-    offset_ += sizeof(value);
-    return value;
-  }
-
-  [[nodiscard]] std::optional<std::uint64_t> u64() {
-    if (!take(sizeof(std::uint64_t))) return std::nullopt;
-    std::uint64_t value = 0;
-    for (std::size_t index = 0; index < sizeof(value); ++index)
-      value |= static_cast<std::uint64_t>(
-                   std::to_integer<std::uint8_t>(bytes_[offset_ + index]))
-               << static_cast<unsigned>(index * 8U);
-    offset_ += sizeof(value);
-    return value;
-  }
-
-  [[nodiscard]] std::optional<std::string> string(
-      std::size_t maximum_size = 1U << 20U) {
-    const auto size = u32();
-    if (!size || *size > maximum_size || !take(*size)) return std::nullopt;
-    std::string value{reinterpret_cast<const char *>(bytes_.data() + offset_),
-                      *size};
-    offset_ += *size;
-    return value;
-  }
-
-  [[nodiscard]] std::optional<ContentIdentity> identity() {
-    if (!take(32U)) return std::nullopt;
-    ContentIdentity identity;
-    std::copy_n(bytes_.begin() + static_cast<std::ptrdiff_t>(offset_),
-                identity.digest.size(), identity.digest.begin());
-    offset_ += identity.digest.size();
-    return identity;
-  }
-
-  [[nodiscard]] bool magic(std::string_view expected) {
-    if (!take(expected.size())) return false;
-    const auto matches = std::string_view{
-                             reinterpret_cast<const char *>(bytes_.data() + offset_),
-                             expected.size()} == expected;
-    offset_ += expected.size();
-    return matches;
-  }
-
-private:
-  [[nodiscard]] bool take(std::size_t size) {
-    if (offset_ > bytes_.size() || size > bytes_.size() - offset_) {
-      ok_ = false;
-      return false;
-    }
-    return true;
-  }
-
-  std::span<const std::byte> bytes_;
-  std::size_t offset_{};
-  bool ok_{true};
-};
+[[nodiscard]] std::optional<std::string_view> plan_artifact_string(
+    std::span<const std::byte> bytes, std::uint64_t string_offset,
+    std::uint64_t string_size, std::uint32_t offset,
+    std::uint32_t size) noexcept {
+  if (offset > string_size || size > string_size - offset ||
+      string_offset > bytes.size() ||
+      static_cast<std::uint64_t>(offset) + size > bytes.size() - string_offset)
+    return std::nullopt;
+  return std::string_view{
+      reinterpret_cast<const char *>(bytes.data() + string_offset + offset),
+      size};
+}
 
 [[nodiscard]] std::string hle_plan_artifact_name(std::string_view plan_key) {
   const auto key_bytes = std::span<const std::byte>{
       reinterpret_cast<const std::byte *>(plan_key.data()), plan_key.size()};
-  return "hle-plan-" + sha256(key_bytes).hex() + ".artifact";
+  return "hle-plan-v2-" + sha256(key_bytes).hex() + ".artifact";
 }
 
 bool path_has_suffix(std::string_view path, std::string_view suffix) {
@@ -467,6 +447,155 @@ read_utf16_string(const AddressSpace &memory, std::uint32_t address,
 }
 
 } // namespace
+
+std::size_t UserlandHleRegistry::SharedHlePlan::patch_count() const noexcept {
+  return artifact_view_ ? mapped_patch_count_ : patches.size();
+}
+
+UserlandHleRegistry::SharedHlePatchView
+UserlandHleRegistry::SharedHlePlan::patch_view(std::size_t index) const {
+  if (!artifact_view_) {
+    if (index >= patches.size()) return {};
+    const auto &patch = patches[index];
+    std::optional<HleRuleView> rule;
+    if (patch.rule) {
+      const auto &source = *patch.rule;
+      rule = HleRuleView{source.image_suffix,
+                         source.symbol,
+                         source.prefix,
+                         source.virtual_address,
+                         source.objc_method
+                             ? std::optional{
+                                   std::pair<std::string_view, std::string_view>{
+                                       source.objc_method->first,
+                                       source.objc_method->second}}
+                             : std::nullopt,
+                         source.objc_class_method,
+                         source.guest_function};
+    }
+    return SharedHlePatchView{patch.image_index,
+                              patch.file_index,
+                              patch.file_offset,
+                              patch.patch_size,
+                              patch.thumb,
+                              patch.guest_function,
+                              patch.symbol,
+                              std::move(rule)};
+  }
+  const auto bytes = artifact_view_->bytes();
+  if (index >= mapped_patch_count_) return {};
+  const auto base = mapped_patch_records_offset_ +
+                    static_cast<std::uint64_t>(index) *
+                        hle_plan_patch_record_size_v2;
+  const auto image_index = plan_artifact_u32(bytes, base);
+  const auto file_index = plan_artifact_u32(bytes, base + 4U);
+  const auto file_offset = plan_artifact_u64(bytes, base + 8U);
+  const auto symbol_offset = plan_artifact_u32(bytes, base + 19U);
+  const auto symbol_size = plan_artifact_u32(bytes, base + 23U);
+  if (!image_index || !file_index || !file_offset || !symbol_offset ||
+      !symbol_size) return {};
+  const auto symbol = plan_artifact_string(
+      bytes, mapped_string_offset_, mapped_string_size_, *symbol_offset,
+      *symbol_size);
+  if (!symbol) return {};
+  SharedHlePatchView result{
+      *image_index,
+      *file_index,
+      *file_offset,
+      std::to_integer<std::uint8_t>(bytes[base + 16U]),
+      std::to_integer<std::uint8_t>(bytes[base + 17U]) != 0U,
+      std::to_integer<std::uint8_t>(bytes[base + 18U]) != 0U,
+      *symbol,
+      std::nullopt};
+  const auto rule_present = std::to_integer<std::uint8_t>(bytes[base + 27U]);
+  if (rule_present > 1U) return {};
+  if (rule_present != 0U) {
+    const auto rule_image_offset = plan_artifact_u32(bytes, base + 28U);
+    const auto rule_image_size = plan_artifact_u32(bytes, base + 32U);
+    const auto rule_symbol_offset = plan_artifact_u32(bytes, base + 36U);
+    const auto rule_symbol_size = plan_artifact_u32(bytes, base + 40U);
+    const auto address = plan_artifact_u32(bytes, base + 46U);
+    const auto class_offset = plan_artifact_u32(bytes, base + 51U);
+    const auto class_size = plan_artifact_u32(bytes, base + 55U);
+    const auto selector_offset = plan_artifact_u32(bytes, base + 59U);
+    const auto selector_size = plan_artifact_u32(bytes, base + 63U);
+    if (!rule_image_offset || !rule_image_size || !rule_symbol_offset ||
+        !rule_symbol_size || !address || !class_offset || !class_size ||
+        !selector_offset || !selector_size) return {};
+    const auto rule_image = plan_artifact_string(
+        bytes, mapped_string_offset_, mapped_string_size_, *rule_image_offset,
+        *rule_image_size);
+    const auto rule_symbol = plan_artifact_string(
+        bytes, mapped_string_offset_, mapped_string_size_, *rule_symbol_offset,
+        *rule_symbol_size);
+    if (!rule_image || !rule_symbol) return {};
+    const auto address_present =
+        std::to_integer<std::uint8_t>(bytes[base + 45U]);
+    const auto objc_present = std::to_integer<std::uint8_t>(bytes[base + 50U]);
+    const auto class_method = std::to_integer<std::uint8_t>(bytes[base + 67U]);
+    const auto rule_guest_function =
+        std::to_integer<std::uint8_t>(bytes[base + 68U]);
+    if (address_present > 1U || objc_present > 1U || class_method > 1U ||
+        rule_guest_function > 1U) return {};
+    std::optional<std::pair<std::string_view, std::string_view>> objc_method;
+    if (objc_present != 0U) {
+      const auto class_name = plan_artifact_string(
+          bytes, mapped_string_offset_, mapped_string_size_, *class_offset,
+          *class_size);
+      const auto selector = plan_artifact_string(
+          bytes, mapped_string_offset_, mapped_string_size_, *selector_offset,
+          *selector_size);
+      if (!class_name || !selector) return {};
+      objc_method = std::pair{*class_name, *selector};
+    }
+    result.rule = HleRuleView{
+        *rule_image,
+        *rule_symbol,
+        std::to_integer<std::uint8_t>(bytes[base + 44U]) != 0U,
+        address_present != 0U ? std::optional{*address} : std::nullopt,
+        std::move(objc_method),
+        class_method != 0U,
+        rule_guest_function != 0U};
+  }
+  return result;
+}
+
+std::optional<std::pair<std::size_t, std::size_t>>
+UserlandHleRegistry::SharedHlePlan::file_range(
+    std::uint32_t file_index) const {
+  if (!artifact_view_) {
+    const auto found = file_ranges.find(file_index);
+    return found == file_ranges.end() ? std::nullopt
+                                      : std::optional{found->second};
+  }
+  const auto bytes = artifact_view_->bytes();
+  std::size_t first = 0;
+  std::size_t last = mapped_range_count_;
+  while (first < last) {
+    const auto middle = first + (last - first) / 2U;
+    const auto base = mapped_range_records_offset_ +
+                      static_cast<std::uint64_t>(middle) *
+                          hle_plan_range_record_size_v2;
+    const auto candidate = plan_artifact_u32(bytes, base);
+    if (!candidate) return std::nullopt;
+    if (*candidate < file_index)
+      first = middle + 1U;
+    else
+      last = middle;
+  }
+  if (first >= mapped_range_count_) return std::nullopt;
+  const auto base = mapped_range_records_offset_ +
+                    static_cast<std::uint64_t>(first) *
+                        hle_plan_range_record_size_v2;
+  const auto candidate = plan_artifact_u32(bytes, base);
+  if (!candidate || *candidate != file_index) return std::nullopt;
+  const auto begin = plan_artifact_u32(bytes, base + 4U);
+  const auto end = plan_artifact_u32(bytes, base + 8U);
+  if (!begin || !end || *begin > *end || *end > mapped_patch_count_)
+    return std::nullopt;
+  return std::pair{static_cast<std::size_t>(*begin),
+                   static_cast<std::size_t>(*end)};
+}
 
 UserlandHleCall::UserlandHleCall(UserlandHleRegistry &registry, Cpu &cpu,
                                  AddressSpace &memory, Output &output,
@@ -833,151 +962,172 @@ std::shared_ptr<const UserlandHleRegistry::SharedHlePlan>
 UserlandHleRegistry::load_shared_plan_artifact(
     std::string_view plan_key, const ContentIdentity &generation_identity,
     ArmArchitectureVersion architecture) {
-  const auto artifact = read_shared_immutable_artifact(
+  const auto artifact = ImmutableArtifactView::open(
       shared_immutable_artifact_named_path(hle_plan_artifact_name(plan_key)));
   if (!artifact) return {};
 
-  PlanArtifactReader reader{*artifact};
-  if (!reader.magic("ILEMU-HLE-PLAN")) return {};
-  const auto version = reader.u32();
-  const auto serialized_generation = reader.identity();
-  const auto serialized_key = reader.identity();
-  const auto serialized_architecture = reader.u8();
-  const auto patch_count = reader.u32();
-  if (!version || *version != 1U || !serialized_generation ||
-      !serialized_key || !serialized_architecture || !patch_count ||
-      *patch_count > 1'000'000U ||
-      *serialized_generation != generation_identity ||
-      *serialized_architecture != static_cast<std::uint8_t>(architecture)) {
+  const auto bytes = artifact->bytes();
+  if (bytes.size() < hle_plan_header_size_v2 ||
+      std::string_view{reinterpret_cast<const char *>(bytes.data()),
+                       hle_plan_magic_v2.size()} != hle_plan_magic_v2 ||
+      !plan_artifact_u32(bytes, 14U) ||
+      *plan_artifact_u32(bytes, 14U) != hle_plan_artifact_version_v2) {
     return {};
   }
+  ContentIdentity serialized_generation;
+  ContentIdentity serialized_key;
+  std::memcpy(serialized_generation.digest.data(), bytes.data() + 18U,
+              serialized_generation.digest.size());
+  std::memcpy(serialized_key.digest.data(), bytes.data() + 50U,
+              serialized_key.digest.size());
+  const auto serialized_architecture =
+      std::to_integer<std::uint8_t>(bytes[82U]);
+  const auto patch_count = plan_artifact_u32(bytes, 83U);
+  const auto range_count = plan_artifact_u32(bytes, 87U);
+  const auto patch_records_offset = plan_artifact_u64(bytes, 91U);
+  const auto range_records_offset = plan_artifact_u64(bytes, 99U);
+  const auto string_offset = plan_artifact_u64(bytes, 107U);
+  const auto string_size = plan_artifact_u64(bytes, 115U);
   const auto key_bytes = std::span<const std::byte>{
       reinterpret_cast<const std::byte *>(plan_key.data()), plan_key.size()};
-  if (*serialized_key != sha256(key_bytes)) return {};
-
-  auto plan = std::make_shared<SharedHlePlan>();
-  plan->generation_identity = *serialized_generation;
-  plan->architecture = architecture;
-  plan->patches.reserve(*patch_count);
+  if (!patch_count || !range_count || !patch_records_offset ||
+      !range_records_offset || !string_offset || !string_size ||
+      *patch_count > 1'000'000U || *range_count > 1'000'000U ||
+      serialized_generation != generation_identity ||
+      serialized_architecture != static_cast<std::uint8_t>(architecture) ||
+      serialized_key != sha256(key_bytes) ||
+      !plan_artifact_table_fits(bytes, *patch_records_offset, *patch_count,
+                                hle_plan_patch_record_size_v2) ||
+      !plan_artifact_table_fits(bytes, *range_records_offset, *range_count,
+                                hle_plan_range_record_size_v2) ||
+      !plan_artifact_table_fits(bytes, *string_offset, *string_size, 1U)) {
+    return {};
+  }
+  auto mapped_plan = std::make_shared<SharedHlePlan>();
+  mapped_plan->generation_identity = serialized_generation;
+  mapped_plan->architecture = architecture;
+  mapped_plan->artifact_view_ = artifact;
+  mapped_plan->mapped_patch_count_ = *patch_count;
+  mapped_plan->mapped_range_count_ = *range_count;
+  mapped_plan->mapped_patch_records_offset_ = *patch_records_offset;
+  mapped_plan->mapped_range_records_offset_ = *range_records_offset;
+  mapped_plan->mapped_string_offset_ = *string_offset;
+  mapped_plan->mapped_string_size_ = *string_size;
   for (std::uint32_t index = 0; index < *patch_count; ++index) {
-    const auto image_index = reader.u32();
-    const auto file_index = reader.u32();
-    const auto file_offset = reader.u64();
-    const auto patch_size = reader.u8();
-    const auto thumb = reader.u8();
-    const auto guest_function = reader.u8();
-    const auto symbol = reader.string(4096U);
-    const auto rule_present = reader.u8();
-    if (!image_index || !file_index || !file_offset || !patch_size ||
-        !thumb || !guest_function || !symbol || !rule_present ||
-        *thumb > 1U || *guest_function > 1U || *rule_present > 1U ||
-        (*patch_size == 0U && *guest_function == 0U) ||
-        (*patch_size != 0U && *patch_size > 16U)) {
+    const auto patch = mapped_plan->patch_view(index);
+    if (patch.symbol.empty() || patch.patch_size > 16U ||
+        (patch.patch_size == 0U && !patch.guest_function)) {
       return {};
     }
-    std::optional<HleRuleKey> rule;
-    if (*rule_present != 0U) {
-      const auto image_suffix = reader.string(4096U);
-      const auto rule_symbol = reader.string(4096U);
-      const auto prefix = reader.u8();
-      const auto address_present = reader.u8();
-      if (!image_suffix || !rule_symbol || !prefix || !address_present ||
-          *prefix > 1U || *address_present > 1U) {
-        return {};
-      }
-      HleRuleKey parsed_rule;
-      parsed_rule.image_suffix = *image_suffix;
-      parsed_rule.symbol = *rule_symbol;
-      parsed_rule.prefix = *prefix != 0U;
-      if (*address_present != 0U) {
-        const auto address = reader.u32();
-        if (!address) return {};
-        parsed_rule.virtual_address = *address;
-      }
-      const auto objc_present = reader.u8();
-      if (!objc_present || *objc_present > 1U) return {};
-      if (*objc_present != 0U) {
-        const auto class_name = reader.string(4096U);
-        const auto selector = reader.string(4096U);
-        if (!class_name || !selector) return {};
-        parsed_rule.objc_method = std::pair{*class_name, *selector};
-      }
-      const auto class_method = reader.u8();
-      const auto rule_guest_function = reader.u8();
-      if (!class_method || !rule_guest_function || *class_method > 1U ||
-          *rule_guest_function > 1U) {
-        return {};
-      }
-      parsed_rule.objc_class_method = *class_method != 0U;
-      parsed_rule.guest_function = *rule_guest_function != 0U;
-      rule = std::move(parsed_rule);
-    }
-    plan->patches.push_back(SharedHlePatch{
-        *image_index,
-        *file_index,
-        *file_offset,
-        *patch_size,
-        *thumb != 0U,
-        *guest_function != 0U,
-        *symbol,
-        std::move(rule)});
   }
-  if (!reader.ok()) return {};
-  for (std::size_t index = 0; index < plan->patches.size();) {
-    const auto file_index = plan->patches[index].file_index;
-    const auto begin = index;
-    while (index < plan->patches.size() &&
-           plan->patches[index].file_index == file_index) {
-      ++index;
+  for (std::uint32_t index = 0; index < *range_count; ++index) {
+    const auto base = *range_records_offset +
+                      static_cast<std::uint64_t>(index) *
+                          hle_plan_range_record_size_v2;
+    const auto begin = plan_artifact_u32(bytes, base + 4U);
+    const auto end = plan_artifact_u32(bytes, base + 8U);
+    if (!begin || !end || *begin > *end || *end > *patch_count) return {};
+    if (index != 0U) {
+      const auto previous = plan_artifact_u32(
+          bytes, *range_records_offset +
+                     static_cast<std::uint64_t>(index - 1U) *
+                         hle_plan_range_record_size_v2);
+      const auto current = plan_artifact_u32(bytes, base);
+      if (!previous || !current || *current <= *previous) return {};
     }
-    plan->file_ranges.emplace(file_index, std::pair{begin, index});
   }
-  return std::shared_ptr<const SharedHlePlan>{std::move(plan)};
+  return std::shared_ptr<const SharedHlePlan>{std::move(mapped_plan)};
+
 }
 
 void UserlandHleRegistry::publish_shared_plan_artifact(
     std::string_view plan_key, const SharedHlePlan &plan) {
-  std::vector<std::byte> bytes;
-  bytes.reserve(128U + plan.patches.size() * 64U);
-  const std::string_view magic{"ILEMU-HLE-PLAN"};
-  bytes.insert(bytes.end(), reinterpret_cast<const std::byte *>(magic.data()),
-               reinterpret_cast<const std::byte *>(magic.data() + magic.size()));
-  append_plan_u32(bytes, 1U);
-  append_plan_identity(bytes, plan.generation_identity);
-  const auto key_bytes = std::span<const std::byte>{
-      reinterpret_cast<const std::byte *>(plan_key.data()), plan_key.size()};
-  append_plan_identity(bytes, sha256(key_bytes));
-  append_plan_u8(bytes, static_cast<std::uint8_t>(plan.architecture));
-  append_plan_u32(bytes, static_cast<std::uint32_t>(plan.patches.size()));
-
-  const auto append_rule = [&bytes](const HleRuleKey &rule) {
-    append_plan_string(bytes, rule.image_suffix);
-    append_plan_string(bytes, rule.symbol);
-    append_plan_u8(bytes, rule.prefix ? 1U : 0U);
-    append_plan_u8(bytes, rule.virtual_address ? 1U : 0U);
-    if (rule.virtual_address) append_plan_u32(bytes, *rule.virtual_address);
-    append_plan_u8(bytes, rule.objc_method ? 1U : 0U);
-    if (rule.objc_method) {
-      append_plan_string(bytes, rule.objc_method->first);
-      append_plan_string(bytes, rule.objc_method->second);
-    }
-    append_plan_u8(bytes, rule.objc_class_method ? 1U : 0U);
-    append_plan_u8(bytes, rule.guest_function ? 1U : 0U);
+  std::vector<std::byte> patch_table;
+  std::vector<std::byte> range_table;
+  std::vector<std::byte> strings;
+  const auto add_string = [&strings](std::string_view value) {
+    const auto offset = strings.size();
+    strings.insert(strings.end(),
+                   reinterpret_cast<const std::byte *>(value.data()),
+                   reinterpret_cast<const std::byte *>(value.data() +
+                                                       value.size()));
+    return std::pair{static_cast<std::uint32_t>(offset),
+                     static_cast<std::uint32_t>(value.size())};
+  };
+  const auto append_string_ref = [&add_string](std::vector<std::byte> &output,
+                                               std::string_view value) {
+    const auto reference = add_string(value);
+    append_plan_u32(output, reference.first);
+    append_plan_u32(output, reference.second);
   };
   for (const auto &patch : plan.patches) {
-    append_plan_u32(bytes, patch.image_index);
-    append_plan_u32(bytes, patch.file_index);
-    append_plan_u64(bytes, patch.file_offset);
-    append_plan_u8(bytes, patch.patch_size);
-    append_plan_u8(bytes, patch.thumb ? 1U : 0U);
-    append_plan_u8(bytes, patch.guest_function ? 1U : 0U);
-    append_plan_string(bytes, patch.symbol);
-    append_plan_u8(bytes, patch.rule ? 1U : 0U);
-    if (patch.rule) append_rule(*patch.rule);
+    append_plan_u32(patch_table, patch.image_index);
+    append_plan_u32(patch_table, patch.file_index);
+    append_plan_u64(patch_table, patch.file_offset);
+    append_plan_u8(patch_table, patch.patch_size);
+    append_plan_u8(patch_table, patch.thumb ? 1U : 0U);
+    append_plan_u8(patch_table, patch.guest_function ? 1U : 0U);
+    append_string_ref(patch_table, patch.symbol);
+    append_plan_u8(patch_table, patch.rule ? 1U : 0U);
+    if (patch.rule) {
+      const auto &rule = *patch.rule;
+      append_string_ref(patch_table, rule.image_suffix);
+      append_string_ref(patch_table, rule.symbol);
+      append_plan_u8(patch_table, rule.prefix ? 1U : 0U);
+      append_plan_u8(patch_table, rule.virtual_address ? 1U : 0U);
+      append_plan_u32(patch_table,
+                      rule.virtual_address ? *rule.virtual_address : 0U);
+      append_plan_u8(patch_table, rule.objc_method ? 1U : 0U);
+      if (rule.objc_method) {
+        append_string_ref(patch_table, rule.objc_method->first);
+        append_string_ref(patch_table, rule.objc_method->second);
+      } else {
+        append_plan_u32(patch_table, 0U);
+        append_plan_u32(patch_table, 0U);
+        append_plan_u32(patch_table, 0U);
+        append_plan_u32(patch_table, 0U);
+      }
+      append_plan_u8(patch_table, rule.objc_class_method ? 1U : 0U);
+      append_plan_u8(patch_table, rule.guest_function ? 1U : 0U);
+    } else {
+      for (std::size_t index = 0; index < 41U; ++index)
+        append_plan_u8(patch_table, 0U);
+    }
   }
+  for (const auto &[file_index, range] : plan.file_ranges) {
+    append_plan_u32(range_table, file_index);
+    append_plan_u32(range_table, static_cast<std::uint32_t>(range.first));
+    append_plan_u32(range_table, static_cast<std::uint32_t>(range.second));
+  }
+  const auto key_bytes = std::span<const std::byte>{
+      reinterpret_cast<const std::byte *>(plan_key.data()), plan_key.size()};
+  std::vector<std::byte> bytes(hle_plan_header_size_v2);
+  std::memcpy(bytes.data(), hle_plan_magic_v2.data(), hle_plan_magic_v2.size());
+  const auto patch_records_offset = bytes.size();
+  bytes.insert(bytes.end(), patch_table.begin(), patch_table.end());
+  const auto range_records_offset = bytes.size();
+  bytes.insert(bytes.end(), range_table.begin(), range_table.end());
+  const auto string_offset = bytes.size();
+  bytes.insert(bytes.end(), strings.begin(), strings.end());
+  write_plan_u32(bytes, 14U, hle_plan_artifact_version_v2);
+  std::memcpy(bytes.data() + 18U, plan.generation_identity.digest.data(),
+              plan.generation_identity.digest.size());
+  const auto key_identity = sha256(key_bytes);
+  std::memcpy(bytes.data() + 50U, key_identity.digest.data(),
+              key_identity.digest.size());
+  bytes[82U] = static_cast<std::byte>(plan.architecture);
+  write_plan_u32(bytes, 83U, static_cast<std::uint32_t>(plan.patches.size()));
+  write_plan_u32(bytes, 87U,
+                 static_cast<std::uint32_t>(plan.file_ranges.size()));
+  write_plan_u64(bytes, 91U, patch_records_offset);
+  write_plan_u64(bytes, 99U, range_records_offset);
+  write_plan_u64(bytes, 107U, string_offset);
+  write_plan_u64(bytes, 115U, strings.size());
   static_cast<void>(publish_shared_immutable_artifact(
       shared_immutable_artifact_named_path(hle_plan_artifact_name(plan_key)),
       bytes));
+  return;
+
 }
 
 const UserlandHleRegistry::Registration *
@@ -987,6 +1137,31 @@ UserlandHleRegistry::find_registration(const HleRuleKey &key) const {
       registrations_.begin(), registrations_.end(),
       [&](const Registration &candidate) {
         return rule_key(candidate) == key;
+      });
+  return registration == registrations_.end() ? nullptr : &*registration;
+}
+
+const UserlandHleRegistry::Registration *
+UserlandHleRegistry::find_registration(const HleRuleView &key) const {
+  if (key.guest_function) return nullptr;
+  const auto registration = std::find_if(
+      registrations_.begin(), registrations_.end(),
+      [&](const Registration &candidate) {
+        if (candidate.image_suffix != key.image_suffix ||
+            candidate.symbol != key.symbol || candidate.prefix != key.prefix ||
+            candidate.virtual_address != key.virtual_address ||
+            candidate.objc_class_method != key.objc_class_method) {
+          return false;
+        }
+        if (candidate.objc_instance_method.has_value() !=
+            key.objc_method.has_value()) {
+          return false;
+        }
+        if (!candidate.objc_instance_method) return true;
+        return candidate.objc_instance_method->first ==
+                   key.objc_method->first &&
+               candidate.objc_instance_method->second ==
+                   key.objc_method->second;
       });
   return registration == registrations_.end() ? nullptr : &*registration;
 }
@@ -1050,7 +1225,7 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
   auto plan = std::make_shared<SharedHlePlan>();
   plan->generation_identity = cache.generation_identity();
   plan->architecture = architecture;
-  const auto file_index_for = [&](const DyldCacheImage &image,
+  const auto file_index_for = [&](const DyldCacheImageView &image,
                                   std::uint64_t file_offset,
                                   std::size_t patch_size)
       -> std::optional<std::uint32_t> {
@@ -1073,7 +1248,7 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
     }
     return std::nullopt;
   };
-  const auto add_patch = [&](const DyldCacheImage &image,
+  const auto add_patch = [&](const DyldCacheImageView &image,
                              std::uint64_t file_offset, std::size_t patch_size,
                              bool thumb, std::string symbol,
                              std::optional<HleRuleKey> rule,
@@ -1176,6 +1351,7 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
       add_patch(image, file_offset, patch_size, thumb, registration.symbol,
                 rule_key(registration), false);
     }
+
   }
 
   std::sort(plan->patches.begin(), plan->patches.end(),
@@ -1372,26 +1548,24 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
     static_cast<void>(queue_patch(address, instruction, std::nullopt));
   };
   if (use_shared_plan) {
-    const auto file_range =
-        shared_hle_plan_->file_ranges.find(*cache_file_index);
-    if (file_range != shared_hle_plan_->file_ranges.end()) {
-      const auto begin = shared_hle_plan_->patches.begin() +
-                         static_cast<std::ptrdiff_t>(file_range->second.first);
-      const auto end = shared_hle_plan_->patches.begin() +
-                       static_cast<std::ptrdiff_t>(file_range->second.second);
-      const auto first_patch = std::lower_bound(
-          begin, end, mapping_offset,
-          [](const SharedHlePatch &patch, std::uint64_t offset) {
-            return patch.file_offset < offset;
-          });
-      const auto after_patch = std::lower_bound(
-          first_patch, end, mapping_file_end,
-          [](const SharedHlePatch &patch, std::uint64_t offset) {
-            return patch.file_offset < offset;
-          });
-      for (auto patch_iterator = first_patch; patch_iterator != after_patch;
-           ++patch_iterator) {
-        const auto &patch = *patch_iterator;
+    const auto file_range = shared_hle_plan_->file_range(*cache_file_index);
+    if (file_range) {
+      auto first_patch = file_range->first;
+      const auto end_patch = file_range->second;
+      while (first_patch < end_patch &&
+             shared_hle_plan_->patch_view(first_patch).file_offset <
+                 mapping_offset) {
+        ++first_patch;
+      }
+      auto after_patch = first_patch;
+      while (after_patch < end_patch &&
+             shared_hle_plan_->patch_view(after_patch).file_offset <
+                 mapping_file_end) {
+        ++after_patch;
+      }
+      for (auto patch_index = first_patch; patch_index < after_patch;
+           ++patch_index) {
+        const auto patch = shared_hle_plan_->patch_view(patch_index);
         if (patch.image_index != *cache_image_index) continue;
         if (patch.file_offset >
             std::numeric_limits<std::uint64_t>::max() - patch.patch_size) {
@@ -1409,7 +1583,8 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
             mapping_address + static_cast<std::uint32_t>(mapping_delta);
         if (patch.rule || patch.guest_function) {
           pending_plan_symbols.push_back(
-              PendingPlanSymbol{patch.symbol, runtime_address, patch.thumb});
+              PendingPlanSymbol{std::string{patch.symbol}, runtime_address,
+                                patch.thumb});
         }
         const auto *registration = patch.rule
                                        ? find_registration(*patch.rule)
@@ -1433,7 +1608,8 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
         }
         static_cast<void>(queue_patch(
             runtime_address, instruction,
-            InstalledCall{registration->id, patch.symbol, patch.thumb,
+            InstalledCall{registration->id, std::string{patch.symbol},
+                          patch.thumb,
                           *original}));
       }
     }
