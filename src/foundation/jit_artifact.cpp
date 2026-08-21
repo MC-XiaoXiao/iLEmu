@@ -2001,6 +2001,15 @@ JitArtifactStore::~JitArtifactStore() {
 JitArtifactLookup JitArtifactStore::lookup(
     const JitArtifactKey &key, JitArtifactRetention retention,
     bool allow_disk_payload) const {
+  const auto record_disk_hit = [this, &key] {
+    ++stats_.disk_hits;
+    if (stats_.disk_hit_key_fingerprint_count <
+        stats_.disk_hit_key_fingerprints.size()) {
+      stats_.disk_hit_key_fingerprints[
+          stats_.disk_hit_key_fingerprint_count++] =
+          static_cast<std::uint64_t>(JitArtifactKeyHash{}(key));
+    }
+  };
   const auto record_matches = [](const DiskArtifactRecord &left,
                                  const DiskArtifactRecord &right) {
     return left.generation == right.generation &&
@@ -2049,7 +2058,7 @@ JitArtifactLookup JitArtifactStore::lookup(
         artifact != artifacts_.end()) {
       const auto disk_hit = artifact->second.loaded_from_disk;
       if (disk_hit) {
-        ++stats_.disk_hits;
+        record_disk_hit();
       } else {
         ++stats_.memory_hits;
       }
@@ -2088,7 +2097,7 @@ JitArtifactLookup JitArtifactStore::lookup(
         return missed;
       }
       if (flight->disk_hit) {
-        ++stats_.disk_hits;
+        record_disk_hit();
       } else {
         ++stats_.memory_hits;
       }
@@ -2137,7 +2146,7 @@ JitArtifactLookup JitArtifactStore::lookup(
             artifact != artifacts_.end()) {
           const auto disk_hit = artifact->second.loaded_from_disk;
           if (disk_hit) {
-            ++stats_.disk_hits;
+            record_disk_hit();
           } else {
             ++stats_.memory_hits;
           }
@@ -2187,7 +2196,7 @@ JitArtifactLookup JitArtifactStore::lookup(
           artifact != artifacts_.end()) {
         const auto disk_hit = artifact->second.loaded_from_disk;
         if (disk_hit) {
-          ++stats_.disk_hits;
+          record_disk_hit();
         } else {
           ++stats_.memory_hits;
         }
@@ -2229,7 +2238,7 @@ JitArtifactLookup JitArtifactStore::lookup(
         ++stats_.misses;
         return finish_locked(lock, nullptr, false, true);
       }
-      ++stats_.disk_hits;
+      record_disk_hit();
       touch_locked(artifact);
       return finish_locked(lock, artifact->second.artifact, true);
     }

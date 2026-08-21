@@ -147,6 +147,11 @@ struct JitArtifactStoreStats {
   std::uint64_t lookups{};
   std::uint64_t memory_hits{};
   std::uint64_t disk_hits{};
+  // Bounded, optional diagnostic breadcrumbs for reproducing a seeded hit.
+  // These are only populated for the first few hits and do not affect lookup
+  // admission or identity validation.
+  std::uint64_t disk_hit_key_fingerprint_count{};
+  std::array<std::uint64_t, 16> disk_hit_key_fingerprints{};
   std::uint64_t disk_read_retries{};
   std::uint64_t disk_read_waits{};
   std::uint64_t misses{};

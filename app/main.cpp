@@ -92,6 +92,20 @@ constexpr std::size_t jit_maximum_adaptive_budget_bytes =
     2048U * bytes_per_mebibyte;
 constexpr std::size_t arm_thumb_breakpoint_size = 2;
 constexpr std::size_t arm_breakpoint_size = 4;
+
+[[nodiscard]] std::string disk_hit_fingerprint_text(
+    const JitArtifactStoreStats &stats) {
+  std::ostringstream text;
+  text << std::hex;
+  for (std::size_t index = 0;
+       index < stats.disk_hit_key_fingerprint_count &&
+       index < stats.disk_hit_key_fingerprints.size();
+       ++index) {
+    if (index != 0U) text << ',';
+    text << stats.disk_hit_key_fingerprints[index];
+  }
+  return text.str();
+}
 // GDB and mixed SDL/control sessions still use this bounded fallback because
 // those wrappers do not expose one waitable host descriptor. A standalone SDL
 // session blocks directly on the SDL event queue.
@@ -2089,6 +2103,8 @@ void firmware_prepare(const std::vector<std::string> &args, Output &output) {
       std::to_string(stats.artifact_stats.writeback_pending_bytes) +
       " disk-bytes=" + std::to_string(stats.artifact_stats.disk_bytes) +
       " disk-hits=" + std::to_string(stats.artifact_stats.disk_hits) +
+      " disk-hit-fingerprints=" +
+      disk_hit_fingerprint_text(stats.artifact_stats) +
       " memory-hits=" + std::to_string(stats.artifact_stats.memory_hits) +
       " lookup-memory-published=" +
       std::to_string(stats.artifact_stats.memory_published_lookups) +
@@ -6319,6 +6335,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         "[perf-artifact] lookup=" + std::to_string(artifact_stats.lookups) +
         " memory-hit=" + std::to_string(artifact_stats.memory_hits) +
         " disk-hit=" + std::to_string(artifact_stats.disk_hits) +
+        " disk-hit-fingerprints=" +
+        disk_hit_fingerprint_text(artifact_stats) +
         " lookup-memory-published=" +
         std::to_string(artifact_stats.memory_published_lookups) +
         " lookup-disk-demand=" +
