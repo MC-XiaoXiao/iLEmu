@@ -7039,6 +7039,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(snapshot_stats.catalog_scan_budget_bytes) +
         " hits=" + std::to_string(snapshot_stats.hits) +
         " evictions=" + std::to_string(snapshot_stats.evictions));
+    const auto dyld_stats = DyldSharedCache::parse_stats();
+    output.line(
+        "[perf-dyld] generation-builds=" +
+        std::to_string(dyld_stats.generation_builds) +
+        " generation-hits=" + std::to_string(dyld_stats.generation_hits) +
+        " image-builds=" + std::to_string(dyld_stats.image_builds) +
+        " image-hits=" + std::to_string(dyld_stats.image_hits));
     // Preserve stopped-guest live/current values, then include Runtime
     // destructor latency measured by the reaper in the final snapshot.
     auto final_snapshot = performance_counters().snapshot();
