@@ -303,6 +303,18 @@ void CoreSurfaceHle::finish_create_from_dictionary(
     const auto valid_address =
         address <= std::numeric_limits<std::uint32_t>::max() - offset;
     const auto base = valid_address ? address + offset : 0;
+
+    // The CoreSurface compatibility wrapper can forward a framebuffer request
+    // whose dictionary contains only the pixel format.  The native transport
+    // supplies the display geometry for that form; keep the same implicit
+    // default instead of returning a null client that the firmware will use.
+    if (address == 0 && size == 0 && surface_width == 0 &&
+        surface_height == 0 && bytes_per_row == 0 && offset == 0 &&
+        format == surface_pixel_format_bgra) {
+        call.set_return(create_default_buffer(call, 0, request->transport));
+        return;
+    }
+
     if (surface_width == 0 || surface_height == 0 || bytes_per_row == 0 ||
         row_bytes > bytes_per_row || required == 0 || required > usable_size ||
         usable_size > maximum_surface_bytes) {
