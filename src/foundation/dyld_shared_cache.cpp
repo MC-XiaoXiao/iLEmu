@@ -44,6 +44,9 @@ constexpr std::size_t subcache_size = 56;
 constexpr std::size_t maximum_mapping_count = 64;
 constexpr std::size_t maximum_image_count = 1'000'000;
 constexpr std::size_t maximum_subcache_count = 64;
+constexpr std::uint32_t mach_header_magic = 0xfeedfaceU;
+constexpr std::uint32_t lc_segment = 0x1U;
+constexpr std::uint32_t lc_uuid = 0x1bU;
 
 struct TextInfo {
   DyldCacheUuid uuid{};
@@ -303,6 +306,157 @@ parse_file(const std::filesystem::path &path, std::uint32_t file_index,
   return parsed;
 }
 
+struct CacheFileRange {
+  std::uint32_t file_index{};
+  std::uint64_t file_offset{};
+};
+
+[[nodiscard]] std::optional<CacheFileRange>
+cache_file_for_vm(std::span<const DyldCacheFile> files,
+                  std::uint64_t address, std::uint64_t size = 1U) {
+  for (std::size_t index = 0; index < files.size(); ++index) {
+    for (const auto &mapping : files[index].mappings) {
+      if (address < mapping.address ||
+          address - mapping.address > mapping.size ||
+          size > mapping.size - (address - mapping.address)) {
+        continue;
+      }
+      return CacheFileRange{static_cast<std::uint32_t>(index),
+                            mapping.file_offset + (address - mapping.address)};
+    }
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] std::optional<std::uint32_t>
+cache_file_index_for_file_range(std::span<const DyldCacheFile> files,
+                                std::uint64_t file_offset,
+                                std::uint64_t size) {
+  for (std::size_t index = 0; index < files.size(); ++index) {
+    for (const auto &mapping : files[index].mappings) {
+      if (file_offset < mapping.file_offset ||
+          file_offset - mapping.file_offset > mapping.size ||
+          size > mapping.size - (file_offset - mapping.file_offset)) {
+        continue;
+      }
+      return static_cast<std::uint32_t>(index);
+    }
+  }
+  return std::nullopt;
+}
+
+[[nodiscard]] std::uint32_t
+read_span_u32(std::span<const std::byte> bytes, std::size_t offset) {
+  if (offset > bytes.size() || bytes.size() - offset < sizeof(std::uint32_t))
+    return 0U;
+  return static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(bytes[offset])) |
+         (static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(bytes[offset + 1U]))
+          << 8U) |
+         (static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(bytes[offset + 2U]))
+          << 16U) |
+         (static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(bytes[offset + 3U]))
+          << 24U);
+}
+
+[[nodiscard]] std::optional<std::string>
+read_span_fixed_string(std::span<const std::byte> bytes, std::size_t offset,
+                       std::size_t size) {
+  if (offset > bytes.size() || size > bytes.size() - offset) return std::nullopt;
+  const auto end = std::find(bytes.begin() + static_cast<std::ptrdiff_t>(offset),
+                             bytes.begin() + static_cast<std::ptrdiff_t>(offset + size),
+                             std::byte{});
+  return std::string{reinterpret_cast<const char *>(bytes.data() + offset),
+                     static_cast<std::size_t>(end -
+                                               (bytes.begin() +
+                                                static_cast<std::ptrdiff_t>(offset)))};
+}
+
+// Old shared caches predate the imagesText table. Their image records still
+// provide the load address, so recover the image's Mach-O segments from the
+// cache itself. This keeps HLE, catalog and shared-region mapping on one
+// metadata path without identifying a particular firmware build.
+bool populate_legacy_image_ranges(DyldCacheImage &image,
+                                  std::span<const DyldCacheFile> files) {
+  if (!image.executable_ranges.empty()) return true;
+  const auto header_source = cache_file_for_vm(files, image.unslid_load_address);
+  if (!header_source || header_source->file_index >= files.size()) return false;
+  const auto &header_file = files[header_source->file_index];
+  std::ifstream input{header_file.path, std::ios::binary};
+  if (!input) return false;
+  const auto magic = read_u32(input, header_source->file_offset);
+  const auto command_count = read_u32(input, header_source->file_offset + 16U);
+  const auto command_bytes = read_u32(input, header_source->file_offset + 20U);
+  if (!magic || !command_count || !command_bytes || *magic != mach_header_magic ||
+      *command_bytes > header_file.file_size ||
+      header_source->file_offset > header_file.file_size - 28U ||
+      *command_bytes >
+          header_file.file_size - header_source->file_offset - 28U) {
+    return false;
+  }
+  const auto command_blob = read_blob(
+      input, header_source->file_offset + 28U, *command_bytes);
+  if (!command_blob) return false;
+  const std::span<const std::byte> commands{*command_blob};
+  std::size_t cursor = 0;
+  std::optional<DyldCacheRange> text_range;
+  for (std::uint32_t index = 0; index < *command_count; ++index) {
+    if (cursor > commands.size() || commands.size() - cursor < 8U) return false;
+    const auto command = read_span_u32(commands, cursor);
+    const auto size = read_span_u32(commands, cursor + 4U);
+    if (size < 8U || size > commands.size() - cursor) return false;
+    if (command == lc_segment && size >= 56U) {
+      const auto name = read_span_fixed_string(commands, cursor + 8U, 16U);
+      if (!name) return false;
+      const auto address = read_span_u32(commands, cursor + 24U);
+      const auto vm_size = read_span_u32(commands, cursor + 28U);
+      const auto file_offset = read_span_u32(commands, cursor + 32U);
+      const auto file_size = read_span_u32(commands, cursor + 36U);
+      const auto maximum_protection = read_span_u32(commands, cursor + 40U);
+      const auto initial_protection = read_span_u32(commands, cursor + 44U);
+      if (file_size != 0U && (initial_protection & 4U) != 0U) {
+        // In the legacy cache format __TEXT's fileoff is relative to the
+        // image header, while the later segments use absolute cache offsets.
+        // Keep this rule tied to the Mach-O segment contract rather than to a
+        // firmware/build identifier.
+        const bool image_relative = *name == "__TEXT";
+        if (image_relative &&
+            add_overflows(header_source->file_offset, file_offset)) {
+          return false;
+        }
+        const auto actual_file_offset =
+            image_relative ? header_source->file_offset + file_offset
+                            : file_offset;
+        const auto source = cache_file_index_for_file_range(
+            files, actual_file_offset, file_size);
+        if (source) {
+          const auto range = DyldCacheRange{
+              address, file_size, actual_file_offset, *source,
+              initial_protection, maximum_protection};
+          image.executable_ranges.push_back(range);
+          if (*name == "__TEXT") text_range = range;
+        }
+      }
+      if (*name == "__TEXT") image.text_segment_size = vm_size;
+    } else if (command == lc_uuid && size >= 24U) {
+      DyldCacheUuid uuid{};
+      std::copy_n(commands.begin() + static_cast<std::ptrdiff_t>(cursor + 8U),
+                  uuid.size(), uuid.begin());
+      image.text_uuid = uuid;
+    }
+    cursor += size;
+  }
+  if (cursor != commands.size()) return false;
+  if (text_range) {
+    if (text_range->file_index >= files.size()) return false;
+    if (const auto identity = sha256_file(
+            files[text_range->file_index].path, text_range->file_offset,
+            text_range->size)) {
+      image.text_identity = *identity;
+    }
+  }
+  return !image.executable_ranges.empty();
+}
+
 [[nodiscard]] std::filesystem::path
 discover_subcache(const std::filesystem::path &main_path,
                   std::string_view suffix, std::size_t index) {
@@ -463,8 +617,11 @@ DyldSharedCache::parse(const std::filesystem::path &path,
     const auto image_path =
         read_string(header_input, *path_offset, main->file.file_size);
     if (!image_path) return std::nullopt;
-    result.images_.push_back(
-        DyldCacheImage{index, *image_path, *load_address});
+    DyldCacheImage image;
+    image.index = index;
+    image.path = *image_path;
+    image.unslid_load_address = *load_address;
+    result.images_.push_back(std::move(image));
   }
 
   for (const auto &info : main->text_infos) {
@@ -508,6 +665,10 @@ DyldSharedCache::parse(const std::filesystem::path &path,
                                       file_offset, size);
     if (!identity) return std::nullopt;
     image->text_identity = *identity;
+  }
+
+  for (auto &image : result.images_) {
+    static_cast<void>(populate_legacy_image_ranges(image, result.files_));
   }
 
   std::vector<std::byte> generation_key;

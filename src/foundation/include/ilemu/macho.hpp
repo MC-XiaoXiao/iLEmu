@@ -71,7 +71,12 @@ public:
         ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
         std::optional<ContentIdentity> known_identity = std::nullopt,
         ImmutableSnapshotKind snapshot_kind =
-            ImmutableSnapshotKind::RuntimeHot);
+            ImmutableSnapshotKind::RuntimeHot,
+        // A dyld shared-cache image keeps its Mach-O header and linkedit
+        // offsets in the cache container. Standalone images use the default
+        // zero offset; cache callers provide the file offset of the image
+        // header while retaining the container's absolute file offsets.
+        std::optional<std::uint64_t> image_header_offset = std::nullopt);
 
     [[nodiscard]] const std::filesystem::path& path() const { return path_; }
     [[nodiscard]] std::uint32_t cpu_type() const { return cpu_type_; }

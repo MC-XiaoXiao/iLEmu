@@ -318,7 +318,8 @@ GuestFileGeneration file_generation_from_stat(const struct stat& file_stat) {
 MachOImage MachOImage::parse(const std::filesystem::path& path,
                              ArmArchitectureVersion architecture,
                              std::optional<ContentIdentity> known_identity,
-                             ImmutableSnapshotKind snapshot_kind) {
+                             ImmutableSnapshotKind snapshot_kind,
+                             std::optional<std::uint64_t> image_header_offset) {
     ScopedFileDescriptor input;
     do {
         input.value = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
@@ -362,9 +363,23 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
                                  path.string()};
     }
 
+    const auto header_offset = image_header_offset.value_or(0U);
+    if (header_offset > image_bytes->size() ||
+        image_bytes->size() - static_cast<std::size_t>(header_offset) < 28U) {
+        throw std::runtime_error{"Mach-O header offset is outside the file: " +
+                                 path.string()};
+    }
+    if (image_header_offset &&
+        *image_header_offset > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error{
+            "shared-cache Mach-O header offset exceeds 32-bit file offsets"};
+    }
+
     // App bundles may carry a classic FAT container. Select the best slice for
     // the guest architecture instead of making each caller know how to unpack
     // it; ARMv7 remains compatible with an ARMv6 slice when no v7 slice exists.
+    // A shared-cache image is already an ARM slice inside a larger container,
+    // so its header offset must remain absolute and FAT selection is skipped.
     const std::span<const std::byte> container{*image_bytes};
     // ContentIdentity names the bytes on disk, not the architecture-specific
     // view selected below.  The watcher and file identity cache hash the
@@ -372,11 +387,12 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     // cold catalog scans, loader lookups, and hot refreshes to agree.  FAT
     // images always compute this value locally because a caller-provided
     // identity from an older catalog may have named only a selected slice.
+    const auto container_magic = read_be_u32(container, 0U);
+    const bool fat_container = !image_header_offset.has_value() &&
+                               container_magic == fat_magic;
     const ContentIdentity container_identity =
-        known_identity && read_be_u32(container, 0U) != fat_magic
-            ? *known_identity
-            : sha256(container);
-    if (read_be_u32(container, 0U) == fat_magic) {
+        known_identity && !fat_container ? *known_identity : sha256(container);
+    if (fat_container) {
         image.fat_container_ = true;
         const auto architecture_count = read_be_u32(container, 4U);
         constexpr std::size_t fat_arch_size = 20U;
@@ -441,23 +457,24 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
         seed_shared_file_identity(path, *image.file_generation_,
                                   image.content_identity_);
     }
-    if (bytes.size() < 28 || read_u32(bytes, 0) != mh_magic) {
+    if (read_u32(bytes, static_cast<std::size_t>(header_offset)) != mh_magic) {
         throw std::runtime_error{"expected a little-endian 32-bit Mach-O: " + path.string()};
     }
-    image.cpu_type_ = read_u32(bytes, 4);
-    image.cpu_subtype_ = read_u32(bytes, 8);
-    image.file_type_ = read_u32(bytes, 12);
-    image.command_count_ = read_u32(bytes, 16);
-    const auto command_bytes = read_u32(bytes, 20);
-    image.flags_ = read_u32(bytes, 24);
+    const auto header = static_cast<std::size_t>(header_offset);
+    image.cpu_type_ = read_u32(bytes, header + 4U);
+    image.cpu_subtype_ = read_u32(bytes, header + 8U);
+    image.file_type_ = read_u32(bytes, header + 12U);
+    image.command_count_ = read_u32(bytes, header + 16U);
+    const auto command_bytes = read_u32(bytes, header + 20U);
+    image.flags_ = read_u32(bytes, header + 24U);
     if (image.cpu_type_ != cpu_type_arm) {
         throw std::runtime_error{"only 32-bit ARM Mach-O images are supported"};
     }
-    if (command_bytes > bytes.size() - 28) {
+    if (command_bytes > bytes.size() - header - 28U) {
         throw std::runtime_error{"Mach-O load command area is truncated"};
     }
 
-    std::size_t offset = 28;
+    std::size_t offset = header + 28U;
     const auto commands_end = offset + command_bytes;
     std::optional<std::pair<std::uint32_t, std::uint32_t>> indirect_symbols;
     std::optional<std::pair<std::uint32_t, std::uint32_t>> code_signature;
@@ -508,6 +525,26 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
                 section.reserved1 = read_u32(bytes, section_offset + 60);
                 section.reserved2 = read_u32(bytes, section_offset + 64);
                 segment.sections.push_back(std::move(section));
+            }
+            if (image_header_offset && segment.name == "__TEXT") {
+                const auto header_offset_32 =
+                    static_cast<std::uint32_t>(*image_header_offset);
+                if (segment.file_offset >
+                    std::numeric_limits<std::uint32_t>::max() -
+                        header_offset_32) {
+                    throw std::runtime_error{
+                        "shared-cache __TEXT file offset overflows"};
+                }
+                segment.file_offset += header_offset_32;
+                for (auto &section : segment.sections) {
+                    if (section.file_offset >
+                        std::numeric_limits<std::uint32_t>::max() -
+                            header_offset_32) {
+                        throw std::runtime_error{
+                            "shared-cache __TEXT section offset overflows"};
+                    }
+                    section.file_offset += header_offset_32;
+                }
             }
             image.segments_.push_back(std::move(segment));
         } else if (command == lc_symtab) {
