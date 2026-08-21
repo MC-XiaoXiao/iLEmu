@@ -40,9 +40,28 @@ set(ILEMU_DYNARMIC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/dynarmic" CACHE PAT
     "Path to the patched MC-XiaoXiao Dynarmic checkout")
 set(ILEMU_BOOST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/ext-boost" CACHE PATH
     "Path to the matching ext-boost checkout")
-set(ILEMU_DYNARMIC_PATCHED_REVISION
-    "8cacf31b31418c149f4d240f0c7d4fe2ac81bf31" CACHE STRING
-    "Expected Dynarmic revision for the x86_64/A32 iLEmu backend")
+# The submodule revision is part of the product repository. Keep it separate
+# from the developer escape hatch so reusing an old build directory cannot
+# make a former -D... value look like the repository's current pin.
+set(ILEMU_DYNARMIC_PINNED_REVISION
+    "8cacf31b31418c149f4d240f0c7d4fe2ac81bf31" CACHE INTERNAL
+    "Product-pinned Dynarmic revision" FORCE)
+set(ILEMU_DYNARMIC_REVISION_OVERRIDE "" CACHE STRING
+    "Developer-selected Dynarmic revision; empty uses the product pin")
+# Remove the pre-override cache entry if this is a reused build directory.
+# It is intentionally not accepted as an implicit override.
+if(DEFINED ILEMU_DYNARMIC_PATCHED_REVISION)
+    unset(ILEMU_DYNARMIC_PATCHED_REVISION CACHE)
+endif()
+if(ILEMU_DYNARMIC_REVISION_OVERRIDE STREQUAL "")
+    set(_ilemu_dynarmic_expected_revision
+        "${ILEMU_DYNARMIC_PINNED_REVISION}")
+    set(_ilemu_dynarmic_revision_source pinned)
+else()
+    set(_ilemu_dynarmic_expected_revision
+        "${ILEMU_DYNARMIC_REVISION_OVERRIDE}")
+    set(_ilemu_dynarmic_revision_source override)
+endif()
 
 if(NOT EXISTS "${ILEMU_DYNARMIC_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
@@ -59,23 +78,36 @@ execute_process(
     COMMAND git rev-parse HEAD
     WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
     RESULT_VARIABLE ILEMU_DYNARMIC_REVISION_RESULT
-    OUTPUT_VARIABLE ILEMU_DYNARMIC_REVISION
+    OUTPUT_VARIABLE ILEMU_DYNARMIC_CHECKED_OUT_REVISION
     ERROR_QUIET
     OUTPUT_STRIP_TRAILING_WHITESPACE)
 if(ILEMU_DYNARMIC_REVISION_RESULT EQUAL 0 AND
-   NOT ILEMU_DYNARMIC_REVISION STREQUAL "")
-    if(NOT ILEMU_DYNARMIC_REVISION STREQUAL
-       "${ILEMU_DYNARMIC_PATCHED_REVISION}")
+   NOT ILEMU_DYNARMIC_CHECKED_OUT_REVISION STREQUAL "")
+    set(ILEMU_DYNARMIC_SELECTED_REVISION
+        "${ILEMU_DYNARMIC_CHECKED_OUT_REVISION}" CACHE INTERNAL
+        "Dynarmic revision observed during configure" FORCE)
+    set(ILEMU_DYNARMIC_EXPECTED_REVISION
+        "${_ilemu_dynarmic_expected_revision}" CACHE INTERNAL
+        "Dynarmic revision selected by pin or explicit override" FORCE)
+    if(NOT ILEMU_DYNARMIC_CHECKED_OUT_REVISION STREQUAL
+       "${_ilemu_dynarmic_expected_revision}")
         message(WARNING
-            "Dynarmic revision ${ILEMU_DYNARMIC_REVISION} is not the "
-            "repository's patched revision "
-            "${ILEMU_DYNARMIC_PATCHED_REVISION}. Continuing with the "
-            "explicitly selected checkout.")
+            "Dynarmic revision ${ILEMU_DYNARMIC_CHECKED_OUT_REVISION} does "
+            "not match the ${_ilemu_dynarmic_revision_source} revision "
+            "${_ilemu_dynarmic_expected_revision}. Continuing with the "
+            "selected checkout.")
     else()
         message(STATUS
-            "Using Dynarmic ${ILEMU_DYNARMIC_REVISION} with the iLEmu "
-            "patch stack committed in the dependency repository")
+            "Using Dynarmic ${ILEMU_DYNARMIC_CHECKED_OUT_REVISION} "
+            "(${_ilemu_dynarmic_revision_source}) with the iLEmu patch "
+            "stack committed in the dependency repository")
     endif()
+else()
+    set(ILEMU_DYNARMIC_SELECTED_REVISION "unknown" CACHE INTERNAL
+        "Dynarmic revision observed during configure" FORCE)
+    set(ILEMU_DYNARMIC_EXPECTED_REVISION
+        "${_ilemu_dynarmic_expected_revision}" CACHE INTERNAL
+        "Dynarmic revision selected by pin or explicit override" FORCE)
 endif()
 
 # Force Dynarmic's FindBoost invocation to use the matching header-only tree.
@@ -116,14 +148,14 @@ set(ILEMU_PROJECT_INCLUDE_DIRS
 # artifact key so a custom development checkout cannot reuse stale artifacts.
 set(ILEMU_DYNARMIC_BUILD_FINGERPRINT 0x0ULL)
 if(ILEMU_DYNARMIC_REVISION_RESULT EQUAL 0 AND
-   NOT ILEMU_DYNARMIC_REVISION STREQUAL "")
+   NOT ILEMU_DYNARMIC_CHECKED_OUT_REVISION STREQUAL "")
     execute_process(
         COMMAND git diff --no-ext-diff --binary
         WORKING_DIRECTORY "${ILEMU_DYNARMIC_DIR}"
         OUTPUT_VARIABLE ILEMU_DYNARMIC_WORKTREE_DIFF
         ERROR_QUIET)
     string(SHA256 ILEMU_DYNARMIC_BUILD_HASH
-           "${ILEMU_DYNARMIC_REVISION}\n${ILEMU_DYNARMIC_WORKTREE_DIFF}")
+           "${ILEMU_DYNARMIC_CHECKED_OUT_REVISION}\n${ILEMU_DYNARMIC_WORKTREE_DIFF}")
     string(SUBSTRING "${ILEMU_DYNARMIC_BUILD_HASH}" 0 16
            ILEMU_DYNARMIC_BUILD_HASH_PREFIX)
     set(ILEMU_DYNARMIC_BUILD_FINGERPRINT

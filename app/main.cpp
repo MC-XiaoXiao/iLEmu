@@ -1433,7 +1433,7 @@ std::string usage() {
          "  ilemu disasm --rootfs DIR --binary PATH "
          "(--symbol NAME | --address ADDR) [--device PROFILE] [--count N] [--thumb]\n"
          "  ilemu boot --rootfs DIR [--device iPhone1,1|iPhone1,2|iPhone2,1] "
-         "[--binary /sbin/launchd] [--ticks N] "
+         "[--binary /sbin/launchd] [--guest-command COMMAND] [--ticks N] "
          "[--cores N] [--jit-cache-mib 8..128] "
          "[--jit-cache-budget-mib 256..4096] "
          "[--watch-address ADDR] [--gdb PORT] "
@@ -2468,6 +2468,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
       host_cache / "vulkan-pipeline-cache.bin");
   configure_gles_backend(gles_backend);
   const auto binary = option(args, "--binary").value_or("/sbin/launchd");
+  const auto guest_command = option(args, "--guest-command");
+  std::vector<std::string> initial_arguments;
+  if (guest_command) {
+    // This is intentionally an argv-level test hook for firmware profiles
+    // that ship a shell but do not ship SpringBoard. It never changes the
+    // normal launchd/SpringBoard boot path.
+    initial_arguments = {binary, "-c", *guest_command};
+  } else {
+    initial_arguments = {binary};
+  }
   if (const auto display_size = option(args, "--display-size")) {
     device.display = parse_display_geometry(*display_size);
   }
@@ -2784,7 +2794,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::vector<std::string> initial_environment{
       "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
       "SHELL=/bin/sh"};
-  auto process = loader.load(binary, {}, initial_environment);
+  auto process =
+      loader.load(binary, std::move(initial_arguments), initial_environment);
   std::unordered_set<ContentIdentity, ContentIdentityHash>
       boot_image_identities;
   boot_image_identities.insert(process.executable.content_identity());
@@ -3424,7 +3435,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   } else {
     output.line("[audio] decoder=pcm-caf-only");
   }
-  initial->kernel->set_process_arguments({binary}, initial_environment);
+  initial->kernel->set_process_arguments(process.arguments, initial_environment);
   initial->kernel->set_process_image(
       process.executable_path,
       process.executable.code_signature_entitlements());
