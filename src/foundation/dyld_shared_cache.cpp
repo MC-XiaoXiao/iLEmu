@@ -824,7 +824,8 @@ DyldSharedCache::parse(const std::filesystem::path &path,
       }
       result.image_range_index_[range.file_index].push_back(
           ImageRangeIndexEntry{range.file_offset,
-                               range.file_offset + range.size, image.index});
+                               range.file_offset + range.size, 0,
+                               image.index});
     }
   }
   for (auto &entries : result.image_range_index_) {
