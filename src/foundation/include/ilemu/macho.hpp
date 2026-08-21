@@ -64,6 +64,11 @@ struct MachSymbol {
     }
 };
 
+struct MachSymbolFileLocation {
+    std::uint32_t symbol_index{};
+    std::uint64_t file_offset{};
+};
+
 class MachOImage {
 public:
     static MachOImage parse(
@@ -97,6 +102,10 @@ public:
     [[nodiscard]] const std::vector<MachSegment>& segments() const { return segments_; }
     [[nodiscard]] const std::vector<MachDylib>& dylibs() const { return dylibs_; }
     [[nodiscard]] const std::vector<MachSymbol>& symbols() const { return symbols_; }
+    [[nodiscard]] const std::vector<MachSymbolFileLocation>&
+    symbol_file_locations() const {
+        return symbol_file_locations_;
+    }
     [[nodiscard]] const std::vector<MachStub>& stubs() const { return stubs_; }
     // Linkers emit a compact, content-addressed function boundary table for
     // stripped images. The parser keeps only bounded, image-local starts so
@@ -150,6 +159,7 @@ private:
     std::vector<MachSegment> segments_;
     std::vector<MachDylib> dylibs_;
     std::vector<MachSymbol> symbols_;
+    std::vector<MachSymbolFileLocation> symbol_file_locations_;
     std::vector<MachStub> stubs_;
     std::vector<std::uint32_t> function_starts_;
     std::optional<std::string> dynamic_linker_;

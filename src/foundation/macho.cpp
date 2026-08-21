@@ -14,6 +14,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "ilemu/file_page_cache.hpp"
+
 namespace ilemu {
 namespace {
 
@@ -338,23 +340,32 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     MachOImage image;
     image.path_ = path;
     image.file_generation_ = file_generation_from_stat(file_stat);
-    auto image_bytes = std::make_shared<std::vector<std::byte>>(
-        static_cast<std::size_t>(file_stat.st_size));
-    image.bytes_ = image_bytes;
-    std::size_t received = 0;
-    while (received < image_bytes->size()) {
-        const auto remaining = image_bytes->size() - received;
-        const auto requested = std::min<std::size_t>(remaining, 64U * 1024U);
-        ssize_t count = -1;
-        do {
-            count = ::pread(input.value, image_bytes->data() + received,
-                            requested, static_cast<off_t>(received));
-        } while (count < 0 && errno == EINTR);
-        if (count <= 0) {
-            throw std::runtime_error{"failed to read Mach-O: " +
-                                     path.string()};
+    std::shared_ptr<const std::vector<std::byte>> image_bytes;
+    if (known_identity) {
+        image_bytes = find_immutable_snapshot(
+            *image.file_generation_, *known_identity,
+            static_cast<std::uint64_t>(file_stat.st_size),
+            static_cast<std::uint64_t>(architecture), snapshot_kind);
+    }
+    if (!image_bytes) {
+        auto loaded_bytes = std::make_shared<std::vector<std::byte>>(
+            static_cast<std::size_t>(file_stat.st_size));
+        std::size_t received = 0;
+        while (received < loaded_bytes->size()) {
+            const auto remaining = loaded_bytes->size() - received;
+            const auto requested = std::min<std::size_t>(remaining, 64U * 1024U);
+            ssize_t count = -1;
+            do {
+                count = ::pread(input.value, loaded_bytes->data() + received,
+                                requested, static_cast<off_t>(received));
+            } while (count < 0 && errno == EINTR);
+            if (count <= 0) {
+                throw std::runtime_error{"failed to read Mach-O: " +
+                                         path.string()};
+            }
+            received += static_cast<std::size_t>(count);
         }
-        received += static_cast<std::size_t>(count);
+        image_bytes = std::move(loaded_bytes);
     }
     struct stat final_file_stat {};
     if (::fstat(input.value, &final_file_stat) != 0 ||
@@ -443,10 +454,9 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
             image_bytes->begin() + static_cast<std::ptrdiff_t>(slice_offset),
             image_bytes->begin() +
                 static_cast<std::ptrdiff_t>(slice_offset + slice_size));
-        image.bytes_ = image_bytes;
     }
 
-    const std::span<const std::byte> bytes{*image_bytes};
+    image.bytes_ = std::move(image_bytes);
     image.content_identity_ = container_identity;
     if (image.file_generation_) {
         if (!image.fat_container_) {
@@ -457,6 +467,10 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
         seed_shared_file_identity(path, *image.file_generation_,
                                   image.content_identity_);
     }
+    // share_immutable_snapshot may return an older shared_ptr held by another
+    // parser. Rebind the span after that publication so it can never retain a
+    // pointer into a replaced vector.
+    const std::span<const std::byte> bytes{*image.bytes_};
     if (read_u32(bytes, static_cast<std::size_t>(header_offset)) != mh_magic) {
         throw std::runtime_error{"expected a little-endian 32-bit Mach-O: " + path.string()};
     }
@@ -692,6 +706,31 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
             extract_code_signature_entitlements(
                 bytes, code_signature->first, code_signature->second);
     }
+    image.symbol_file_locations_.reserve(image.symbols_.size());
+    for (std::size_t index = 0; index < image.symbols_.size(); ++index) {
+        const auto &symbol = image.symbols_[index];
+        if (symbol.value == 0U) continue;
+        const auto segment = std::find_if(
+            image.segments_.begin(), image.segments_.end(),
+            [&](const MachSegment &candidate) {
+                return symbol.value >= candidate.vm_address &&
+                       symbol.value - candidate.vm_address <
+                           candidate.file_size;
+            });
+        if (segment == image.segments_.end()) continue;
+        image.symbol_file_locations_.push_back(MachSymbolFileLocation{
+            static_cast<std::uint32_t>(index),
+            static_cast<std::uint64_t>(segment->file_offset) +
+                (symbol.value - segment->vm_address)});
+    }
+    std::sort(image.symbol_file_locations_.begin(),
+              image.symbol_file_locations_.end(),
+              [](const MachSymbolFileLocation &left,
+                 const MachSymbolFileLocation &right) {
+                  if (left.file_offset != right.file_offset)
+                      return left.file_offset < right.file_offset;
+                  return left.symbol_index < right.symbol_index;
+              });
     return image;
 }
 

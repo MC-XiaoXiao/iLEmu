@@ -539,6 +539,23 @@ std::shared_ptr<const std::vector<std::byte>> share_immutable_snapshot(
   return snapshot;
 }
 
+std::shared_ptr<const std::vector<std::byte>> find_immutable_snapshot(
+    const GuestFileGeneration &generation, const ContentIdentity &identity,
+    std::uint64_t byte_size, std::uint64_t layout_tag,
+    ImmutableSnapshotKind kind) {
+  const ImmutableSnapshotKey key{generation, identity, byte_size, layout_tag,
+                                 kind};
+  std::lock_guard lock{immutable_snapshot_mutex};
+  const auto existing = immutable_snapshots.find(key);
+  if (existing == immutable_snapshots.end()) return {};
+  ++immutable_snapshot_hits;
+  immutable_snapshot_lru.splice(immutable_snapshot_lru.end(),
+                                immutable_snapshot_lru,
+                                existing->second.lru_position);
+  existing->second.lru_position = std::prev(immutable_snapshot_lru.end());
+  return existing->second.snapshot;
+}
+
 ImmutableSnapshotStats immutable_snapshot_stats() {
   std::lock_guard lock{immutable_snapshot_mutex};
   const auto limits = immutable_snapshot_limits();

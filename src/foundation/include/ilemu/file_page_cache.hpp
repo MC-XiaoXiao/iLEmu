@@ -304,6 +304,15 @@ share_immutable_snapshot(
     std::uint64_t layout_tag = 0,
     ImmutableSnapshotKind kind = ImmutableSnapshotKind::RuntimeHot);
 
+// Returns an already-published immutable snapshot without taking ownership
+// from a caller. Runtime parsers use this before allocating a second buffer
+// for another view of the same file generation.
+[[nodiscard]] std::shared_ptr<const std::vector<std::byte>>
+find_immutable_snapshot(
+    const GuestFileGeneration &generation, const ContentIdentity &identity,
+    std::uint64_t byte_size, std::uint64_t layout_tag = 0,
+    ImmutableSnapshotKind kind = ImmutableSnapshotKind::RuntimeHot);
+
 struct ImmutableSnapshotStats {
   std::uint64_t entries{};
   std::uint64_t bytes{};

@@ -600,7 +600,7 @@ private:
   AddressSpace &memory_;
   Output &output_;
   std::filesystem::path rootfs_;
-  std::optional<DyldSharedCache> dyld_shared_cache_;
+  std::shared_ptr<const DyldSharedCache> dyld_shared_cache_;
   std::filesystem::path dyld_shared_cache_path_;
   bool dyld_shared_cache_attempted_{};
   DeviceProfile device_profile_;

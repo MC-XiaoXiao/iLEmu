@@ -65,6 +65,8 @@ struct SharedRegionRangeRead {
 struct MappingSource {
   std::filesystem::path path;
   std::uint64_t file_offset{};
+  std::optional<GuestFileGeneration> expected_generation;
+  std::optional<ContentIdentity> expected_content_identity;
 };
 
 enum class MappingLayout {
@@ -385,15 +387,16 @@ void rollback(AddressSpace &memory,
 
 const DyldSharedCache *CompatibilityKernel::dyld_shared_cache_for(
     const std::filesystem::path &path) {
-  if (dyld_shared_cache_attempted_ && dyld_shared_cache_path_ == path)
-    return dyld_shared_cache_ ? &*dyld_shared_cache_ : nullptr;
-  if (dyld_shared_cache_attempted_) return nullptr;
+  if (dyld_shared_cache_attempted_ && dyld_shared_cache_path_ != path)
+    return nullptr;
 
-  if (!looks_like_dyld_shared_cache(path)) return nullptr;
+  if (!looks_like_dyld_shared_cache(path)) {
+    dyld_shared_cache_.reset();
+    return nullptr;
+  }
 
   dyld_shared_cache_attempted_ = true;
   dyld_shared_cache_path_ = path;
-  dyld_shared_cache_.reset();
   DyldSharedCacheOptions options;
   options.architecture =
       arm_architecture_for_model(device_profile_.cpu_model) ==
@@ -401,14 +404,17 @@ const DyldSharedCache *CompatibilityKernel::dyld_shared_cache_for(
           ? "armv7"
           : "armv6k";
   if (const auto parsed = DyldSharedCache::parse(path, options)) {
-    dyld_shared_cache_ = *parsed;
-    output_.write("[shared-region] parsed dyld cache generation files=" +
-                  std::to_string(dyld_shared_cache_->files().size()) +
-                  " images=" +
-                  std::to_string(dyld_shared_cache_->images().size()) +
-                  "\n");
+    const auto previous_generation = dyld_shared_cache_;
+    dyld_shared_cache_ = parsed.shared();
+    if (previous_generation != parsed.shared()) {
+      output_.write("[shared-region] parsed dyld cache generation files=" +
+                    std::to_string(dyld_shared_cache_->files().size()) +
+                    " images=" +
+                    std::to_string(dyld_shared_cache_->images().size()) +
+                    "\n");
+    }
   }
-  return dyld_shared_cache_ ? &*dyld_shared_cache_ : nullptr;
+  return dyld_shared_cache_ ? dyld_shared_cache_.get() : nullptr;
 }
 
 bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
@@ -528,7 +534,8 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
   const auto mapping_source = [&](const Mapping &mapping)
       -> std::optional<MappingSource> {
     if (shared_cache == nullptr) {
-      return MappingSource{descriptor->second, mapping.file_offset};
+      return MappingSource{descriptor->second, mapping.file_offset, std::nullopt,
+                           std::nullopt};
     }
     for (const auto &file : shared_cache->files()) {
       for (const auto &range : file.mappings) {
@@ -549,7 +556,8 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
             mapping.size > source_size - source_offset) {
           return std::nullopt;
         }
-        return MappingSource{file.path, source_offset};
+        return MappingSource{file.path, source_offset, file.file_generation,
+                             file.content_identity};
       }
     }
     return std::nullopt;
@@ -589,7 +597,9 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
                             : memory_.map_file(
                                   address, mapping.size,
                                   mapping_permissions,
-                                  source->path, source->file_offset);
+                                  source->path, source->file_offset,
+                                  source->expected_generation,
+                                  source->expected_content_identity);
     if (diagnostics.enabled())
       map_time += std::chrono::steady_clock::now() - map_started;
     if (!mapped) {
