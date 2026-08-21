@@ -135,7 +135,15 @@ public:
   ArtifactFileLock &operator=(const ArtifactFileLock &) = delete;
   ArtifactFileLock(ArtifactFileLock &&other) noexcept
       : descriptor_{std::exchange(other.descriptor_, -1)} {}
-  ArtifactFileLock &operator=(ArtifactFileLock &&) = delete;
+  ArtifactFileLock &operator=(ArtifactFileLock &&other) noexcept {
+    if (this == &other) return *this;
+    if (descriptor_ >= 0) {
+      static_cast<void>(::flock(descriptor_, LOCK_UN));
+      static_cast<void>(::close(descriptor_));
+    }
+    descriptor_ = std::exchange(other.descriptor_, -1);
+    return *this;
+  }
   ~ArtifactFileLock() {
     if (descriptor_ < 0) return;
     static_cast<void>(::flock(descriptor_, LOCK_UN));
@@ -143,7 +151,8 @@ public:
   }
 
   [[nodiscard]] static std::optional<ArtifactFileLock>
-  acquire(const std::filesystem::path &persistence_path, Mode mode) noexcept {
+  acquire(const std::filesystem::path &persistence_path, Mode mode,
+          bool nonblocking = false) noexcept {
     try {
       const auto lock_path = std::filesystem::path{
           persistence_path.string() + ".writer.lock"};
@@ -156,7 +165,8 @@ public:
       const auto descriptor =
           ::open(lock_path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
       if (descriptor < 0) return std::nullopt;
-      const auto operation = mode == Mode::Exclusive ? LOCK_EX : LOCK_SH;
+      auto operation = mode == Mode::Exclusive ? LOCK_EX : LOCK_SH;
+      if (nonblocking) operation |= LOCK_NB;
       if (::flock(descriptor, operation) != 0) {
         static_cast<void>(::close(descriptor));
         return std::nullopt;
@@ -3233,8 +3243,21 @@ JitArtifactCompactionResult JitArtifactStore::compact_with_result(
     {
       if (cancelled()) return result;
       const std::lock_guard persistence_lock{persistence_mutex_};
-      auto file_lock = ArtifactFileLock::acquire(
-          disk_path, ArtifactFileLock::Mode::Exclusive);
+      std::optional<ArtifactFileLock> file_lock;
+      // flock() is deliberately polled in short, cancellable intervals.
+      // A compaction request must not leave the guest/UI thread parked behind
+      // another writer for hundreds of milliseconds.
+      for (unsigned attempt = 0; attempt < 32U && !file_lock; ++attempt) {
+        // The caller already checked cancellation immediately before entering
+        // this section. Only subsequent non-blocking retries consume another
+        // check, preserving the progress granularity of save_full().
+        if (attempt != 0U && cancelled()) return result;
+        file_lock = ArtifactFileLock::acquire(
+            disk_path, ArtifactFileLock::Mode::Exclusive, true);
+        if (!file_lock) {
+          std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+      }
       if (!file_lock) return failed();
       const auto writer_generation = file_lock->generation();
       if (!writer_generation) return failed();
