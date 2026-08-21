@@ -437,6 +437,14 @@ void deliver_due_vsync_locked(KernelSharedState &state,
     state.iokit_display_vsync_deadlines.erase(
         state.iokit_display_vsync_deadlines.begin());
 
+    // Multiple client registrations can share one physical panel pulse.
+    // Count that internal pulse once while preserving every registration's
+    // existing guest notification and deadline advancement below.
+    if (state.display_vsync_last_delivered_deadline != indexed_deadline) {
+      state.display_vsync_last_delivered_deadline = indexed_deadline;
+      ++state.display_vsync_pulse_count;
+    }
+
     const auto registration_it =
         state.iokit_display_vsync.find(connection_object);
     if (registration_it == state.iokit_display_vsync.end())

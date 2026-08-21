@@ -1213,6 +1213,11 @@ struct KernelSharedState {
   // kernel deadline path does not scan every display connection.
   std::set<std::pair<std::uint64_t, std::uint32_t>>
       iokit_display_vsync_deadlines;
+  // Monotonic product-internal display pulse attribution. This is diagnostic
+  // state only; it does not participate in the guest-visible VSync message
+  // sequence or in deadline selection.
+  std::uint64_t display_vsync_pulse_count{};
+  std::uint64_t display_vsync_last_delivered_deadline{};
   std::map<std::uint32_t, IOKitDisplayConnectionState>
       iokit_display_connections;
   std::map<std::uint32_t, IOKitAudioConnectionState> iokit_audio_connections;

@@ -224,6 +224,12 @@ public:
   [[nodiscard]] std::uint64_t display_submitted_frames() const {
     return display_state_->presented_frames();
   }
+  [[nodiscard]] std::uint64_t display_content_revision() const {
+    return display_state_->content_revision();
+  }
+  [[nodiscard]] std::uint64_t display_vsync_pulse_count() const {
+    return shared_state_->display_vsync_pulse_count;
+  }
   [[nodiscard]] std::optional<std::uint32_t>
   active_client_process_id() const {
     const auto active_scene = scene_coordinator_->active_client_scene();
