@@ -29,6 +29,13 @@ struct DyldSharedCache::ImageStore {
            std::shared_ptr<const MachOImage>> images;
 };
 
+struct DyldSharedCache::FileViewStore {
+  std::mutex mutex;
+  // A null value records a failed open for this immutable generation too;
+  // callers must not repeatedly retry a member after an atomic failure.
+  std::map<std::uint32_t, std::shared_ptr<const ImmutableFileView>> views;
+};
+
 struct DyldSharedCache::GenerationArtifactView {
   static std::shared_ptr<const GenerationArtifactView>
   open(const std::filesystem::path &path);
@@ -651,6 +658,8 @@ std::uint64_t generation_builds{};
 std::uint64_t generation_hits{};
 std::uint64_t generation_artifact_builds{};
 std::uint64_t generation_artifact_hits{};
+std::uint64_t file_view_builds{};
+std::uint64_t file_view_hits{};
 std::uint64_t image_builds{};
 std::uint64_t image_hits{};
 
@@ -1165,7 +1174,8 @@ DyldSharedCache::ParseResult::shared() const noexcept {
 }
 
 DyldSharedCache::DyldSharedCache()
-    : image_store_{std::make_shared<ImageStore>()} {}
+    : image_store_{std::make_shared<ImageStore>()},
+      file_view_store_{std::make_shared<FileViewStore>()} {}
 
 DyldSharedCache::~DyldSharedCache() = default;
 
@@ -1675,8 +1685,45 @@ DyldSharedCache::ParseStats DyldSharedCache::parse_stats() noexcept {
                     generation_hits,
                     generation_artifact_builds,
                     generation_artifact_hits,
+                    file_view_builds,
+                    file_view_hits,
                     image_builds,
                     image_hits};
+}
+
+std::shared_ptr<const ImmutableFileView>
+DyldSharedCache::immutable_file_view_at(std::size_t index) const {
+  if (file_view_store_ == nullptr ||
+      index > std::numeric_limits<std::uint32_t>::max()) {
+    return {};
+  }
+  std::lock_guard lock{file_view_store_->mutex};
+  const auto member_index = static_cast<std::uint32_t>(index);
+  if (const auto cached = file_view_store_->views.find(member_index);
+      cached != file_view_store_->views.end()) {
+    ++file_view_hits;
+    return cached->second;
+  }
+
+  std::shared_ptr<const ImmutableFileView> view;
+  if (generation_artifact_view_) {
+    const auto source = file_view_at(index);
+    if (source.file_generation &&
+        source.file_size <= std::numeric_limits<std::size_t>::max()) {
+      view = ImmutableFileView::open(
+          std::filesystem::path{source.path}, *source.file_generation,
+          source.content_identity, static_cast<std::uint64_t>(source.file_size));
+    }
+    ++file_view_builds;
+  } else if (index < files_.size()) {
+    // A newly built generation captured these views before publication. The
+    // accessor still records their reuse in the same per-member store so the
+    // lifetime and failure behavior match artifact-loaded generations.
+    view = files_[index].immutable_file_view;
+    ++file_view_hits;
+  }
+  file_view_store_->views.emplace(member_index, view);
+  return view;
 }
 
 std::shared_ptr<const MachOImage> DyldSharedCache::parse_image(
@@ -1710,9 +1757,7 @@ std::shared_ptr<const MachOImage> DyldSharedCache::parse_image(
     source.file_size = source_view.file_size;
     source.file_generation = source_view.file_generation;
     source.content_identity = source_view.content_identity;
-    source.immutable_file_view = ImmutableFileView::open(
-        source.path, *source.file_generation, source.content_identity,
-        static_cast<std::uint64_t>(source.file_size));
+    source.immutable_file_view = immutable_file_view_at(header->file_index);
     if (!source.immutable_file_view) return {};
   } else {
     source = files_[header->file_index];

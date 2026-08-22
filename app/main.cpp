@@ -7249,6 +7249,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
         std::to_string(dyld_stats.generation_artifact_builds) +
         " generation-artifact-hits=" +
         std::to_string(dyld_stats.generation_artifact_hits) +
+        " file-view-builds=" + std::to_string(dyld_stats.file_view_builds) +
+        " file-view-hits=" + std::to_string(dyld_stats.file_view_hits) +
         " image-builds=" + std::to_string(dyld_stats.image_builds) +
         " image-hits=" + std::to_string(dyld_stats.image_hits));
     const auto hle_stats = userland_hle_stats();

@@ -246,6 +246,8 @@ public:
     std::uint64_t generation_hits{};
     std::uint64_t generation_artifact_builds{};
     std::uint64_t generation_artifact_hits{};
+    std::uint64_t file_view_builds{};
+    std::uint64_t file_view_hits{};
     std::uint64_t image_builds{};
     std::uint64_t image_hits{};
   };
@@ -310,6 +312,11 @@ private:
   std::uint64_t max_slide_{};
   std::vector<std::vector<ImageRangeIndexEntry>> image_range_index_;
   std::shared_ptr<ImageStore> image_store_;
+  // Artifact-loaded generations have no process-local DyldCacheFile records
+  // that can retain their immutable member views. Keep one demand-paged view
+  // per member so logical images sharing a subcache do not reopen/remap it.
+  struct FileViewStore;
+  std::shared_ptr<FileViewStore> file_view_store_;
   // Cross-process artifact loads retain the read-only mmap backing for the
   // lifetime of this generation. Typed lookup records remain a small local
   // façade for the existing API; the immutable serialized source is never
@@ -318,6 +325,8 @@ private:
 
   [[nodiscard]] DyldCacheFileView file_view_at(std::size_t index) const;
   [[nodiscard]] DyldCacheImageView image_view_at(std::size_t index) const;
+  [[nodiscard]] std::shared_ptr<const ImmutableFileView>
+  immutable_file_view_at(std::size_t index) const;
 
   friend class DyldCacheFileRange;
   friend class DyldCacheImageRange;
