@@ -50,6 +50,14 @@ void DisplayState::replace_pixels(std::vector<std::uint32_t> pixels,
   if (pixels.size() != expected)
     return;
   std::lock_guard lock{mutex_};
+  const auto owner_changed = owner_process_id != 0 &&
+                             content_owner_process_id_ != owner_process_id;
+  auto next_orientation = content_orientation_;
+  if (owner_process_id != 0 && orientation_resolver_)
+    next_orientation = orientation_resolver_(owner_process_id);
+  const auto content_unchanged =
+      !host_surface_ && !owner_changed && pixels_ == pixels &&
+      next_orientation == content_orientation_;
   pixels_ = std::move(pixels);
   host_surface_.reset();
   surface_reader_ = {};
@@ -57,10 +65,10 @@ void DisplayState::replace_pixels(std::vector<std::uint32_t> pixels,
   surface_content_generation_ = 0;
   if (owner_process_id != 0) {
     content_owner_process_id_ = owner_process_id;
-    if (orientation_resolver_)
-      content_orientation_ = orientation_resolver_(owner_process_id);
+    content_orientation_ = next_orientation;
   }
-  ++content_revision_;
+  if (!content_unchanged)
+    ++content_revision_;
 }
 
 void DisplayState::replace_surface(
