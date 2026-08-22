@@ -1110,7 +1110,9 @@ void SdlDisplay::set_host_graphics(
     std::shared_ptr<HostGraphicsDevice> graphics) {
   flush_presentation();
   impl_->stop_native_presenter();
+#if defined(ILEMU_HAS_SDL2)
   impl_->stop_cpu_presenter();
+#endif
   {
     std::lock_guard lock{impl_->frame_mutex};
     // Release frames before dropping the renderer. A deferred readback keeps
