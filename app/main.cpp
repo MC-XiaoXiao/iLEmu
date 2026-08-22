@@ -5147,6 +5147,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
     resolve_display_urgent_thread();
     synchronize_device_time_to_host();
     synchronize_scheduler_realtime_clock();
+    // Host synchronization can deliver a VSync notification without guest
+    // execution consuming a slice. Re-resolve here so the already-pending
+    // receive gets the same bounded callback lease in this iteration.
+    resolve_display_urgent_thread();
     if (realtime_pacer) {
       const auto display_urgent_runnable = [&]() {
         if (!display_urgent_thread)
