@@ -760,18 +760,21 @@ bool attempt_authorized_for_foreground_locked(
           attempt.phase == KernelSharedState::ApplicationLaunchPhase::Active);
 }
 
-bool process_participates_in_display_timing_locked(
+bool process_has_display_timing_client_locked(
     const KernelSharedState &state, std::uint32_t process_id) {
   return std::any_of(
       state.iokit_display_vsync.begin(), state.iokit_display_vsync.end(),
       [&state, process_id](const auto &entry) {
         const auto &[connection_object, registration] = entry;
         // GraphicsServices deliberately toggles its VSync callback around
-        // lifecycle transitions. A retained phase deadline is not a live
-        // subscription: selector 8/9 disable must stop both callbacks and
-        // display-timing participation until the next explicit enable.
+        // lifecycle transitions. Scene admission still needs to see the
+        // registered display client while that callback is disabled; the
+        // callback path itself independently gates on `enabled` and therefore
+        // sends no notifications and produces no client animation frames.
+        // Keeping the retained deadline here preserves the last frame and
+        // lets the causal foreground handoff finish before the next enable.
         if (registration.owner_pid != process_id ||
-            !registration.enabled || !registration.next_deadline) {
+            !registration.next_deadline) {
           return false;
         }
         const auto connection =
@@ -800,7 +803,7 @@ bool flattened_display_scene_available_locked(
              KernelSharedState::ApplicationSuspensionReason::None &&
          owns_only_scene && !has_active_application_route_locked(state) &&
          !different_foreground_attempt_locked(state, process_id) &&
-         process_participates_in_display_timing_locked(state, process_id);
+         process_has_display_timing_client_locked(state, process_id);
 }
 
 void release_application_fullscreen_suppression_locked(
