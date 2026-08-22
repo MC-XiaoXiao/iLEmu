@@ -110,9 +110,17 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(Cpu &cpu,
       bsd_error(cpu, 8); // ENOEXEC
       return true;
     }
+    // SpringBoard's older launch path forks a helper and asks that child to
+    // SETEXEC the application. There is no separate child-return path below,
+    // so observe the successful PID-bound spawn here after exec has assigned
+    // the new process identity.
+    graphics_services_input::record_application_spawn(
+        *shared_state_, process_.parent_pid, process_.pid, *path, *arguments,
+        scene_coordinator_.get(), true);
     performance_counters().record_exec();
     std::ostringstream message;
     message << "[process] spawn-setexec pid=" << process_.pid
+            << " parent=" << process_.parent_pid
             << " suspended=" << attributes->start_suspended << " " << *path
             << " argv=";
     for (std::size_t index = 0; index < arguments->size(); ++index) {

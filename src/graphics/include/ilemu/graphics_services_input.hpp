@@ -146,7 +146,7 @@ void record_application_spawn(
     KernelSharedState &state, std::uint32_t sender_process_id,
     std::uint32_t process_id, std::string_view executable_path,
     std::span<const std::string> arguments,
-    SceneCoordinator *scenes = nullptr);
+    SceneCoordinator *scenes = nullptr, bool force_foreground = false);
 
 // Starts a new generation for a server-side LayerKit render context. The next
 // visible root commit binds the context to the then-pending App event route.

@@ -1070,6 +1070,44 @@ KernelSharedState::ApplicationLaunchAttempt &begin_launch_attempt_locked(
   return attempt->second;
 }
 
+bool foreground_transition_attempt(
+    const KernelSharedState::ApplicationLaunchAttempt &attempt) {
+  return attempt.phase ==
+             KernelSharedState::ApplicationLaunchPhase::Launching ||
+         attempt.phase == KernelSharedState::ApplicationLaunchPhase::Active ||
+         attempt.phase == KernelSharedState::ApplicationLaunchPhase::HeldLock ||
+         attempt.foreground_handoff;
+}
+
+void ensure_foreground_transition_snapshot_locked(
+    KernelSharedState &state, std::uint32_t process_id,
+    const KernelSharedState::ApplicationLaunchAttempt &attempt,
+    bool force_foreground, bool mark_spawned) {
+  // A lifecycle/scene rendezvous is the authoritative foreground decision for
+  // the rare path where a process-owned attempt was initially Suspended. The
+  // normal launch path remains gated by the causal attempt phase.
+  if (!force_foreground && !foreground_transition_attempt(attempt))
+    return;
+  const auto destination = state.process_identity_locked(process_id);
+  if (!destination)
+    return;
+  std::optional<KernelSharedState::ForegroundTransitionProcess> source;
+  if (state.active_application_scene &&
+      state.active_application_scene->process_id != process_id) {
+    source = state.process_identity_locked(
+        state.active_application_scene->process_id);
+  }
+  state.begin_foreground_transition_locked(
+      attempt.token, attempt.origin_touch_sequence, std::move(source),
+      destination);
+  if (mark_spawned ||
+      attempt.origin == KernelSharedState::ApplicationLaunchOrigin::Spawn) {
+    state.mark_foreground_transition_locked(
+        KernelSharedState::ForegroundTransitionMilestone::Spawned,
+        process_id);
+  }
+}
+
 void record_resident_lookup_locked(
     KernelSharedState &state, std::uint32_t process_id,
     std::uint64_t origin_touch_sequence) {
@@ -2176,9 +2214,23 @@ void complete_home_transition_after_present(
 void record_application_spawn(
     KernelSharedState &state, std::uint32_t sender_process_id,
     std::uint32_t process_id, std::string_view executable_path,
-    std::span<const std::string> arguments, SceneCoordinator *scenes) {
+    std::span<const std::string> arguments, SceneCoordinator *scenes,
+    bool force_foreground) {
   std::lock_guard lock{state.mach_mutex};
-  if (!process_is_springboard_locked(state, sender_process_id) ||
+  // Older SpringBoard launches fork through launchd and then SETEXEC in the
+  // child, so that successful child has parent PID 1 rather than the
+  // SpringBoard PID. Keep this exception causal: a SETEXEC application is
+  // foreground-observable only while a recent host input or exact handoff is
+  // still pending. Ordinary/background launches retain the sender guard.
+  const auto exact_foreground_handoff =
+      state.foreground_application_attempt_process_id == process_id ||
+      state.pending_application_handoff_process_id == process_id;
+  const auto causal_setexec_foreground =
+      force_foreground &&
+      (state.pending_foreground_transition_input_completion ||
+       exact_foreground_handoff);
+  if ((!process_is_springboard_locked(state, sender_process_id) &&
+       !causal_setexec_foreground) ||
       process_id == 0U ||
       !is_application_executable_path(executable_path) ||
       std::find(arguments.begin(), arguments.end(), "--suspended") !=
@@ -2199,6 +2251,8 @@ void record_application_spawn(
   } else {
     bind_held_launch_locked(state, process_id, *attempt);
   }
+  ensure_foreground_transition_snapshot_locked(state, process_id, *attempt,
+                                               force_foreground, true);
   if (origin_touch_sequence == 0U &&
       state.pending_application_handoff_process_id) {
     state.pending_application_handoff_process_id.reset();
@@ -2303,6 +2357,21 @@ void activate_resolved_application_locked(KernelSharedState &state,
   if (scene_committed && event_object != 0U && valid_application &&
       !preserves_committed_foreground &&
       (!requests_userspace_prewarm || owns_active_intent)) {
+    // Some firmware builds bind the resident process first and only later
+    // promote its Suspended attempt through this scene/event rendezvous. Start
+    // the bounded observation at the point foreground ownership is actually
+    // accepted, then fill milestones already proven by this block.
+    ensure_foreground_transition_snapshot_locked(state, process_id, *attempt,
+                                                 true, false);
+    state.mark_foreground_transition_locked(
+        KernelSharedState::ForegroundTransitionMilestone::EventPortReady,
+        process_id);
+    state.mark_foreground_transition_locked(
+        KernelSharedState::ForegroundTransitionMilestone::Lifecycle,
+        process_id);
+    state.mark_foreground_transition_locked(
+        KernelSharedState::ForegroundTransitionMilestone::SceneCommitted,
+        process_id);
     std::optional<KernelSharedState::ApplicationTouchTransform> transform;
     if (const auto cached =
             state.application_scene_transforms.find(process_id);

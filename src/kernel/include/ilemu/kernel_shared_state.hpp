@@ -1164,6 +1164,11 @@ struct KernelSharedState {
   // may grow an unbounded trace buffer or use this state to make a decision.
   std::optional<ForegroundTransitionSnapshot>
       foreground_transition_snapshot;
+  // Host control can finish a gesture before the guest creates the PID-bound
+  // launch attempt. Keep only that one latest boundary so a late snapshot can
+  // still report the real input-complete timestamp without retaining a trace.
+  std::optional<ForegroundTransitionTimestamp>
+      pending_foreground_transition_input_completion;
   std::optional<ApplicationLaunchBarrier> application_launch_barrier;
   // Home is a cancellation watermark independent of the latest Lock barrier.
   // Keeping it monotonic prevents a later Lock from reviving an older launch.
@@ -1380,6 +1385,17 @@ struct KernelSharedState {
     if (launch_token == 0U || !destination)
       return;
     if (foreground_transition_snapshot &&
+        foreground_transition_snapshot->launch_token == launch_token &&
+        foreground_transition_snapshot->destination == destination) {
+      if (!foreground_transition_snapshot->input_completed &&
+          pending_foreground_transition_input_completion) {
+        foreground_transition_snapshot->input_completed =
+            pending_foreground_transition_input_completion;
+        pending_foreground_transition_input_completion.reset();
+      }
+      return;
+    }
+    if (foreground_transition_snapshot &&
         foreground_transition_snapshot->terminal_state ==
             ForegroundTransitionTerminalState::Pending) {
       foreground_transition_snapshot->terminal_state =
@@ -1395,6 +1411,11 @@ struct KernelSharedState {
     snapshot.input_sequence = input_sequence;
     snapshot.source = std::move(source);
     snapshot.destination = std::move(destination);
+    if (pending_foreground_transition_input_completion) {
+      snapshot.input_completed =
+          pending_foreground_transition_input_completion;
+      pending_foreground_transition_input_completion.reset();
+    }
     foreground_transition_snapshot = std::move(snapshot);
   }
 
@@ -1453,14 +1474,15 @@ struct KernelSharedState {
   }
 
   void mark_foreground_transition_input_complete_locked() {
+    const auto timestamp = foreground_transition_timestamp_locked();
     if (!foreground_transition_snapshot ||
         foreground_transition_snapshot->terminal_state !=
-            ForegroundTransitionTerminalState::Pending ||
-        foreground_transition_snapshot->input_completed) {
+            ForegroundTransitionTerminalState::Pending) {
+      pending_foreground_transition_input_completion = timestamp;
       return;
     }
-    foreground_transition_snapshot->input_completed =
-        foreground_transition_timestamp_locked();
+    if (!foreground_transition_snapshot->input_completed)
+      foreground_transition_snapshot->input_completed = timestamp;
   }
 
   void note_foreground_transition_content_change_locked(

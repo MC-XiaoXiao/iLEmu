@@ -244,6 +244,19 @@ public:
     shared_state_->note_foreground_transition_content_change_locked(
         process_id, content_revision);
   }
+  void record_foreground_transition_display_submission(
+      std::uint32_t process_id, std::uint64_t frame_sequence) {
+    if (process_id == 0U)
+      return;
+    const auto content_revision = display_state_->content_revision();
+    std::lock_guard lock{shared_state_->mach_mutex};
+    shared_state_->mark_foreground_transition_locked(
+        KernelSharedState::ForegroundTransitionMilestone::
+            DestinationFirstFrame,
+        process_id, frame_sequence);
+    shared_state_->note_foreground_transition_content_change_locked(
+        process_id, content_revision);
+  }
   void mark_foreground_transition_input_complete() {
     std::lock_guard lock{shared_state_->mach_mutex};
     shared_state_->mark_foreground_transition_input_complete_locked();

@@ -11,7 +11,7 @@ bool concise_prefix(std::string_view text) {
         "[control]", "[device-state]", "[loader]", "[clock]",
         "[process]", "[display]", "[baseband]", "[watch]", "[gles]",
         "[perf]", "[perf-display]", "[perf-clock]", "[boot]", "[benchmark]",
-        "[transition]",
+        "[transition]", "[transition-snapshot]", "[display-attribution]",
     };
     for (const auto prefix : prefixes) {
         if (text.starts_with(prefix)) return true;

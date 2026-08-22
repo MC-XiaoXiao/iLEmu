@@ -3570,46 +3570,50 @@ void boot(const std::vector<std::string> &args, Output &output) {
     output.line("[baseband] replay input=" + *baseband_input_path +
                 " bytes=" + std::to_string(baseband_input.size()));
   }
+  const auto record_first_transition_submission =
+      [&](const DisplayFrame &frame) {
+        std::lock_guard lock{transition_attribution.mutex};
+        if (!transition_attribution.awaiting_first_submission)
+          return;
+        transition_attribution.awaiting_first_submission = false;
+        transition_attribution.first_submission_sequence = frame.sequence;
+        transition_attribution.stability_baseline_set = false;
+        transition_attribution.stability_baseline_display_time = 0;
+        transition_attribution.internal_stability_marker_emitted = false;
+        const auto submitted_nanoseconds =
+            frame.submitted_at == std::chrono::steady_clock::time_point{}
+                ? steady_nanoseconds()
+                : static_cast<std::uint64_t>(
+                      std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          frame.submitted_at.time_since_epoch())
+                          .count());
+        output.marker(
+            "[transition] frame-submit id=" +
+            std::to_string(transition_attribution.active_transition_id) +
+            " sequence=" + std::to_string(frame.sequence) +
+            " owner-pid=" + std::to_string(frame.owner_process_id) +
+            " submitted-ns=" + std::to_string(submitted_nanoseconds) +
+            " input-complete-ns=" +
+            std::to_string(transition_attribution.input_complete_nanoseconds));
+      };
   if (sdl_display) {
     initial->kernel->set_display_presenter(
-        [backend = sdl_display.get()](DisplayFrame frame) {
+        [backend = sdl_display.get(), kernel = initial->kernel.get(),
+         &record_first_transition_submission](DisplayFrame frame) {
+          kernel->record_foreground_transition_display_submission(
+              frame.owner_process_id, frame.sequence);
+          record_first_transition_submission(frame);
           backend->present(std::move(frame));
         });
   } else if (frame_file_presenter) {
     initial->kernel->set_display_presenter(
         [backend = frame_file_presenter.get(),
-         &output, &steady_nanoseconds, &transition_attribution](
+         kernel = initial->kernel.get(), &output,
+         &record_first_transition_submission](
             DisplayFrame frame) {
-          {
-            std::lock_guard lock{transition_attribution.mutex};
-            if (transition_attribution.awaiting_first_submission) {
-              transition_attribution.awaiting_first_submission = false;
-              transition_attribution.first_submission_sequence =
-                  frame.sequence;
-              transition_attribution.stability_baseline_set = false;
-              transition_attribution.stability_baseline_display_time = 0;
-              transition_attribution.internal_stability_marker_emitted =
-                  false;
-              const auto submitted_nanoseconds =
-                  frame.submitted_at ==
-                          std::chrono::steady_clock::time_point{}
-                      ? steady_nanoseconds()
-                      : static_cast<std::uint64_t>(
-                            std::chrono::duration_cast<
-                                std::chrono::nanoseconds>(
-                                frame.submitted_at.time_since_epoch())
-                                .count());
-              output.marker(
-                  "[transition] frame-submit id=" +
-                  std::to_string(transition_attribution.active_transition_id) +
-                  " sequence=" +
-                  std::to_string(frame.sequence) +
-                  " submitted-ns=" + std::to_string(submitted_nanoseconds) +
-                  " input-complete-ns=" +
-                  std::to_string(
-                      transition_attribution.input_complete_nanoseconds));
-            }
-          }
+          kernel->record_foreground_transition_display_submission(
+              frame.owner_process_id, frame.sequence);
+          record_first_transition_submission(frame);
           // Animation diagnostics must not turn the measured window into a
           // PNG-writing benchmark. The presenter callback is still the
           // actual CPU-present boundary for the headless sink; retain pixels
