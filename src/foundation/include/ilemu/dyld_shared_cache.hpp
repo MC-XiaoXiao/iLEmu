@@ -267,6 +267,11 @@ public:
 
   [[nodiscard]] DyldCacheFileView main_cache() const;
   [[nodiscard]] DyldCacheFileRange files() const noexcept;
+  // Return the retained immutable, demand-paged backing for one cache file.
+  // Shared-region mappings use this to avoid reopening and revalidating the
+  // same cache member once per mapping entry during process startup.
+  [[nodiscard]] std::shared_ptr<const ImmutableFileView>
+  immutable_file_view_at(std::size_t index) const;
   [[nodiscard]] DyldCacheImageRange images() const noexcept;
   [[nodiscard]] const ContentIdentity &generation_identity() const noexcept;
   [[nodiscard]] std::uint32_t platform() const noexcept;
@@ -325,9 +330,6 @@ private:
 
   [[nodiscard]] DyldCacheFileView file_view_at(std::size_t index) const;
   [[nodiscard]] DyldCacheImageView image_view_at(std::size_t index) const;
-  [[nodiscard]] std::shared_ptr<const ImmutableFileView>
-  immutable_file_view_at(std::size_t index) const;
-
   friend class DyldCacheFileRange;
   friend class DyldCacheImageRange;
 };

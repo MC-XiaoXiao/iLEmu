@@ -67,6 +67,7 @@ struct MappingSource {
   std::uint64_t file_offset{};
   std::optional<GuestFileGeneration> expected_generation;
   std::optional<ContentIdentity> expected_content_identity;
+  std::shared_ptr<const ImmutableFileView> immutable_file_view;
 };
 
 enum class MappingLayout {
@@ -538,9 +539,12 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
       -> std::optional<MappingSource> {
     if (shared_cache == nullptr) {
       return MappingSource{descriptor->second, mapping.file_offset, std::nullopt,
-                           std::nullopt};
+                           std::nullopt, {}};
     }
-    for (const auto &file : shared_cache->files()) {
+    const auto files = shared_cache->files();
+    for (std::size_t file_index = 0; file_index < files.size();
+         ++file_index) {
+      const auto file = files[file_index];
       for (const auto &range : file.mappings) {
         if (mapping.address < range.address ||
             mapping.address - range.address > range.size ||
@@ -561,7 +565,8 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
           return std::nullopt;
         }
         return MappingSource{source_path, source_offset, file.file_generation,
-                             file.content_identity};
+                             file.content_identity,
+                             shared_cache->immutable_file_view_at(file_index)};
       }
     }
     return std::nullopt;
@@ -603,7 +608,8 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
                                   mapping_permissions,
                                   source->path, source->file_offset,
                                   source->expected_generation,
-                                  source->expected_content_identity);
+                                  source->expected_content_identity, {},
+                                  source->immutable_file_view);
     if (diagnostics.enabled())
       map_time += std::chrono::steady_clock::now() - map_started;
     if (!mapped) {

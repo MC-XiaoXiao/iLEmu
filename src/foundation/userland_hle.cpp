@@ -597,6 +597,21 @@ UserlandHleRegistry::SharedHlePlan::file_range(
                    static_cast<std::size_t>(*end)};
 }
 
+void UserlandHleRegistry::SharedHlePlan::build_image_patch_index() {
+  image_patch_indices_.clear();
+  for (std::size_t index = 0; index < patch_count(); ++index) {
+    const auto patch = patch_view(index);
+    image_patch_indices_[{patch.file_index, patch.image_index}].push_back(index);
+  }
+}
+
+const std::vector<std::size_t> *
+UserlandHleRegistry::SharedHlePlan::patches_for_image(
+    std::uint32_t file_index, std::uint32_t image_index) const {
+  const auto found = image_patch_indices_.find({file_index, image_index});
+  return found == image_patch_indices_.end() ? nullptr : &found->second;
+}
+
 UserlandHleCall::UserlandHleCall(UserlandHleRegistry &registry, Cpu &cpu,
                                  AddressSpace &memory, Output &output,
                                  std::uint32_t process_id,
@@ -1036,6 +1051,7 @@ UserlandHleRegistry::load_shared_plan_artifact(
       if (!previous || !current || *current <= *previous) return {};
     }
   }
+  mapped_plan->build_image_patch_index();
   return std::shared_ptr<const SharedHlePlan>{std::move(mapped_plan)};
 
 }
@@ -1373,6 +1389,7 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
     }
     plan->file_ranges.emplace(file_index, std::pair{begin, index});
   }
+  plan->build_image_patch_index();
 
   std::shared_ptr<const SharedHlePlan> immutable_plan = std::move(plan);
   shared_plans.insert_or_assign(plan_key, immutable_plan);
@@ -1548,25 +1565,31 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
     static_cast<void>(queue_patch(address, instruction, std::nullopt));
   };
   if (use_shared_plan) {
-    const auto file_range = shared_hle_plan_->file_range(*cache_file_index);
-    if (file_range) {
-      auto first_patch = file_range->first;
-      const auto end_patch = file_range->second;
-      while (first_patch < end_patch &&
-             shared_hle_plan_->patch_view(first_patch).file_offset <
-                 mapping_offset) {
-        ++first_patch;
-      }
-      auto after_patch = first_patch;
-      while (after_patch < end_patch &&
-             shared_hle_plan_->patch_view(after_patch).file_offset <
-                 mapping_file_end) {
-        ++after_patch;
-      }
-      for (auto patch_index = first_patch; patch_index < after_patch;
-           ++patch_index) {
+    const auto *image_patches = shared_hle_plan_->patches_for_image(
+        *cache_file_index, *cache_image_index);
+    if (image_patches != nullptr) {
+      const auto lower_bound_patch = [&](std::size_t begin,
+                                         std::size_t end,
+                                         std::uint64_t offset) {
+        while (begin < end) {
+          const auto middle = begin + (end - begin) / 2U;
+          const auto patch_index = (*image_patches)[middle];
+          if (shared_hle_plan_->patch_view(patch_index).file_offset < offset)
+            begin = middle + 1U;
+          else
+            end = middle;
+        }
+        return begin;
+      };
+      const auto first_patch =
+          lower_bound_patch(0U, image_patches->size(), mapping_offset);
+      const auto end_patch = image_patches->size();
+      const auto after_patch =
+          lower_bound_patch(first_patch, end_patch, mapping_file_end);
+      for (auto patch_position = first_patch; patch_position < after_patch;
+           ++patch_position) {
+        const auto patch_index = (*image_patches)[patch_position];
         const auto patch = shared_hle_plan_->patch_view(patch_index);
-        if (patch.image_index != *cache_image_index) continue;
         if (patch.file_offset >
             std::numeric_limits<std::uint64_t>::max() - patch.patch_size) {
           continue;

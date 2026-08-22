@@ -293,6 +293,12 @@ private:
     [[nodiscard]] SharedHlePatchView patch_view(std::size_t index) const;
     [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>>
     file_range(std::uint32_t file_index) const;
+    // Build a second derived index so a mapped image only visits its own
+    // shared-cache patches. The primary file range remains offset-sorted for
+    // consumers that need to walk a whole cache member.
+    void build_image_patch_index();
+    [[nodiscard]] const std::vector<std::size_t> *patches_for_image(
+        std::uint32_t file_index, std::uint32_t image_index) const;
 
   private:
     friend class UserlandHleRegistry;
@@ -303,6 +309,8 @@ private:
     std::uint64_t mapped_range_records_offset_{};
     std::uint64_t mapped_string_offset_{};
     std::uint64_t mapped_string_size_{};
+    std::map<std::pair<std::uint32_t, std::uint32_t>,
+             std::vector<std::size_t>> image_patch_indices_;
   };
 
   [[nodiscard]] static std::shared_ptr<const SharedHlePlan>
