@@ -6,27 +6,34 @@
 
 namespace ilemu {
 
-// Relates Mach absolute time to a host monotonic clock for unbounded emulator
-// sessions. Bounded test runs intentionally do not use this class so their
-// virtual-time behavior remains deterministic and fast.
+// Mach absolute time is the guest DeviceMonotonicTime domain. Execution
+// accounting advances that domain through the scheduler; this mapping only
+// answers what device time the host steady clock permits. It never rebases the
+// mapping when guest execution is slow.
+using DeviceMonotonicTime = std::uint64_t;
+
+// Relates guest DeviceMonotonicTime to one fixed host steady-clock origin for
+// interactive emulator sessions. Bounded test runs intentionally do not use
+// this class so their deterministic-time behavior remains fast and repeatable.
 class RealtimePacer {
 public:
-  explicit RealtimePacer(std::uint64_t initial_virtual_time);
+  explicit RealtimePacer(DeviceMonotonicTime initial_device_monotonic_time);
 
-  [[nodiscard]] std::uint64_t allowed_virtual_time() const;
+  [[nodiscard]] DeviceMonotonicTime
+  allowed_device_monotonic_time() const;
   [[nodiscard]] std::chrono::nanoseconds
-  delay_until(std::uint64_t virtual_time) const;
-  // Return the stable host deadline corresponding to a future virtual time.
+  delay_until(DeviceMonotonicTime device_monotonic_time) const;
+  // Return the stable host deadline corresponding to a future device time.
   // Unlike now()+delay_until(), this does not drift when the caller refreshes
   // the same guest deadline on every idle-loop iteration.
   [[nodiscard]] std::chrono::steady_clock::time_point
-  host_deadline_for(std::uint64_t virtual_time) const;
+  host_deadline_for(DeviceMonotonicTime device_monotonic_time) const;
   [[nodiscard]] std::chrono::nanoseconds limit_delay(
       std::chrono::nanoseconds delay,
       std::optional<std::chrono::steady_clock::time_point> host_deadline) const;
 
 private:
-  std::uint64_t initial_virtual_time_{};
+  DeviceMonotonicTime initial_device_monotonic_time_{};
   std::chrono::steady_clock::time_point initial_host_time_;
 };
 

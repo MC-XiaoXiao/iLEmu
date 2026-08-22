@@ -4583,9 +4583,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
     std::chrono::steady_clock::time_point started_at;
     std::uint64_t guest_started_at{};
     std::uint64_t pacer_started_at{};
-    std::uint64_t rebase_count{};
-    std::uint64_t rebase_deficit_total_nanoseconds{};
-    std::uint64_t rebase_deficit_max_nanoseconds{};
+    std::uint64_t host_sync_count{};
+    std::uint64_t host_sync_deficit_total_nanoseconds{};
+    std::uint64_t host_sync_deficit_max_nanoseconds{};
   };
   std::optional<DisplayClockWindow> display_clock_window;
   Runtime *display_scanout_owner = nullptr;
@@ -4686,8 +4686,36 @@ void boot(const std::vector<std::string> &args, Output &output) {
     output.line("[clock] mode=virtual-rtc seed=host-once rate=realtime "
                 "timezone=guest");
   }
+  // Interactive DeviceMonotonicTime is mapped to host steady time exactly
+  // once. If execution accounting leaves the guest behind that fixed map,
+  // move the shared device clock forward and service its devices; never reset
+  // the map to make a CPU-bound guest appear realtime.
+  const auto synchronize_device_time_to_host = [&]() {
+    if (!realtime_pacer)
+      return;
+    const auto current_time =
+        initial_runtime->kernel->current_absolute_time();
+    const auto host_time = realtime_pacer->allowed_device_monotonic_time();
+    if (current_time >= host_time)
+      return;
+    const auto deficit = host_time - current_time;
+    if (display_clock_window) {
+      ++display_clock_window->host_sync_count;
+      display_clock_window->host_sync_deficit_total_nanoseconds += deficit;
+      display_clock_window->host_sync_deficit_max_nanoseconds = std::max(
+          display_clock_window->host_sync_deficit_max_nanoseconds, deficit);
+    }
+    initial_runtime->kernel->advance_absolute_time(host_time);
+    for (auto &runtime : runtimes) {
+      if (runtime.get() != initial_runtime &&
+          !runtime->kernel->process().exited) {
+        runtime->kernel->service_time_dependent_devices(host_time);
+      }
+    }
+  };
   while ((!bounded_execution || remaining_ticks != 0) &&
          !initial_runtime->kernel->process().exited && !hard_stop) {
+    synchronize_device_time_to_host();
     observe_transition_stability();
     std::optional<XnuThreadId> input_preferred_thread;
     refresh_catalog_after_file_mutations(scheduler.runnable_count() == 0);
@@ -4875,7 +4903,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 display_clock_window = DisplayClockWindow{
                     std::chrono::steady_clock::now(),
                     initial_runtime->kernel->current_absolute_time(),
-                    realtime_pacer->allowed_virtual_time()};
+                    realtime_pacer->allowed_device_monotonic_time()};
               }
               output.marker("[control] perf-begin label=" + command.message);
             }
@@ -4889,7 +4917,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
             const auto guest_ended_at =
                 initial_runtime->kernel->current_absolute_time();
             const auto pacer_ended_at =
-                realtime_pacer ? realtime_pacer->allowed_virtual_time() : 0U;
+                realtime_pacer
+                    ? realtime_pacer->allowed_device_monotonic_time()
+                    : 0U;
             if (performance_counters().cpu_source_diagnostics_configured()) {
               scheduler.set_dispatch_diagnostics(false);
             }
@@ -4921,14 +4951,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   " host-ns=" + std::to_string(host_elapsed) +
                   " guest-ns=" + std::to_string(guest_elapsed) +
                   " pacer-ns=" + std::to_string(pacer_elapsed) +
-                  " rebase=" +
-                  std::to_string(display_clock_window->rebase_count) +
-                  " rebase-deficit-total-ns=" +
+                  " host-sync=" +
+                  std::to_string(display_clock_window->host_sync_count) +
+                  " host-sync-deficit-total-ns=" +
                   std::to_string(
-                      display_clock_window->rebase_deficit_total_nanoseconds) +
-                  " rebase-deficit-max-ns=" +
+                      display_clock_window
+                          ->host_sync_deficit_total_nanoseconds) +
+                  " host-sync-deficit-max-ns=" +
                   std::to_string(
-                      display_clock_window->rebase_deficit_max_nanoseconds));
+                      display_clock_window
+                          ->host_sync_deficit_max_nanoseconds));
             }
             if (frame_file_presenter)
               frame_file_presenter->set_enabled(true);
@@ -5006,45 +5038,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
       }
     };
     resolve_display_urgent_thread();
+    synchronize_device_time_to_host();
     if (realtime_pacer) {
-      const auto current_time =
-          initial_runtime->kernel->current_absolute_time();
-      const auto host_time = realtime_pacer->allowed_virtual_time();
-      if (current_time < host_time) {
-        if (scheduler.runnable_count() == 0) {
-          // Guest execution advances virtual time in calibrated instruction
-          // quanta. Catch it up from the host monotonic clock only while all
-          // guest threads are idle; forcing wall time through a CPU-bound
-          // guest skips animation timers before it can produce their frames.
-          initial_runtime->kernel->advance_absolute_time(host_time);
-          for (auto &runtime : runtimes) {
-            if (runtime.get() != initial_runtime &&
-                !runtime->kernel->process().exited) {
-              runtime->kernel->service_time_dependent_devices(host_time);
-            }
-          }
-        } else {
-          // Short host-side execution and HLE work belongs inside the current
-          // display period. Preserve that phase so the following sleep is
-          // shortened instead of making every frame take work + one period.
-          // Rebase only sustained overload; this still bounds the timer jump
-          // when a CPU-bound guest eventually becomes idle.
-          const auto deficit = host_time - current_time;
-          if (deficit >
-              iokit_abi::display_vsync::period_absolute_time) {
-            if (display_clock_window) {
-              ++display_clock_window->rebase_count;
-              display_clock_window->rebase_deficit_total_nanoseconds +=
-                  deficit;
-              display_clock_window->rebase_deficit_max_nanoseconds =
-                  std::max(
-                      display_clock_window->rebase_deficit_max_nanoseconds,
-                      deficit);
-            }
-            realtime_pacer.emplace(current_time);
-          }
-        }
-      }
       const auto display_urgent_runnable = [&]() {
         if (!display_urgent_thread)
           return false;
@@ -6099,7 +6094,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
           if (guest_ahead_delay <= std::chrono::nanoseconds::zero()) {
             if (!observed_guest_timer_deadline ||
                 *observed_guest_timer_deadline != *next_deadline) {
-              const auto allowed = realtime_pacer->allowed_virtual_time();
+              const auto allowed =
+                  realtime_pacer->allowed_device_monotonic_time();
               if (allowed > *next_deadline) {
                 const auto overshoot = allowed - *next_deadline;
                 ++guest_timer_overshoot_samples;
