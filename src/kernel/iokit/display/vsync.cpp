@@ -93,6 +93,36 @@ bool queue_has_vsync(const std::deque<KernelSharedState::MachMessage> &queue) {
   });
 }
 
+void discard_queued_vsync_messages_locked(KernelSharedState &state,
+                                          std::uint32_t notification_port) {
+  const auto queue = state.mach_queues.find(notification_port);
+  if (queue == state.mach_queues.end())
+    return;
+
+  auto &messages = queue->second;
+  const auto old_size = messages.size();
+  for (auto message = messages.begin(); message != messages.end();) {
+    if (message->bytes.size() < darwin::mig_wire::message_header_size) {
+      ++message;
+      continue;
+    }
+    std::uint32_t identifier = 0;
+    for (std::size_t byte = 0; byte < sizeof(identifier); ++byte) {
+      identifier |=
+          std::to_integer<std::uint32_t>(
+              message->bytes[darwin::mig_wire::header_identifier_offset + byte])
+          << (byte * 8U);
+    }
+    if (identifier == iokit_abi::display_vsync::message_identifier) {
+      message = messages.erase(message);
+    } else {
+      ++message;
+    }
+  }
+  if (messages.size() != old_size)
+    state.note_mach_queue_topology_change_locked();
+}
+
 KernelSharedState::MachMessage
 make_vsync_message(const KernelSharedState::IOKitDisplayVSync &registration,
                    std::uint64_t deadline) {
@@ -204,6 +234,14 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
     vsync.async_reference[iokit_abi::display_vsync::async_refcon_index] =
         refcon;
     vsync.enabled = callout != 0 && refcon != 0;
+    if (!vsync.enabled) {
+      // A message queued before disable belongs to the old registration
+      // window. Do not let a sleeping receiver consume it after selector 9
+      // has been turned off: selector-off means no callback and no frame.
+      // The scanout surface remains untouched, so the last real frame stays
+      // visible until the next fixed-phase enable.
+      discard_queued_vsync_messages_locked(state, vsync.notification_port);
+    }
     state.mark_foreground_transition_locked(
         vsync.enabled
             ? KernelSharedState::ForegroundTransitionMilestone::VsyncEnabled
