@@ -172,6 +172,25 @@ struct HlePerformanceSnapshot {
     std::uint64_t nanoseconds{};
 };
 
+// Per-guest-process CPU attribution is collected only inside an explicit
+// display performance window.  Keeping this separate from the global
+// histograms lets transition diagnostics distinguish application work from
+// SpringBoard and system-service work without adding a production hot-path
+// branch when telemetry is disabled.
+struct DiagnosticProcessSnapshot {
+    std::uint32_t process_id{};
+    std::uint64_t cpu_runs{};
+    std::uint64_t cpu_ticks{};
+    std::uint64_t cpu_execute_nanoseconds{};
+    std::uint64_t cpu_total_nanoseconds{};
+    std::uint64_t cpu_ensure_jit_nanoseconds{};
+    std::uint64_t cpu_invalidation_nanoseconds{};
+    std::uint64_t cpu_artifact_preload_nanoseconds{};
+    std::uint64_t svc_calls{};
+    std::uint64_t host_yield_checks{};
+    std::uint64_t host_yields{};
+};
+
 enum class PerfDiagnosticSourceKind : std::uint8_t {
     SchedulerBack,
     SchedulerFront,
@@ -271,6 +290,8 @@ struct PerformanceSnapshot {
     std::uint64_t display_first_nanoseconds{};
     std::uint64_t display_last_nanoseconds{};
     std::uint64_t display_mailbox_coalesced{};
+    std::uint64_t display_vsync_queued{};
+    std::uint64_t display_vsync_coalesced{};
     std::uint64_t display_vsync_budget_cuts{};
     std::uint64_t display_vsync_budget_saved_ticks{};
     std::uint64_t display_queue_depth{};
@@ -304,6 +325,7 @@ struct PerformanceSnapshot {
     std::array<PerfLatencySnapshot, perf_latency_kind_count> latencies{};
     std::vector<JitCacheSlotSnapshot> jit_cache_slots;
     std::vector<HlePerformanceSnapshot> hle_subsystems;
+    std::vector<DiagnosticProcessSnapshot> diagnostic_processes;
     std::vector<DiagnosticSourceSnapshot> diagnostic_sources;
     std::uint64_t diagnostic_source_inserted{};
     std::uint64_t diagnostic_source_updated{};
@@ -472,6 +494,8 @@ class PerformanceCounters {
         std::uint64_t frame_sequence,
         std::chrono::steady_clock::time_point dequeued_at);
     void record_display_mailbox_coalesced();
+    void record_display_vsync_queued();
+    void record_display_vsync_coalesced();
     void record_display_vsync_budget(std::uint64_t original_ticks,
                                      std::uint64_t limited_ticks);
     void record_display_queue_depth(std::uint64_t depth);
@@ -645,6 +669,8 @@ class PerformanceCounters {
     std::atomic<std::uint64_t> display_first_nanoseconds_{};
     std::atomic<std::uint64_t> display_last_nanoseconds_{};
     std::atomic<std::uint64_t> display_mailbox_coalesced_{};
+    std::atomic<std::uint64_t> display_vsync_queued_{};
+    std::atomic<std::uint64_t> display_vsync_coalesced_{};
     std::atomic<std::uint64_t> display_vsync_budget_cuts_{};
     std::atomic<std::uint64_t> display_vsync_budget_saved_ticks_{};
     std::atomic<std::uint64_t> display_queue_depth_{};
@@ -714,6 +740,9 @@ class PerformanceCounters {
     mutable std::mutex hle_mutex_;
     std::map<std::string, HlePerformanceSnapshot, std::less<>>
         hle_subsystems_;
+    mutable std::mutex diagnostic_process_mutex_;
+    std::map<std::uint32_t, DiagnosticProcessSnapshot>
+        diagnostic_processes_;
     using DiagnosticSourceKey = std::tuple<PerfDiagnosticSourceKind,
                                            std::uint32_t, std::uint32_t,
                                            std::uint64_t>;

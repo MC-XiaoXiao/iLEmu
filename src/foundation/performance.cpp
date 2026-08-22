@@ -42,6 +42,7 @@ constexpr std::array diagnostic_sequence_kinds{
     PerfLatencyKind::VsyncCallbackToSwapEnd,
     PerfLatencyKind::VsyncSwapEndToGuestSubmit,
     PerfLatencyKind::VsyncDueToGuestSubmit,
+    PerfLatencyKind::MachMessageSendToReceive,
 };
 std::array<std::vector<std::uint64_t>, diagnostic_sequence_kinds.size()>
     diagnostic_display_sequences;
@@ -446,8 +447,8 @@ bool is_display_window_latency(PerfLatencyKind kind) {
     case PerfLatencyKind::CpuRunTotal:
     case PerfLatencyKind::SchedulerRunnableToDispatch:
     case PerfLatencyKind::SchedulerPreemptionRequestToReturn:
-        return true;
     case PerfLatencyKind::MachMessageSendToReceive:
+        return true;
     case PerfLatencyKind::InputEnqueue:
     case PerfLatencyKind::DisplayPresent:
     case PerfLatencyKind::JitColdPath:
@@ -559,6 +560,8 @@ void PerformanceCounters::reset(bool enabled) {
     display_first_nanoseconds_.store(0, std::memory_order_relaxed);
     display_last_nanoseconds_.store(0, std::memory_order_relaxed);
     display_mailbox_coalesced_.store(0, std::memory_order_relaxed);
+    display_vsync_queued_.store(0, std::memory_order_relaxed);
+    display_vsync_coalesced_.store(0, std::memory_order_relaxed);
     display_vsync_budget_cuts_.store(0, std::memory_order_relaxed);
     display_vsync_budget_saved_ticks_.store(0, std::memory_order_relaxed);
     display_queue_depth_.store(0, std::memory_order_relaxed);
@@ -656,6 +659,10 @@ void PerformanceCounters::reset(bool enabled) {
 
 void PerformanceCounters::reset_display_window_locked() {
     display_window_snapshot_ = PerformanceSnapshot{};
+    {
+        std::lock_guard process_lock{diagnostic_process_mutex_};
+        diagnostic_processes_.clear();
+    }
     for (auto& histogram : display_window_latencies_)
         histogram = DisplayWindowLatencyHistogram{};
     for (auto& sequence : diagnostic_display_sequences)
@@ -976,6 +983,14 @@ PerformanceCounters::end_display_window() {
                 result.hle_subsystems.push_back(
                     HlePerformanceSnapshot{name, calls, nanoseconds});
             }
+        }
+    }
+    {
+        std::lock_guard process_lock{diagnostic_process_mutex_};
+        result.diagnostic_processes.reserve(diagnostic_processes_.size());
+        for (const auto& [process_id, stats] : diagnostic_processes_) {
+            static_cast<void>(process_id);
+            result.diagnostic_processes.push_back(stats);
         }
     }
     {
@@ -1721,6 +1736,21 @@ void PerformanceCounters::record_display_mailbox_coalesced() {
         &PerformanceSnapshot::display_mailbox_coalesced);
 }
 
+void PerformanceCounters::record_display_vsync_queued() {
+    if (!enabled())
+        return;
+    display_vsync_queued_.fetch_add(1, std::memory_order_relaxed);
+    add_display_window_counter(&PerformanceSnapshot::display_vsync_queued);
+}
+
+void PerformanceCounters::record_display_vsync_coalesced() {
+    if (!enabled())
+        return;
+    display_vsync_coalesced_.fetch_add(1, std::memory_order_relaxed);
+    add_display_window_counter(
+        &PerformanceSnapshot::display_vsync_coalesced);
+}
+
 void PerformanceCounters::record_display_vsync_budget(
     std::uint64_t original_ticks, std::uint64_t limited_ticks) {
     if (!enabled() || limited_ticks >= original_ticks)
@@ -2210,6 +2240,32 @@ void PerformanceCounters::record_cpu_run_phases(
             static_cast<PerfLatencyKind>(first_kind + index),
             phase_nanoseconds[index]);
     }
+    {
+        std::lock_guard process_lock{diagnostic_process_mutex_};
+        auto [found, inserted] = diagnostic_processes_.try_emplace(
+            process_id, DiagnosticProcessSnapshot{});
+        auto& process = found->second;
+        if (inserted)
+            process.process_id = process_id;
+        const auto phase = [&](PerfLatencyKind kind) {
+            return phase_nanoseconds[static_cast<std::size_t>(kind) -
+                                    first_kind];
+        };
+        ++process.cpu_runs;
+        process.cpu_ticks += consumed_ticks;
+        process.cpu_execute_nanoseconds += phase(PerfLatencyKind::CpuRunExecute);
+        process.cpu_total_nanoseconds += phase(PerfLatencyKind::CpuRunTotal);
+        process.cpu_ensure_jit_nanoseconds +=
+            phase(PerfLatencyKind::CpuRunEnsureJit);
+        process.cpu_invalidation_nanoseconds +=
+            phase(PerfLatencyKind::CpuRunInvalidation);
+        process.cpu_artifact_preload_nanoseconds +=
+            phase(PerfLatencyKind::CpuRunArtifactPreload);
+        process.svc_calls += svc_calls;
+        process.host_yield_checks += host_yield_checks;
+        if (host_yielded)
+            ++process.host_yields;
+    }
     if (phase_nanoseconds.back() >= minimum_diagnostic_cpu_run_nanoseconds &&
         diagnostic_cpu_runs.size() < maximum_diagnostic_sequence_samples) {
         DiagnosticCpuRun run;
@@ -2584,6 +2640,10 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
         display_last_nanoseconds_.load(std::memory_order_relaxed);
     result.display_mailbox_coalesced =
         display_mailbox_coalesced_.load(std::memory_order_relaxed);
+    result.display_vsync_queued =
+        display_vsync_queued_.load(std::memory_order_relaxed);
+    result.display_vsync_coalesced =
+        display_vsync_coalesced_.load(std::memory_order_relaxed);
     result.display_vsync_budget_cuts =
         display_vsync_budget_cuts_.load(std::memory_order_relaxed);
     result.display_vsync_budget_saved_ticks =
@@ -2690,6 +2750,14 @@ PerformanceSnapshot PerformanceCounters::snapshot() const {
         for (const auto& [name, stats] : hle_subsystems_) {
             static_cast<void>(name);
             result.hle_subsystems.push_back(stats);
+        }
+    }
+    {
+        std::lock_guard process_lock{diagnostic_process_mutex_};
+        result.diagnostic_processes.reserve(diagnostic_processes_.size());
+        for (const auto& [process_id, stats] : diagnostic_processes_) {
+            static_cast<void>(process_id);
+            result.diagnostic_processes.push_back(stats);
         }
     }
     {
@@ -2852,6 +2920,32 @@ std::string_view perf_latency_kind_name(PerfLatencyKind kind) {
     return "unknown";
 }
 
+void append_diagnostic_process_summary(
+    std::ostringstream& text,
+    const std::vector<DiagnosticProcessSnapshot>& processes) {
+    text << " diagnostic-process-format="
+            "pid:runs/ticks/execute-ns/total-ns/ensure-jit-ns/"
+            "invalidation-ns/artifact-preload-ns/svc/yields/yield-checks"
+         << " diagnostic-process=";
+    if (processes.empty()) {
+        text << "none";
+        return;
+    }
+    for (std::size_t index = 0; index < processes.size(); ++index) {
+        if (index != 0)
+            text << ',';
+        const auto& process = processes[index];
+        text << process.process_id << ':' << process.cpu_runs << '/'
+             << process.cpu_ticks << '/' << process.cpu_execute_nanoseconds
+             << '/' << process.cpu_total_nanoseconds << '/'
+             << process.cpu_ensure_jit_nanoseconds << '/'
+             << process.cpu_invalidation_nanoseconds << '/'
+             << process.cpu_artifact_preload_nanoseconds << '/'
+             << process.svc_calls << '/' << process.host_yields << '/'
+             << process.host_yield_checks;
+    }
+}
+
 std::string format_performance_summary(
     const PerformanceSnapshot& snapshot) {
     std::uint64_t fallback_total = 0;
@@ -2937,6 +3031,8 @@ std::string format_performance_summary(
          << " host-copy=" << snapshot.host_copies
          << " display-submit=" << snapshot.display_submissions
          << " display-coalesced=" << snapshot.display_mailbox_coalesced
+         << " display-vsync=" << snapshot.display_vsync_queued << '/'
+         << snapshot.display_vsync_coalesced
          << " display-vsync-budget=" << snapshot.display_vsync_budget_cuts
          << '/' << snapshot.display_vsync_budget_saved_ticks
          << " display-queue=" << snapshot.display_queue_depth
@@ -3072,6 +3168,7 @@ std::string format_performance_summary(
          << snapshot.diagnostic_source_dropped << '/'
          << snapshot.diagnostic_source_capacity << '/'
          << snapshot.diagnostic_source_peak_occupancy;
+    append_diagnostic_process_summary(text, snapshot.diagnostic_processes);
     return text.str();
 }
 
@@ -3120,6 +3217,8 @@ std::string format_display_performance_summary(
          << frames_per_second(present_returns,
                               snapshot.present_first_nanoseconds,
                               snapshot.present_last_nanoseconds)
+         << " display-vsync=" << snapshot.display_vsync_queued << '/'
+         << snapshot.display_vsync_coalesced
          << " latency-format=samples/p50/p95/p99/max/>16.7/>20/>33.3/>50"
          << " latency-ns=";
     constexpr std::array display_latencies{
@@ -3425,6 +3524,7 @@ std::string format_display_performance_summary(
          << snapshot.diagnostic_source_dropped << '/'
          << snapshot.diagnostic_source_capacity << '/'
          << snapshot.diagnostic_source_peak_occupancy;
+    append_diagnostic_process_summary(text, snapshot.diagnostic_processes);
     return text.str();
 }
 

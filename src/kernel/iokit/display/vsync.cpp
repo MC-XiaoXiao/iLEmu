@@ -477,6 +477,9 @@ void deliver_due_vsync_locked(KernelSharedState &state,
           registration.async_reference
               [iokit_abi::display_vsync::async_refcon_index],
           registration.sequence);
+      performance_counters().record_display_vsync_queued();
+    } else {
+      performance_counters().record_display_vsync_coalesced();
     }
     const auto period = iokit_abi::display_vsync::period_absolute_time;
     const auto elapsed = deadline - *registration.next_deadline;
