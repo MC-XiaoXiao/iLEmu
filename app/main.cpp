@@ -5670,10 +5670,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
       if (hard_stop)
         break;
     }
-    const auto display_deadline_before_advance =
-        initial_runtime->kernel->next_display_vsync_deadline();
-    const auto display_time_before_advance =
-        initial_runtime->kernel->current_absolute_time();
     scheduler.advance_time(scheduler_round_ticks);
     if (scheduler_round_ticks != 0) {
       initial_runtime->kernel->advance_time_by(
@@ -5708,13 +5704,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
       if (display_scanout_owner != nullptr)
         static_cast<void>(
             display_scanout_owner->kernel->refresh_display_scanout());
-      if (display_deadline_before_advance &&
-          *display_deadline_before_advance > display_time_before_advance &&
-          advanced_time >= *display_deadline_before_advance &&
-          display_scanout_owner != nullptr) {
-        display_urgent_process =
-            display_scanout_owner->kernel->process().pid;
-      }
+    }
+    if (display_scanout_owner != nullptr) {
+      // A realtime host-sync step at the top of the loop can advance the
+      // device clock and enqueue a VSync message without passing through the
+      // guest-time advance above. Keep the scanout owner marked for the next
+      // polling iteration in both cases; resolve_display_urgent_thread()
+      // still selects a thread only when it has a pending VSync receive.
+      display_urgent_process = display_scanout_owner->kernel->process().pid;
     }
     const auto display_submissions =
         initial_runtime->kernel->display_submitted_frames();
