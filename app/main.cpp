@@ -5311,7 +5311,14 @@ void boot(const std::vector<std::string> &args, Output &output) {
         preferred_thread = input_preferred_thread;
       }
     }
-    display_urgent_process.reset();
+    // Keep the scanout owner identity across scheduler iterations.  The
+    // realtime pacer can take the `guest ahead` path below without executing
+    // a guest slice; clearing this identity here would then make the next
+    // host-synchronized VSync wake an ordinary runnable thread instead of
+    // allowing resolve_display_urgent_thread() to select its receiver.
+    // Ownership is refreshed after guest execution and stale identities are
+    // harmless because resolution still requires a live matching runtime and
+    // a pending VSync receive.
     std::vector<XnuScheduledSlice> scheduled_batch;
     scheduled_batch.reserve(guest_processor_count);
     auto reservable_ticks = remaining_ticks;
