@@ -145,6 +145,8 @@ void CompatibilityKernel::exit_process(std::uint32_t status,
       events.exit_generation = 1U;
     events.wait_status =
         signal != 0U ? signal & 0x7fU : (status & 0xffU) << 8U;
+    shared_state_->mark_foreground_transition_cancelled_for_process_locked(
+        process_.pid);
   }
   kernel_bsd::interval_timer::retire_process(*shared_state_, process_.pid);
   shared_state_->advisory_file_locks->release_process_record_locks(

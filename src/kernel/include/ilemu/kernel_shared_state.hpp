@@ -493,6 +493,10 @@ struct KernelSharedState {
     std::vector<std::byte> code_signature_entitlements;
     std::optional<CoreAnimationRemoteProfile> core_animation_remote_profile;
     DisplayOrientation display_orientation{DisplayOrientation::Portrait};
+    // A PID can be reused after its zombie record is reaped. Keep a monotonic
+    // product-internal identity so transition observations never join facts
+    // from two different processes that share a PID.
+    std::uint64_t incarnation{};
   };
   struct ProcessKeventState {
     std::uint64_t exec_generation{};
@@ -720,6 +724,54 @@ struct KernelSharedState {
     // launch so the firmware's handoff animation runs exactly once.
     bool foreground_handoff{};
     bool handoff_animation_dispatched{};
+  };
+  struct ForegroundTransitionProcess {
+    std::uint32_t process_id{};
+    std::uint64_t incarnation{};
+
+    bool operator==(const ForegroundTransitionProcess &) const = default;
+  };
+  struct ForegroundTransitionTimestamp {
+    std::uint64_t device_monotonic_time{};
+    std::uint64_t host_steady_nanoseconds{};
+  };
+  enum class ForegroundTransitionMilestone {
+    Spawned,
+    EventPortReady,
+    Lifecycle,
+    SceneCommitted,
+    VsyncDisabled,
+    VsyncEnabled,
+    DestinationFirstFrame,
+  };
+  enum class ForegroundTransitionTerminalState {
+    Pending,
+    Stable,
+    Cancelled,
+    Superseded,
+  };
+  struct ForegroundTransitionSnapshot {
+    std::uint64_t generation{};
+    std::uint64_t launch_token{};
+    std::uint64_t input_sequence{};
+    std::optional<ForegroundTransitionProcess> source;
+    std::optional<ForegroundTransitionProcess> destination;
+    std::optional<ForegroundTransitionTimestamp> input_completed;
+    std::optional<ForegroundTransitionTimestamp> spawned;
+    std::optional<ForegroundTransitionTimestamp> event_port_ready;
+    std::optional<ForegroundTransitionTimestamp> lifecycle;
+    std::optional<ForegroundTransitionTimestamp> scene_committed;
+    std::optional<ForegroundTransitionTimestamp> vsync_disabled;
+    std::optional<ForegroundTransitionTimestamp> vsync_enabled;
+    std::optional<ForegroundTransitionTimestamp> destination_first_frame;
+    std::uint64_t destination_first_frame_sequence{};
+    std::optional<ForegroundTransitionTimestamp> first_content_change;
+    std::optional<ForegroundTransitionTimestamp> last_content_change;
+    std::uint64_t first_content_revision{};
+    std::uint64_t last_content_revision{};
+    ForegroundTransitionTerminalState terminal_state{
+        ForegroundTransitionTerminalState::Pending};
+    std::optional<ForegroundTransitionTimestamp> terminal;
   };
   struct ApplicationLaunchBarrier {
     ApplicationSuspensionReason reason{ApplicationSuspensionReason::None};
@@ -1105,6 +1157,13 @@ struct KernelSharedState {
   float springboard_unlock_touch_end_x{};
   float springboard_unlock_touch_end_y{};
   std::uint64_t next_application_launch_token{1};
+  std::uint64_t next_process_incarnation{1};
+  std::uint64_t next_foreground_transition_generation{1};
+  // One active immutable observation is sufficient for the current
+  // foreground handoff. Replacing it is explicit and bounded; no event path
+  // may grow an unbounded trace buffer or use this state to make a decision.
+  std::optional<ForegroundTransitionSnapshot>
+      foreground_transition_snapshot;
   std::optional<ApplicationLaunchBarrier> application_launch_barrier;
   // Home is a cancellation watermark independent of the latest Lock barrier.
   // Keeping it monotonic prevents a later Lock from reviving an older launch.
@@ -1291,6 +1350,174 @@ struct KernelSharedState {
   std::map<std::uint32_t, ProcessKeventState> process_kevent_states;
   std::shared_ptr<bsd::AdvisoryFileLockRegistry> advisory_file_locks{
       std::make_shared<bsd::AdvisoryFileLockRegistry>()};
+
+  [[nodiscard]] static std::uint64_t
+  foreground_transition_host_steady_nanoseconds() {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch())
+            .count());
+  }
+
+  [[nodiscard]] ForegroundTransitionTimestamp
+  foreground_transition_timestamp_locked() const {
+    return ForegroundTransitionTimestamp{
+        clock.now(), foreground_transition_host_steady_nanoseconds()};
+  }
+
+  [[nodiscard]] std::optional<ForegroundTransitionProcess>
+  process_identity_locked(std::uint32_t process_id) const {
+    const auto process = processes.find(process_id);
+    if (process == processes.end())
+      return std::nullopt;
+    return ForegroundTransitionProcess{process_id, process->second.incarnation};
+  }
+
+  void begin_foreground_transition_locked(
+      std::uint64_t launch_token, std::uint64_t input_sequence,
+      std::optional<ForegroundTransitionProcess> source,
+      std::optional<ForegroundTransitionProcess> destination) {
+    if (launch_token == 0U || !destination)
+      return;
+    if (foreground_transition_snapshot &&
+        foreground_transition_snapshot->terminal_state ==
+            ForegroundTransitionTerminalState::Pending) {
+      foreground_transition_snapshot->terminal_state =
+          ForegroundTransitionTerminalState::Superseded;
+      foreground_transition_snapshot->terminal =
+          foreground_transition_timestamp_locked();
+    }
+    ForegroundTransitionSnapshot snapshot;
+    snapshot.generation = next_foreground_transition_generation++;
+    if (snapshot.generation == 0U)
+      snapshot.generation = next_foreground_transition_generation++;
+    snapshot.launch_token = launch_token;
+    snapshot.input_sequence = input_sequence;
+    snapshot.source = std::move(source);
+    snapshot.destination = std::move(destination);
+    foreground_transition_snapshot = std::move(snapshot);
+  }
+
+  void mark_foreground_transition_locked(
+      ForegroundTransitionMilestone milestone,
+      std::optional<std::uint32_t> process_id = std::nullopt,
+      std::uint64_t frame_sequence = 0U) {
+    if (!foreground_transition_snapshot ||
+        foreground_transition_snapshot->terminal_state !=
+            ForegroundTransitionTerminalState::Pending)
+      return;
+    if (process_id) {
+      if (!foreground_transition_snapshot->destination ||
+          foreground_transition_snapshot->destination->process_id !=
+              *process_id) {
+        return;
+      }
+      const auto process = process_identity_locked(*process_id);
+      if (!process || *process != *foreground_transition_snapshot->destination)
+        return;
+    }
+    const auto timestamp = foreground_transition_timestamp_locked();
+    switch (milestone) {
+    case ForegroundTransitionMilestone::Spawned:
+      if (!foreground_transition_snapshot->spawned)
+        foreground_transition_snapshot->spawned = timestamp;
+      break;
+    case ForegroundTransitionMilestone::EventPortReady:
+      if (!foreground_transition_snapshot->event_port_ready)
+        foreground_transition_snapshot->event_port_ready = timestamp;
+      break;
+    case ForegroundTransitionMilestone::Lifecycle:
+      if (!foreground_transition_snapshot->lifecycle)
+        foreground_transition_snapshot->lifecycle = timestamp;
+      break;
+    case ForegroundTransitionMilestone::SceneCommitted:
+      if (!foreground_transition_snapshot->scene_committed)
+        foreground_transition_snapshot->scene_committed = timestamp;
+      break;
+    case ForegroundTransitionMilestone::VsyncDisabled:
+      if (!foreground_transition_snapshot->vsync_disabled)
+        foreground_transition_snapshot->vsync_disabled = timestamp;
+      break;
+    case ForegroundTransitionMilestone::VsyncEnabled:
+      if (!foreground_transition_snapshot->vsync_enabled)
+        foreground_transition_snapshot->vsync_enabled = timestamp;
+      break;
+    case ForegroundTransitionMilestone::DestinationFirstFrame:
+      if (!foreground_transition_snapshot->destination_first_frame) {
+        foreground_transition_snapshot->destination_first_frame = timestamp;
+        foreground_transition_snapshot->destination_first_frame_sequence =
+            frame_sequence;
+      }
+      break;
+    }
+  }
+
+  void mark_foreground_transition_input_complete_locked() {
+    if (!foreground_transition_snapshot ||
+        foreground_transition_snapshot->terminal_state !=
+            ForegroundTransitionTerminalState::Pending ||
+        foreground_transition_snapshot->input_completed) {
+      return;
+    }
+    foreground_transition_snapshot->input_completed =
+        foreground_transition_timestamp_locked();
+  }
+
+  void note_foreground_transition_content_change_locked(
+      std::uint32_t process_id, std::uint64_t content_revision) {
+    if (!foreground_transition_snapshot || process_id == 0U ||
+        foreground_transition_snapshot->terminal_state !=
+            ForegroundTransitionTerminalState::Pending ||
+        !foreground_transition_snapshot->destination ||
+        foreground_transition_snapshot->destination->process_id !=
+            process_id ||
+        process_identity_locked(process_id) !=
+            foreground_transition_snapshot->destination ||
+        content_revision == 0U ||
+        (foreground_transition_snapshot->last_content_change &&
+         foreground_transition_snapshot->last_content_revision ==
+             content_revision)) {
+      return;
+    }
+    const auto timestamp = foreground_transition_timestamp_locked();
+    if (!foreground_transition_snapshot->first_content_change) {
+      foreground_transition_snapshot->first_content_change = timestamp;
+      foreground_transition_snapshot->first_content_revision =
+          content_revision;
+    }
+    foreground_transition_snapshot->last_content_change = timestamp;
+    foreground_transition_snapshot->last_content_revision = content_revision;
+  }
+
+  void mark_foreground_transition_stable_locked() {
+    if (!foreground_transition_snapshot ||
+        foreground_transition_snapshot->terminal_state !=
+            ForegroundTransitionTerminalState::Pending)
+      return;
+    foreground_transition_snapshot->terminal_state =
+        ForegroundTransitionTerminalState::Stable;
+    foreground_transition_snapshot->terminal =
+        foreground_transition_timestamp_locked();
+  }
+
+  void mark_foreground_transition_cancelled_for_process_locked(
+      std::uint32_t process_id) {
+    if (!foreground_transition_snapshot ||
+        foreground_transition_snapshot->terminal_state !=
+            ForegroundTransitionTerminalState::Pending ||
+        !foreground_transition_snapshot->destination ||
+        foreground_transition_snapshot->destination->process_id !=
+            process_id ||
+        process_identity_locked(process_id) !=
+            foreground_transition_snapshot->destination) {
+      return;
+    }
+    foreground_transition_snapshot->terminal_state =
+        ForegroundTransitionTerminalState::Cancelled;
+    foreground_transition_snapshot->terminal =
+        foreground_transition_timestamp_locked();
+  }
+
   std::mutex mach_mutex;
   mutable std::mutex socket_mutex;
   mutable std::mutex filesystem_mutex;

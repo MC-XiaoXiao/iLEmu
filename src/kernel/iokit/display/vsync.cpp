@@ -204,6 +204,10 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
     vsync.async_reference[iokit_abi::display_vsync::async_refcon_index] =
         refcon;
     vsync.enabled = callout != 0 && refcon != 0;
+    state.mark_foreground_transition_locked(
+        vsync.enabled
+            ? KernelSharedState::ForegroundTransitionMilestone::VsyncEnabled
+            : KernelSharedState::ForegroundTransitionMilestone::VsyncDisabled);
     if (vsync.enabled) {
       const auto now = state.clock.now();
       const auto period = iokit_abi::display_vsync::period_absolute_time;

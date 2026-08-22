@@ -837,8 +837,12 @@ bool resolve_flattened_display_scene_locked(
     state.foreground_application_attempt_process_id = process_id;
   }
   release_application_fullscreen_suppression_locked(state, process_id);
-  if (scenes && !scenes->client_scene(process_id))
+  if (scenes && !scenes->client_scene(process_id)) {
+    state.mark_foreground_transition_locked(
+        KernelSharedState::ForegroundTransitionMilestone::SceneCommitted,
+        process_id);
     scenes->commit_client_scene(process_id, std::nullopt);
+  }
   return true;
 }
 
@@ -1023,6 +1027,26 @@ KernelSharedState::ApplicationLaunchAttempt &begin_launch_attempt_locked(
           origin_touch_sequence, origin, phase,
           programmatic_foreground_spawn || handoff_foreground_spawn, false});
   static_cast<void>(inserted);
+  const auto foreground_transition_phase =
+      attempt->second.phase == KernelSharedState::ApplicationLaunchPhase::Launching ||
+      attempt->second.phase == KernelSharedState::ApplicationLaunchPhase::Active ||
+      attempt->second.phase == KernelSharedState::ApplicationLaunchPhase::HeldLock ||
+      attempt->second.foreground_handoff;
+  if (foreground_transition_phase) {
+    std::optional<KernelSharedState::ForegroundTransitionProcess> source;
+    if (state.active_application_scene &&
+        state.active_application_scene->process_id != process_id) {
+      source = state.process_identity_locked(
+          state.active_application_scene->process_id);
+    }
+    state.begin_foreground_transition_locked(
+        attempt->second.token, origin_touch_sequence, std::move(source),
+        state.process_identity_locked(process_id));
+    if (origin == KernelSharedState::ApplicationLaunchOrigin::Spawn)
+      state.mark_foreground_transition_locked(
+          KernelSharedState::ForegroundTransitionMilestone::Spawned,
+          process_id);
+  }
   if (attempt->second.phase ==
           KernelSharedState::ApplicationLaunchPhase::Launching ||
       attempt->second.phase ==
@@ -2587,6 +2611,12 @@ void record_application_event_delivery_locked(
                                   resume_origin_touch_sequence);
   }
   state.application_event_objects_by_process[process_id] = destination;
+  state.mark_foreground_transition_locked(
+      KernelSharedState::ForegroundTransitionMilestone::EventPortReady,
+      process_id);
+  state.mark_foreground_transition_locked(
+      KernelSharedState::ForegroundTransitionMilestone::Lifecycle,
+      process_id);
   // Event delivery proves the PID-owned route, not lifecycle meaning. Retry
   // the readiness rendezvous for every firmware event so an event port that
   // arrives after a LayerKit commit, or after display timing becomes live,
@@ -2608,6 +2638,9 @@ void record_application_remote_scene_commit_locked(
     return;
   }
 
+  state.mark_foreground_transition_locked(
+      KernelSharedState::ForegroundTransitionMilestone::SceneCommitted,
+      sender_pid);
   scenes->commit_client_scene(sender_pid, std::nullopt);
   activate_resolved_application_locked(state, sender_pid, scenes);
 }

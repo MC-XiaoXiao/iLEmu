@@ -267,6 +267,11 @@ std::uint64_t DisplayState::content_revision() const {
   return content_revision_;
 }
 
+std::uint32_t DisplayState::content_owner_process_id() const {
+  std::lock_guard lock{mutex_};
+  return content_owner_process_id_;
+}
+
 bool DisplayState::powered_on() const {
   std::lock_guard lock{mutex_};
   return powered_on_;

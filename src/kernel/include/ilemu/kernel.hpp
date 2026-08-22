@@ -227,8 +227,30 @@ public:
   [[nodiscard]] std::uint64_t display_content_revision() const {
     return display_state_->content_revision();
   }
+  [[nodiscard]] std::uint32_t display_content_owner_process_id() const {
+    return display_state_->content_owner_process_id();
+  }
   [[nodiscard]] std::uint64_t display_vsync_pulse_count() const {
     return shared_state_->display_vsync_pulse_count;
+  }
+  [[nodiscard]] std::optional<KernelSharedState::ForegroundTransitionSnapshot>
+  foreground_transition_snapshot() const {
+    std::lock_guard lock{shared_state_->mach_mutex};
+    return shared_state_->foreground_transition_snapshot;
+  }
+  void note_foreground_transition_content_change(
+      std::uint32_t process_id, std::uint64_t content_revision) {
+    std::lock_guard lock{shared_state_->mach_mutex};
+    shared_state_->note_foreground_transition_content_change_locked(
+        process_id, content_revision);
+  }
+  void mark_foreground_transition_input_complete() {
+    std::lock_guard lock{shared_state_->mach_mutex};
+    shared_state_->mark_foreground_transition_input_complete_locked();
+  }
+  void mark_foreground_transition_stable() {
+    std::lock_guard lock{shared_state_->mach_mutex};
+    shared_state_->mark_foreground_transition_stable_locked();
   }
   [[nodiscard]] std::optional<std::uint32_t>
   active_client_process_id() const {

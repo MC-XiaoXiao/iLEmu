@@ -91,6 +91,7 @@ public:
   [[nodiscard]] DisplayFrame snapshot() const;
   [[nodiscard]] std::uint64_t presented_frames() const;
   [[nodiscard]] std::uint64_t content_revision() const;
+  [[nodiscard]] std::uint32_t content_owner_process_id() const;
   [[nodiscard]] bool powered_on() const;
   [[nodiscard]] DisplayGeometry geometry() const { return geometry_; }
   [[nodiscard]] std::uint32_t width() const { return geometry_.width; }

@@ -298,6 +298,13 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   mobile_framebuffer_hle_.set_scene_coordinator(scene_coordinator_);
   mobile_framebuffer_hle_.set_frame_presented_handler(
       [this](std::uint32_t process_id) {
+        {
+          std::lock_guard lock{shared_state_->mach_mutex};
+          shared_state_->mark_foreground_transition_locked(
+              KernelSharedState::ForegroundTransitionMilestone::
+                  DestinationFirstFrame,
+              process_id, display_state_->presented_frames());
+        }
         graphics_services_input::complete_home_transition_after_present(
             *shared_state_, process_id, scene_coordinator_.get());
       });
@@ -975,12 +982,18 @@ void CompatibilityKernel::set_process_image(
   if (name.size() > 16)
     name.resize(16);
   auto &record = shared_state_->processes[process_.pid];
+  const auto new_process_incarnation = record.incarnation == 0U || record.exited;
   record.parent_pid = process_.parent_pid;
   record.process_group = process_.process_group;
   record.uid = process_.uid;
   record.effective_uid = process_.effective_uid;
   record.gid = process_.gid;
   record.effective_gid = process_.effective_gid;
+  if (new_process_incarnation) {
+    record.incarnation = shared_state_->next_process_incarnation++;
+    if (record.incarnation == 0U)
+      record.incarnation = shared_state_->next_process_incarnation++;
+  }
   record.exited = false;
   record.exit_status = 0;
   record.termination_signal = 0;
@@ -2089,6 +2102,9 @@ void CompatibilityKernel::inherit_process_state(
   child_record.exit_status = 0;
   child_record.termination_signal = 0;
   child_record.exited = false;
+  child_record.incarnation = shared_state_->next_process_incarnation++;
+  if (child_record.incarnation == 0U)
+    child_record.incarnation = shared_state_->next_process_incarnation++;
   if (child_record.command.empty())
     child_record.command = "unknown";
   shared_state_->processes[child_pid] = std::move(child_record);

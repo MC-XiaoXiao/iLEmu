@@ -3080,6 +3080,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   const auto mark_transition_input_complete =
       [&](std::string_view kind) {
         const auto completed_at = steady_nanoseconds();
+        if (!runtimes.empty())
+          runtimes.front()->kernel->mark_foreground_transition_input_complete();
         std::lock_guard lock{transition_attribution.mutex};
         transition_attribution.active_transition_id =
             ++transition_attribution.next_transition_id;
@@ -4593,6 +4595,72 @@ void boot(const std::vector<std::string> &args, Output &output) {
       initial_runtime->kernel->display_submitted_frames();
   auto last_display_submission = std::chrono::steady_clock::now();
   constexpr std::uint64_t internal_stability_vsync_pulses = 60;
+  const auto transition_timestamp = [](const auto &timestamp) {
+    if (!timestamp)
+      return std::string{"none"};
+    return std::to_string(timestamp->device_monotonic_time) + "/" +
+           std::to_string(timestamp->host_steady_nanoseconds);
+  };
+  const auto transition_process = [](const auto &process) {
+    if (!process)
+      return std::string{"none"};
+    return std::to_string(process->process_id) + "/" +
+           std::to_string(process->incarnation);
+  };
+  const auto transition_terminal = [](const auto terminal) {
+    using Terminal =
+        KernelSharedState::ForegroundTransitionTerminalState;
+    switch (terminal) {
+    case Terminal::Pending:
+      return std::string{"pending"};
+    case Terminal::Stable:
+      return std::string{"stable"};
+    case Terminal::Cancelled:
+      return std::string{"cancelled"};
+    case Terminal::Superseded:
+      return std::string{"superseded"};
+    }
+    return std::string{"unknown"};
+  };
+  const auto emit_foreground_transition_snapshot =
+      [&](std::string_view phase) {
+        const auto snapshot = initial_runtime->kernel->foreground_transition_snapshot();
+        if (!snapshot) {
+          output.marker("[transition-snapshot] phase=" +
+                        std::string{phase} + " state=none");
+          return;
+        }
+        output.marker(
+            "[transition-snapshot] phase=" + std::string{phase} +
+            " generation=" + std::to_string(snapshot->generation) +
+            " token=" + std::to_string(snapshot->launch_token) +
+            " input-sequence=" + std::to_string(snapshot->input_sequence) +
+            " source=" + transition_process(snapshot->source) +
+            " destination=" + transition_process(snapshot->destination) +
+            " input-complete=" + transition_timestamp(snapshot->input_completed) +
+            " spawned=" + transition_timestamp(snapshot->spawned) +
+            " event-port-ready=" +
+            transition_timestamp(snapshot->event_port_ready) +
+            " lifecycle=" + transition_timestamp(snapshot->lifecycle) +
+            " scene-committed=" +
+            transition_timestamp(snapshot->scene_committed) +
+            " vsync-disabled=" + transition_timestamp(snapshot->vsync_disabled) +
+            " vsync-enabled=" + transition_timestamp(snapshot->vsync_enabled) +
+            " destination-first-frame=" +
+            transition_timestamp(snapshot->destination_first_frame) +
+            " destination-first-frame-sequence=" +
+            std::to_string(snapshot->destination_first_frame_sequence) +
+            " first-content-change=" +
+            transition_timestamp(snapshot->first_content_change) +
+            " first-content-revision=" +
+            std::to_string(snapshot->first_content_revision) +
+            " last-content-change=" +
+            transition_timestamp(snapshot->last_content_change) +
+            " last-content-revision=" +
+            std::to_string(snapshot->last_content_revision) +
+            " terminal=" + transition_terminal(snapshot->terminal_state) +
+            " terminal-time=" + transition_timestamp(snapshot->terminal));
+      };
   const auto observe_transition_stability = [&]() {
     if (!transition_attribution.internal_stability_active.load(
             std::memory_order_acquire)) {
@@ -4603,6 +4671,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
     const auto content_revision =
         initial_runtime->kernel->display_content_revision();
     const auto display_time = initial_runtime->kernel->current_absolute_time();
+    initial_runtime->kernel->note_foreground_transition_content_change(
+        initial_runtime->kernel->display_content_owner_process_id(),
+        content_revision);
     std::lock_guard lock{transition_attribution.mutex};
     ++transition_attribution.stability_observation_count;
     transition_attribution.stability_last_observed_content_revision =
@@ -4647,6 +4718,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
     transition_attribution.internal_stability_active.store(
         false, std::memory_order_release);
     const auto stable_nanoseconds = steady_nanoseconds();
+    initial_runtime->kernel->mark_foreground_transition_stable();
+    emit_foreground_transition_snapshot("stable");
     output.marker(
         "[transition] internal-stable id=" +
         std::to_string(transition_attribution.active_transition_id) +

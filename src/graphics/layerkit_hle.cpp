@@ -98,6 +98,13 @@ void LayerKitHle::register_handlers(
                       placement->presentation_offset_y,
                       placement->screen_origin_y});
           if (client_process_id && scene_coordinator_) {
+            {
+              std::lock_guard lock{shared_state_->mach_mutex};
+              shared_state_->mark_foreground_transition_locked(
+                  KernelSharedState::ForegroundTransitionMilestone::
+                      SceneCommitted,
+                  *client_process_id);
+            }
             scene_coordinator_->commit_client_scene(
                 *client_process_id,
                 SceneTransform{1.0F, 0.0F, 0.0F, 1.0F,
