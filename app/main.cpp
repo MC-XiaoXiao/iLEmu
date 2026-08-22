@@ -4701,7 +4701,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
     const auto deficit = host_time - current_time;
     if (display_clock_window) {
       ++display_clock_window->host_sync_count;
-      display_clock_window->host_sync_deficit_total_nanoseconds += deficit;
+      display_clock_window->host_sync_deficit_total_nanoseconds =
+          deficit > std::numeric_limits<std::uint64_t>::max() -
+                         display_clock_window
+                             ->host_sync_deficit_total_nanoseconds
+              ? std::numeric_limits<std::uint64_t>::max()
+              : display_clock_window->host_sync_deficit_total_nanoseconds +
+                    deficit;
       display_clock_window->host_sync_deficit_max_nanoseconds = std::max(
           display_clock_window->host_sync_deficit_max_nanoseconds, deficit);
     }
