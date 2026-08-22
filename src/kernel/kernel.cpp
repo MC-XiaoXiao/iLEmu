@@ -308,6 +308,18 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
         graphics_services_input::complete_home_transition_after_present(
             *shared_state_, process_id, scene_coordinator_.get());
       });
+  mobile_framebuffer_hle_.set_semantic_presentation_handler(
+      [this](std::uint32_t process_id) {
+        const auto frame_sequence = display_state_->presented_frames();
+        const auto content_revision = display_state_->content_revision();
+        std::lock_guard lock{shared_state_->mach_mutex};
+        shared_state_->mark_foreground_transition_locked(
+            KernelSharedState::ForegroundTransitionMilestone::
+                DestinationFirstFrame,
+            process_id, frame_sequence);
+        shared_state_->note_foreground_transition_content_change_locked(
+            process_id, content_revision);
+      });
   register_core_telephony_hle(
       userland_hle_, [this] { return wifi_state_; },
       [this](const WifiSnapshot &before, const WifiSnapshot &after) {

@@ -5,6 +5,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <vector>
 
 #include "ilemu/host_graphics.hpp"
@@ -36,13 +37,19 @@ public:
     void set_scene_coordinator(std::shared_ptr<SceneCoordinator> scenes);
     void set_frame_presented_handler(
         std::function<void(std::uint32_t)> handler);
+    // A compositor-owned panel submission can still contain an active
+    // client's layers. Keep that semantic client observation separate from
+    // the physical process that owns DisplayState's scanout.
+    void set_semantic_presentation_handler(
+        std::function<void(std::uint32_t)> handler);
     [[nodiscard]] bool has_active_layers() const;
 
 private:
     void set_background_color(UserlandHleCall& call);
     void set_layer(UserlandHleCall& call);
     void submit_layers(UserlandHleCall& call);
-    void record_presentation(UserlandHleCall& call);
+    [[nodiscard]] std::optional<std::uint32_t>
+    record_presentation(UserlandHleCall& call);
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
     [[nodiscard]] bool
     application_surface_allowed(std::uint32_t producer_process_id,
@@ -79,6 +86,7 @@ private:
     std::shared_ptr<KernelSharedState> shared_state_;
     std::shared_ptr<SceneCoordinator> scene_coordinator_;
     std::function<void(std::uint32_t)> frame_presented_handler_;
+    std::function<void(std::uint32_t)> semantic_presentation_handler_;
     std::shared_ptr<GlesRenderer> host_graphics_;
     std::unique_ptr<CommandEncoder> command_encoder_;
     std::shared_ptr<HostSurface> scanout_surface_;

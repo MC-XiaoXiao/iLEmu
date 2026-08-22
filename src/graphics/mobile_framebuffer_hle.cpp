@@ -103,13 +103,15 @@ MobileFramebufferHle::MobileFramebufferHle(
       performance_counters().record_vsync_swap_end(
           call.process_id(), call.argument(0));
       submit_layers(call);
-      record_presentation(call);
+      const auto semantic_process_id = record_presentation(call);
       if (display_) {
         display_->present(call.process_id());
         performance_counters().record_vsync_guest_submit(
             call.process_id(), call.argument(0));
         if (frame_presented_handler_)
           frame_presented_handler_(call.process_id());
+        if (semantic_process_id && semantic_presentation_handler_)
+          semantic_presentation_handler_(*semantic_process_id);
       }
     }
     call.set_return(iokit_abi::success);
@@ -196,6 +198,11 @@ void MobileFramebufferHle::set_scene_coordinator(
 void MobileFramebufferHle::set_frame_presented_handler(
     std::function<void(std::uint32_t)> handler) {
   frame_presented_handler_ = std::move(handler);
+}
+
+void MobileFramebufferHle::set_semantic_presentation_handler(
+    std::function<void(std::uint32_t)> handler) {
+  semantic_presentation_handler_ = std::move(handler);
 }
 
 bool MobileFramebufferHle::display_write_allowed(
@@ -813,9 +820,10 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall &call) {
   display_->replace_pixels(std::move(composed), call.process_id());
 }
 
-void MobileFramebufferHle::record_presentation(UserlandHleCall &call) {
+std::optional<std::uint32_t>
+MobileFramebufferHle::record_presentation(UserlandHleCall &call) {
   if (!presentation_tracker_)
-    return;
+    return std::nullopt;
   std::vector<PresentationLayer> presented_layers;
   presented_layers.reserve(layers_.size());
   for (const auto &[order, state] : layers_) {
@@ -845,9 +853,16 @@ void MobileFramebufferHle::record_presentation(UserlandHleCall &call) {
   auto logical_client_scene = scene_coordinator_
                                   ? scene_coordinator_->active_client_scene()
                                   : std::nullopt;
+  const auto semantic_process_id =
+      logical_client_scene && !presented_layers.empty() &&
+              logical_client_scene->state == ClientSceneState::Active
+          ? std::optional<std::uint32_t>{
+                logical_client_scene->client_process_id}
+          : std::nullopt;
   static_cast<void>(presentation_tracker_->record(
       call.process_id(), std::move(presented_layers),
       std::move(logical_client_scene)));
+  return semantic_process_id;
 }
 
 void MobileFramebufferHle::set_background_color(UserlandHleCall &call) {
