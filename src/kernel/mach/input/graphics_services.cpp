@@ -767,12 +767,11 @@ bool process_participates_in_display_timing_locked(
       [&state, process_id](const auto &entry) {
         const auto &[connection_object, registration] = entry;
         // GraphicsServices deliberately toggles its VSync callback around
-        // lifecycle transitions. The retained deadline proves that this live
-        // registration completed at least one real enable, without making
-        // foreground identity depend on the exact disable/enable instruction
-        // interleaving at which SpringBoard's message is delivered.
+        // lifecycle transitions. A retained phase deadline is not a live
+        // subscription: selector 8/9 disable must stop both callbacks and
+        // display-timing participation until the next explicit enable.
         if (registration.owner_pid != process_id ||
-            !registration.next_deadline) {
+            !registration.enabled || !registration.next_deadline) {
           return false;
         }
         const auto connection =
