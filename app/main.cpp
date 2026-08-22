@@ -3975,6 +3975,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::optional<XnuThreadId> last_serial_thread;
   std::optional<std::uint32_t> display_urgent_process;
   std::optional<XnuThreadId> display_urgent_thread;
+  std::optional<std::chrono::steady_clock::time_point>
+      display_urgent_lease_deadline;
 
   std::uint32_t next_pid = 2;
   std::size_t watchpoint_trace_count = 0;
@@ -4450,6 +4452,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
           }
           if (flavor == time_constraint_policy &&
               policy.size() >= time_constraint_policy_word_count) {
+            scheduler.set_realtime_clock_ticks(duration_to_guest_ticks(
+                runtime_ptr->kernel->current_absolute_time(),
+                darwin::mach::thread_policy::absolute_time_units_per_second,
+                guest_ticks_per_second));
             const auto to_scheduler_ticks =
                 [guest_ticks_per_second](std::uint32_t value) {
               return duration_to_guest_ticks(
@@ -4796,9 +4802,16 @@ void boot(const std::vector<std::string> &args, Output &output) {
       }
     }
   };
+  const auto synchronize_scheduler_realtime_clock = [&]() {
+    scheduler.set_realtime_clock_ticks(duration_to_guest_ticks(
+        initial_runtime->kernel->current_absolute_time(),
+        darwin::mach::thread_policy::absolute_time_units_per_second,
+        guest_ticks_per_second));
+  };
   while ((!bounded_execution || remaining_ticks != 0) &&
          !initial_runtime->kernel->process().exited && !hard_stop) {
     synchronize_device_time_to_host();
+    synchronize_scheduler_realtime_clock();
     observe_transition_stability();
     std::optional<XnuThreadId> input_preferred_thread;
     refresh_catalog_after_file_mutations(scheduler.runnable_count() == 0);
@@ -5116,12 +5129,24 @@ void boot(const std::vector<std::string> &args, Output &output) {
           display_urgent_thread = XnuThreadId{
               *display_urgent_process,
               static_cast<std::uint32_t>(*processor)};
+          // A VSync receive is only the entry to the firmware callback. Keep
+          // the callback thread preferred for a bounded host-time lease so
+          // its real SwapEnd can finish across several guest slices. Without
+          // this, the scheduler clears the preference after one slice and
+          // foreground app startup can interrupt the compositor between the
+          // callback and its presentation. This changes no guest clock,
+          // callback count, or frame content, and cannot starve the system
+          // because the lease is short and expires without a presentation.
+          display_urgent_lease_deadline =
+              std::chrono::steady_clock::now() +
+              std::chrono::milliseconds{50};
         }
         break;
       }
     };
     resolve_display_urgent_thread();
     synchronize_device_time_to_host();
+    synchronize_scheduler_realtime_clock();
     if (realtime_pacer) {
       const auto display_urgent_runnable = [&]() {
         if (!display_urgent_thread)
@@ -5259,6 +5284,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
       preferred_thread = XnuThreadId{debug_request->thread->process,
                                      debug_request->thread->thread - 1U};
     }
+    if (display_urgent_lease_deadline &&
+        std::chrono::steady_clock::now() >= *display_urgent_lease_deadline) {
+      display_urgent_thread.reset();
+      display_urgent_lease_deadline.reset();
+    }
     if (!preferred_thread && display_urgent_thread) {
       if (const auto info = scheduler.info(*display_urgent_thread);
           info && info->state == XnuThreadState::Runnable) {
@@ -5271,7 +5301,6 @@ void boot(const std::vector<std::string> &args, Output &output) {
         preferred_thread = input_preferred_thread;
       }
     }
-    display_urgent_thread.reset();
     display_urgent_process.reset();
     std::vector<XnuScheduledSlice> scheduled_batch;
     scheduled_batch.reserve(guest_processor_count);
@@ -5718,6 +5747,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
     if (display_submissions != observed_display_submissions) {
       observed_display_submissions = display_submissions;
       last_display_submission = std::chrono::steady_clock::now();
+      display_urgent_thread.reset();
+      display_urgent_lease_deadline.reset();
     }
     if (ran_thread) {
       guest_idle_since.reset();

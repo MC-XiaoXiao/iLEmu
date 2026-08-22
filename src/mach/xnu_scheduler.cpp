@@ -137,7 +137,7 @@ bool XnuScheduler::make_runnable(XnuThreadId thread) {
     record.info.computation_metered = 0;
     if (record.info.realtime) {
         record.info.realtime_deadline = saturating_add(
-            elapsed_ticks_, record.info.realtime_constraint);
+            realtime_clock_ticks_, record.info.realtime_constraint);
     }
     enqueue(thread, QueuePosition::Back);
     return true;
@@ -325,10 +325,15 @@ bool XnuScheduler::set_realtime(
     record.info.realtime_computation = computation_ticks;
     record.info.realtime_constraint = constraint_ticks;
     record.info.realtime_deadline =
-        saturating_add(elapsed_ticks_, constraint_ticks);
+        saturating_add(realtime_clock_ticks_, constraint_ticks);
     record.info.remaining_quantum = computation_ticks;
     recompute_priority(thread, record);
     return true;
+}
+
+void XnuScheduler::set_realtime_clock_ticks(std::uint64_t elapsed_ticks) {
+    external_realtime_clock_ = true;
+    realtime_clock_ticks_ = std::max(realtime_clock_ticks_, elapsed_ticks);
 }
 
 std::optional<XnuScheduledSlice> XnuScheduler::choose_next(
@@ -865,6 +870,8 @@ void XnuScheduler::unindex_thread(XnuThreadId thread) {
 
 void XnuScheduler::advance_scheduler_time(std::uint64_t consumed_ticks) {
     elapsed_ticks_ = saturating_add(elapsed_ticks_, consumed_ticks);
+    if (!external_realtime_clock_)
+        realtime_clock_ticks_ = elapsed_ticks_;
     expire_depressions();
     elapsed_since_scheduler_tick_ = saturating_add(
         elapsed_since_scheduler_tick_, consumed_ticks);

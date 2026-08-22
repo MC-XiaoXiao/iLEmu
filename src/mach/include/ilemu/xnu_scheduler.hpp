@@ -172,6 +172,12 @@ public:
         XnuThreadId thread, std::uint64_t period_ticks,
         std::uint64_t computation_ticks, std::uint64_t constraint_ticks,
         bool preemptible);
+    // Realtime policy deadlines are defined from mach_absolute_time(), not
+    // from the amount of guest execution that has completed. The interactive
+    // host loop updates this converted device-clock value before processing
+    // wakeups and policy changes; deterministic callers retain the scheduler
+    // execution clock until they opt into this source.
+    void set_realtime_clock_ticks(std::uint64_t elapsed_ticks);
 
     [[nodiscard]] std::optional<XnuScheduledSlice> choose_next(
         std::optional<XnuThreadId> preferred = std::nullopt);
@@ -310,6 +316,8 @@ private:
     std::uint32_t priority_usage_shift_{};
     std::uint64_t elapsed_since_scheduler_tick_{};
     std::uint64_t elapsed_ticks_{};
+    std::uint64_t realtime_clock_ticks_{};
+    bool external_realtime_clock_{};
     std::uint64_t scheduler_tick_{};
     std::uint64_t next_enqueue_sequence_{};
     bool dispatch_diagnostics_enabled_{};
