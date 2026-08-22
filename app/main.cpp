@@ -5151,31 +5151,12 @@ void boot(const std::vector<std::string> &args, Output &output) {
     // execution consuming a slice. Re-resolve here so the already-pending
     // receive gets the same bounded callback lease in this iteration.
     resolve_display_urgent_thread();
-    if (realtime_pacer) {
-      const auto display_urgent_runnable = [&]() {
-        if (!display_urgent_thread)
-          return false;
-        if (const auto info = scheduler.info(*display_urgent_thread);
-            info.has_value()) {
-          return info->state == XnuThreadState::Runnable;
-        }
-        return false;
-      }();
-      const auto guest_ahead_delay = display_urgent_runnable
-          ? std::chrono::nanoseconds::zero()
-          : realtime_pacer->delay_until(
-                initial_runtime->kernel->current_absolute_time());
-      if (guest_ahead_delay > std::chrono::nanoseconds::zero()) {
-        const auto sleep_delay = realtime_pacer->limit_delay(
-            guest_ahead_delay, next_host_control_deadline());
-        if (sleep_delay > std::chrono::nanoseconds::zero()) {
-          wait_for_host_activity(sleep_delay);
-        }
-        // A due host control should wake the polling loop, not make a guest
-        // that is still ahead appear eligible to execute.
-        continue;
-      }
-    }
+    // Materialize a queued VSync receive before realtime pacing. If guest
+    // execution is slightly ahead of the fixed host mapping, sleeping first
+    // hides the already-due display callback and turns a small pacing lead
+    // into a full submission interval. Delivery does not advance guest time;
+    // the urgent display thread below is the only exception that may execute
+    // while the guest is ahead.
     for (auto &runtime : runtimes) {
       for (std::size_t processor = 0; processor < runtime->cpus->size();
            ++processor) {
@@ -5202,6 +5183,31 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 *delivered_input, thread.process, thread.thread);
           }
         }
+      }
+    }
+    if (realtime_pacer) {
+      const auto display_urgent_runnable = [&]() {
+        if (!display_urgent_thread)
+          return false;
+        if (const auto info = scheduler.info(*display_urgent_thread);
+            info.has_value()) {
+          return info->state == XnuThreadState::Runnable;
+        }
+        return false;
+      }();
+      const auto guest_ahead_delay = display_urgent_runnable
+          ? std::chrono::nanoseconds::zero()
+          : realtime_pacer->delay_until(
+              initial_runtime->kernel->current_absolute_time());
+      if (guest_ahead_delay > std::chrono::nanoseconds::zero()) {
+        const auto sleep_delay = realtime_pacer->limit_delay(
+            guest_ahead_delay, next_host_control_deadline());
+        if (sleep_delay > std::chrono::nanoseconds::zero()) {
+          wait_for_host_activity(sleep_delay);
+        }
+        // A due host control should wake the polling loop, not make a guest
+        // that is still ahead appear eligible to execute.
+        continue;
       }
     }
     // XNU keeps a compact zombie process record until its parent waits, but
