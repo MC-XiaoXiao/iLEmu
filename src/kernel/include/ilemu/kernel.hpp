@@ -350,11 +350,20 @@ public:
   next_display_vsync_deadline() const;
   [[nodiscard]] std::optional<std::size_t>
   display_vsync_receiver_processor();
+  // Return the exact queued Mach receiver or, after synchronous mach_msg
+  // delivery, the processor that now owns the uncompleted firmware callback.
+  // This is host-only scheduling metadata and does not alter the receive ABI.
+  [[nodiscard]] std::optional<std::size_t>
+  display_vsync_dependency_processor();
   // Returns the last guest processor observed inside the real display
   // notification callback. This is host scheduling metadata only; callers
   // must fall back to display_vsync_receiver_processor() when unavailable.
   [[nodiscard]] std::optional<std::size_t>
   display_vsync_callback_processor();
+  // True only while a real queued VSync notification has not yet reached the
+  // firmware NotifyFunc boundary. This is host scheduling metadata and does
+  // not synthesize callbacks or keep selector 9 enabled.
+  [[nodiscard]] bool display_vsync_callback_pending();
   void advance_absolute_time(std::uint64_t deadline);
   void advance_time_by(std::uint64_t interval);
   // The clock is shared by every process, while device registrations are

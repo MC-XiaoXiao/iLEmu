@@ -166,6 +166,7 @@ make_vsync_message(std::uint32_t connection_object,
   message.display_vsync_connection_object = connection_object;
   message.display_vsync_registration_generation =
       registration.registration_generation;
+  message.display_vsync_sequence = registration.sequence;
   return message;
 }
 
@@ -230,6 +231,10 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
       discard_queued_vsync_messages_locked(
           state, vsync.notification_port, connection_object,
           vsync.registration_generation);
+      // Disabling selector 9 cancels the old notification window. A queued
+      // message discarded above can no longer enter NotifyFunc, so retire its
+      // host-only callback watermark with the same registration semantics.
+      vsync.callback_sequence = vsync.sequence;
     }
     state.mark_foreground_transition_locked(
         vsync.enabled

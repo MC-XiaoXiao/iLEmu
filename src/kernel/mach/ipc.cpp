@@ -101,6 +101,32 @@ CompatibilityKernel::display_vsync_receiver_processor() {
 }
 
 std::optional<std::size_t>
+CompatibilityKernel::display_vsync_dependency_processor() {
+  std::lock_guard kernel_lock{mutex_};
+  std::lock_guard mach_lock{shared_state_->mach_mutex};
+
+  std::optional<std::size_t> delivered_receiver;
+  for (const auto &[connection_object, registration] :
+       shared_state_->iokit_display_vsync) {
+    static_cast<void>(connection_object);
+    if (!registration.enabled || registration.owner_pid != process_.pid ||
+        registration.callback_sequence >= registration.sequence) {
+      continue;
+    }
+    if (const auto receiver = preferred_pending_mach_receiver_locked(
+            registration.notification_port)) {
+      return receiver;
+    }
+    if (!delivered_receiver && registration.last_receiver_processor &&
+        registration.receiver_sequence > registration.callback_sequence) {
+      delivered_receiver = static_cast<std::size_t>(
+          *registration.last_receiver_processor);
+    }
+  }
+  return delivered_receiver;
+}
+
+std::optional<std::size_t>
 CompatibilityKernel::display_vsync_callback_processor() {
   std::lock_guard kernel_lock{mutex_};
   std::lock_guard mach_lock{shared_state_->mach_mutex};
@@ -125,6 +151,20 @@ CompatibilityKernel::display_vsync_callback_processor() {
     }
   }
   return fallback;
+}
+
+bool CompatibilityKernel::display_vsync_callback_pending() {
+  std::lock_guard kernel_lock{mutex_};
+  std::lock_guard mach_lock{shared_state_->mach_mutex};
+  return std::any_of(
+      shared_state_->iokit_display_vsync.begin(),
+      shared_state_->iokit_display_vsync.end(),
+      [this](const auto &entry) {
+        const auto &registration = entry.second;
+        return registration.enabled &&
+               registration.owner_pid == process_.pid &&
+               registration.callback_sequence < registration.sequence;
+      });
 }
 
 std::optional<std::size_t>
@@ -684,6 +724,12 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
       pending_message.graphics_touch_phase;
   const auto delivered_destination_send_object =
       pending_message.destination_send_object;
+  const auto delivered_vsync_connection =
+      pending_message.display_vsync_connection_object;
+  const auto delivered_vsync_generation =
+      pending_message.display_vsync_registration_generation;
+  const auto delivered_vsync_sequence =
+      pending_message.display_vsync_sequence;
   if (pending_message.host_enqueue_nanoseconds != 0U &&
       performance_counters().cpu_source_diagnostics_configured()) {
     const auto dispatch_nanoseconds = static_cast<std::uint64_t>(
@@ -715,6 +761,12 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu &cpu) {
   const auto copied =
       memory_.copy_in(pending->second.message_address, received->bytes);
   if (copied) {
+    if (delivered_vsync_connection) {
+      shared_state_->observe_display_vsync_receive_locked(
+          process_.pid, *delivered_vsync_connection,
+          delivered_vsync_generation, delivered_vsync_sequence,
+          static_cast<std::uint32_t>(cpu.processor_id()));
+    }
     if (delivered_input_sequence != 0U &&
         delivered_input_kind !=
             KernelSharedState::MachMessage::GraphicsInputKind::None) {

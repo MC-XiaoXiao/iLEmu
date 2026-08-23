@@ -90,20 +90,12 @@ MobileFramebufferHle::MobileFramebufferHle(
         call.process_id(), call.argument(0), 0, callback_processor);
     if (shared_state_) {
       std::lock_guard lock{shared_state_->mach_mutex};
-      for (auto &[connection_object, registration] :
-           shared_state_->iokit_display_vsync) {
-        static_cast<void>(connection_object);
-        if (registration.owner_pid != call.process_id() ||
-            registration.async_reference[
-                iokit_abi::display_vsync::async_refcon_index] !=
-                call.argument(0)) {
-          continue;
-        }
-        // This records the processor at the real firmware callback boundary,
-        // after Mach delivery and before the original routine resumes. It is
-        // host-only metadata and cannot change the guest callback path.
-        registration.last_callback_processor = callback_processor;
-      }
+      // This records the processor and consumes the host-only pending
+      // watermark at the real firmware callback boundary, after Mach delivery
+      // and before the original routine resumes. Guest callback semantics are
+      // unchanged.
+      shared_state_->observe_display_vsync_callback_locked(
+          call.process_id(), call.argument(0), callback_processor);
     }
     call.resume_original_persistently();
   });

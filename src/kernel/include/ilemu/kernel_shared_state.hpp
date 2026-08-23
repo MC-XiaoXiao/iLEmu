@@ -29,6 +29,7 @@
 #include "ilemu/display_geometry.hpp"
 #include "ilemu/file_page_cache.hpp"
 #include "ilemu/hfs_metadata.hpp"
+#include "ilemu/iokit_abi.hpp"
 #include "ilemu/kernel_mach_task_identity.hpp"
 #include "ilemu/mach_namespace.hpp"
 #include "ilemu/mach_port_object.hpp"
@@ -430,6 +431,10 @@ struct KernelSharedState {
     // and cancellation affect only the registration that produced them.
     std::optional<std::uint32_t> display_vsync_connection_object;
     std::uint64_t display_vsync_registration_generation{};
+    // Host-only identity of the exact notification instance. It never enters
+    // the Mach payload and exists only to join a successful receive to the
+    // firmware callback that follows it.
+    std::uint64_t display_vsync_sequence{};
     std::vector<OolPayload> ool_payloads;
     std::vector<OolPortArray> ool_port_arrays;
     std::optional<std::uint32_t> reply_object;
@@ -636,6 +641,18 @@ struct KernelSharedState {
     // a bounded scheduler lease; it is not exposed to the guest and does not
     // affect VSync messages, deadlines, or callback semantics.
     std::optional<std::uint32_t> last_callback_processor;
+    // The receive can complete synchronously inside mach_msg while its Guest
+    // thread is already running, bypassing the host polling wake path. Retain
+    // that exact processor and notification sequence until NotifyFunc consumes
+    // it so the scheduler can continue the real callback dependency chain.
+    std::optional<std::uint32_t> last_receiver_processor;
+    std::uint64_t receiver_sequence{};
+    // Host-only completion watermark for queued VSync notifications. The
+    // sequence advances only when a real Mach message is enqueued, and this
+    // watermark catches up when firmware enters NotifyFunc. Their difference
+    // identifies an actual callback handoff that still needs Guest CPU time;
+    // it is never exposed in the notification payload.
+    std::uint64_t callback_sequence{};
     std::optional<std::uint64_t> next_deadline;
     std::uint64_t sequence{};
     std::uint64_t method_call_count{};
@@ -1370,6 +1387,57 @@ struct KernelSharedState {
   std::map<std::uint32_t, ProcessKeventState> process_kevent_states;
   std::shared_ptr<bsd::AdvisoryFileLockRegistry> advisory_file_locks{
       std::make_shared<bsd::AdvisoryFileLockRegistry>()};
+
+  // The caller holds mach_mutex. Observe only the boundary executed by the
+  // firmware callback; no host-generated callback or payload interpretation
+  // participates in this bookkeeping.
+  void observe_display_vsync_callback_locked(
+      std::uint32_t process_id, std::uint32_t framebuffer_refcon,
+      std::uint32_t processor_id) {
+    for (auto &[connection_object, registration] : iokit_display_vsync) {
+      static_cast<void>(connection_object);
+      if (registration.owner_pid != process_id ||
+          registration.async_reference[
+              iokit_abi::display_vsync::async_refcon_index] !=
+              framebuffer_refcon) {
+        continue;
+      }
+      registration.last_callback_processor = processor_id;
+      // Prefer the exact successfully received notification. A later pulse
+      // may already be queued after this message left the Mach queue; retiring
+      // registration.sequence here would hide that newer callback dependency.
+      const auto completed_sequence =
+          registration.receiver_sequence > registration.callback_sequence
+              ? registration.receiver_sequence
+              : registration.sequence;
+      registration.callback_sequence = std::min(
+          registration.sequence,
+          std::max(registration.callback_sequence, completed_sequence));
+    }
+  }
+
+  // The caller holds mach_mutex. Observe only a successful Mach copyout of a
+  // real kernel-generated VSync message. Registration generation prevents a
+  // stale queued message from attaching to a replacement IOUserClient.
+  void observe_display_vsync_receive_locked(
+      std::uint32_t process_id, std::uint32_t connection_object,
+      std::uint64_t registration_generation,
+      std::uint64_t notification_sequence, std::uint32_t processor_id) {
+    const auto found = iokit_display_vsync.find(connection_object);
+    if (found == iokit_display_vsync.end())
+      return;
+    auto &registration = found->second;
+    if (!registration.enabled || registration.owner_pid != process_id ||
+        registration.registration_generation != registration_generation ||
+        notification_sequence == 0U ||
+        notification_sequence > registration.sequence ||
+        notification_sequence <= registration.callback_sequence ||
+        notification_sequence < registration.receiver_sequence) {
+      return;
+    }
+    registration.last_receiver_processor = processor_id;
+    registration.receiver_sequence = notification_sequence;
+  }
 
   [[nodiscard]] static std::uint64_t
   foreground_transition_host_steady_nanoseconds() {

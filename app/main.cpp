@@ -3980,6 +3980,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::optional<std::uint32_t> display_urgent_process;
   std::optional<XnuThreadId> display_urgent_thread;
   std::optional<XnuThreadId> display_urgent_receiver_thread;
+  std::optional<XnuThreadId> display_yielded_thread;
   std::optional<std::chrono::steady_clock::time_point>
       display_urgent_lease_deadline;
 
@@ -5137,13 +5138,21 @@ void boot(const std::vector<std::string> &args, Output &output) {
             runtime->kernel->process().exited) {
           continue;
         }
-        // A pending VSync must first wake the Mach receiver. The callback
-        // processor is selected only after delivery below; selecting it here
-        // can leave the receiver asleep while a different same-process thread
-        // consumes the bounded dependency lease. This changes no guest clock,
+        // Prefer an exact blocked Mach receiver or a notification already
+        // received synchronously by a running thread. If the message is only
+        // queued and no receiver is waiting yet, the most recent real
+        // NotifyFunc processor is the sole observed dependency that can drain
+        // its CFRunLoop. A Guest thread_switch from that fallback is honored by
+        // the one-shot display_yielded_thread exclusion below, so it cannot be
+        // reselected into the old zero-work spin. This changes no guest clock,
         // callback count, or frame content.
-        if (const auto processor =
-                runtime->kernel->display_vsync_receiver_processor()) {
+        auto processor =
+            runtime->kernel->display_vsync_dependency_processor();
+        if (!processor &&
+            runtime->kernel->display_vsync_callback_pending()) {
+          processor = runtime->kernel->display_vsync_callback_processor();
+        }
+        if (processor) {
           const XnuThreadId receiver_thread{
               *display_urgent_process,
               static_cast<std::uint32_t>(*processor)};
@@ -5362,21 +5371,63 @@ void boot(const std::vector<std::string> &args, Output &output) {
         scheduler_handoff_thread.reset();
       }
     }
-    if (display_urgent_lease_deadline &&
+    const auto display_callback_pending = [&]() {
+      if (!display_urgent_process)
+        return false;
+      for (const auto &runtime : runtimes) {
+        if (!runtime->kernel->process().exited &&
+            runtime->kernel->process().pid == *display_urgent_process) {
+          return runtime->kernel->display_vsync_callback_pending();
+        }
+      }
+      return false;
+    }();
+    if (!display_callback_pending)
+      display_yielded_thread.reset();
+    if (display_urgent_lease_deadline && !display_callback_pending &&
         std::chrono::steady_clock::now() >= *display_urgent_lease_deadline) {
       display_urgent_thread.reset();
       display_urgent_receiver_thread.reset();
       display_urgent_lease_deadline.reset();
     }
+    if (!preferred_thread && display_callback_pending &&
+        display_yielded_thread && display_urgent_process) {
+      // thread_switch without an eligible explicit hint asks the scheduler to
+      // let another runnable thread make progress. During a VSync callback
+      // handoff, prefer exactly one oldest same-process dependency while
+      // excluding the yielding source. This avoids both immediately selecting
+      // the source again and dropping the real pending callback into ordinary
+      // system-wide contention. No Guest priority, quantum, or wait state is
+      // changed by this one-shot host selection.
+      preferred_thread = scheduler.oldest_runnable_thread(
+          *display_urgent_process, display_yielded_thread);
+    }
+    if (!preferred_thread && display_callback_pending &&
+        display_urgent_receiver_thread) {
+      if (const auto info = scheduler.info(*display_urgent_receiver_thread);
+          info && info->state == XnuThreadState::Runnable &&
+          display_urgent_receiver_thread != display_yielded_thread) {
+        // callback_processor is an observation from the previous firmware
+        // callback until this notification reaches NotifyFunc. While the
+        // current message is still pending, its exact Mach receiver owns the
+        // handoff; selecting the stale callback first can spin a CFRunLoop
+        // thread while the receiver never consumes the message.
+        preferred_thread = display_urgent_receiver_thread;
+      }
+    }
     if (!preferred_thread && display_urgent_thread) {
       if (const auto info = scheduler.info(*display_urgent_thread);
-          info && info->state == XnuThreadState::Runnable) {
+          info && info->state == XnuThreadState::Runnable &&
+          display_urgent_thread != display_yielded_thread) {
         preferred_thread = display_urgent_thread;
       }
     }
     if (!preferred_thread && display_urgent_thread &&
-        display_urgent_process && display_urgent_lease_deadline &&
-        std::chrono::steady_clock::now() < *display_urgent_lease_deadline) {
+        display_urgent_process &&
+        (display_callback_pending ||
+         (display_urgent_lease_deadline &&
+          std::chrono::steady_clock::now() <
+              *display_urgent_lease_deadline))) {
       const auto callback_info = scheduler.info(*display_urgent_thread);
       if (callback_info && callback_info->state != XnuThreadState::Runnable) {
         // The callback can legitimately be waiting (or still running on a
@@ -5425,6 +5476,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
         if (scheduler_handoff_thread &&
             *scheduler_handoff_thread == scheduled->thread) {
           scheduler_handoff_thread.reset();
+        }
+        if (display_yielded_thread &&
+            *display_yielded_thread != scheduled->thread) {
+          // One different runnable dependency has now received the processor;
+          // the Guest yield has been honored and the callback source may be
+          // considered again on the following scheduler iteration.
+          display_yielded_thread.reset();
         }
         performance_counters().record_diagnostic_input_execute(
             scheduled->thread.process, scheduled->thread.thread);
@@ -5776,6 +5834,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
               << static_cast<std::uint64_t>(result.reason);
         throw std::runtime_error{error.str()};
       }
+      if (completion == XnuSliceCompletion::Yield &&
+          display_callback_pending &&
+          ((display_urgent_thread &&
+            *display_urgent_thread == scheduled->thread) ||
+           (display_urgent_receiver_thread &&
+            *display_urgent_receiver_thread == scheduled->thread))) {
+        // thread_switch is an explicit Guest request for another runnable
+        // dependency to make progress. Suppress this source for one host
+        // selection instead of either immediately reselecting it (which can
+        // spin) or discarding all callback ownership (which can starve the
+        // pending VSync behind unrelated cold-start work).
+        display_yielded_thread = scheduled->thread;
+      }
       if (!scheduler_completed) {
         static_cast<void>(
             scheduler.complete_slice(scheduled->thread, result.ticks_consumed,
@@ -5876,6 +5947,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       last_display_submission = std::chrono::steady_clock::now();
       display_urgent_thread.reset();
       display_urgent_receiver_thread.reset();
+      display_yielded_thread.reset();
       display_urgent_lease_deadline.reset();
     }
     if (ran_thread) {
