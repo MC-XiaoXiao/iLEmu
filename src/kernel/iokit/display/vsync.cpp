@@ -77,54 +77,38 @@ bool is_display_connection_locked(const KernelSharedState &state,
          service->second.class_name == apple_h1clcd_class;
 }
 
-bool queue_has_vsync(const std::deque<KernelSharedState::MachMessage> &queue) {
-  return std::any_of(queue.begin(), queue.end(), [](const auto &message) {
-    if (message.bytes.size() < darwin::mig_wire::message_header_size) {
-      return false;
-    }
-    std::uint32_t identifier = 0;
-    for (std::size_t byte = 0; byte < sizeof(identifier); ++byte) {
-      identifier |=
-          std::to_integer<std::uint32_t>(
-              message.bytes[darwin::mig_wire::header_identifier_offset + byte])
-          << (byte * 8U);
-    }
-    return identifier == iokit_abi::display_vsync::message_identifier;
+bool queue_has_vsync(const std::deque<KernelSharedState::MachMessage> &queue,
+                     std::uint32_t connection_object,
+                     std::uint64_t registration_generation) {
+  return std::any_of(queue.begin(), queue.end(), [&](const auto &message) {
+    return message.display_vsync_connection_object == connection_object &&
+           message.display_vsync_registration_generation ==
+               registration_generation;
   });
 }
 
 void discard_queued_vsync_messages_locked(KernelSharedState &state,
-                                          std::uint32_t notification_port) {
+                                          std::uint32_t notification_port,
+                                          std::uint32_t connection_object,
+                                          std::uint64_t registration_generation) {
   const auto queue = state.mach_queues.find(notification_port);
   if (queue == state.mach_queues.end())
     return;
 
   auto &messages = queue->second;
   const auto old_size = messages.size();
-  for (auto message = messages.begin(); message != messages.end();) {
-    if (message->bytes.size() < darwin::mig_wire::message_header_size) {
-      ++message;
-      continue;
-    }
-    std::uint32_t identifier = 0;
-    for (std::size_t byte = 0; byte < sizeof(identifier); ++byte) {
-      identifier |=
-          std::to_integer<std::uint32_t>(
-              message->bytes[darwin::mig_wire::header_identifier_offset + byte])
-          << (byte * 8U);
-    }
-    if (identifier == iokit_abi::display_vsync::message_identifier) {
-      message = messages.erase(message);
-    } else {
-      ++message;
-    }
-  }
+  std::erase_if(messages, [&](const auto &message) {
+    return message.display_vsync_connection_object == connection_object &&
+           message.display_vsync_registration_generation ==
+               registration_generation;
+  });
   if (messages.size() != old_size)
     state.note_mach_queue_topology_change_locked();
 }
 
 KernelSharedState::MachMessage
-make_vsync_message(const KernelSharedState::IOKitDisplayVSync &registration,
+make_vsync_message(std::uint32_t connection_object,
+                   const KernelSharedState::IOKitDisplayVSync &registration,
                    std::uint64_t deadline) {
   using namespace iokit_abi::display_vsync;
   constexpr std::size_t notification_header_offset =
@@ -179,6 +163,9 @@ make_vsync_message(const KernelSharedState::IOKitDisplayVSync &registration,
   write_word(message.bytes, argument_offset + 4U * sizeof(std::uint32_t), 0);
   write_word(message.bytes, argument_offset + 5U * sizeof(std::uint32_t), 0);
   message.destination = registration.notification_port;
+  message.display_vsync_connection_object = connection_object;
+  message.display_vsync_registration_generation =
+      registration.registration_generation;
   return message;
 }
 
@@ -240,7 +227,9 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
       // has been turned off: selector-off means no callback and no frame.
       // The scanout surface remains untouched, so the last real frame stays
       // visible until the next fixed-phase enable.
-      discard_queued_vsync_messages_locked(state, vsync.notification_port);
+      discard_queued_vsync_messages_locked(
+          state, vsync.notification_port, connection_object,
+          vsync.registration_generation);
     }
     state.mark_foreground_transition_locked(
         vsync.enabled
@@ -422,12 +411,20 @@ std::optional<std::uint32_t> handle_notification_port_request(
       return write_simple_reply(memory, message_address, local_port, message_id,
                                 iokit_abi::bad_argument);
     }
+    if (const auto previous = state.iokit_display_vsync.find(connection_object);
+        previous != state.iokit_display_vsync.end()) {
+      remove_vsync_deadline_index_locked(state, connection_object);
+      discard_queued_vsync_messages_locked(
+          state, previous->second.notification_port, connection_object,
+          previous->second.registration_generation);
+    }
     KernelSharedState::IOKitDisplayVSync registration;
     registration.owner_pid = process.pid;
     registration.notification_port = notification_object;
     registration.notification_type = notification_type;
     registration.registration_reference = reference;
-    remove_vsync_deadline_index_locked(state, connection_object);
+    registration.registration_generation =
+        ++state.iokit_display_vsync_registration_generation;
     state.iokit_display_vsync[connection_object] = registration;
   }
 
@@ -504,7 +501,8 @@ void deliver_due_vsync_locked(KernelSharedState &state,
       continue;
     }
     auto &queue = state.mach_queues[registration.notification_port];
-    if (!queue_has_vsync(queue)) {
+    if (!queue_has_vsync(queue, connection_object,
+                         registration.registration_generation)) {
       ++registration.sequence;
       state.enqueue_mach_message_locked(
           registration.notification_port,
@@ -513,7 +511,8 @@ void deliver_due_vsync_locked(KernelSharedState &state,
           // virtual clock catches up after a long host-side stall; using it
           // here would make the guest observe a frame timestamp that skips
           // the fixed VSync phase.
-          make_vsync_message(registration, indexed_deadline));
+          make_vsync_message(connection_object, registration,
+                             indexed_deadline));
       performance_counters().record_vsync_due(
           registration.owner_pid,
           registration.async_reference
@@ -533,7 +532,13 @@ void deliver_due_vsync_locked(KernelSharedState &state,
 
 void close_connection_locked(KernelSharedState &state,
                              std::uint32_t connection_object) {
+  const auto registration = state.iokit_display_vsync.find(connection_object);
   remove_vsync_deadline_index_locked(state, connection_object);
+  if (registration != state.iokit_display_vsync.end()) {
+    discard_queued_vsync_messages_locked(
+        state, registration->second.notification_port, connection_object,
+        registration->second.registration_generation);
+  }
   state.iokit_display_vsync.erase(connection_object);
   state.iokit_display_connections.erase(connection_object);
 }

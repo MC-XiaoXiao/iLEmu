@@ -526,6 +526,10 @@ void remove_port_object_locked(KernelSharedState &state, std::uint32_t object) {
   state.mach_timers.erase(object);
   state.mach_memory_entries.erase(object);
   state.iokit_iterators.erase(object);
+  // Every IOServiceClose and receive-right teardown converges here. Retire
+  // display timer registrations before erasing the generic connection so a
+  // closed user client cannot keep scheduling VSync callbacks indefinitely.
+  kernel_iokit::display::close_connection_locked(state, object);
   state.iokit_connections.erase(object);
   state.iokit_audio_connections.erase(object);
   state.iokit_mbx_connections.erase(object);
@@ -726,8 +730,9 @@ void cleanup_exited_process_metadata_locked(KernelSharedState &state,
       ++it;
       continue;
     }
-    kernel_iokit::display::remove_vsync_deadline_index_locked(state, it->first);
-    it = state.iokit_display_vsync.erase(it);
+    const auto connection_object = it->first;
+    ++it;
+    kernel_iokit::display::close_connection_locked(state, connection_object);
   }
 }
 

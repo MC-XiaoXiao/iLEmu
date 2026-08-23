@@ -424,6 +424,12 @@ struct KernelSharedState {
     std::uint64_t graphics_input_sequence{};
     GraphicsInputKind graphics_input_kind{GraphicsInputKind::None};
     std::optional<TouchPhase> graphics_touch_phase;
+    // Kernel-originated display notifications can share one Mach receive
+    // port across successive or concurrent IOUserClient registrations. Keep
+    // their host-only origin separate from the guest payload so coalescing
+    // and cancellation affect only the registration that produced them.
+    std::optional<std::uint32_t> display_vsync_connection_object;
+    std::uint64_t display_vsync_registration_generation{};
     std::vector<OolPayload> ool_payloads;
     std::vector<OolPortArray> ool_port_arrays;
     std::optional<std::uint32_t> reply_object;
@@ -623,7 +629,13 @@ struct KernelSharedState {
     std::uint32_t notification_port{};
     std::uint32_t notification_type{};
     std::uint32_t registration_reference{};
+    std::uint64_t registration_generation{};
     std::array<std::uint32_t, 8> async_reference{};
+    // Host-only observation of the guest thread that most recently entered
+    // the real framebuffer notification callback. It is used only to choose
+    // a bounded scheduler lease; it is not exposed to the guest and does not
+    // affect VSync messages, deadlines, or callback semantics.
+    std::optional<std::uint32_t> last_callback_processor;
     std::optional<std::uint64_t> next_deadline;
     std::uint64_t sequence{};
     std::uint64_t method_call_count{};
@@ -1275,6 +1287,7 @@ struct KernelSharedState {
   // Keyed by the global IOUserClient connection object. The notification
   // port is also a global ipc_port object, never a task-local Mach name.
   std::map<std::uint32_t, IOKitDisplayVSync> iokit_display_vsync;
+  std::uint64_t iokit_display_vsync_registration_generation{};
   // Enabled registrations are indexed by their next timer deadline so the
   // kernel deadline path does not scan every display connection.
   std::set<std::pair<std::uint64_t, std::uint32_t>>
