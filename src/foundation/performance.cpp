@@ -90,6 +90,9 @@ struct DiagnosticVsyncFrame {
     std::chrono::steady_clock::time_point callback;
     std::chrono::steady_clock::time_point swap_end;
     std::chrono::steady_clock::time_point guest_submit;
+    std::uint32_t receiver_processor{};
+    std::uint32_t callback_processor{};
+    std::uint32_t swap_end_processor{};
     DiagnosticFrameWork work;
 };
 
@@ -1952,9 +1955,34 @@ void PerformanceCounters::record_vsync_due(std::uint32_t process_id,
         VsyncTimeline{sequence, std::chrono::steady_clock::now(), {}, {}});
 }
 
+void PerformanceCounters::record_vsync_receiver(
+    std::uint32_t process_id, std::uint32_t processor_id) {
+    if (!enabled() || process_id == 0)
+        return;
+    std::lock_guard lock{vsync_timeline_mutex_};
+    VsyncTimeline *best = nullptr;
+    for (auto &[key, timelines] : vsync_timelines_) {
+        if (key.first != process_id)
+            continue;
+        for (auto iterator = timelines.rbegin(); iterator != timelines.rend();
+             ++iterator) {
+            if (iterator->callback !=
+                    std::chrono::steady_clock::time_point{} ||
+                iterator->receiver_processor != 0) {
+                continue;
+            }
+            if (best == nullptr || iterator->due > best->due)
+                best = &*iterator;
+            break;
+        }
+    }
+    if (best != nullptr)
+        best->receiver_processor = processor_id;
+}
+
 void PerformanceCounters::record_vsync_callback(
     std::uint32_t process_id, std::uint32_t framebuffer,
-    std::uint64_t sequence) {
+    std::uint64_t sequence, std::uint32_t processor_id) {
     if (!enabled() || process_id == 0 || framebuffer == 0)
         return;
     const auto now = std::chrono::steady_clock::now();
@@ -1995,6 +2023,7 @@ void PerformanceCounters::record_vsync_callback(
         found->second.erase(found->second.begin(), timeline);
         auto& current = found->second.front();
         current.callback = now;
+        current.callback_processor = processor_id;
         if (current.due != std::chrono::steady_clock::time_point{} &&
             now >= current.due) {
             due_to_callback = static_cast<std::uint64_t>(
@@ -2008,7 +2037,8 @@ void PerformanceCounters::record_vsync_callback(
 }
 
 void PerformanceCounters::record_vsync_swap_end(
-    std::uint32_t process_id, std::uint32_t framebuffer) {
+    std::uint32_t process_id, std::uint32_t framebuffer,
+    std::uint32_t processor_id) {
     if (!enabled() || process_id == 0 || framebuffer == 0)
         return;
     const auto now = std::chrono::steady_clock::now();
@@ -2028,6 +2058,7 @@ void PerformanceCounters::record_vsync_swap_end(
         if (timeline == found->second.rend())
             return;
         timeline->swap_end = now;
+        timeline->swap_end_processor = processor_id;
         if (now >= timeline->callback) {
             callback_to_swap_end = static_cast<std::uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -2153,6 +2184,9 @@ void PerformanceCounters::record_vsync_guest_submit(
                 completed_timeline->callback,
                 completed_timeline->swap_end,
                 now,
+                completed_timeline->receiver_processor,
+                completed_timeline->callback_processor,
+                completed_timeline->swap_end_processor,
                 diagnostic_work_delta(current_work,
                                       diagnostic_previous_frame_work),
             });
@@ -3389,6 +3423,7 @@ std::string format_display_performance_summary(
             "present-return:present-kind|"
          << "v:vsync:pid:fb:frame:"
             "due/callback/swap-end/guest-submit:"
+            "receiver/callback-processor/swap-end-processor:"
             "blocks/cpu-exec/cpu-ticks/svc/page-miss/page-fault/"
             "draw/submit/fence/fence-ns:"
             "r/submit-reasons:"
@@ -3451,6 +3486,8 @@ std::string format_display_performance_summary(
         append_diagnostic_timestamp(text, frame.swap_end);
         text << '/';
         append_diagnostic_timestamp(text, frame.guest_submit);
+        text << ':' << frame.receiver_processor << '/'
+             << frame.callback_processor << '/' << frame.swap_end_processor;
         text << ':' << frame.work.translation_blocks << '/'
              << frame.work.cpu_executions << '/' << frame.work.cpu_ticks
              << '/' << frame.work.svc_calls << '/'

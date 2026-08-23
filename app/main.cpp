@@ -5180,6 +5180,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
             display_vsync_receiver && *display_vsync_receiver == processor;
         if (runtime->kernel->deliver_pending_event(waiting_cpu)) {
           if (delivered_display_vsync) {
+            performance_counters().record_vsync_receiver(
+                runtime->kernel->process().pid,
+                static_cast<std::uint32_t>(processor));
             display_urgent_thread = thread;
             display_urgent_lease_deadline =
                 std::chrono::steady_clock::now() +

@@ -16,6 +16,7 @@
 #include "ilemu/address_space.hpp"
 #include "ilemu/application_path.hpp"
 #include "ilemu/core_surface_abi.hpp"
+#include "ilemu/cpu.hpp"
 #include "ilemu/display.hpp"
 #include "ilemu/gles_renderer.hpp"
 #include "ilemu/iokit_abi.hpp"
@@ -84,7 +85,8 @@ MobileFramebufferHle::MobileFramebufferHle(
   add("_IOMobileFramebufferGetNotifyMessageCount",
       [](UserlandHleCall &call) {
     performance_counters().record_vsync_callback(
-        call.process_id(), call.argument(0), 0);
+        call.process_id(), call.argument(0), 0,
+        static_cast<std::uint32_t>(call.cpu().processor_id()));
     call.resume_original_persistently();
   });
   // GetLayerDefaultSurface intentionally remains firmware code. It calls
@@ -101,7 +103,8 @@ MobileFramebufferHle::MobileFramebufferHle(
   add("_IOMobileFramebufferSwapEnd", [this](UserlandHleCall &call) {
     if (display_write_allowed(call)) {
       performance_counters().record_vsync_swap_end(
-          call.process_id(), call.argument(0));
+          call.process_id(), call.argument(0),
+          static_cast<std::uint32_t>(call.cpu().processor_id()));
       submit_layers(call);
       const auto semantic_process_id = record_presentation(call);
       if (display_) {

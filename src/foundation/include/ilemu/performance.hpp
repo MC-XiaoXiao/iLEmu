@@ -516,11 +516,15 @@ class PerformanceCounters {
     void record_vsync_due(std::uint32_t process_id,
                           std::uint32_t framebuffer,
                           std::uint64_t sequence);
+    void record_vsync_receiver(std::uint32_t process_id,
+                               std::uint32_t processor_id);
     void record_vsync_callback(std::uint32_t process_id,
                                std::uint32_t framebuffer,
-                               std::uint64_t sequence);
+                               std::uint64_t sequence,
+                               std::uint32_t processor_id = 0);
     void record_vsync_swap_end(std::uint32_t process_id,
-                               std::uint32_t framebuffer);
+                               std::uint32_t framebuffer,
+                               std::uint32_t processor_id = 0);
     void record_vsync_guest_submit(std::uint32_t process_id,
                                    std::uint32_t framebuffer);
     void discard_pending_vsync_callbacks();
@@ -709,6 +713,9 @@ class PerformanceCounters {
         std::chrono::steady_clock::time_point due;
         std::chrono::steady_clock::time_point callback;
         std::chrono::steady_clock::time_point swap_end;
+        std::uint32_t receiver_processor{};
+        std::uint32_t callback_processor{};
+        std::uint32_t swap_end_processor{};
     };
     mutable std::mutex vsync_timeline_mutex_;
     std::map<std::pair<std::uint32_t, std::uint32_t>,
