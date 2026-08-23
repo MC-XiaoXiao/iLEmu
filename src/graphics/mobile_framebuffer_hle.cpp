@@ -295,10 +295,19 @@ MobileFramebufferHle::acquire_composition_surface() {
                        composition_surfaces_.size();
     composition_surface_index_ = (index + 1U) % composition_surfaces_.size();
     const auto &candidate = composition_surfaces_[index];
-    if (candidate && candidate != scanout_surface_)
+    if (candidate && candidate != scanout_surface_ &&
+        !candidate->presentation_leased())
       return candidate;
   }
-  return {};
+  // All ring targets may still be referenced by the ordered presenter. Grow
+  // the host-only pool for this submission instead of reusing a mutable
+  // surface and changing the pixels of an older queued DisplayFrame.
+  auto surface = host_graphics_->create_surface(
+      {0x434f4d50U,
+       next_scanout_surface.fetch_add(1, std::memory_order_relaxed)},
+      descriptor);
+  composition_surfaces_.push_back(surface);
+  return surface;
 }
 
 bool MobileFramebufferHle::submit_host_layers(UserlandHleCall &call) {

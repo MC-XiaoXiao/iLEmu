@@ -1,4 +1,5 @@
 #include "ilemu/display.hpp"
+#include "ilemu/host_graphics.hpp"
 #include "ilemu/performance.hpp"
 
 #include <algorithm>
@@ -6,6 +7,20 @@
 
 namespace ilemu {
 namespace {
+
+void attach_presentation_leases(DisplayFrame &frame) {
+  if (frame.host_surface && !frame.presentation_lease)
+    frame.presentation_lease =
+        make_host_surface_presentation_lease(frame.host_surface);
+  if (frame.presentation_staging_surface &&
+      !frame.presentation_staging_lease) {
+    frame.presentation_staging_lease =
+        frame.presentation_staging_surface == frame.host_surface
+            ? frame.presentation_lease
+            : make_host_surface_presentation_lease(
+                  frame.presentation_staging_surface);
+  }
+}
 
 std::vector<std::uint32_t>
 visible_pixels(const std::vector<std::uint32_t> &scanout, bool powered_on) {
@@ -124,6 +139,7 @@ void DisplayState::set_powered_on(bool powered_on) {
     }
     frame.orientation = content_orientation_;
   }
+  attach_presentation_leases(frame);
   const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
   auto &performance = performance_counters();
   if (performance.enabled()) {
@@ -179,6 +195,7 @@ void DisplayState::present(std::uint32_t owner_process_id) {
     }
     frame.orientation = content_orientation_;
   }
+  attach_presentation_leases(frame);
   const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
   auto &performance = performance_counters();
   if (performance.enabled()) {
@@ -214,6 +231,7 @@ bool DisplayState::clear_if_owner(std::uint32_t owner_process_id) {
                          pixels_};
     frame.orientation = DisplayOrientation::Portrait;
   }
+  attach_presentation_leases(frame);
   const PerformanceLatencyScope latency{PerfLatencyKind::DisplayPresent};
   auto &performance = performance_counters();
   if (performance.enabled()) {

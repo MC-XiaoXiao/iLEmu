@@ -70,6 +70,21 @@ enum class HostRotation : std::uint8_t {
     Clockwise270,
 };
 
+class HostSurface;
+
+class HostSurfacePresentationLease {
+  public:
+    ~HostSurfacePresentationLease();
+
+  private:
+    friend std::shared_ptr<HostSurfacePresentationLease>
+    make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface);
+    explicit HostSurfacePresentationLease(
+        std::shared_ptr<HostSurface> surface);
+
+    std::shared_ptr<HostSurface> surface_;
+};
+
 // Cross-frontend surface identity. The CPU and GPU generations describe which
 // representation is authoritative; a backend owns the native image for key().
 class HostSurface {
@@ -108,6 +123,7 @@ class HostSurface {
     }
     [[nodiscard]] std::uint64_t cpu_generation() const;
     [[nodiscard]] std::uint64_t gpu_generation() const;
+    [[nodiscard]] bool presentation_leased() const;
     [[nodiscard]] CpuMapping
     map_cpu(bool write,
             PerfCpuMapReason reason = PerfCpuMapReason::Internal);
@@ -132,6 +148,7 @@ class HostSurface {
     void mark_gpu_synchronized(std::uint64_t cpu_generation);
 
   private:
+    friend class HostSurfacePresentationLease;
     struct DamageRecord {
         std::uint64_t generation{};
         std::vector<HostRectangle> rectangles;
@@ -142,6 +159,8 @@ class HostSurface {
     void record_damage_locked(
         std::uint64_t generation,
         std::span<const HostRectangle> rectangles);
+    void retain_presentation_lease();
+    void release_presentation_lease();
 
     HostSurfaceKey key_;
     HostSurfaceDescriptor descriptor_;
@@ -153,7 +172,11 @@ class HostSurface {
     std::vector<HostRectangle> cpu_damage_;
     std::deque<DamageRecord> damage_history_;
     std::uint64_t discarded_damage_generation_{};
+    std::uint64_t presentation_lease_count_{};
 };
+
+[[nodiscard]] std::shared_ptr<HostSurfacePresentationLease>
+make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface);
 
 class CommandEncoder {
   public:

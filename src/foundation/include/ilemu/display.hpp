@@ -13,6 +13,7 @@
 namespace ilemu {
 
 class HostSurface;
+class HostSurfacePresentationLease;
 
 struct DisplayFrame {
   DisplayFrame() = default;
@@ -42,11 +43,17 @@ struct DisplayFrame {
   // A hardware presenter consumes the native surface directly. CPU sinks
   // invoke read_pixels only at an explicit screenshot/software boundary.
   std::shared_ptr<HostSurface> host_surface;
+  // Host-only content lease. A composition target cannot be reused while a
+  // queued presenter frame still points at it, even though the shared_ptr
+  // keeps the HostSurface object alive.
+  std::shared_ptr<HostSurfacePresentationLease> presentation_lease;
   // SDL's native presenter fills a bounded pool of private surfaces when a
   // frame arrives as CPU pixels. Keep the source lease with the frame when a
   // rotation pass creates a second destination surface; otherwise a queued
   // frame could outlive the staging buffer that owns its pixels.
   std::shared_ptr<HostSurface> presentation_staging_surface;
+  std::shared_ptr<HostSurfacePresentationLease>
+      presentation_staging_lease;
   std::function<std::vector<std::uint32_t>()> read_pixels;
   // Process incarnation that last populated the shared display state. This
   // lets teardown revoke only stale application content without clearing a

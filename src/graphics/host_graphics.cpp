@@ -540,6 +540,26 @@ class CpuCommandEncoder final : public CommandEncoder {
 
 } // namespace
 
+HostSurfacePresentationLease::HostSurfacePresentationLease(
+    std::shared_ptr<HostSurface> surface)
+    : surface_{std::move(surface)} {
+    if (surface_)
+        surface_->retain_presentation_lease();
+}
+
+HostSurfacePresentationLease::~HostSurfacePresentationLease() {
+    if (surface_)
+        surface_->release_presentation_lease();
+}
+
+std::shared_ptr<HostSurfacePresentationLease>
+make_host_surface_presentation_lease(std::shared_ptr<HostSurface> surface) {
+    if (!surface)
+        return {};
+    return std::shared_ptr<HostSurfacePresentationLease>{
+        new HostSurfacePresentationLease{std::move(surface)}};
+}
+
 HostSurface::CpuMapping::CpuMapping(HostSurface& surface, bool write)
     : surface_{&surface}, lock_{surface.mutex_}, write_{write} {}
 
@@ -580,6 +600,11 @@ std::uint64_t HostSurface::cpu_generation() const {
 std::uint64_t HostSurface::gpu_generation() const {
     std::lock_guard lock{mutex_};
     return gpu_generation_;
+}
+
+bool HostSurface::presentation_leased() const {
+    std::lock_guard lock{mutex_};
+    return presentation_lease_count_ != 0;
 }
 
 HostSurface::CpuMapping HostSurface::map_cpu(
@@ -694,6 +719,17 @@ void HostSurface::mark_gpu_synchronized(std::uint64_t cpu_generation) {
     next_generation_ = std::max(next_generation_, gpu_generation_);
     if (cpu_generation >= cpu_generation_)
         cpu_damage_.clear();
+}
+
+void HostSurface::retain_presentation_lease() {
+    std::lock_guard lock{mutex_};
+    ++presentation_lease_count_;
+}
+
+void HostSurface::release_presentation_lease() {
+    std::lock_guard lock{mutex_};
+    if (presentation_lease_count_ != 0)
+        --presentation_lease_count_;
 }
 
 void HostSurface::mark_cpu_write_locked(

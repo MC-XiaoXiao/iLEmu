@@ -481,6 +481,9 @@ struct SdlDisplay::Impl {
     }
     frame.host_surface = staged_surface;
     frame.presentation_staging_surface = staged_surface;
+    frame.presentation_lease =
+        make_host_surface_presentation_lease(staged_surface);
+    frame.presentation_staging_lease = frame.presentation_lease;
     return frame.host_surface != nullptr;
   }
 
@@ -615,10 +618,14 @@ struct SdlDisplay::Impl {
 
     auto graphics = host_graphics;
     auto oriented = oriented_surface;
+    frame.presentation_staging_surface = source;
+    frame.presentation_staging_lease = frame.presentation_lease;
     frame.width = output_geometry.width;
     frame.height = output_geometry.height;
     frame.pixels.clear();
     frame.host_surface = oriented;
+    frame.presentation_lease =
+        make_host_surface_presentation_lease(oriented);
     frame.read_pixels = [graphics = std::move(graphics),
                          oriented = std::move(oriented)] {
       if (!graphics->map_cpu(*oriented, true,
