@@ -5171,7 +5171,20 @@ void boot(const std::vector<std::string> &args, Output &output) {
           continue;
         }
         auto &waiting_cpu = runtime->cpus->cpu(processor);
+        const auto display_vsync_receiver =
+            display_urgent_process &&
+                    runtime->kernel->process().pid == *display_urgent_process
+                ? runtime->kernel->display_vsync_receiver_processor()
+                : std::nullopt;
+        const auto delivered_display_vsync =
+            display_vsync_receiver && *display_vsync_receiver == processor;
         if (runtime->kernel->deliver_pending_event(waiting_cpu)) {
+          if (delivered_display_vsync) {
+            display_urgent_thread = thread;
+            display_urgent_lease_deadline =
+                std::chrono::steady_clock::now() +
+                std::chrono::milliseconds{50};
+          }
           const auto delivered_input =
               runtime->kernel->take_last_delivered_graphics_input(processor);
           if (scheduler.make_runnable(thread) && delivered_input) {
