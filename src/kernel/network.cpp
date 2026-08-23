@@ -1497,7 +1497,10 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             : registration->filter == darwin::kqueue::filter_mach_port
                 ? ready_mach_name.has_value()
                 : false;
-        if (written == event_count || !ready) {
+        const auto clears_after_delivery =
+            (registration->flags & darwin::kqueue::event_clear) != 0U;
+        if (!ready) {
+            registration->clear_delivered = false;
             ++registration;
             continue;
         }
@@ -1509,6 +1512,17 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                                                   [endpoint->second.side]
                                                       .size());
         }
+        if (clears_after_delivery && registration->clear_delivered &&
+            registration->clear_available == available) {
+            ++registration;
+            continue;
+        }
+        if (written == event_count) {
+            ++registration;
+            continue;
+        }
+        if (clears_after_delivery)
+            result_flags |= darwin::kqueue::event_clear;
         const auto event = event_address +
                            written * darwin::kqueue::arm32_event::size;
         if (!memory_.write32(
@@ -1531,6 +1545,10 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             return std::nullopt;
         }
         ++written;
+        if (clears_after_delivery) {
+            registration->clear_delivered = true;
+            registration->clear_available = available;
+        }
         if ((filter_flags & darwin::kqueue::process_note_exit) != 0U) {
             registration = queue->second.erase(registration);
         } else {
