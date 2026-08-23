@@ -3983,6 +3983,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::optional<XnuThreadId> display_yielded_thread;
   std::optional<std::chrono::steady_clock::time_point>
       display_urgent_lease_deadline;
+  std::optional<std::chrono::steady_clock::time_point>
+      display_callback_pending_since;
+  bool display_callback_pending_reported = false;
+  std::optional<XnuThreadId> diagnostic_svc_spin_thread;
+  std::uint64_t diagnostic_svc_spin_calls = 0;
+  std::uint64_t diagnostic_svc_spin_report_at = 1'000;
+  std::uint64_t diagnostic_display_yield_count = 0;
 
   std::uint32_t next_pid = 2;
   std::size_t watchpoint_trace_count = 0;
@@ -5384,6 +5391,33 @@ void boot(const std::vector<std::string> &args, Output &output) {
     }();
     if (!display_callback_pending)
       display_yielded_thread.reset();
+    if (performance_counters().cpu_source_diagnostics_enabled() &&
+        display_callback_pending) {
+      const auto now = std::chrono::steady_clock::now();
+      if (!display_callback_pending_since)
+        display_callback_pending_since = now;
+      if (!display_callback_pending_reported &&
+          now - *display_callback_pending_since >=
+              std::chrono::milliseconds{100}) {
+        const auto format_thread = [&](const auto &thread) {
+          if (!thread)
+            return std::string{"none"};
+          const auto info = scheduler.info(*thread);
+          return std::to_string(thread->process) + ":" +
+                 std::to_string(thread->thread) + ":" +
+                 (info ? std::to_string(static_cast<unsigned>(info->state))
+                       : "missing");
+        };
+        output.line(
+            "[perf] display-callback-pending duration-ms=100 callback=" +
+            format_thread(display_urgent_thread) + " receiver=" +
+            format_thread(display_urgent_receiver_thread));
+        display_callback_pending_reported = true;
+      }
+    } else {
+      display_callback_pending_since.reset();
+      display_callback_pending_reported = false;
+    }
     if (display_urgent_lease_deadline && !display_callback_pending &&
         std::chrono::steady_clock::now() >= *display_urgent_lease_deadline) {
       display_urgent_thread.reset();
@@ -5498,6 +5532,35 @@ void boot(const std::vector<std::string> &args, Output &output) {
               scheduled->thread.process, scheduled->thread.thread,
               scheduled->runnable_generation, scheduled->front_continuation,
               nanoseconds);
+          // Transition-localization probe. It records only severe runnable
+          // starvation while CPU source diagnostics are explicitly active.
+          if (nanoseconds >= 50'000'000U) {
+            const auto info = scheduler.info(scheduled->thread);
+            const auto active_process =
+                initial_runtime->kernel->active_client_process_id();
+            const auto transition =
+                initial_runtime->kernel->foreground_transition_snapshot();
+            output.line(
+                "[perf] scheduler-stall pid=" +
+                std::to_string(scheduled->thread.process) + " thread=" +
+                std::to_string(scheduled->thread.thread) + " wait-ns=" +
+                std::to_string(nanoseconds) + " priority=" +
+                (info ? std::to_string(info->scheduled_priority) : "none") +
+                " base-priority=" +
+                (info ? std::to_string(info->base_priority) : "none") +
+                " active-process=" +
+                (active_process ? std::to_string(*active_process) : "none") +
+                " transition-destination=" +
+                (transition && transition->destination
+                     ? std::to_string(
+                           transition->destination->process_id)
+                     : "none") +
+                " preferred=" +
+                std::to_string(preferred_thread &&
+                               *preferred_thread == scheduled->thread) +
+                " display-pending=" +
+                std::to_string(display_callback_pending));
+          }
         }
         scheduled_batch.push_back(*scheduled);
         if (bounded_execution) {
@@ -5670,6 +5733,33 @@ void boot(const std::vector<std::string> &args, Output &output) {
       const auto index = prepared.thread_index;
       auto &cpu = *prepared.cpu;
       auto result = std::move(prepared.result);
+      if (performance_counters().cpu_source_diagnostics_enabled() &&
+          result.svc_calls != 0 && result.ticks_consumed < 10'000U) {
+        if (diagnostic_svc_spin_thread != scheduled->thread) {
+          diagnostic_svc_spin_thread = scheduled->thread;
+          diagnostic_svc_spin_calls = 0;
+          diagnostic_svc_spin_report_at = 1'000;
+        }
+        diagnostic_svc_spin_calls += result.svc_calls;
+        if (diagnostic_svc_spin_calls >= diagnostic_svc_spin_report_at) {
+          const auto &registers = cpu.registers();
+          output.line(
+              "[perf] svc-spin pid=" +
+              std::to_string(scheduled->thread.process) + " thread=" +
+              std::to_string(scheduled->thread.thread) + " calls=" +
+              std::to_string(diagnostic_svc_spin_calls) + " r12=" +
+              std::to_string(registers[12]) + " r0=" +
+              std::to_string(registers[0]) + " pc=" +
+              std::to_string(registers[15]) + " lr=" +
+              std::to_string(registers[14]) + " display-pending=" +
+              std::to_string(display_callback_pending));
+          diagnostic_svc_spin_report_at *= 10U;
+        }
+      } else {
+        diagnostic_svc_spin_thread.reset();
+        diagnostic_svc_spin_calls = 0;
+        diagnostic_svc_spin_report_at = 1'000;
+      }
       guest_parallelism_policy.observe(
           scheduled->thread, result.ticks_consumed, result.svc_calls);
       if (prepared.deferred_svc && result.svc) {
@@ -5800,14 +5890,29 @@ void boot(const std::vector<std::string> &args, Output &output) {
       } else if (Dynarmic::Has(result.reason,
                                Dynarmic::HaltReason::UserDefined8)) {
         if (const auto request = runtime.kernel->consume_scheduler_yield(index);
-            request && request->depress) {
-          const auto duration_ticks =
-              duration_to_guest_ticks(
-                  request->duration_milliseconds,
-                  xnu792::scheduler::milliseconds_per_second,
-                  guest_ticks_per_second);
-          static_cast<void>(
-              scheduler.depress(scheduled->thread, duration_ticks));
+            request) {
+          if (performance_counters().cpu_source_diagnostics_enabled() &&
+              display_callback_pending &&
+              diagnostic_display_yield_count++ < 32U) {
+            output.line(
+                "[perf] display-yield source=" +
+                std::to_string(scheduled->thread.process) + ":" +
+                std::to_string(scheduled->thread.thread) + " handoff=" +
+                (scheduler_handoff_thread
+                     ? std::to_string(scheduler_handoff_thread->process) + ":" +
+                           std::to_string(scheduler_handoff_thread->thread)
+                     : "none") +
+                " depress=" + std::to_string(request->depress));
+          }
+          if (request->depress) {
+            const auto duration_ticks =
+                duration_to_guest_ticks(
+                    request->duration_milliseconds,
+                    xnu792::scheduler::milliseconds_per_second,
+                    guest_ticks_per_second);
+            static_cast<void>(
+                scheduler.depress(scheduled->thread, duration_ticks));
+          }
         }
         completion = XnuSliceCompletion::Yield;
       } else if (result.host_yielded) {

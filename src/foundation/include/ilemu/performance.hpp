@@ -537,7 +537,8 @@ class PerformanceCounters {
         std::span<const std::uint64_t> phase_nanoseconds,
         std::uint64_t requested_ticks, std::uint64_t consumed_ticks,
         std::uint64_t host_yield_checks, bool host_yielded,
-        std::uint64_t svc_calls, std::optional<std::uint32_t> svc);
+        std::uint64_t svc_calls, std::optional<std::uint32_t> svc,
+        std::uint32_t halt_reason);
     void record_diagnostic_scheduler_dispatch(
         std::uint32_t process_id, std::uint32_t thread_id,
         std::uint64_t runnable_generation, bool front_continuation,
