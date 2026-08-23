@@ -56,6 +56,11 @@ struct DyldSharedCache::GenerationArtifactView {
   image(std::size_t index) const;
   [[nodiscard]] std::optional<DyldSharedCache::ImageRangeIndexEntry>
   index_entry(std::size_t index) const;
+  // The serialized range index is emitted file-by-file. Retain those
+  // boundaries once when opening an artifact so shared-region mappings can
+  // search only the requested cache member instead of rescanning every image.
+  [[nodiscard]] std::optional<std::pair<std::size_t, std::size_t>>
+  index_range_for_file(std::uint32_t file_index) const noexcept;
 
 private:
   std::shared_ptr<const ImmutableArtifactView> backing_;
@@ -71,6 +76,7 @@ private:
   std::uint64_t index_records_offset_{};
   std::uint64_t string_offset_{};
   std::uint64_t string_size_{};
+  std::vector<std::pair<std::size_t, std::size_t>> index_file_ranges_;
   std::uint32_t platform_{};
   std::uint8_t format_version_{};
   std::uint64_t shared_region_start_{};
@@ -914,6 +920,7 @@ DyldSharedCache::GenerationArtifactView::open(
   std::memcpy(result->generation_identity_.digest.data(),
               bytes.data() + dyld_header_generation_identity_offset,
               result->generation_identity_.digest.size());
+  result->index_file_ranges_.assign(result->file_count_, {});
 
   for (std::uint32_t file_index = 0; file_index < result->file_count_;
        ++file_index) {
@@ -924,8 +931,26 @@ DyldSharedCache::GenerationArtifactView::open(
     const auto image = result->image(image_index);
     if (!image || image->index != image_index) return {};
   }
+  std::optional<std::pair<std::uint32_t, std::uint64_t>> previous;
   for (std::uint32_t index = 0; index < result->index_count_; ++index) {
-    if (!result->index_entry(index)) return {};
+    const auto entry = result->index_entry(index);
+    if (!entry || entry->file_index >= result->file_count_) return {};
+    if (previous &&
+        (entry->file_index < previous->first ||
+         (entry->file_index == previous->first &&
+          entry->file_offset < previous->second))) {
+      return {};
+    }
+    auto &file_range = result->index_file_ranges_[entry->file_index];
+    if (!previous || entry->file_index != previous->first) {
+      // Each file occupies one contiguous run in the serialized index. A
+      // repeated file would make a single binary-search range ambiguous.
+      if (file_range.first != file_range.second) return {};
+      file_range = {index, static_cast<std::size_t>(index) + 1U};
+    } else {
+      file_range.second = static_cast<std::size_t>(index) + 1U;
+    }
+    previous = std::pair{entry->file_index, entry->file_offset};
   }
   return std::shared_ptr<const GenerationArtifactView>{std::move(result)};
 }
@@ -1145,6 +1170,15 @@ DyldSharedCache::GenerationArtifactView::index_entry(std::size_t index) const {
       index_count_);
   if (entries == nullptr) return std::nullopt;
   return entries[index];
+}
+
+std::optional<std::pair<std::size_t, std::size_t>>
+DyldSharedCache::GenerationArtifactView::index_range_for_file(
+    std::uint32_t file_index) const noexcept {
+  if (file_index >= index_file_ranges_.size()) return std::nullopt;
+  const auto range = index_file_ranges_[file_index];
+  return range.first == range.second ? std::nullopt
+                                     : std::optional{range};
 }
 
 DyldSharedCache::ParseResult::ParseResult(
@@ -1787,14 +1821,33 @@ std::vector<std::uint32_t> DyldSharedCache::images_intersecting_file_range(
   }
   const auto file_end = file_offset + size;
   if (generation_artifact_view_) {
-    std::vector<std::uint32_t> image_indices;
-    for (std::size_t index = 0; index < generation_artifact_view_->index_count();
-         ++index) {
-      const auto entry = generation_artifact_view_->index_entry(index);
-      if (!entry || entry->file_index != file_index ||
-          entry->file_offset >= file_end || entry->file_end <= file_offset) {
-        continue;
+    const auto range = generation_artifact_view_->index_range_for_file(file_index);
+    if (!range) return {};
+    const auto begin = range->first;
+    const auto end = range->second;
+    const auto lower_bound = [&](std::size_t first, std::size_t last,
+                                 std::uint64_t offset) {
+      while (first < last) {
+        const auto middle = first + (last - first) / 2U;
+        const auto entry = generation_artifact_view_->index_entry(middle);
+        if (!entry || entry->file_offset < offset)
+          first = middle + 1U;
+        else
+          last = middle;
       }
+      return first;
+    };
+    auto first = lower_bound(begin, end, file_offset);
+    while (first > begin) {
+      const auto previous = generation_artifact_view_->index_entry(first - 1U);
+      if (!previous || previous->prefix_file_end <= file_offset) break;
+      --first;
+    }
+    std::vector<std::uint32_t> image_indices;
+    for (std::size_t index = first; index < end; ++index) {
+      const auto entry = generation_artifact_view_->index_entry(index);
+      if (!entry || entry->file_offset >= file_end) break;
+      if (entry->file_end <= file_offset) continue;
       image_indices.push_back(entry->image_index);
     }
     std::sort(image_indices.begin(), image_indices.end());
