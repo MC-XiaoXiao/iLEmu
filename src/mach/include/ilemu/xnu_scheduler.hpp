@@ -196,6 +196,12 @@ public:
         XnuSliceCompletion completion,
         XnuTimeAccounting time_accounting = XnuTimeAccounting::Advance);
     void advance_time(std::uint64_t elapsed_ticks);
+    // XNU's scheduler tick is a periodic mach_absolute_time event. Interactive
+    // execution can advance that device clock beyond instruction accounting
+    // while the host services an expensive syscall or translation. Catch the
+    // scheduler housekeeping clock up to the same absolute point without
+    // synthesizing CPU usage or changing thread quanta.
+    void synchronize_time(std::uint64_t elapsed_ticks);
 
     [[nodiscard]] bool contains(XnuThreadId thread) const;
     [[nodiscard]] std::optional<XnuThreadSchedulingInfo> info(

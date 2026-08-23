@@ -573,6 +573,11 @@ void XnuScheduler::advance_time(std::uint64_t elapsed_ticks) {
     advance_scheduler_time(elapsed_ticks);
 }
 
+void XnuScheduler::synchronize_time(std::uint64_t elapsed_ticks) {
+    if (elapsed_ticks <= elapsed_ticks_) return;
+    advance_scheduler_time(elapsed_ticks - elapsed_ticks_);
+}
+
 bool XnuScheduler::contains(XnuThreadId thread) const {
     return threads_.contains(thread);
 }

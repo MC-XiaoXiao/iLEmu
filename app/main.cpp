@@ -4802,16 +4802,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
       }
     }
   };
-  const auto synchronize_scheduler_realtime_clock = [&]() {
-    scheduler.set_realtime_clock_ticks(duration_to_guest_ticks(
+  const auto synchronize_scheduler_time = [&]() {
+    const auto scheduler_time = duration_to_guest_ticks(
         initial_runtime->kernel->current_absolute_time(),
         darwin::mach::thread_policy::absolute_time_units_per_second,
-        guest_ticks_per_second));
+        guest_ticks_per_second);
+    scheduler.synchronize_time(scheduler_time);
+    scheduler.set_realtime_clock_ticks(scheduler_time);
   };
   while ((!bounded_execution || remaining_ticks != 0) &&
          !initial_runtime->kernel->process().exited && !hard_stop) {
     synchronize_device_time_to_host();
-    synchronize_scheduler_realtime_clock();
+    synchronize_scheduler_time();
     observe_transition_stability();
     std::optional<XnuThreadId> input_preferred_thread;
     refresh_catalog_after_file_mutations(scheduler.runnable_count() == 0);
@@ -5146,7 +5148,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
     };
     resolve_display_urgent_thread();
     synchronize_device_time_to_host();
-    synchronize_scheduler_realtime_clock();
+    synchronize_scheduler_time();
     // Host synchronization can deliver a VSync notification without guest
     // execution consuming a slice. Re-resolve here so the already-pending
     // receive gets the same bounded callback lease in this iteration.
