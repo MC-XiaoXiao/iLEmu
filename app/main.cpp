@@ -4573,6 +4573,11 @@ void boot(const std::vector<std::string> &args, Output &output) {
   };
   const auto wait_for_host_activity = [&](std::chrono::nanoseconds delay) {
     if (delay <= std::chrono::nanoseconds::zero()) return;
+    // A display submission may be the final Guest action before VSync is
+    // disabled.  Do not let the idle wait hide an already queued frame until
+    // an unrelated SDL event wakes the loop; the next iteration will drain
+    // the mailbox without changing Guest time or presentation cadence.
+    if (sdl_display && sdl_display->has_pending_presentation()) return;
     const auto waitable_sdl_session =
         sdl_display && (!live_control || live_control->closed()) &&
         !gdb_server;

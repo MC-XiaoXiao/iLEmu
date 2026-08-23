@@ -30,6 +30,10 @@ public:
   void set_host_graphics(std::shared_ptr<HostGraphicsDevice> graphics);
   void present(DisplayFrame frame);
   void flush_presentation();
+  // A Guest submission can arrive just before the scheduler enters its
+  // interactive idle wait.  The scheduler must poll again before sleeping
+  // when the ordered display mailbox already owns a frame.
+  [[nodiscard]] bool has_pending_presentation();
   // Counts frames accepted by the native swapchain, or completed by the SDL
   // software presenter.
   [[nodiscard]] std::uint64_t presented_frames() const;

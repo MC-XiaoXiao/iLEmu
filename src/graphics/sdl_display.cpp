@@ -1202,6 +1202,16 @@ void SdlDisplay::present(DisplayFrame frame) {
 #endif
 }
 
+bool SdlDisplay::has_pending_presentation() {
+#if defined(ILEMU_HAS_SDL2)
+  std::lock_guard lock{impl_->frame_mutex};
+  return !impl_->pending_frames.empty() || impl_->overflow_frame.has_value() ||
+         !impl_->native_fallback_frames.empty();
+#else
+  return false;
+#endif
+}
+
 void SdlDisplay::flush_presentation() {
 #if defined(ILEMU_HAS_SDL2)
   // A native failure is converted to the software path by poll_events(), so a
