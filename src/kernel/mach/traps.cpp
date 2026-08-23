@@ -305,12 +305,30 @@ void CompatibilityKernel::dispatch_mach(Cpu &cpu, std::uint32_t trap) {
   }
   case darwin::mach::scheduler::thread_switch_trap: {
     using namespace darwin::mach::scheduler;
+    const auto thread_name = registers[0];
     const auto option = registers[1];
     const auto option_time_ms = registers[2];
     if (option > maximum_switch_option) {
       registers[0] = darwin::mach::invalid_argument;
       return;
     }
+
+    std::optional<XnuThreadId> handoff_thread;
+    if (thread_name != xnu792::ipc::null_name) {
+      std::lock_guard mach_lock{shared_state_->mach_mutex};
+      const auto object = resolve_name_with_right(
+          *shared_state_, process_.pid, thread_name,
+          xnu792::ipc::Right::Send);
+      const auto owner =
+          object ? find_thread_owner(*shared_state_, *object) : std::nullopt;
+      if (owner &&
+          (owner->first != process_.pid ||
+           owner->second != static_cast<std::uint32_t>(cpu.processor_id()))) {
+        handoff_thread = XnuThreadId{owner->first, owner->second};
+      }
+    }
+    if (handoff_thread)
+      scheduler_handoffs_[cpu.processor_id()] = *handoff_thread;
 
     registers[0] = darwin::mach::success;
     if (option == switch_option_wait && option_time_ms != 0) {
@@ -329,7 +347,8 @@ void CompatibilityKernel::dispatch_mach(Cpu &cpu, std::uint32_t trap) {
     // UserDefined8 is the scheduler-only yield reason: main.cpp does not
     // move the thread to a wait queue and clears it on the next round.
     scheduler_yields_[cpu.processor_id()] =
-        SchedulerYieldRequest{option == switch_option_depress, option_time_ms};
+        SchedulerYieldRequest{option == switch_option_depress,
+                              option_time_ms};
     cpu.halt(Dynarmic::HaltReason::UserDefined8);
     return;
   }
@@ -522,7 +541,8 @@ void CompatibilityKernel::dispatch_mach(Cpu &cpu, std::uint32_t trap) {
       registers[0] = 0;
       return;
     }
-    scheduler_yields_[cpu.processor_id()] = SchedulerYieldRequest{};
+    scheduler_yields_[cpu.processor_id()] =
+        SchedulerYieldRequest{false, 0};
     registers[0] = 1;
     cpu.halt(Dynarmic::HaltReason::UserDefined8);
     return;

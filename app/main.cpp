@@ -3976,6 +3976,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       guest_processor_count};
   GuestParallelismPolicy guest_parallelism_policy{guest_ticks_per_second};
   std::optional<XnuThreadId> last_serial_thread;
+  std::optional<XnuThreadId> scheduler_handoff_thread;
   std::optional<std::uint32_t> display_urgent_process;
   std::optional<XnuThreadId> display_urgent_thread;
   std::optional<XnuThreadId> display_urgent_receiver_thread;
@@ -5349,6 +5350,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
       preferred_thread = XnuThreadId{debug_request->thread->process,
                                      debug_request->thread->thread - 1U};
     }
+    if (!preferred_thread && scheduler_handoff_thread) {
+      if (const auto info = scheduler.info(*scheduler_handoff_thread);
+          info && info->state == XnuThreadState::Runnable) {
+        // XNU thread_switch(thread_name, ...) removes an eligible hinted
+        // thread from its run queue and hands the processor directly to it.
+        // Preserve that one-shot Guest request ahead of host-side display and
+        // input preferences; it changes no priority or quantum.
+        preferred_thread = scheduler_handoff_thread;
+      } else {
+        scheduler_handoff_thread.reset();
+      }
+    }
     if (display_urgent_lease_deadline &&
         std::chrono::steady_clock::now() >= *display_urgent_lease_deadline) {
       display_urgent_thread.reset();
@@ -5409,6 +5422,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
       const auto scheduled =
           scheduler.choose_next(processor, preferred_thread);
       if (scheduled) {
+        if (scheduler_handoff_thread &&
+            *scheduler_handoff_thread == scheduled->thread) {
+          scheduler_handoff_thread.reset();
+        }
         performance_counters().record_diagnostic_input_execute(
             scheduled->thread.process, scheduled->thread.thread);
         if (performance_counters().cpu_source_diagnostics_enabled() &&
@@ -5604,6 +5621,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
         // reason explicitly requested by the serial kernel dispatch represents
         // the guest thread's scheduler state here.
         result.reason = cpu.consume_requested_halt_reason();
+      }
+      if (const auto handoff =
+              runtime.kernel->consume_scheduler_handoff(index)) {
+        scheduler_handoff_thread = *handoff;
       }
       scheduler_round_ticks =
           std::max(scheduler_round_ticks, result.ticks_consumed);

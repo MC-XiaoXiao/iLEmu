@@ -802,6 +802,8 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id) {
   pending_selects_.clear();
   pending_timers_.clear();
   pending_semaphore_waits_.clear();
+  scheduler_yields_.clear();
+  scheduler_handoffs_.clear();
   aio_completions_.clear();
 }
 

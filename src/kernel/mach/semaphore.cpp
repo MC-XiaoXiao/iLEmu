@@ -55,6 +55,16 @@ CompatibilityKernel::consume_scheduler_yield(std::size_t processor_id) {
   return result;
 }
 
+std::optional<XnuThreadId>
+CompatibilityKernel::consume_scheduler_handoff(std::size_t processor_id) {
+  const auto handoff = scheduler_handoffs_.find(processor_id);
+  if (handoff == scheduler_handoffs_.end())
+    return std::nullopt;
+  const auto result = handoff->second;
+  scheduler_handoffs_.erase(handoff);
+  return result;
+}
+
 std::uint32_t CompatibilityKernel::signal_semaphore_locked(std::uint32_t name,
                                                            bool all,
                                                            bool prepost,

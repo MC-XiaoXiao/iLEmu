@@ -209,6 +209,8 @@ public:
   [[nodiscard]] std::uint32_t deliver_signal(std::uint32_t signal);
   [[nodiscard]] std::optional<SchedulerYieldRequest>
   consume_scheduler_yield(std::size_t processor_id);
+  [[nodiscard]] std::optional<XnuThreadId>
+  consume_scheduler_handoff(std::size_t processor_id);
   void set_display_presenter(DisplayState::Presenter presenter) {
     display_state_->set_presenter(std::move(presenter));
   }
@@ -750,6 +752,7 @@ private:
   TaskMemoryRegionQuery task_memory_region_query_;
   TaskMemoryShareQuery task_memory_share_query_;
   std::map<std::size_t, SchedulerYieldRequest> scheduler_yields_;
+  std::map<std::size_t, XnuThreadId> scheduler_handoffs_;
   std::map<std::size_t, PendingWait> pending_waits_;
   std::map<std::size_t, PendingMachReceive> pending_mach_receives_;
   std::map<std::size_t, std::uint64_t> last_delivered_graphics_inputs_;
