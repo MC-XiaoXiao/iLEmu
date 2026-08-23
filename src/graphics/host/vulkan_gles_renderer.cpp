@@ -750,6 +750,11 @@ class VulkanGlesRenderer final : public GlesRenderer {
     std::string renderer_name_;
     std::filesystem::path pipeline_cache_path_;
     mutable std::mutex mutex_;
+    // Non-zero only while a native presenter owns mutex_ and has committed to
+    // submit every command recorded before releasing it. Encoder::submit may
+    // then use that guaranteed queue boundary instead of blocking a Guest
+    // thread on presentation work.
+    std::atomic<std::uint32_t> presentation_submissions_pending_{};
     std::atomic<PerfFallbackReason> last_failure_reason_{
         PerfFallbackReason::None};
 };
@@ -937,6 +942,15 @@ class VulkanGlesRenderer::Encoder final : public CommandEncoder {
     }
 
     bool submit(PerfSubmitReason reason) override {
+        // Native presentation serializes the same global command stream and
+        // always submits it before releasing renderer_.mutex_. If it already
+        // owns that lock, waiting here can pin the only Guest CPU for an
+        // entire host-present interval even though presentation will satisfy
+        // this non-blocking flush itself.
+        if (renderer_.presentation_submissions_pending_.load(
+                std::memory_order_acquire) != 0) {
+            return true;
+        }
         std::lock_guard lock{renderer_.mutex_};
         try {
             renderer_.submit_commands(false, reason);
@@ -2771,6 +2785,10 @@ void VulkanGlesRenderer::release_owner(std::uint64_t owner) {
 
 HostGraphicsDevice::PresentResult
 VulkanGlesRenderer::present_target(Target& target) {
+    // A presentation attempt is also a command-stream flush, even when the
+    // host swapchain is temporarily unavailable. Encoder::submit relies on
+    // this boundary while presentation owns the renderer mutex.
+    submit_commands(false, PerfSubmitReason::Presentation);
     if (presentation_swapchain_ == VK_NULL_HANDLE ||
         presentation_images_.empty()) {
         last_failure_reason_.store(PerfFallbackReason::VulkanUnavailable,
@@ -2780,7 +2798,6 @@ VulkanGlesRenderer::present_target(Target& target) {
     // DZN and other translation layers may retain a presented image beyond
     // the render fence. Keep presentation in the next ring slot so compositor
     // and presentation semaphore lifetimes cannot alias.
-    submit_commands(false, PerfSubmitReason::Presentation);
     auto* slot = &command_slot();
     wait_for_slot(*slot);
 
@@ -4493,11 +4510,23 @@ HostGraphicsDevice::PresentResult VulkanGlesRenderer::present(
         auto presented = PresentResult::Failed;
         {
             std::lock_guard lock{mutex_};
+            presentation_submissions_pending_.fetch_add(
+                1U, std::memory_order_release);
+            struct PendingPresentationSubmission {
+                std::atomic<std::uint32_t>& count;
+                ~PendingPresentationSubmission() {
+                    count.fetch_sub(1U, std::memory_order_release);
+                }
+            } pending_submission{presentation_submissions_pending_};
             auto& target = prepare_host_surface(
                 *surface, cpu_frame, cpu_generation, gpu_generation,
                 std::move(cpu_damage));
-            if (!target.valid)
+            if (!target.valid) {
+                // Preserve the submission guarantee published above even if
+                // this particular surface cannot be presented.
+                submit_commands(false, PerfSubmitReason::Presentation);
                 return PresentResult::Failed;
+            }
             presented = present_target(target);
         }
         if (presented != PresentResult::Failed)
