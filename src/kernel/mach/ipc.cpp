@@ -101,6 +101,33 @@ CompatibilityKernel::display_vsync_receiver_processor() {
 }
 
 std::optional<std::size_t>
+CompatibilityKernel::display_vsync_callback_processor() {
+  std::lock_guard kernel_lock{mutex_};
+  std::lock_guard mach_lock{shared_state_->mach_mutex};
+
+  std::optional<std::size_t> fallback;
+  for (const auto &[connection_object, registration] :
+       shared_state_->iokit_display_vsync) {
+    static_cast<void>(connection_object);
+    if (!registration.enabled || registration.owner_pid != process_.pid ||
+        !registration.last_callback_processor) {
+      continue;
+    }
+    // Prefer the registration whose receive is currently pending. Multiple
+    // display connections can coexist during a foreground handoff; this
+    // keeps a stale callback observation from winning over the active one.
+    if (preferred_pending_mach_receiver_locked(
+            registration.notification_port)) {
+      return static_cast<std::size_t>(*registration.last_callback_processor);
+    }
+    if (!fallback) {
+      fallback = static_cast<std::size_t>(*registration.last_callback_processor);
+    }
+  }
+  return fallback;
+}
+
+std::optional<std::size_t>
 CompatibilityKernel::pending_mach_receiver_processor(std::uint32_t object) {
   std::lock_guard kernel_lock{mutex_};
   std::lock_guard mach_lock{shared_state_->mach_mutex};

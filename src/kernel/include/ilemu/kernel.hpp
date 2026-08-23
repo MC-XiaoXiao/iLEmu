@@ -348,6 +348,11 @@ public:
   next_display_vsync_deadline() const;
   [[nodiscard]] std::optional<std::size_t>
   display_vsync_receiver_processor();
+  // Returns the last guest processor observed inside the real display
+  // notification callback. This is host scheduling metadata only; callers
+  // must fall back to display_vsync_receiver_processor() when unavailable.
+  [[nodiscard]] std::optional<std::size_t>
+  display_vsync_callback_processor();
   void advance_absolute_time(std::uint64_t deadline);
   void advance_time_by(std::uint64_t interval);
   // The clock is shared by every process, while device registrations are

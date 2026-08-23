@@ -3975,6 +3975,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::optional<XnuThreadId> last_serial_thread;
   std::optional<std::uint32_t> display_urgent_process;
   std::optional<XnuThreadId> display_urgent_thread;
+  std::optional<XnuThreadId> display_urgent_receiver_thread;
   std::optional<std::chrono::steady_clock::time_point>
       display_urgent_lease_deadline;
 
@@ -5124,29 +5125,32 @@ void boot(const std::vector<std::string> &args, Output &output) {
       scheduled_snapshots.erase(scheduled_snapshots.begin());
     }
     const auto resolve_display_urgent_thread = [&]() {
-      if (!display_urgent_process || display_urgent_thread)
+      if (!display_urgent_process)
         return;
       for (auto &runtime : runtimes) {
         if (runtime->kernel->process().pid != *display_urgent_process ||
             runtime->kernel->process().exited) {
           continue;
         }
+        // A pending VSync must first wake the Mach receiver. The callback
+        // processor is selected only after delivery below; selecting it here
+        // can leave the receiver asleep while a different same-process thread
+        // consumes the bounded dependency lease. This changes no guest clock,
+        // callback count, or frame content.
         if (const auto processor =
                 runtime->kernel->display_vsync_receiver_processor()) {
-          display_urgent_thread = XnuThreadId{
+          const XnuThreadId receiver_thread{
               *display_urgent_process,
               static_cast<std::uint32_t>(*processor)};
-          // A VSync receive is only the entry to the firmware callback. Keep
-          // the callback thread preferred for a bounded host-time lease so
-          // its real SwapEnd can finish across several guest slices. Without
-          // this, the scheduler clears the preference after one slice and
-          // foreground app startup can interrupt the compositor between the
-          // callback and its presentation. This changes no guest clock,
-          // callback count, or frame content, and cannot starve the system
-          // because the lease is short and expires without a presentation.
-          display_urgent_lease_deadline =
-              std::chrono::steady_clock::now() +
-              std::chrono::milliseconds{50};
+          if (!display_urgent_thread ||
+              *display_urgent_thread != receiver_thread) {
+            display_urgent_thread = receiver_thread;
+            // Keep the receive itself preferred until the queued message has
+            // been materialized. The callback lease starts after delivery.
+            display_urgent_lease_deadline =
+                std::chrono::steady_clock::now() +
+                std::chrono::milliseconds{50};
+          }
         }
         break;
       }
@@ -5188,14 +5192,33 @@ void boot(const std::vector<std::string> &args, Output &output) {
             performance_counters().record_vsync_receiver(
                 runtime->kernel->process().pid,
                 static_cast<std::uint32_t>(processor));
-            display_urgent_thread = thread;
+            auto callback_processor =
+                runtime->kernel->display_vsync_callback_processor();
+            if (!callback_processor ||
+                !scheduler.info(XnuThreadId{
+                    runtime->kernel->process().pid,
+                    static_cast<std::uint32_t>(*callback_processor)})) {
+              callback_processor = processor;
+            }
+            display_urgent_thread = XnuThreadId{
+                runtime->kernel->process().pid,
+                static_cast<std::uint32_t>(*callback_processor)};
+            // The callback can be a continuation of a different thread than
+            // the one that consumed the Mach receive. If the callback thread
+            // is still waiting, schedule this exact receiver once instead of
+            // guessing with same-process thread age.
+            display_urgent_receiver_thread = thread;
             display_urgent_lease_deadline =
                 std::chrono::steady_clock::now() +
                 std::chrono::milliseconds{50};
           }
           const auto delivered_input =
               runtime->kernel->take_last_delivered_graphics_input(processor);
-          if (scheduler.make_runnable(thread) && delivered_input) {
+          // Every delivered event wakes its blocked guest receiver. Input
+          // attribution is a separate diagnostic concern; keeping the wake
+          // inside that conditional left pure Mach/VSync receivers Waiting.
+          const auto made_runnable = scheduler.make_runnable(thread);
+          if (made_runnable && delivered_input) {
             // A just-delivered input event is a generic interactive wakeup,
             // not a process-specific priority. Let its receiver run once
             // before ordinary runnable continuations consume another slice.
@@ -5210,13 +5233,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
     }
     if (realtime_pacer) {
       const auto display_urgent_runnable = [&]() {
-        if (!display_urgent_thread)
+        const auto is_runnable = [&](const auto &thread) {
+          if (!thread)
+            return false;
+          if (const auto info = scheduler.info(*thread); info.has_value())
+            return info->state == XnuThreadState::Runnable;
           return false;
-        if (const auto info = scheduler.info(*display_urgent_thread);
-            info.has_value()) {
-          return info->state == XnuThreadState::Runnable;
-        }
-        return false;
+        };
+        // A waiting callback can have a runnable receive dependency. Do not
+        // let realtime pacing sleep through that handoff; the receiver must
+        // execute before the callback can become runnable.
+        return is_runnable(display_urgent_thread) ||
+               is_runnable(display_urgent_receiver_thread);
       }();
       const auto guest_ahead_delay = display_urgent_runnable
           ? std::chrono::nanoseconds::zero()
@@ -5320,6 +5348,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
     if (display_urgent_lease_deadline &&
         std::chrono::steady_clock::now() >= *display_urgent_lease_deadline) {
       display_urgent_thread.reset();
+      display_urgent_receiver_thread.reset();
       display_urgent_lease_deadline.reset();
     }
     if (!preferred_thread && display_urgent_thread) {
@@ -5332,14 +5361,24 @@ void boot(const std::vector<std::string> &args, Output &output) {
         display_urgent_process && display_urgent_lease_deadline &&
         std::chrono::steady_clock::now() < *display_urgent_lease_deadline) {
       const auto callback_info = scheduler.info(*display_urgent_thread);
-      if (callback_info && callback_info->state == XnuThreadState::Waiting) {
-        // The callback can legitimately block while handing work to another
-        // SpringBoard thread.  Keep the same bounded, host-only display
-        // transaction lease connected to that dependency instead of letting
-        // an unrelated runnable thread consume the entire lease.  This does
-        // not change Guest priority, quantum, clock, or callback/frame count.
-        preferred_thread = scheduler.oldest_runnable_thread(
-            *display_urgent_process, display_urgent_thread);
+      if (callback_info && callback_info->state != XnuThreadState::Runnable) {
+        // The callback can legitimately be waiting (or still running on a
+        // different guest processor) while handing work to another
+        // SpringBoard thread. First honor the exact receiver that just
+        // consumed the Mach message; only fall back to same-process age when
+        // that receiver is no longer runnable. This does not change Guest
+        // priority, quantum, clock, or callback/frame count.
+        if (display_urgent_receiver_thread) {
+          if (const auto receiver_info =
+                  scheduler.info(*display_urgent_receiver_thread);
+              receiver_info && receiver_info->state == XnuThreadState::Runnable) {
+            preferred_thread = display_urgent_receiver_thread;
+          }
+        }
+        if (!preferred_thread) {
+          preferred_thread = scheduler.oldest_runnable_thread(
+              *display_urgent_process, display_urgent_thread);
+        }
       }
     }
     if (!preferred_thread && input_preferred_thread) {
@@ -5804,6 +5843,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       observed_display_submissions = display_submissions;
       last_display_submission = std::chrono::steady_clock::now();
       display_urgent_thread.reset();
+      display_urgent_receiver_thread.reset();
       display_urgent_lease_deadline.reset();
     }
     if (ran_thread) {

@@ -83,10 +83,28 @@ MobileFramebufferHle::MobileFramebufferHle(
   // the original routine. The VSync/IONotificationPort entry points, callback
   // dispatch, coalescing, arguments, and object lifetime remain firmware code.
   add("_IOMobileFramebufferGetNotifyMessageCount",
-      [](UserlandHleCall &call) {
+      [this](UserlandHleCall &call) {
+    const auto callback_processor =
+        static_cast<std::uint32_t>(call.cpu().processor_id());
     performance_counters().record_vsync_callback(
-        call.process_id(), call.argument(0), 0,
-        static_cast<std::uint32_t>(call.cpu().processor_id()));
+        call.process_id(), call.argument(0), 0, callback_processor);
+    if (shared_state_) {
+      std::lock_guard lock{shared_state_->mach_mutex};
+      for (auto &[connection_object, registration] :
+           shared_state_->iokit_display_vsync) {
+        static_cast<void>(connection_object);
+        if (registration.owner_pid != call.process_id() ||
+            registration.async_reference[
+                iokit_abi::display_vsync::async_refcon_index] !=
+                call.argument(0)) {
+          continue;
+        }
+        // This records the processor at the real firmware callback boundary,
+        // after Mach delivery and before the original routine resumes. It is
+        // host-only metadata and cannot change the guest callback path.
+        registration.last_callback_processor = callback_processor;
+      }
+    }
     call.resume_original_persistently();
   });
   // GetLayerDefaultSurface intentionally remains firmware code. It calls
