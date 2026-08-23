@@ -158,8 +158,15 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
     if (!dynamic_linker.entry_point()) {
         throw std::runtime_error{"dynamic linker lacks LC_UNIXTHREAD"};
     }
-    executable.map_into(memory_);
-    dynamic_linker.map_into(memory_);
+    // Each image can have several executable segments. Keep the first
+    // validated file backing for that image so later segments reuse its open
+    // descriptor and generation/content identity checks. The contexts are
+    // intentionally separate because the executable and dyld are different
+    // pathnames and may have independent generations.
+    FileMappingBatchContext executable_mapping_context;
+    executable.map_into(memory_, &executable_mapping_context);
+    FileMappingBatchContext dynamic_linker_mapping_context;
+    dynamic_linker.map_into(memory_, &dynamic_linker_mapping_context);
     if (!memory_.map(stack_base, stack_size,
                      MemoryPermission::Read | MemoryPermission::Write)) {
         throw std::runtime_error{"failed to map initial user stack"};

@@ -1013,7 +1013,8 @@ std::optional<std::uint32_t> MachOImage::find_objc_method(
     return std::nullopt;
 }
 
-void MachOImage::map_into(AddressSpace& memory) const {
+void MachOImage::map_into(AddressSpace& memory,
+                          FileMappingBatchContext *batch_context) const {
     const auto bytes = byte_span();
     for (const auto& segment : segments_) {
         if (segment.vm_size == 0 || segment.name == "__PAGEZERO") {
@@ -1094,7 +1095,12 @@ void MachOImage::map_into(AddressSpace& memory) const {
                         static_cast<std::uint32_t>(file_guest_end -
                                                    file_guest_start),
                         permissions, path_, file_offset, file_generation_,
-                        content_identity_, bytes_, immutable_file_view_)) {
+                        content_identity_,
+                        batch_context && batch_context->backing
+                            ? std::shared_ptr<const std::vector<std::byte>>{}
+                            : bytes_,
+                        immutable_file_view_,
+                        batch_context)) {
                     // File backing is an optimization for immutable text, not
                     // part of the Mach-O loading contract. A transient host
                     // mapping failure must retain the original anonymous-copy

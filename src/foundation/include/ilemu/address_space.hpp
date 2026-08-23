@@ -46,6 +46,14 @@ struct AddressSpaceWriteStats {
   std::uint64_t copy_on_write_detaches{};
 };
 
+// A shared-region syscall maps several file ranges from one descriptor. Keep
+// the first validated backing as a batch context so subsequent ranges reuse
+// its descriptor, generation, and content identity without weakening the
+// existing per-mapping validation path used by ordinary callers.
+struct FileMappingBatchContext {
+  std::shared_ptr<GuestFileBacking> backing;
+};
+
 [[nodiscard]] AddressSpaceWriteStats address_space_write_stats() noexcept;
 
 class AddressSpace {
@@ -130,7 +138,8 @@ public:
                 std::shared_ptr<const std::vector<std::byte>>
                     immutable_snapshot = {},
                 std::shared_ptr<const ImmutableFileView>
-                    immutable_file_view = {});
+                    immutable_file_view = {},
+                FileMappingBatchContext *batch_context = nullptr);
   enum class PageMappingMode {
     CopyOnWrite,
     Shared,

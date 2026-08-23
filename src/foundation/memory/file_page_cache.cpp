@@ -1604,18 +1604,42 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
                             std::shared_ptr<const std::vector<std::byte>>
                                 immutable_snapshot,
                             std::shared_ptr<const ImmutableFileView>
-                                immutable_file_view) {
+                                immutable_file_view,
+                            std::shared_ptr<const GuestFileBacking>
+                                reusable_mapping) {
   if (size == 0 || file_offset % guest_memory_page_size != 0) {
     return std::nullopt;
   }
 
-  auto descriptor = immutable_file_view ? -1 : open_file_descriptor(path);
-  if (!immutable_file_view && descriptor < 0) return std::nullopt;
+  const auto reusable =
+      reusable_mapping && !immutable_file_view && !immutable_snapshot &&
+              !reusable_mapping->immutable_file_view &&
+              !reusable_mapping->immutable_snapshot &&
+              reusable_mapping->path == path &&
+              (!expected_generation ||
+               *expected_generation == reusable_mapping->generation) &&
+              (!expected_content_identity ||
+               *expected_content_identity == reusable_mapping->content_identity)
+          ? std::move(reusable_mapping)
+          : std::shared_ptr<const GuestFileBacking>{};
+  bool borrowed_descriptor = false;
+  int descriptor = -1;
+  if (reusable) {
+    const auto &io_state = reusable->io_state;
+    if (!io_state) return std::nullopt;
+    const std::scoped_lock lock{io_state->mutex};
+    descriptor = io_state->file_descriptor;
+    if (descriptor < 0) return std::nullopt;
+    borrowed_descriptor = true;
+  } else if (!immutable_file_view) {
+    descriptor = open_file_descriptor(path);
+    if (descriptor < 0) return std::nullopt;
+  }
   const auto close_descriptor = [&]() {
-    if (descriptor >= 0) {
+    if (descriptor >= 0 && !borrowed_descriptor) {
       static_cast<void>(::close(descriptor));
-      descriptor = -1;
     }
+    descriptor = -1;
   };
 
   struct stat file_stat {};
@@ -1634,6 +1658,10 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     file_size = static_cast<std::uintmax_t>(file_stat.st_size);
     generation = generation_from_stat(file_stat);
     modified = file_time_from_stat(file_stat);
+  }
+  if (reusable && generation != reusable->generation) {
+    close_descriptor();
+    return std::nullopt;
   }
   if (immutable_snapshot && immutable_snapshot->size() != file_size) {
     close_descriptor();
@@ -1655,18 +1683,27 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
     close_descriptor();
     return std::nullopt;
   }
-  // Keep the pathname used by the guest namespace separate from the
-  // canonical object-identity key used for shared hashes and descriptors.
-  const auto namespace_key = namespace_path(path);
-  const auto normalized_path = immutable_file_view ? namespace_key
-                                                   : stable_path(path);
+  // An immutable view already carries the exact generation and content
+  // identity. Use its content-addressed backing as the page-cache key and
+  // avoid rebuilding the guest namespace path for every shared-cache range.
+  // Ordinary mappings retain the namespace/canonical split below because
+  // their path can be replaced while a descriptor remains alive.
+  const auto normalized_path = immutable_file_view
+                                   ? immutable_file_view->backing_path().string()
+                                   : reusable ? reusable->cache_path
+                                              : stable_path(path);
+  const auto namespace_key = immutable_file_view || reusable
+                                 ? std::string{}
+                                 : namespace_path(path);
   std::shared_ptr<GuestFileGenerationRegistry> generation_registry;
   std::uint64_t generation_revision = 0;
   {
     const std::scoped_lock lock{mutex_};
     generation_registry = generation_registry_;
   }
-  if (generation_registry && !immutable_file_view) {
+  if (reusable) {
+    generation_revision = reusable->generation_revision;
+  } else if (generation_registry && !immutable_file_view) {
     generation_revision =
         generation_registry
             ->observe_normalized(namespace_key, generation)
@@ -1675,12 +1712,11 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   std::optional<ContentIdentity> content_identity;
   if (immutable_file_view) {
     content_identity = immutable_file_view->content_identity();
+  } else if (reusable) {
     const std::scoped_lock lock{mutex_};
     ++stats_.identity_queries;
     ++stats_.identity_hits;
-    store_identity_locked(
-        normalized_path,
-        Identity{generation, generation_revision, *content_identity, {}});
+    content_identity = reusable->content_identity;
   } else {
     const std::scoped_lock lock{mutex_};
     ++stats_.identity_queries;
@@ -1752,7 +1788,9 @@ FilePageCache::open_mapping(const std::filesystem::path &path,
   // while existing mappings keep the old vnode alive through their shared
   // state.
   std::shared_ptr<GuestFileIoState> io_state;
-  if (!immutable_file_view) {
+  if (reusable) {
+    io_state = reusable->io_state;
+  } else if (!immutable_file_view) {
     const std::scoped_lock lock{global_identity_mutex};
     const auto identity = global_identities.find(normalized_path);
     if (identity != global_identities.end() &&

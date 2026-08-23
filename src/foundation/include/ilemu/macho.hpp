@@ -137,7 +137,8 @@ public:
     [[nodiscard]] std::optional<std::uint32_t> find_objc_class_method(
         std::string_view class_name, std::string_view selector) const;
 
-    void map_into(AddressSpace& memory) const;
+    void map_into(AddressSpace& memory,
+                  FileMappingBatchContext *batch_context = nullptr) const;
 
 private:
     [[nodiscard]] std::optional<std::uint32_t> find_objc_method(

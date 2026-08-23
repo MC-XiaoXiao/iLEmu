@@ -443,7 +443,8 @@ public:
                std::shared_ptr<const std::vector<std::byte>>
                    immutable_snapshot = {},
                std::shared_ptr<const ImmutableFileView> immutable_file_view =
-                   {});
+                   {},
+               std::shared_ptr<const GuestFileBacking> reusable_mapping = {});
 
   // Creates or reuses one page for an already validated mapping. The page
   // remains byte-lazy; GuestPageBacking::materialize performs clustered I/O.

@@ -1522,6 +1522,19 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
   if (image_header_offset && !parsed_image && !use_shared_plan)
     return 0;
 
+  // Shared-cache mappings are delivered as many VM ranges. Most ranges do
+  // not contain an HLE entry; avoid allocating the per-range patch queues and
+  // rescanning the registration tables for those ranges. The image index is
+  // generation-scoped and already includes guest-function entries, so a
+  // missing vector is a complete no-op for this mapping.
+  const std::vector<std::size_t> *shared_image_patches = nullptr;
+  if (use_shared_plan) {
+    shared_image_patches = shared_hle_plan_->patches_for_image(
+        *cache_file_index, *cache_image_index);
+    if (shared_image_patches == nullptr)
+      return 0;
+  }
+
   struct PendingPatch {
     std::uint32_t address{};
     std::vector<std::byte> instruction;
@@ -1565,8 +1578,7 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
     static_cast<void>(queue_patch(address, instruction, std::nullopt));
   };
   if (use_shared_plan) {
-    const auto *image_patches = shared_hle_plan_->patches_for_image(
-        *cache_file_index, *cache_image_index);
+    const auto *image_patches = shared_image_patches;
     if (image_patches != nullptr) {
       const auto lower_bound_patch = [&](std::size_t begin,
                                          std::size_t end,

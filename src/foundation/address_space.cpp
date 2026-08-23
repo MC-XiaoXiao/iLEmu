@@ -507,7 +507,8 @@ bool AddressSpace::map_file(std::uint32_t address, std::uint32_t size,
                             std::shared_ptr<const std::vector<std::byte>>
                                 immutable_snapshot,
                             std::shared_ptr<const ImmutableFileView>
-                                immutable_file_view) {
+                                immutable_file_view,
+                            FileMappingBatchContext *batch_context) {
   if (size == 0 || range_overflows(address, size) ||
       address % page_size != 0 || file_offset % page_size != 0) {
     return false;
@@ -515,7 +516,9 @@ bool AddressSpace::map_file(std::uint32_t address, std::uint32_t size,
   const auto backing = file_page_cache_->open_mapping(
       path, file_offset, size, std::move(expected_generation),
       std::move(expected_content_identity), std::move(immutable_snapshot),
-      std::move(immutable_file_view));
+      std::move(immutable_file_view),
+      batch_context ? batch_context->backing
+                    : std::shared_ptr<const GuestFileBacking>{});
   if (!backing) return false;
 
   auto lock = write_lock();
@@ -527,8 +530,13 @@ bool AddressSpace::map_file(std::uint32_t address, std::uint32_t size,
   static_cast<void>(mapping);
   if (!inserted) return false;
   vm_map_.map_or(address, end, permissions);
-  add_page_permissions_locked(address, end, permissions);
+  // map_file rejects any overlapping VM range, so the new pages have no
+  // permissions to preserve. Use the range setter; unlike the OR path used
+  // by map(), it can fill sparse permission chunks in bulk.
+  set_page_permissions_locked(address, end, permissions);
   bump_executable_content_generation_locked();
+  if (batch_context && !batch_context->backing)
+    batch_context->backing = *backing;
   return true;
 }
 
@@ -1823,13 +1831,27 @@ void AddressSpace::add_page_permissions_locked(
     std::uint32_t address, std::uint64_t end,
     MemoryPermission permissions) {
   const auto bits = permission_bits(permissions);
-  for (std::uint64_t base = address; base < end; base += page_size) {
-    auto &chunk = writable_page_permission_chunk_locked(
-        static_cast<std::size_t>(base / page_size));
-    const auto index =
-        static_cast<std::size_t>(base / page_size) %
-        page_permission_chunk_size;
-    chunk[index] |= static_cast<std::uint8_t>(mapped_page_flag | bits);
+  const auto first_page = static_cast<std::size_t>(address / page_size);
+  const auto after_page = static_cast<std::size_t>(end / page_size);
+  for (auto page = first_page; page < after_page;) {
+    const auto chunk_index = page / page_permission_chunk_size;
+    const auto chunk_begin = page % page_permission_chunk_size;
+    const auto chunk_end = std::min(
+        page_permission_chunk_size - chunk_begin, after_page - page);
+    auto &chunk = page_permissions_[chunk_index];
+    if (!chunk) {
+      chunk = std::make_shared<PagePermissionChunk>();
+      std::fill(chunk->begin() + static_cast<std::ptrdiff_t>(chunk_begin),
+                chunk->begin() +
+                    static_cast<std::ptrdiff_t>(chunk_begin + chunk_end),
+                static_cast<std::uint8_t>(mapped_page_flag | bits));
+    } else {
+      if (!chunk.unique()) chunk = std::make_shared<PagePermissionChunk>(*chunk);
+      for (auto index = chunk_begin; index < chunk_begin + chunk_end; ++index)
+        (*chunk)[index] |=
+            static_cast<std::uint8_t>(mapped_page_flag | bits);
+    }
+    page += chunk_end;
   }
 }
 
@@ -1838,24 +1860,45 @@ void AddressSpace::set_page_permissions_locked(
     MemoryPermission permissions) {
   const auto flags = static_cast<std::uint8_t>(
       mapped_page_flag | permission_bits(permissions));
-  for (std::uint64_t base = address; base < end; base += page_size) {
-    auto &chunk = writable_page_permission_chunk_locked(
-        static_cast<std::size_t>(base / page_size));
-    chunk[static_cast<std::size_t>(base / page_size) %
-          page_permission_chunk_size] = flags;
+  const auto first_page = static_cast<std::size_t>(address / page_size);
+  const auto after_page = static_cast<std::size_t>(end / page_size);
+  for (auto page = first_page; page < after_page;) {
+    const auto chunk_index = page / page_permission_chunk_size;
+    const auto chunk_begin = page % page_permission_chunk_size;
+    const auto chunk_end = std::min(
+        page_permission_chunk_size - chunk_begin, after_page - page);
+    auto &chunk = page_permissions_[chunk_index];
+    if (!chunk) {
+      chunk = std::make_shared<PagePermissionChunk>();
+    } else if (!chunk.unique()) {
+      chunk = std::make_shared<PagePermissionChunk>(*chunk);
+    }
+    std::fill(chunk->begin() + static_cast<std::ptrdiff_t>(chunk_begin),
+              chunk->begin() +
+                  static_cast<std::ptrdiff_t>(chunk_begin + chunk_end),
+              flags);
+    page += chunk_end;
   }
 }
 
 void AddressSpace::clear_page_permissions_locked(std::uint32_t address,
                                                  std::uint64_t end) {
-  for (std::uint64_t base = address; base < end; base += page_size) {
-    const auto page_index =
-        static_cast<std::size_t>(base / page_size);
-    const auto chunk_index =
-        page_index / page_permission_chunk_size;
-    if (!page_permissions_[chunk_index]) continue;
-    auto &chunk = writable_page_permission_chunk_locked(page_index);
-    chunk[page_index % page_permission_chunk_size] = 0U;
+  const auto first_page = static_cast<std::size_t>(address / page_size);
+  const auto after_page = static_cast<std::size_t>(end / page_size);
+  for (auto page = first_page; page < after_page;) {
+    const auto chunk_index = page / page_permission_chunk_size;
+    const auto chunk_begin = page % page_permission_chunk_size;
+    const auto chunk_end = std::min(
+        page_permission_chunk_size - chunk_begin, after_page - page);
+    auto &chunk = page_permissions_[chunk_index];
+    if (chunk) {
+      if (!chunk.unique()) chunk = std::make_shared<PagePermissionChunk>(*chunk);
+      std::fill(chunk->begin() + static_cast<std::ptrdiff_t>(chunk_begin),
+                chunk->begin() +
+                    static_cast<std::ptrdiff_t>(chunk_begin + chunk_end),
+                std::uint8_t{});
+    }
+    page += chunk_end;
   }
 }
 
