@@ -2519,6 +2519,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
   }
   const auto ticks_option = option(args, "--ticks");
   const auto bounded_execution = ticks_option.has_value();
+  const auto device_time_policy =
+      bounded_execution ? DeviceTimePolicy::DeterministicExecution
+                        : DeviceTimePolicy::HostMappedInteractive;
   const auto ticks = ticks_option ? std::stoull(*ticks_option)
                                   : std::numeric_limits<std::uint64_t>::max();
   const bool disable_scheduler_preemption =
@@ -4762,7 +4765,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::uint64_t guest_timer_overshoot_max_nanoseconds{};
   std::optional<std::uint64_t> observed_guest_timer_deadline;
   DeadlineQueue<std::uint32_t, std::uint64_t> guest_deadlines;
-  if (!bounded_execution) {
+  if (device_time_policy == DeviceTimePolicy::HostMappedInteractive) {
     realtime_pacer.emplace(initial_runtime->kernel->current_absolute_time());
     const auto host_wall_time =
         std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -4776,9 +4779,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
                 "timezone=guest");
   }
   // Interactive DeviceMonotonicTime is mapped to host steady time exactly
-  // once. If execution accounting leaves the guest behind that fixed map,
-  // move the shared device clock forward and service its devices; never reset
-  // the map to make a CPU-bound guest appear realtime.
+  // once. CPU execution accounting never advances this domain; after a slow
+  // translated slice or host-backed syscall, the next synchronization moves
+  // directly to the fixed mapping and services every due device without
+  // rebasing it. Deterministic runs intentionally bypass this path.
   const auto synchronize_device_time_to_host = [&]() {
     if (!realtime_pacer)
       return;
@@ -5794,18 +5798,25 @@ void boot(const std::vector<std::string> &args, Output &output) {
       if (hard_stop)
         break;
     }
-    scheduler.advance_time(scheduler_round_ticks);
-    if (scheduler_round_ticks != 0) {
-      initial_runtime->kernel->advance_time_by(
-          guest_tick_clock.absolute_time_units(scheduler_round_ticks));
-      const auto advanced_time =
-          initial_runtime->kernel->current_absolute_time();
-      for (auto &runtime : runtimes) {
-        if (runtime.get() != initial_runtime &&
-            !runtime->kernel->process().exited) {
-          runtime->kernel->service_time_dependent_devices(advanced_time);
+    if (device_time_policy == DeviceTimePolicy::DeterministicExecution) {
+      // Bounded runs derive DeterministicTime from executed guest ticks. CPU
+      // usage and quantum accounting already happened in complete_slice();
+      // this advances only their deterministic scheduler/device timeline.
+      scheduler.advance_time(scheduler_round_ticks);
+      if (scheduler_round_ticks != 0) {
+        initial_runtime->kernel->advance_time_by(
+            guest_tick_clock.absolute_time_units(scheduler_round_ticks));
+        const auto advanced_time =
+            initial_runtime->kernel->current_absolute_time();
+        for (auto &runtime : runtimes) {
+          if (runtime.get() != initial_runtime &&
+              !runtime->kernel->process().exited) {
+            runtime->kernel->service_time_dependent_devices(advanced_time);
+          }
         }
       }
+    }
+    if (scheduler_round_ticks != 0) {
       // AppleH1CLCD scans its reserved CoreSurface directly; firmware does
       // not unlock or swap that front buffer. Cache the publishing task after
       // the first lookup; imported task-local mappings retain the producer
