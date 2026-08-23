@@ -1269,6 +1269,12 @@ public:
         }
         if (owner_->svc_handler_) {
             owner_->svc_handler_(*owner_, immediate);
+            // Immediate HLE executes inside Dynarmic's callback and can spend
+            // far longer in host wall time than the surrounding Guest block
+            // accounts in instruction ticks.  Re-check the existing host-only
+            // cooperation deadline at this safe syscall boundary so the outer
+            // scheduler can service an equal-priority runnable peer.
+            maybe_check_host_yield(0, true);
         } else {
             jit_->HaltExecution(Dynarmic::HaltReason::UserDefined2);
         }

@@ -5653,8 +5653,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
         completion = XnuSliceCompletion::Yield;
       } else if (result.host_yielded) {
         // Host cooperation is not a Guest AST or a guest scheduler yield.
-        // Keep the runnable thread at the head of its current quantum.
-        completion = XnuSliceCompletion::Continue;
+        // Preserve the current quantum and priority while releasing only the
+        // emulator's queue-head continuation so an equal-priority peer can
+        // run after a wall-time-expensive translation or immediate SVC.
+        completion = XnuSliceCompletion::HostCooperate;
       } else if (Dynarmic::Has(result.reason,
                                Dynarmic::HaltReason::UserDefined2)) {
         // XNU AST preemption retains the current quantum. The

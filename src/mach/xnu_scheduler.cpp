@@ -531,7 +531,18 @@ bool XnuScheduler::complete_slice(
     if (quantum_expired) {
         performance_counters().record_scheduler_quantum_expiry();
     }
-    if (completion == XnuSliceCompletion::Yield || quantum_expired) {
+    if (completion == XnuSliceCompletion::HostCooperate && !quantum_expired) {
+        // A host wall-time boundary is not an XNU thread_switch/yield and
+        // must not reset the Guest quantum, metered computation, or dynamic
+        // priority.  It does need to release the emulator's queue-head
+        // continuation contract: otherwise an equal-priority peer can remain
+        // runnable for hundreds of host milliseconds while an expensive HLE
+        // syscall consumes almost no Guest instruction ticks.
+        record.info.state = XnuThreadState::Runnable;
+        performance_counters().record_scheduler_runnable_transition();
+        begin_runnable_generation(record);
+        enqueue(thread, QueuePosition::Back);
+    } else if (completion == XnuSliceCompletion::Yield || quantum_expired) {
         if (completion == XnuSliceCompletion::Yield) {
             record.info.computation_metered = 0;
         }

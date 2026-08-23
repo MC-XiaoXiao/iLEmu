@@ -82,6 +82,7 @@ enum class XnuThreadState : std::uint8_t {
 
 enum class XnuSliceCompletion : std::uint8_t {
     Continue,
+    HostCooperate,
     Yield,
     Block,
     Terminate,
