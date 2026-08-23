@@ -5328,6 +5328,20 @@ void boot(const std::vector<std::string> &args, Output &output) {
         preferred_thread = display_urgent_thread;
       }
     }
+    if (!preferred_thread && display_urgent_thread &&
+        display_urgent_process && display_urgent_lease_deadline &&
+        std::chrono::steady_clock::now() < *display_urgent_lease_deadline) {
+      const auto callback_info = scheduler.info(*display_urgent_thread);
+      if (callback_info && callback_info->state == XnuThreadState::Waiting) {
+        // The callback can legitimately block while handing work to another
+        // SpringBoard thread.  Keep the same bounded, host-only display
+        // transaction lease connected to that dependency instead of letting
+        // an unrelated runnable thread consume the entire lease.  This does
+        // not change Guest priority, quantum, clock, or callback/frame count.
+        preferred_thread = scheduler.oldest_runnable_thread(
+            *display_urgent_process, display_urgent_thread);
+      }
+    }
     if (!preferred_thread && input_preferred_thread) {
       if (const auto info = scheduler.info(*input_preferred_thread);
           info && info->state == XnuThreadState::Runnable) {

@@ -216,6 +216,13 @@ public:
     // Running threads so reclamation never depends on global queue activity.
     [[nodiscard]] std::size_t process_runnable_count(
         std::uint32_t process) const;
+    // Return the oldest runnable thread for a process without changing any
+    // Guest scheduling state.  Interactive display completion uses this only
+    // inside a bounded host-side callback lease to let a blocked callback's
+    // same-process dependency make progress.
+    [[nodiscard]] std::optional<XnuThreadId> oldest_runnable_thread(
+        std::uint32_t process,
+        std::optional<XnuThreadId> excluded = std::nullopt) const;
     [[nodiscard]] std::size_t waiting_count() const;
     [[nodiscard]] std::int32_t highest_runnable_priority() const;
     [[nodiscard]] std::uint64_t scheduler_tick() const { return scheduler_tick_; }
