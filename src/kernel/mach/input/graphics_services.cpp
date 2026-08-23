@@ -1611,6 +1611,20 @@ void register_springboard_application_handoff_animation(
                                    std::string{objc_message_send});
   registry.register_objc_instance_method(
       std::string{springboard_image}, "SBDisplay",
+      "setActivationSetting:value:",
+      "-[SBDisplay setActivationSetting:value:]", [](UserlandHleCall &call) {
+        constexpr std::uint32_t animation_start_time_setting = 0x1000U;
+        if (call.argument(2) == animation_start_time_setting &&
+            call.argument(3) != 0U) {
+          // SpringBoard records the start before preparing the zoom layers.
+          // Removing only this explicit start lets the transaction choose its
+          // commit time while retaining the firmware's animation definition.
+          call.cpu().registers()[3] = 0U;
+        }
+        call.resume_original_persistently();
+      });
+  registry.register_objc_instance_method(
+      std::string{springboard_image}, "SBDisplay",
       "setActivationSetting:flag:",
       "-[SBDisplay setActivationSetting:flag:]",
       [foreground_application_observer =
