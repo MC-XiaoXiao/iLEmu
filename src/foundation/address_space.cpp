@@ -340,15 +340,33 @@ void AddressSpace::clear() {
   bump_executable_content_generation_locked();
 }
 
-bool AddressSpace::protect(std::uint32_t address, std::uint32_t size,
-                           MemoryPermission permissions) {
+AddressSpace::ProtectResult AddressSpace::protect_with_result(
+    std::uint32_t address, std::uint32_t size,
+    MemoryPermission permissions) {
   if (size == 0 || range_overflows(address, size)) {
-    return size == 0;
+    return ProtectResult{.succeeded = size == 0};
   }
   const auto first = page_base(address);
   const auto end = page_range_end(address, size);
   auto lock = write_lock();
-  if (!vm_map_.protect(first, end, permissions)) return false;
+  if (!vm_map_.accessible(first, end, MemoryPermission::None)) return {};
+
+  bool executable_permissions_changed = false;
+  for (std::uint64_t cursor = first; cursor < end;) {
+    const auto region =
+        vm_map_.region_at_or_after(static_cast<std::uint32_t>(cursor));
+    if (!region || region->address > cursor || region->end <= cursor) {
+      return {};
+    }
+    if (region->permissions != permissions &&
+        (has_permission(region->permissions, MemoryPermission::Execute) ||
+         has_permission(permissions, MemoryPermission::Execute))) {
+      executable_permissions_changed = true;
+    }
+    cursor = std::min(region->end, end);
+  }
+
+  if (!vm_map_.protect(first, end, permissions)) return {};
   set_page_permissions_locked(first, end, permissions);
   if (has_permission(permissions, MemoryPermission::Write)) {
     ensure_unique_page_map_locked();
@@ -361,8 +379,17 @@ bool AddressSpace::protect(std::uint32_t address, std::uint32_t size,
     }
   }
   refresh_jit_page_range_locked(first, end);
-  bump_executable_content_generation_locked();
-  return true;
+  if (executable_permissions_changed)
+    bump_executable_content_generation_locked();
+  return ProtectResult{
+      .succeeded = true,
+      .executable_permissions_changed = executable_permissions_changed,
+  };
+}
+
+bool AddressSpace::protect(std::uint32_t address, std::uint32_t size,
+                           MemoryPermission permissions) {
+  return protect_with_result(address, size, permissions).succeeded;
 }
 
 void AddressSpace::mark_translation_profile_stable(std::uint32_t address,

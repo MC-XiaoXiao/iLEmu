@@ -112,6 +112,16 @@ public:
            MemoryPermission permissions);
   bool unmap(std::uint32_t address, std::uint32_t size);
   void clear();
+  struct ProtectResult {
+    bool succeeded{};
+    // True when at least one affected mapping changed permissions and either
+    // its old or new permissions allowed instruction execution. Callers use
+    // this to retire translated code without invalidating data-only changes.
+    bool executable_permissions_changed{};
+  };
+  [[nodiscard]] ProtectResult
+  protect_with_result(std::uint32_t address, std::uint32_t size,
+                      MemoryPermission permissions);
   bool protect(std::uint32_t address, std::uint32_t size,
                MemoryPermission permissions);
   struct CopyInOperation {
