@@ -816,6 +816,11 @@ struct KernelSharedState {
   struct ApplicationLaunchBarrier {
     ApplicationSuspensionReason reason{ApplicationSuspensionReason::None};
     std::uint64_t input_sequence{};
+    // A Lock transaction owns the exact resident scene that was foreground
+    // when the barrier was raised. Unlike the general suspension slot, this
+    // identity survives asynchronous UIKit lifecycle notifications until the
+    // matching unlock transaction consumes it.
+    std::optional<std::uint32_t> retained_process_id;
   };
   struct HeldApplicationLaunch {
     std::uint64_t origin_touch_sequence{};

@@ -930,6 +930,27 @@ UnlockTransitionCompletion
 complete_unlock_transition_locked(KernelSharedState &state,
                                   std::uint64_t unlock_up_sequence) {
   UnlockTransitionCompletion completion;
+  const auto retained_lock_process_id = [&]() -> std::optional<std::uint32_t> {
+    if (!state.application_launch_barrier ||
+        state.application_launch_barrier->reason !=
+            KernelSharedState::ApplicationSuspensionReason::Lock) {
+      return std::nullopt;
+    }
+    const auto candidate =
+        state.application_launch_barrier->retained_process_id
+            ? state.application_launch_barrier->retained_process_id
+            : state.suspended_application_scene_process_id;
+    if (!candidate)
+      return std::nullopt;
+    const auto process_id = *candidate;
+    const auto process = state.processes.find(process_id);
+    if (process == state.processes.end() || process->second.exited ||
+        !is_application_executable_path(process->second.executable_path) ||
+        !application_event_object_for_process_locked(state, process_id)) {
+      return std::nullopt;
+    }
+    return process_id;
+  }();
   if (!state.application_launch_barrier ||
       state.application_launch_barrier->reason !=
           KernelSharedState::ApplicationSuspensionReason::Lock) {
@@ -970,6 +991,26 @@ complete_unlock_transition_locked(KernelSharedState &state,
     }
   } else {
     state.held_application_launch.reset();
+  }
+  if (!completion.resume_process_id &&
+      !completion.completes_interrupted_home_exit &&
+      retained_lock_process_id) {
+    // Lock suspends the already-active scene without destroying its event
+    // route. A completed unlock must promote that same resident scene even
+    // when no launch/lifecycle callback follows; otherwise its retained pixels
+    // return while all later touches continue to route to SpringBoard.
+    const auto process_id = *retained_lock_process_id;
+    if (auto *attempt = launch_attempt_locked(state, process_id);
+        attempt && !attempt_interrupted(*attempt)) {
+      attempt->phase = KernelSharedState::ApplicationLaunchPhase::Launching;
+      state.foreground_application_attempt_process_id = process_id;
+      state.application_touch_suspended = true;
+      state.application_suspension_reason =
+          KernelSharedState::ApplicationSuspensionReason::Lock;
+      state.suspended_application_scene_process_id = process_id;
+      release_application_fullscreen_suppression_locked(state, process_id);
+      completion.resume_process_id = process_id;
+    }
   }
   return completion;
 }
@@ -1162,7 +1203,8 @@ void apply_launch_barrier_locked(
   const auto prior_held_application_launch =
       state.held_application_launch;
   state.application_launch_barrier =
-      KernelSharedState::ApplicationLaunchBarrier{reason, input_sequence};
+      KernelSharedState::ApplicationLaunchBarrier{reason, input_sequence,
+                                                  std::nullopt};
   // A Home/Lock barrier supersedes an incomplete App-to-App transition. Do
   // not let a later process spawn consume a foreground intent that the user
   // has already interrupted.
@@ -2175,6 +2217,13 @@ void suspend_active_application(
           : prior_home_exit_process_id;
   apply_launch_barrier_locked(state, reason, system_input_sequence,
                               sampleable_home_exit_process_id);
+  if (reason == KernelSharedState::ApplicationSuspensionReason::Lock &&
+      target_process_id && state.application_launch_barrier &&
+      state.application_launch_barrier->input_sequence ==
+          system_input_sequence) {
+    state.application_launch_barrier->retained_process_id =
+        *target_process_id;
+  }
 
   // With no exact current target, the sequence barrier is sufficient. A later
   // SpringBoard spawn/lookup will create a PID-bound attempt and compare its
