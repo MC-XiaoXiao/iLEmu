@@ -1425,7 +1425,7 @@ private:
 
 std::string usage() {
   return "Usage:\n"
-         "  ilemu profile [--device iPhone1,1|iPhone1,2|iPhone2,1|iPad1,1] [--output FILE]\n"
+         "  ilemu profile [--device PROFILE] [--output FILE]\n"
          "  ilemu inspect --rootfs DIR [--binary /sbin/launchd] "
          "[--device PROFILE] [--symbols SUBSTRING] [--output FILE]\n"
          "  ilemu catalog --rootfs DIR [--device PROFILE] [--manifest FILE] "
@@ -1442,7 +1442,7 @@ std::string usage() {
          "[--jit-artifact-disk-mib 0..4096] [--output FILE]\n"
          "  ilemu disasm --rootfs DIR --binary PATH "
          "(--symbol NAME | --address ADDR) [--device PROFILE] [--count N] [--thumb]\n"
-         "  ilemu boot --rootfs DIR [--device iPhone1,1|iPhone1,2|iPhone2,1|iPad1,1] "
+         "  ilemu boot --rootfs DIR [--device PROFILE] "
          "[--binary /sbin/launchd] [--guest-command COMMAND] [--ticks N] "
          "[--cores N] [--jit-cache-mib 8..128] "
          "[--jit-cache-budget-mib 256..4096] "
