@@ -26,8 +26,7 @@ namespace device_mig = xnu792::mig::device;
 constexpr std::uint32_t mach_receive_invalid_data = 0x10004008U;
 constexpr std::uint32_t mig_reply_identifier_delta = 100;
 constexpr std::uint32_t reply_size = 36;
-constexpr std::uint32_t apple_h1clcd_service_type = 0;
-constexpr std::string_view apple_h1clcd_class{"AppleH1CLCD"};
+constexpr std::uint32_t mobile_framebuffer_service_type = 0;
 
 void write_word(std::vector<std::byte> &bytes, std::size_t offset,
                 std::uint32_t value) {
@@ -68,13 +67,14 @@ bool is_display_connection_locked(const KernelSharedState &state,
   const auto connection = state.iokit_connections.find(connection_object);
   if (connection == state.iokit_connections.end() ||
       connection->second.owner_pid != process.pid ||
-      connection->second.type != apple_h1clcd_service_type) {
+      connection->second.type != mobile_framebuffer_service_type) {
     return false;
   }
   const auto service =
       state.iokit_services.find(connection->second.service_port);
   return service != state.iokit_services.end() &&
-         service->second.class_name == apple_h1clcd_class;
+         service->second.user_client_profile ==
+             KernelSharedState::IOKitUserClientProfile::Display;
 }
 
 bool queue_has_vsync(const std::deque<KernelSharedState::MachMessage> &queue,
@@ -152,16 +152,19 @@ make_vsync_message(std::uint32_t connection_object,
   // IOMobileFramebufferNotifyFunc forwards all six natural_t values to the
   // firmware callback. Both GraphicsServices' HeartbeatVBLCallback and
   // LayerKit's LKDisplayLinkCallback consume arguments 2 and 3 as the 64-bit
-  // frame time. LayerKit treats arguments 4 and 5 as an offset and adds them
-  // to that frame time, so an ordinary VSync leaves the offset at zero.
-  // Duplicating the deadline there advances LayerKit at twice Mach time and
-  // makes short UI animations expire before their first frame.
+  // sampled frame time. QuartzCore's IOMFBServer adds arguments 4 and 5 to
+  // that sample to obtain the next host time and also publishes the same
+  // value as CVTimeStamp.videoRefreshPeriod. Pass one physical panel period:
+  // zero prevents a completed frame from scheduling the next animation
+  // update, while duplicating the absolute deadline advances time twice.
   write_word(message.bytes, argument_offset + 2U * sizeof(std::uint32_t),
              static_cast<std::uint32_t>(deadline));
   write_word(message.bytes, argument_offset + 3U * sizeof(std::uint32_t),
              static_cast<std::uint32_t>(deadline >> 32U));
-  write_word(message.bytes, argument_offset + 4U * sizeof(std::uint32_t), 0);
-  write_word(message.bytes, argument_offset + 5U * sizeof(std::uint32_t), 0);
+  write_word(message.bytes, argument_offset + 4U * sizeof(std::uint32_t),
+             static_cast<std::uint32_t>(period_absolute_time));
+  write_word(message.bytes, argument_offset + 5U * sizeof(std::uint32_t),
+             static_cast<std::uint32_t>(period_absolute_time >> 32U));
   message.destination = registration.notification_port;
   message.display_vsync_connection_object = connection_object;
   message.display_vsync_registration_generation =
@@ -183,17 +186,17 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
     return std::nullopt;
 
   if (selector == static_cast<std::uint32_t>(
-                      iokit_abi::AppleH1ClcdSelector::GetLayerDefaultSurface)) {
+                      iokit_abi::MobileFramebufferSelector::GetLayerDefaultSurface)) {
     if (!scalar_input.empty() || !inband_input.empty() ||
         scalar_output_capacity < 1U) {
       return MethodResult{iokit_abi::bad_argument, {}};
     }
     return MethodResult{iokit_abi::success,
-                        {iokit_abi::apple_h1clcd_default_surface_id}};
+                        {iokit_abi::mobile_framebuffer_default_surface_id}};
   }
 
   if (selector == static_cast<std::uint32_t>(
-                      iokit_abi::AppleH1ClcdSelector::SetWhiteOnBlackMode)) {
+                      iokit_abi::MobileFramebufferSelector::SetWhiteOnBlackMode)) {
     if (scalar_input.size() != 1U || !inband_input.empty() ||
         scalar_output_capacity != 0U) {
       return MethodResult{iokit_abi::bad_argument, {}};
@@ -201,7 +204,7 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
     return MethodResult{iokit_abi::success, {}};
   }
 
-  if (iokit_abi::is_apple_h1clcd_vsync_selector(selector)) {
+  if (iokit_abi::is_mobile_framebuffer_vsync_selector(selector)) {
     if (scalar_input.size() != 2U || !inband_input.empty()) {
       return MethodResult{iokit_abi::bad_argument, {}};
     }
@@ -255,7 +258,7 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
     return MethodResult{iokit_abi::success, {}};
   }
 
-  if (iokit_abi::is_apple_h1clcd_power_selector(selector)) {
+  if (iokit_abi::is_mobile_framebuffer_power_selector(selector)) {
     if (scalar_input.size() != 1U || !inband_input.empty() ||
         scalar_output_capacity != 0U) {
       return MethodResult{iokit_abi::bad_argument, {}};

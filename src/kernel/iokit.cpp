@@ -521,7 +521,7 @@ std::uint32_t
 connection_type_for_profile(KernelSharedState::IOKitUserClientProfile profile,
                             std::uint32_t requested_type) {
   if (profile == KernelSharedState::IOKitUserClientProfile::Display)
-    return iokit_abi::apple_h1clcd_service_type;
+    return iokit_abi::mobile_framebuffer_service_type;
   if (profile == KernelSharedState::IOKitUserClientProfile::CoreSurface)
     return iokit_abi::core_surface_root_service_type;
   if (profile == KernelSharedState::IOKitUserClientProfile::Audio)
@@ -600,7 +600,9 @@ ensure_mobile_framebuffer_service_locked(KernelSharedState &shared_state) {
   shared_state.mach_queues.try_emplace(port);
   shared_state.iokit_services.emplace(
       port, KernelSharedState::IOKitService{
-                std::string{apple_h1clcd_class},
+                shared_state.framebuffer_service_class.empty()
+                    ? std::string{apple_h1clcd_class}
+                    : shared_state.framebuffer_service_class,
                 {std::string{mobile_framebuffer_class}},
                 {},
                 {},
@@ -973,9 +975,14 @@ void populate_matching_services_locked(KernelSharedState &shared_state,
       contains_text(matching, sdio_device_name)) {
     services.push_back(ensure_wifi_bus_service_locked(shared_state));
   }
-  // S5L8900/iPhone1,1 uses AppleH1CLCD. AppleMX31IPU belongs to a different
-  // first-generation platform and intentionally remains unmatched.
-  if (contains_text(matching, apple_h1clcd_class) ||
+  // The physical service class is a device capability. Keep generic
+  // IOMobileFramebuffer conformance visible while letting each SoC's stock
+  // QuartzCore select its own native display-server implementation.
+  const auto framebuffer_service_class =
+      shared_state.framebuffer_service_class.empty()
+          ? apple_h1clcd_class
+          : std::string_view{shared_state.framebuffer_service_class};
+  if (contains_text(matching, framebuffer_service_class) ||
       contains_text(matching, mobile_framebuffer_class)) {
     services.push_back(ensure_mobile_framebuffer_service_locked(shared_state));
   }
@@ -2191,7 +2198,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(
             : ConnectMethodResult{};
     std::uint64_t method_call_count = 0;
     bool vsync_enabled = false;
-    if (iokit_abi::is_apple_h1clcd_vsync_selector(request->selector)) {
+    if (iokit_abi::is_mobile_framebuffer_vsync_selector(request->selector)) {
       std::lock_guard mach_lock{shared_state.mach_mutex};
       if (const auto registration =
               shared_state.iokit_display_vsync.find(remote_object);

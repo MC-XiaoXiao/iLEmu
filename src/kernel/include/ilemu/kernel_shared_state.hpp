@@ -343,6 +343,7 @@ struct KernelSharedState {
   GraphicsAcceleratorProfileKind graphics_accelerator{
       GraphicsAcceleratorProfileKind::MbxLite};
   std::string graphics_driver_bundle;
+  std::string framebuffer_service_class;
 
   struct NetworkInterface {
     std::uint16_t flags{};
@@ -1332,7 +1333,7 @@ struct KernelSharedState {
   std::map<std::uint32_t, IOKitGraphicsConnectionState>
       iokit_graphics_connections;
   // The physical panel has one power state even though GraphicsServices and
-  // LayerKit open separate AppleH1CLCD user clients.
+  // LayerKit can open separate IOMobileFramebuffer user clients.
   DisplayGeometry display_geometry{default_display_geometry};
   DisplayGeometry user_interface_geometry{default_display_geometry};
   std::optional<std::uint32_t> requested_display_power_state;

@@ -27,34 +27,38 @@ enum class Message : std::uint32_t {
   ConnectMethod = 2865,
 };
 
-enum class AppleH1ClcdSelector : std::uint32_t {
+// IOMobileFramebuffer.framework exposes these selectors independently of the
+// physical framebuffer driver class (AppleH1CLCD, AppleM2CLCD, ...). Keep the
+// user-client contract named after that framework boundary so a device profile
+// can select its native IORegistry class without changing the transport ABI.
+enum class MobileFramebufferSelector : std::uint32_t {
   GetLayerDefaultSurface = 3,
   SetVSyncNotificationsV1 = 8,
   SetVSyncNotifications = 9,
   RequestPowerChangeV2 = 12,
   RequestPowerChangeV1 = 13,
   RequestPowerChange = 14,
-  // Optional panel-mode control exposed by later AppleH1CLCD clients.  The
+  // Optional panel-mode control exposed by later framebuffer clients.  The
   // guest sends one scalar and expects only an IOKit return code; the host
   // compositor already owns the final pixel transform, so accepting this
   // capability is intentionally state-neutral.
   SetWhiteOnBlackMode = 19,
 };
 
-constexpr bool is_apple_h1clcd_vsync_selector(std::uint32_t selector) {
+constexpr bool is_mobile_framebuffer_vsync_selector(std::uint32_t selector) {
   return selector == static_cast<std::uint32_t>(
-                         AppleH1ClcdSelector::SetVSyncNotificationsV1) ||
+                         MobileFramebufferSelector::SetVSyncNotificationsV1) ||
          selector == static_cast<std::uint32_t>(
-                         AppleH1ClcdSelector::SetVSyncNotifications);
+                         MobileFramebufferSelector::SetVSyncNotifications);
 }
 
-constexpr bool is_apple_h1clcd_power_selector(std::uint32_t selector) {
+constexpr bool is_mobile_framebuffer_power_selector(std::uint32_t selector) {
   return selector == static_cast<std::uint32_t>(
-                         AppleH1ClcdSelector::RequestPowerChangeV2) ||
+                         MobileFramebufferSelector::RequestPowerChangeV2) ||
          selector == static_cast<std::uint32_t>(
-                         AppleH1ClcdSelector::RequestPowerChangeV1) ||
+                         MobileFramebufferSelector::RequestPowerChangeV1) ||
          selector == static_cast<std::uint32_t>(
-                         AppleH1ClcdSelector::RequestPowerChange);
+                         MobileFramebufferSelector::RequestPowerChange);
 }
 
 inline constexpr std::uint32_t success = 0;
@@ -68,7 +72,7 @@ inline constexpr std::uint32_t aborted = 0xe00002ebU;
 // outstanding start/stop transitions.
 inline constexpr std::uint32_t service_busy_state_quiet = 0;
 
-inline constexpr std::uint32_t apple_h1clcd_service_type = 0;
+inline constexpr std::uint32_t mobile_framebuffer_service_type = 0;
 inline constexpr std::uint32_t core_surface_root_service_type = 0;
 inline constexpr std::uint32_t power_root_service_type = 0;
 inline constexpr std::uint32_t generic_user_client_type = 0xffffffffU;
@@ -76,7 +80,7 @@ inline constexpr std::uint32_t generic_user_client_type = 0xffffffffU;
 // CoreSurface IDs are transport handles, not guest pointers. Keep the display
 // driver's reserved surface outside the IDs normally allocated at process
 // startup; CoreSurfaceHle advances its allocator after a lookup of this ID.
-inline constexpr std::uint32_t apple_h1clcd_default_surface_id = 0x100U;
+inline constexpr std::uint32_t mobile_framebuffer_default_surface_id = 0x100U;
 
 namespace display_vsync {
 

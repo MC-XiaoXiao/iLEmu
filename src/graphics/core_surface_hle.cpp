@@ -154,7 +154,7 @@ bool CoreSurfaceHle::refresh_default_scanout(AddressSpace& memory,
     if (!display_)
         return false;
     const auto backing =
-        surfaces_->find(iokit_abi::apple_h1clcd_default_surface_id);
+        surfaces_->find(iokit_abi::mobile_framebuffer_default_surface_id);
     if (!backing)
         return false;
     const auto generation =
@@ -163,7 +163,7 @@ bool CoreSurfaceHle::refresh_default_scanout(AddressSpace& memory,
         return false;
     last_scanout_generation_ = generation;
     const auto pixels = surfaces_->read_argb(
-        memory, iokit_abi::apple_h1clcd_default_surface_id);
+        memory, iokit_abi::mobile_framebuffer_default_surface_id);
     if (!pixels || pixels->empty() || *pixels == last_scanout_pixels_) {
         return false;
     }

@@ -246,6 +246,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
   shared_state_->graphics_accelerator = device_profile_.graphics_accelerator;
   shared_state_->graphics_driver_bundle =
       std::string{device_profile_.graphics_driver_bundle};
+  shared_state_->framebuffer_service_class =
+      std::string{device_profile_.framebuffer_service_class};
   shared_state_->device_cpu_subtype = mach_cpu_subtype_for_architecture(
       arm_architecture_for_model(device_profile_.cpu_model));
   const auto virtual_baseband =
@@ -715,7 +717,7 @@ bool CompatibilityKernel::refresh_display_scanout() {
 
 bool CompatibilityKernel::owns_display_scanout() const {
   const auto backing =
-      surface_store_->find(iokit_abi::apple_h1clcd_default_surface_id);
+      surface_store_->find(iokit_abi::mobile_framebuffer_default_surface_id);
   return backing &&
          backing->provenance.producer_process_id == process_.pid;
 }
