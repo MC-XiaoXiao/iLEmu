@@ -45,6 +45,7 @@ struct LiveControlCommand {
   SystemButtonInput system_button;
   std::chrono::milliseconds button_hold{};
   bool wake_display{};
+  bool home_wake_barrier{};
   std::filesystem::path path;
   std::chrono::milliseconds snapshot_interval{};
   std::size_t snapshot_count{};

@@ -369,6 +369,7 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line) {
         std::chrono::milliseconds{unlock.release_delay_ms},
         std::chrono::milliseconds{unlock.wake_settle_delay_ms});
     command.wake_display = true;
+    command.home_wake_barrier = system_gestures_.home_wake_barrier;
     return {std::move(command)};
   }
   if (operation == "drag") {

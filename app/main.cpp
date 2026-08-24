@@ -4924,7 +4924,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
           break;
         case LiveControlCommandKind::Gesture:
           if (command.wake_display &&
-              !initial_runtime->kernel->display_powered_on()) {
+              (command.home_wake_barrier ||
+               !initial_runtime->kernel->display_powered_on())) {
             initial_runtime->kernel->enqueue_system_button(
                 SystemButtonInput{SystemButton::Home, SystemButtonPhase::Down});
             initial_runtime->kernel->enqueue_system_button(

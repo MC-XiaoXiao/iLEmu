@@ -46,18 +46,24 @@ struct NormalizedDragGestureProfile {
 struct SystemGestureProfile {
     std::string_view name;
     NormalizedDragGestureProfile unlock;
+    // Some compact lock scenes need the firmware Home transition even while
+    // the panel is already powered; tablet scenes retain the power-only wake
+    // behavior.
+    bool home_wake_barrier{};
 };
 
 inline constexpr SystemGestureProfile classic_compact_system_gestures{
     "classic-compact-slider",
     {0.15625F, 0.8958333333F, 0.8125F, 0.8958333333F, 1'400U, 7U,
      200U, 1'000U},
+    true,
 };
 
 inline constexpr SystemGestureProfile classic_centered_tablet_system_gestures{
     "classic-centered-tablet-slider",
     {0.3776041667F, 0.9375F, 0.8463541667F, 0.9375F, 1'400U, 7U,
      200U, 1'500U},
+    false,
 };
 
 struct DeviceProfile {
