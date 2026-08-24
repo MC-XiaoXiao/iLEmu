@@ -1416,7 +1416,7 @@ private:
 
 std::string usage() {
   return "Usage:\n"
-         "  ilemu profile [--device iPhone1,1|iPhone1,2|iPhone2,1] [--output FILE]\n"
+         "  ilemu profile [--device iPhone1,1|iPhone1,2|iPhone2,1|iPad1,1] [--output FILE]\n"
          "  ilemu inspect --rootfs DIR [--binary /sbin/launchd] "
          "[--device PROFILE] [--symbols SUBSTRING] [--output FILE]\n"
          "  ilemu catalog --rootfs DIR [--device PROFILE] [--manifest FILE] "
@@ -1433,7 +1433,7 @@ std::string usage() {
          "[--jit-artifact-disk-mib 0..4096] [--output FILE]\n"
          "  ilemu disasm --rootfs DIR --binary PATH "
          "(--symbol NAME | --address ADDR) [--device PROFILE] [--count N] [--thumb]\n"
-         "  ilemu boot --rootfs DIR [--device iPhone1,1|iPhone1,2|iPhone2,1] "
+         "  ilemu boot --rootfs DIR [--device iPhone1,1|iPhone1,2|iPhone2,1|iPad1,1] "
          "[--binary /sbin/launchd] [--guest-command COMMAND] [--ticks N] "
          "[--cores N] [--jit-cache-mib 8..128] "
          "[--jit-cache-budget-mib 256..4096] "
@@ -1855,7 +1855,8 @@ void profile(const std::vector<std::string>& args, Output &output) {
        << "display: " << device.display.width << 'x' << device.display.height
        << '\n'
        << "ui: " << device.user_interface.width << 'x'
-       << device.user_interface.height;
+       << device.user_interface.height << '\n'
+       << "framebuffer_service: " << device.framebuffer_service_class;
   output.line(text.str());
 }
 
@@ -2766,7 +2767,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
     touch_replay = std::make_unique<TouchReplay>(*path);
   }
   if (std::find(args.begin(), args.end(), "--control-stdin") != args.end()) {
-    live_control = std::make_unique<LiveControl>(0, device.user_interface);
+    live_control = std::make_unique<LiveControl>(
+        0, device.user_interface, device.system_gestures);
     output.line("[control] ready; use help for commands");
   }
   std::optional<std::uint16_t> gdb_port;
@@ -4881,7 +4883,8 @@ void boot(const std::vector<std::string> &args, Output &output) {
           mark_transition_input_complete("touch");
           break;
         case LiveControlCommandKind::Gesture:
-          if (command.wake_display) {
+          if (command.wake_display &&
+              !initial_runtime->kernel->display_powered_on()) {
             initial_runtime->kernel->enqueue_system_button(
                 SystemButtonInput{SystemButton::Home, SystemButtonPhase::Down});
             initial_runtime->kernel->enqueue_system_button(
@@ -6014,7 +6017,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       }
     }
     if (scheduler_round_ticks != 0) {
-      // AppleH1CLCD scans its reserved CoreSurface directly; firmware does
+      // IOMobileFramebuffer scans its reserved CoreSurface directly; firmware does
       // not unlock or swap that front buffer. Cache the publishing task after
       // the first lookup; imported task-local mappings retain the producer
       // provenance and cannot steal ownership.

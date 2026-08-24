@@ -5,6 +5,7 @@
 #include <string>
 #include <vector>
 
+#include "ilemu/device_profile.hpp"
 #include "ilemu/display_geometry.hpp"
 #include "ilemu/system_button_input.hpp"
 #include "ilemu/touch_input.hpp"
@@ -55,7 +56,9 @@ struct LiveControlCommand {
 class LiveControl {
 public:
   explicit LiveControl(int descriptor,
-                       DisplayGeometry geometry = default_display_geometry);
+                       DisplayGeometry geometry = default_display_geometry,
+                       SystemGestureProfile system_gestures =
+                           classic_compact_system_gestures);
 
   [[nodiscard]] std::vector<LiveControlCommand> poll();
   // Blocks until the descriptor is readable/hung up or the timeout expires.
@@ -68,6 +71,7 @@ private:
 
   int descriptor_{};
   DisplayGeometry geometry_;
+  SystemGestureProfile system_gestures_;
   std::string buffered_input_;
   bool closed_{};
 };

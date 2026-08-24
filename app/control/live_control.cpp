@@ -26,19 +26,6 @@ constexpr std::size_t maximum_drag_steps = 64;
 constexpr std::int64_t default_tap_duration_ms = 80;
 constexpr std::int64_t maximum_button_hold_ms = 60'000;
 constexpr auto drag_release_delay = std::chrono::milliseconds{16};
-// Reproduce the smallest trajectory that has been verified against the stock
-// iPhone OS 1.0 lock slider: Down at the knob center, seven 30-pixel moves at
-// 200 ms intervals, then Up after one final 200 ms hold.
-constexpr float unlock_start_x_fraction = 0.15625F;
-constexpr float unlock_y_fraction = 0.8958333333F;
-constexpr float unlock_end_x_fraction = 0.8125F;
-constexpr std::int64_t unlock_duration_ms = 1'400;
-constexpr std::size_t unlock_steps = 7;
-constexpr auto unlock_release_delay = std::chrono::milliseconds{200};
-// A Home click is processed by SpringBoard before it requests panel power and
-// tears down the dimming window. Do not begin the lock gesture in that window.
-constexpr auto unlock_home_settle_delay = std::chrono::milliseconds{1'000};
-
 LiveControlCommand error_command(std::string message) {
   LiveControlCommand result;
   result.kind = LiveControlCommandKind::Error;
@@ -129,9 +116,11 @@ parse_button_hold(std::string_view value) {
 
 } // namespace
 
-LiveControl::LiveControl(int descriptor, DisplayGeometry geometry)
+LiveControl::LiveControl(int descriptor, DisplayGeometry geometry,
+                         SystemGestureProfile system_gestures)
     : descriptor_{descriptor},
-      geometry_{geometry.valid() ? geometry : default_display_geometry} {
+      geometry_{geometry.valid() ? geometry : default_display_geometry},
+      system_gestures_{system_gestures} {
   if (descriptor_ < 0)
     closed_ = true;
 }
@@ -372,11 +361,13 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line) {
       return {error_command("unlock does not accept arguments")};
     const auto width = static_cast<float>(geometry_.width);
     const auto height = static_cast<float>(geometry_.height);
+    const auto &unlock = system_gestures_.unlock;
     auto command = make_drag_command(
-        width * unlock_start_x_fraction, height * unlock_y_fraction,
-        width * unlock_end_x_fraction, height * unlock_y_fraction,
-        unlock_duration_ms, unlock_steps, "unlock", unlock_release_delay,
-        unlock_home_settle_delay);
+        width * unlock.start_x_fraction, height * unlock.start_y_fraction,
+        width * unlock.end_x_fraction, height * unlock.end_y_fraction,
+        unlock.duration_ms, unlock.steps, "unlock",
+        std::chrono::milliseconds{unlock.release_delay_ms},
+        std::chrono::milliseconds{unlock.wake_settle_delay_ms});
     command.wake_display = true;
     return {std::move(command)};
   }
