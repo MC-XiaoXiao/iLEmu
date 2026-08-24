@@ -47,12 +47,7 @@ namespace {
 [[nodiscard]] bool task_owns_mach_right_locked(
     const KernelSharedState &state, std::uint32_t task, std::uint32_t object,
     xnu792::ipc::Right right) {
-  const auto mask = xnu792::ipc::type_mask(right);
-  for (const auto &named : state.mach_namespaces.entries(task)) {
-    if (named.entry.object == object && (named.entry.type & mask) != 0U)
-      return true;
-  }
-  return false;
+  return state.mach_namespaces.owns_right(task, object, right);
 }
 
 [[nodiscard]] bool pending_mach_receive_is_usable_locked(

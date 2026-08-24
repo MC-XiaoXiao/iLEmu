@@ -79,6 +79,8 @@ public:
                                                  MachObject object) const;
   [[nodiscard]] std::optional<MachTypeMask> type(TaskId task,
                                                  MachName name) const;
+  [[nodiscard]] bool owns_right(TaskId task, MachObject object,
+                                Right right) const;
   [[nodiscard]] std::vector<NamedEntry> entries(TaskId task) const;
   [[nodiscard]] bool contains_task(TaskId task) const;
   [[nodiscard]] bool contains(TaskId task, MachName name) const;

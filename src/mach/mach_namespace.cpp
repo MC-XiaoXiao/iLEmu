@@ -203,6 +203,20 @@ std::optional<MachTypeMask> MachNamespaceTable::type(TaskId task,
   return entry ? std::optional{entry->type} : std::nullopt;
 }
 
+bool MachNamespaceTable::owns_right(TaskId task, MachObject object,
+                                    Right right) const {
+  const auto space = spaces_.find(task);
+  if (space == spaces_.end()) return false;
+  const auto names = indexed_names(space->second, object);
+  if (names == nullptr) return false;
+  const auto mask = type_mask(right);
+  return std::any_of(names->begin(), names->end(), [&](MachName name) {
+    const auto entry = space->second.entries.find(name);
+    return entry != space->second.entries.end() &&
+           (entry->second.type & mask) != 0U;
+  });
+}
+
 std::vector<NamedEntry> MachNamespaceTable::entries(TaskId task) const {
   std::vector<NamedEntry> result;
   const auto space = spaces_.find(task);
