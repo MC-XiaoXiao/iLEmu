@@ -4859,9 +4859,6 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
             submit_commands(false, PerfSubmitReason::BatchCapacity);
             wait_for_slot(command_slot());
         }
-        ensure_buffer(command_slot().vertex,
-                      std::max(vertex_bytes, minimum_vertex_arena_bytes),
-                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         const auto align_staging = [](VkDeviceSize value) {
             return (value + staging_alignment - 1U) &
                    ~(staging_alignment - 1U);
@@ -4899,6 +4896,12 @@ bool VulkanGlesRenderer::draw(DisplayFrame& frame, GlesRenderTargetKey target,
             command_slot().staging,
             std::max(staging_end, minimum_staging_arena_bytes),
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        // The staging-capacity check may submit the current batch and rotate
+        // to another command slot. Allocate per-slot draw buffers only after
+        // that final rotation decision.
+        ensure_buffer(command_slot().vertex,
+                      std::max(vertex_bytes, minimum_vertex_arena_bytes),
+                      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         auto& commands = command_slot();
         ensure_buffer(commands.uniform,
                       uniform_stride_ * maximum_batch_draws,
