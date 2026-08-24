@@ -103,17 +103,10 @@ std::optional<DisplayOrientation> plist_orientation(plist_t root) {
   if (const auto value = read_string(
           plist_dict_get_item(root, "UIInterfaceOrientation")))
     return value;
-  if (const auto value = read_string(
-          plist_dict_get_item(root, "UISupportedInterfaceOrientations")))
-    return value;
-
-  const auto array = plist_dict_get_item(root, "UISupportedInterfaceOrientations");
-  if (array == nullptr || plist_get_node_type(array) != PLIST_ARRAY)
-    return std::nullopt;
-  for (std::uint32_t index = 0; index < plist_array_get_size(array); ++index) {
-    if (const auto value = read_string(plist_array_get_item(array, index)))
-      return value;
-  }
+  // UISupportedInterfaceOrientations is a capability set, not a request for
+  // the application's initial orientation. UIKit owns selection within that
+  // set; choosing the first parseable member here can rotate an application
+  // merely because an earlier capability is unknown to this host.
   return std::nullopt;
 }
 #endif
