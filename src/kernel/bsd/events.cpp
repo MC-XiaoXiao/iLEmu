@@ -953,62 +953,13 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
           }
-          std::vector<std::byte> result(
-              wifi_driver::scan_result_size, std::byte{0});
-          const auto write16 = [&result](std::uint32_t offset,
-                                         std::uint16_t value) {
-            result[offset] = static_cast<std::byte>(value & 0xffU);
-            result[offset + 1] =
-                static_cast<std::byte>((value >> 8U) & 0xffU);
-          };
-          const auto write32 = [&result](std::uint32_t offset,
-                                         std::uint32_t value) {
-            for (std::uint32_t index = 0; index < 4; ++index) {
-              result[offset + index] =
-                  static_cast<std::byte>((value >> (index * 8U)) & 0xffU);
-            }
-          };
           // Preserve only the firmware-owned IE scratch pointer. Copying the
           // entire input record would leak uninitialized caller flags into
           // the native parser and can make a discovered AP appear associated.
-          write32(wifi_driver::scan_ie_pointer_offset, *ie_scratch);
-          write32(wifi_driver::scan_channel_offset, access_point.channel);
-          write32(wifi_driver::scan_channel_flags_offset, 0);
-          write16(wifi_driver::scan_noise_offset,
-                  static_cast<std::uint16_t>(
-                      static_cast<std::int16_t>(-90)));
-          const auto signal_strength = std::clamp(
-              access_point.rssi - wifi_driver::scan_signal_floor_dbm,
-              0, wifi_driver::scan_signal_ceiling_dbm -
-                     wifi_driver::scan_signal_floor_dbm);
-          write16(wifi_driver::scan_rssi_offset,
-                  static_cast<std::uint16_t>(signal_strength));
-          write16(wifi_driver::scan_beacon_interval_offset, 100);
-          // IEEE 802.11 capability bit 0 is ESS. Privacy (bit 4) is set only
-          // for networks whose association requires a key.
-          write16(
-              wifi_driver::scan_capabilities_offset,
-              static_cast<std::uint16_t>(
-                  1U |
-                  (access_point.security == WifiSecurity::Open ? 0U : 0x10U)));
-          std::copy(access_point.bssid.begin(), access_point.bssid.end(),
-                    result.begin() + wifi_driver::scan_bssid_offset);
-          result[wifi_driver::scan_rate_count_offset] = std::byte{0};
-          result[wifi_driver::scan_ssid_length_offset] =
-              static_cast<std::byte>(access_point.ssid.size());
-          std::fill_n(result.begin() + wifi_driver::scan_ssid_offset, 32,
-                      std::byte{0});
-          std::transform(
-              access_point.ssid.begin(), access_point.ssid.end(),
-              result.begin() + wifi_driver::scan_ssid_offset,
-              [](char value) {
-                return static_cast<std::byte>(
-                    static_cast<unsigned char>(value));
-              });
-          write32(wifi_driver::scan_age_offset, 0);
-          write32(wifi_driver::scan_flags_offset, 0);
-          write16(wifi_driver::scan_ie_length_offset, 0);
-          if (!memory_.copy_in(*data_address, result)) {
+          const auto result = wifi_driver::make_network_record(
+              &access_point, wifi_driver::aligned_network_record_layout, 0,
+              *ie_scratch);
+          if (!result || !memory_.copy_in(*data_address, *result)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
           }
@@ -1021,43 +972,41 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
           return;
         }
         if (registers[1] == wifi_driver::get_request &&
-            *command == wifi_driver::command_extended_capabilities) {
-          if (*data_address == 0 ||
-              *data_length < wifi_driver::extended_capabilities_size) {
+            *command == wifi_driver::command_current_network) {
+          const auto layout =
+              shared_state_->darwin_kernel_identity.apple80211_ioctl ==
+                      DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord
+                  ? wifi_driver::compact_network_record_layout
+                  : wifi_driver::aligned_network_record_layout;
+          if (*data_address == 0 || *data_length < layout.size) {
             bsd_error(cpu, *data_address == 0
                                ? bsd_support::bad_address
                                : bsd_support::invalid_argument);
             return;
           }
-          const auto blob_length = memory_.read16(
-              *data_address +
-              wifi_driver::extended_capabilities_blob_length_offset);
-          const auto blob_pointer = memory_.read32(
-              *data_address +
-              wifi_driver::extended_capabilities_blob_pointer_offset);
-          if (!blob_length || !blob_pointer ||
-              (*blob_length != 0 && *blob_pointer == 0)) {
+          const auto ie_length =
+              memory_.read16(*data_address + layout.ie_length_offset);
+          const auto ie_pointer =
+              memory_.read32(*data_address + layout.ie_pointer_offset);
+          if (!ie_length || !ie_pointer ||
+              (*ie_length != 0 && *ie_pointer == 0)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
           }
-          const std::array<std::byte,
-                           wifi_driver::extended_capabilities_size>
-              capabilities{};
-          if (!memory_.copy_in(*data_address, capabilities) ||
-              !memory_.write16(
-                  *data_address +
-                      wifi_driver::extended_capabilities_blob_length_offset,
-                  *blob_length) ||
-              !memory_.write32(
-                  *data_address +
-                      wifi_driver::extended_capabilities_blob_pointer_offset,
-                  *blob_pointer)) {
+          const auto associated =
+              wifi_state_->snapshot().associated_access_point;
+          const auto record = wifi_driver::make_network_record(
+              associated ? &*associated : nullptr, layout, *ie_length,
+              *ie_pointer);
+          if (!record || !memory_.copy_in(*data_address, *record)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
           }
-          output_.write("[wifi-driver] extended-capabilities pid=" +
+          output_.write("[wifi-driver] current-network pid=" +
                         std::to_string(process_.pid) + " fd=" +
-                        std::to_string(fd) + " optional=none\n");
+                        std::to_string(fd) + " layout=" +
+                        std::to_string(layout.size) + " associated=" +
+                        std::to_string(associated.has_value()) + "\n");
           bsd_success(cpu, 0);
           return;
         }

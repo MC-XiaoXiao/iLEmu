@@ -9,6 +9,10 @@
 #include <string_view>
 #include <vector>
 
+namespace ilemu {
+struct VirtualAccessPoint;
+}
+
 namespace ilemu::darwin::network {
 
 // XNU 792 / Darwin 8 networking constants. These are kept here rather than
@@ -142,10 +146,7 @@ inline constexpr std::uint32_t command_noise = 17;
 inline constexpr std::uint32_t command_power = 19;
 inline constexpr std::uint32_t command_association_result = 21;
 inline constexpr std::uint32_t command_driver_name = 23;
-// Mobile AirPort drivers expose an extended capability record in addition to
-// the public Apple80211 selectors. A zeroed record is a valid declaration
-// that no optional chipset features are present.
-inline constexpr std::uint32_t command_extended_capabilities = 201;
+inline constexpr std::uint32_t command_current_network = 201;
 inline constexpr std::uint32_t inline_scalar_value_offset = 20;
 inline constexpr std::uint32_t association_result_success = 1;
 
@@ -163,9 +164,20 @@ inline constexpr std::uint32_t signal_state_last_offset = 48;
 inline constexpr std::uint32_t power_state_size = 24;
 inline constexpr std::uint32_t power_state_count_offset = 4;
 inline constexpr std::uint32_t power_state_first_value_offset = 8;
-inline constexpr std::uint32_t extended_capabilities_size = 144;
-inline constexpr std::uint32_t extended_capabilities_blob_length_offset = 136;
-inline constexpr std::uint32_t extended_capabilities_blob_pointer_offset = 140;
+
+struct NetworkRecordLayout {
+    std::uint32_t size{};
+    std::uint32_t ie_length_offset{};
+    std::uint32_t ie_pointer_offset{};
+};
+
+// Darwin 9 aligns the final pointer after a 16-bit IE length. Darwin 10's
+// mobile driver removes that padding while preserving selector 201 and all
+// preceding fields.
+inline constexpr NetworkRecordLayout aligned_network_record_layout{
+    144, 136, 140};
+inline constexpr NetworkRecordLayout compact_network_record_layout{
+    140, 134, 136};
 
 inline constexpr std::uint32_t scan_result_size = 144;
 inline constexpr std::uint32_t scan_channel_offset = 8;
@@ -184,6 +196,13 @@ inline constexpr std::uint32_t scan_ie_length_offset = 136;
 inline constexpr std::uint32_t scan_ie_pointer_offset = 140;
 inline constexpr std::int32_t scan_signal_floor_dbm = -100;
 inline constexpr std::int32_t scan_signal_ceiling_dbm = 0;
+
+// Builds the raw AirPortFamily network record consumed by the firmware's own
+// Apple80211-to-CoreFoundation converter. A null access point represents a
+// powered but unassociated interface and still produces a valid empty record.
+[[nodiscard]] std::optional<std::vector<std::byte>> make_network_record(
+    const VirtualAccessPoint* access_point, NetworkRecordLayout layout,
+    std::uint16_t ie_length, std::uint32_t ie_pointer);
 
 }  // namespace apple80211_driver
 

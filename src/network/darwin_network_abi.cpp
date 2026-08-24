@@ -1,5 +1,7 @@
 #include "ilemu/darwin_network_abi.hpp"
 
+#include "ilemu/wifi_state.hpp"
+
 #include <algorithm>
 #include <bit>
 #include <limits>
@@ -194,6 +196,54 @@ void append_record(
 }
 
 }  // namespace
+
+std::optional<std::vector<std::byte>>
+apple80211_driver::make_network_record(
+    const VirtualAccessPoint* access_point, NetworkRecordLayout layout,
+    std::uint16_t ie_length, std::uint32_t ie_pointer) {
+    if (layout.size < scan_flags_offset + sizeof(std::uint32_t) ||
+        layout.ie_length_offset + sizeof(std::uint16_t) > layout.size ||
+        layout.ie_pointer_offset + sizeof(std::uint32_t) > layout.size ||
+        (ie_length != 0 && ie_pointer == 0) ||
+        (access_point && access_point->ssid.size() > 32)) {
+        return std::nullopt;
+    }
+
+    std::vector<std::byte> result(layout.size, std::byte{0});
+    put16(result, layout.ie_length_offset, ie_length);
+    put32(result, layout.ie_pointer_offset, ie_pointer);
+    if (!access_point) return result;
+
+    put32(result, scan_channel_offset, access_point->channel);
+    put32(result, scan_channel_flags_offset, 0);
+    put16(result, scan_noise_offset,
+          static_cast<std::uint16_t>(static_cast<std::int16_t>(-90)));
+    const auto signal_strength = std::clamp(
+        access_point->rssi - scan_signal_floor_dbm, 0,
+        scan_signal_ceiling_dbm - scan_signal_floor_dbm);
+    put16(result, scan_rssi_offset,
+          static_cast<std::uint16_t>(signal_strength));
+    put16(result, scan_beacon_interval_offset, 100);
+    // IEEE 802.11 capability bit 0 is ESS. Privacy (bit 4) is set only for
+    // networks whose association requires a key.
+    put16(result, scan_capabilities_offset,
+          static_cast<std::uint16_t>(
+              1U | (access_point->security == WifiSecurity::Open ? 0U
+                                                                  : 0x10U)));
+    std::copy(access_point->bssid.begin(), access_point->bssid.end(),
+              result.begin() + scan_bssid_offset);
+    result[scan_rate_count_offset] = std::byte{0};
+    result[scan_ssid_length_offset] =
+        static_cast<std::byte>(access_point->ssid.size());
+    std::transform(access_point->ssid.begin(), access_point->ssid.end(),
+                   result.begin() + scan_ssid_offset, [](char value) {
+                       return static_cast<std::byte>(
+                           static_cast<unsigned char>(value));
+                   });
+    put32(result, scan_age_offset, 0);
+    put32(result, scan_flags_offset, 0);
+    return result;
+}
 
 std::vector<std::byte> make_route_interface_list(
     std::span<const InterfaceSnapshot> interfaces,
