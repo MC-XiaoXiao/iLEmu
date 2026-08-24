@@ -4,6 +4,7 @@ add_library(ilemu_foundation STATIC
     address_space.cpp
     application_display_profile.cpp
     arm_cpu_model.cpp
+    arm_unpredictable_instruction.cpp
     cpu.cpp
     darwin_notify_state_hle.cpp
     device_profile.cpp

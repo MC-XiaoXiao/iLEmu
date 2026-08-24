@@ -36,6 +36,7 @@
 #include "ilemu/jit_translation_profile.hpp"
 #include "ilemu/jit_native_preimport_tracker.hpp"
 #include "ilemu/jit_artifact.hpp"
+#include "ilemu/arm_unpredictable_instruction.hpp"
 #include "dynarmic_ir_artifact.hpp"
 #include "ilemu/performance.hpp"
 
@@ -1290,6 +1291,27 @@ public:
             owner_->registers()[15] = pc;
             jit_->HaltExecution(Dynarmic::HaltReason::UserDefined7);
             return;
+        }
+        if (exception == Dynarmic::A32::Exception::UnpredictableInstruction) {
+            const auto thumb = (jit_->Cpsr() & (1U << 5U)) != 0U;
+            std::optional<std::uint32_t> instruction;
+            if (thumb) {
+                const auto first =
+                    memory_.read16(pc, MemoryPermission::Execute);
+                const auto second =
+                    memory_.read16(pc + 2U, MemoryPermission::Execute);
+                if (first && second) {
+                    instruction = (static_cast<std::uint32_t>(*first) << 16U) |
+                                  *second;
+                }
+            } else {
+                instruction = memory_.read32(pc, MemoryPermission::Execute);
+            }
+            if (instruction && emulate_arm_unpredictable_instruction(
+                                   cpu_model_.unpredictable_instruction_profile(),
+                                   thumb, *instruction, jit_->ExtRegs())) {
+                return;
+            }
         }
         std::ostringstream message;
         message << "ARM exception " << static_cast<unsigned>(exception)

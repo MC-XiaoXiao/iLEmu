@@ -69,6 +69,11 @@ public:
     return ArmArchitectureVersion::Armv6K;
   }
 
+  [[nodiscard]] ArmUnpredictableInstructionProfile
+  unpredictable_instruction_profile() const noexcept override {
+    return ArmUnpredictableInstructionProfile::Strict;
+  }
+
   [[nodiscard]] std::uint32_t ticks_per_second() const noexcept override {
     return clock_hz_;
   }
@@ -102,6 +107,11 @@ public:
   [[nodiscard]] ArmArchitectureVersion
   architecture_version() const noexcept override {
     return ArmArchitectureVersion::Armv7;
+  }
+
+  [[nodiscard]] ArmUnpredictableInstructionProfile
+  unpredictable_instruction_profile() const noexcept override {
+    return ArmUnpredictableInstructionProfile::CortexA8;
   }
 
   [[nodiscard]] std::uint32_t ticks_per_second() const noexcept override {

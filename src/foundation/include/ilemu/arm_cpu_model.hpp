@@ -17,6 +17,14 @@ enum class ArmCpuModelKind : std::uint8_t {
   CortexA8,
 };
 
+// ARM permits implementation-defined handling for instructions whose result
+// is architecturally UNKNOWN. Keep that policy attached to the emulated core,
+// independently of a device, firmware build, image, or guest address.
+enum class ArmUnpredictableInstructionProfile : std::uint8_t {
+  Strict,
+  CortexA8,
+};
+
 [[nodiscard]] constexpr ArmArchitectureVersion
 arm_architecture_for_model(ArmCpuModelKind kind) noexcept {
   switch (kind) {
@@ -51,6 +59,8 @@ public:
 
   [[nodiscard]] virtual ArmArchitectureVersion
   architecture_version() const noexcept = 0;
+  [[nodiscard]] virtual ArmUnpredictableInstructionProfile
+  unpredictable_instruction_profile() const noexcept = 0;
   [[nodiscard]] virtual std::uint32_t ticks_per_second() const noexcept = 0;
   [[nodiscard]] virtual std::uint64_t
   ticks_for_instruction(bool thumb, std::uint32_t address,
