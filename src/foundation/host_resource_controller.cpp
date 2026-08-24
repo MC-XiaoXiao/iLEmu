@@ -9,16 +9,18 @@ namespace {
 
 [[nodiscard]] unsigned work_priority(HostWorkKind kind) {
   switch (kind) {
-  case HostWorkKind::Maintenance:
+  case HostWorkKind::ForegroundPrepare:
     return 0;
-  case HostWorkKind::BackgroundCompile:
+  case HostWorkKind::Maintenance:
     return 1;
-  case HostWorkKind::OfflineCompile:
+  case HostWorkKind::BackgroundCompile:
     return 2;
-  case HostWorkKind::ArtifactCompaction:
+  case HostWorkKind::OfflineCompile:
     return 3;
+  case HostWorkKind::ArtifactCompaction:
+    return 4;
   }
-  return 3;
+  return 4;
 }
 
 [[nodiscard]] bool is_budgeted_compile(HostWorkKind kind) {

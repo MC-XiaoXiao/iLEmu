@@ -970,21 +970,28 @@ struct Runtime {
   std::vector<bool> allocated;
   std::optional<PendingExec> pending_exec;
   std::shared_ptr<HostWorkToken> precompile_task;
+  std::shared_ptr<HostWorkToken> execution_prepare_task;
   JitPrecompilePhase precompile_phase{JitPrecompilePhase::Remaining};
   RuntimeWorkEpoch work_epoch;
   std::optional<std::chrono::steady_clock::time_point>
       execution_reclaim_after;
   bool fresh_spawn_address_space{};
+  bool resume_after_execution_prepare{};
   bool jit_memory_accounted{};
 
   [[nodiscard]] std::uint64_t begin_image_transition(
       HostResourceController &host_resources) {
     const auto next_epoch = work_epoch.begin_transition();
-    const auto task = precompile_task;
-    if (task) task->cancel();
+    const auto precompile = precompile_task;
+    const auto execution_prepare = execution_prepare_task;
+    if (precompile) precompile->cancel();
+    if (execution_prepare) execution_prepare->cancel();
     host_resources.wake();
     if (cpus) cpus->quiesce_precompilation();
-    if (task) task->wait_finished();
+    if (precompile) precompile->wait_finished();
+    if (execution_prepare) execution_prepare->wait_finished();
+    execution_prepare_task.reset();
+    resume_after_execution_prepare = false;
     return next_epoch;
   }
 
@@ -1001,7 +1008,9 @@ struct Runtime {
     PerformanceLatencyScope latency{PerfLatencyKind::RuntimeDestructor};
     static_cast<void>(work_epoch.begin_transition());
     if (precompile_task) precompile_task->cancel();
+    if (execution_prepare_task) execution_prepare_task->cancel();
     if (cpus) cpus->quiesce_precompilation();
+    if (execution_prepare_task) execution_prepare_task->wait_finished();
     pending_exec.reset();
     std::vector<bool>{}.swap(allocated);
     kernel.reset();
@@ -4353,10 +4362,37 @@ void boot(const std::vector<std::string> &args, Output &output) {
                   child_cpu, loaded.executable_path);
               precompile_startup_profile(*child_runtime,
                                          loaded.executable_path);
-          observe_runtime_jit_memory_counted(*child_runtime);
+              observe_runtime_jit_memory_counted(*child_runtime);
             }
             child_runtime->activate_image_epoch(image_epoch);
             child_runtime->fresh_spawn_address_space = false;
+            const auto foreground_application =
+                precompile_phase_for_process(loaded.executable_path) ==
+                JitPrecompilePhase::ForegroundApplication;
+            if (foreground_application) {
+              const auto initial_thread = XnuThreadId{child_pid, 0};
+              const auto held_for_prepare =
+                  start_suspended || scheduler.suspend_thread(initial_thread);
+              if (held_for_prepare) {
+                child_runtime->execution_prepare_task = host_resources.submit(
+                    HostWorkKind::ForegroundPrepare, std::nullopt,
+                    [child_runtime] {
+                      try {
+                        child_runtime->cpus
+                            ->prepare_primary_execution_resource();
+                      } catch (...) {
+                        // The first Guest slice retains ensure_jit() as the
+                        // safe fallback if Host-side preparation fails.
+                      }
+                    });
+              }
+              if (child_runtime->execution_prepare_task) {
+                child_runtime->resume_after_execution_prepare =
+                    !start_suspended;
+              } else if (held_for_prepare && !start_suspended) {
+                static_cast<void>(scheduler.resume_thread(initial_thread));
+              }
+            }
             if (start_suspended) {
               static_cast<void>(scheduler.block(XnuThreadId{child_pid, 0}));
             }
@@ -5298,6 +5334,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
     // the AddressSpace and exclusive-monitor lifetimes.
     constexpr auto execution_reclaim_grace = std::chrono::milliseconds{1500};
     const auto reclaim_now = std::chrono::steady_clock::now();
+    for (auto &runtime : runtimes) {
+      if (!runtime->execution_prepare_task ||
+          !runtime->execution_prepare_task->finished()) {
+        continue;
+      }
+      runtime->execution_prepare_task.reset();
+      if (runtime->resume_after_execution_prepare &&
+          !runtime->kernel->process().exited) {
+        static_cast<void>(scheduler.resume_thread(
+            XnuThreadId{runtime->kernel->process().pid, 0}));
+      }
+      runtime->resume_after_execution_prepare = false;
+    }
     const auto precompile_finished = [&](Runtime &runtime) {
       if (!runtime.precompile_task) return true;
       if (!runtime.precompile_task->finished()) {
@@ -5310,6 +5359,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
     for (auto &runtime : runtimes) {
       if (runtime->kernel->process().exited &&
           runtime->cpus->has_execution_resources()) {
+        if (runtime->execution_prepare_task &&
+            !runtime->execution_prepare_task->finished()) {
+          continue;
+        }
         if (!runtime->execution_reclaim_after) {
           runtime->execution_reclaim_after =
               reclaim_now + execution_reclaim_grace;

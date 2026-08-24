@@ -310,6 +310,11 @@ public:
     [[nodiscard]] std::optional<std::size_t> add_cpu();
     void set_process_id(std::uint32_t process_id);
     void set_jit_code_cache_size(std::size_t bytes);
+    // Construct the primary Dynarmic executor without running Guest code.
+    // Spawned foreground processes use this from a Host worker while their
+    // initial Guest thread remains suspended, keeping the non-preemptible
+    // constructor off the interactive scheduler thread.
+    void prepare_primary_execution_resource();
     [[nodiscard]] std::uint64_t jit_code_cache_bytes();
     void clear_cache();
     void invalidate_cache_range(std::uint32_t address, std::size_t length);

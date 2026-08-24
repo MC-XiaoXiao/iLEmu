@@ -16,6 +16,7 @@
 namespace ilemu {
 
 enum class HostWorkKind : std::uint8_t {
+  ForegroundPrepare,
   BackgroundCompile,
   OfflineCompile,
   Maintenance,

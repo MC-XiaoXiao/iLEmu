@@ -2820,6 +2820,12 @@ private:
     }
 
   public:
+    void prepare() {
+        const std::lock_guard lock{execution_mutex_};
+        memory_.synchronize_shared_write_tracking();
+        ensure_jit();
+    }
+
     void set_process_id(std::uint32_t process_id) {
         process_id_ = process_id;
     }
@@ -2958,6 +2964,10 @@ public:
                 first_processor_id + slot, slot, memory, monitor, cpu_model,
                 artifact_store, execution_context_, nullptr));
         }
+    }
+
+    void prepare_primary_execution_resource() {
+        if (!executors_.empty()) executors_.front()->prepare();
     }
 
     ~CpuExecutionPool() {
@@ -4437,6 +4447,10 @@ void CpuCluster::set_process_id(std::uint32_t process_id) {
 
 void CpuCluster::set_jit_code_cache_size(std::size_t bytes) {
     execution_pool_->set_code_cache_size(bytes);
+}
+
+void CpuCluster::prepare_primary_execution_resource() {
+    if (execution_pool_) execution_pool_->prepare_primary_execution_resource();
 }
 
 std::uint64_t CpuCluster::jit_code_cache_bytes() {
