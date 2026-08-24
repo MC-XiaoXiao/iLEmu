@@ -928,6 +928,8 @@ std::size_t CompatibilityKernel::install_mapped_user_image(
     if (source_file == cache->files().end()) return 0;
     const auto source_file_index = static_cast<std::uint32_t>(
         std::distance(cache->files().begin(), source_file));
+    static_cast<void>(userland_hle_.resolve_mapped_shared_cache_data_symbols(
+        image_path, mapping_address, mapping_size, file_offset));
     const auto image_indices = cache->images_intersecting_file_range(
         source_file_index, file_offset, mapping_size);
     for (const auto image_index : image_indices) {

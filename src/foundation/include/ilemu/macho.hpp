@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <span>
@@ -71,6 +72,8 @@ struct MachSymbolFileLocation {
 
 class MachOImage {
 public:
+    using VmStringResolver =
+        std::function<std::optional<std::string>(std::uint32_t)>;
     static MachOImage parse(
         const std::filesystem::path& path,
         ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
@@ -133,9 +136,11 @@ public:
     // metadata. This covers stripped firmware methods without relying on a
     // version-specific virtual address.
     [[nodiscard]] std::optional<std::uint32_t> find_objc_instance_method(
-        std::string_view class_name, std::string_view selector) const;
+        std::string_view class_name, std::string_view selector,
+        VmStringResolver external_string = {}) const;
     [[nodiscard]] std::optional<std::uint32_t> find_objc_class_method(
-        std::string_view class_name, std::string_view selector) const;
+        std::string_view class_name, std::string_view selector,
+        VmStringResolver external_string = {}) const;
 
     void map_into(AddressSpace& memory,
                   FileMappingBatchContext *batch_context = nullptr) const;
@@ -143,7 +148,7 @@ public:
 private:
     [[nodiscard]] std::optional<std::uint32_t> find_objc_method(
         std::string_view class_name, std::string_view selector,
-        bool class_method) const;
+        bool class_method, const VmStringResolver& external_string) const;
     [[nodiscard]] std::span<const std::byte> byte_span() const noexcept;
 
     std::filesystem::path path_;

@@ -1726,6 +1726,36 @@ DyldSharedCache::immutable_file_view_at(std::size_t index) const {
   return view;
 }
 
+std::optional<std::string>
+DyldSharedCache::read_vm_c_string(std::uint64_t address) const {
+  constexpr std::size_t maximum_string_size = 4096U;
+  for (std::size_t file_index = 0; file_index < files().size(); ++file_index) {
+    const auto file = file_view_at(file_index);
+    for (const auto &mapping : file.mappings) {
+      if (address < mapping.address || address - mapping.address >= mapping.size)
+        continue;
+      const auto delta = address - mapping.address;
+      if (mapping.file_offset >
+          std::numeric_limits<std::uint64_t>::max() - delta) {
+        return std::nullopt;
+      }
+      const auto offset = mapping.file_offset + delta;
+      const auto view = immutable_file_view_at(file_index);
+      if (!view || offset >= view->size()) return std::nullopt;
+      const auto available = static_cast<std::size_t>(
+          std::min<std::uint64_t>(view->size() - offset,
+                                  maximum_string_size));
+      const auto bytes = view->range(offset, available);
+      const auto terminator = std::find(bytes.begin(), bytes.end(), std::byte{0});
+      if (terminator == bytes.end()) return std::nullopt;
+      return std::string{
+          reinterpret_cast<const char *>(bytes.data()),
+          static_cast<std::size_t>(terminator - bytes.begin())};
+    }
+  }
+  return std::nullopt;
+}
+
 std::shared_ptr<const MachOImage> DyldSharedCache::parse_image(
     std::uint32_t image_index, ArmArchitectureVersion architecture) const {
   if (image_store_ == nullptr || image_index >= images().size()) return {};

@@ -272,6 +272,11 @@ public:
   // same cache member once per mapping entry during process startup.
   [[nodiscard]] std::shared_ptr<const ImmutableFileView>
   immutable_file_view_at(std::size_t index) const;
+  // Resolve one unslid cache VM address across the main cache or subcaches.
+  // Objective-C selector uniquing can point an image's method metadata at a
+  // string owned by a different cache image.
+  [[nodiscard]] std::optional<std::string>
+  read_vm_c_string(std::uint64_t address) const;
   [[nodiscard]] DyldCacheImageRange images() const noexcept;
   [[nodiscard]] const ContentIdentity &generation_identity() const noexcept;
   [[nodiscard]] std::uint32_t platform() const noexcept;

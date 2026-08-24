@@ -639,17 +639,10 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
     return true;
   }
   for (const auto &mapping : *mappings) {
-    // Image installation discovers and patches guest functions, publishes
-    // executable catalog hints, and detects framework ABI profiles. None of
-    // those operations needs a writable/data-only segment. Dyld supplies all
-    // ranges of a standalone image in one shared_region_map call, so parsing
-    // the same Mach-O again for each data segment only extends cold launch
-    // latency while producing no additional patches.
-    if ((mapping.initial_protection & vm_protection_zero_fill) != 0 ||
-        !has_permission(permissions(mapping.initial_protection),
-                        MemoryPermission::Execute)) {
-      continue;
-    }
+    if ((mapping.initial_protection & vm_protection_zero_fill) != 0) continue;
+    const auto executable =
+        has_permission(permissions(mapping.initial_protection),
+                       MemoryPermission::Execute);
     const auto source_started = diagnostics.enabled()
                                     ? std::chrono::steady_clock::now()
                                     : std::chrono::steady_clock::time_point{};
@@ -659,6 +652,16 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
                                 source_started;
     }
     if (!source) continue;
+    if (shared_cache != nullptr) {
+      static_cast<void>(userland_hle_.resolve_mapped_shared_cache_data_symbols(
+          source->path, mapping.address + *slide, mapping.size,
+          source->file_offset));
+    }
+    // Image installation discovers and patches guest functions, publishes
+    // executable catalog hints, and detects framework ABI profiles. Those
+    // operations remain restricted to executable ranges. Data-only ranges
+    // above only publish explicitly requested guest data exports.
+    if (!executable) continue;
     const auto install_started = diagnostics.enabled()
                                      ? std::chrono::steady_clock::now()
                                      : std::chrono::steady_clock::time_point{};

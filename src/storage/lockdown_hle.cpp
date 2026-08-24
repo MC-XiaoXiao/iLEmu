@@ -51,10 +51,10 @@ void register_lockdown_hle(UserlandHleRegistry &registry,
   registry.register_guest_function(std::string{core_foundation_image},
                                    std::string{create_cf_string});
   if (profile.brick_state) {
-    registry.register_guest_function(std::string{core_foundation_image},
-                                     std::string{cf_boolean_false});
-    registry.register_guest_function(std::string{core_foundation_image},
-                                     std::string{cf_boolean_true});
+    registry.register_guest_data_symbol(std::string{core_foundation_image},
+                                        std::string{cf_boolean_false});
+    registry.register_guest_data_symbol(std::string{core_foundation_image},
+                                        std::string{cf_boolean_true});
   }
   registry.register_function(
       std::string{lockdown_image}, std::string{copy_value},

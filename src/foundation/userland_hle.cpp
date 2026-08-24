@@ -66,6 +66,9 @@ void append_plan_u64(std::vector<std::byte> &bytes, std::uint64_t value) {
 
 constexpr std::string_view hle_plan_magic_v2{"ILEMU-HLE-PLAN"};
 constexpr std::uint32_t hle_plan_artifact_version_v2 = 2U;
+// Increment when metadata lookup semantics change without changing the
+// serialized plan layout, so persisted plans are rebuilt from the firmware.
+constexpr std::uint32_t hle_plan_builder_version = 6U;
 constexpr std::size_t hle_plan_header_size_v2 = 123U;
 constexpr std::size_t hle_plan_patch_record_size_v2 = 69U;
 constexpr std::size_t hle_plan_range_record_size_v2 = 12U;
@@ -809,6 +812,21 @@ void UserlandHleRegistry::register_guest_function(std::string image_suffix,
   ++registration_generation_;
 }
 
+void UserlandHleRegistry::register_guest_data_symbol(
+    std::string image_suffix, std::string symbol) {
+  if (image_suffix.empty() || symbol.empty()) {
+    throw std::runtime_error{"invalid guest data symbol registration"};
+  }
+  const auto dependency = std::pair{std::move(image_suffix), std::move(symbol)};
+  if (std::find(guest_data_symbols_.begin(), guest_data_symbols_.end(),
+                dependency) != guest_data_symbols_.end()) {
+    throw std::runtime_error{"duplicate guest data symbol registration: " +
+                             dependency.second};
+  }
+  guest_data_symbols_.push_back(dependency);
+  ++registration_generation_;
+}
+
 void UserlandHleRegistry::register_objc_instance_method(
     std::string image_suffix, std::string class_name, std::string selector,
     std::string diagnostic_name, Handler handler) {
@@ -900,6 +918,10 @@ bool UserlandHleRegistry::needs_image_metadata(
                return path_has_suffix(image_path, registration.image_suffix);
              }) ||
          std::any_of(guest_functions_.begin(), guest_functions_.end(),
+                     [&](const auto &dependency) {
+                       return path_has_suffix(image_path, dependency.first);
+                     }) ||
+         std::any_of(guest_data_symbols_.begin(), guest_data_symbols_.end(),
                      [&](const auto &dependency) {
                        return path_has_suffix(image_path, dependency.first);
                      });
@@ -1182,11 +1204,80 @@ UserlandHleRegistry::find_registration(const HleRuleView &key) const {
   return registration == registrations_.end() ? nullptr : &*registration;
 }
 
+void UserlandHleRegistry::prepare_shared_cache_data_symbols(
+    const DyldSharedCache &cache, ArmArchitectureVersion architecture) {
+  shared_cache_data_symbols_.clear();
+  if (guest_data_symbols_.empty()) return;
+
+  for (const auto &image : cache.images()) {
+    const auto first_dependency = std::find_if(
+        guest_data_symbols_.begin(), guest_data_symbols_.end(),
+        [&](const auto &dependency) {
+          return path_has_suffix(image.path, dependency.first);
+        });
+    if (first_dependency == guest_data_symbols_.end()) continue;
+
+    const auto parsed = cache.parse_image(image.index, architecture);
+    if (!parsed) continue;
+    for (const auto &dependency : guest_data_symbols_) {
+      if (!path_has_suffix(image.path, dependency.first)) continue;
+      const auto *symbol = parsed->find_symbol(dependency.second);
+      if (symbol == nullptr || symbol->value == 0U) continue;
+
+      for (const auto &file : cache.files()) {
+        const auto mapping = std::find_if(
+            file.mappings.begin(), file.mappings.end(),
+            [&](const DyldCacheMapping &candidate) {
+              return symbol->value >= candidate.address &&
+                     static_cast<std::uint64_t>(symbol->value) -
+                             candidate.address <
+                         candidate.size;
+            });
+        if (mapping == file.mappings.end()) continue;
+        const auto delta =
+            static_cast<std::uint64_t>(symbol->value) - mapping->address;
+        if (mapping->file_offset >
+            std::numeric_limits<std::uint64_t>::max() - delta) {
+          continue;
+        }
+        shared_cache_data_symbols_.push_back(SharedCacheDataSymbol{
+            std::filesystem::path{file.path}.generic_string(),
+            mapping->file_offset + delta, dependency.second});
+        break;
+      }
+    }
+  }
+
+  std::sort(shared_cache_data_symbols_.begin(),
+            shared_cache_data_symbols_.end(),
+            [](const SharedCacheDataSymbol &left,
+               const SharedCacheDataSymbol &right) {
+              if (left.cache_path != right.cache_path)
+                return left.cache_path < right.cache_path;
+              if (left.file_offset != right.file_offset)
+                return left.file_offset < right.file_offset;
+              return left.symbol < right.symbol;
+            });
+  shared_cache_data_symbols_.erase(
+      std::unique(shared_cache_data_symbols_.begin(),
+                  shared_cache_data_symbols_.end(),
+                  [](const SharedCacheDataSymbol &left,
+                     const SharedCacheDataSymbol &right) {
+                    return left.cache_path == right.cache_path &&
+                           left.file_offset == right.file_offset &&
+                           left.symbol == right.symbol;
+                  }),
+      shared_cache_data_symbols_.end());
+}
+
 void UserlandHleRegistry::prepare_shared_cache_plan(
     const DyldSharedCache &cache, ArmArchitectureVersion architecture) {
+  prepare_shared_cache_data_symbols(cache, architecture);
   std::string plan_key = cache.generation_identity().hex();
   plan_key.push_back('\n');
   plan_key += std::to_string(static_cast<unsigned>(architecture));
+  plan_key.push_back('\n');
+  plan_key += std::to_string(hle_plan_builder_version);
   plan_key.push_back('\n');
   for (const auto &registration : registrations_) {
     plan_key += rule_key_text(rule_key(registration));
@@ -1282,6 +1373,10 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
         std::move(symbol),
         std::move(rule)});
   };
+  const MachOImage::VmStringResolver cache_string =
+      [&cache](std::uint32_t address) {
+        return cache.read_vm_c_string(address);
+      };
 
   for (const auto &image : cache.images()) {
     if (!needs_image_metadata(image.path)) continue;
@@ -1345,8 +1440,10 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
       const auto &[class_name, selector] = *registration.objc_instance_method;
       const auto method =
           registration.objc_class_method
-              ? parsed->find_objc_class_method(class_name, selector)
-              : parsed->find_objc_instance_method(class_name, selector);
+              ? parsed->find_objc_class_method(class_name, selector,
+                                               cache_string)
+              : parsed->find_objc_instance_method(class_name, selector,
+                                                  cache_string);
       if (!method) continue;
       const bool thumb = (*method & 1U) != 0;
       const auto preferred_address = *method & ~1U;
@@ -1464,6 +1561,12 @@ UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
           return path_has_suffix(logical_image_path, dependency.first) &&
                  dependency.second == symbol.name;
         });
+    const auto guest_data_symbol = std::any_of(
+        guest_data_symbols_.begin(), guest_data_symbols_.end(),
+        [&](const auto &dependency) {
+          return path_has_suffix(logical_image_path, dependency.first) &&
+                 dependency.second == symbol.name;
+        });
     const auto registration_id = registration != nullptr
                                      ? registration->id
                                      : std::uint16_t{0};
@@ -1480,7 +1583,8 @@ UserlandHleRegistry::ParsedImageCacheEntry &UserlandHleRegistry::cached_image(
         location.file_offset,
         registration_id,
         patch_size,
-        guest_function});
+        guest_function,
+        guest_data_symbol});
   }
   return entry;
 }
@@ -1508,6 +1612,10 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
                   });
   const auto guest_relevant =
       std::any_of(guest_functions_.begin(), guest_functions_.end(),
+                  [&](const auto &dependency) {
+                    return path_has_suffix(path, dependency.first);
+                  }) ||
+      std::any_of(guest_data_symbols_.begin(), guest_data_symbols_.end(),
                   [&](const auto &dependency) {
                     return path_has_suffix(path, dependency.first);
                   });
@@ -1676,10 +1784,13 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(
     }
     const auto runtime_address =
         mapping_address + static_cast<std::uint32_t>(mapping_delta);
-    if (hle_relevant || cached_symbol.guest_function) {
+    if (hle_relevant || cached_symbol.guest_function ||
+        cached_symbol.guest_data_symbol) {
       installed_symbols_.insert_or_assign(symbol.name, runtime_address);
-      installed_symbol_thumb_.insert_or_assign(symbol.name,
-                                               symbol.thumb_definition());
+      if (hle_relevant || cached_symbol.guest_function) {
+        installed_symbol_thumb_.insert_or_assign(symbol.name,
+                                                 symbol.thumb_definition());
+      }
     }
 
     const auto *registration = cached_symbol.registration_id == 0U
@@ -1964,6 +2075,35 @@ std::size_t UserlandHleRegistry::install_mapped_shared_cache_image(
       cpu, process_id, image_path, cache_path, image_header_offset,
       cache_identity, mapping_address, mapping_size, file_offset, architecture,
       std::move(parsed_image), cache_file_index, cache_image_index);
+}
+
+std::size_t UserlandHleRegistry::resolve_mapped_shared_cache_data_symbols(
+    const std::filesystem::path &cache_path,
+    std::uint32_t mapping_address, std::uint32_t mapping_size,
+    std::uint64_t file_offset) {
+  if (mapping_size == 0U ||
+      file_offset > std::numeric_limits<std::uint64_t>::max() - mapping_size) {
+    return 0U;
+  }
+  const auto path = cache_path.generic_string();
+  const auto file_end = file_offset + mapping_size;
+  std::size_t resolved = 0U;
+  for (const auto &symbol : shared_cache_data_symbols_) {
+    if (symbol.cache_path != path || symbol.file_offset < file_offset ||
+        symbol.file_offset >= file_end) {
+      continue;
+    }
+    const auto delta = symbol.file_offset - file_offset;
+    if (delta > std::numeric_limits<std::uint32_t>::max() - mapping_address)
+      continue;
+    const auto address =
+        mapping_address + static_cast<std::uint32_t>(delta);
+    const auto [iterator, inserted] =
+        installed_symbols_.insert_or_assign(symbol.symbol, address);
+    static_cast<void>(iterator);
+    if (inserted) ++resolved;
+  }
+  return resolved;
 }
 
 bool UserlandHleRegistry::dispatch(Cpu &cpu, std::uint32_t process_id,
@@ -2491,6 +2631,7 @@ void UserlandHleRegistry::inherit_mappings(const UserlandHleRegistry &parent) {
   loaded_images_ = parent.loaded_images_;
   registration_generation_ = parent.registration_generation_;
   parsed_image_cache_ = parent.parsed_image_cache_;
+  shared_cache_data_symbols_ = parent.shared_cache_data_symbols_;
   interned_strings_ = parent.interned_strings_;
   string_page_ = parent.string_page_;
   string_cursor_ = parent.string_cursor_;

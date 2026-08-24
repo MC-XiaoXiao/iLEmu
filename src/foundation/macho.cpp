@@ -817,29 +817,44 @@ std::optional<std::uint16_t> MachOImage::read_vm_u16(std::uint32_t address) cons
 }
 
 std::optional<std::uint32_t> MachOImage::find_objc_instance_method(
-    std::string_view class_name, std::string_view selector) const {
-    return find_objc_method(class_name, selector, false);
+    std::string_view class_name, std::string_view selector,
+    VmStringResolver external_string) const {
+    return find_objc_method(class_name, selector, false, external_string);
 }
 
 std::optional<std::uint32_t> MachOImage::find_objc_class_method(
-    std::string_view class_name, std::string_view selector) const {
-    return find_objc_method(class_name, selector, true);
+    std::string_view class_name, std::string_view selector,
+    VmStringResolver external_string) const {
+    return find_objc_method(class_name, selector, true, external_string);
 }
 
 std::optional<std::uint32_t> MachOImage::find_objc_method(
     std::string_view class_name, std::string_view selector,
-    bool class_method) const {
+    bool class_method, const VmStringResolver& external_string) const {
     constexpr std::uint32_t objc1_class_name_offset = 8U;
     constexpr std::uint32_t objc1_class_method_lists_offset = 28U;
     constexpr std::uint32_t objc2_class_data_offset = 16U;
     constexpr std::uint32_t objc2_class_ro_name_offset = 16U;
     constexpr std::uint32_t objc2_class_ro_methods_offset = 20U;
     constexpr std::uint32_t objc2_data_pointer_flags = 0x3U;
+    constexpr std::uint32_t objc2_category_class_offset = 4U;
+    constexpr std::uint32_t objc2_category_instance_methods_offset = 8U;
+    constexpr std::uint32_t objc2_category_class_methods_offset = 12U;
     constexpr std::uint32_t method_list_header_size = 8U;
     constexpr std::uint32_t method_size = 12U;
     constexpr std::uint32_t method_entry_size_mask = 0x0000fffcU;
     constexpr std::uint32_t maximum_method_lists = 4096U;
     constexpr std::uint32_t maximum_methods_per_list = 4096U;
+
+    const auto string_equals = [&](std::uint32_t address,
+                                   std::string_view expected) {
+        if (const auto local = vm_c_string(byte_span(), segments_, address)) {
+            return *local == expected;
+        }
+        if (!external_string) return false;
+        const auto external = external_string(address);
+        return external && *external == expected;
+    };
 
     const auto executable = [&](std::uint32_t implementation) {
         const auto address = implementation & ~1U;
@@ -873,15 +888,31 @@ std::optional<std::uint32_t> MachOImage::find_objc_method(
             const auto entry = static_cast<std::uint32_t>(entry64);
             const auto name = read_vm_u32(entry);
             const auto implementation = read_vm_u32(entry + 8U);
-            if (!name || !implementation) return std::nullopt;
-                const auto candidate =
-                    vm_c_string(byte_span(), segments_, *name);
-            if (candidate && *candidate == selector &&
+            if (!name || !implementation) continue;
+            if (string_equals(*name, selector) &&
                 executable(*implementation)) {
                 return implementation;
             }
         }
         return std::nullopt;
+    };
+    const auto class_has_name = [&](std::uint32_t object) {
+        if (object == 0U ||
+            object > std::numeric_limits<std::uint32_t>::max() -
+                         objc2_class_data_offset) {
+            return false;
+        }
+        const auto data = read_vm_u32(object + objc2_class_data_offset);
+        if (!data) return false;
+        const auto class_ro = *data & ~objc2_data_pointer_flags;
+        if (class_ro == 0U ||
+            class_ro > std::numeric_limits<std::uint32_t>::max() -
+                           objc2_class_ro_name_offset) {
+            return false;
+        }
+        const auto name = read_vm_u32(class_ro + objc2_class_ro_name_offset);
+        if (!name) return false;
+        return string_equals(*name, class_name);
     };
 
     // Objective-C 2 stores pointers to class_t records in a dedicated
@@ -926,17 +957,59 @@ std::optional<std::uint32_t> MachOImage::find_objc_method(
                 const auto name =
                     read_vm_u32(class_ro + objc2_class_ro_name_offset);
                 if (!name) continue;
-                const auto candidate =
-                    vm_c_string(byte_span(), segments_, *name);
-                if (!candidate || *candidate != class_name) continue;
+                if (!string_equals(*name, class_name)) continue;
                 const auto methods =
                     read_vm_u32(class_ro + objc2_class_ro_methods_offset);
-                if (!methods || *methods == 0U) return std::nullopt;
+                if (!methods || *methods == 0U) break;
                 const auto entsize_and_flags = read_vm_u32(*methods);
-                if (!entsize_and_flags) return std::nullopt;
+                if (!entsize_and_flags) break;
                 const auto entry_size =
                     *entsize_and_flags & method_entry_size_mask;
-                return search_list(*methods, entry_size);
+                if (const auto method = search_list(*methods, entry_size)) {
+                    return method;
+                }
+                break;
+            }
+        }
+    }
+
+    // Objective-C 2 categories carry additional methods outside the class's
+    // primary method list.  Framework-private API is commonly published this
+    // way, so include category lists in semantic HLE lookup as well.
+    for (const auto& segment : segments_) {
+        for (const auto& section : segment.sections) {
+            if (section.name != "__objc_catlist") continue;
+            for (std::uint64_t section_offset = 0;
+                 section_offset + sizeof(std::uint32_t) <= section.size;
+                 section_offset += sizeof(std::uint32_t)) {
+                const auto pointer64 =
+                    static_cast<std::uint64_t>(section.address) +
+                    section_offset;
+                if (pointer64 > std::numeric_limits<std::uint32_t>::max()) {
+                    break;
+                }
+                const auto category =
+                    read_vm_u32(static_cast<std::uint32_t>(pointer64));
+                if (!category || *category == 0U ||
+                    *category > std::numeric_limits<std::uint32_t>::max() -
+                                    objc2_category_class_methods_offset) {
+                    continue;
+                }
+                const auto object =
+                    read_vm_u32(*category + objc2_category_class_offset);
+                if (!object || !class_has_name(*object)) continue;
+                const auto methods_offset =
+                    class_method ? objc2_category_class_methods_offset
+                                 : objc2_category_instance_methods_offset;
+                const auto methods = read_vm_u32(*category + methods_offset);
+                if (!methods || *methods == 0U) continue;
+                const auto entsize_and_flags = read_vm_u32(*methods);
+                if (!entsize_and_flags) continue;
+                const auto entry_size =
+                    *entsize_and_flags & method_entry_size_mask;
+                if (const auto method = search_list(*methods, entry_size)) {
+                    return method;
+                }
             }
         }
     }
@@ -965,8 +1038,7 @@ std::optional<std::uint32_t> MachOImage::find_objc_method(
                 const auto name =
                     read_vm_u32(object + objc1_class_name_offset);
                 if (!name) continue;
-            const auto candidate = vm_c_string(byte_span(), segments_, *name);
-                if (!candidate || *candidate != class_name) continue;
+            if (!string_equals(*name, class_name)) continue;
                 const auto method_object =
                     class_method ? read_vm_u32(object)
                                  : std::optional<std::uint32_t>{object};

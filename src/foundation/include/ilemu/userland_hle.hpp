@@ -127,6 +127,12 @@ public:
   // logic.
   void register_guest_function(std::string image_suffix,
                                std::string symbol);
+  // Resolve a defined guest data export without treating its contents as an
+  // instruction or patching it. Shared-cache data pages are published when
+  // their backing mapping is installed; standalone images use the same
+  // symbol-location path as ordinary HLE dependencies.
+  void register_guest_data_symbol(std::string image_suffix,
+                                  std::string symbol);
   // Resolve a stripped Objective-C 1.x instance method by metadata name when
   // the image is mapped. This avoids firmware-version-specific addresses.
   void register_objc_instance_method(std::string image_suffix,
@@ -180,6 +186,14 @@ public:
       std::shared_ptr<const MachOImage> parsed_image = {},
       std::optional<std::uint32_t> cache_file_index = {},
       std::optional<std::uint32_t> cache_image_index = {});
+
+  // Resolve registered data exports carried by one mapped shared-cache file
+  // range. This is separate from executable-image installation because dyld
+  // maps cache data without execute permission and it must never be patched.
+  [[nodiscard]] std::size_t resolve_mapped_shared_cache_data_symbols(
+      const std::filesystem::path &cache_path,
+      std::uint32_t mapping_address, std::uint32_t mapping_size,
+      std::uint64_t file_offset);
 
   // Returns true only for a registered HLE SVC. The guest return path is
   // completed with ARM BX lr semantics after the handler returns.
@@ -237,6 +251,7 @@ private:
     std::uint16_t registration_id{};
     std::uint8_t patch_size{};
     bool guest_function{};
+    bool guest_data_symbol{};
   };
   struct HleRuleKey {
     std::string image_suffix;
@@ -378,10 +393,21 @@ private:
     Handler completion;
   };
 
+  struct SharedCacheDataSymbol {
+    std::string cache_path;
+    std::uint64_t file_offset{};
+    std::string symbol;
+  };
+
+  void prepare_shared_cache_data_symbols(
+      const DyldSharedCache &cache, ArmArchitectureVersion architecture);
+
   AddressSpace &memory_;
   Output &output_;
   std::vector<Registration> registrations_;
   std::vector<std::pair<std::string, std::string>> guest_functions_;
+  std::vector<std::pair<std::string, std::string>> guest_data_symbols_;
+  std::vector<SharedCacheDataSymbol> shared_cache_data_symbols_;
   std::uint64_t registration_generation_{};
   std::map<std::string, ParsedImageCacheEntry, std::less<>>
       parsed_image_cache_;
