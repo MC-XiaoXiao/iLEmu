@@ -1239,7 +1239,9 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const {
         if (const auto listener = unix_listener_states_.find(fd);
             listener != unix_listener_states_.end()) {
             std::lock_guard socket_lock{shared_state_->socket_mutex};
-            if (!listener->second->pending_endpoints.empty()) return true;
+            if (!listener->second->pending_endpoints.empty()) {
+                return true;
+            }
         }
     }
     const auto socket_ready = [&](std::uint32_t socket_fd) {
@@ -1458,7 +1460,10 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
          registration != queue->second.end();) {
         std::uint32_t filter_flags = 0;
         std::uint32_t available = 1;
-        auto result_flags = std::uint16_t{};
+        auto result_flags = static_cast<std::uint16_t>(
+            registration->flags &
+            (darwin::kqueue::event_clear | darwin::kqueue::event_dispatch |
+             darwin::kqueue::event_one_shot));
         std::optional<std::uint32_t> ready_mach_name;
         if (registration->filter == darwin::kqueue::filter_process) {
             std::lock_guard lock{shared_state_->mach_mutex};
@@ -1486,9 +1491,14 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                    darwin::kqueue::filter_mach_port) {
             ready_mach_name = ready_mach_port_name(registration->ident);
             if (ready_mach_name) available = *ready_mach_name;
+        } else if (registration->filter == darwin::kqueue::filter_user) {
+            filter_flags = registration->filter_flags;
+            available = static_cast<std::uint32_t>(registration->data);
         }
         const auto ready =
-            registration->filter == darwin::kqueue::filter_read
+            !registration->enabled
+                ? false
+            : registration->filter == darwin::kqueue::filter_read
                 ? descriptor_readable(registration->ident)
             : registration->filter == darwin::kqueue::filter_write
                 ? descriptor_writable(registration->ident)
@@ -1496,6 +1506,8 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                 ? filter_flags != 0U
             : registration->filter == darwin::kqueue::filter_mach_port
                 ? ready_mach_name.has_value()
+            : registration->filter == darwin::kqueue::filter_user
+                ? registration->user_triggered
                 : false;
         const auto clears_after_delivery =
             (registration->flags & darwin::kqueue::event_clear) != 0U;
@@ -1510,7 +1522,16 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             available = static_cast<std::uint32_t>(
                 shared_state_->socket_pair_buffers[endpoint->second.pair]
                                                   [endpoint->second.side]
-                                                      .size());
+                .size());
+        } else if (registration->filter == darwin::kqueue::filter_read &&
+                   listening_sockets_.contains(registration->ident)) {
+            std::lock_guard socket_lock{shared_state_->socket_mutex};
+            if (const auto listener =
+                    unix_listener_states_.find(registration->ident);
+                listener != unix_listener_states_.end()) {
+                available = static_cast<std::uint32_t>(
+                    listener->second->pending_endpoints.size());
+            }
         }
         if (clears_after_delivery && registration->clear_delivered &&
             registration->clear_available == available) {
@@ -1548,8 +1569,15 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         if (clears_after_delivery) {
             registration->clear_delivered = true;
             registration->clear_available = available;
+            if (registration->filter == darwin::kqueue::filter_user)
+                registration->user_triggered = false;
+        }
+        if ((registration->flags & darwin::kqueue::event_dispatch) != 0U) {
+            registration->enabled = false;
         }
         if ((filter_flags & darwin::kqueue::process_note_exit) != 0U) {
+            registration = queue->second.erase(registration);
+        } else if ((registration->flags & darwin::kqueue::event_one_shot) != 0U) {
             registration = queue->second.erase(registration);
         } else {
             if (registration->filter ==

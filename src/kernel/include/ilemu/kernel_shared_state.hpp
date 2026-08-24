@@ -91,6 +91,8 @@ struct KeventRegistration {
   std::uint32_t user_data{};
   std::uint64_t process_exec_generation{};
   std::uint64_t process_exit_generation{};
+  bool user_triggered{};
+  bool enabled{true};
   bool clear_delivered{};
   std::uint32_t clear_available{};
 };

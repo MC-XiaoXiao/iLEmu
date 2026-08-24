@@ -2397,6 +2397,15 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
             static_cast<std::int32_t>(*data),
             *user_data,
         };
+        registration.enabled =
+            (*flags & darwin::kqueue::event_disable) == 0U;
+        if (signed_filter == darwin::kqueue::filter_user) {
+          registration.user_triggered =
+              (*flags & darwin::kqueue::event_trigger) != 0U ||
+              (*filter_flags & darwin::kqueue::user_note_trigger) != 0U;
+          registration.filter_flags =
+              *filter_flags & darwin::kqueue::user_note_flags_mask;
+        }
         if (signed_filter == darwin::kqueue::filter_process) {
           std::lock_guard lock{shared_state_->mach_mutex};
           const auto process =
@@ -2412,6 +2421,38 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu &cpu, std::uint32_t number) {
           queue->second.push_back(registration);
         } else {
           *found = registration;
+        }
+      } else if (found != queue->second.end()) {
+        if (signed_filter == darwin::kqueue::filter_user) {
+          if ((*flags & darwin::kqueue::event_trigger) != 0U ||
+              (*filter_flags & darwin::kqueue::user_note_trigger) != 0U) {
+            found->user_triggered = true;
+          }
+          const auto operand =
+              *filter_flags & darwin::kqueue::user_note_flags_mask;
+          switch (*filter_flags &
+                  darwin::kqueue::user_note_ff_control_mask) {
+          case darwin::kqueue::user_note_ff_and:
+            found->filter_flags &= operand;
+            break;
+          case darwin::kqueue::user_note_ff_or:
+            found->filter_flags |= operand;
+            break;
+          case darwin::kqueue::user_note_ff_copy:
+            found->filter_flags = operand;
+            break;
+          default:
+            break;
+          }
+          found->data = static_cast<std::int32_t>(*data);
+          found->user_data = *user_data;
+        }
+        if ((*flags & darwin::kqueue::event_disable) != 0) {
+          found->enabled = false;
+          found->flags |= darwin::kqueue::event_disable;
+        } else if ((*flags & darwin::kqueue::event_enable) != 0) {
+          found->enabled = true;
+          found->flags &= ~darwin::kqueue::event_disable;
         }
       }
       if ((*flags & darwin::kqueue::event_receipt) != 0 &&
