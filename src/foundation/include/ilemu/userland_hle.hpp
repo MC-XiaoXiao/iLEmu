@@ -154,6 +154,11 @@ public:
   // Used by shared-cache mapping code to avoid parsing images that cannot
   // contribute an HLE/profile lookup.
   [[nodiscard]] bool needs_image_metadata(std::string_view image_path) const;
+  // Standalone Mach-O data exports live in non-executable mappings. The
+  // shared-region mapper uses this narrower query to install only those data
+  // ranges that can satisfy an explicitly registered guest dependency.
+  [[nodiscard]] bool needs_data_symbol_mapping(
+      std::string_view image_path) const;
 
   // Build or acquire the immutable HLE lookup plan for one published dyld
   // cache generation. The plan contains semantic rule descriptors only;

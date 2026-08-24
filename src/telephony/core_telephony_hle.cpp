@@ -33,6 +33,14 @@ constexpr std::array<std::string_view, 3> application_image_directories{
     "private/var/mobile/Applications/"};
 constexpr std::string_view offline_sim_status_export{
     "_kCTSIMSupportSIMStatusReady"};
+// These are exported CF objects rather than callable entry points. Register
+// them explicitly so shared-cache mappings can resolve the same firmware
+// objects that the HLE returns to the guest.
+constexpr std::array<std::string_view, 3> firmware_object_exports{
+    "_kCTRegistrationStatusNotRegistered",
+    "_kCTRegistrationNetworkSelectionModeDisabled",
+    offline_sim_status_export,
+};
 constexpr std::string_view create_call_from_info{
     "__CTCallCreateFromCallInfo"};
 constexpr std::string_view copy_next_call{
@@ -551,6 +559,10 @@ void register_core_telephony_hle(
     UserlandHleRegistry& registry, WifiStateProvider wifi_state,
     std::function<void(const WifiSnapshot&, const WifiSnapshot&)>
         wifi_state_changed, bool offline_transport) {
+    for (const auto symbol : firmware_object_exports) {
+        registry.register_guest_data_symbol(std::string{core_telephony_image},
+                                            std::string{symbol});
+    }
     for (const auto symbol : {
              copy_cf_string,
              cf_dictionary_create_mutable,

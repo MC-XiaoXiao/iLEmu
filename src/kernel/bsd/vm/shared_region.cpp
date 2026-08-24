@@ -658,10 +658,17 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(Cpu &cpu,
           source->file_offset));
     }
     // Image installation discovers and patches guest functions, publishes
-    // executable catalog hints, and detects framework ABI profiles. Those
-    // operations remain restricted to executable ranges. Data-only ranges
-    // above only publish explicitly requested guest data exports.
-    if (!executable) continue;
+    // executable catalog hints, and detects framework ABI profiles. Keep it
+    // restricted to executable ranges except for standalone images with an
+    // explicitly registered data export: those symbols reside in __DATA and
+    // still need their runtime address published. Shared-cache data exports
+    // were resolved above without parsing or patching the data mapping.
+    if (!executable &&
+        (shared_cache != nullptr ||
+         !userland_hle_.needs_data_symbol_mapping(
+             source->path.generic_string()))) {
+      continue;
+    }
     const auto install_started = diagnostics.enabled()
                                      ? std::chrono::steady_clock::now()
                                      : std::chrono::steady_clock::time_point{};

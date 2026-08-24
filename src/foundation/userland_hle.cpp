@@ -927,6 +927,15 @@ bool UserlandHleRegistry::needs_image_metadata(
                      });
 }
 
+bool UserlandHleRegistry::needs_data_symbol_mapping(
+    std::string_view image_path) const {
+  return std::any_of(
+      guest_data_symbols_.begin(), guest_data_symbols_.end(),
+      [&](const auto &dependency) {
+        return path_has_suffix(image_path, dependency.first);
+      });
+}
+
 UserlandHleRegistry::Registration *
 UserlandHleRegistry::select_registration(std::string_view image_path,
                                          std::string_view symbol) {
