@@ -1,4 +1,5 @@
 add_library(ilemu_kernel_mach_thread STATIC
+    creation.cpp
     lifecycle.cpp
     self.cpp
     state.cpp)

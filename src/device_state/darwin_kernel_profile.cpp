@@ -52,8 +52,23 @@ struct BuildProfileRule {
   std::string_view matcher;
   BuildMatchKind match_kind;
   DarwinAbiEpoch abi_epoch;
+  DarwinPthreadAbiProfile pthread_abi;
+  DarwinNotifyStateProfile notify_state_profile;
   DarwinGuestCapabilities capabilities;
+  std::string_view profile_name;
+  std::string_view operating_system_release;
+  std::uint32_t operating_system_revision{};
+  std::string_view kernel_version;
 };
+
+constexpr BuildProfileRule
+build_family_rule(std::string_view matcher, DarwinAbiEpoch abi_epoch,
+                  DarwinPthreadAbiProfile pthread_abi,
+                  DarwinGuestCapabilities capabilities) {
+  return {matcher, BuildMatchKind::FamilyPrefix, abi_epoch, pthread_abi,
+          DarwinNotifyStateProfile::NativeServerTokens, capabilities,
+          {}, {}, 0, {}};
+}
 
 // Keep build recognition data-driven at the ABI-family boundary. Individual
 // firmware releases within an audited family share the same contract; the
@@ -61,18 +76,31 @@ struct BuildProfileRule {
 // rule is an audited build-series prefix from the later XNU source set (for
 // example 11A465 from xnu-4903), not a catch-all for arbitrary numeric builds.
 constexpr std::array build_profile_rules{
-    BuildProfileRule{"1A", BuildMatchKind::FamilyPrefix,
-                     DarwinAbiEpoch::IphoneOs1, {true, true, true}},
-    BuildProfileRule{"3A", BuildMatchKind::FamilyPrefix,
-                     DarwinAbiEpoch::IphoneOs1, {true, true, true}},
-    BuildProfileRule{"5A", BuildMatchKind::FamilyPrefix,
-                     DarwinAbiEpoch::IphoneOs2, {true, false, false}},
-    BuildProfileRule{"5G", BuildMatchKind::FamilyPrefix,
-                     DarwinAbiEpoch::IphoneOs2, {true, false, false}},
-    BuildProfileRule{"7A", BuildMatchKind::FamilyPrefix,
-                     DarwinAbiEpoch::IphoneOs3, {true, false, false}},
-    BuildProfileRule{"11", BuildMatchKind::FamilyPrefix,
-                     DarwinAbiEpoch::Later, {true, false, false}},
+    build_family_rule("1A", DarwinAbiEpoch::IphoneOs1,
+                      DarwinPthreadAbiProfile::LegacyMachThreads,
+                      {true, true, true}),
+    build_family_rule("3A", DarwinAbiEpoch::IphoneOs1,
+                      DarwinPthreadAbiProfile::LegacyMachThreads,
+                      {true, true, true}),
+    build_family_rule("5A", DarwinAbiEpoch::IphoneOs2,
+                      DarwinPthreadAbiProfile::LegacyMachThreads,
+                      {true, false, false}),
+    build_family_rule("5G", DarwinAbiEpoch::IphoneOs2,
+                      DarwinPthreadAbiProfile::LegacyMachThreads,
+                      {true, false, false}),
+    build_family_rule("7A", DarwinAbiEpoch::IphoneOs3,
+                      DarwinPthreadAbiProfile::LegacyMachThreads,
+                      {true, false, false}),
+    BuildProfileRule{
+        "7B", BuildMatchKind::FamilyPrefix, DarwinAbiEpoch::Darwin10,
+        DarwinPthreadAbiProfile::BsdThreadRegisterV1,
+        DarwinNotifyStateProfile::BootstrapAwareServerTokens,
+        {true, false, false}, "darwin10.3-arm", "10.3.1", 199506,
+        "Darwin Kernel Version 10.3.1: iLEmu compatibility kernel; "
+        "darwin10.3/RELEASE_ARM"},
+    build_family_rule("11", DarwinAbiEpoch::Later,
+                      DarwinPthreadAbiProfile::BsdThreadRegisterV2,
+                      {true, false, false}),
 };
 
 [[nodiscard]] bool matches_build(const BuildProfileRule &rule,
@@ -86,13 +114,28 @@ constexpr std::array build_profile_rules{
 
 struct DarwinBuildContract {
   DarwinAbiEpoch abi_epoch{DarwinAbiEpoch::Unknown};
+  DarwinPthreadAbiProfile pthread_abi{
+      DarwinPthreadAbiProfile::LegacyMachThreads};
+  DarwinNotifyStateProfile notify_state_profile{
+      DarwinNotifyStateProfile::NativeServerTokens};
   DarwinGuestCapabilities capabilities{};
+  std::string_view profile_name;
+  std::string_view operating_system_release;
+  std::uint32_t operating_system_revision{};
+  std::string_view kernel_version;
 };
 
 [[nodiscard]] DarwinBuildContract contract_for_build(std::string_view build) {
   for (const auto &rule : build_profile_rules) {
     if (matches_build(rule, build))
-      return {rule.abi_epoch, rule.capabilities};
+      return {rule.abi_epoch,
+              rule.pthread_abi,
+              rule.notify_state_profile,
+              rule.capabilities,
+              rule.profile_name,
+              rule.operating_system_release,
+              rule.operating_system_revision,
+              rule.kernel_version};
   }
   // Unknown epochs intentionally expose no version-sensitive capability.
   // Additive and shape-dispatched routes remain available through their
@@ -150,7 +193,17 @@ make_darwin_kernel_identity_profile(const std::filesystem::path &rootfs) {
   }
   const auto contract = contract_for_build(profile.abi_build_version);
   profile.abi_epoch = contract.abi_epoch;
+  profile.pthread_abi = contract.pthread_abi;
+  profile.notify_state_profile = contract.notify_state_profile;
   profile.capabilities = contract.capabilities;
+  if (!contract.profile_name.empty())
+    profile.name = contract.profile_name;
+  if (!contract.operating_system_release.empty())
+    profile.operating_system_release = contract.operating_system_release;
+  if (contract.operating_system_revision != 0)
+    profile.operating_system_revision = contract.operating_system_revision;
+  if (!contract.kernel_version.empty())
+    profile.version = contract.kernel_version;
   return profile;
 }
 

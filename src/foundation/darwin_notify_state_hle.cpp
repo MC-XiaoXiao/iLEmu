@@ -21,6 +21,9 @@ DarwinNotifyStateHle::DarwinNotifyStateHle(UserlandHleRegistry &registry) {
       std::string{libsystem_image}, "_notify_register_check",
       [this](UserlandHleCall &call) { register_check(call); });
   registry.register_function(
+      std::string{libsystem_image}, "_notify_check",
+      [this](UserlandHleCall &call) { check(call); });
+  registry.register_function(
       std::string{libsystem_image}, "_notify_get_state",
       [this](UserlandHleCall &call) { get_state(call); });
   registry.register_function(
@@ -29,6 +32,17 @@ DarwinNotifyStateHle::DarwinNotifyStateHle(UserlandHleRegistry &registry) {
 }
 
 DarwinNotifyStateHle::~DarwinNotifyStateHle() { reset(); }
+
+void DarwinNotifyStateHle::set_profile(DarwinNotifyStateProfile profile) {
+  std::lock_guard lock{mutex_};
+  profile_ = profile;
+}
+
+void DarwinNotifyStateHle::set_native_server_ready_query(
+    NativeServerReadyQuery query) {
+  std::lock_guard lock{mutex_};
+  native_server_ready_query_ = std::move(query);
+}
 
 void DarwinNotifyStateHle::set_provider(std::string name,
                                         StateProvider provider) {
@@ -70,6 +84,8 @@ void DarwinNotifyStateHle::reset() {
     bus_->registrations.erase(key);
   owned_registrations_.clear();
   token_names_.clear();
+  virtual_tokens_.clear();
+  next_virtual_token_ = 0x4000'0000U;
 }
 
 void DarwinNotifyStateHle::register_mach_port(UserlandHleCall &call) {
@@ -80,12 +96,22 @@ void DarwinNotifyStateHle::register_mach_port(UserlandHleCall &call) {
     call.resume_original_persistently();
     return;
   }
+  bool has_provider = false;
+  bool bootstrap_aware = false;
   {
     std::lock_guard lock{mutex_};
-    if (!providers_.contains(*name)) {
-      call.resume_original_persistently();
-      return;
-    }
+    has_provider = providers_.contains(*name);
+    bootstrap_aware =
+        profile_ == DarwinNotifyStateProfile::BootstrapAwareServerTokens;
+  }
+  const auto server_ready = native_server_ready();
+  if (bootstrap_aware && !server_ready) {
+    call.set_return(1);
+    return;
+  }
+  if (!has_provider) {
+    call.resume_original_persistently();
+    return;
   }
   call.resume_original_persistently(
       [this, name = *name, port_address,
@@ -107,12 +133,34 @@ void DarwinNotifyStateHle::register_check(UserlandHleCall &call) {
     call.resume_original_persistently();
     return;
   }
+  bool has_provider = false;
+  bool bootstrap_aware = false;
   {
     std::lock_guard lock{mutex_};
-    if (!providers_.contains(*name)) {
-      call.resume_original_persistently();
+    has_provider = providers_.contains(*name);
+    bootstrap_aware =
+        profile_ == DarwinNotifyStateProfile::BootstrapAwareServerTokens;
+  }
+  const auto server_ready = native_server_ready();
+  if (bootstrap_aware && !server_ready) {
+    if (!has_provider) {
+      call.set_return(1);
       return;
     }
+    const auto token = allocate_virtual_token();
+    if (!call.write32(token_address, token)) {
+      std::lock_guard lock{mutex_};
+      virtual_tokens_.erase(token);
+      call.set_return(1);
+      return;
+    }
+    record_registration(*name, token, call.process_id(), 0);
+    call.set_return(0);
+    return;
+  }
+  if (!has_provider) {
+    call.resume_original_persistently();
+    return;
   }
   call.resume_original_persistently(
       [this, name = *name, token_address](UserlandHleCall &completed) {
@@ -128,6 +176,7 @@ void DarwinNotifyStateHle::get_state(UserlandHleCall &call) {
   const auto token = call.argument(0);
   const auto state_address = call.argument(1);
   StateProvider provider;
+  bool virtual_token = false;
   {
     std::lock_guard lock{mutex_};
     const auto registered = token_names_.find(token);
@@ -136,6 +185,19 @@ void DarwinNotifyStateHle::get_state(UserlandHleCall &call) {
       if (found != providers_.end())
         provider = found->second;
     }
+    virtual_token = virtual_tokens_.contains(token);
+  }
+  if (virtual_token) {
+    const auto state = provider ? provider() : 0U;
+    call.set_return(state_address != 0 &&
+                            call.write32(state_address,
+                                         static_cast<std::uint32_t>(state)) &&
+                            call.write32(
+                                state_address + sizeof(std::uint32_t),
+                                static_cast<std::uint32_t>(state >> 32U))
+                        ? 0U
+                        : 1U);
+    return;
   }
   if (!provider || state_address == 0) {
     call.resume_original_persistently();
@@ -158,14 +220,37 @@ void DarwinNotifyStateHle::get_state(UserlandHleCall &call) {
       });
 }
 
+void DarwinNotifyStateHle::check(UserlandHleCall &call) {
+  const auto token = call.argument(0);
+  const auto changed_address = call.argument(1);
+  bool virtual_token = false;
+  {
+    std::lock_guard lock{mutex_};
+    virtual_token = virtual_tokens_.contains(token);
+  }
+  if (!virtual_token) {
+    call.resume_original_persistently();
+    return;
+  }
+  call.set_return(changed_address != 0 && call.write32(changed_address, 0U)
+                      ? 0U
+                      : 1U);
+}
+
 void DarwinNotifyStateHle::cancel(UserlandHleCall &call) {
   const auto token = call.argument(0);
   const auto key = RegistrationKey{call.process_id(), token};
+  bool virtual_token = false;
   {
     std::scoped_lock lock{mutex_, bus_->mutex};
+    virtual_token = virtual_tokens_.erase(token) != 0;
     token_names_.erase(token);
     owned_registrations_.erase(key);
     bus_->registrations.erase(key);
+  }
+  if (virtual_token) {
+    call.set_return(0);
+    return;
   }
   call.resume_original_persistently();
 }
@@ -187,6 +272,25 @@ void DarwinNotifyStateHle::record_registration(std::string name,
                  dispatcher(process_id, port_name, token);
                }});
   owned_registrations_.insert(key);
+}
+
+std::uint32_t DarwinNotifyStateHle::allocate_virtual_token() {
+  std::lock_guard lock{mutex_};
+  std::uint32_t token{};
+  do {
+    token = next_virtual_token_++;
+  } while (token == 0 || token_names_.contains(token));
+  virtual_tokens_.insert(token);
+  return token;
+}
+
+bool DarwinNotifyStateHle::native_server_ready() const {
+  NativeServerReadyQuery query;
+  {
+    std::lock_guard lock{mutex_};
+    query = native_server_ready_query_;
+  }
+  return !query || query();
 }
 
 } // namespace ilemu

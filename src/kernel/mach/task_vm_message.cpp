@@ -325,90 +325,31 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
     if (!valid_state) {
       return write_create_error(darwin::mach::invalid_argument);
     }
-    const auto processor =
-        thread_create_handler_
-            ? thread_create_handler_(state, guest_cpsr | 0x10U)
-            : std::nullopt;
-    if (!processor) {
-      return write_create_error(darwin::mach::resource_shortage);
+    std::uint32_t create_error{};
+    const auto created = create_guest_thread(
+        state, guest_cpsr, creates_suspended_thread, create_error);
+    if (!created)
+      return write_create_error(create_error);
+    const std::array<std::uint32_t, 10> reply{
+        0x80000012U,       40, *local_port, 0, 0,
+        *message_id + 100, 1,  created->port_name, 0, 0x00110000U,
+    };
+    for (std::size_t index = 0; index < reply.size(); ++index) {
+      if (!memory_.write32(message_address +
+                               static_cast<std::uint32_t>(index * 4U),
+                           reply[index])) {
+        registers[0] = 0x10004008U;
+        return true;
+      }
     }
-    if (processor) {
-      thread_ports_.erase(*processor);
-      {
-        std::lock_guard mach_lock{shared_state_->mach_mutex};
-        if (auto task = shared_state_->task_thread_port_objects.find(
-                process_.pid);
-            task != shared_state_->task_thread_port_objects.end()) {
-          if (const auto old_thread = task->second.find(
-                  static_cast<std::uint32_t>(*processor));
-              old_thread != task->second.end()) {
-            process_.thread_disk_io_policies.erase(old_thread->second);
-            task->second.erase(old_thread);
-          }
-          if (task->second.empty()) {
-            shared_state_->task_thread_port_objects.erase(task);
-          }
-        }
-      }
-      if (creates_suspended_thread && thread_runnable_handler_ &&
-          !thread_runnable_handler_(process_.pid,
-                                    static_cast<std::uint32_t>(*processor),
-                                    false)) {
-        if (thread_terminate_handler_) {
-          static_cast<void>(thread_terminate_handler_(process_.pid,
-                                                      *processor));
-        }
-        return write_create_error(darwin::mach::failure);
-      }
-      std::uint32_t port_object = 0;
-      std::uint32_t port_name = 0;
-      {
-        std::lock_guard mach_lock{shared_state_->mach_mutex};
-        port_object = shared_state_->allocate_mach_object();
-        static_cast<void>(shared_state_->mach_port_objects.create(port_object));
-        shared_state_->mach_queues.try_emplace(port_object);
-        port_name =
-            shared_state_->mach_namespaces
-                .copyout(process_.pid, port_object,
-                         xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
-                .value_or(0);
-        if (port_name != 0) {
-          shared_state_->task_thread_port_objects[process_.pid]
-                                                 [static_cast<std::uint32_t>(
-                                                     *processor)] = port_object;
-        }
-      }
-      if (port_name == 0) {
-        std::lock_guard mach_lock{shared_state_->mach_mutex};
-        remove_port_object_locked(*shared_state_, port_object);
-        if (thread_terminate_handler_) {
-          static_cast<void>(thread_terminate_handler_(process_.pid,
-                                                      *processor));
-        }
-        return write_create_error(darwin::mach::resource_shortage);
-      }
-      thread_ports_[*processor] = port_name;
-      const std::array<std::uint32_t, 10> reply{
-          0x80000012U,       40, *local_port, 0, 0,
-          *message_id + 100, 1,  port_name,   0, 0x00110000U,
-      };
-      for (std::size_t index = 0; index < reply.size(); ++index) {
-        if (!memory_.write32(message_address +
-                                 static_cast<std::uint32_t>(index * 4U),
-                             reply[index])) {
-          registers[0] = 0x10004008U;
-          return true;
-        }
-      }
-      registers[0] = 0;
-      if (creates_running_thread && scheduler_preemption_query_ &&
-          scheduler_preemption_query_(cpu.processor_id())) {
-        // Scheduler AST boundary. Unlike an explicit yield, this
-        // preserves the remainder of the current first timeslice.
-        cpu.request_guest_preemption();
-      }
-      return true;
+    registers[0] = 0;
+    if (creates_running_thread && scheduler_preemption_query_ &&
+        scheduler_preemption_query_(cpu.processor_id())) {
+      // Scheduler AST boundary. Unlike an explicit yield, this preserves the
+      // remainder of the current first timeslice.
+      cpu.request_guest_preemption();
     }
+    return true;
   }
   if (*message_id ==
           mig_message_id(xnu792::mig::task::Routine::mach_ports_lookup) &&

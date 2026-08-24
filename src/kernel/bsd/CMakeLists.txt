@@ -10,6 +10,7 @@ add_subdirectory(vm)
 
 target_sources(ilemu_kernel PRIVATE
     dispatch.cpp
+    pthread_runtime.cpp
     aio.cpp
     process.cpp
     filesystem.cpp

@@ -101,6 +101,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
     dispatch_bsd(cpu, *canonical);
     return;
   }
+  if (dispatch_bsd_pthread(cpu, number))
+    return;
 
   switch (number) {
   case 322: { // VersionSensitive nosys/iopolicysys collision.
@@ -207,6 +209,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu &cpu, std::uint32_t number) {
   case 96:
   case 116:
   case darwin::syscall::set_time_of_day:
+  case darwin::syscall::set_real_effective_user_id:
+  case darwin::syscall::set_real_effective_group_id:
   case 147:
   case darwin::syscall::set_groups:
   case darwin::syscall::set_group_id:

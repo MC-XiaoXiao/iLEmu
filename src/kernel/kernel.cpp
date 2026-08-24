@@ -234,9 +234,9 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
       [this](std::uint32_t descriptor, std::uint32_t event) {
         inject_wifi_driver_event(descriptor, event);
       });
-  configure_darwin_notify_state();
   shared_state_->darwin_kernel_identity =
       make_darwin_kernel_identity_profile(rootfs_);
+  configure_darwin_notify_state();
   shared_state_->device_product_type = device_profile_.product_type;
   shared_state_->device_board_config = device_profile_.board_config;
   shared_state_->device_hardware_model = device_profile_.hardware_model;
@@ -386,6 +386,17 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
 }
 
 void CompatibilityKernel::configure_darwin_notify_state() {
+  darwin_notify_state_hle_.set_profile(
+      shared_state_->darwin_kernel_identity.notify_state_profile);
+  darwin_notify_state_hle_.set_native_server_ready_query(
+      [weak_state = std::weak_ptr<KernelSharedState>{shared_state_}] {
+        const auto state = weak_state.lock();
+        if (!state)
+          return false;
+        std::lock_guard lock{state->mach_mutex};
+        return state->bootstrap_checked_in_services.contains(
+            "com.apple.system.notification_center");
+      });
   const auto provider = [state = ringer_switch_state_] {
     return static_cast<std::uint64_t>(state->active());
   };
@@ -745,6 +756,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id) {
   next_display_scanout_deadline_.reset();
   signal_actions_ = {};
   signal_mask_ = 0;
+  pthread_runtime_.prepare_exec();
   process_.waiting_for_events = false;
   const auto current_thread_port =
       thread_ports_.find(processor_id) != thread_ports_.end()
@@ -2014,6 +2026,7 @@ void CompatibilityKernel::inherit_process_state(
   if (inherit_fork_state) {
     darwin_notify_state_hle_.inherit_state(parent.darwin_notify_state_hle_);
   }
+  pthread_runtime_.inherit_from(parent.pthread_runtime_, inherit_fork_state);
   configure_darwin_notify_state();
   core_audio_hle_.set_service(audio_service_);
   apple80211_hle_.set_wifi_state(wifi_state_);

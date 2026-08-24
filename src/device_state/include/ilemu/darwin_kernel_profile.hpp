@@ -5,8 +5,19 @@
 #include <string>
 
 #include "ilemu/darwin_abi_route.hpp"
+#include "ilemu/darwin_notify_state_hle.hpp"
 
 namespace ilemu {
+
+// libpthread moved thread creation and workqueue registration behind BSD
+// syscalls in Darwin 10. Keep that wire contract separate from the broader
+// kernel epoch: later Darwin releases revise the registration arguments and
+// workqueue operations without changing the device model.
+enum class DarwinPthreadAbiProfile : std::uint8_t {
+  LegacyMachThreads,
+  BsdThreadRegisterV1,
+  BsdThreadRegisterV2,
+};
 
 struct DarwinGuestCapabilities {
   // XNU's nosys entry returns ENOSYS and raises SIGSYS on the audited
@@ -42,6 +53,10 @@ struct DarwinKernelIdentityProfile {
   // rootfs use the explicitly compiled compatibility default instead.
   std::string abi_build_version;
   DarwinAbiEpoch abi_epoch{DarwinAbiEpoch::Unknown};
+  DarwinPthreadAbiProfile pthread_abi{
+      DarwinPthreadAbiProfile::LegacyMachThreads};
+  DarwinNotifyStateProfile notify_state_profile{
+      DarwinNotifyStateProfile::NativeServerTokens};
   DarwinGuestCapabilities capabilities;
 };
 

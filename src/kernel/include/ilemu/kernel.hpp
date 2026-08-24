@@ -29,6 +29,7 @@
 #include "ilemu/cpu.hpp"
 #include "ilemu/darwin_bpf_abi.hpp"
 #include "ilemu/darwin_notify_state_hle.hpp"
+#include "ilemu/darwin_pthread_runtime.hpp"
 #include "ilemu/darwin_tty_abi.hpp"
 #include "ilemu/display.hpp"
 #include "ilemu/device_profile.hpp"
@@ -373,6 +374,11 @@ public:
   [[nodiscard]] std::string wait_reason(std::size_t processor) const;
 
 private:
+  struct CreatedGuestThread {
+    std::size_t processor{};
+    std::uint32_t port_name{};
+  };
+
   void enqueue_system_button_impl(const SystemButtonInput &input,
                                   bool force_home_transition);
 
@@ -398,9 +404,14 @@ private:
 
   void dispatch_arm_fast_trap(Cpu &cpu);
   void dispatch_bsd(Cpu &cpu, std::uint32_t number);
+  [[nodiscard]] bool dispatch_bsd_pthread(Cpu &cpu, std::uint32_t number);
+  [[nodiscard]] bool service_bsd_workqueue(Cpu &cpu);
   void dispatch_bsd_nosys(Cpu &cpu, bool send_sigsys);
   [[nodiscard]] std::optional<std::uint32_t>
   thread_object_for_processor(std::size_t processor) const;
+  [[nodiscard]] std::optional<CreatedGuestThread> create_guest_thread(
+      const std::array<std::uint32_t, 16> &state, std::uint32_t cpsr,
+      bool start_suspended, std::uint32_t &kernel_error);
   void dispatch_bsd_aio(Cpu &cpu, std::uint32_t number);
   void dispatch_bsd_process(Cpu &cpu, std::uint32_t number);
   void release_process_mach_rights();
@@ -688,6 +699,7 @@ private:
   std::filesystem::path guest_working_directory_{"/"};
   std::string process_image_{"/sbin/launchd"};
   ProcessContext process_;
+  DarwinPthreadRuntime pthread_runtime_;
   std::map<std::uint32_t, std::filesystem::path> file_descriptors_;
   std::map<std::uint32_t, std::shared_ptr<bsd::RegularFileOpenDescription>>
       regular_file_open_descriptions_;

@@ -18,6 +18,8 @@ bool CompatibilityKernel::dispatch_bsd_process_credentials(
     Cpu &cpu, std::uint32_t number) {
   if (number != darwin::syscall::set_groups &&
       number != darwin::syscall::set_user_id &&
+      number != darwin::syscall::set_real_effective_user_id &&
+      number != darwin::syscall::set_real_effective_group_id &&
       number != darwin::syscall::set_group_id &&
       number != darwin::syscall::set_effective_group_id &&
       number != darwin::syscall::set_effective_user_id &&
@@ -74,6 +76,82 @@ bool CompatibilityKernel::dispatch_bsd_process_credentials(
                   " pid=" + std::to_string(process_.pid) +
                   " count=" + std::to_string(requested_count) +
                   " egid=" + std::to_string(groups[0]) + "\n");
+    bsd_success(cpu, 0);
+    return true;
+  }
+
+  if (number == darwin::syscall::set_real_effective_group_id) {
+    constexpr std::uint32_t unchanged =
+        std::numeric_limits<std::uint32_t>::max();
+    const auto requested_real = cpu.registers()[0];
+    const auto requested_effective = cpu.registers()[1];
+    const auto old_real = process_.gid;
+    const auto old_effective = process_.effective_gid;
+    const auto privileged = process_.effective_uid == 0;
+    const auto permitted = [&](std::uint32_t requested) {
+      // Set-id image transitions are not modeled yet, so the saved group ID
+      // has the same observable value as the real group ID.
+      return requested == unchanged || privileged || requested == old_real ||
+             requested == old_effective;
+    };
+    if (!permitted(requested_real) || !permitted(requested_effective)) {
+      bsd_error(cpu, darwin::error::operation_not_permitted);
+      return true;
+    }
+
+    if (requested_real != unchanged)
+      process_.gid = requested_real;
+    if (requested_effective != unchanged)
+      process_.effective_gid = requested_effective;
+    if (const auto record = shared_state_->processes.find(process_.pid);
+        record != shared_state_->processes.end()) {
+      if (requested_real != unchanged)
+        record->second.gid = requested_real;
+      if (requested_effective != unchanged)
+        record->second.effective_gid = requested_effective;
+    }
+    output_.write("[process] setregid pid=" +
+                  std::to_string(process_.pid) + " gid=" +
+                  std::to_string(process_.gid) + " egid=" +
+                  std::to_string(process_.effective_gid) + "\n");
+    bsd_success(cpu, 0);
+    return true;
+  }
+
+  if (number == darwin::syscall::set_real_effective_user_id) {
+    constexpr std::uint32_t unchanged =
+        std::numeric_limits<std::uint32_t>::max();
+    const auto requested_real = cpu.registers()[0];
+    const auto requested_effective = cpu.registers()[1];
+    const auto old_real = process_.uid;
+    const auto old_effective = process_.effective_uid;
+    const auto privileged = old_effective == 0;
+    const auto permitted = [&](std::uint32_t requested) {
+      // Set-id image transitions are not modeled yet, so the saved user ID
+      // has the same observable value as the real user ID.
+      return requested == unchanged || privileged || requested == old_real ||
+             requested == old_effective;
+    };
+    if (!permitted(requested_real) || !permitted(requested_effective)) {
+      bsd_error(cpu, darwin::error::operation_not_permitted);
+      return true;
+    }
+
+    if (requested_real != unchanged)
+      process_.uid = requested_real;
+    if (requested_effective != unchanged)
+      process_.effective_uid = requested_effective;
+    if (const auto record = shared_state_->processes.find(process_.pid);
+        record != shared_state_->processes.end()) {
+      if (requested_real != unchanged)
+        record->second.uid = requested_real;
+      if (requested_effective != unchanged)
+        record->second.effective_uid = requested_effective;
+    }
+    output_.write("[process] setreuid pid=" +
+                  std::to_string(process_.pid) + " uid=" +
+                  std::to_string(process_.uid) + " euid=" +
+                  std::to_string(process_.effective_uid) + "\n");
     bsd_success(cpu, 0);
     return true;
   }
