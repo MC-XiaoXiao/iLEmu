@@ -112,6 +112,11 @@ MobileFramebufferHle::MobileFramebufferHle(
       [this](UserlandHleCall &call) { set_background_color(call); });
   add("_IOMobileFramebufferSwapEnd", [this](UserlandHleCall &call) {
     if (display_write_allowed(call)) {
+      if (shared_state_) {
+        std::lock_guard lock{shared_state_->mach_mutex};
+        shared_state_->observe_display_vsync_swap_end_locked(
+            call.process_id(), call.argument(0));
+      }
       performance_counters().record_vsync_swap_end(
           call.process_id(), call.argument(0),
           static_cast<std::uint32_t>(call.cpu().processor_id()));

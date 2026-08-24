@@ -3983,6 +3983,10 @@ void boot(const std::vector<std::string> &args, Output &output) {
   std::optional<XnuThreadId> display_urgent_thread;
   std::optional<XnuThreadId> display_urgent_receiver_thread;
   std::optional<XnuThreadId> display_yielded_thread;
+  std::optional<XnuThreadId> display_inflight_callback_thread;
+  std::uint64_t display_inflight_callback_sequence{};
+  std::optional<std::chrono::steady_clock::time_point>
+      display_inflight_callback_deadline;
   std::optional<std::chrono::steady_clock::time_point>
       display_urgent_lease_deadline;
   std::optional<std::chrono::steady_clock::time_point>
@@ -5392,7 +5396,57 @@ void boot(const std::vector<std::string> &args, Output &output) {
       }
       return false;
     }();
-    if (!display_callback_pending)
+    const auto observed_inflight_callback = [&]()
+        -> std::optional<std::pair<XnuThreadId, std::uint64_t>> {
+      // A callback can become in-flight only after the queued notification
+      // established one of these local dependencies. Avoid another pair of
+      // kernel/Mach locks on every idle host-loop iteration.
+      if (!display_urgent_process ||
+          (!display_urgent_thread && !display_urgent_receiver_thread))
+        return std::nullopt;
+      for (const auto &runtime : runtimes) {
+        if (!runtime->kernel->process().exited &&
+            runtime->kernel->process().pid == *display_urgent_process) {
+          if (const auto dependency =
+                  runtime->kernel
+                      ->display_vsync_inflight_callback_dependency()) {
+            return std::pair{
+                XnuThreadId{
+                    *display_urgent_process,
+                    static_cast<std::uint32_t>(dependency->first)},
+                dependency->second};
+          }
+          break;
+        }
+      }
+      return std::nullopt;
+    }();
+    if (!observed_inflight_callback) {
+      display_inflight_callback_thread.reset();
+      display_inflight_callback_sequence = 0U;
+      display_inflight_callback_deadline.reset();
+    } else if (!display_inflight_callback_thread ||
+               *display_inflight_callback_thread !=
+                   observed_inflight_callback->first ||
+               display_inflight_callback_sequence !=
+                   observed_inflight_callback->second) {
+      display_inflight_callback_thread = observed_inflight_callback->first;
+      display_inflight_callback_sequence =
+          observed_inflight_callback->second;
+      // SwapEnd normally retires this ownership within one display period.
+      // Keep a bounded safety lease so a firmware callback that elects not to
+      // submit cannot retain host preference indefinitely.
+      display_inflight_callback_deadline =
+          std::chrono::steady_clock::now() + std::chrono::milliseconds{100};
+    }
+    const auto display_inflight_callback_active =
+        display_inflight_callback_thread &&
+        display_inflight_callback_deadline &&
+        std::chrono::steady_clock::now() <
+            *display_inflight_callback_deadline;
+    const auto display_callback_work_active =
+        display_callback_pending || display_inflight_callback_active;
+    if (!display_callback_work_active)
       display_yielded_thread.reset();
     if (performance_counters().cpu_source_diagnostics_enabled() &&
         display_callback_pending) {
@@ -5427,7 +5481,7 @@ void boot(const std::vector<std::string> &args, Output &output) {
       display_urgent_receiver_thread.reset();
       display_urgent_lease_deadline.reset();
     }
-    if (!preferred_thread && display_callback_pending &&
+    if (!preferred_thread && display_callback_work_active &&
         display_yielded_thread && display_urgent_process) {
       // thread_switch without an eligible explicit hint asks the scheduler to
       // let another runnable thread make progress. During a VSync callback
@@ -5438,6 +5492,18 @@ void boot(const std::vector<std::string> &args, Output &output) {
       // changed by this one-shot host selection.
       preferred_thread = scheduler.oldest_runnable_thread(
           *display_urgent_process, display_yielded_thread);
+    }
+    if (!preferred_thread && display_inflight_callback_active &&
+        display_inflight_callback_thread &&
+        display_inflight_callback_thread != display_yielded_thread) {
+      if (const auto info = scheduler.info(*display_inflight_callback_thread);
+          info && info->state == XnuThreadState::Runnable) {
+        // A synchronous mach_msg receive may run on a different processor
+        // from NotifyFunc. Once firmware has entered NotifyFunc, follow that
+        // exact processor until SwapEnd instead of continuing to prefer the
+        // stale receiver observed before the callback began.
+        preferred_thread = display_inflight_callback_thread;
+      }
     }
     if (!preferred_thread && display_callback_pending &&
         display_urgent_receiver_thread) {
@@ -5484,6 +5550,19 @@ void boot(const std::vector<std::string> &args, Output &output) {
           preferred_thread = scheduler.oldest_runnable_thread(
               *display_urgent_process, display_urgent_thread);
         }
+      }
+    }
+    if (!preferred_thread && display_inflight_callback_active &&
+        display_inflight_callback_thread && display_urgent_process) {
+      const auto callback_info =
+          scheduler.info(*display_inflight_callback_thread);
+      if (callback_info &&
+          callback_info->state != XnuThreadState::Runnable) {
+        // Frame assembly can hand work to another SpringBoard thread. Preserve
+        // the bounded in-flight ownership while allowing that real dependency
+        // to run; no Guest priority or wait state is changed.
+        preferred_thread = scheduler.oldest_runnable_thread(
+            *display_urgent_process, display_inflight_callback_thread);
       }
     }
     if (!preferred_thread && input_preferred_thread) {
@@ -5943,11 +6022,13 @@ void boot(const std::vector<std::string> &args, Output &output) {
         throw std::runtime_error{error.str()};
       }
       if (completion == XnuSliceCompletion::Yield &&
-          display_callback_pending &&
+          display_callback_work_active &&
           ((display_urgent_thread &&
             *display_urgent_thread == scheduled->thread) ||
            (display_urgent_receiver_thread &&
-            *display_urgent_receiver_thread == scheduled->thread))) {
+            *display_urgent_receiver_thread == scheduled->thread) ||
+           (display_inflight_callback_thread &&
+            *display_inflight_callback_thread == scheduled->thread))) {
         // thread_switch is an explicit Guest request for another runnable
         // dependency to make progress. Suppress this source for one host
         // selection instead of either immediately reselecting it (which can
@@ -6056,6 +6137,9 @@ void boot(const std::vector<std::string> &args, Output &output) {
       display_urgent_thread.reset();
       display_urgent_receiver_thread.reset();
       display_yielded_thread.reset();
+      display_inflight_callback_thread.reset();
+      display_inflight_callback_sequence = 0U;
+      display_inflight_callback_deadline.reset();
       display_urgent_lease_deadline.reset();
     }
     if (ran_thread) {

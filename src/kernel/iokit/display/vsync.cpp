@@ -238,6 +238,7 @@ dispatch_connect_method(KernelSharedState &state, const ProcessContext &process,
       // message discarded above can no longer enter NotifyFunc, so retire its
       // host-only callback watermark with the same registration semantics.
       vsync.callback_sequence = vsync.sequence;
+      vsync.swap_sequence = vsync.sequence;
     }
     state.mark_foreground_transition_locked(
         vsync.enabled

@@ -361,6 +361,11 @@ public:
   // must fall back to display_vsync_receiver_processor() when unavailable.
   [[nodiscard]] std::optional<std::size_t>
   display_vsync_callback_processor();
+  // Return the processor currently between the firmware NotifyFunc and
+  // SwapEnd boundaries. This closes only the host scheduling dependency; the
+  // Guest callback, frame count, and timing remain firmware-owned.
+  [[nodiscard]] std::optional<std::pair<std::size_t, std::uint64_t>>
+  display_vsync_inflight_callback_dependency();
   // True only while a real queued VSync notification has not yet reached the
   // firmware NotifyFunc boundary. This is host scheduling metadata and does
   // not synthesize callbacks or keep selector 9 enabled.

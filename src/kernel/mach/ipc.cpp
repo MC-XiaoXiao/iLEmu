@@ -148,6 +148,24 @@ CompatibilityKernel::display_vsync_callback_processor() {
   return fallback;
 }
 
+std::optional<std::pair<std::size_t, std::uint64_t>>
+CompatibilityKernel::display_vsync_inflight_callback_dependency() {
+  std::lock_guard kernel_lock{mutex_};
+  std::lock_guard mach_lock{shared_state_->mach_mutex};
+  for (const auto &[connection_object, registration] :
+       shared_state_->iokit_display_vsync) {
+    static_cast<void>(connection_object);
+    if (registration.enabled && registration.owner_pid == process_.pid &&
+        registration.last_callback_processor &&
+        registration.swap_sequence < registration.callback_sequence) {
+      return std::pair{
+          static_cast<std::size_t>(*registration.last_callback_processor),
+          registration.callback_sequence};
+    }
+  }
+  return std::nullopt;
+}
+
 bool CompatibilityKernel::display_vsync_callback_pending() {
   std::lock_guard kernel_lock{mutex_};
   std::lock_guard mach_lock{shared_state_->mach_mutex};

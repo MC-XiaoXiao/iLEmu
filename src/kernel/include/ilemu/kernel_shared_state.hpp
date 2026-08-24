@@ -657,6 +657,11 @@ struct KernelSharedState {
     // identifies an actual callback handoff that still needs Guest CPU time;
     // it is never exposed in the notification payload.
     std::uint64_t callback_sequence{};
+    // SwapEnd retires the callback work begun at NotifyFunc. Keeping this
+    // separate from callback_sequence lets the host scheduler follow the real
+    // callback processor through frame assembly without extending the queued
+    // Mach-message lifetime or changing any Guest-visible notification state.
+    std::uint64_t swap_sequence{};
     std::optional<std::uint64_t> next_deadline;
     std::uint64_t sequence{};
     std::uint64_t method_call_count{};
@@ -1446,6 +1451,24 @@ struct KernelSharedState {
     }
     registration.last_receiver_processor = processor_id;
     registration.receiver_sequence = notification_sequence;
+  }
+
+  // The caller holds mach_mutex. Retire only callback work that has reached
+  // the firmware's real SwapEnd boundary; a newer queued notification remains
+  // represented by registration.sequence and is unaffected.
+  void observe_display_vsync_swap_end_locked(
+      std::uint32_t process_id, std::uint32_t framebuffer_refcon) {
+    for (auto &[connection_object, registration] : iokit_display_vsync) {
+      static_cast<void>(connection_object);
+      if (registration.owner_pid != process_id ||
+          registration.async_reference[
+              iokit_abi::display_vsync::async_refcon_index] !=
+              framebuffer_refcon) {
+        continue;
+      }
+      registration.swap_sequence = std::max(
+          registration.swap_sequence, registration.callback_sequence);
+    }
   }
 
   [[nodiscard]] static std::uint64_t
