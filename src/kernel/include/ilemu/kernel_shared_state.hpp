@@ -31,6 +31,7 @@
 #include "ilemu/hfs_metadata.hpp"
 #include "ilemu/iokit_abi.hpp"
 #include "ilemu/kernel_mach_task_identity.hpp"
+#include "ilemu/launchd_job_catalog.hpp"
 #include "ilemu/mach_namespace.hpp"
 #include "ilemu/mach_port_object.hpp"
 #include "ilemu/touch_input.hpp"
@@ -1135,6 +1136,11 @@ struct KernelSharedState {
   // Keep names only to deduplicate retries; status reporting exposes a count
   // and does not depend on any firmware-specific service name.
   std::set<std::string> bootstrap_checked_in_services;
+  // Provider identity comes from the firmware's launchd job declarations.
+  // Load it once per emulated boot so every process observes the same
+  // bootstrap namespace without rescanning plists during each lookup.
+  std::once_flag launchd_job_catalog_once;
+  std::optional<LaunchdJobCatalog> launchd_job_catalog;
   // A Purple application registers a bootstrap service backed by its own
   // receive right. When SpringBoard resolves that service, retain the global
   // port object so host touch input can follow Purple's foreground routing.

@@ -60,6 +60,33 @@ bool write_message_words(AddressSpace &memory, std::uint32_t address,
   return true;
 }
 
+bool write_bootstrap_lookup_failure(AddressSpace &memory,
+                                    std::uint32_t message_address,
+                                    std::uint32_t reply_port,
+                                    std::uint32_t request_id) {
+  const std::array<std::uint32_t, 9> reply{
+      18U, 36U, reply_port, 0U, 0U, request_id + 100U,
+      0x00000000U, 0x00000001U, 1102U};
+  return write_message_words(memory, message_address, reply);
+}
+
+bool bootstrap_provider_is_resolving_self(
+    KernelSharedState &state, const std::filesystem::path &rootfs,
+    std::uint32_t process_id, std::string_view service) {
+  std::call_once(state.launchd_job_catalog_once, [&] {
+    state.launchd_job_catalog = LaunchdJobCatalog::load(rootfs);
+  });
+  std::lock_guard lock{state.mach_mutex};
+  if (!state.launchd_job_catalog ||
+      state.bootstrap_checked_in_services.contains(std::string{service})) {
+    return false;
+  }
+  const auto process = state.processes.find(process_id);
+  return process != state.processes.end() && !process->second.exited &&
+         state.launchd_job_catalog->executable_provides_service(
+             process->second.executable_path, service);
+}
+
 } // namespace
 
 void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
@@ -332,24 +359,36 @@ void CompatibilityKernel::dispatch_mach_message(Cpu &cpu) {
     }
   }
 
+  if (*message_id ==
+          mig_message_id(xnu792::mig::bootstrap::Routine::look_up) &&
+      *remote_port == process_.bootstrap_port && registers[3] >= 36U) {
+    const auto service_name = memory_.read_c_string(
+        message_address +
+            xnu792::mig::bootstrap::look_up_arguments[2].request_offset,
+        128U);
+    if (service_name && bootstrap_provider_is_resolving_self(
+                            *shared_state_, rootfs_, process_.pid,
+                            *service_name)) {
+      registers[0] = write_bootstrap_lookup_failure(
+                         memory_, message_address, *local_port, *message_id)
+                         ? 0U
+                         : 0x10004008U;
+      output_.line("[bootstrap] provider self-lookup deferred pid=" +
+                   std::to_string(process_.pid) + " service=" +
+                   *service_name);
+      return;
+    }
+  }
+
   if (*message_id == mig_message_id(xnu792::mig::bootstrap::Routine::look_up) &&
       process_.pid == 1 && registers[3] >= 36) {
     // launchd probes its own bootstrap namespace before its server
     // receive loop exists. Match XNU/launchd's normal early negative
     // lookup; requests from child processes are routed to PID 1 below.
-    const std::array<std::uint32_t, 9> reply{
-        18,          36,          *local_port, 0, 0, *message_id + 100,
-        0x00000000U, 0x00000001U, 1102,
-    };
-    for (std::size_t index = 0; index < reply.size(); ++index) {
-      if (!memory_.write32(message_address +
-                               static_cast<std::uint32_t>(index * 4U),
-                           reply[index])) {
-        registers[0] = 0x10004008U;
-        return;
-      }
-    }
-    registers[0] = 0;
+    registers[0] = write_bootstrap_lookup_failure(
+                       memory_, message_address, *local_port, *message_id)
+                       ? 0U
+                       : 0x10004008U;
     return;
   }
   if (wants_send && registers[2] >= 24 &&

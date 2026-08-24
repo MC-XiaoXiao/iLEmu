@@ -1,5 +1,6 @@
 add_library(ilemu_device_state STATIC
     darwin_kernel_profile.cpp
+    launchd_job_catalog.cpp
     lockdown_profile.cpp
     network_preferences.cpp)
 add_library(iLEmu::device_state ALIAS ilemu_device_state)
