@@ -24,6 +24,7 @@ inline constexpr std::uint32_t texture0 = 0x84c0U;
 inline constexpr std::uint32_t active_texture = 0x84e0U;
 inline constexpr std::uint32_t client_active_texture = 0x84e1U;
 inline constexpr std::uint32_t maximum_texture_units = 0x84e2U;
+inline constexpr std::uint32_t maximum_texture_image_units = 0x8872U;
 inline constexpr std::size_t texture_unit_count = 2;
 inline constexpr std::uint32_t array_buffer = 0x8892U;
 inline constexpr std::uint32_t element_array_buffer = 0x8893U;

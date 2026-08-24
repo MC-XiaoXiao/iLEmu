@@ -31,6 +31,8 @@ constexpr std::array<std::string_view, 2> adaptive_ogl_settings{
     "CA_AUTO_ENABLE_OGL=1",
     "LK_AUTO_ENABLE_OGL=1",
 };
+constexpr std::string_view core_animation_ogl_name{"CA_ENABLE_OGL="};
+constexpr std::string_view core_animation_ogl_setting{"CA_ENABLE_OGL=0"};
 
 struct InterpreterDirective {
     std::string path;
@@ -197,6 +199,17 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
         for (const auto setting : adaptive_ogl_settings)
             environment.emplace_back(setting);
     }
+    // EAGL surface transport is available, but the compatibility renderer is
+    // a fixed-function pipeline. Ask CoreAnimation to keep its own
+    // programmable renderer disabled and use the firmware's software/MBX2D
+    // compositor. An explicit guest setting remains authoritative.
+    const auto core_animation_ogl_is_explicit =
+        std::any_of(environment.begin(), environment.end(),
+                    [](const std::string &variable) {
+                        return variable.starts_with(core_animation_ogl_name);
+                    });
+    if (!core_animation_ogl_is_explicit)
+        environment.emplace_back(core_animation_ogl_setting);
 
     std::uint32_t string_cursor = stack_top;
     auto push_string = [&](const std::string& value) {

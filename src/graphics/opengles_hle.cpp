@@ -978,19 +978,58 @@ void OpenGlesHle::draw(UserlandHleCall &call, bool indexed) {
 }
 
 void OpenGlesHle::register_eagl(UserlandHleRegistry &registry) {
+    registry.register_objc_instance_method(
+        std::string{opengles_image}, "EAGLContext",
+        "initWithAPI:properties:", "-[EAGLContext initWithAPI:properties:]",
+        [this](UserlandHleCall &call) {
+            const auto object = call.argument(0);
+            const auto api = call.argument(2);
+            if (object == 0U || (api != 1U && api != 2U)) {
+                call.set_return(0U);
+                return;
+            }
+            const auto key = std::pair{call.process_id(), object};
+            if (!eagl_contexts_.contains(key)) {
+                const auto handle = next_context_++;
+                contexts_.emplace(handle, default_context_state());
+                eagl_contexts_.emplace(key, handle);
+            }
+            call.set_return(object);
+        });
     registry.register_objc_class_method(
         std::string{opengles_image}, "EAGLContext",
         "setCurrentContext:", "+[EAGLContext setCurrentContext:]",
         [this](UserlandHleCall &call) {
             const auto process_id = call.process_id();
             const auto object = call.argument(2);
+            auto &current = thread(call);
+            const auto key = std::pair{process_id, object};
+            const auto hle_context = eagl_contexts_.find(key);
+            if (hle_context != eagl_contexts_.end()) {
+                current.context = hle_context->second;
+                call.set_return(1U);
+                return;
+            }
+            if (object == 0U) {
+                const auto current_is_eagl = std::any_of(
+                    eagl_contexts_.begin(), eagl_contexts_.end(),
+                    [&](const auto &entry) {
+                        return entry.first.first == process_id &&
+                               entry.second == current.context;
+                    });
+                if (current_is_eagl) {
+                    current.context = 0U;
+                    call.set_return(1U);
+                    return;
+                }
+            }
             call.resume_original_persistently([this, process_id, object](
                                                   UserlandHleCall &completed) {
                 if (completed.argument(0) == 0U)
                     return;
-                auto &current = thread(completed);
+                auto &completed_thread = thread(completed);
                 if (object == 0U) {
-                    current.context = 0U;
+                    completed_thread.context = 0U;
                     return;
                 }
 
@@ -1002,21 +1041,61 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry &registry) {
                     std::any_of(eagl_contexts_.begin(), eagl_contexts_.end(),
                                 [&](const auto &entry) {
                                     return entry.first.first == process_id &&
-                                           entry.second == current.context;
+                                           entry.second == completed_thread.context;
                                 });
-                if (current.context != 0U && !current_is_eagl)
+                if (completed_thread.context != 0U && !current_is_eagl)
                     return;
 
-                const auto key = std::pair{process_id, object};
-                auto context = eagl_contexts_.find(key);
+                const auto eagl_key = std::pair{process_id, object};
+                auto context = eagl_contexts_.find(eagl_key);
                 if (context == eagl_contexts_.end()) {
                     const auto handle = next_context_++;
                     contexts_.emplace(handle, default_context_state());
-                    context = eagl_contexts_.emplace(key, handle).first;
+                    context = eagl_contexts_.emplace(eagl_key, handle).first;
                 }
-                current.context = context->second;
+                completed_thread.context = context->second;
             });
         });
+    registry.register_objc_class_method(
+        std::string{opengles_image}, "EAGLContext", "currentContext",
+        "+[EAGLContext currentContext]", [this](UserlandHleCall &call) {
+            const auto &current_state = thread(call);
+            const auto context = std::find_if(
+                eagl_contexts_.begin(), eagl_contexts_.end(),
+                [&](const auto &entry) {
+                    return entry.first.first == call.process_id() &&
+                           entry.second == current_state.context;
+                });
+            if (context == eagl_contexts_.end()) {
+                call.resume_original_persistently();
+                return;
+            }
+            call.set_return(context->first.second);
+        });
+    const auto register_notification =
+        [this, &registry](std::string selector, std::string symbol) {
+            registry.register_objc_instance_method(
+                std::string{opengles_image}, "EAGLContext",
+                std::move(selector), std::move(symbol),
+                [this](UserlandHleCall &call) {
+                    const auto context = std::pair{
+                        call.process_id(), call.argument(0)};
+                    if (!eagl_contexts_.contains(context)) {
+                        call.resume_original_persistently();
+                        return;
+                    }
+                    // The host renderer completes synchronously and the
+                    // IOMobileFramebuffer HLE owns swap ordering, so there is
+                    // no driver transaction token to forward.
+                    call.set_return(0U);
+                });
+        };
+    register_notification(
+        "swapNotification:forTransaction:onLayer:",
+        "-[EAGLContext swapNotification:forTransaction:onLayer:]");
+    register_notification(
+        "sendNotification:forTransaction:onLayer:",
+        "-[EAGLContext sendNotification:forTransaction:onLayer:]");
     registry.register_objc_instance_method(
         std::string{opengles_image}, "EAGLContext",
         "renderbufferStorage:fromDrawable:",
@@ -1090,10 +1169,13 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry &registry) {
                 return;
             }
             std::uint32_t texture{};
-            if (target == gles_abi::texture_rectangle_apple) {
+            if (target == gles_abi::texture_rectangle_apple ||
+                target == gles_abi::texture_2d) {
                 const auto &unit =
                     context->texture_units[context->active_texture_unit];
-                texture = unit.bound_texture_rectangle;
+                texture = target == gles_abi::texture_rectangle_apple
+                              ? unit.bound_texture_rectangle
+                              : unit.bound_texture_2d;
             } else if (target == gles_abi::renderbuffer &&
                        context->bound_framebuffer != 0U) {
                 const auto framebuffer =
@@ -1715,6 +1797,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry &registry) {
                 static_cast<std::uint32_t>(context->client_active_texture_unit);
             break;
         case gles_abi::maximum_texture_units:
+        case gles_abi::maximum_texture_image_units:
             values[0] =
                 static_cast<std::uint32_t>(gles_abi::texture_unit_count);
             break;
