@@ -13,6 +13,7 @@
 #include "ilemu/display.hpp"
 #include "ilemu/gles_abi.hpp"
 #include "ilemu/gles_math.hpp"
+#include "ilemu/gles_program_state.hpp"
 #include "ilemu/gles_rasterizer.hpp"
 #include "ilemu/gles_renderer.hpp"
 #include "ilemu/gles_resources.hpp"
@@ -80,6 +81,7 @@ class OpenGlesHle {
             std::uint32_t stride{};
             std::uint32_t pointer{};
             std::uint32_t buffer{};
+            bool normalized{};
             bool enabled{};
         };
         struct TextureUnitState {
@@ -127,6 +129,21 @@ class OpenGlesHle {
         std::vector<GlesMatrix> projection_stack;
         ArrayPointer vertex_array;
         ArrayPointer color_array;
+        std::map<std::uint32_t, ArrayPointer> generic_arrays;
+        std::uint32_t current_program{};
+    };
+    struct ProgrammableDrawState {
+        ContextState::ArrayPointer position_array;
+        ContextState::ArrayPointer color_array;
+        std::array<ContextState::ArrayPointer, gles_abi::texture_unit_count>
+            texture_arrays;
+        GlesMatrix vertex_matrix;
+        std::array<std::array<float, 2>, gles_abi::texture_unit_count>
+            texture_scales{{{1.0F, 1.0F}, {1.0F, 1.0F}}};
+        std::array<GlesTextureEnvironment, gles_abi::texture_unit_count>
+            texture_environments;
+        std::array<bool, gles_abi::texture_unit_count> sampled_textures{};
+        std::array<bool, gles_abi::texture_unit_count> rectangle_textures{};
     };
     enum class RenderTargetKind : std::uint8_t {
         Display,
@@ -159,7 +176,10 @@ class OpenGlesHle {
                                   bool normalized) const;
     [[nodiscard]] std::optional<GlesRasterVertex>
     read_vertex(UserlandHleCall &call, const ContextState &context,
-                std::uint32_t index) const;
+                std::uint32_t index,
+                const ProgrammableDrawState *programmable = nullptr) const;
+    [[nodiscard]] std::optional<ProgrammableDrawState>
+    programmable_draw_state(const ContextState &context) const;
     [[nodiscard]] std::optional<std::uint32_t>
     core_surface_identifier(UserlandHleCall &call, std::uint32_t surface) const;
     [[nodiscard]] SurfaceState *current_pixmap_surface(UserlandHleCall &call);
@@ -191,6 +211,7 @@ class OpenGlesHle {
     void register_eagl(UserlandHleRegistry &registry);
     void register_egl(UserlandHleRegistry &registry);
     void register_gles(UserlandHleRegistry &registry);
+    void register_programmable_gles(UserlandHleRegistry &registry);
     void unsupported(UserlandHleCall &call);
 
     std::map<std::size_t, ThreadState> threads_;
@@ -199,6 +220,7 @@ class OpenGlesHle {
         eagl_contexts_;
     std::map<std::uint32_t, SurfaceState> surfaces_;
     GlesResourceStore resources_;
+    GlesProgramState programs_;
     std::uint32_t next_context_{0x00010001U};
     std::uint32_t next_surface_{0x00020001U};
     std::uint32_t next_framebuffer_{1U};

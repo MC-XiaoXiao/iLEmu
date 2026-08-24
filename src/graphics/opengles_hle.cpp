@@ -158,6 +158,7 @@ OpenGlesHle::OpenGlesHle(UserlandHleRegistry &registry,
     register_eagl(registry);
     register_egl(registry);
     register_gles(registry);
+    register_programmable_gles(registry);
 }
 
 OpenGlesHle::~OpenGlesHle() { release_renderer_resources(); }
@@ -169,6 +170,7 @@ void OpenGlesHle::reset() {
     eagl_contexts_.clear();
     surfaces_.clear();
     resources_.reset();
+    programs_.reset();
     renderer_owner_ = allocate_gles_renderer_owner();
     next_context_ = 0x00010001U;
     next_surface_ = 0x00020001U;
@@ -186,6 +188,7 @@ void OpenGlesHle::inherit_state(const OpenGlesHle &parent) {
     eagl_contexts_ = parent.eagl_contexts_;
     surfaces_ = parent.surfaces_;
     resources_.inherit_state(parent.resources_);
+    programs_ = parent.programs_;
     renderer_owner_ = allocate_gles_renderer_owner();
     default_guest_profile_kind_ = parent.default_guest_profile_kind_;
     next_context_ = parent.next_context_;
@@ -344,7 +347,8 @@ void OpenGlesHle::set_array_pointer(UserlandHleCall &call,
     *array = ContextState::ArrayPointer{
         static_cast<std::uint32_t>(size),   type,
         static_cast<std::uint32_t>(stride), call.argument(3),
-        context->bound_array_buffer,        enabled};
+        context->bound_array_buffer,        false,
+        enabled};
 }
 
 bool OpenGlesHle::read_array(UserlandHleCall &call,
@@ -354,7 +358,8 @@ bool OpenGlesHle::read_array(UserlandHleCall &call,
     std::uint32_t component_size{};
     if (array.type == gles_abi::float_type || array.type == gles_abi::fixed) {
         component_size = 4;
-    } else if (array.type == gles_abi::short_type) {
+    } else if (array.type == gles_abi::short_type ||
+               array.type == gles_abi::unsigned_short) {
         component_size = 2;
     } else if (array.type == gles_abi::byte ||
                array.type == gles_abi::unsigned_byte) {
@@ -422,6 +427,9 @@ bool OpenGlesHle::read_array(UserlandHleCall &call,
                         ? std::max(-1.0F,
                                    static_cast<float>(signed_value) / 32'767.0F)
                         : static_cast<float>(signed_value);
+        } else if (array.type == gles_abi::unsigned_short) {
+            value = normalized ? static_cast<float>(raw) / 65'535.0F
+                               : static_cast<float>(raw);
         } else if (array.type == gles_abi::byte) {
             const auto signed_value = static_cast<std::int8_t>(raw);
             value =
@@ -439,35 +447,56 @@ bool OpenGlesHle::read_array(UserlandHleCall &call,
 
 std::optional<GlesRasterVertex>
 OpenGlesHle::read_vertex(UserlandHleCall &call, const ContextState &context,
-                         std::uint32_t index) const {
-    if (!context.vertex_array.enabled)
+                         std::uint32_t index,
+                         const ProgrammableDrawState *programmable) const {
+    const auto &position_array =
+        programmable ? programmable->position_array : context.vertex_array;
+    const auto &color_array =
+        programmable ? programmable->color_array : context.color_array;
+    if (!position_array.enabled)
         return std::nullopt;
     GlesRasterVertex vertex;
     vertex.color = context.current_color;
-    if (!read_array(call, context.vertex_array, index, vertex.position,
-                    false)) {
+    if (!read_array(call, position_array, index, vertex.position,
+                    position_array.normalized)) {
         return std::nullopt;
     }
-    if (context.color_array.enabled &&
-        !read_array(call, context.color_array, index, vertex.color, true)) {
+    if (color_array.enabled &&
+        !read_array(call, color_array, index, vertex.color,
+                    color_array.normalized)) {
         return std::nullopt;
     }
-    vertex.position = context.projection_matrix.transform(
-        context.modelview_matrix.transform(vertex.position));
+    vertex.position = programmable
+                          ? programmable->vertex_matrix.transform(
+                                vertex.position)
+                          : context.projection_matrix.transform(
+                                context.modelview_matrix.transform(
+                                    vertex.position));
     for (std::size_t unit_index = 0; unit_index < context.texture_units.size();
          ++unit_index) {
         const auto &unit = context.texture_units[unit_index];
-        if (unit.texture_array.enabled) {
+        const auto &texture_array =
+            programmable ? programmable->texture_arrays[unit_index]
+                         : unit.texture_array;
+        if (texture_array.enabled) {
             std::array<float, 4> texture{};
-            if (!read_array(call, unit.texture_array, index, texture, false)) {
+            if (!read_array(call, texture_array, index, texture,
+                            texture_array.normalized)) {
                 return std::nullopt;
             }
             vertex.texture[unit_index] = {texture[0], texture[1]};
         }
-        const auto transformed_texture = unit.texture_matrix.transform(
-            {vertex.texture[unit_index][0], vertex.texture[unit_index][1], 0.0F,
-             1.0F});
-        if (transformed_texture[3] != 0.0F) {
+        if (programmable) {
+            vertex.texture[unit_index][0] *=
+                programmable->texture_scales[unit_index][0];
+            vertex.texture[unit_index][1] *=
+                programmable->texture_scales[unit_index][1];
+        } else {
+            const auto transformed_texture = unit.texture_matrix.transform(
+                {vertex.texture[unit_index][0], vertex.texture[unit_index][1],
+                 0.0F, 1.0F});
+            if (transformed_texture[3] == 0.0F)
+                continue;
             vertex.texture[unit_index] = {
                 transformed_texture[0] / transformed_texture[3],
                 transformed_texture[1] / transformed_texture[3]};
@@ -817,6 +846,11 @@ void OpenGlesHle::draw(UserlandHleCall &call, bool indexed) {
         set_gl_error(call, gles_abi::out_of_memory);
         return;
     }
+    const auto programmable = programmable_draw_state(*context);
+    if (context->current_program != 0U && !programmable) {
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
     std::vector<GlesRasterVertex> vertices;
     vertices.reserve(static_cast<std::size_t>(count));
     const auto index_type = indexed ? call.argument(2) : 0;
@@ -876,7 +910,9 @@ void OpenGlesHle::draw(UserlandHleCall &call, bool indexed) {
                 }
             }
         }
-        const auto vertex = read_vertex(call, *context, vertex_index);
+        const auto vertex = read_vertex(
+            call, *context, vertex_index,
+            programmable ? &*programmable : nullptr);
         if (!vertex) {
             set_gl_error(call, gles_abi::invalid_operation);
             return;
@@ -929,11 +965,17 @@ void OpenGlesHle::draw(UserlandHleCall &call, bool indexed) {
     for (std::size_t unit_index = 0; unit_index < context->texture_units.size();
          ++unit_index) {
         const auto &unit = context->texture_units[unit_index];
-        const auto rectangle_enabled = unit.texture_rectangle_enabled;
+        const auto rectangle_enabled =
+            programmable ? programmable->rectangle_textures[unit_index]
+                         : unit.texture_rectangle_enabled;
         auto &raster_unit = state.texture_units[unit_index];
-        raster_unit.enabled = rectangle_enabled || unit.texture_2d_enabled;
+        raster_unit.enabled =
+            programmable ? programmable->sampled_textures[unit_index]
+                         : rectangle_enabled || unit.texture_2d_enabled;
         raster_unit.rectangle = rectangle_enabled;
-        raster_unit.environment = unit.texture_environment;
+        raster_unit.environment =
+            programmable ? programmable->texture_environments[unit_index]
+                         : unit.texture_environment;
         raster_unit.texture = rectangle_enabled ? unit.bound_texture_rectangle
                                                 : unit.bound_texture_2d;
         if (!raster_unit.enabled)

@@ -17,7 +17,9 @@ add_library(ilemu_graphics STATIC
     mbx3d_quad_hle.cpp
     mobile_framebuffer_hle.cpp
     opengles_guest_profile.cpp
+    gles_program_state.cpp
     opengles_hle.cpp
+    opengles_programmable.cpp
     presentation_tracker.cpp
     sdl_display.cpp
     sdl_input.cpp
