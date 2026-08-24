@@ -19,6 +19,15 @@ enum class DarwinPthreadAbiProfile : std::uint8_t {
   BsdThreadRegisterV2,
 };
 
+// Apple80211 keeps selector 201 across these releases, but the native driver
+// record packed behind the ioctl changed independently of the public API.
+// Name the two audited wire layouts so BSD emulation never needs to inspect a
+// firmware build string or infer a layout from a caller-provided byte count.
+enum class DarwinApple80211IoctlProfile : std::uint8_t {
+  AlignedCurrentNetworkRecord,
+  CompactCurrentNetworkRecord,
+};
+
 struct DarwinGuestCapabilities {
   // XNU's nosys entry returns ENOSYS and raises SIGSYS on the audited
   // production epochs. Unknown profiles conservatively suppress the signal
@@ -55,6 +64,8 @@ struct DarwinKernelIdentityProfile {
   DarwinAbiEpoch abi_epoch{DarwinAbiEpoch::Unknown};
   DarwinPthreadAbiProfile pthread_abi{
       DarwinPthreadAbiProfile::LegacyMachThreads};
+  DarwinApple80211IoctlProfile apple80211_ioctl{
+      DarwinApple80211IoctlProfile::AlignedCurrentNetworkRecord};
   DarwinNotifyStateProfile notify_state_profile{
       DarwinNotifyStateProfile::NativeServerTokens};
   DarwinGuestCapabilities capabilities;

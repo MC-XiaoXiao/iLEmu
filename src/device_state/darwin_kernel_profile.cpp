@@ -53,6 +53,7 @@ struct BuildProfileRule {
   BuildMatchKind match_kind;
   DarwinAbiEpoch abi_epoch;
   DarwinPthreadAbiProfile pthread_abi;
+  DarwinApple80211IoctlProfile apple80211_ioctl;
   DarwinNotifyStateProfile notify_state_profile;
   DarwinGuestCapabilities capabilities;
   std::string_view profile_name;
@@ -66,6 +67,7 @@ build_family_rule(std::string_view matcher, DarwinAbiEpoch abi_epoch,
                   DarwinPthreadAbiProfile pthread_abi,
                   DarwinGuestCapabilities capabilities) {
   return {matcher, BuildMatchKind::FamilyPrefix, abi_epoch, pthread_abi,
+          DarwinApple80211IoctlProfile::AlignedCurrentNetworkRecord,
           DarwinNotifyStateProfile::NativeServerTokens, capabilities,
           {}, {}, 0, {}};
 }
@@ -94,6 +96,7 @@ constexpr std::array build_profile_rules{
     BuildProfileRule{
         "7B", BuildMatchKind::FamilyPrefix, DarwinAbiEpoch::Darwin10,
         DarwinPthreadAbiProfile::BsdThreadRegisterV1,
+        DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
         DarwinNotifyStateProfile::BootstrapAwareServerTokens,
         {true, false, false}, "darwin10.3-arm", "10.3.1", 199506,
         "Darwin Kernel Version 10.3.1: iLEmu compatibility kernel; "
@@ -116,6 +119,8 @@ struct DarwinBuildContract {
   DarwinAbiEpoch abi_epoch{DarwinAbiEpoch::Unknown};
   DarwinPthreadAbiProfile pthread_abi{
       DarwinPthreadAbiProfile::LegacyMachThreads};
+  DarwinApple80211IoctlProfile apple80211_ioctl{
+      DarwinApple80211IoctlProfile::AlignedCurrentNetworkRecord};
   DarwinNotifyStateProfile notify_state_profile{
       DarwinNotifyStateProfile::NativeServerTokens};
   DarwinGuestCapabilities capabilities{};
@@ -130,6 +135,7 @@ struct DarwinBuildContract {
     if (matches_build(rule, build))
       return {rule.abi_epoch,
               rule.pthread_abi,
+              rule.apple80211_ioctl,
               rule.notify_state_profile,
               rule.capabilities,
               rule.profile_name,
@@ -194,6 +200,7 @@ make_darwin_kernel_identity_profile(const std::filesystem::path &rootfs) {
   const auto contract = contract_for_build(profile.abi_build_version);
   profile.abi_epoch = contract.abi_epoch;
   profile.pthread_abi = contract.pthread_abi;
+  profile.apple80211_ioctl = contract.apple80211_ioctl;
   profile.notify_state_profile = contract.notify_state_profile;
   profile.capabilities = contract.capabilities;
   if (!contract.profile_name.empty())
