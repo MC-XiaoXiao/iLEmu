@@ -17,6 +17,7 @@ class GlesRenderer;
 class PresentationTracker;
 class SceneCoordinator;
 struct KernelSharedState;
+class SurfaceTransportLease;
 class UserlandHleCall;
 class UserlandHleRegistry;
 class SurfaceStore;
@@ -96,6 +97,11 @@ private:
     std::vector<std::shared_ptr<HostSurface>> composition_surfaces_;
     std::size_t composition_surface_index_{};
     std::map<std::uint32_t, LayerState> layers_;
+    // A hardware layer retains its IOSurface independently of the process
+    // that created the backing. The lease is presentation state, not a host
+    // renderer concern, and is released when that layer is replaced/removed.
+    std::map<std::uint32_t, std::shared_ptr<SurfaceTransportLease>>
+        layer_surface_leases_;
     std::map<std::uint32_t, SubmittedLayer> submitted_layers_;
     std::uint32_t next_swap_id_{1};
     std::uint32_t background_argb_{0xff000000U};

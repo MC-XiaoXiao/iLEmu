@@ -160,6 +160,7 @@ MobileFramebufferHle::MobileFramebufferHle(
 
 void MobileFramebufferHle::reset() {
   layers_.clear();
+  layer_surface_leases_.clear();
   submitted_layers_.clear();
   next_swap_id_ = 1;
   background_argb_ = 0xff000000U;
@@ -170,6 +171,7 @@ void MobileFramebufferHle::reset() {
 
 void MobileFramebufferHle::inherit_state(const MobileFramebufferHle &parent) {
   layers_ = parent.layers_;
+  layer_surface_leases_ = parent.layer_surface_leases_;
   submitted_layers_ = parent.submitted_layers_;
   next_swap_id_ = parent.next_swap_id_;
   background_argb_ = parent.background_argb_;
@@ -669,6 +671,7 @@ void MobileFramebufferHle::set_layer(UserlandHleCall &call) {
   }
   if (surface == 0) {
     layers_.erase(layer);
+    layer_surface_leases_.erase(layer);
     call.set_return(iokit_abi::success);
     return;
   }
@@ -699,6 +702,12 @@ void MobileFramebufferHle::set_layer(UserlandHleCall &call) {
     call.set_return(iokit_abi::bad_argument);
     return;
   }
+  const auto surface_lease =
+      surface_store_->acquire_transport_lease(*identifier);
+  if (!surface_lease) {
+    call.set_return(iokit_abi::bad_argument);
+    return;
+  }
   const auto float_argument = [&](std::size_t index) {
     return std::bit_cast<float>(call.argument(index));
   };
@@ -724,6 +733,7 @@ void MobileFramebufferHle::set_layer(UserlandHleCall &call) {
   layers_.insert_or_assign(
       layer, LayerState{*identifier, source, destination,
                         call.argument(mobile_framebuffer_abi::flags_argument)});
+  layer_surface_leases_.insert_or_assign(layer, surface_lease);
   call.set_return(iokit_abi::success);
 }
 
