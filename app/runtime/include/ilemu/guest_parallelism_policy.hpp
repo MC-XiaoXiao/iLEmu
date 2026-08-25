@@ -17,13 +17,13 @@ public:
 
     [[nodiscard]] bool should_serialize(XnuThreadId thread) const;
     void observe(XnuThreadId thread, std::uint64_t ticks_consumed,
-                 std::uint64_t svc_calls);
+        std::uint64_t svc_calls);
     void forget(XnuThreadId thread);
     void forget_process(std::uint32_t process_id);
 
 private:
     struct ThreadHistory {
-        std::uint8_t syscall_density_score{};
+        std::uint8_t syscall_density_score { };
     };
 
     static constexpr std::uint8_t serialize_score = 2;
@@ -31,7 +31,7 @@ private:
     static constexpr std::uint64_t minimum_parallel_intervals_per_second =
         4'000;
 
-    std::uint64_t minimum_parallel_ticks_per_svc_{};
+    std::uint64_t minimum_parallel_ticks_per_svc_ { };
     std::map<XnuThreadId, ThreadHistory> histories_;
 };
 

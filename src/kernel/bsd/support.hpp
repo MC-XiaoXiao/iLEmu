@@ -24,14 +24,13 @@ inline constexpr std::uint32_t not_implemented = 78;
 inline constexpr std::uint32_t maximum_socket_address_size = 255;
 inline constexpr std::size_t maximum_io = 16U * 1024U * 1024U;
 
-[[nodiscard]] hfs::Timestamp
-guest_filesystem_timestamp(const VirtualClock &clock);
+[[nodiscard]] hfs::Timestamp guest_filesystem_timestamp(
+    const VirtualClock& clock);
 
-[[nodiscard]] std::uint32_t
-darwin_filesystem_error(const std::error_code &error,
-                        std::uint32_t fallback = 5U);
+[[nodiscard]] std::uint32_t darwin_filesystem_error(
+    const std::error_code& error, std::uint32_t fallback = 5U);
 
-[[nodiscard]] std::string
-format_payload_prefix(std::span<const std::byte> bytes);
+[[nodiscard]] std::string format_payload_prefix(
+    std::span<const std::byte> bytes);
 
 } // namespace ilemu::bsd_support

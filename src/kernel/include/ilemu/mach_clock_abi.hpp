@@ -24,4 +24,4 @@ constexpr std::uint32_t attribute_word_count = 1;
 // samples it in one-microsecond quanta.
 constexpr std::uint32_t virtual_resolution_nanoseconds = 1'000;
 
-}  // namespace ilemu::darwin::mach::clock
+} // namespace ilemu::darwin::mach::clock

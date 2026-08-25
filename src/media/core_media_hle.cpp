@@ -8,19 +8,21 @@
 namespace ilemu {
 namespace {
 
-constexpr std::string_view core_media_image{
-    "/System/Library/PrivateFrameworks/CoreMedia.framework/CoreMedia"};
+    constexpr std::string_view core_media_image {
+        "/System/Library/PrivateFrameworks/CoreMedia.framework/CoreMedia"
+    };
 } // namespace
 
-CoreMediaHle::CoreMediaHle(UserlandHleRegistry &registry) {
-  registry.register_function(
-      std::string{core_media_image},
-      "_CMSessionMgrCopyDeviceRouteForAudioCategory",
-      &CoreMediaHle::copy_device_route_for_audio_category);
+CoreMediaHle::CoreMediaHle(UserlandHleRegistry& registry)
+{
+    registry.register_function(std::string { core_media_image },
+        "_CMSessionMgrCopyDeviceRouteForAudioCategory",
+        &CoreMediaHle::copy_device_route_for_audio_category);
 }
 
-void CoreMediaHle::copy_device_route_for_audio_category(UserlandHleCall &call) {
-  call.resume_original_persistently();
+void CoreMediaHle::copy_device_route_for_audio_category(UserlandHleCall& call)
+{
+    call.resume_original_persistently();
 }
 
 } // namespace ilemu

@@ -13,8 +13,8 @@ namespace ilemu::darwin::bpf {
 
 // Darwin 8 / XNU 792 Berkeley Packet Filter ABI. The target firmware is
 // ARM32, so pointers, timeval, ifreq and bpf_program use 32-bit layouts.
-inline constexpr std::string_view descriptor_kind{"bpf"};
-inline constexpr std::string_view device_prefix{"/dev/bpf"};
+inline constexpr std::string_view descriptor_kind { "bpf" };
+inline constexpr std::string_view device_prefix { "/dev/bpf" };
 inline constexpr std::uint32_t maximum_device_minor = 255;
 inline constexpr std::uint32_t default_buffer_length = 4'096;
 inline constexpr std::uint32_t minimum_buffer_length = 32;
@@ -53,43 +53,44 @@ inline constexpr std::uint32_t get_data_link_type_list = 0xc008'4279U;
 inline constexpr std::uint32_t set_filter_without_reset = 0x8008'427eU;
 
 struct CapturePacket {
-  std::uint64_t timestamp_nanoseconds{};
-  std::vector<std::byte> frame;
+    std::uint64_t timestamp_nanoseconds { };
+    std::vector<std::byte> frame;
 };
 
 struct DescriptorState {
-  std::uint32_t minor{};
-  std::uint32_t buffer_length{default_buffer_length};
-  std::string interface_name;
-  std::uint32_t read_timeout_seconds{};
-  std::uint32_t read_timeout_microseconds{};
-  std::uint32_t signal{};
-  bool immediate{};
-  bool header_complete{};
-  bool see_sent{true};
-  mutable std::mutex capture_mutex;
-  std::deque<CapturePacket> capture_queue;
-  std::uint32_t received_packets{};
-  std::uint32_t dropped_packets{};
+    std::uint32_t minor { };
+    std::uint32_t buffer_length { default_buffer_length };
+    std::string interface_name;
+    std::uint32_t read_timeout_seconds { };
+    std::uint32_t read_timeout_microseconds { };
+    std::uint32_t signal { };
+    bool immediate { };
+    bool header_complete { };
+    bool see_sent { true };
+    mutable std::mutex capture_mutex;
+    std::deque<CapturePacket> capture_queue;
+    std::uint32_t received_packets { };
+    std::uint32_t dropped_packets { };
 };
 
-[[nodiscard]] inline std::optional<std::uint32_t>
-device_minor(std::string_view path) {
-  if (!path.starts_with(device_prefix) ||
-      path.size() == device_prefix.size()) {
-    return std::nullopt;
-  }
-  std::uint32_t minor = 0;
-  for (const auto character : path.substr(device_prefix.size())) {
-    if (character < '0' || character > '9') {
-      return std::nullopt;
+[[nodiscard]] inline std::optional<std::uint32_t> device_minor(
+    std::string_view path)
+{
+    if (!path.starts_with(device_prefix) ||
+        path.size() == device_prefix.size()) {
+        return std::nullopt;
     }
-    minor = minor * 10U + static_cast<std::uint32_t>(character - '0');
-    if (minor > maximum_device_minor) {
-      return std::nullopt;
+    std::uint32_t minor = 0;
+    for (const auto character : path.substr(device_prefix.size())) {
+        if (character < '0' || character > '9') {
+            return std::nullopt;
+        }
+        minor = minor * 10U + static_cast<std::uint32_t>(character - '0');
+        if (minor > maximum_device_minor) {
+            return std::nullopt;
+        }
     }
-  }
-  return minor;
+    return minor;
 }
 
 } // namespace ilemu::darwin::bpf

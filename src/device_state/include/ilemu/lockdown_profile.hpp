@@ -15,17 +15,17 @@ enum class LockdownActivation {
 };
 
 struct LockdownFirmwareProfile {
-    bool registration_state{true};
-    bool brick_state{};
+    bool registration_state { true };
+    bool brick_state { };
 };
 
 struct LockdownProfileResult {
     std::filesystem::path path;
-    bool changed{};
+    bool changed { };
 };
 
-[[nodiscard]] std::optional<LockdownActivation>
-parse_lockdown_activation(std::string_view value);
+[[nodiscard]] std::optional<LockdownActivation> parse_lockdown_activation(
+    std::string_view value);
 
 // Select the Lockdown state contract from symbols imported by the firmware.
 // This models API capabilities rather than product or build-version names.
@@ -40,4 +40,4 @@ parse_lockdown_activation(std::string_view value);
     const std::filesystem::path& rootfs, LockdownActivation activation,
     const LockdownFirmwareProfile& profile);
 
-}  // namespace ilemu
+} // namespace ilemu

@@ -15,19 +15,20 @@ namespace ilemu::hfs {
 // filesystem geometry through statfs/getattrlist.
 class VolumeProfile {
 public:
-  VolumeProfile(std::filesystem::path rootfs, std::uint64_t storage_bytes);
+    VolumeProfile(std::filesystem::path rootfs, std::uint64_t storage_bytes);
 
-  [[nodiscard]] const VolumeMetadata &
-  for_guest_path(std::string_view path) const;
-  [[nodiscard]] const VolumeMetadata &
-  for_mounted_device(std::string_view device) const;
-  [[nodiscard]] bool is_mount_root(std::string_view path) const;
-  [[nodiscard]] std::span<const VolumeMetadata> volumes() const {
-    return volumes_;
-  }
+    [[nodiscard]] const VolumeMetadata& for_guest_path(
+        std::string_view path) const;
+    [[nodiscard]] const VolumeMetadata& for_mounted_device(
+        std::string_view device) const;
+    [[nodiscard]] bool is_mount_root(std::string_view path) const;
+    [[nodiscard]] std::span<const VolumeMetadata> volumes() const
+    {
+        return volumes_;
+    }
 
 private:
-  std::vector<VolumeMetadata> volumes_;
+    std::vector<VolumeMetadata> volumes_;
 };
 
 } // namespace ilemu::hfs

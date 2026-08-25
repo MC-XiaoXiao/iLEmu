@@ -10,10 +10,11 @@ class UserlandHleRegistry;
 // empty-route result and leaves all other media logic in the guest.
 class CoreMediaHle {
 public:
-  explicit CoreMediaHle(UserlandHleRegistry &registry);
+    explicit CoreMediaHle(UserlandHleRegistry& registry);
 
 private:
-  static void copy_device_route_for_audio_category(class UserlandHleCall &call);
+    static void copy_device_route_for_audio_category(
+        class UserlandHleCall& call);
 };
 
 } // namespace ilemu

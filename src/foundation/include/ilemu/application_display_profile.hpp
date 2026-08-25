@@ -14,9 +14,9 @@ namespace ilemu {
 // profile may provide the capability; otherwise the legacy portrait default
 // is retained. App names and versions are never used as rules.
 [[nodiscard]] DisplayOrientation detect_application_display_orientation(
-    const std::filesystem::path &rootfs, std::string_view executable_path);
+    const std::filesystem::path& rootfs, std::string_view executable_path);
 
-[[nodiscard]] const char *display_orientation_name(
+[[nodiscard]] const char* display_orientation_name(
     DisplayOrientation orientation);
 
 // Converts a framebuffer's top-left pixel array into the panel-facing

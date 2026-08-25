@@ -12,31 +12,31 @@ namespace ilemu::surface_transport {
 // application, or page.  Both profiles publish the same SurfaceStore backing
 // while preserving their own client-object layout for native firmware code.
 enum class Kind : std::uint8_t {
-  CoreSurfaceClientBuffer,
-  IOSurfaceClient,
+    CoreSurfaceClientBuffer,
+    IOSurfaceClient,
 };
 
 struct Profile {
-  std::string_view name;
-  std::string_view image_suffix;
-  std::string_view symbol_prefix;
-  std::uint32_t public_client_pointer_offset;
-  std::uint32_t client_structure_size;
-  std::uint32_t reference_count_offset;
-  std::uint32_t identifier_offset;
-  std::uint32_t base_address_offset;
-  std::uint32_t allocation_size_offset;
-  std::uint32_t width_offset;
-  std::uint32_t height_offset;
-  std::uint32_t bytes_per_row_offset;
-  std::uint32_t data_offset_offset;
-  std::uint32_t pixel_format_offset;
-  std::uint32_t plane_count_offset;
-  bool lock_seed_output;
-  std::array<std::string_view, 7> create_property_symbols;
+    std::string_view name;
+    std::string_view image_suffix;
+    std::string_view symbol_prefix;
+    std::uint32_t public_client_pointer_offset;
+    std::uint32_t client_structure_size;
+    std::uint32_t reference_count_offset;
+    std::uint32_t identifier_offset;
+    std::uint32_t base_address_offset;
+    std::uint32_t allocation_size_offset;
+    std::uint32_t width_offset;
+    std::uint32_t height_offset;
+    std::uint32_t bytes_per_row_offset;
+    std::uint32_t data_offset_offset;
+    std::uint32_t pixel_format_offset;
+    std::uint32_t plane_count_offset;
+    bool lock_seed_output;
+    std::array<std::string_view, 7> create_property_symbols;
 };
 
-inline constexpr Profile core_surface_client_buffer{
+inline constexpr Profile core_surface_client_buffer {
     .name = "core-surface-client-buffer",
     .image_suffix = "/CoreSurface.framework/CoreSurface",
     .symbol_prefix = "_CoreSurfaceClientBuffer",
@@ -53,20 +53,16 @@ inline constexpr Profile core_surface_client_buffer{
     .pixel_format_offset = 32,
     .plane_count_offset = 40,
     .lock_seed_output = false,
-    .create_property_symbols =
-        {"_kCoreSurfaceBufferClientAddress",
-         "_kCoreSurfaceBufferAllocSize",
-         "_kCoreSurfaceBufferWidth",
-         "_kCoreSurfaceBufferHeight",
-         "_kCoreSurfaceBufferPitch",
-         "_kCoreSurfaceBufferPixelFormat",
-         "_kCoreSurfaceBufferOffset"},
+    .create_property_symbols = { "_kCoreSurfaceBufferClientAddress",
+        "_kCoreSurfaceBufferAllocSize", "_kCoreSurfaceBufferWidth",
+        "_kCoreSurfaceBufferHeight", "_kCoreSurfaceBufferPitch",
+        "_kCoreSurfaceBufferPixelFormat", "_kCoreSurfaceBufferOffset" },
 };
 
 // iPhoneOS builds with a separate IOSurface framework keep a 1,216-byte
 // private client object.  CoreSurface remains a native compatibility wrapper
 // and forwards into this symbol family.
-inline constexpr Profile io_surface_client{
+inline constexpr Profile io_surface_client {
     .name = "io-surface-client",
     .image_suffix = "/IOSurface.framework/IOSurface",
     .symbol_prefix = "_IOSurfaceClient",
@@ -83,19 +79,15 @@ inline constexpr Profile io_surface_client{
     .pixel_format_offset = 36,
     .plane_count_offset = 44,
     .lock_seed_output = true,
-    .create_property_symbols =
-        {"",
-         "_kIOSurfaceAllocSize",
-         "_kIOSurfaceWidth",
-         "_kIOSurfaceHeight",
-         "_kIOSurfaceBytesPerRow",
-         "_kIOSurfacePixelFormat",
-         "_kIOSurfaceOffset"},
+    .create_property_symbols = { "", "_kIOSurfaceAllocSize", "_kIOSurfaceWidth",
+        "_kIOSurfaceHeight", "_kIOSurfaceBytesPerRow", "_kIOSurfacePixelFormat",
+        "_kIOSurfaceOffset" },
 };
 
-[[nodiscard]] constexpr const Profile &for_kind(Kind kind) {
-  return kind == Kind::IOSurfaceClient ? io_surface_client
-                                       : core_surface_client_buffer;
+[[nodiscard]] constexpr const Profile& for_kind(Kind kind)
+{
+    return kind == Kind::IOSurfaceClient ? io_surface_client
+                                         : core_surface_client_buffer;
 }
 
 } // namespace ilemu::surface_transport

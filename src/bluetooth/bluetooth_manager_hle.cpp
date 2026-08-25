@@ -8,15 +8,16 @@
 namespace ilemu {
 namespace {
 
-constexpr std::string_view mobile_bluetooth_image{
-    "/MobileBluetooth.framework/MobileBluetooth"};
+    constexpr std::string_view mobile_bluetooth_image {
+        "/MobileBluetooth.framework/MobileBluetooth"
+    };
 
-}  // namespace
+} // namespace
 
-void register_bluetooth_manager_hle(UserlandHleRegistry& registry) {
-    registry.register_function(
-        std::string{mobile_bluetooth_image}, "_BTSessionAttachWithRunLoop",
-        [](UserlandHleCall& call) {
+void register_bluetooth_manager_hle(UserlandHleRegistry& registry)
+{
+    registry.register_function(std::string { mobile_bluetooth_image },
+        "_BTSessionAttachWithRunLoop", [](UserlandHleCall& call) {
             // There is no emulated Bluetooth controller. Report attachment
             // failure at the public MobileBluetooth backend boundary so every
             // daemon and framework takes its native no-Bluetooth fallback.
@@ -24,4 +25,4 @@ void register_bluetooth_manager_hle(UserlandHleRegistry& registry) {
         });
 }
 
-}  // namespace ilemu
+} // namespace ilemu

@@ -19,9 +19,10 @@ inline constexpr std::uint32_t version = 1;
 inline constexpr std::uint32_t flag_no_reply = 1U;
 inline constexpr std::uint32_t flag_reuse_socket = 2U;
 inline constexpr std::size_t header_size = 28U;
-inline constexpr std::string_view server_path{"/var/run/mDNSResponder"};
-inline constexpr std::string_view control_path_prefix{
-    "/tmp/dnssd_clippath."};
+inline constexpr std::string_view server_path { "/var/run/mDNSResponder" };
+inline constexpr std::string_view control_path_prefix {
+    "/tmp/dnssd_clippath."
+};
 
 enum class RequestOperation : std::uint32_t {
     Connection = 1,
@@ -65,59 +66,59 @@ enum class DnsRecordType : std::uint16_t {
 };
 
 struct Header {
-    std::uint32_t data_length{};
-    std::uint32_t flags{};
-    RequestOperation operation{RequestOperation::Connection};
-    std::array<std::uint32_t, 2> client_context{};
-    std::uint32_t record_index{};
+    std::uint32_t data_length { };
+    std::uint32_t flags { };
+    RequestOperation operation { RequestOperation::Connection };
+    std::array<std::uint32_t, 2> client_context { };
+    std::uint32_t record_index { };
 };
 
 struct ReplyHeader {
-    std::uint32_t data_length{};
-    std::uint32_t flags{};
-    ReplyOperation operation{ReplyOperation::Enumeration};
-    std::array<std::uint32_t, 2> client_context{};
-    std::uint32_t record_index{};
+    std::uint32_t data_length { };
+    std::uint32_t flags { };
+    ReplyOperation operation { ReplyOperation::Enumeration };
+    std::array<std::uint32_t, 2> client_context { };
+    std::uint32_t record_index { };
 };
 
 struct ReplyPrefix {
-    std::uint32_t flags{};
-    std::uint32_t interface_index{};
-    std::int32_t error{};
+    std::uint32_t flags { };
+    std::uint32_t interface_index { };
+    std::int32_t error { };
 };
 
 struct GetAddressInfoRequest {
-    std::uint32_t flags{};
-    std::uint32_t interface_index{};
-    std::uint32_t protocols{};
+    std::uint32_t flags { };
+    std::uint32_t interface_index { };
+    std::uint32_t protocols { };
     std::string_view hostname;
 };
 
 struct GetAddressInfoReply {
     ReplyPrefix prefix;
     std::string_view hostname;
-    DnsRecordType record_type{DnsRecordType::A};
+    DnsRecordType record_type { DnsRecordType::A };
     std::span<const std::byte> address;
-    std::uint32_t ttl{};
+    std::uint32_t ttl { };
 };
 
-[[nodiscard]] constexpr std::array<std::byte, 2> encode_u16(
-    std::uint16_t value) {
+[[nodiscard]] constexpr std::array<std::byte, 2> encode_u16(std::uint16_t value)
+{
     return {
         static_cast<std::byte>((value >> 8U) & 0xffU),
         static_cast<std::byte>(value & 0xffU),
     };
 }
 
-[[nodiscard]] constexpr std::uint16_t decode_u16(
-    const std::byte* bytes) {
+[[nodiscard]] constexpr std::uint16_t decode_u16(const std::byte* bytes)
+{
     return static_cast<std::uint16_t>(
         (static_cast<std::uint16_t>(bytes[0]) << 8U) |
         static_cast<std::uint16_t>(bytes[1]));
 }
 
-[[nodiscard]] constexpr std::array<std::byte, 4> encode_u32(
-    std::uint32_t value) {
+[[nodiscard]] constexpr std::array<std::byte, 4> encode_u32(std::uint32_t value)
+{
     return {
         static_cast<std::byte>((value >> 24U) & 0xffU),
         static_cast<std::byte>((value >> 16U) & 0xffU),
@@ -126,8 +127,8 @@ struct GetAddressInfoReply {
     };
 }
 
-[[nodiscard]] constexpr std::uint32_t decode_u32(
-    const std::byte* bytes) {
+[[nodiscard]] constexpr std::uint32_t decode_u32(const std::byte* bytes)
+{
     return (static_cast<std::uint32_t>(bytes[0]) << 24U) |
            (static_cast<std::uint32_t>(bytes[1]) << 16U) |
            (static_cast<std::uint32_t>(bytes[2]) << 8U) |
@@ -138,7 +139,8 @@ struct GetAddressInfoReply {
 // eight bytes without byte swapping so a client can recover its own pointer;
 // this target is little-endian ARM32.
 [[nodiscard]] constexpr std::array<std::byte, 4> encode_arm32_u32(
-    std::uint32_t value) {
+    std::uint32_t value)
+{
     return {
         static_cast<std::byte>(value & 0xffU),
         static_cast<std::byte>((value >> 8U) & 0xffU),
@@ -147,22 +149,21 @@ struct GetAddressInfoReply {
     };
 }
 
-[[nodiscard]] constexpr std::uint32_t decode_arm32_u32(
-    const std::byte* bytes) {
+[[nodiscard]] constexpr std::uint32_t decode_arm32_u32(const std::byte* bytes)
+{
     return static_cast<std::uint32_t>(bytes[0]) |
            (static_cast<std::uint32_t>(bytes[1]) << 8U) |
            (static_cast<std::uint32_t>(bytes[2]) << 16U) |
            (static_cast<std::uint32_t>(bytes[3]) << 24U);
 }
 
-[[nodiscard]] constexpr std::array<std::byte, header_size>
-encode_header_words(
-    std::uint32_t data_length, std::uint32_t flags,
-    std::uint32_t operation,
+[[nodiscard]] constexpr std::array<std::byte, header_size> encode_header_words(
+    std::uint32_t data_length, std::uint32_t flags, std::uint32_t operation,
     const std::array<std::uint32_t, 2>& client_context,
-    std::uint32_t record_index) {
-    std::array<std::byte, header_size> wire{};
-    const std::array converted_words{version, data_length, flags, operation};
+    std::uint32_t record_index)
+{
+    std::array<std::byte, header_size> wire { };
+    const std::array converted_words { version, data_length, flags, operation };
     for (std::size_t word = 0; word < converted_words.size(); ++word) {
         const auto encoded = encode_u32(converted_words[word]);
         for (std::size_t byte = 0; byte < encoded.size(); ++byte) {
@@ -183,25 +184,26 @@ encode_header_words(
 }
 
 [[nodiscard]] constexpr std::array<std::byte, header_size> encode_header(
-    const Header& header) {
-    return encode_header_words(
-        header.data_length, header.flags,
-        static_cast<std::uint32_t>(header.operation),
-        header.client_context, header.record_index);
+    const Header& header)
+{
+    return encode_header_words(header.data_length, header.flags,
+        static_cast<std::uint32_t>(header.operation), header.client_context,
+        header.record_index);
 }
 
 [[nodiscard]] constexpr std::array<std::byte, header_size> encode_header(
-    const ReplyHeader& header) {
-    return encode_header_words(
-        header.data_length, header.flags,
-        static_cast<std::uint32_t>(header.operation),
-        header.client_context, header.record_index);
+    const ReplyHeader& header)
+{
+    return encode_header_words(header.data_length, header.flags,
+        static_cast<std::uint32_t>(header.operation), header.client_context,
+        header.record_index);
 }
 
 [[nodiscard]] constexpr std::array<std::byte, reply_prefix_size>
-encode_reply_prefix(const ReplyPrefix& prefix) {
-    std::array<std::byte, reply_prefix_size> wire{};
-    const std::array words{
+encode_reply_prefix(const ReplyPrefix& prefix)
+{
+    std::array<std::byte, reply_prefix_size> wire { };
+    const std::array words {
         prefix.flags,
         prefix.interface_index,
         static_cast<std::uint32_t>(prefix.error),
@@ -217,73 +219,79 @@ encode_reply_prefix(const ReplyPrefix& prefix) {
 
 namespace detail {
 
-template <std::size_t Size>
-void append(std::vector<std::byte>& output,
-            const std::array<std::byte, Size>& value) {
-    output.insert(output.end(), value.begin(), value.end());
-}
-
-[[nodiscard]] inline bool valid_c_string(std::string_view value) {
-    return value.find('\0') == std::string_view::npos;
-}
-
-[[nodiscard]] inline std::optional<std::size_t> find_terminator(
-    std::span<const std::byte> wire, std::size_t start) {
-    for (std::size_t index = start; index < wire.size(); ++index) {
-        if (wire[index] == std::byte{0}) {
-            return index;
-        }
+    template <std::size_t Size>
+    void append(std::vector<std::byte>& output,
+        const std::array<std::byte, Size>& value)
+    {
+        output.insert(output.end(), value.begin(), value.end());
     }
-    return std::nullopt;
-}
 
-[[nodiscard]] inline std::string_view string_view_at(
-    std::span<const std::byte> wire, std::size_t start, std::size_t size) {
-    return {reinterpret_cast<const char*>(wire.data() + start), size};
-}
+    [[nodiscard]] inline bool valid_c_string(std::string_view value)
+    {
+        return value.find('\0') == std::string_view::npos;
+    }
 
-}  // namespace detail
+    [[nodiscard]] inline std::optional<std::size_t> find_terminator(
+        std::span<const std::byte> wire, std::size_t start)
+    {
+        for (std::size_t index = start; index < wire.size(); ++index) {
+            if (wire[index] == std::byte { 0 }) {
+                return index;
+            }
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] inline std::string_view string_view_at(
+        std::span<const std::byte> wire, std::size_t start, std::size_t size)
+    {
+        return { reinterpret_cast<const char*>(wire.data() + start), size };
+    }
+
+} // namespace detail
 
 [[nodiscard]] inline std::optional<std::vector<std::byte>>
-encode_get_address_info_request(const GetAddressInfoRequest& request) {
+encode_get_address_info_request(const GetAddressInfoRequest& request)
+{
     if (!detail::valid_c_string(request.hostname)) {
         return std::nullopt;
     }
     std::vector<std::byte> wire;
-    wire.reserve(get_address_info_request_fixed_size +
-                 request.hostname.size() + 1U);
+    wire.reserve(
+        get_address_info_request_fixed_size + request.hostname.size() + 1U);
     detail::append(wire, encode_u32(request.flags));
     detail::append(wire, encode_u32(request.interface_index));
     detail::append(wire, encode_u32(request.protocols));
     for (const char character : request.hostname) {
         wire.push_back(static_cast<std::byte>(character));
     }
-    wire.push_back(std::byte{0});
+    wire.push_back(std::byte { 0 });
     return wire;
 }
 
 [[nodiscard]] inline std::optional<GetAddressInfoRequest>
-decode_get_address_info_request(std::span<const std::byte> wire) {
+decode_get_address_info_request(std::span<const std::byte> wire)
+{
     if (wire.size() < get_address_info_request_fixed_size + 1U) {
         return std::nullopt;
     }
-    const auto terminator = detail::find_terminator(
-        wire, get_address_info_request_fixed_size);
+    const auto terminator =
+        detail::find_terminator(wire, get_address_info_request_fixed_size);
     if (!terminator || *terminator + 1U != wire.size()) {
         return std::nullopt;
     }
-    return GetAddressInfoRequest{
+    return GetAddressInfoRequest {
         decode_u32(wire.data()),
         decode_u32(wire.data() + 4U),
         decode_u32(wire.data() + 8U),
-        detail::string_view_at(
-            wire, get_address_info_request_fixed_size,
+        detail::string_view_at(wire, get_address_info_request_fixed_size,
             *terminator - get_address_info_request_fixed_size),
     };
 }
 
 [[nodiscard]] inline std::optional<std::vector<std::byte>>
-encode_get_address_info_reply(const GetAddressInfoReply& reply) {
+encode_get_address_info_reply(const GetAddressInfoReply& reply)
+{
     if (!detail::valid_c_string(reply.hostname) ||
         reply.address.size() > std::numeric_limits<std::uint16_t>::max()) {
         return std::nullopt;
@@ -295,7 +303,7 @@ encode_get_address_info_reply(const GetAddressInfoReply& reply) {
     for (const char character : reply.hostname) {
         wire.push_back(static_cast<std::byte>(character));
     }
-    wire.push_back(std::byte{0});
+    wire.push_back(std::byte { 0 });
     detail::append(
         wire, encode_u16(static_cast<std::uint16_t>(reply.record_type)));
     detail::append(
@@ -306,9 +314,10 @@ encode_get_address_info_reply(const GetAddressInfoReply& reply) {
 }
 
 [[nodiscard]] inline std::optional<GetAddressInfoReply>
-decode_get_address_info_reply(std::span<const std::byte> wire) {
-    if (wire.size() < reply_prefix_size + 1U +
-                          get_address_info_reply_suffix_size) {
+decode_get_address_info_reply(std::span<const std::byte> wire)
+{
+    if (wire.size() <
+        reply_prefix_size + 1U + get_address_info_reply_suffix_size) {
         return std::nullopt;
     }
     const auto terminator = detail::find_terminator(wire, reply_prefix_size);
@@ -325,8 +334,8 @@ decode_get_address_info_reply(std::span<const std::byte> wire) {
     if (ttl_offset + 4U != wire.size()) {
         return std::nullopt;
     }
-    return GetAddressInfoReply{
-        ReplyPrefix{
+    return GetAddressInfoReply {
+        ReplyPrefix {
             decode_u32(wire.data()),
             decode_u32(wire.data() + 4U),
             std::bit_cast<std::int32_t>(decode_u32(wire.data() + 8U)),
@@ -339,4 +348,4 @@ decode_get_address_info_reply(std::span<const std::byte> wire) {
     };
 }
 
-}  // namespace ilemu::dnssd_ipc
+} // namespace ilemu::dnssd_ipc

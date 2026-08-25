@@ -30,4 +30,4 @@ private:
     std::atomic_int64_t wall_time_offset_;
 };
 
-}  // namespace ilemu
+} // namespace ilemu

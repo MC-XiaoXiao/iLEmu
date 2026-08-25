@@ -26,27 +26,28 @@ inline constexpr std::uint32_t maximum_send_user_references =
     maximum_user_references - 1U;
 
 enum class Right : std::uint32_t {
-  Send = 0,
-  Receive = 1,
-  SendOnce = 2,
-  PortSet = 3,
-  DeadName = 4,
+    Send = 0,
+    Receive = 1,
+    SendOnce = 2,
+    PortSet = 3,
+    DeadName = 4,
 };
 
-[[nodiscard]] constexpr MachTypeMask type_mask(Right right) {
-  return 1U << (static_cast<std::uint32_t>(right) + 16U);
+[[nodiscard]] constexpr MachTypeMask type_mask(Right right)
+{
+    return 1U << (static_cast<std::uint32_t>(right) + 16U);
 }
 
 struct NameEntry {
-  MachObject object{};
-  MachTypeMask type{};
-  std::array<std::uint32_t, 5> user_references{};
+    MachObject object { };
+    MachTypeMask type { };
+    std::array<std::uint32_t, 5> user_references { };
 };
 
 struct NamedEntry {
-  TaskId task{};
-  MachName name{};
-  NameEntry entry;
+    TaskId task { };
+    MachName name { };
+    NameEntry entry;
 };
 
 // Models the ipc_space/ipc_entry boundary from XNU 792. A Mach name is only
@@ -55,64 +56,63 @@ struct NamedEntry {
 // KernelSharedState::mach_mutex.
 class MachNamespaceTable {
 public:
-  void create_task(TaskId task);
-  void destroy_task(TaskId task);
+    void create_task(TaskId task);
+    void destroy_task(TaskId task);
 
-  bool install(TaskId task, MachName name, MachObject object, MachTypeMask type,
-               std::uint32_t user_references = 1);
-  [[nodiscard]] std::optional<MachName> allocate(TaskId task, MachObject object,
-                                                 MachTypeMask type);
-  [[nodiscard]] std::optional<MachName> copyout(TaskId task, MachObject object,
-                                                MachTypeMask type);
-  // Used only when an ABI explicitly restores a task-local name, such as a
-  // forked task inheriting the userspace bootstrap_port variable. Generic
-  // right copyout must never use a global MachObject as a preferred name.
-  [[nodiscard]] std::optional<MachName>
-  copyout_at_name(TaskId task, MachObject object, MachTypeMask type,
-                  MachName preferred_name);
+    bool install(TaskId task, MachName name, MachObject object,
+        MachTypeMask type, std::uint32_t user_references = 1);
+    [[nodiscard]] std::optional<MachName> allocate(
+        TaskId task, MachObject object, MachTypeMask type);
+    [[nodiscard]] std::optional<MachName> copyout(
+        TaskId task, MachObject object, MachTypeMask type);
+    // Used only when an ABI explicitly restores a task-local name, such as a
+    // forked task inheriting the userspace bootstrap_port variable. Generic
+    // right copyout must never use a global MachObject as a preferred name.
+    [[nodiscard]] std::optional<MachName> copyout_at_name(TaskId task,
+        MachObject object, MachTypeMask type, MachName preferred_name);
 
-  [[nodiscard]] std::optional<NameEntry> lookup(TaskId task,
-                                                MachName name) const;
-  [[nodiscard]] std::optional<MachObject> resolve(TaskId task,
-                                                  MachName name) const;
-  [[nodiscard]] std::optional<MachName> name_for(TaskId task,
-                                                 MachObject object) const;
-  [[nodiscard]] std::optional<MachTypeMask> type(TaskId task,
-                                                 MachName name) const;
-  [[nodiscard]] bool owns_right(TaskId task, MachObject object,
-                                Right right) const;
-  [[nodiscard]] std::vector<NamedEntry> entries(TaskId task) const;
-  [[nodiscard]] bool contains_task(TaskId task) const;
-  [[nodiscard]] bool contains(TaskId task, MachName name) const;
-  [[nodiscard]] std::size_t right_reference_count(MachObject object,
-                                                  Right right) const;
-  [[nodiscard]] std::optional<std::uint32_t>
-  user_references(TaskId task, MachName name, Right right) const;
-  bool rename(TaskId task, MachName old_name, MachName new_name);
-  bool modify_references(TaskId task, MachName name, Right right,
-                         std::int32_t delta);
-  [[nodiscard]] std::optional<NameEntry> destroy_name(TaskId task,
-                                                      MachName name);
-  [[nodiscard]] std::vector<NamedEntry> mark_object_dead(MachObject object);
-  bool remove_type(TaskId task, MachName name, MachTypeMask type);
-  bool deallocate(TaskId task, MachName name);
+    [[nodiscard]] std::optional<NameEntry> lookup(
+        TaskId task, MachName name) const;
+    [[nodiscard]] std::optional<MachObject> resolve(
+        TaskId task, MachName name) const;
+    [[nodiscard]] std::optional<MachName> name_for(
+        TaskId task, MachObject object) const;
+    [[nodiscard]] std::optional<MachTypeMask> type(
+        TaskId task, MachName name) const;
+    [[nodiscard]] bool owns_right(
+        TaskId task, MachObject object, Right right) const;
+    [[nodiscard]] std::vector<NamedEntry> entries(TaskId task) const;
+    [[nodiscard]] bool contains_task(TaskId task) const;
+    [[nodiscard]] bool contains(TaskId task, MachName name) const;
+    [[nodiscard]] std::size_t right_reference_count(
+        MachObject object, Right right) const;
+    [[nodiscard]] std::optional<std::uint32_t> user_references(
+        TaskId task, MachName name, Right right) const;
+    bool rename(TaskId task, MachName old_name, MachName new_name);
+    bool modify_references(
+        TaskId task, MachName name, Right right, std::int32_t delta);
+    [[nodiscard]] std::optional<NameEntry> destroy_name(
+        TaskId task, MachName name);
+    [[nodiscard]] std::vector<NamedEntry> mark_object_dead(MachObject object);
+    bool remove_type(TaskId task, MachName name, MachTypeMask type);
+    bool deallocate(TaskId task, MachName name);
 
 private:
-  struct Space {
-    MachName next_name{first_dynamic_name};
-    std::map<MachName, NameEntry> entries;
-    // Most ipc objects have one name in a task, but aliases are legal. Keep
-    // the names sorted so name_for/copyout preserve the same lowest-name
-    // result as the authoritative ipc_entry map without scanning that map.
-    std::unordered_map<MachObject, std::vector<MachName>> names_by_object;
-  };
+    struct Space {
+        MachName next_name { first_dynamic_name };
+        std::map<MachName, NameEntry> entries;
+        // Most ipc objects have one name in a task, but aliases are legal. Keep
+        // the names sorted so name_for/copyout preserve the same lowest-name
+        // result as the authoritative ipc_entry map without scanning that map.
+        std::unordered_map<MachObject, std::vector<MachName>> names_by_object;
+    };
 
-  static void index_name(Space &space, MachObject object, MachName name);
-  static void unindex_name(Space &space, MachObject object, MachName name);
-  [[nodiscard]] static const std::vector<MachName> *
-  indexed_names(const Space &space, MachObject object);
-  [[nodiscard]] static bool valid_name(MachName name);
-  std::map<TaskId, Space> spaces_;
+    static void index_name(Space& space, MachObject object, MachName name);
+    static void unindex_name(Space& space, MachObject object, MachName name);
+    [[nodiscard]] static const std::vector<MachName>* indexed_names(
+        const Space& space, MachObject object);
+    [[nodiscard]] static bool valid_name(MachName name);
+    std::map<TaskId, Space> spaces_;
 };
 
 } // namespace ilemu::xnu792::ipc

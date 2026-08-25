@@ -8,4 +8,4 @@ class UserlandHleRegistry;
 // boundary so guest clients can take their native offline path.
 void register_bluetooth_manager_hle(UserlandHleRegistry& registry);
 
-}  // namespace ilemu
+} // namespace ilemu

@@ -14,27 +14,27 @@ namespace ilemu {
 // triangles. Keeping this above the render backends gives Vulkan and software
 // identical line-width and attribute-interpolation behavior.
 class GlesPrimitiveBatch {
-  public:
+public:
     [[nodiscard]] std::span<const GlesRasterVertex> vertices() const;
     [[nodiscard]] std::uint32_t mode() const { return mode_; }
     [[nodiscard]] bool ignores_culling() const { return ignores_culling_; }
 
-  private:
+private:
     friend class GlesPrimitiveAssembler;
 
     std::span<const GlesRasterVertex> source_;
     std::optional<std::vector<GlesRasterVertex>> expanded_;
-    std::uint32_t mode_{};
-    bool ignores_culling_{};
+    std::uint32_t mode_ { };
+    bool ignores_culling_ { };
 };
 
 class GlesPrimitiveAssembler {
-  public:
+public:
     [[nodiscard]] static bool supports(std::uint32_t mode);
     [[nodiscard]] static std::size_t minimum_vertex_count(std::uint32_t mode);
-    [[nodiscard]] static std::optional<GlesPrimitiveBatch>
-    assemble(std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
-             const GlesRasterState& state);
+    [[nodiscard]] static std::optional<GlesPrimitiveBatch> assemble(
+        std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
+        const GlesRasterState& state);
 };
 
 } // namespace ilemu

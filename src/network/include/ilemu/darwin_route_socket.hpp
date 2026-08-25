@@ -68,34 +68,33 @@ enum class ParseError {
 };
 
 struct Message {
-    std::uint8_t type{};
-    std::uint16_t interface_index{};
-    std::uint32_t flags{};
-    std::uint32_t addresses{};
-    std::uint32_t pid{};
-    std::uint32_t sequence{};
-    std::uint32_t error{};
-    std::array<std::optional<std::vector<std::byte>>,
-               maximum_sockaddr_count>
+    std::uint8_t type { };
+    std::uint16_t interface_index { };
+    std::uint32_t flags { };
+    std::uint32_t addresses { };
+    std::uint32_t pid { };
+    std::uint32_t sequence { };
+    std::uint32_t error { };
+    std::array<std::optional<std::vector<std::byte>>, maximum_sockaddr_count>
         sockaddrs;
 };
 
 struct ParseResult {
     std::optional<Message> message;
-    ParseError error{ParseError::None};
+    ParseError error { ParseError::None };
 };
 
 struct Entry {
     enum class Origin { RoutingSocket, Interface };
 
-    std::uint8_t family{};
-    std::uint16_t interface_index{};
-    std::uint32_t flags{};
+    std::uint8_t family { };
+    std::uint16_t interface_index { };
+    std::uint32_t flags { };
     std::vector<std::byte> destination;
     std::vector<std::byte> gateway;
     std::vector<std::byte> netmask;
     std::string interface_name;
-    Origin origin{Origin::RoutingSocket};
+    Origin origin { Origin::RoutingSocket };
 
     [[nodiscard]] bool same_key(const Entry& other) const;
 };
@@ -124,14 +123,12 @@ struct InterfaceRouteUpdate {
     std::span<const std::byte> request, std::uint32_t sender_pid,
     std::uint32_t darwin_error, std::uint16_t interface_index = 0);
 
-[[nodiscard]] std::vector<std::byte> make_entry_message(
-    const Entry& entry, std::uint32_t sender_pid, std::uint32_t sequence,
-    bool mark_done, bool include_interface,
-    std::uint8_t message_type = message_get);
+[[nodiscard]] std::vector<std::byte> make_entry_message(const Entry& entry,
+    std::uint32_t sender_pid, std::uint32_t sequence, bool mark_done,
+    bool include_interface, std::uint8_t message_type = message_get);
 [[nodiscard]] std::vector<std::byte> make_table_dump(
     std::span<const Entry> entries, std::uint32_t address_family = 0,
-    std::uint32_t required_flags = 0,
-    std::uint8_t message_type = message_get);
+    std::uint32_t required_flags = 0, std::uint8_t message_type = message_get);
 
 class Table {
 public:
@@ -152,4 +149,4 @@ private:
     std::vector<Entry> entries_;
 };
 
-}  // namespace ilemu::darwin::route
+} // namespace ilemu::darwin::route

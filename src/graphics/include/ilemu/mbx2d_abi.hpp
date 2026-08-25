@@ -63,8 +63,8 @@ inline constexpr std::uint32_t layerkit_source_over_destination_word =
 // same source factor as its crossfade equation, but keeps the ordinary
 // one-minus-source-alpha destination factor. This is still premultiplied
 // source-over; the global alpha scales both the source colour and alpha.
-inline constexpr std::uint32_t
-    layerkit_global_alpha_source_over_source_word = 0x00500000U;
+inline constexpr std::uint32_t layerkit_global_alpha_source_over_source_word =
+    0x00500000U;
 inline constexpr std::uint32_t
     layerkit_global_alpha_source_over_destination_word = 0x09000000U;
 
@@ -83,4 +83,4 @@ inline constexpr std::uint32_t layerkit_mask_source_word = 0x00000006U;
 inline constexpr std::uint32_t layerkit_mask_destination_word = 0x00000010U;
 inline constexpr std::uint32_t layerkit_mask_operation_word = 0x00000a00U;
 
-}  // namespace ilemu::mbx2d_abi
+} // namespace ilemu::mbx2d_abi

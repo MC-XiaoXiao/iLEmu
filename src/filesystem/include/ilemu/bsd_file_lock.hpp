@@ -11,19 +11,19 @@
 namespace ilemu::bsd {
 
 enum class AdvisoryLockKind : std::uint8_t {
-  Shared,
-  Exclusive,
+    Shared,
+    Exclusive,
 };
 
 struct RecordLockRange {
-  AdvisoryLockKind kind{AdvisoryLockKind::Shared};
-  std::uint64_t start{};
-  // A disengaged end is the POSIX l_len == 0 form extending through EOF.
-  std::optional<std::uint64_t> end;
+    AdvisoryLockKind kind { AdvisoryLockKind::Shared };
+    std::uint64_t start { };
+    // A disengaged end is the POSIX l_len == 0 form extending through EOF.
+    std::optional<std::uint64_t> end;
 };
 
 struct RecordLockConflict : RecordLockRange {
-  std::uint32_t owner_pid{};
+    std::uint32_t owner_pid { };
 };
 
 class AdvisoryFileLockRegistry;
@@ -33,65 +33,63 @@ class AdvisoryFileLockRegistry;
 // shared by dup(2), fork(2), and SCM_RIGHTS transfers.
 class RegularFileOpenDescription {
 public:
-  RegularFileOpenDescription(
-      std::uint64_t identifier, std::uint32_t permanent_file_id,
-      int host_descriptor,
-      std::weak_ptr<AdvisoryFileLockRegistry> lock_registry);
-  RegularFileOpenDescription(const RegularFileOpenDescription &) = delete;
-  RegularFileOpenDescription &
-  operator=(const RegularFileOpenDescription &) = delete;
-  ~RegularFileOpenDescription();
+    RegularFileOpenDescription(std::uint64_t identifier,
+        std::uint32_t permanent_file_id, int host_descriptor,
+        std::weak_ptr<AdvisoryFileLockRegistry> lock_registry);
+    RegularFileOpenDescription(const RegularFileOpenDescription&) = delete;
+    RegularFileOpenDescription& operator=(
+        const RegularFileOpenDescription&) = delete;
+    ~RegularFileOpenDescription();
 
-  [[nodiscard]] std::uint64_t identifier() const { return identifier_; }
-  [[nodiscard]] std::uint32_t permanent_file_id() const {
-    return permanent_file_id_;
-  }
-  [[nodiscard]] int host_descriptor() const { return host_descriptor_; }
+    [[nodiscard]] std::uint64_t identifier() const { return identifier_; }
+    [[nodiscard]] std::uint32_t permanent_file_id() const
+    {
+        return permanent_file_id_;
+    }
+    [[nodiscard]] int host_descriptor() const { return host_descriptor_; }
 
 private:
-  std::uint64_t identifier_{};
-  std::uint32_t permanent_file_id_{};
-  int host_descriptor_{-1};
-  std::weak_ptr<AdvisoryFileLockRegistry> lock_registry_;
+    std::uint64_t identifier_ { };
+    std::uint32_t permanent_file_id_ { };
+    int host_descriptor_ { -1 };
+    std::weak_ptr<AdvisoryFileLockRegistry> lock_registry_;
 };
 
 class AdvisoryFileLockRegistry
     : public std::enable_shared_from_this<AdvisoryFileLockRegistry> {
 public:
-  [[nodiscard]] std::shared_ptr<RegularFileOpenDescription>
-  open(std::uint32_t permanent_file_id, int host_descriptor);
+    [[nodiscard]] std::shared_ptr<RegularFileOpenDescription> open(
+        std::uint32_t permanent_file_id, int host_descriptor);
 
-  // Returns false only when another open description owns an incompatible
-  // lock.  Conversion of a description's own lock is atomic.
-  [[nodiscard]] bool try_acquire(const RegularFileOpenDescription &description,
-                                 AdvisoryLockKind kind);
-  void release(const RegularFileOpenDescription &description);
+    // Returns false only when another open description owns an incompatible
+    // lock.  Conversion of a description's own lock is atomic.
+    [[nodiscard]] bool try_acquire(
+        const RegularFileOpenDescription& description, AdvisoryLockKind kind);
+    void release(const RegularFileOpenDescription& description);
 
-  [[nodiscard]] std::optional<RecordLockConflict>
-  record_conflict(std::uint32_t permanent_file_id, std::uint32_t owner_pid,
-                  const RecordLockRange &request) const;
-  [[nodiscard]] bool try_set_record_lock(std::uint32_t permanent_file_id,
-                                         std::uint32_t owner_pid,
-                                         const RecordLockRange &request);
-  void unlock_record_lock(std::uint32_t permanent_file_id,
-                          std::uint32_t owner_pid,
-                          const RecordLockRange &range);
-  void release_process_record_locks(std::uint32_t owner_pid);
+    [[nodiscard]] std::optional<RecordLockConflict> record_conflict(
+        std::uint32_t permanent_file_id, std::uint32_t owner_pid,
+        const RecordLockRange& request) const;
+    [[nodiscard]] bool try_set_record_lock(std::uint32_t permanent_file_id,
+        std::uint32_t owner_pid, const RecordLockRange& request);
+    void unlock_record_lock(std::uint32_t permanent_file_id,
+        std::uint32_t owner_pid, const RecordLockRange& range);
+    void release_process_record_locks(std::uint32_t owner_pid);
 
 private:
-  struct FileLock {
-    std::optional<std::uint64_t> exclusive_owner;
-    std::set<std::uint64_t> shared_owners;
-  };
+    struct FileLock {
+        std::optional<std::uint64_t> exclusive_owner;
+        std::set<std::uint64_t> shared_owners;
+    };
 
-  struct OwnedRecordLock : RecordLockRange {
-    std::uint32_t owner_pid{};
-  };
+    struct OwnedRecordLock : RecordLockRange {
+        std::uint32_t owner_pid { };
+    };
 
-  mutable std::mutex mutex_;
-  std::uint64_t next_description_identifier_{1};
-  std::map<std::uint32_t, FileLock> locks_;
-  std::map<std::uint32_t, std::vector<OwnedRecordLock>> record_locks_;
+    mutable std::mutex mutex_;
+    std::uint64_t next_description_identifier_ { 1 };
+    std::map<std::uint32_t, FileLock> locks_;
+    std::map<std::uint32_t, std::vector<OwnedRecordLock>> record_locks_;
 };
 
 } // namespace ilemu::bsd

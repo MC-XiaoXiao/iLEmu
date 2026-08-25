@@ -11,8 +11,8 @@
 namespace ilemu {
 
 std::uint32_t Mbx2dHle::allocate_client_surface(
-    std::uint32_t base, std::uint32_t allocation_size,
-    std::uint32_t width) {
+    std::uint32_t base, std::uint32_t allocation_size, std::uint32_t width)
+{
     if (base == 0 || width == 0 ||
         width > std::numeric_limits<std::uint32_t>::max() / 2U ||
         allocation_size < width * 2U ||
@@ -21,20 +21,16 @@ std::uint32_t Mbx2dHle::allocate_client_surface(
         return 0;
     }
     const auto handle = next_surface_++;
-    surfaces_.emplace(
-        handle,
-        Surface{
-            handle, 0, false, false,
-            SurfaceStore::Backing{
-                0, base, allocation_size, width, 0, 0,
-                0, {}},
-            {}, true});
+    surfaces_.emplace(handle, Surface { handle, 0, false, false,
+                                  SurfaceStore::Backing { 0, base,
+                                      allocation_size, width, 0, 0, 0, { } },
+                                  { }, true });
     return handle;
 }
 
-std::optional<Mbx2dHle::ResolvedSurface>
-Mbx2dHle::resolve_source(UserlandHleCall& call,
-                         const std::optional<Binding>& binding) {
+std::optional<Mbx2dHle::ResolvedSurface> Mbx2dHle::resolve_source(
+    UserlandHleCall& call, const std::optional<Binding>& binding)
+{
     auto resolved = resolve(binding);
     if (!resolved || !binding || !resolved->backing ||
         resolved->core_surface_id != 0 || resolved->framebuffer ||
@@ -47,9 +43,9 @@ Mbx2dHle::resolve_source(UserlandHleCall& call,
     if (found == surfaces_.end() || !found->second.client_backing)
         return resolved;
     auto& client = found->second;
-    const HostSurfaceDescriptor descriptor{
-        resolved->width, resolved->height, resolved->backing->bytes_per_row,
-        surface_pixel_format_bgra, PerfSurfaceKind::Unknown};
+    const HostSurfaceDescriptor descriptor { resolved->width, resolved->height,
+        resolved->backing->bytes_per_row, surface_pixel_format_bgra,
+        PerfSurfaceKind::Unknown };
     if (client.client_host_source) {
         const auto current = client.client_host_source->descriptor();
         if (current.width != descriptor.width ||
@@ -61,8 +57,8 @@ Mbx2dHle::resolve_source(UserlandHleCall& call,
     }
 
     if (client.client_host_source_dirty) {
-        const auto pixels = read_region(*resolved, 0, 0, resolved->width,
-                                        resolved->height, call);
+        const auto pixels = read_region(
+            *resolved, 0, 0, resolved->width, resolved->height, call);
         if (!pixels)
             return resolved;
         if (!client.client_host_source) {
@@ -70,7 +66,7 @@ Mbx2dHle::resolve_source(UserlandHleCall& call,
             if (sequence == 0)
                 sequence = next_client_host_source_++;
             client.client_host_source = host_graphics_->create_surface(
-                {renderer_owner_, sequence}, descriptor, *pixels);
+                { renderer_owner_, sequence }, descriptor, *pixels);
         } else {
             client.client_host_source->replace_cpu(*pixels);
         }
@@ -82,7 +78,8 @@ Mbx2dHle::resolve_source(UserlandHleCall& call,
     return resolved;
 }
 
-void Mbx2dHle::retire_client_host_source(Surface& surface) {
+void Mbx2dHle::retire_client_host_source(Surface& surface)
+{
     if (surface.client_host_source) {
         retired_client_host_sources_.push_back(
             surface.client_host_source->key());
@@ -91,18 +88,20 @@ void Mbx2dHle::retire_client_host_source(Surface& surface) {
     surface.client_host_source_dirty = true;
 }
 
-void Mbx2dHle::release_retired_client_host_sources() {
+void Mbx2dHle::release_retired_client_host_sources()
+{
     if (retired_client_host_sources_.empty())
         return;
     host_graphics_->release(
-        std::span<const HostSurfaceKey>{retired_client_host_sources_});
+        std::span<const HostSurfaceKey> { retired_client_host_sources_ });
     retired_client_host_sources_.clear();
 }
 
-void Mbx2dHle::release_client_renderer_resources() {
+void Mbx2dHle::release_client_renderer_resources()
+{
     if (renderer_owner_ != 0 && host_graphics_)
         host_graphics_->release_owner(renderer_owner_);
     retired_client_host_sources_.clear();
 }
 
-}  // namespace ilemu
+} // namespace ilemu

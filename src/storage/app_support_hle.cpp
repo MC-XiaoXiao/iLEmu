@@ -10,23 +10,24 @@
 namespace ilemu {
 namespace {
 
-constexpr std::string_view app_support_image{
-    "/AppSupport.framework/AppSupport"};
-constexpr std::uint32_t sqlite_error = 1U;
+    constexpr std::string_view app_support_image {
+        "/AppSupport.framework/AppSupport"
+    };
+    constexpr std::uint32_t sqlite_error = 1U;
 
-constexpr std::array<std::string_view, 3> transaction_operations{
-    "_CPSqliteConnectionBegin",
-    "_CPSqliteConnectionCommit",
-    "_CPSqliteConnectionRollback",
-};
+    constexpr std::array<std::string_view, 3> transaction_operations {
+        "_CPSqliteConnectionBegin",
+        "_CPSqliteConnectionCommit",
+        "_CPSqliteConnectionRollback",
+    };
 
-}  // namespace
+} // namespace
 
-void register_app_support_hle(UserlandHleRegistry& registry) {
+void register_app_support_hle(UserlandHleRegistry& registry)
+{
     for (const auto operation : transaction_operations) {
-        registry.register_function(
-            std::string{app_support_image}, std::string{operation},
-            [](UserlandHleCall& call) {
+        registry.register_function(std::string { app_support_image },
+            std::string { operation }, [](UserlandHleCall& call) {
                 if (call.argument(0) == 0) {
                     // Calendar's alarm-engine boot path can legitimately have
                     // no readable database connection on a freshly extracted
@@ -41,4 +42,4 @@ void register_app_support_hle(UserlandHleRegistry& registry) {
     }
 }
 
-}  // namespace ilemu
+} // namespace ilemu

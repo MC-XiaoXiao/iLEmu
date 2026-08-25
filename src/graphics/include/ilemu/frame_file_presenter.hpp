@@ -22,7 +22,7 @@ public:
 private:
     std::filesystem::path path_;
     std::mutex mutex_;
-    std::atomic_bool enabled_{true};
+    std::atomic_bool enabled_ { true };
 };
 
-}  // namespace ilemu
+} // namespace ilemu

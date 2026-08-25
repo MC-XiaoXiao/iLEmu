@@ -31,31 +31,27 @@ using GlesRenderTargetKey = HostSurfaceKey;
 // already decoded GLES vertices and fixed-function state; they do not depend on
 // EGL, CoreSurface, LayerKit, or any guest process details.
 class GlesRenderer : public HostGraphicsDevice {
-  public:
+public:
     virtual ~GlesRenderer() = default;
 
-    [[nodiscard]] std::shared_ptr<HostSurface>
-    create_surface(HostSurfaceKey key, HostSurfaceDescriptor descriptor,
-                   std::span<const std::uint32_t> initial_pixels = {})
-        override;
+    [[nodiscard]] std::shared_ptr<HostSurface> create_surface(
+        HostSurfaceKey key, HostSurfaceDescriptor descriptor,
+        std::span<const std::uint32_t> initial_pixels = { }) override;
     [[nodiscard]] std::unique_ptr<CommandEncoder>
     create_command_encoder() override;
-    [[nodiscard]] bool
-    map_cpu(HostSurface& surface, bool read,
-            PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback,
-            std::optional<HostRectangle>* readback_damage = nullptr) override;
-    [[nodiscard]] HostNativeImage
-    native_image(const HostSurface& surface) const override;
-    [[nodiscard]] PresentResult
-    present(const std::shared_ptr<HostSurface>& surface) override;
+    [[nodiscard]] bool map_cpu(HostSurface& surface, bool read,
+        PerfCpuMapReason reason = PerfCpuMapReason::GpuReadback,
+        std::optional<HostRectangle>* readback_damage = nullptr) override;
+    [[nodiscard]] HostNativeImage native_image(
+        const HostSurface& surface) const override;
+    [[nodiscard]] PresentResult present(
+        const std::shared_ptr<HostSurface>& surface) override;
     [[nodiscard]] bool native_presentation_available() const override;
     [[nodiscard]] bool refresh_presentation_surface() override;
 
     [[nodiscard]] virtual bool draw(DisplayFrame& frame,
-                                    GlesRenderTargetKey target,
-                                    std::span<const GlesRasterVertex> vertices,
-                                    std::uint32_t mode,
-                                    const GlesRasterState& state) = 0;
+        GlesRenderTargetKey target, std::span<const GlesRasterVertex> vertices,
+        std::uint32_t mode, const GlesRasterState& state) = 0;
     // Makes recorded work visible to the host queue without waiting for it.
     [[nodiscard]] virtual bool flush(GlesRenderTargetKey target) = 0;
     // Waits for recorded work without materializing the target on the CPU.
@@ -63,16 +59,15 @@ class GlesRenderer : public HostGraphicsDevice {
     // Materializes GPU-resident draws in a host-endian CPU frame at an
     // explicit CPU-map/readback boundary. An immediately visible backend may
     // implement this as a no-op.
-    [[nodiscard]] virtual bool synchronize(
-        DisplayFrame& frame, GlesRenderTargetKey target,
+    [[nodiscard]] virtual bool synchronize(DisplayFrame& frame,
+        GlesRenderTargetKey target,
         std::optional<HostRectangle>* readback_damage = nullptr) = 0;
     // Marks a CPU-side clear or another writer as authoritative for the target.
     virtual void invalidate(GlesRenderTargetKey target) = 0;
     // Releases a lifecycle batch behind one backend synchronization boundary.
     // Guest-facing stores already know the complete retiring set; preserving
     // that batch prevents a host fence wait per individual surface.
-    virtual void
-    release(std::span<const GlesRenderTargetKey> targets) = 0;
+    virtual void release(std::span<const GlesRenderTargetKey> targets) = 0;
     // Drops every process-local target and sampled texture associated with an
     // OpenGLES resource owner. The renderer is shared across guest processes,
     // so retiring only render targets would otherwise leave per-process
@@ -85,7 +80,8 @@ class GlesRenderer : public HostGraphicsDevice {
     // Approximate live host allocation footprint owned by this renderer. The
     // value is for the unified host-resource view; zero is valid for software
     // backends that do not retain a separate allocation pool.
-    [[nodiscard]] virtual std::uint64_t resource_bytes() const noexcept {
+    [[nodiscard]] virtual std::uint64_t resource_bytes() const noexcept
+    {
         return 0;
     }
 };
@@ -115,8 +111,7 @@ void configure_gles_vulkan_presenter(
 // Releases a shared CoreSurface target only when the renderer is still alive;
 // unlike shared_gles_renderer(), this never creates a backend during teardown.
 void release_gles_render_target(GlesRenderTargetKey target);
-void release_gles_render_targets(
-    std::span<const GlesRenderTargetKey> targets);
+void release_gles_render_targets(std::span<const GlesRenderTargetKey> targets);
 // Release the host renderer while its graphics driver is still initialized.
 // The command-line host calls this after all guest runtimes have unwound.
 void shutdown_gles_renderer();

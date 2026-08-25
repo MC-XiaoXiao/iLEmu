@@ -18,9 +18,10 @@ using WifiStateProvider = std::function<std::shared_ptr<WifiState>()>;
 // SIM modal from an intentionally absent modem. A replay/virtual transport
 // leaves the firmware's own SIM result untouched.
 void register_core_telephony_hle(UserlandHleRegistry& registry);
-void register_core_telephony_hle(
-    UserlandHleRegistry& registry, WifiStateProvider wifi_state,
+void register_core_telephony_hle(UserlandHleRegistry& registry,
+    WifiStateProvider wifi_state,
     std::function<void(const WifiSnapshot&, const WifiSnapshot&)>
-        wifi_state_changed = {}, bool offline_transport = true);
+        wifi_state_changed = { },
+    bool offline_transport = true);
 
-}  // namespace ilemu
+} // namespace ilemu

@@ -13,19 +13,19 @@ namespace ilemu {
 // emits the matching Up event without involving the SDL window or host GUI.
 class LiveButtonScheduler {
 public:
-  void schedule(SystemButtonInput down, std::chrono::milliseconds hold);
-  [[nodiscard]] std::vector<SystemButtonInput> poll();
-  [[nodiscard]] bool empty() const { return events_.empty(); }
-  [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
-  next_deadline() const;
+    void schedule(SystemButtonInput down, std::chrono::milliseconds hold);
+    [[nodiscard]] std::vector<SystemButtonInput> poll();
+    [[nodiscard]] bool empty() const { return events_.empty(); }
+    [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
+    next_deadline() const;
 
 private:
-  struct Event {
-    std::chrono::steady_clock::time_point deadline;
-    SystemButtonInput input;
-  };
+    struct Event {
+        std::chrono::steady_clock::time_point deadline;
+        SystemButtonInput input;
+    };
 
-  std::deque<Event> events_;
+    std::deque<Event> events_;
 };
 
 } // namespace ilemu

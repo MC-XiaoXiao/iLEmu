@@ -9,8 +9,8 @@
 
 namespace ilemu {
 
-[[nodiscard]] std::optional<std::vector<std::byte>>
-serialize_dynarmic_ir(const Dynarmic::IR::Block& block);
+[[nodiscard]] std::optional<std::vector<std::byte>> serialize_dynarmic_ir(
+    const Dynarmic::IR::Block& block);
 
 [[nodiscard]] std::optional<Dynarmic::IR::Block> deserialize_dynarmic_ir(
     std::span<const std::byte> bytes);

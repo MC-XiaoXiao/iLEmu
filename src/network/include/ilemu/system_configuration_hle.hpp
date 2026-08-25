@@ -10,10 +10,10 @@ class UserlandHleRegistry;
 // the legacy InterfaceNamer dynamic-store marker is absent.
 class SystemConfigurationHle {
 public:
-  explicit SystemConfigurationHle(UserlandHleRegistry &registry);
+    explicit SystemConfigurationHle(UserlandHleRegistry& registry);
 
 private:
-  void begin_interface_discovery(UserlandHleCall &call);
+    void begin_interface_discovery(UserlandHleCall& call);
 };
 
 } // namespace ilemu

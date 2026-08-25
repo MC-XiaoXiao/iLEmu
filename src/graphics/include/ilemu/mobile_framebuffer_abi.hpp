@@ -22,4 +22,4 @@ inline constexpr std::size_t destination_width_argument = 9;
 inline constexpr std::size_t destination_height_argument = 10;
 inline constexpr std::size_t flags_argument = 11;
 
-}  // namespace ilemu::mobile_framebuffer_abi
+} // namespace ilemu::mobile_framebuffer_abi

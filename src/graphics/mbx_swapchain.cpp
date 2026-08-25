@@ -12,8 +12,8 @@
 
 namespace ilemu {
 
-void Mbx2dHle::initialize_destination(
-    UserlandHleCall& call, RenderState& state) {
+void Mbx2dHle::initialize_destination(UserlandHleCall& call, RenderState& state)
+{
     const auto destination = resolve(state.destination);
     if (!destination || destination->framebuffer || !display_ ||
         destination->width != display_->width() ||
@@ -21,19 +21,18 @@ void Mbx2dHle::initialize_destination(
         return;
     }
     const auto surface = state.destination->surface;
-    if (initialized_destinations_.contains(surface)) return;
+    if (initialized_destinations_.contains(surface))
+        return;
 
     // CoreGraphics can rasterize static LayerKit content into a newly-created
     // CoreSurface before MBX2D binds it as the render destination.  Keep that
     // CPU-rendered backing store; replacing it with the previous scanout would
     // erase layers such as the lock-screen bottom bar before the first GPU
     // dirty update arrives.
-    const auto existing = read_region(*destination, 0, 0, destination->width,
-                                      destination->height, call);
+    const auto existing = read_region(
+        *destination, 0, 0, destination->width, destination->height, call);
     if (existing && std::any_of(existing->begin(), existing->end(),
-                                [](std::uint32_t pixel) {
-                                    return pixel != 0;
-                                })) {
+                        [](std::uint32_t pixel) { return pixel != 0; })) {
         initialized_destinations_.insert(surface);
         destination_frame_sequences_[surface] =
             display_ ? display_->presented_frames() : 0;
@@ -42,23 +41,23 @@ void Mbx2dHle::initialize_destination(
 
     auto initial = display_ && display_->presented_frames() != 0
                        ? display_->snapshot().pixels
-                       : std::vector<std::uint32_t>{};
-    const auto pixel_count = static_cast<std::size_t>(destination->width) *
-                             destination->height;
+                       : std::vector<std::uint32_t> { };
+    const auto pixel_count =
+        static_cast<std::size_t>(destination->width) * destination->height;
     if (initial.size() != pixel_count) {
         initial.assign(pixel_count, 0xff000000U);
     }
     if (write_region(*destination, 0, 0, destination->width,
-                     destination->height, initial, call)) {
+            destination->height, initial, call)) {
         initialized_destinations_.insert(surface);
         destination_frame_sequences_[surface] =
             display_ ? display_->presented_frames() : 0;
     }
 }
 
-void Mbx2dHle::prepare_destination_for_frame(
-    UserlandHleCall& call, RenderState& state, DamageRegion damage,
-    std::uint32_t source_surface) {
+void Mbx2dHle::prepare_destination_for_frame(UserlandHleCall& call,
+    RenderState& state, DamageRegion damage, std::uint32_t source_surface)
+{
     initialize_destination(call, state);
     const auto destination = resolve(state.destination);
     if (!destination || destination->framebuffer || !display_ ||
@@ -73,8 +72,7 @@ void Mbx2dHle::prepare_destination_for_frame(
         prepared->second == sequence) {
         if (const auto current = destination_scene_damage_.find(surface);
             current != destination_scene_damage_.end()) {
-            current->second.left =
-                std::min(current->second.left, damage.left);
+            current->second.left = std::min(current->second.left, damage.left);
             current->second.top = std::min(current->second.top, damage.top);
             current->second.right =
                 std::max(current->second.right, damage.right);
@@ -85,12 +83,10 @@ void Mbx2dHle::prepare_destination_for_frame(
         }
         return;
     }
-    damage.left = std::clamp<std::int64_t>(
-        damage.left, 0, destination->width);
-    damage.top = std::clamp<std::int64_t>(
-        damage.top, 0, destination->height);
-    damage.right = std::clamp<std::int64_t>(
-        damage.right, damage.left, destination->width);
+    damage.left = std::clamp<std::int64_t>(damage.left, 0, destination->width);
+    damage.top = std::clamp<std::int64_t>(damage.top, 0, destination->height);
+    damage.right =
+        std::clamp<std::int64_t>(damage.right, damage.left, destination->width);
     damage.bottom = std::clamp<std::int64_t>(
         damage.bottom, damage.top, destination->height);
     const auto current_damage = damage;
@@ -100,9 +96,9 @@ void Mbx2dHle::prepare_destination_for_frame(
         previous_source != destination_scene_sources_.end() &&
         previous_source->second == source_surface &&
         !(damage.left >= previous->second.left &&
-          damage.top >= previous->second.top &&
-          damage.right <= previous->second.right &&
-          damage.bottom <= previous->second.bottom)) {
+            damage.top >= previous->second.top &&
+            damage.right <= previous->second.right &&
+            damage.bottom <= previous->second.bottom)) {
         damage.left = std::min(damage.left, previous->second.left);
         damage.top = std::min(damage.top, previous->second.top);
         damage.right = std::max(damage.right, previous->second.right);
@@ -116,7 +112,7 @@ void Mbx2dHle::prepare_destination_for_frame(
     // already been composed from retained siblings in the current pass.
     // Clearing that area here would replace those pixels with black after they
     // were drawn. A replacement source likewise starts a new scene generation.
-    bool cleared{};
+    bool cleared { };
     if (width > 0 && height > 0 && host_graphics_->accelerated() &&
         destination->host_surface && destination->backing &&
         destination->backing->pixel_format == surface_pixel_format_bgra &&
@@ -126,21 +122,19 @@ void Mbx2dHle::prepare_destination_for_frame(
             std::numeric_limits<std::uint32_t>::max() &&
         static_cast<std::uint64_t>(height) <=
             std::numeric_limits<std::uint32_t>::max()) {
-        cleared = command_encoder_->fill(
-            destination->host_surface,
-            {static_cast<std::int32_t>(damage.left),
-             static_cast<std::int32_t>(damage.top),
-             static_cast<std::uint32_t>(width),
-             static_cast<std::uint32_t>(height)},
+        cleared = command_encoder_->fill(destination->host_surface,
+            { static_cast<std::int32_t>(damage.left),
+                static_cast<std::int32_t>(damage.top),
+                static_cast<std::uint32_t>(width),
+                static_cast<std::uint32_t>(height) },
             0xff000000U, HostCompositeMode::Copy);
     }
     if (!cleared && width > 0 && height > 0) {
         const auto pixel_count =
             static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
         const std::vector<std::uint32_t> clear(pixel_count, 0xff000000U);
-        cleared =
-            write_region(*destination, damage.left, damage.top, width, height,
-                         clear, call);
+        cleared = write_region(
+            *destination, damage.left, damage.top, width, height, clear, call);
     }
     if (cleared) {
         destination_frame_sequences_[surface] = sequence;
@@ -149,4 +143,4 @@ void Mbx2dHle::prepare_destination_for_frame(
     }
 }
 
-}  // namespace ilemu
+} // namespace ilemu

@@ -49,4 +49,4 @@ constexpr std::size_t simple_reply_word_count = simple_reply_size / 4;
 
 constexpr std::uint64_t absolute_time_units_per_second = 1'000'000'000ULL;
 
-}  // namespace ilemu::darwin::mach::thread_policy
+} // namespace ilemu::darwin::mach::thread_policy

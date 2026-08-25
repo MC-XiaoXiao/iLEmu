@@ -15,4 +15,4 @@ constexpr std::uint32_t maximum_switch_option = switch_option_wait;
 
 constexpr std::uint64_t nanoseconds_per_millisecond = 1'000'000ULL;
 
-}  // namespace ilemu::darwin::mach::scheduler
+} // namespace ilemu::darwin::mach::scheduler

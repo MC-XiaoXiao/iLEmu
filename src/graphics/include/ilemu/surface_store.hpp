@@ -18,7 +18,8 @@ class HostSurface;
 class SurfaceTransportLease;
 struct HostRectangle;
 
-constexpr std::uint32_t surface_fourcc(char a, char b, char c, char d) {
+constexpr std::uint32_t surface_fourcc(char a, char b, char c, char d)
+{
     return (static_cast<std::uint32_t>(a) << 24U) |
            (static_cast<std::uint32_t>(b) << 16U) |
            (static_cast<std::uint32_t>(c) << 8U) |
@@ -45,18 +46,20 @@ inline constexpr std::uint32_t surface_pixel_format_yuvs =
 inline constexpr std::uint32_t surface_pixel_format_2vuy =
     surface_fourcc('2', 'v', 'u', 'y');
 
-constexpr bool surface_is_yuv422(std::uint32_t pixel_format) {
+constexpr bool surface_is_yuv422(std::uint32_t pixel_format)
+{
     return pixel_format == surface_pixel_format_yuvs ||
            pixel_format == surface_pixel_format_2vuy;
 }
 
-constexpr bool surface_is_rgb555(std::uint32_t pixel_format) {
+constexpr bool surface_is_rgb555(std::uint32_t pixel_format)
+{
     return pixel_format == surface_pixel_format_rgb555 ||
            pixel_format == surface_pixel_format_rgb555_le;
 }
 
-constexpr std::uint32_t
-surface_bytes_per_pixel(std::uint32_t pixel_format) {
+constexpr std::uint32_t surface_bytes_per_pixel(std::uint32_t pixel_format)
+{
     if (pixel_format == surface_pixel_format_bgra)
         return 4U;
     if (surface_is_rgb555(pixel_format) ||
@@ -72,10 +75,10 @@ surface_bytes_per_pixel(std::uint32_t pixel_format) {
 // CoreSurface transport ID can be imported into a different guest address
 // space without assuming that both tasks chose the same virtual address.
 class SurfaceStore {
-  public:
+public:
     struct CpuSynchronizationOptions {
-        bool avoid_sync{};
-        bool read_only{};
+        bool avoid_sync { };
+        bool read_only { };
     };
 
     ~SurfaceStore();
@@ -83,26 +86,26 @@ class SurfaceStore {
     struct Provenance {
         // The task that first published the backing. Importers retain this
         // identity instead of replacing it with the compositor's task.
-        std::uint32_t producer_process_id{};
+        std::uint32_t producer_process_id { };
         // Assigned by the shared registry at publication time so reused
         // process or transport identifiers still describe distinct surfaces.
-        std::uint64_t publication_sequence{};
+        std::uint64_t publication_sequence { };
     };
 
     struct Backing {
-        std::uint32_t id{};
-        std::uint32_t base{};
-        std::uint32_t allocation_size{};
-        std::uint32_t width{};
-        std::uint32_t height{};
-        std::uint32_t bytes_per_row{};
-        std::uint32_t pixel_format{};
+        std::uint32_t id { };
+        std::uint32_t base { };
+        std::uint32_t allocation_size { };
+        std::uint32_t width { };
+        std::uint32_t height { };
+        std::uint32_t bytes_per_row { };
+        std::uint32_t pixel_format { };
         Provenance provenance;
     };
 
     struct SharedMapping {
         Backing metadata;
-        std::uint32_t mapping_size{};
+        std::uint32_t mapping_size { };
     };
 
     void reset();
@@ -115,48 +118,43 @@ class SurfaceStore {
     [[nodiscard]] std::uint32_t allocate_identifier();
     [[nodiscard]] std::uint64_t publication_watermark() const;
     [[nodiscard]] bool publish(AddressSpace& memory, Backing backing);
-    [[nodiscard]] std::optional<SharedMapping>
-    shared_mapping(std::uint32_t id) const;
+    [[nodiscard]] std::optional<SharedMapping> shared_mapping(
+        std::uint32_t id) const;
     // A kernel transport port retains its shared backing independently of
     // every process-local client until the port object itself is reclaimed.
     [[nodiscard]] std::shared_ptr<SurfaceTransportLease>
     acquire_transport_lease(std::uint32_t id) const;
+    [[nodiscard]] std::optional<Backing> import(
+        AddressSpace& memory, std::uint32_t id, std::uint32_t mapping_address);
     [[nodiscard]] std::optional<Backing> import(AddressSpace& memory,
-                                                std::uint32_t id,
-                                                std::uint32_t mapping_address);
-    [[nodiscard]] std::optional<Backing>
-    import(AddressSpace& memory, const SharedMapping& expected,
-           std::uint32_t mapping_address,
-           std::uint64_t* mapping_lease_token);
+        const SharedMapping& expected, std::uint32_t mapping_address,
+        std::uint64_t* mapping_lease_token);
     // CoreSurface wrappers and graphics API surfaces own the shared backing
     // independently. Retain/release local ownership without duplicating the
     // process mapping or the registry's per-store reference.
     [[nodiscard]] bool retain(std::uint32_t id);
     void release(std::uint32_t id);
     [[nodiscard]] std::optional<Backing> find(std::uint32_t id) const;
-    [[nodiscard]] std::shared_ptr<HostSurface>
-    host_surface(std::uint32_t id) const;
-    [[nodiscard]] std::optional<std::vector<std::uint32_t>>
-    read_argb(AddressSpace& memory, std::uint32_t id) const;
+    [[nodiscard]] std::shared_ptr<HostSurface> host_surface(
+        std::uint32_t id) const;
+    [[nodiscard]] std::optional<std::vector<std::uint32_t>> read_argb(
+        AddressSpace& memory, std::uint32_t id) const;
     // CPU map is the explicit GPU completion/readback boundary. The resulting
     // pixels are copied into the guest mapping for firmware access.
     [[nodiscard]] bool synchronize_for_cpu(AddressSpace& memory,
-                                           std::uint32_t id,
-                                           CpuSynchronizationOptions options)
-        const;
+        std::uint32_t id, CpuSynchronizationOptions options) const;
     // Imports guest CPU writes even when a newer GPU generation exists. This
     // is the unlock/flush direction, not a GPU readback request.
-    [[nodiscard]] bool synchronize_from_guest(AddressSpace& memory,
-                                              std::uint32_t id) const;
+    [[nodiscard]] bool synchronize_from_guest(
+        AddressSpace& memory, std::uint32_t id) const;
     [[nodiscard]] bool write_argb(AddressSpace& memory, std::uint32_t id,
-                                  std::span<const std::uint32_t> pixels) const;
+        std::span<const std::uint32_t> pixels) const;
     [[nodiscard]] bool write_bytes(AddressSpace& memory, std::uint32_t id,
-                                   std::span<const std::byte> bytes) const;
+        std::span<const std::byte> bytes) const;
     [[nodiscard]] bool transfer_scaled(AddressSpace& memory,
-                                       std::uint32_t source_id,
-                                       std::uint32_t destination_id) const;
+        std::uint32_t source_id, std::uint32_t destination_id) const;
 
-  private:
+private:
     friend class SurfaceTransportLease;
     struct SyncState {
         std::mutex mutex;
@@ -165,39 +163,41 @@ class SurfaceStore {
     };
     struct SharedObject {
         Backing metadata;
-        std::uint32_t page_offset{};
-        std::uint32_t mapping_size{};
+        std::uint32_t page_offset { };
+        std::uint32_t mapping_size { };
         std::vector<std::shared_ptr<GuestPageBacking>> pages;
         std::shared_ptr<HostSurface> host_surface;
         std::shared_ptr<SyncState> sync_state;
-        std::size_t store_references{};
+        std::size_t store_references { };
     };
     struct SharedRegistry {
         mutable std::mutex mutex;
         std::map<std::uint32_t, SharedObject> objects;
-        std::uint32_t next_identifier{1};
-        std::uint64_t publication_watermark{};
+        std::uint32_t next_identifier { 1 };
+        std::uint64_t publication_watermark { };
     };
 
-    [[nodiscard]] std::optional<std::vector<std::uint32_t>>
-    read_guest_argb(AddressSpace& memory, const Backing& backing) const;
+    [[nodiscard]] std::optional<std::vector<std::uint32_t>> read_guest_argb(
+        AddressSpace& memory, const Backing& backing) const;
     [[nodiscard]] std::optional<std::vector<std::uint32_t>>
     read_guest_argb_region(AddressSpace& memory, const Backing& backing,
-                           HostRectangle rectangle) const;
-    [[nodiscard]] bool write_argb_region_to_guest(
-        AddressSpace& memory, const Backing& backing, HostRectangle rectangle,
+        HostRectangle rectangle) const;
+    [[nodiscard]] bool write_argb_region_to_guest(AddressSpace& memory,
+        const Backing& backing, HostRectangle rectangle,
         std::span<const std::uint32_t> pixels) const;
-    [[nodiscard]] std::shared_ptr<SyncState> shared_sync_state(std::uint32_t id) const;
-    void update_guest_sync_generation(AddressSpace& memory,
-                                      const Backing& backing) const;
+    [[nodiscard]] std::shared_ptr<SyncState> shared_sync_state(
+        std::uint32_t id) const;
+    void update_guest_sync_generation(
+        AddressSpace& memory, const Backing& backing) const;
     void update_guest_snapshot(const Backing& backing, HostRectangle rectangle,
-                               std::span<const std::uint32_t> pixels) const;
+        std::span<const std::uint32_t> pixels) const;
 
     mutable std::mutex mutex_;
     std::map<std::uint32_t, Backing> backings_;
     std::map<std::uint32_t, std::size_t> backing_references_;
-    std::shared_ptr<SharedRegistry> registry_{
-        std::make_shared<SharedRegistry>()};
+    std::shared_ptr<SharedRegistry> registry_ {
+        std::make_shared<SharedRegistry>()
+    };
 };
 
 } // namespace ilemu

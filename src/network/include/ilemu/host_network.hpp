@@ -22,8 +22,8 @@ enum class HostNetworkPolicy : std::uint8_t {
     std::string_view value);
 [[nodiscard]] std::string_view host_network_policy_name(
     HostNetworkPolicy policy);
-[[nodiscard]] std::optional<std::array<std::byte, 4>>
-parse_host_ipv4_resolver(std::string_view configuration);
+[[nodiscard]] std::optional<std::array<std::byte, 4>> parse_host_ipv4_resolver(
+    std::string_view configuration);
 
 enum class HostSocketStatus : std::uint8_t {
     Success,
@@ -35,13 +35,13 @@ class HostSocket;
 
 struct HostSocketCreateResult {
     std::shared_ptr<HostSocket> socket;
-    std::uint32_t darwin_error{};
+    std::uint32_t darwin_error { };
 };
 
 struct HostSocketResult {
-    HostSocketStatus status{HostSocketStatus::Success};
-    std::uint32_t darwin_error{};
-    std::size_t transferred{};
+    HostSocketStatus status { HostSocketStatus::Success };
+    std::uint32_t darwin_error { };
+    std::size_t transferred { };
     std::vector<std::byte> bytes;
     std::vector<std::byte> address;
     std::vector<std::byte> destination_address;
@@ -56,9 +56,9 @@ struct HostSocketResult {
 // sequences; no host sockaddr object crosses this boundary.
 class HostSocket {
 public:
-    static HostSocketCreateResult create(
-        HostNetworkPolicy policy, std::uint32_t darwin_family,
-        std::uint32_t darwin_type, std::uint32_t protocol);
+    static HostSocketCreateResult create(HostNetworkPolicy policy,
+        std::uint32_t darwin_family, std::uint32_t darwin_type,
+        std::uint32_t protocol);
 
     ~HostSocket();
     HostSocket(const HostSocket&) = delete;
@@ -71,13 +71,11 @@ public:
         std::span<const std::byte> darwin_address);
     [[nodiscard]] HostSocketResult listen(std::uint32_t backlog);
     [[nodiscard]] HostSocketResult accept();
-    [[nodiscard]] HostSocketResult send(
-        std::span<const std::byte> bytes,
-        std::span<const std::byte> darwin_destination = {});
+    [[nodiscard]] HostSocketResult send(std::span<const std::byte> bytes,
+        std::span<const std::byte> darwin_destination = { });
     [[nodiscard]] HostSocketResult receive(std::size_t capacity);
-    [[nodiscard]] HostSocketResult set_option(
-        std::uint32_t darwin_level, std::uint32_t darwin_option,
-        std::span<const std::byte> value);
+    [[nodiscard]] HostSocketResult set_option(std::uint32_t darwin_level,
+        std::uint32_t darwin_option, std::span<const std::byte> value);
     [[nodiscard]] HostSocketResult local_address() const;
     [[nodiscard]] HostSocketResult peer_address() const;
     [[nodiscard]] HostSocketResult pending_bytes() const;
@@ -91,19 +89,18 @@ public:
     [[nodiscard]] std::uint32_t darwin_type() const { return darwin_type_; }
 
 private:
-    HostSocket(
-        int descriptor, HostNetworkPolicy policy,
+    HostSocket(int descriptor, HostNetworkPolicy policy,
         std::uint32_t darwin_family, std::uint32_t darwin_type);
 
-    int descriptor_{-1};
-    HostNetworkPolicy policy_{HostNetworkPolicy::Isolated};
-    std::uint32_t darwin_family_{};
-    std::uint32_t darwin_type_{};
+    int descriptor_ { -1 };
+    HostNetworkPolicy policy_ { HostNetworkPolicy::Isolated };
+    std::uint32_t darwin_family_ { };
+    std::uint32_t darwin_type_ { };
     std::optional<std::vector<std::byte>> presented_peer_address_;
-    bool presents_virtual_local_ipv4_address_{};
-    bool receive_destination_address_{};
-    bool receive_interface_{};
-    bool receive_hop_limit_{};
+    bool presents_virtual_local_ipv4_address_ { };
+    bool receive_destination_address_ { };
+    bool receive_interface_ { };
+    bool receive_hop_limit_ { };
 };
 
-}  // namespace ilemu
+} // namespace ilemu

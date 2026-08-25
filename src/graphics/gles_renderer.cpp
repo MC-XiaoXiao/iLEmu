@@ -3,10 +3,10 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
-#include <memory>
-#include <mutex>
 #include <filesystem>
 #include <limits>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -24,276 +24,306 @@
 namespace ilemu {
 namespace {
 
-class SoftwareGlesRenderer final : public GlesRenderer {
-  public:
-    bool draw(DisplayFrame& frame, GlesRenderTargetKey target,
-              std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
-              const GlesRasterState& state) override {
-        static_cast<void>(target);
-        return GlesSoftwareRasterizer::draw(frame, vertices, mode, state);
-    }
-
-    bool synchronize(
-        DisplayFrame& frame, GlesRenderTargetKey target,
-        std::optional<HostRectangle>* readback_damage) override {
-        static_cast<void>(target);
-        if (readback_damage != nullptr) {
-            *readback_damage = HostRectangle{0, 0, frame.width, frame.height};
+    class SoftwareGlesRenderer final : public GlesRenderer {
+    public:
+        bool draw(DisplayFrame& frame, GlesRenderTargetKey target,
+            std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
+            const GlesRasterState& state) override
+        {
+            static_cast<void>(target);
+            return GlesSoftwareRasterizer::draw(frame, vertices, mode, state);
         }
-        return true;
-    }
 
-    bool flush(GlesRenderTargetKey target) override {
-        static_cast<void>(target);
-        return true;
-    }
-
-    bool finish(GlesRenderTargetKey target) override {
-        static_cast<void>(target);
-        return true;
-    }
-
-    void invalidate(GlesRenderTargetKey target) override {
-        static_cast<void>(target);
-    }
-
-    void release(std::span<const GlesRenderTargetKey> targets) override {
-        static_cast<void>(targets);
-    }
-
-    void release_owner(std::uint64_t owner) override {
-        static_cast<void>(owner);
-    }
-
-    [[nodiscard]] std::string_view name() const override {
-        return "iLEmu GLES 1.1 software";
-    }
-
-    [[nodiscard]] bool accelerated() const override { return false; }
-    [[nodiscard]] bool software_fallback_allowed() const override {
-        return false;
-    }
-    [[nodiscard]] PerfFallbackReason failure_reason() const override {
-        return PerfFallbackReason::None;
-    }
-};
-
-class FallbackGlesRenderer final : public GlesRenderer {
-  public:
-    FallbackGlesRenderer(std::unique_ptr<GlesRenderer> primary,
-                         std::unique_ptr<GlesRenderer> fallback)
-        : primary_{std::move(primary)}, fallback_{std::move(fallback)} {}
-
-    bool draw(DisplayFrame& frame, GlesRenderTargetKey target,
-              std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
-              const GlesRasterState& state) override {
-        if (primary_->draw(frame, target, vertices, mode, state))
+        bool synchronize(DisplayFrame& frame, GlesRenderTargetKey target,
+            std::optional<HostRectangle>* readback_damage) override
+        {
+            static_cast<void>(target);
+            if (readback_damage != nullptr) {
+                *readback_damage =
+                    HostRectangle { 0, 0, frame.width, frame.height };
+            }
             return true;
-        performance_counters().record_fallback(primary_->failure_reason());
-        if (!primary_->synchronize(frame, target))
+        }
+
+        bool flush(GlesRenderTargetKey target) override
+        {
+            static_cast<void>(target);
+            return true;
+        }
+
+        bool finish(GlesRenderTargetKey target) override
+        {
+            static_cast<void>(target);
+            return true;
+        }
+
+        void invalidate(GlesRenderTargetKey target) override
+        {
+            static_cast<void>(target);
+        }
+
+        void release(std::span<const GlesRenderTargetKey> targets) override
+        {
+            static_cast<void>(targets);
+        }
+
+        void release_owner(std::uint64_t owner) override
+        {
+            static_cast<void>(owner);
+        }
+
+        [[nodiscard]] std::string_view name() const override
+        {
+            return "iLEmu GLES 1.1 software";
+        }
+
+        [[nodiscard]] bool accelerated() const override { return false; }
+        [[nodiscard]] bool software_fallback_allowed() const override
+        {
             return false;
-        auto fallback_state = state;
-        std::optional<GlesResourceStore> fallback_resources;
-        if (state.resources != nullptr) {
-            fallback_resources = *state.resources;
-            if (!fallback_resources->materialize_surface_textures(*primary_))
+        }
+        [[nodiscard]] PerfFallbackReason failure_reason() const override
+        {
+            return PerfFallbackReason::None;
+        }
+    };
+
+    class FallbackGlesRenderer final : public GlesRenderer {
+    public:
+        FallbackGlesRenderer(std::unique_ptr<GlesRenderer> primary,
+            std::unique_ptr<GlesRenderer> fallback)
+            : primary_ { std::move(primary) }
+            , fallback_ { std::move(fallback) }
+        {
+        }
+
+        bool draw(DisplayFrame& frame, GlesRenderTargetKey target,
+            std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
+            const GlesRasterState& state) override
+        {
+            if (primary_->draw(frame, target, vertices, mode, state))
+                return true;
+            performance_counters().record_fallback(primary_->failure_reason());
+            if (!primary_->synchronize(frame, target))
                 return false;
-            fallback_state.resources = &*fallback_resources;
-        }
-        if (!fallback_->draw(frame, target, vertices, mode,
-                             fallback_state)) {
-            return false;
-        }
-        primary_->invalidate(target);
-        return true;
-    }
-
-    bool synchronize(
-        DisplayFrame& frame, GlesRenderTargetKey target,
-        std::optional<HostRectangle>* readback_damage) override {
-        std::optional<HostRectangle> primary_damage;
-        std::optional<HostRectangle> fallback_damage;
-        if (!primary_->synchronize(
-                frame, target,
-                readback_damage != nullptr ? &primary_damage : nullptr) ||
-            !fallback_->synchronize(
-                frame, target,
-                readback_damage != nullptr ? &fallback_damage : nullptr)) {
-            return false;
-        }
-        if (readback_damage == nullptr)
-            return true;
-        if (!primary_damage) {
-            *readback_damage = fallback_damage;
+            auto fallback_state = state;
+            std::optional<GlesResourceStore> fallback_resources;
+            if (state.resources != nullptr) {
+                fallback_resources = *state.resources;
+                if (!fallback_resources->materialize_surface_textures(
+                        *primary_))
+                    return false;
+                fallback_state.resources = &*fallback_resources;
+            }
+            if (!fallback_->draw(
+                    frame, target, vertices, mode, fallback_state)) {
+                return false;
+            }
+            primary_->invalidate(target);
             return true;
         }
-        if (!fallback_damage) {
-            *readback_damage = primary_damage;
+
+        bool synchronize(DisplayFrame& frame, GlesRenderTargetKey target,
+            std::optional<HostRectangle>* readback_damage) override
+        {
+            std::optional<HostRectangle> primary_damage;
+            std::optional<HostRectangle> fallback_damage;
+            if (!primary_->synchronize(frame, target,
+                    readback_damage != nullptr ? &primary_damage : nullptr) ||
+                !fallback_->synchronize(frame, target,
+                    readback_damage != nullptr ? &fallback_damage : nullptr)) {
+                return false;
+            }
+            if (readback_damage == nullptr)
+                return true;
+            if (!primary_damage) {
+                *readback_damage = fallback_damage;
+                return true;
+            }
+            if (!fallback_damage) {
+                *readback_damage = primary_damage;
+                return true;
+            }
+            const auto x = std::min(primary_damage->x, fallback_damage->x);
+            const auto y = std::min(primary_damage->y, fallback_damage->y);
+            const auto right =
+                std::max(static_cast<std::int64_t>(primary_damage->x) +
+                             primary_damage->width,
+                    static_cast<std::int64_t>(fallback_damage->x) +
+                        fallback_damage->width);
+            const auto bottom =
+                std::max(static_cast<std::int64_t>(primary_damage->y) +
+                             primary_damage->height,
+                    static_cast<std::int64_t>(fallback_damage->y) +
+                        fallback_damage->height);
+            *readback_damage =
+                HostRectangle { x, y, static_cast<std::uint32_t>(right - x),
+                    static_cast<std::uint32_t>(bottom - y) };
             return true;
         }
-        const auto x = std::min(primary_damage->x, fallback_damage->x);
-        const auto y = std::min(primary_damage->y, fallback_damage->y);
-        const auto right = std::max(
-            static_cast<std::int64_t>(primary_damage->x) +
-                primary_damage->width,
-            static_cast<std::int64_t>(fallback_damage->x) +
-                fallback_damage->width);
-        const auto bottom = std::max(
-            static_cast<std::int64_t>(primary_damage->y) +
-                primary_damage->height,
-            static_cast<std::int64_t>(fallback_damage->y) +
-                fallback_damage->height);
-        *readback_damage = HostRectangle{
-            x, y, static_cast<std::uint32_t>(right - x),
-            static_cast<std::uint32_t>(bottom - y)};
-        return true;
+
+        bool flush(GlesRenderTargetKey target) override
+        {
+            return primary_->flush(target) && fallback_->flush(target);
+        }
+
+        bool finish(GlesRenderTargetKey target) override
+        {
+            return primary_->finish(target) && fallback_->finish(target);
+        }
+
+        void invalidate(GlesRenderTargetKey target) override
+        {
+            primary_->invalidate(target);
+            fallback_->invalidate(target);
+        }
+
+        void release(std::span<const GlesRenderTargetKey> targets) override
+        {
+            primary_->release(targets);
+            fallback_->release(targets);
+        }
+
+        void release_owner(std::uint64_t owner) override
+        {
+            primary_->release_owner(owner);
+            fallback_->release_owner(owner);
+        }
+
+        [[nodiscard]] std::string_view name() const override
+        {
+            return primary_->name();
+        }
+
+        [[nodiscard]] bool accelerated() const override
+        {
+            return primary_->accelerated();
+        }
+        [[nodiscard]] bool software_fallback_allowed() const override
+        {
+            return true;
+        }
+        [[nodiscard]] PerfFallbackReason failure_reason() const override
+        {
+            return primary_->failure_reason();
+        }
+        [[nodiscard]] std::uint64_t resource_bytes() const noexcept override
+        {
+            const auto primary = primary_->resource_bytes();
+            const auto fallback = fallback_->resource_bytes();
+            return primary >
+                           std::numeric_limits<std::uint64_t>::max() - fallback
+                       ? std::numeric_limits<std::uint64_t>::max()
+                       : primary + fallback;
+        }
+        [[nodiscard]] HostNativeImage native_image(
+            const HostSurface& surface) const override
+        {
+            return primary_->native_image(surface);
+        }
+        [[nodiscard]] PresentResult present(
+            const std::shared_ptr<HostSurface>& surface) override
+        {
+            return primary_->present(surface);
+        }
+        [[nodiscard]] bool native_presentation_available() const override
+        {
+            return primary_->native_presentation_available();
+        }
+        [[nodiscard]] bool refresh_presentation_surface() override
+        {
+            return primary_->refresh_presentation_surface();
+        }
+        [[nodiscard]] std::unique_ptr<CommandEncoder>
+        create_command_encoder() override
+        {
+            return primary_->create_command_encoder();
+        }
+
+    private:
+        std::unique_ptr<GlesRenderer> primary_;
+        std::unique_ptr<GlesRenderer> fallback_;
+    };
+
+    struct SharedRendererState {
+        std::mutex mutex;
+        GlesBackend backend { GlesBackend::Auto };
+        std::filesystem::path pipeline_cache;
+        VulkanPresenterConfiguration presenter;
+        std::shared_ptr<GlesRenderer>* renderer { };
+    };
+
+    SharedRendererState& shared_renderer_state()
+    {
+        static SharedRendererState state;
+        return state;
     }
 
-    bool flush(GlesRenderTargetKey target) override {
-        return primary_->flush(target) && fallback_->flush(target);
-    }
+    std::shared_ptr<GlesRenderer> create_renderer(GlesBackend backend,
+        const std::filesystem::path& pipeline_cache,
+        const VulkanPresenterConfiguration& presenter)
+    {
+        if (backend == GlesBackend::Software) {
+            return std::make_shared<SoftwareGlesRenderer>();
+        }
 
-    bool finish(GlesRenderTargetKey target) override {
-        return primary_->finish(target) && fallback_->finish(target);
-    }
+        std::string failure;
+#if defined(ILEMU_HAS_VULKAN)
+        if (auto accelerated = create_vulkan_gles_renderer(pipeline_cache,
+                presenter.create_surface ? &presenter : nullptr, &failure)) {
+            if (backend == GlesBackend::Vulkan) {
+                return std::shared_ptr<GlesRenderer> { std::move(accelerated) };
+            }
+            return std::make_shared<FallbackGlesRenderer>(
+                std::move(accelerated),
+                std::make_unique<SoftwareGlesRenderer>());
+        }
+        performance_counters().record_fallback(
+            PerfFallbackReason::VulkanUnavailable);
+#else
+        failure = "Vulkan support was not built";
+        performance_counters().record_fallback(
+            PerfFallbackReason::VulkanUnavailable);
+#endif
 
-    void invalidate(GlesRenderTargetKey target) override {
-        primary_->invalidate(target);
-        fallback_->invalidate(target);
-    }
-
-    void release(std::span<const GlesRenderTargetKey> targets) override {
-        primary_->release(targets);
-        fallback_->release(targets);
-    }
-
-    void release_owner(std::uint64_t owner) override {
-        primary_->release_owner(owner);
-        fallback_->release_owner(owner);
-    }
-
-    [[nodiscard]] std::string_view name() const override {
-        return primary_->name();
-    }
-
-    [[nodiscard]] bool accelerated() const override {
-        return primary_->accelerated();
-    }
-    [[nodiscard]] bool software_fallback_allowed() const override {
-        return true;
-    }
-    [[nodiscard]] PerfFallbackReason failure_reason() const override {
-        return primary_->failure_reason();
-    }
-    [[nodiscard]] std::uint64_t resource_bytes() const noexcept override {
-        const auto primary = primary_->resource_bytes();
-        const auto fallback = fallback_->resource_bytes();
-        return primary > std::numeric_limits<std::uint64_t>::max() - fallback
-                   ? std::numeric_limits<std::uint64_t>::max()
-                   : primary + fallback;
-    }
-    [[nodiscard]] HostNativeImage
-    native_image(const HostSurface& surface) const override {
-        return primary_->native_image(surface);
-    }
-    [[nodiscard]] PresentResult
-    present(const std::shared_ptr<HostSurface>& surface) override {
-        return primary_->present(surface);
-    }
-    [[nodiscard]] bool native_presentation_available() const override {
-        return primary_->native_presentation_available();
-    }
-    [[nodiscard]] bool refresh_presentation_surface() override {
-        return primary_->refresh_presentation_surface();
-    }
-    [[nodiscard]] std::unique_ptr<CommandEncoder>
-    create_command_encoder() override {
-        return primary_->create_command_encoder();
-    }
-
-  private:
-    std::unique_ptr<GlesRenderer> primary_;
-    std::unique_ptr<GlesRenderer> fallback_;
-};
-
-struct SharedRendererState {
-    std::mutex mutex;
-    GlesBackend backend{GlesBackend::Auto};
-    std::filesystem::path pipeline_cache;
-    VulkanPresenterConfiguration presenter;
-    std::shared_ptr<GlesRenderer>* renderer{};
-};
-
-SharedRendererState& shared_renderer_state() {
-    static SharedRendererState state;
-    return state;
-}
-
-std::shared_ptr<GlesRenderer>
-create_renderer(GlesBackend backend,
-                const std::filesystem::path& pipeline_cache,
-                const VulkanPresenterConfiguration& presenter) {
-    if (backend == GlesBackend::Software) {
+        if (backend == GlesBackend::Vulkan) {
+            throw std::runtime_error {
+                "forced Vulkan GLES backend unavailable: " + failure
+            };
+        }
         return std::make_shared<SoftwareGlesRenderer>();
     }
 
-    std::string failure;
-#if defined(ILEMU_HAS_VULKAN)
-    if (auto accelerated =
-            create_vulkan_gles_renderer(
-                pipeline_cache,
-                presenter.create_surface ? &presenter : nullptr, &failure)) {
-        if (backend == GlesBackend::Vulkan) {
-            return std::shared_ptr<GlesRenderer>{std::move(accelerated)};
-        }
-        return std::make_shared<FallbackGlesRenderer>(
-            std::move(accelerated),
-            std::make_unique<SoftwareGlesRenderer>());
+    std::shared_ptr<GlesRenderer>& renderer_slot(GlesBackend backend,
+        const std::filesystem::path& pipeline_cache,
+        const VulkanPresenterConfiguration& presenter)
+    {
+        // Register this holder's destructor only after create_renderer()
+        // returns. Vulkan ICDs may register their own process-lifetime teardown
+        // during device creation; the renderer must be destroyed before those
+        // callbacks.
+        static std::shared_ptr<GlesRenderer> renderer =
+            create_renderer(backend, pipeline_cache, presenter);
+        return renderer;
     }
-    performance_counters().record_fallback(
-        PerfFallbackReason::VulkanUnavailable);
-#else
-    failure = "Vulkan support was not built";
-    performance_counters().record_fallback(
-        PerfFallbackReason::VulkanUnavailable);
-#endif
-
-    if (backend == GlesBackend::Vulkan) {
-        throw std::runtime_error{
-            "forced Vulkan GLES backend unavailable: " + failure};
-    }
-    return std::make_shared<SoftwareGlesRenderer>();
-}
-
-std::shared_ptr<GlesRenderer>&
-renderer_slot(GlesBackend backend,
-              const std::filesystem::path& pipeline_cache,
-              const VulkanPresenterConfiguration& presenter) {
-    // Register this holder's destructor only after create_renderer() returns.
-    // Vulkan ICDs may register their own process-lifetime teardown during
-    // device creation; the renderer must be destroyed before those callbacks.
-    static std::shared_ptr<GlesRenderer> renderer =
-        create_renderer(backend, pipeline_cache, presenter);
-    return renderer;
-}
 
 } // namespace
 
-std::shared_ptr<HostSurface>
-GlesRenderer::create_surface(HostSurfaceKey key,
-                             HostSurfaceDescriptor descriptor,
-                             std::span<const std::uint32_t> initial_pixels) {
+std::shared_ptr<HostSurface> GlesRenderer::create_surface(HostSurfaceKey key,
+    HostSurfaceDescriptor descriptor,
+    std::span<const std::uint32_t> initial_pixels)
+{
     return make_host_surface(key, descriptor, initial_pixels);
 }
 
-std::unique_ptr<CommandEncoder>
-GlesRenderer::create_command_encoder() {
+std::unique_ptr<CommandEncoder> GlesRenderer::create_command_encoder()
+{
     return make_cpu_command_encoder();
 }
 
-bool GlesRenderer::map_cpu(
-    HostSurface& surface, bool read, PerfCpuMapReason reason,
-    std::optional<HostRectangle>* readback_damage) {
+bool GlesRenderer::map_cpu(HostSurface& surface, bool read,
+    PerfCpuMapReason reason, std::optional<HostRectangle>* readback_damage)
+{
     if (readback_damage != nullptr)
         readback_damage->reset();
     if (!read)
@@ -308,80 +338,87 @@ bool GlesRenderer::map_cpu(
     return true;
 }
 
-HostNativeImage
-GlesRenderer::native_image(const HostSurface& surface) const {
+HostNativeImage GlesRenderer::native_image(const HostSurface& surface) const
+{
     static_cast<void>(surface);
-    return {};
+    return { };
 }
 
-HostGraphicsDevice::PresentResult
-GlesRenderer::present(const std::shared_ptr<HostSurface>& surface) {
+HostGraphicsDevice::PresentResult GlesRenderer::present(
+    const std::shared_ptr<HostSurface>& surface)
+{
     static_cast<void>(surface);
     return PresentResult::Failed;
 }
 
-bool GlesRenderer::native_presentation_available() const {
-    return false;
-}
+bool GlesRenderer::native_presentation_available() const { return false; }
 
-bool GlesRenderer::refresh_presentation_surface() {
-    return false;
-}
+bool GlesRenderer::refresh_presentation_surface() { return false; }
 
-void configure_gles_backend(GlesBackend backend) {
+void configure_gles_backend(GlesBackend backend)
+{
     auto& state = shared_renderer_state();
-    std::lock_guard lock{state.mutex};
+    std::lock_guard lock { state.mutex };
     if (state.renderer != nullptr && *state.renderer &&
         state.backend != backend) {
-        throw std::logic_error{
-            "GLES backend cannot change after renderer initialization"};
+        throw std::logic_error {
+            "GLES backend cannot change after renderer initialization"
+        };
     }
     state.backend = backend;
 }
 
-std::uint64_t allocate_gles_renderer_owner() {
-    static std::atomic<std::uint64_t> next_owner{1};
+std::uint64_t allocate_gles_renderer_owner()
+{
+    static std::atomic<std::uint64_t> next_owner { 1 };
     for (;;) {
-        const auto owner =
-            next_owner.fetch_add(1, std::memory_order_relaxed);
+        const auto owner = next_owner.fetch_add(1, std::memory_order_relaxed);
         if (owner != 0)
             return owner;
     }
 }
 
-void configure_gles_pipeline_cache(std::filesystem::path path) {
+void configure_gles_pipeline_cache(std::filesystem::path path)
+{
     auto& state = shared_renderer_state();
-    std::lock_guard lock{state.mutex};
+    std::lock_guard lock { state.mutex };
     if (state.renderer != nullptr && *state.renderer) {
-        throw std::logic_error{
-            "GLES pipeline cache path cannot change after initialization"};
+        throw std::logic_error {
+            "GLES pipeline cache path cannot change after initialization"
+        };
     }
     state.pipeline_cache = std::move(path);
 }
 
-void configure_gles_vulkan_presenter(
-    VulkanPresenterConfiguration configuration) {
+void configure_gles_vulkan_presenter(VulkanPresenterConfiguration configuration)
+{
     auto& state = shared_renderer_state();
-    std::lock_guard lock{state.mutex};
+    std::lock_guard lock { state.mutex };
     if (state.renderer != nullptr && *state.renderer) {
-        throw std::logic_error{
-            "Vulkan presenter cannot change after renderer initialization"};
+        throw std::logic_error {
+            "Vulkan presenter cannot change after renderer initialization"
+        };
     }
     state.presenter = std::move(configuration);
 }
 
-std::string_view gles_backend_name(GlesBackend backend) {
+std::string_view gles_backend_name(GlesBackend backend)
+{
     switch (backend) {
-    case GlesBackend::Auto: return "auto";
-    case GlesBackend::Software: return "software";
-    case GlesBackend::Vulkan: return "vulkan";
+    case GlesBackend::Auto:
+        return "auto";
+    case GlesBackend::Software:
+        return "software";
+    case GlesBackend::Vulkan:
+        return "vulkan";
     }
     return "unknown";
 }
 
-std::shared_ptr<GlesRenderer> shared_gles_renderer() {
+std::shared_ptr<GlesRenderer> shared_gles_renderer()
+{
     auto& state = shared_renderer_state();
-    std::lock_guard lock{state.mutex};
+    std::lock_guard lock { state.mutex };
     if (state.renderer == nullptr)
         state.renderer = &renderer_slot(
             state.backend, state.pipeline_cache, state.presenter);
@@ -391,23 +428,25 @@ std::shared_ptr<GlesRenderer> shared_gles_renderer() {
     return *state.renderer;
 }
 
-void release_gles_render_target(GlesRenderTargetKey target) {
-    release_gles_render_targets(std::span{&target, 1U});
+void release_gles_render_target(GlesRenderTargetKey target)
+{
+    release_gles_render_targets(std::span { &target, 1U });
 }
 
-void release_gles_render_targets(
-    std::span<const GlesRenderTargetKey> targets) {
+void release_gles_render_targets(std::span<const GlesRenderTargetKey> targets)
+{
     if (targets.empty())
         return;
     auto& state = shared_renderer_state();
-    std::lock_guard lock{state.mutex};
+    std::lock_guard lock { state.mutex };
     if (state.renderer != nullptr && *state.renderer)
         (*state.renderer)->release(targets);
 }
 
-void shutdown_gles_renderer() {
+void shutdown_gles_renderer()
+{
     auto& state = shared_renderer_state();
-    std::lock_guard lock{state.mutex};
+    std::lock_guard lock { state.mutex };
     if (state.renderer != nullptr)
         state.renderer->reset();
 }

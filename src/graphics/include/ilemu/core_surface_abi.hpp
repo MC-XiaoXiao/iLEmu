@@ -29,4 +29,4 @@ inline constexpr std::uint32_t bytes_per_bgra_pixel = 4;
 inline constexpr std::uint32_t lock_read_only = 0x00000001U;
 inline constexpr std::uint32_t lock_avoid_sync = 0x00000002U;
 
-}  // namespace ilemu::core_surface_abi
+} // namespace ilemu::core_surface_abi

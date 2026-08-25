@@ -16,19 +16,19 @@ namespace ilemu {
 // terminal read chunking and guest scheduling speed.
 class LiveTouchScheduler {
 public:
-  void schedule(std::span<const LiveTouchEvent> gesture);
-  [[nodiscard]] std::vector<TouchInput> poll();
-  [[nodiscard]] bool empty() const { return events_.empty(); }
-  [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
-  next_deadline() const;
+    void schedule(std::span<const LiveTouchEvent> gesture);
+    [[nodiscard]] std::vector<TouchInput> poll();
+    [[nodiscard]] bool empty() const { return events_.empty(); }
+    [[nodiscard]] std::optional<std::chrono::steady_clock::time_point>
+    next_deadline() const;
 
 private:
-  struct Event {
-    std::chrono::steady_clock::time_point deadline;
-    TouchInput input;
-  };
+    struct Event {
+        std::chrono::steady_clock::time_point deadline;
+        TouchInput input;
+    };
 
-  std::deque<Event> events_;
+    std::deque<Event> events_;
 };
 
 } // namespace ilemu

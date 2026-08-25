@@ -18,53 +18,59 @@
 namespace ilemu::xnu792::mig {
 namespace {
 
-template<typename Range>
-std::optional<RoutineInfo> find(
-    std::uint32_t identifier, Subsystem subsystem,
-    std::string_view subsystem_name, const Range& routines) {
-    for (const auto& descriptor : routines) {
-        if (static_cast<std::uint32_t>(descriptor.routine) == identifier) {
-            return RoutineInfo{
-                subsystem, identifier, subsystem_name, descriptor.name,
-                descriptor.arguments};
+    template <typename Range>
+    std::optional<RoutineInfo> find(std::uint32_t identifier,
+        Subsystem subsystem, std::string_view subsystem_name,
+        const Range& routines)
+    {
+        for (const auto& descriptor : routines) {
+            if (static_cast<std::uint32_t>(descriptor.routine) == identifier) {
+                return RoutineInfo { subsystem, identifier, subsystem_name,
+                    descriptor.name, descriptor.arguments };
+            }
         }
+        return std::nullopt;
     }
-    return std::nullopt;
-}
 
-bool descriptor_type(WireType type) {
-    return type == WireType::Port || type == WireType::OutOfLine ||
-           type == WireType::OutOfLinePorts;
-}
-
-bool participates(const ArgumentInfo& argument, WireLayoutSide side) {
-    return side == WireLayoutSide::Request
-               ? argument.direction == ArgumentDirection::In ||
-                     argument.direction == ArgumentDirection::InOut
-               : argument.direction == ArgumentDirection::Out ||
-                     argument.direction == ArgumentDirection::InOut;
-}
-
-constexpr std::uint32_t align_inline(std::uint32_t offset) {
-    return (offset + darwin::mig_wire::word_size - 1U) &
-           ~(darwin::mig_wire::word_size - 1U);
-}
-
-bool checked_add(std::uint32_t& value, std::uint32_t increment) {
-    if (increment > std::numeric_limits<std::uint32_t>::max() - value) {
-        return false;
+    bool descriptor_type(WireType type)
+    {
+        return type == WireType::Port || type == WireType::OutOfLine ||
+               type == WireType::OutOfLinePorts;
     }
-    value += increment;
-    return true;
-}
 
-}  // namespace
+    bool participates(const ArgumentInfo& argument, WireLayoutSide side)
+    {
+        return side == WireLayoutSide::Request
+                   ? argument.direction == ArgumentDirection::In ||
+                         argument.direction == ArgumentDirection::InOut
+                   : argument.direction == ArgumentDirection::Out ||
+                         argument.direction == ArgumentDirection::InOut;
+    }
+
+    constexpr std::uint32_t align_inline(std::uint32_t offset)
+    {
+        return (offset + darwin::mig_wire::word_size - 1U) &
+               ~(darwin::mig_wire::word_size - 1U);
+    }
+
+    bool checked_add(std::uint32_t& value, std::uint32_t increment)
+    {
+        if (increment > std::numeric_limits<std::uint32_t>::max() - value) {
+            return false;
+        }
+        value += increment;
+        return true;
+    }
+
+} // namespace
 
 std::optional<std::vector<ArgumentWirePosition>> compute_wire_layout(
     std::span<const ArgumentInfo> arguments, WireLayoutSide side,
-    std::span<const std::uint32_t> element_counts) {
+    std::span<const std::uint32_t> element_counts)
+{
     std::vector<ArgumentWirePosition> result(arguments.size());
-    if (arguments.empty()) return result;
+    if (arguments.empty())
+        return result;
 
     std::size_t descriptor_count = 0;
     for (std::size_t index = 1; index < arguments.size(); ++index) {
@@ -98,7 +104,8 @@ std::optional<std::vector<ArgumentWirePosition>> compute_wire_layout(
     std::size_t descriptor_index = 0;
     for (std::size_t index = 1; index < arguments.size(); ++index) {
         const auto& argument = arguments[index];
-        if (argument.attributes == "ServerAuditToken") continue;
+        if (argument.attributes == "ServerAuditToken")
+            continue;
         if (argument.attributes == "sreplyport") {
             if (side == WireLayoutSide::Request) {
                 result[index].offset =
@@ -111,7 +118,7 @@ std::optional<std::vector<ArgumentWirePosition>> compute_wire_layout(
                 result[index].offset =
                     darwin::mig_wire::descriptor_offset(descriptor_index++);
                 if ((argument.wire_type == WireType::OutOfLine ||
-                     argument.wire_type == WireType::OutOfLinePorts) &&
+                        argument.wire_type == WireType::OutOfLinePorts) &&
                     argument.element_size != 0) {
                     cursor = align_inline(cursor);
                     result[index].count_offset = cursor;
@@ -150,11 +157,10 @@ std::optional<std::vector<ArgumentWirePosition>> compute_wire_layout(
                 return std::nullopt;
             }
             result[index].offset = cursor;
-            const auto count = index < element_counts.size()
-                                   ? element_counts[index]
-                                   : 0U;
-            const auto bytes = static_cast<std::uint64_t>(count) *
-                               argument.element_size;
+            const auto count =
+                index < element_counts.size() ? element_counts[index] : 0U;
+            const auto bytes =
+                static_cast<std::uint64_t>(count) * argument.element_size;
             if (bytes > std::numeric_limits<std::uint32_t>::max() ||
                 (argument.wire_size != 0 && bytes > argument.wire_size) ||
                 !checked_add(cursor, static_cast<std::uint32_t>(bytes))) {
@@ -170,61 +176,50 @@ std::optional<std::vector<ArgumentWirePosition>> compute_wire_layout(
     return result;
 }
 
-std::optional<RoutineInfo> lookup_routine(std::uint32_t identifier) {
-    if (const auto result = find(
-            identifier, Subsystem::MachPort,
+std::optional<RoutineInfo> lookup_routine(std::uint32_t identifier)
+{
+    if (const auto result = find(identifier, Subsystem::MachPort,
             mach_port::subsystem_name, mach_port::routines)) {
         return result;
     }
-    if (const auto result = find(
-            identifier, Subsystem::Task,
+    if (const auto result = find(identifier, Subsystem::Task,
             task::subsystem_name, task::routines)) {
         return result;
     }
-    if (const auto result = find(
-            identifier, Subsystem::ThreadAct,
+    if (const auto result = find(identifier, Subsystem::ThreadAct,
             thread_act::subsystem_name, thread_act::routines)) {
         return result;
     }
-    if (const auto result = find(
-            identifier, Subsystem::Iokit,
+    if (const auto result = find(identifier, Subsystem::Iokit,
             device::subsystem_name, device::routines)) {
         return result;
     }
-    if (const auto result = find(
-            identifier, Subsystem::MachHost,
+    if (const auto result = find(identifier, Subsystem::MachHost,
             mach_host::subsystem_name, mach_host::routines)) {
         return result;
     }
-    if (const auto result = find(
-            identifier, Subsystem::VmMap,
+    if (const auto result = find(identifier, Subsystem::VmMap,
             vm_map::subsystem_name, vm_map::routines)) {
         return result;
     }
-    if (const auto result = find(
-            identifier, Subsystem::Clock,
+    if (const auto result = find(identifier, Subsystem::Clock,
             clock::subsystem_name, clock::routines)) {
         return result;
     }
-    if (const auto result = find(
-            identifier, Subsystem::ClockReply,
+    if (const auto result = find(identifier, Subsystem::ClockReply,
             clock_reply::subsystem_name, clock_reply::routines)) {
         return result;
     }
-    if (const auto result = find(
-            identifier, Subsystem::Semaphore,
+    if (const auto result = find(identifier, Subsystem::Semaphore,
             semaphore::subsystem_name, semaphore::routines)) {
         return result;
     }
-    if (const auto result = find(
-            identifier, Subsystem::Bootstrap,
+    if (const auto result = find(identifier, Subsystem::Bootstrap,
             bootstrap::subsystem_name, bootstrap::routines)) {
         return result;
     }
-    return find(
-        identifier, Subsystem::SystemConfiguration,
-        system_configuration::subsystem_name,
-        system_configuration::routines);
+    return find(identifier, Subsystem::SystemConfiguration,
+        system_configuration::subsystem_name, system_configuration::routines);
 }
 
-}  // namespace ilemu::xnu792::mig
+} // namespace ilemu::xnu792::mig

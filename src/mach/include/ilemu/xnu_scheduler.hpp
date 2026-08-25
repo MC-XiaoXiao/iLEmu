@@ -21,56 +21,57 @@ namespace ilemu {
 // model instead of assuming that the CPU clock equals the system bus clock.
 namespace xnu792::scheduler {
 
-constexpr std::size_t run_queue_count = 128;
-constexpr std::int32_t minimum_priority = 0;
-constexpr std::int32_t maximum_priority = 127;
-constexpr std::int32_t realtime_base_priority = 96;
-constexpr std::int32_t realtime_queue_priority = realtime_base_priority + 1;
-constexpr std::int32_t maximum_kernel_priority = 95;
-constexpr std::int32_t preempt_priority = maximum_kernel_priority - 2;
-constexpr std::int32_t maximum_user_priority = 63;
-constexpr std::int32_t default_base_priority = 31;
-constexpr std::uint64_t default_guest_ticks_per_second = 400'000'000;
-constexpr std::uint64_t default_preemption_rate = 100;
-constexpr std::uint64_t scheduler_ticks_per_second = 8;
-constexpr std::uint64_t scheduling_usage_decay_ticks = 32;
-constexpr std::uint64_t maximum_unsafe_quanta = 800;
-constexpr std::uint64_t scheduler_tick_shift = 3;
-constexpr std::uint64_t failsafe_release_scheduler_ticks =
-    (2 * maximum_unsafe_quanta / default_preemption_rate) *
-    (std::uint64_t{1} << scheduler_tick_shift);
-constexpr std::uint64_t milliseconds_per_second = 1'000;
-constexpr std::uint64_t standard_quantum_ticks =
-    default_guest_ticks_per_second / default_preemption_rate;
-constexpr std::uint64_t scheduler_tick_interval =
-    default_guest_ticks_per_second / scheduler_ticks_per_second;
-constexpr std::uint64_t microseconds_per_second = 1'000'000;
-constexpr std::uint64_t minimum_realtime_computation_ticks =
-    default_guest_ticks_per_second * 50 / microseconds_per_second;
-constexpr std::uint64_t maximum_realtime_computation_ticks =
-    default_guest_ticks_per_second * 50'000 / microseconds_per_second;
+    constexpr std::size_t run_queue_count = 128;
+    constexpr std::int32_t minimum_priority = 0;
+    constexpr std::int32_t maximum_priority = 127;
+    constexpr std::int32_t realtime_base_priority = 96;
+    constexpr std::int32_t realtime_queue_priority = realtime_base_priority + 1;
+    constexpr std::int32_t maximum_kernel_priority = 95;
+    constexpr std::int32_t preempt_priority = maximum_kernel_priority - 2;
+    constexpr std::int32_t maximum_user_priority = 63;
+    constexpr std::int32_t default_base_priority = 31;
+    constexpr std::uint64_t default_guest_ticks_per_second = 400'000'000;
+    constexpr std::uint64_t default_preemption_rate = 100;
+    constexpr std::uint64_t scheduler_ticks_per_second = 8;
+    constexpr std::uint64_t scheduling_usage_decay_ticks = 32;
+    constexpr std::uint64_t maximum_unsafe_quanta = 800;
+    constexpr std::uint64_t scheduler_tick_shift = 3;
+    constexpr std::uint64_t failsafe_release_scheduler_ticks =
+        (2 * maximum_unsafe_quanta / default_preemption_rate) *
+        (std::uint64_t { 1 } << scheduler_tick_shift);
+    constexpr std::uint64_t milliseconds_per_second = 1'000;
+    constexpr std::uint64_t standard_quantum_ticks =
+        default_guest_ticks_per_second / default_preemption_rate;
+    constexpr std::uint64_t scheduler_tick_interval =
+        default_guest_ticks_per_second / scheduler_ticks_per_second;
+    constexpr std::uint64_t microseconds_per_second = 1'000'000;
+    constexpr std::uint64_t minimum_realtime_computation_ticks =
+        default_guest_ticks_per_second * 50 / microseconds_per_second;
+    constexpr std::uint64_t maximum_realtime_computation_ticks =
+        default_guest_ticks_per_second * 50'000 / microseconds_per_second;
 
-}  // namespace xnu792::scheduler
+} // namespace xnu792::scheduler
 
 struct XnuThreadId {
-    std::uint32_t process{};
-    std::uint32_t thread{};
+    std::uint32_t process { };
+    std::uint32_t thread { };
 
     auto operator<=>(const XnuThreadId&) const = default;
 };
 
 struct XnuThreadWakeResult {
-    bool handled{};
-    bool preemption_needed{};
+    bool handled { };
+    bool preemption_needed { };
 
     constexpr explicit operator bool() const noexcept { return handled; }
 };
 
 struct XnuThreadIdHash {
-    [[nodiscard]] std::size_t operator()(XnuThreadId thread) const noexcept {
+    [[nodiscard]] std::size_t operator()(XnuThreadId thread) const noexcept
+    {
         const auto value = (static_cast<std::uint64_t>(thread.process) << 32U) |
                            static_cast<std::uint64_t>(thread.thread);
-        return std::hash<std::uint64_t>{}(value);
+        return std::hash<std::uint64_t> { }(value);
     }
 };
 
@@ -101,36 +102,40 @@ enum class XnuPreemption : std::uint8_t {
 
 struct XnuScheduledSlice {
     XnuThreadId thread;
-    std::size_t processor{};
-    std::uint64_t tick_budget{};
+    std::size_t processor { };
+    std::uint64_t tick_budget { };
     std::chrono::steady_clock::time_point runnable_since;
-    std::uint64_t runnable_generation{};
-    bool front_continuation{};
+    std::uint64_t runnable_generation { };
+    bool front_continuation { };
 };
 
 struct XnuThreadSchedulingInfo {
-    XnuThreadState state{XnuThreadState::Waiting};
-    std::int32_t base_priority{xnu792::scheduler::default_base_priority};
-    std::int32_t scheduled_priority{xnu792::scheduler::default_base_priority};
-    std::uint64_t remaining_quantum{xnu792::scheduler::standard_quantum_ticks};
-    std::uint64_t scheduling_usage{};
-    std::uint64_t cpu_usage{};
-    std::uint64_t scheduler_stamp{};
+    XnuThreadState state { XnuThreadState::Waiting };
+    std::int32_t base_priority { xnu792::scheduler::default_base_priority };
+    std::int32_t scheduled_priority {
+        xnu792::scheduler::default_base_priority
+    };
+    std::uint64_t remaining_quantum {
+        xnu792::scheduler::standard_quantum_ticks
+    };
+    std::uint64_t scheduling_usage { };
+    std::uint64_t cpu_usage { };
+    std::uint64_t scheduler_stamp { };
     std::optional<std::size_t> bound_processor;
     std::optional<std::size_t> last_processor;
-    std::uint64_t realtime_period{};
-    std::uint64_t realtime_computation{};
-    std::uint64_t realtime_constraint{};
-    std::uint64_t realtime_deadline{};
-    std::uint64_t computation_metered{};
-    std::uint64_t failsafe_release_tick{};
-    std::uint32_t remaining_timeslices{};
+    std::uint64_t realtime_period { };
+    std::uint64_t realtime_computation { };
+    std::uint64_t realtime_constraint { };
+    std::uint64_t realtime_deadline { };
+    std::uint64_t computation_metered { };
+    std::uint64_t failsafe_release_tick { };
+    std::uint32_t remaining_timeslices { };
     std::optional<std::size_t> timeslice_processor;
-    bool timeshare{true};
-    bool realtime{};
-    bool realtime_preemptible{};
-    bool failsafe{};
-    bool depressed{};
+    bool timeshare { true };
+    bool realtime { };
+    bool realtime_preemptible { };
+    bool failsafe { };
+    bool depressed { };
 };
 
 // A deterministic implementation of XNU 792's traditional processor-set run
@@ -147,8 +152,7 @@ public:
 
     void set_dispatch_diagnostics(bool enabled);
 
-    bool register_thread(
-        XnuThreadId thread,
+    bool register_thread(XnuThreadId thread,
         std::int32_t base_priority = xnu792::scheduler::default_base_priority,
         bool runnable = true);
     bool remove_thread(XnuThreadId thread);
@@ -166,11 +170,9 @@ public:
     bool resume_thread(XnuThreadId thread);
     bool set_base_priority(XnuThreadId thread, std::int32_t priority);
     bool depress(XnuThreadId thread, std::uint64_t duration_ticks = 0);
-    bool bind_thread(
-        XnuThreadId thread, std::optional<std::size_t> processor);
+    bool bind_thread(XnuThreadId thread, std::optional<std::size_t> processor);
     bool set_timeshare(XnuThreadId thread, bool timeshare);
-    bool set_realtime(
-        XnuThreadId thread, std::uint64_t period_ticks,
+    bool set_realtime(XnuThreadId thread, std::uint64_t period_ticks,
         std::uint64_t computation_ticks, std::uint64_t constraint_ticks,
         bool preemptible);
     // Realtime policy deadlines are defined from mach_absolute_time(), not
@@ -191,8 +193,7 @@ public:
     // processor from the running thread instead of confusing it with the
     // emulator's per-process CPU-context slot.
     [[nodiscard]] bool should_yield(XnuThreadId running_thread) const;
-    bool complete_slice(
-        XnuThreadId thread, std::uint64_t consumed_ticks,
+    bool complete_slice(XnuThreadId thread, std::uint64_t consumed_ticks,
         XnuSliceCompletion completion,
         XnuTimeAccounting time_accounting = XnuTimeAccounting::Advance);
     void advance_time(std::uint64_t elapsed_ticks);
@@ -207,7 +208,8 @@ public:
     [[nodiscard]] std::optional<XnuThreadSchedulingInfo> info(
         XnuThreadId thread) const;
     [[nodiscard]] std::size_t thread_count() const { return threads_.size(); }
-    [[nodiscard]] std::size_t processor_count() const {
+    [[nodiscard]] std::size_t processor_count() const
+    {
         return processor_run_queues_.size();
     }
     [[nodiscard]] std::size_t runnable_count() const { return runnable_count_; }
@@ -225,7 +227,10 @@ public:
         std::optional<XnuThreadId> excluded = std::nullopt) const;
     [[nodiscard]] std::size_t waiting_count() const;
     [[nodiscard]] std::int32_t highest_runnable_priority() const;
-    [[nodiscard]] std::uint64_t scheduler_tick() const { return scheduler_tick_; }
+    [[nodiscard]] std::uint64_t scheduler_tick() const
+    {
+        return scheduler_tick_;
+    }
 
 private:
     using ReadyQueue = std::list<XnuThreadId>;
@@ -237,44 +242,43 @@ private:
         // removal index for all priorities; this side index avoids a linear
         // deadline insertion/search on the scheduler hot path.
         std::set<RealtimeQueueKey> realtime_order;
-        std::array<std::uint32_t,
-                   xnu792::scheduler::run_queue_count / 32>
-            bitmap{};
-        std::int32_t high_queue{-1};
-        std::size_t count{};
+        std::array<std::uint32_t, xnu792::scheduler::run_queue_count / 32>
+            bitmap { };
+        std::int32_t high_queue { -1 };
+        std::size_t count { };
     };
 
     struct QueueCandidate {
         XnuThreadId thread;
-        std::int32_t priority{};
-        std::uint64_t realtime_deadline{};
-        std::uint64_t enqueue_sequence{};
-        bool realtime{};
-        bool front_continuation{};
-        bool local{};
+        std::int32_t priority { };
+        std::uint64_t realtime_deadline { };
+        std::uint64_t enqueue_sequence { };
+        bool realtime { };
+        bool front_continuation { };
+        bool local { };
     };
 
     struct ThreadRecord {
         XnuThreadSchedulingInfo info;
-        bool queued{};
-        std::int32_t queued_priority{};
-        std::uint64_t enqueue_sequence{};
+        bool queued { };
+        std::int32_t queued_priority { };
+        std::uint64_t enqueue_sequence { };
         std::chrono::steady_clock::time_point enqueued_at;
-        std::uint64_t runnable_generation{};
+        std::uint64_t runnable_generation { };
         // A partially used quantum stays at the queue head. Preserve that
         // continuation priority when local and global queues are compared.
-        bool front_continuation{};
+        bool front_continuation { };
         std::optional<ReadyQueue::iterator> queue_position;
         std::optional<RealtimeQueueKey> realtime_queue_key;
         std::optional<std::uint32_t> priority_usage_shift;
         std::optional<std::size_t> queued_processor;
         std::optional<std::uint64_t> depression_deadline;
-        std::uint32_t suspend_count{};
-        bool resume_runnable{};
-        bool wake_pending{};
-        std::int32_t failsafe_saved_base_priority{};
-        bool failsafe_saved_timeshare{};
-        bool failsafe_saved_realtime{};
+        std::uint32_t suspend_count { };
+        bool resume_runnable { };
+        bool wake_pending { };
+        std::int32_t failsafe_saved_base_priority { };
+        bool failsafe_saved_timeshare { };
+        bool failsafe_saved_realtime { };
     };
 
     enum class QueuePosition { Front, Back };
@@ -317,24 +321,24 @@ private:
     RunQueue processor_set_run_queue_;
     std::vector<RunQueue> processor_run_queues_;
     std::unordered_map<XnuThreadId, ThreadRecord, XnuThreadIdHash> threads_;
-    std::unordered_map<
-        std::uint32_t,
-        std::unordered_set<XnuThreadId, XnuThreadIdHash>> process_threads_;
+    std::unordered_map<std::uint32_t,
+        std::unordered_set<XnuThreadId, XnuThreadIdHash>>
+        process_threads_;
     std::set<std::pair<std::uint64_t, XnuThreadId>> depression_order_;
     std::set<std::pair<std::uint64_t, XnuThreadId>> failsafe_order_;
-    std::size_t runnable_count_{};
-    std::size_t waiting_count_{};
-    std::size_t active_timeshare_count_{};
-    std::uint64_t quantum_ticks_{};
-    std::uint64_t scheduler_tick_ticks_{};
-    std::uint32_t priority_usage_shift_{};
-    std::uint64_t elapsed_since_scheduler_tick_{};
-    std::uint64_t elapsed_ticks_{};
-    std::uint64_t realtime_clock_ticks_{};
-    bool external_realtime_clock_{};
-    std::uint64_t scheduler_tick_{};
-    std::uint64_t next_enqueue_sequence_{};
-    bool dispatch_diagnostics_enabled_{};
+    std::size_t runnable_count_ { };
+    std::size_t waiting_count_ { };
+    std::size_t active_timeshare_count_ { };
+    std::uint64_t quantum_ticks_ { };
+    std::uint64_t scheduler_tick_ticks_ { };
+    std::uint32_t priority_usage_shift_ { };
+    std::uint64_t elapsed_since_scheduler_tick_ { };
+    std::uint64_t elapsed_ticks_ { };
+    std::uint64_t realtime_clock_ticks_ { };
+    bool external_realtime_clock_ { };
+    std::uint64_t scheduler_tick_ { };
+    std::uint64_t next_enqueue_sequence_ { };
+    bool dispatch_diagnostics_enabled_ { };
 };
 
-}  // namespace ilemu
+} // namespace ilemu

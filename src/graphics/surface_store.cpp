@@ -19,93 +19,102 @@
 namespace ilemu {
 namespace {
 
-std::atomic<std::uint64_t> next_host_surface_sequence{1};
+    std::atomic<std::uint64_t> next_host_surface_sequence { 1 };
 
-std::uint64_t allocate_host_surface_sequence() {
-    auto sequence =
-        next_host_surface_sequence.fetch_add(1, std::memory_order_relaxed);
-    if (sequence == 0) {
-        sequence =
-            next_host_surface_sequence.fetch_add(1,
-                                                 std::memory_order_relaxed);
+    std::uint64_t allocate_host_surface_sequence()
+    {
+        auto sequence =
+            next_host_surface_sequence.fetch_add(1, std::memory_order_relaxed);
+        if (sequence == 0) {
+            sequence = next_host_surface_sequence.fetch_add(
+                1, std::memory_order_relaxed);
+        }
+        return sequence;
     }
-    return sequence;
-}
 
-std::uint8_t clamp_channel(std::int32_t value) {
-    return static_cast<std::uint8_t>(std::clamp(value, 0, 255));
-}
+    std::uint8_t clamp_channel(std::int32_t value)
+    {
+        return static_cast<std::uint8_t>(std::clamp(value, 0, 255));
+    }
 
-std::uint32_t decode_yuv(std::uint8_t y, std::uint8_t u, std::uint8_t v) {
-    const auto luminance = std::max(0, static_cast<std::int32_t>(y) - 16);
-    const auto blue_difference = static_cast<std::int32_t>(u) - 128;
-    const auto red_difference = static_cast<std::int32_t>(v) - 128;
-    const auto red = clamp_channel(
-        (298 * luminance + 409 * red_difference + 128) >> 8);
-    const auto green = clamp_channel(
-        (298 * luminance - 100 * blue_difference - 208 * red_difference +
-         128) >>
-        8);
-    const auto blue = clamp_channel(
-        (298 * luminance + 516 * blue_difference + 128) >> 8);
-    return 0xff000000U | (static_cast<std::uint32_t>(red) << 16U) |
-           (static_cast<std::uint32_t>(green) << 8U) | blue;
-}
+    std::uint32_t decode_yuv(std::uint8_t y, std::uint8_t u, std::uint8_t v)
+    {
+        const auto luminance = std::max(0, static_cast<std::int32_t>(y) - 16);
+        const auto blue_difference = static_cast<std::int32_t>(u) - 128;
+        const auto red_difference = static_cast<std::int32_t>(v) - 128;
+        const auto red =
+            clamp_channel((298 * luminance + 409 * red_difference + 128) >> 8);
+        const auto green =
+            clamp_channel((298 * luminance - 100 * blue_difference -
+                              208 * red_difference + 128) >>
+                          8);
+        const auto blue =
+            clamp_channel((298 * luminance + 516 * blue_difference + 128) >> 8);
+        return 0xff000000U | (static_cast<std::uint32_t>(red) << 16U) |
+               (static_cast<std::uint32_t>(green) << 8U) | blue;
+    }
 
-struct YuvSample {
-    std::uint8_t y{};
-    std::uint8_t u{};
-    std::uint8_t v{};
-};
-
-YuvSample encode_yuv(std::uint32_t pixel) {
-    const auto red = static_cast<std::int32_t>((pixel >> 16U) & 0xffU);
-    const auto green = static_cast<std::int32_t>((pixel >> 8U) & 0xffU);
-    const auto blue = static_cast<std::int32_t>(pixel & 0xffU);
-    return YuvSample{
-        clamp_channel(((66 * red + 129 * green + 25 * blue + 128) >> 8) +
-                      16),
-        clamp_channel(((-38 * red - 74 * green + 112 * blue + 128) >> 8) +
-                      128),
-        clamp_channel(((112 * red - 94 * green - 18 * blue + 128) >> 8) +
-                      128),
+    struct YuvSample {
+        std::uint8_t y { };
+        std::uint8_t u { };
+        std::uint8_t v { };
     };
-}
 
-void normalize_written_ranges(std::vector<AddressSpace::WrittenRange>& ranges) {
-    std::ranges::sort(ranges, {}, [](const AddressSpace::WrittenRange& range) {
-        return range.address;
-    });
-    std::vector<AddressSpace::WrittenRange> normalized;
-    normalized.reserve(ranges.size());
-    for (const auto range : ranges) {
-        if (range.size == 0) continue;
-        if (normalized.empty()) {
-            normalized.push_back(range);
-            continue;
-        }
-        auto& previous = normalized.back();
-        const auto previous_end =
-            static_cast<std::uint64_t>(previous.address) + previous.size;
-        const auto range_end = static_cast<std::uint64_t>(range.address) + range.size;
-        if (range.address > previous_end) {
-            normalized.push_back(range);
-            continue;
-        }
-        previous.size = static_cast<std::uint32_t>(std::max(previous_end, range_end) -
-                                                   previous.address);
+    YuvSample encode_yuv(std::uint32_t pixel)
+    {
+        const auto red = static_cast<std::int32_t>((pixel >> 16U) & 0xffU);
+        const auto green = static_cast<std::int32_t>((pixel >> 8U) & 0xffU);
+        const auto blue = static_cast<std::int32_t>(pixel & 0xffU);
+        return YuvSample {
+            clamp_channel(
+                ((66 * red + 129 * green + 25 * blue + 128) >> 8) + 16),
+            clamp_channel(
+                ((-38 * red - 74 * green + 112 * blue + 128) >> 8) + 128),
+            clamp_channel(
+                ((112 * red - 94 * green - 18 * blue + 128) >> 8) + 128),
+        };
     }
-    ranges = std::move(normalized);
-}
+
+    void normalize_written_ranges(
+        std::vector<AddressSpace::WrittenRange>& ranges)
+    {
+        std::ranges::sort(
+            ranges, { }, [](const AddressSpace::WrittenRange& range) {
+                return range.address;
+            });
+        std::vector<AddressSpace::WrittenRange> normalized;
+        normalized.reserve(ranges.size());
+        for (const auto range : ranges) {
+            if (range.size == 0)
+                continue;
+            if (normalized.empty()) {
+                normalized.push_back(range);
+                continue;
+            }
+            auto& previous = normalized.back();
+            const auto previous_end =
+                static_cast<std::uint64_t>(previous.address) + previous.size;
+            const auto range_end =
+                static_cast<std::uint64_t>(range.address) + range.size;
+            if (range.address > previous_end) {
+                normalized.push_back(range);
+                continue;
+            }
+            previous.size = static_cast<std::uint32_t>(
+                std::max(previous_end, range_end) - previous.address);
+        }
+        ranges = std::move(normalized);
+    }
 
 } // namespace
 
 class SurfaceTransportLease {
-  public:
-    ~SurfaceTransportLease() {
+public:
+    ~SurfaceTransportLease()
+    {
         std::optional<std::uint64_t> released_target;
         {
-            std::lock_guard lock{registry_->mutex};
+            std::lock_guard lock { registry_->mutex };
             const auto object = registry_->objects.find(id_);
             if (object == registry_->objects.end() ||
                 object->second.metadata.provenance.publication_sequence !=
@@ -122,31 +131,33 @@ class SurfaceTransportLease {
             registry_->objects.erase(object);
         }
         if (released_target)
-            release_gles_render_target({0, *released_target});
+            release_gles_render_target({ 0, *released_target });
     }
 
-  private:
+private:
     friend class SurfaceStore;
-    SurfaceTransportLease(std::shared_ptr<SurfaceStore::SharedRegistry> registry,
-                          std::uint32_t id,
-                          std::uint64_t publication_sequence)
-        : registry_{std::move(registry)}, id_{id},
-          publication_sequence_{publication_sequence} {}
+    SurfaceTransportLease(
+        std::shared_ptr<SurfaceStore::SharedRegistry> registry,
+        std::uint32_t id, std::uint64_t publication_sequence)
+        : registry_ { std::move(registry) }
+        , id_ { id }
+        , publication_sequence_ { publication_sequence }
+    {
+    }
 
     std::shared_ptr<SurfaceStore::SharedRegistry> registry_;
-    std::uint32_t id_{};
-    std::uint64_t publication_sequence_{};
+    std::uint32_t id_ { };
+    std::uint64_t publication_sequence_ { };
 };
 
-SurfaceStore::~SurfaceStore() {
-    reset();
-}
+SurfaceStore::~SurfaceStore() { reset(); }
 
-void SurfaceStore::reset() {
+void SurfaceStore::reset()
+{
     const auto registry = registry_;
     std::vector<GlesRenderTargetKey> released_targets;
     {
-        std::scoped_lock lock{mutex_, registry->mutex};
+        std::scoped_lock lock { mutex_, registry->mutex };
         for (const auto& [id, backing] : backings_) {
             static_cast<void>(backing);
             const auto object = registry->objects.find(id);
@@ -155,8 +166,8 @@ void SurfaceStore::reset() {
             if (object->second.store_references > 1) {
                 --object->second.store_references;
             } else {
-                released_targets.push_back(
-                    {0, object->second.metadata.provenance.publication_sequence});
+                released_targets.push_back({ 0,
+                    object->second.metadata.provenance.publication_sequence });
                 registry->objects.erase(object);
             }
         }
@@ -166,7 +177,8 @@ void SurfaceStore::reset() {
     release_gles_render_targets(released_targets);
 }
 
-void SurfaceStore::inherit_state(const SurfaceStore& parent) {
+void SurfaceStore::inherit_state(const SurfaceStore& parent)
+{
     if (this == &parent)
         return;
     reset();
@@ -175,9 +187,9 @@ void SurfaceStore::inherit_state(const SurfaceStore& parent) {
     std::map<std::uint32_t, std::size_t> inherited_references;
     std::shared_ptr<SharedRegistry> inherited_registry;
     {
-        std::lock_guard parent_lock{parent.mutex_};
+        std::lock_guard parent_lock { parent.mutex_ };
         inherited_registry = parent.registry_;
-        std::lock_guard registry_lock{inherited_registry->mutex};
+        std::lock_guard registry_lock { inherited_registry->mutex };
         inherited = parent.backings_;
         inherited_references = parent.backing_references_;
         for (const auto& [id, backing] : inherited) {
@@ -188,29 +200,31 @@ void SurfaceStore::inherit_state(const SurfaceStore& parent) {
         }
     }
     {
-        std::lock_guard lock{mutex_};
+        std::lock_guard lock { mutex_ };
         backings_ = std::move(inherited);
         backing_references_ = std::move(inherited_references);
         registry_ = std::move(inherited_registry);
     }
 }
 
-void SurfaceStore::share_registry(const SurfaceStore& peer) {
+void SurfaceStore::share_registry(const SurfaceStore& peer)
+{
     if (this == &peer)
         return;
 
     std::shared_ptr<SharedRegistry> shared;
     {
-        std::lock_guard peer_lock{peer.mutex_};
+        std::lock_guard peer_lock { peer.mutex_ };
         shared = peer.registry_;
     }
     reset();
-    std::lock_guard lock{mutex_};
+    std::lock_guard lock { mutex_ };
     registry_ = std::move(shared);
 }
 
-std::uint32_t SurfaceStore::allocate_identifier() {
-    std::lock_guard lock{registry_->mutex};
+std::uint32_t SurfaceStore::allocate_identifier()
+{
+    std::lock_guard lock { registry_->mutex };
     while (registry_->next_identifier == 0 ||
            registry_->objects.contains(registry_->next_identifier)) {
         ++registry_->next_identifier;
@@ -218,12 +232,14 @@ std::uint32_t SurfaceStore::allocate_identifier() {
     return registry_->next_identifier++;
 }
 
-std::uint64_t SurfaceStore::publication_watermark() const {
-    std::lock_guard lock{registry_->mutex};
+std::uint64_t SurfaceStore::publication_watermark() const
+{
+    std::lock_guard lock { registry_->mutex };
     return registry_->publication_watermark;
 }
 
-bool SurfaceStore::publish(AddressSpace& memory, Backing backing) {
+bool SurfaceStore::publish(AddressSpace& memory, Backing backing)
+{
     if (backing.id == 0 || backing.base == 0 || backing.allocation_size == 0) {
         return false;
     }
@@ -243,7 +259,7 @@ bool SurfaceStore::publish(AddressSpace& memory, Backing backing) {
     const auto registry = registry_;
     const auto published_id = backing.id;
     {
-        std::scoped_lock lock{mutex_, registry->mutex};
+        std::scoped_lock lock { mutex_, registry->mutex };
         if (registry->objects.contains(backing.id) ||
             backings_.contains(backing.id)) {
             return false;
@@ -260,11 +276,10 @@ bool SurfaceStore::publish(AddressSpace& memory, Backing backing) {
         object.pages = std::move(*pages);
         if (surface_bytes_per_pixel(backing.pixel_format) != 0U) {
             object.host_surface = shared_gles_renderer()->create_surface(
-                {0, backing.provenance.publication_sequence},
-                HostSurfaceDescriptor{backing.width, backing.height,
-                                      backing.bytes_per_row,
-                                      backing.pixel_format,
-                                      PerfSurfaceKind::CoreSurface});
+                { 0, backing.provenance.publication_sequence },
+                HostSurfaceDescriptor { backing.width, backing.height,
+                    backing.bytes_per_row, backing.pixel_format,
+                    PerfSurfaceKind::CoreSurface });
         }
         object.sync_state = std::make_shared<SyncState>();
         object.store_references = 1;
@@ -278,8 +293,8 @@ bool SurfaceStore::publish(AddressSpace& memory, Backing backing) {
         if (const auto surface = host_surface(published_id))
             surface->replace_cpu(*pixels);
         if (const auto published = find(published_id)) {
-            update_guest_snapshot(
-                *published, HostRectangle{0, 0, published->width, published->height},
+            update_guest_snapshot(*published,
+                HostRectangle { 0, 0, published->width, published->height },
                 *pixels);
         }
     }
@@ -288,49 +303,51 @@ bool SurfaceStore::publish(AddressSpace& memory, Backing backing) {
     return true;
 }
 
-std::optional<SurfaceStore::SharedMapping>
-SurfaceStore::shared_mapping(std::uint32_t id) const {
+std::optional<SurfaceStore::SharedMapping> SurfaceStore::shared_mapping(
+    std::uint32_t id) const
+{
     const auto registry = registry_;
-    std::lock_guard lock{registry->mutex};
+    std::lock_guard lock { registry->mutex };
     const auto found = registry->objects.find(id);
     if (found == registry->objects.end())
         return std::nullopt;
-    return SharedMapping{found->second.metadata, found->second.mapping_size};
+    return SharedMapping { found->second.metadata, found->second.mapping_size };
 }
 
-std::shared_ptr<SurfaceTransportLease>
-SurfaceStore::acquire_transport_lease(std::uint32_t id) const {
+std::shared_ptr<SurfaceTransportLease> SurfaceStore::acquire_transport_lease(
+    std::uint32_t id) const
+{
     const auto registry = registry_;
-    std::lock_guard lock{registry->mutex};
+    std::lock_guard lock { registry->mutex };
     const auto object = registry->objects.find(id);
     if (object == registry->objects.end() ||
         object->second.store_references ==
             std::numeric_limits<std::size_t>::max()) {
-        return {};
+        return { };
     }
     ++object->second.store_references;
-    return std::shared_ptr<SurfaceTransportLease>{new SurfaceTransportLease{
+    return std::shared_ptr<SurfaceTransportLease> { new SurfaceTransportLease {
         registry, id,
-        object->second.metadata.provenance.publication_sequence}};
+        object->second.metadata.provenance.publication_sequence } };
 }
 
-std::optional<SurfaceStore::Backing>
-SurfaceStore::import(AddressSpace& memory, std::uint32_t id,
-                     std::uint32_t mapping_address) {
+std::optional<SurfaceStore::Backing> SurfaceStore::import(
+    AddressSpace& memory, std::uint32_t id, std::uint32_t mapping_address)
+{
     const auto expected = shared_mapping(id);
     if (!expected)
         return std::nullopt;
     return import(memory, *expected, mapping_address, nullptr);
 }
 
-std::optional<SurfaceStore::Backing>
-SurfaceStore::import(AddressSpace& memory, const SharedMapping& expected,
-                     std::uint32_t mapping_address,
-                     std::uint64_t* mapping_lease_token) {
+std::optional<SurfaceStore::Backing> SurfaceStore::import(AddressSpace& memory,
+    const SharedMapping& expected, std::uint32_t mapping_address,
+    std::uint64_t* mapping_lease_token)
+{
     if (mapping_lease_token)
         *mapping_lease_token = 0;
     const auto registry = registry_;
-    std::scoped_lock lock{mutex_, registry->mutex};
+    std::scoped_lock lock { mutex_, registry->mutex };
     const auto id = expected.metadata.id;
     if (const auto local = backings_.find(id); local != backings_.end()) {
         if (mapping_lease_token)
@@ -343,11 +360,9 @@ SurfaceStore::import(AddressSpace& memory, const SharedMapping& expected,
     const auto& object = found->second;
     if (object.metadata.provenance.publication_sequence !=
             expected.metadata.provenance.publication_sequence ||
-        object.mapping_size != expected.mapping_size ||
-        mapping_address == 0 ||
+        object.mapping_size != expected.mapping_size || mapping_address == 0 ||
         mapping_address % AddressSpace::page_size != 0 ||
-        !memory.map_page_backings(
-            mapping_address, object.mapping_size,
+        !memory.map_page_backings(mapping_address, object.mapping_size,
             MemoryPermission::Read | MemoryPermission::Write, object.pages,
             AddressSpace::PageMappingMode::Shared, mapping_lease_token)) {
         return std::nullopt;
@@ -360,8 +375,9 @@ SurfaceStore::import(AddressSpace& memory, const SharedMapping& expected,
     return local;
 }
 
-bool SurfaceStore::retain(std::uint32_t id) {
-    std::lock_guard lock{mutex_};
+bool SurfaceStore::retain(std::uint32_t id)
+{
+    std::lock_guard lock { mutex_ };
     if (!backings_.contains(id))
         return false;
     auto reference = backing_references_.find(id);
@@ -373,11 +389,12 @@ bool SurfaceStore::retain(std::uint32_t id) {
     return true;
 }
 
-void SurfaceStore::release(std::uint32_t id) {
+void SurfaceStore::release(std::uint32_t id)
+{
     const auto registry = registry_;
     std::optional<std::uint64_t> released_target;
     {
-        std::scoped_lock lock{mutex_, registry->mutex};
+        std::scoped_lock lock { mutex_, registry->mutex };
         const auto backing = backings_.find(id);
         if (backing == backings_.end())
             return;
@@ -402,65 +419,66 @@ void SurfaceStore::release(std::uint32_t id) {
         }
     }
     if (released_target)
-        release_gles_render_target({0, *released_target});
+        release_gles_render_target({ 0, *released_target });
 }
 
-std::optional<SurfaceStore::Backing>
-SurfaceStore::find(std::uint32_t id) const {
-    std::lock_guard lock{mutex_};
+std::optional<SurfaceStore::Backing> SurfaceStore::find(std::uint32_t id) const
+{
+    std::lock_guard lock { mutex_ };
     const auto found = backings_.find(id);
     return found == backings_.end() ? std::nullopt
-                                    : std::optional<Backing>{found->second};
+                                    : std::optional<Backing> { found->second };
 }
 
-std::shared_ptr<HostSurface>
-SurfaceStore::host_surface(std::uint32_t id) const {
+std::shared_ptr<HostSurface> SurfaceStore::host_surface(std::uint32_t id) const
+{
     const auto registry = registry_;
-    std::lock_guard lock{registry->mutex};
+    std::lock_guard lock { registry->mutex };
     const auto found = registry->objects.find(id);
     return found == registry->objects.end() ? nullptr
                                             : found->second.host_surface;
 }
 
-std::shared_ptr<SurfaceStore::SyncState>
-SurfaceStore::shared_sync_state(std::uint32_t id) const {
+std::shared_ptr<SurfaceStore::SyncState> SurfaceStore::shared_sync_state(
+    std::uint32_t id) const
+{
     const auto registry = registry_;
-    std::lock_guard lock{registry->mutex};
+    std::lock_guard lock { registry->mutex };
     const auto found = registry->objects.find(id);
-    return found == registry->objects.end() ? nullptr : found->second.sync_state;
+    return found == registry->objects.end() ? nullptr
+                                            : found->second.sync_state;
 }
 
-std::optional<std::vector<std::uint32_t>>
-SurfaceStore::read_argb(AddressSpace& memory, std::uint32_t id) const {
+std::optional<std::vector<std::uint32_t>> SurfaceStore::read_argb(
+    AddressSpace& memory, std::uint32_t id) const
+{
     const auto backing = find(id);
-    if (!backing ||
-        (backing->pixel_format != surface_pixel_format_bgra &&
-         !surface_is_yuv422(backing->pixel_format))) {
+    if (!backing || (backing->pixel_format != surface_pixel_format_bgra &&
+                        !surface_is_yuv422(backing->pixel_format))) {
         return std::nullopt;
     }
     const auto surface = host_surface(id);
-    if (surface &&
-        surface->gpu_generation() > surface->cpu_generation()) {
+    if (surface && surface->gpu_generation() > surface->cpu_generation()) {
         if (!shared_gles_renderer()->map_cpu(
                 *surface, true, PerfCpuMapReason::CoreSurface))
             return std::nullopt;
-        auto mapping =
-            surface->map_cpu(false, PerfCpuMapReason::CoreSurface);
+        auto mapping = surface->map_cpu(false, PerfCpuMapReason::CoreSurface);
         return mapping.frame().pixels;
     }
     auto pixels = read_guest_argb(memory, *backing);
     if (pixels) {
-        if (surface) surface->replace_cpu(*pixels);
-        update_guest_snapshot(
-            *backing, HostRectangle{0, 0, backing->width, backing->height}, *pixels);
+        if (surface)
+            surface->replace_cpu(*pixels);
+        update_guest_snapshot(*backing,
+            HostRectangle { 0, 0, backing->width, backing->height }, *pixels);
         update_guest_sync_generation(memory, *backing);
     }
     return pixels;
 }
 
-std::optional<std::vector<std::uint32_t>>
-SurfaceStore::read_guest_argb(AddressSpace& memory,
-                              const Backing& backing) const {
+std::optional<std::vector<std::uint32_t>> SurfaceStore::read_guest_argb(
+    AddressSpace& memory, const Backing& backing) const
+{
     const auto yuv = surface_is_yuv422(backing.pixel_format);
     if (backing.pixel_format != surface_pixel_format_bgra && !yuv)
         return std::nullopt;
@@ -472,11 +490,10 @@ SurfaceStore::read_guest_argb(AddressSpace& memory,
     if (row_bytes > backing.bytes_per_row)
         return std::nullopt;
     const auto required =
-        backing.height == 0
-            ? 0
-            : static_cast<std::uint64_t>(backing.height - 1U) *
-                      backing.bytes_per_row +
-                  row_bytes;
+        backing.height == 0 ? 0
+                            : static_cast<std::uint64_t>(backing.height - 1U) *
+                                      backing.bytes_per_row +
+                                  row_bytes;
     if (required > backing.allocation_size ||
         required > std::numeric_limits<std::size_t>::max()) {
         return std::nullopt;
@@ -485,14 +502,15 @@ SurfaceStore::read_guest_argb(AddressSpace& memory,
         memory.read_bytes(backing.base, static_cast<std::size_t>(required));
     if (!source)
         return std::nullopt;
-    std::vector<std::uint32_t> pixels(static_cast<std::size_t>(backing.width) *
-                                      backing.height);
+    std::vector<std::uint32_t> pixels(
+        static_cast<std::size_t>(backing.width) * backing.height);
     for (std::uint32_t y = 0; y < backing.height; ++y) {
         if (surface_is_yuv422(backing.pixel_format)) {
             const auto row_offset =
                 static_cast<std::size_t>(y) * backing.bytes_per_row;
             for (std::uint32_t x = 0; x < backing.width; x += 2U) {
-                const auto offset = row_offset + static_cast<std::size_t>(x) * 2U;
+                const auto offset =
+                    row_offset + static_cast<std::size_t>(x) * 2U;
                 const auto first =
                     std::to_integer<std::uint8_t>((*source)[offset]);
                 const auto second =
@@ -515,11 +533,11 @@ SurfaceStore::read_guest_argb(AddressSpace& memory,
             continue;
         }
         if constexpr (std::endian::native == std::endian::little) {
-            std::memcpy(pixels.data() +
-                            static_cast<std::size_t>(y) * backing.width,
-                        source->data() + static_cast<std::size_t>(y) *
-                                             backing.bytes_per_row,
-                        static_cast<std::size_t>(row_bytes));
+            std::memcpy(
+                pixels.data() + static_cast<std::size_t>(y) * backing.width,
+                source->data() +
+                    static_cast<std::size_t>(y) * backing.bytes_per_row,
+                static_cast<std::size_t>(row_bytes));
             continue;
         }
         for (std::uint32_t x = 0; x < backing.width; ++x) {
@@ -540,15 +558,12 @@ SurfaceStore::read_guest_argb(AddressSpace& memory,
     return pixels;
 }
 
-std::optional<std::vector<std::uint32_t>>
-SurfaceStore::read_guest_argb_region(
-    AddressSpace& memory, const Backing& backing,
-    HostRectangle rectangle) const {
-    constexpr auto pixel_size =
-        core_surface_abi::bytes_per_bgra_pixel;
-    if (rectangle.x < 0 || rectangle.y < 0 ||
-        rectangle.width == 0 || rectangle.height == 0 ||
-        rectangle.width > backing.width ||
+std::optional<std::vector<std::uint32_t>> SurfaceStore::read_guest_argb_region(
+    AddressSpace& memory, const Backing& backing, HostRectangle rectangle) const
+{
+    constexpr auto pixel_size = core_surface_abi::bytes_per_bgra_pixel;
+    if (rectangle.x < 0 || rectangle.y < 0 || rectangle.width == 0 ||
+        rectangle.height == 0 || rectangle.width > backing.width ||
         rectangle.height > backing.height ||
         static_cast<std::uint32_t>(rectangle.x) >
             backing.width - rectangle.width ||
@@ -565,65 +580,52 @@ SurfaceStore::read_guest_argb_region(
         return std::nullopt;
     }
     std::vector<std::uint32_t> pixels(
-        static_cast<std::size_t>(rectangle.width) *
-        rectangle.height);
+        static_cast<std::size_t>(rectangle.width) * rectangle.height);
     for (std::uint32_t row = 0; row < rectangle.height; ++row) {
-        const auto source_y =
-            static_cast<std::uint32_t>(rectangle.y) + row;
+        const auto source_y = static_cast<std::uint32_t>(rectangle.y) + row;
         const auto offset =
-            static_cast<std::uint64_t>(source_y) *
-                backing.bytes_per_row +
+            static_cast<std::uint64_t>(source_y) * backing.bytes_per_row +
             static_cast<std::uint64_t>(
                 static_cast<std::uint32_t>(rectangle.x)) *
                 pixel_size;
         if (offset > backing.allocation_size ||
             row_bytes > backing.allocation_size - offset ||
-            offset + row_bytes >
-                std::numeric_limits<std::uint32_t>::max() ||
-            backing.base >
-                std::numeric_limits<std::uint32_t>::max() -
-                    (offset + row_bytes)) {
+            offset + row_bytes > std::numeric_limits<std::uint32_t>::max() ||
+            backing.base > std::numeric_limits<std::uint32_t>::max() -
+                               (offset + row_bytes)) {
             return std::nullopt;
         }
-        const auto bytes = memory.read_bytes(
-            backing.base + static_cast<std::uint32_t>(offset),
-            static_cast<std::size_t>(row_bytes));
+        const auto bytes =
+            memory.read_bytes(backing.base + static_cast<std::uint32_t>(offset),
+                static_cast<std::size_t>(row_bytes));
         if (!bytes)
             return std::nullopt;
-        if constexpr (std::endian::native ==
-                      std::endian::little) {
+        if constexpr (std::endian::native == std::endian::little) {
             std::memcpy(
-                pixels.data() +
-                    static_cast<std::size_t>(row) *
-                        rectangle.width,
+                pixels.data() + static_cast<std::size_t>(row) * rectangle.width,
                 bytes->data(), static_cast<std::size_t>(row_bytes));
         } else {
             for (std::uint32_t x = 0; x < rectangle.width; ++x) {
-                const auto byte =
-                    static_cast<std::size_t>(x) * pixel_size;
+                const auto byte = static_cast<std::size_t>(x) * pixel_size;
                 const auto blue =
                     std::to_integer<std::uint32_t>((*bytes)[byte]);
-                const auto green = std::to_integer<std::uint32_t>(
-                    (*bytes)[byte + 1U]);
+                const auto green =
+                    std::to_integer<std::uint32_t>((*bytes)[byte + 1U]);
                 const auto red =
-                    std::to_integer<std::uint32_t>(
-                        (*bytes)[byte + 2U]);
-                const auto alpha = std::to_integer<std::uint32_t>(
-                    (*bytes)[byte + 3U]);
-                pixels[static_cast<std::size_t>(row) *
-                           rectangle.width +
-                       x] =
-                    (alpha << 24U) | (red << 16U) |
-                    (green << 8U) | blue;
+                    std::to_integer<std::uint32_t>((*bytes)[byte + 2U]);
+                const auto alpha =
+                    std::to_integer<std::uint32_t>((*bytes)[byte + 3U]);
+                pixels[static_cast<std::size_t>(row) * rectangle.width + x] =
+                    (alpha << 24U) | (red << 16U) | (green << 8U) | blue;
             }
         }
     }
     return pixels;
 }
 
-bool SurfaceStore::synchronize_for_cpu(AddressSpace& memory,
-                                       std::uint32_t id,
-                                       CpuSynchronizationOptions options) const {
+bool SurfaceStore::synchronize_for_cpu(AddressSpace& memory, std::uint32_t id,
+    CpuSynchronizationOptions options) const
+{
     const auto backing = find(id);
     if (!backing)
         return false;
@@ -638,15 +640,17 @@ bool SurfaceStore::synchronize_for_cpu(AddressSpace& memory,
     // materialization here would expose stale Guest bytes (for example to the
     // firmware snapshot encoder). Preserve AvoidSync only for writable
     // ownership, where the caller did not request readable contents.
-    if (options.avoid_sync && !options.read_only) return true;
+    if (options.avoid_sync && !options.read_only)
+        return true;
 
     const auto sync_state = shared_sync_state(id);
-    if (!sync_state) return false;
+    if (!sync_state)
+        return false;
     // Both synchronization directions serialize the shared guest snapshot
     // before touching the host surface.  Keeping one lock order avoids a
     // GPU-readback/guest-flush deadlock when different guest tasks use the
     // same CoreSurface concurrently.
-    std::unique_lock sync_lock{sync_state->mutex};
+    std::unique_lock sync_lock { sync_state->mutex };
 
     std::optional<HostRectangle> damage;
     if (!shared_gles_renderer()->map_cpu(
@@ -670,11 +674,10 @@ bool SurfaceStore::synchronize_for_cpu(AddressSpace& memory,
             const auto offset =
                 (static_cast<std::size_t>(
                      static_cast<std::uint32_t>(damage->y) + row) *
-                 backing->width) +
+                    backing->width) +
                 static_cast<std::uint32_t>(damage->x);
-            std::copy_n(
-                mapping.frame().pixels.begin() +
-                    static_cast<std::ptrdiff_t>(offset),
+            std::copy_n(mapping.frame().pixels.begin() +
+                            static_cast<std::ptrdiff_t>(offset),
                 damage->width,
                 snapshot.begin() + static_cast<std::ptrdiff_t>(offset));
         }
@@ -688,17 +691,21 @@ bool SurfaceStore::synchronize_for_cpu(AddressSpace& memory,
     return true;
 }
 
-bool SurfaceStore::synchronize_from_guest(AddressSpace& memory,
-                                          std::uint32_t id) const {
+bool SurfaceStore::synchronize_from_guest(
+    AddressSpace& memory, std::uint32_t id) const
+{
     const auto backing = find(id);
     if (!backing || backing->pixel_format != surface_pixel_format_bgra)
         return backing.has_value();
     const auto sync_state = shared_sync_state(id);
-    if (!sync_state) return false;
-    std::unique_lock sync_lock{sync_state->mutex};
-    const auto shared_changes = memory.shared_write_generation_changes(
-        backing->base, backing->allocation_size, sync_state->shared_page_generations);
-    if (!shared_changes) return false;
+    if (!sync_state)
+        return false;
+    std::unique_lock sync_lock { sync_state->mutex };
+    const auto shared_changes =
+        memory.shared_write_generation_changes(backing->base,
+            backing->allocation_size, sync_state->shared_page_generations);
+    if (!shared_changes)
+        return false;
     auto written_ranges = shared_changes->ranges;
     normalize_written_ranges(written_ranges);
     if (written_ranges.empty()) {
@@ -706,8 +713,7 @@ bool SurfaceStore::synchronize_from_guest(AddressSpace& memory,
         return true;
     }
 
-    constexpr auto pixel_size =
-        core_surface_abi::bytes_per_bgra_pixel;
+    constexpr auto pixel_size = core_surface_abi::bytes_per_bgra_pixel;
     const auto visible_row_bytes =
         static_cast<std::uint64_t>(backing->width) * pixel_size;
     if (backing->bytes_per_row == 0 ||
@@ -717,44 +723,32 @@ bool SurfaceStore::synchronize_from_guest(AddressSpace& memory,
     std::vector<HostRectangle> rectangles;
     for (const auto& range : written_ranges) {
         const auto range_begin =
-            static_cast<std::uint64_t>(range.address) -
-            backing->base;
+            static_cast<std::uint64_t>(range.address) - backing->base;
         const auto range_end = range_begin + range.size;
-        const auto first_row =
-            range_begin / backing->bytes_per_row;
+        const auto first_row = range_begin / backing->bytes_per_row;
         const auto end_row =
-            (range_end + backing->bytes_per_row - 1U) /
-            backing->bytes_per_row;
-        for (auto row = first_row;
-             row < end_row && row < backing->height; ++row) {
+            (range_end + backing->bytes_per_row - 1U) / backing->bytes_per_row;
+        for (auto row = first_row; row < end_row && row < backing->height;
+            ++row) {
             const auto row_begin = row * backing->bytes_per_row;
             const auto visible_end = row_begin + visible_row_bytes;
-            const auto dirty_begin =
-                std::max(range_begin, row_begin);
-            const auto dirty_end =
-                std::min(range_end, visible_end);
+            const auto dirty_begin = std::max(range_begin, row_begin);
+            const auto dirty_end = std::min(range_end, visible_end);
             if (dirty_end <= dirty_begin)
                 continue;
-            const auto x =
-                (dirty_begin - row_begin) / pixel_size;
+            const auto x = (dirty_begin - row_begin) / pixel_size;
             const auto x_end =
-                (dirty_end - row_begin + pixel_size - 1U) /
-                pixel_size;
+                (dirty_end - row_begin + pixel_size - 1U) / pixel_size;
             if (x_end <= x || x >= backing->width)
                 continue;
-            const auto rectangle = HostRectangle{
-                static_cast<std::int32_t>(x),
+            const auto rectangle = HostRectangle { static_cast<std::int32_t>(x),
                 static_cast<std::int32_t>(row),
                 static_cast<std::uint32_t>(
-                    std::min<std::uint64_t>(
-                        x_end, backing->width) -
-                    x),
-                1};
-            if (!rectangles.empty() &&
-                rectangles.back().x == rectangle.x &&
+                    std::min<std::uint64_t>(x_end, backing->width) - x),
+                1 };
+            if (!rectangles.empty() && rectangles.back().x == rectangle.x &&
                 rectangles.back().width == rectangle.width &&
-                static_cast<std::uint32_t>(
-                    rectangles.back().y) +
+                static_cast<std::uint32_t>(rectangles.back().y) +
                         rectangles.back().height ==
                     static_cast<std::uint32_t>(rectangle.y)) {
                 ++rectangles.back().height;
@@ -771,8 +765,9 @@ bool SurfaceStore::synchronize_from_guest(AddressSpace& memory,
     guest_regions.reserve(rectangles.size());
     for (const auto rectangle : rectangles) {
         auto pixels = read_guest_argb_region(memory, *backing, rectangle);
-        if (!pixels) return false;
-        guest_regions.push_back(GuestRegion{rectangle, std::move(*pixels)});
+        if (!pixels)
+            return false;
+        guest_regions.push_back(GuestRegion { rectangle, std::move(*pixels) });
     }
 
     struct ChangedRun {
@@ -788,8 +783,10 @@ bool SurfaceStore::synchronize_from_guest(AddressSpace& memory,
             return false;
         }
         const auto pixels = read_guest_argb(memory, *backing);
-        if (!pixels) return false;
-        if (surface) surface->replace_cpu(*pixels);
+        if (!pixels)
+            return false;
+        if (surface)
+            surface->replace_cpu(*pixels);
         sync_state->guest_pixel_snapshot = *pixels;
         sync_state->shared_page_generations = shared_changes->page_generations;
         return true;
@@ -801,7 +798,7 @@ bool SurfaceStore::synchronize_from_guest(AddressSpace& memory,
             const auto snapshot_row =
                 (static_cast<std::size_t>(
                      static_cast<std::uint32_t>(region.rectangle.y) + row) *
-                 backing->width) +
+                    backing->width) +
                 static_cast<std::uint32_t>(region.rectangle.x);
             std::uint32_t x = 0;
             while (x < region.rectangle.width) {
@@ -816,15 +813,19 @@ bool SurfaceStore::synchronize_from_guest(AddressSpace& memory,
                            sync_state->guest_pixel_snapshot[snapshot_row + x]) {
                     ++x;
                 }
-                if (x == begin) continue;
+                if (x == begin)
+                    continue;
                 ChangedRun run;
-                run.rectangle = HostRectangle{
+                run.rectangle = HostRectangle {
                     region.rectangle.x + static_cast<std::int32_t>(begin),
-                    region.rectangle.y + static_cast<std::int32_t>(row), x - begin, 1};
-                run.pixels.assign(region.pixels.begin() +
-                                      static_cast<std::ptrdiff_t>(source_row + begin),
-                                  region.pixels.begin() +
-                                      static_cast<std::ptrdiff_t>(source_row + x));
+                    region.rectangle.y + static_cast<std::int32_t>(row),
+                    x - begin, 1
+                };
+                run.pixels.assign(
+                    region.pixels.begin() +
+                        static_cast<std::ptrdiff_t>(source_row + begin),
+                    region.pixels.begin() +
+                        static_cast<std::ptrdiff_t>(source_row + x));
                 changed_runs.push_back(std::move(run));
             }
         }
@@ -832,58 +833,65 @@ bool SurfaceStore::synchronize_from_guest(AddressSpace& memory,
 
     const auto surface = host_surface(id);
     if (!changed_runs.empty()) {
-        if (!surface) return false;
+        if (!surface)
+            return false;
         if (surface->gpu_generation() > surface->cpu_generation() &&
-            !shared_gles_renderer()->map_cpu(*surface, true,
-                                             PerfCpuMapReason::CoreSurface)) {
+            !shared_gles_renderer()->map_cpu(
+                *surface, true, PerfCpuMapReason::CoreSurface)) {
             return false;
         }
         auto mapping = surface->map_cpu(true, PerfCpuMapReason::CoreSurface);
         std::optional<HostRectangle> damage;
         for (const auto& run : changed_runs) {
             const auto destination =
-                static_cast<std::size_t>(static_cast<std::uint32_t>(run.rectangle.y)) *
+                static_cast<std::size_t>(
+                    static_cast<std::uint32_t>(run.rectangle.y)) *
                     backing->width +
                 static_cast<std::uint32_t>(run.rectangle.x);
             std::copy(run.pixels.begin(), run.pixels.end(),
-                      mapping.frame().pixels.begin() +
-                          static_cast<std::ptrdiff_t>(destination));
+                mapping.frame().pixels.begin() +
+                    static_cast<std::ptrdiff_t>(destination));
             if (!damage) {
                 damage = run.rectangle;
                 continue;
             }
             const auto left = std::min(damage->x, run.rectangle.x);
             const auto top = std::min(damage->y, run.rectangle.y);
-            const auto right = std::max(
-                static_cast<std::int64_t>(damage->x) + damage->width,
-                static_cast<std::int64_t>(run.rectangle.x) + run.rectangle.width);
-            const auto bottom = std::max(
-                static_cast<std::int64_t>(damage->y) + damage->height,
-                static_cast<std::int64_t>(run.rectangle.y) + run.rectangle.height);
-            damage = HostRectangle{left, top, static_cast<std::uint32_t>(right - left),
-                                   static_cast<std::uint32_t>(bottom - top)};
+            const auto right =
+                std::max(static_cast<std::int64_t>(damage->x) + damage->width,
+                    static_cast<std::int64_t>(run.rectangle.x) +
+                        run.rectangle.width);
+            const auto bottom =
+                std::max(static_cast<std::int64_t>(damage->y) + damage->height,
+                    static_cast<std::int64_t>(run.rectangle.y) +
+                        run.rectangle.height);
+            damage = HostRectangle { left, top,
+                static_cast<std::uint32_t>(right - left),
+                static_cast<std::uint32_t>(bottom - top) };
         }
-        if (damage) mapping.set_damage(*damage);
+        if (damage)
+            mapping.set_damage(*damage);
     }
     for (const auto& run : changed_runs) {
         const auto destination =
-            static_cast<std::size_t>(static_cast<std::uint32_t>(run.rectangle.y)) *
+            static_cast<std::size_t>(
+                static_cast<std::uint32_t>(run.rectangle.y)) *
                 backing->width +
             static_cast<std::uint32_t>(run.rectangle.x);
         std::copy(run.pixels.begin(), run.pixels.end(),
-                  sync_state->guest_pixel_snapshot.begin() +
-                      static_cast<std::ptrdiff_t>(destination));
+            sync_state->guest_pixel_snapshot.begin() +
+                static_cast<std::ptrdiff_t>(destination));
     }
     sync_state->shared_page_generations = shared_changes->page_generations;
     return true;
 }
 
 bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,
-                              std::span<const std::uint32_t> pixels) const {
+    std::span<const std::uint32_t> pixels) const
+{
     const auto backing = find(id);
-    if (!backing ||
-        (backing->pixel_format != surface_pixel_format_bgra &&
-         !surface_is_yuv422(backing->pixel_format))) {
+    if (!backing || (backing->pixel_format != surface_pixel_format_bgra &&
+                        !surface_is_yuv422(backing->pixel_format))) {
         return false;
     }
     const auto pixel_count =
@@ -906,11 +914,9 @@ bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,
                 const auto first = encode_yuv(source[x]);
                 const auto second = encode_yuv(source[x + 1U]);
                 const auto u = static_cast<std::uint8_t>(
-                    (static_cast<std::uint32_t>(first.u) + second.u + 1U) /
-                    2U);
+                    (static_cast<std::uint32_t>(first.u) + second.u + 1U) / 2U);
                 const auto v = static_cast<std::uint8_t>(
-                    (static_cast<std::uint32_t>(first.v) + second.v + 1U) /
-                    2U);
+                    (static_cast<std::uint32_t>(first.v) + second.v + 1U) / 2U);
                 const auto offset = static_cast<std::size_t>(x) * 2U;
                 if (backing->pixel_format == surface_pixel_format_2vuy) {
                     row[offset] = static_cast<std::byte>(u);
@@ -928,9 +934,8 @@ bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,
             if (!memory.copy_in(destination, row))
                 return false;
         }
-    } else if (!write_argb_region_to_guest(
-                   memory, *backing,
-                   HostRectangle{0, 0, backing->width, backing->height},
+    } else if (!write_argb_region_to_guest(memory, *backing,
+                   HostRectangle { 0, 0, backing->width, backing->height },
                    pixels)) {
         return false;
     }
@@ -938,13 +943,14 @@ bool SurfaceStore::write_argb(AddressSpace& memory, std::uint32_t id,
     if (const auto surface = host_surface(id))
         surface->replace_cpu(pixels);
     update_guest_snapshot(*backing,
-                          HostRectangle{0, 0, backing->width, backing->height}, pixels);
+        HostRectangle { 0, 0, backing->width, backing->height }, pixels);
     update_guest_sync_generation(memory, *backing);
     return true;
 }
 
 bool SurfaceStore::write_bytes(AddressSpace& memory, std::uint32_t id,
-                               std::span<const std::byte> bytes) const {
+    std::span<const std::byte> bytes) const
+{
     const auto backing = find(id);
     if (!backing || bytes.size() > backing->allocation_size ||
         !memory.copy_in(backing->base, bytes)) {
@@ -955,8 +961,8 @@ bool SurfaceStore::write_bytes(AddressSpace& memory, std::uint32_t id,
 }
 
 bool SurfaceStore::transfer_scaled(AddressSpace& memory,
-                                   std::uint32_t source_id,
-                                   std::uint32_t destination_id) const {
+    std::uint32_t source_id, std::uint32_t destination_id) const
+{
     const auto source = find(source_id);
     const auto destination = find(destination_id);
     if (!source || !destination || source->width == 0 || source->height == 0 ||
@@ -992,31 +998,38 @@ bool SurfaceStore::transfer_scaled(AddressSpace& memory,
 }
 
 void SurfaceStore::update_guest_sync_generation(
-    AddressSpace& memory, const Backing& backing) const {
+    AddressSpace& memory, const Backing& backing) const
+{
     const auto sync_state = shared_sync_state(backing.id);
-    if (!sync_state) return;
-    std::lock_guard sync_lock{sync_state->mutex};
-    const auto shared_generation =
-        memory.shared_write_generation_changes(backing.base, backing.allocation_size);
-    if (!shared_generation) return;
+    if (!sync_state)
+        return;
+    std::lock_guard sync_lock { sync_state->mutex };
+    const auto shared_generation = memory.shared_write_generation_changes(
+        backing.base, backing.allocation_size);
+    if (!shared_generation)
+        return;
     sync_state->shared_page_generations = shared_generation->page_generations;
 }
 
 void SurfaceStore::update_guest_snapshot(const Backing& backing,
-                                         HostRectangle rectangle,
-                                         std::span<const std::uint32_t> pixels) const {
-    const auto pixel_count = static_cast<std::size_t>(backing.width) * backing.height;
+    HostRectangle rectangle, std::span<const std::uint32_t> pixels) const
+{
+    const auto pixel_count =
+        static_cast<std::size_t>(backing.width) * backing.height;
     if (rectangle.x < 0 || rectangle.y < 0 || rectangle.width == 0 ||
         rectangle.height == 0 || rectangle.width > backing.width ||
         rectangle.height > backing.height ||
-        static_cast<std::uint32_t>(rectangle.x) > backing.width - rectangle.width ||
-        static_cast<std::uint32_t>(rectangle.y) > backing.height - rectangle.height ||
+        static_cast<std::uint32_t>(rectangle.x) >
+            backing.width - rectangle.width ||
+        static_cast<std::uint32_t>(rectangle.y) >
+            backing.height - rectangle.height ||
         pixels.size() != pixel_count) {
         return;
     }
     const auto sync_state = shared_sync_state(backing.id);
-    if (!sync_state) return;
-    std::lock_guard sync_lock{sync_state->mutex};
+    if (!sync_state)
+        return;
+    std::lock_guard sync_lock { sync_state->mutex };
     auto& snapshot = sync_state->guest_pixel_snapshot;
     if (snapshot.size() != pixel_count) {
         snapshot.assign(pixels.begin(), pixels.end());
@@ -1024,18 +1037,20 @@ void SurfaceStore::update_guest_snapshot(const Backing& backing,
     }
     for (std::uint32_t row = 0; row < rectangle.height; ++row) {
         const auto offset =
-            (static_cast<std::size_t>(static_cast<std::uint32_t>(rectangle.y) + row) *
-             backing.width) +
+            (static_cast<std::size_t>(
+                 static_cast<std::uint32_t>(rectangle.y) + row) *
+                backing.width) +
             static_cast<std::uint32_t>(rectangle.x);
         std::copy_n(pixels.begin() + static_cast<std::ptrdiff_t>(offset),
-                    rectangle.width,
-                    snapshot.begin() + static_cast<std::ptrdiff_t>(offset));
+            rectangle.width,
+            snapshot.begin() + static_cast<std::ptrdiff_t>(offset));
     }
 }
 
-bool SurfaceStore::write_argb_region_to_guest(
-    AddressSpace& memory, const Backing& backing, HostRectangle rectangle,
-    std::span<const std::uint32_t> pixels) const {
+bool SurfaceStore::write_argb_region_to_guest(AddressSpace& memory,
+    const Backing& backing, HostRectangle rectangle,
+    std::span<const std::uint32_t> pixels) const
+{
     constexpr auto pixel_size = core_surface_abi::bytes_per_bgra_pixel;
     const auto pixel_count =
         static_cast<std::uint64_t>(backing.width) * backing.height;
@@ -1051,12 +1066,12 @@ bool SurfaceStore::write_argb_region_to_guest(
     }
     const auto row_bytes =
         static_cast<std::uint64_t>(rectangle.width) * pixel_size;
-    const auto last_row = static_cast<std::uint64_t>(rectangle.y) +
-                          rectangle.height - 1U;
-    const auto required = last_row * backing.bytes_per_row +
-                          (static_cast<std::uint64_t>(rectangle.x) +
-                           rectangle.width) *
-                              pixel_size;
+    const auto last_row =
+        static_cast<std::uint64_t>(rectangle.y) + rectangle.height - 1U;
+    const auto required =
+        last_row * backing.bytes_per_row +
+        (static_cast<std::uint64_t>(rectangle.x) + rectangle.width) *
+            pixel_size;
     if (required > backing.allocation_size ||
         required > std::numeric_limits<std::uint32_t>::max() ||
         backing.base > std::numeric_limits<std::uint32_t>::max() - required) {
@@ -1069,14 +1084,14 @@ bool SurfaceStore::write_argb_region_to_guest(
     }
     for (std::uint32_t y = 0; y < rectangle.height; ++y) {
         const auto source_y = static_cast<std::uint32_t>(rectangle.y) + y;
-        const auto row = pixels.subspan(
-            static_cast<std::size_t>(source_y) * backing.width +
-                static_cast<std::uint32_t>(rectangle.x),
-            rectangle.width);
+        const auto row =
+            pixels.subspan(static_cast<std::size_t>(source_y) * backing.width +
+                               static_cast<std::uint32_t>(rectangle.x),
+                rectangle.width);
         std::span<const std::byte> bytes;
         if constexpr (std::endian::native == std::endian::little) {
-            bytes = {reinterpret_cast<const std::byte*>(row.data()),
-                     static_cast<std::size_t>(row_bytes)};
+            bytes = { reinterpret_cast<const std::byte*>(row.data()),
+                static_cast<std::size_t>(row_bytes) };
         } else {
             for (std::uint32_t x = 0; x < rectangle.width; ++x) {
                 const auto pixel = row[x];

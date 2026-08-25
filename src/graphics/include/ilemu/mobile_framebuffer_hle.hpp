@@ -25,9 +25,9 @@ class SurfaceStore;
 class MobileFramebufferHle {
 public:
     MobileFramebufferHle(UserlandHleRegistry& registry,
-                         std::shared_ptr<DisplayState> display,
-                         std::shared_ptr<SurfaceStore> surfaces = {},
-                         std::shared_ptr<PresentationTracker> presentations = {});
+        std::shared_ptr<DisplayState> display,
+        std::shared_ptr<SurfaceStore> surfaces = { },
+        std::shared_ptr<PresentationTracker> presentations = { });
 
     void reset();
     void inherit_state(const MobileFramebufferHle& parent);
@@ -49,36 +49,36 @@ private:
     void set_background_color(UserlandHleCall& call);
     void set_layer(UserlandHleCall& call);
     void submit_layers(UserlandHleCall& call);
-    [[nodiscard]] std::optional<std::uint32_t>
-    record_presentation(UserlandHleCall& call);
+    [[nodiscard]] std::optional<std::uint32_t> record_presentation(
+        UserlandHleCall& call);
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
-    [[nodiscard]] bool
-    application_surface_allowed(std::uint32_t producer_process_id,
-                                std::uint64_t publication_sequence) const;
-    [[nodiscard]] bool submit_host_layers(UserlandHleCall &call);
+    [[nodiscard]] bool application_surface_allowed(
+        std::uint32_t producer_process_id,
+        std::uint64_t publication_sequence) const;
+    [[nodiscard]] bool submit_host_layers(UserlandHleCall& call);
     void ensure_scanout_surface();
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_composition_surface();
 
     struct Rectangle {
-        float x{};
-        float y{};
-        float width{};
-        float height{};
+        float x { };
+        float y { };
+        float width { };
+        float height { };
 
         bool operator==(const Rectangle&) const = default;
     };
     struct LayerState {
-        std::uint32_t surface_id{};
+        std::uint32_t surface_id { };
         Rectangle source;
         Rectangle destination;
-        std::uint32_t flags{};
+        std::uint32_t flags { };
 
         bool operator==(const LayerState&) const = default;
     };
     struct SubmittedLayer {
         LayerState state;
         HostSurfaceKey surface_key;
-        std::uint64_t generation{};
+        std::uint64_t generation { };
     };
 
     std::shared_ptr<DisplayState> display_;
@@ -95,7 +95,7 @@ private:
     // still consume it. The ring is independent of guest model/firmware; the
     // software path below continues to compose into DisplayState pixels.
     std::vector<std::shared_ptr<HostSurface>> composition_surfaces_;
-    std::size_t composition_surface_index_{};
+    std::size_t composition_surface_index_ { };
     std::map<std::uint32_t, LayerState> layers_;
     // A hardware layer retains its IOSurface independently of the process
     // that created the backing. The lease is presentation state, not a host
@@ -103,10 +103,10 @@ private:
     std::map<std::uint32_t, std::shared_ptr<SurfaceTransportLease>>
         layer_surface_leases_;
     std::map<std::uint32_t, SubmittedLayer> submitted_layers_;
-    std::uint32_t next_swap_id_{1};
-    std::uint32_t background_argb_{0xff000000U};
-    std::uint32_t submitted_background_argb_{0xff000000U};
-    bool scanout_contents_valid_{};
+    std::uint32_t next_swap_id_ { 1 };
+    std::uint32_t background_argb_ { 0xff000000U };
+    std::uint32_t submitted_background_argb_ { 0xff000000U };
+    bool scanout_contents_valid_ { };
 };
 
-}  // namespace ilemu
+} // namespace ilemu

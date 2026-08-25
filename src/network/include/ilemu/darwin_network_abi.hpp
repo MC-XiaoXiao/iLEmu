@@ -119,94 +119,96 @@ inline constexpr std::uint32_t media_status_active = 0x00000002U;
 // memory and is described by its final length/pointer fields.
 namespace apple80211_driver {
 
-inline constexpr std::string_view event_device_name = "airport";
-inline constexpr std::string_view event_device_path = "/dev/airport";
-inline constexpr std::string_view event_descriptor_kind = "wifi-events";
+    inline constexpr std::string_view event_device_name = "airport";
+    inline constexpr std::string_view event_device_path = "/dev/airport";
+    inline constexpr std::string_view event_descriptor_kind = "wifi-events";
 
-inline constexpr std::uint32_t set_request = 0x802069c8U;
-inline constexpr std::uint32_t get_request = 0xc02069c9U;
-inline constexpr std::uint32_t event_scan_completed = 10;
-inline constexpr std::uint32_t event_header_size = 8;
-inline constexpr std::uint32_t event_identifier_offset = 0;
-inline constexpr std::uint32_t event_payload_length_offset = 4;
-inline constexpr std::uint32_t command_offset = 16;
-inline constexpr std::uint32_t data_length_offset = 24;
-inline constexpr std::uint32_t data_address_offset = 28;
+    inline constexpr std::uint32_t set_request = 0x802069c8U;
+    inline constexpr std::uint32_t get_request = 0xc02069c9U;
+    inline constexpr std::uint32_t event_scan_completed = 10;
+    inline constexpr std::uint32_t event_header_size = 8;
+    inline constexpr std::uint32_t event_identifier_offset = 0;
+    inline constexpr std::uint32_t event_payload_length_offset = 4;
+    inline constexpr std::uint32_t command_offset = 16;
+    inline constexpr std::uint32_t data_length_offset = 24;
+    inline constexpr std::uint32_t data_address_offset = 28;
 
-inline constexpr std::uint32_t command_scan = 10;
-inline constexpr std::uint32_t command_scan_result = 11;
-inline constexpr std::uint32_t command_interface_probe = 12;
-inline constexpr std::uint32_t command_current_ssid = 1;
-inline constexpr std::uint32_t command_channel = 4;
-inline constexpr std::uint32_t command_rate = 8;
-inline constexpr std::uint32_t command_current_bssid = 9;
-inline constexpr std::uint32_t command_state = 13;
-inline constexpr std::uint32_t command_rssi = 16;
-inline constexpr std::uint32_t command_noise = 17;
-inline constexpr std::uint32_t command_power = 19;
-inline constexpr std::uint32_t command_association_result = 21;
-inline constexpr std::uint32_t command_driver_name = 23;
-inline constexpr std::uint32_t command_current_network = 201;
-inline constexpr std::uint32_t inline_scalar_value_offset = 20;
-inline constexpr std::uint32_t association_result_success = 1;
+    inline constexpr std::uint32_t command_scan = 10;
+    inline constexpr std::uint32_t command_scan_result = 11;
+    inline constexpr std::uint32_t command_interface_probe = 12;
+    inline constexpr std::uint32_t command_current_ssid = 1;
+    inline constexpr std::uint32_t command_channel = 4;
+    inline constexpr std::uint32_t command_rate = 8;
+    inline constexpr std::uint32_t command_current_bssid = 9;
+    inline constexpr std::uint32_t command_state = 13;
+    inline constexpr std::uint32_t command_rssi = 16;
+    inline constexpr std::uint32_t command_noise = 17;
+    inline constexpr std::uint32_t command_power = 19;
+    inline constexpr std::uint32_t command_association_result = 21;
+    inline constexpr std::uint32_t command_driver_name = 23;
+    inline constexpr std::uint32_t command_current_network = 201;
+    inline constexpr std::uint32_t inline_scalar_value_offset = 20;
+    inline constexpr std::uint32_t association_result_success = 1;
 
-inline constexpr std::uint32_t current_ssid_size = 32;
-inline constexpr std::uint32_t current_bssid_size = 6;
-inline constexpr std::uint32_t channel_state_size = 16;
-inline constexpr std::uint32_t channel_state_channel_offset = 8;
-inline constexpr std::uint32_t channel_state_flags_offset = 12;
-inline constexpr std::uint32_t signal_state_size = 52;
-inline constexpr std::uint32_t signal_state_count_offset = 4;
-inline constexpr std::uint32_t signal_state_unit_offset = 8;
-inline constexpr std::uint32_t signal_state_control_average_offset = 12;
-inline constexpr std::uint32_t signal_state_extension_average_offset = 28;
-inline constexpr std::uint32_t signal_state_last_offset = 48;
-inline constexpr std::uint32_t power_state_size = 24;
-inline constexpr std::uint32_t power_state_count_offset = 4;
-inline constexpr std::uint32_t power_state_first_value_offset = 8;
+    inline constexpr std::uint32_t current_ssid_size = 32;
+    inline constexpr std::uint32_t current_bssid_size = 6;
+    inline constexpr std::uint32_t channel_state_size = 16;
+    inline constexpr std::uint32_t channel_state_channel_offset = 8;
+    inline constexpr std::uint32_t channel_state_flags_offset = 12;
+    inline constexpr std::uint32_t signal_state_size = 52;
+    inline constexpr std::uint32_t signal_state_count_offset = 4;
+    inline constexpr std::uint32_t signal_state_unit_offset = 8;
+    inline constexpr std::uint32_t signal_state_control_average_offset = 12;
+    inline constexpr std::uint32_t signal_state_extension_average_offset = 28;
+    inline constexpr std::uint32_t signal_state_last_offset = 48;
+    inline constexpr std::uint32_t power_state_size = 24;
+    inline constexpr std::uint32_t power_state_count_offset = 4;
+    inline constexpr std::uint32_t power_state_first_value_offset = 8;
 
-struct NetworkRecordLayout {
-    std::uint32_t size{};
-    std::uint32_t ie_length_offset{};
-    std::uint32_t ie_pointer_offset{};
-};
+    struct NetworkRecordLayout {
+        std::uint32_t size { };
+        std::uint32_t ie_length_offset { };
+        std::uint32_t ie_pointer_offset { };
+    };
 
-// Darwin 9 aligns the final pointer after a 16-bit IE length. Darwin 10's
-// mobile driver removes that padding while preserving selector 201 and all
-// preceding fields.
-inline constexpr NetworkRecordLayout aligned_network_record_layout{
-    144, 136, 140};
-inline constexpr NetworkRecordLayout compact_network_record_layout{
-    140, 134, 136};
+    // Darwin 9 aligns the final pointer after a 16-bit IE length. Darwin 10's
+    // mobile driver removes that padding while preserving selector 201 and all
+    // preceding fields.
+    inline constexpr NetworkRecordLayout aligned_network_record_layout { 144,
+        136, 140 };
+    inline constexpr NetworkRecordLayout compact_network_record_layout { 140,
+        134, 136 };
 
-inline constexpr std::uint32_t scan_result_size = 144;
-inline constexpr std::uint32_t scan_channel_offset = 8;
-inline constexpr std::uint32_t scan_channel_flags_offset = 12;
-inline constexpr std::uint32_t scan_noise_offset = 16;
-inline constexpr std::uint32_t scan_rssi_offset = 18;
-inline constexpr std::uint32_t scan_beacon_interval_offset = 20;
-inline constexpr std::uint32_t scan_capabilities_offset = 22;
-inline constexpr std::uint32_t scan_bssid_offset = 24;
-inline constexpr std::uint32_t scan_rate_count_offset = 30;
-inline constexpr std::uint32_t scan_ssid_length_offset = 92;
-inline constexpr std::uint32_t scan_ssid_offset = 93;
-inline constexpr std::uint32_t scan_age_offset = 128;
-inline constexpr std::uint32_t scan_flags_offset = 132;
-inline constexpr std::uint32_t scan_ie_length_offset = 136;
-inline constexpr std::uint32_t scan_ie_pointer_offset = 140;
-inline constexpr std::int32_t scan_signal_floor_dbm = -100;
-inline constexpr std::int32_t scan_signal_ceiling_dbm = 0;
+    inline constexpr std::uint32_t scan_result_size = 144;
+    inline constexpr std::uint32_t scan_channel_offset = 8;
+    inline constexpr std::uint32_t scan_channel_flags_offset = 12;
+    inline constexpr std::uint32_t scan_noise_offset = 16;
+    inline constexpr std::uint32_t scan_rssi_offset = 18;
+    inline constexpr std::uint32_t scan_beacon_interval_offset = 20;
+    inline constexpr std::uint32_t scan_capabilities_offset = 22;
+    inline constexpr std::uint32_t scan_bssid_offset = 24;
+    inline constexpr std::uint32_t scan_rate_count_offset = 30;
+    inline constexpr std::uint32_t scan_ssid_length_offset = 92;
+    inline constexpr std::uint32_t scan_ssid_offset = 93;
+    inline constexpr std::uint32_t scan_age_offset = 128;
+    inline constexpr std::uint32_t scan_flags_offset = 132;
+    inline constexpr std::uint32_t scan_ie_length_offset = 136;
+    inline constexpr std::uint32_t scan_ie_pointer_offset = 140;
+    inline constexpr std::int32_t scan_signal_floor_dbm = -100;
+    inline constexpr std::int32_t scan_signal_ceiling_dbm = 0;
 
-// Builds the raw AirPortFamily network record consumed by the firmware's own
-// Apple80211-to-CoreFoundation converter. A null access point represents a
-// powered but unassociated interface and still produces a valid empty record.
-[[nodiscard]] std::optional<std::vector<std::byte>> make_network_record(
-    const VirtualAccessPoint* access_point, NetworkRecordLayout layout,
-    std::uint16_t ie_length, std::uint32_t ie_pointer);
+    // Builds the raw AirPortFamily network record consumed by the firmware's
+    // own Apple80211-to-CoreFoundation converter. A null access point
+    // represents a powered but unassociated interface and still produces a
+    // valid empty record.
+    [[nodiscard]] std::optional<std::vector<std::byte>> make_network_record(
+        const VirtualAccessPoint* access_point, NetworkRecordLayout layout,
+        std::uint16_t ie_length, std::uint32_t ie_pointer);
 
-}  // namespace apple80211_driver
+} // namespace apple80211_driver
 
-constexpr std::uint32_t ioctl_identity(std::uint32_t command) {
+constexpr std::uint32_t ioctl_identity(std::uint32_t command)
+{
     return command & ioctl_identity_mask;
 }
 
@@ -230,14 +232,14 @@ inline constexpr std::size_t maximum_retained_kernel_events = 256;
 
 struct InterfaceSnapshot {
     std::string name;
-    std::uint16_t index{};
-    std::uint16_t flags{};
-    std::uint32_t family{};
-    std::uint32_t unit{};
-    std::uint32_t mtu{};
-    std::uint8_t type{};
-    std::array<std::byte, 6> link_address{};
-    std::uint8_t link_address_length{};
+    std::uint16_t index { };
+    std::uint16_t flags { };
+    std::uint32_t family { };
+    std::uint32_t unit { };
+    std::uint32_t mtu { };
+    std::uint8_t type { };
+    std::array<std::byte, 6> link_address { };
+    std::uint8_t link_address_length { };
     std::optional<std::array<std::byte, 16>> ipv4_address;
     std::optional<std::array<std::byte, 16>> ipv4_netmask;
     std::optional<std::array<std::byte, 16>> ipv4_broadcast;
@@ -257,9 +259,9 @@ struct InterfaceSnapshot {
 [[nodiscard]] std::vector<std::byte> make_ipv6_network_event_data(
     const InterfaceSnapshot& interface);
 
-[[nodiscard]] std::vector<std::byte> make_kernel_event(
-    std::uint32_t identifier, std::uint32_t vendor,
-    std::uint32_t event_class, std::uint32_t event_subclass,
-    std::uint32_t event_code, std::span<const std::byte> event_data);
+[[nodiscard]] std::vector<std::byte> make_kernel_event(std::uint32_t identifier,
+    std::uint32_t vendor, std::uint32_t event_class,
+    std::uint32_t event_subclass, std::uint32_t event_code,
+    std::span<const std::byte> event_data);
 
-}  // namespace ilemu::darwin::network
+} // namespace ilemu::darwin::network

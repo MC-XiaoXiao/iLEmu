@@ -30,10 +30,10 @@ private:
     [[nodiscard]] bool should_emit(std::string_view text) const;
 
     std::unique_ptr<std::ofstream> file_;
-    std::ostream* stream_{};
-    bool flush_each_write_{true};
-    bool verbose_{true};
+    std::ostream* stream_ { };
+    bool flush_each_write_ { true };
+    bool verbose_ { true };
     std::mutex mutex_;
 };
 
-}  // namespace ilemu
+} // namespace ilemu

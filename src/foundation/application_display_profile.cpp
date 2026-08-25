@@ -15,197 +15,213 @@
 namespace ilemu {
 namespace {
 
-std::optional<DisplayOrientation> parse_orientation(std::string_view value) {
-  if (value == "UIInterfaceOrientationPortrait")
-    return DisplayOrientation::Portrait;
-  if (value == "UIInterfaceOrientationPortraitUpsideDown")
-    return DisplayOrientation::PortraitUpsideDown;
-  if (value == "UIInterfaceOrientationLandscapeLeft")
-    return DisplayOrientation::LandscapeLeft;
-  if (value == "UIInterfaceOrientationLandscapeRight")
-    return DisplayOrientation::LandscapeRight;
-  return std::nullopt;
-}
-
-std::filesystem::path info_plist_path(const std::filesystem::path &rootfs,
-                                      std::string_view executable_path) {
-  auto relative = std::filesystem::path{executable_path};
-  if (relative.is_absolute())
-    relative = relative.relative_path();
-  return rootfs / relative.parent_path() / "Info.plist";
-}
-
-// A number of pre-iOS 3 applications did not put an orientation key in their
-// top-level manifest.  Their UIKit/OpenFeint resource profile is nevertheless
-// explicit in the bundle layout (for example, an iPhone_Landscape resource
-// bundle).  Treat a single, unambiguous resource orientation as a capability;
-// never let a landscape-only helper coexist with a portrait profile and then
-// guess which one the application wanted.
-std::optional<DisplayOrientation> resource_bundle_orientation(
-    const std::filesystem::path &app_bundle) {
-  bool landscape = false;
-  bool portrait = false;
-  std::error_code error;
-  std::filesystem::directory_iterator entries{app_bundle, error};
-  if (error)
-    return std::nullopt;
-  for (const auto &entry : entries) {
-    std::error_code entry_error;
-    if (!entry.is_directory(entry_error) || entry_error)
-      continue;
-    const auto filename = entry.path().filename().string();
-    std::string lowercase;
-    lowercase.reserve(filename.size());
-    for (const auto character : filename) {
-      lowercase.push_back(static_cast<char>(std::tolower(
-          static_cast<unsigned char>(character))));
+    std::optional<DisplayOrientation> parse_orientation(std::string_view value)
+    {
+        if (value == "UIInterfaceOrientationPortrait")
+            return DisplayOrientation::Portrait;
+        if (value == "UIInterfaceOrientationPortraitUpsideDown")
+            return DisplayOrientation::PortraitUpsideDown;
+        if (value == "UIInterfaceOrientationLandscapeLeft")
+            return DisplayOrientation::LandscapeLeft;
+        if (value == "UIInterfaceOrientationLandscapeRight")
+            return DisplayOrientation::LandscapeRight;
+        return std::nullopt;
     }
-    if (lowercase.size() < 7U ||
-        lowercase.compare(lowercase.size() - 7U, 7U, ".bundle") != 0)
-      continue;
-    landscape = landscape || lowercase.find("landscape") != std::string::npos;
-    portrait = portrait || lowercase.find("portrait") != std::string::npos;
-  }
-  if (landscape && !portrait)
-    return DisplayOrientation::LandscapeLeft;
-  return std::nullopt;
-}
+
+    std::filesystem::path info_plist_path(
+        const std::filesystem::path& rootfs, std::string_view executable_path)
+    {
+        auto relative = std::filesystem::path { executable_path };
+        if (relative.is_absolute())
+            relative = relative.relative_path();
+        return rootfs / relative.parent_path() / "Info.plist";
+    }
+
+    // A number of pre-iOS 3 applications did not put an orientation key in
+    // their top-level manifest.  Their UIKit/OpenFeint resource profile is
+    // nevertheless explicit in the bundle layout (for example, an
+    // iPhone_Landscape resource bundle).  Treat a single, unambiguous resource
+    // orientation as a capability; never let a landscape-only helper coexist
+    // with a portrait profile and then guess which one the application wanted.
+    std::optional<DisplayOrientation> resource_bundle_orientation(
+        const std::filesystem::path& app_bundle)
+    {
+        bool landscape = false;
+        bool portrait = false;
+        std::error_code error;
+        std::filesystem::directory_iterator entries { app_bundle, error };
+        if (error)
+            return std::nullopt;
+        for (const auto& entry : entries) {
+            std::error_code entry_error;
+            if (!entry.is_directory(entry_error) || entry_error)
+                continue;
+            const auto filename = entry.path().filename().string();
+            std::string lowercase;
+            lowercase.reserve(filename.size());
+            for (const auto character : filename) {
+                lowercase.push_back(static_cast<char>(
+                    std::tolower(static_cast<unsigned char>(character))));
+            }
+            if (lowercase.size() < 7U ||
+                lowercase.compare(lowercase.size() - 7U, 7U, ".bundle") != 0)
+                continue;
+            landscape =
+                landscape || lowercase.find("landscape") != std::string::npos;
+            portrait =
+                portrait || lowercase.find("portrait") != std::string::npos;
+        }
+        if (landscape && !portrait)
+            return DisplayOrientation::LandscapeLeft;
+        return std::nullopt;
+    }
 
 #if defined(ILEMU_HAS_LIBPLIST)
-class PlistOwner {
-public:
-  explicit PlistOwner(plist_t node = nullptr) : node_{node} {}
-  ~PlistOwner() {
-    if (node_ != nullptr)
-      plist_free(node_);
-  }
-  PlistOwner(const PlistOwner &) = delete;
-  PlistOwner &operator=(const PlistOwner &) = delete;
-  [[nodiscard]] plist_t get() const { return node_; }
+    class PlistOwner {
+    public:
+        explicit PlistOwner(plist_t node = nullptr)
+            : node_ { node }
+        {
+        }
+        ~PlistOwner()
+        {
+            if (node_ != nullptr)
+                plist_free(node_);
+        }
+        PlistOwner(const PlistOwner&) = delete;
+        PlistOwner& operator=(const PlistOwner&) = delete;
+        [[nodiscard]] plist_t get() const { return node_; }
 
-private:
-  plist_t node_{};
-};
+    private:
+        plist_t node_ { };
+    };
 
-std::optional<DisplayOrientation> plist_orientation(plist_t root) {
-  const auto read_string = [](plist_t node)
-      -> std::optional<DisplayOrientation> {
-    if (node == nullptr || plist_get_node_type(node) != PLIST_STRING)
-      return std::nullopt;
-    std::uint64_t length{};
-    const auto *value = plist_get_string_ptr(node, &length);
-    if (value == nullptr)
-      return std::nullopt;
-    return parse_orientation(
-        std::string_view{value, static_cast<std::size_t>(length)});
-  };
+    std::optional<DisplayOrientation> plist_orientation(plist_t root)
+    {
+        const auto read_string =
+            [](plist_t node) -> std::optional<DisplayOrientation> {
+            if (node == nullptr || plist_get_node_type(node) != PLIST_STRING)
+                return std::nullopt;
+            std::uint64_t length { };
+            const auto* value = plist_get_string_ptr(node, &length);
+            if (value == nullptr)
+                return std::nullopt;
+            return parse_orientation(
+                std::string_view { value, static_cast<std::size_t>(length) });
+        };
 
-  if (const auto value = read_string(
-          plist_dict_get_item(root, "UIInterfaceOrientation")))
-    return value;
-  // UISupportedInterfaceOrientations is a capability set, not a request for
-  // the application's initial orientation. UIKit owns selection within that
-  // set; choosing the first parseable member here can rotate an application
-  // merely because an earlier capability is unknown to this host.
-  return std::nullopt;
-}
+        if (const auto value = read_string(
+                plist_dict_get_item(root, "UIInterfaceOrientation")))
+            return value;
+        // UISupportedInterfaceOrientations is a capability set, not a request
+        // for the application's initial orientation. UIKit owns selection
+        // within that set; choosing the first parseable member here can rotate
+        // an application merely because an earlier capability is unknown to
+        // this host.
+        return std::nullopt;
+    }
 #endif
 
 } // namespace
 
 DisplayOrientation detect_application_display_orientation(
-    const std::filesystem::path &rootfs, std::string_view executable_path) {
-  const auto portrait_fallback = [&] {
-    return resource_bundle_orientation(
-               info_plist_path(rootfs, executable_path).parent_path())
-        .value_or(DisplayOrientation::Portrait);
-  };
-  if (rootfs.empty() || executable_path.empty())
-    return DisplayOrientation::Portrait;
-  const auto path = info_plist_path(rootfs, executable_path);
-  std::ifstream input{path, std::ios::binary};
-  if (!input)
-    return portrait_fallback();
+    const std::filesystem::path& rootfs, std::string_view executable_path)
+{
+    const auto portrait_fallback = [&] {
+        return resource_bundle_orientation(
+            info_plist_path(rootfs, executable_path).parent_path())
+            .value_or(DisplayOrientation::Portrait);
+    };
+    if (rootfs.empty() || executable_path.empty())
+        return DisplayOrientation::Portrait;
+    const auto path = info_plist_path(rootfs, executable_path);
+    std::ifstream input { path, std::ios::binary };
+    if (!input)
+        return portrait_fallback();
 
 #if defined(ILEMU_HAS_LIBPLIST)
-  const std::string bytes{std::istreambuf_iterator<char>{input},
-                          std::istreambuf_iterator<char>{}};
-  plist_t parsed = nullptr;
-  plist_format_t format = PLIST_FORMAT_NONE;
-  if (plist_from_memory(bytes.data(), static_cast<std::uint32_t>(bytes.size()),
-                        &parsed, &format) != PLIST_ERR_SUCCESS ||
-      parsed == nullptr || plist_get_node_type(parsed) != PLIST_DICT) {
-    if (parsed != nullptr)
-      plist_free(parsed);
-    return portrait_fallback();
-  }
-  PlistOwner root{parsed};
-  if (const auto orientation = plist_orientation(root.get()))
-    return *orientation;
-  if (const auto orientation = resource_bundle_orientation(path.parent_path()))
-    return *orientation;
-  return DisplayOrientation::Portrait;
+    const std::string bytes { std::istreambuf_iterator<char> { input },
+        std::istreambuf_iterator<char> { } };
+    plist_t parsed = nullptr;
+    plist_format_t format = PLIST_FORMAT_NONE;
+    if (plist_from_memory(bytes.data(),
+            static_cast<std::uint32_t>(bytes.size()), &parsed,
+            &format) != PLIST_ERR_SUCCESS ||
+        parsed == nullptr || plist_get_node_type(parsed) != PLIST_DICT) {
+        if (parsed != nullptr)
+            plist_free(parsed);
+        return portrait_fallback();
+    }
+    PlistOwner root { parsed };
+    if (const auto orientation = plist_orientation(root.get()))
+        return *orientation;
+    if (const auto orientation =
+            resource_bundle_orientation(path.parent_path()))
+        return *orientation;
+    return DisplayOrientation::Portrait;
 #else
-  static_cast<void>(input);
-  return portrait_fallback();
+    static_cast<void>(input);
+    return portrait_fallback();
 #endif
 }
 
-const char *display_orientation_name(DisplayOrientation orientation) {
-  switch (orientation) {
-  case DisplayOrientation::Portrait:
+const char* display_orientation_name(DisplayOrientation orientation)
+{
+    switch (orientation) {
+    case DisplayOrientation::Portrait:
+        return "portrait";
+    case DisplayOrientation::PortraitUpsideDown:
+        return "portrait-upside-down";
+    case DisplayOrientation::LandscapeLeft:
+        return "landscape-left";
+    case DisplayOrientation::LandscapeRight:
+        return "landscape-right";
+    }
     return "portrait";
-  case DisplayOrientation::PortraitUpsideDown:
-    return "portrait-upside-down";
-  case DisplayOrientation::LandscapeLeft:
-    return "landscape-left";
-  case DisplayOrientation::LandscapeRight:
-    return "landscape-right";
-  }
-  return "portrait";
 }
 
 std::vector<std::uint32_t> orient_display_pixels(
     DisplayGeometry source_geometry, std::span<const std::uint32_t> pixels,
-    DisplayOrientation orientation) {
-  if (!source_geometry.valid() ||
-      pixels.size() != source_geometry.pixel_count())
-    return {};
-  const auto output_geometry = is_landscape(orientation)
-                                   ? DisplayGeometry{source_geometry.height,
-                                                     source_geometry.width}
-                               : source_geometry;
-  std::vector<std::uint32_t> output(output_geometry.pixel_count());
-  const auto source_at = [&](std::uint32_t x, std::uint32_t y) {
-    return pixels[static_cast<std::size_t>(y) * source_geometry.width + x];
-  };
-  for (std::uint32_t y = 0; y < output_geometry.height; ++y) {
-    for (std::uint32_t x = 0; x < output_geometry.width; ++x) {
-      std::uint32_t source_x{};
-      std::uint32_t source_y{};
-      switch (orientation) {
-      case DisplayOrientation::Portrait:
-        source_x = x;
-        source_y = y;
-        break;
-      case DisplayOrientation::PortraitUpsideDown:
-        source_x = source_geometry.width - 1U - x;
-        source_y = source_geometry.height - 1U - y;
-        break;
-      case DisplayOrientation::LandscapeLeft:
-        source_x = y;
-        source_y = x;
-        break;
-      case DisplayOrientation::LandscapeRight:
-        source_x = source_geometry.width - 1U - y;
-        source_y = source_geometry.height - 1U - x;
-        break;
-      }
-      output[static_cast<std::size_t>(y) * output_geometry.width + x] =
-          source_at(source_x, source_y);
+    DisplayOrientation orientation)
+{
+    if (!source_geometry.valid() ||
+        pixels.size() != source_geometry.pixel_count())
+        return { };
+    const auto output_geometry =
+        is_landscape(orientation)
+            ? DisplayGeometry { source_geometry.height, source_geometry.width }
+            : source_geometry;
+    std::vector<std::uint32_t> output(output_geometry.pixel_count());
+    const auto source_at = [&](std::uint32_t x, std::uint32_t y) {
+        return pixels[static_cast<std::size_t>(y) * source_geometry.width + x];
+    };
+    for (std::uint32_t y = 0; y < output_geometry.height; ++y) {
+        for (std::uint32_t x = 0; x < output_geometry.width; ++x) {
+            std::uint32_t source_x { };
+            std::uint32_t source_y { };
+            switch (orientation) {
+            case DisplayOrientation::Portrait:
+                source_x = x;
+                source_y = y;
+                break;
+            case DisplayOrientation::PortraitUpsideDown:
+                source_x = source_geometry.width - 1U - x;
+                source_y = source_geometry.height - 1U - y;
+                break;
+            case DisplayOrientation::LandscapeLeft:
+                source_x = y;
+                source_y = x;
+                break;
+            case DisplayOrientation::LandscapeRight:
+                source_x = source_geometry.width - 1U - y;
+                source_y = source_geometry.height - 1U - x;
+                break;
+            }
+            output[static_cast<std::size_t>(y) * output_geometry.width + x] =
+                source_at(source_x, source_y);
+        }
     }
-  }
-  return output;
+    return output;
 }
 
 } // namespace ilemu

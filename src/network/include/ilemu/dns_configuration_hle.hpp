@@ -8,4 +8,4 @@ class UserlandHleRegistry;
 // endpoint without creating resolver files inside the guest root filesystem.
 void register_dns_configuration_hle(UserlandHleRegistry& registry);
 
-}  // namespace ilemu
+} // namespace ilemu

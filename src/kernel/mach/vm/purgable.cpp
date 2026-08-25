@@ -13,114 +13,115 @@
 namespace ilemu {
 namespace {
 
-// Darwin also publishes this routine in the mach_vm subsystem. ARM32 keeps
-// the same scalar request/reply layout while the subsystem-relative ID moves.
-constexpr std::uint32_t mach_vm_purgable_control_identifier = 4818U;
-constexpr std::uint32_t request_size = 44U;
-constexpr std::uint32_t reply_size = 40U;
-constexpr std::uint32_t kern_invalid_argument = 4U;
+    // Darwin also publishes this routine in the mach_vm subsystem. ARM32 keeps
+    // the same scalar request/reply layout while the subsystem-relative ID
+    // moves.
+    constexpr std::uint32_t mach_vm_purgable_control_identifier = 4818U;
+    constexpr std::uint32_t request_size = 44U;
+    constexpr std::uint32_t reply_size = 40U;
+    constexpr std::uint32_t kern_invalid_argument = 4U;
 
-constexpr std::uint32_t vm_purgable_set_state = 0U;
-constexpr std::uint32_t vm_purgable_get_state = 1U;
-constexpr std::uint32_t vm_purgable_nonvolatile = 0U;
-constexpr std::uint32_t vm_purgable_empty = 2U;
+    constexpr std::uint32_t vm_purgable_set_state = 0U;
+    constexpr std::uint32_t vm_purgable_get_state = 1U;
+    constexpr std::uint32_t vm_purgable_nonvolatile = 0U;
+    constexpr std::uint32_t vm_purgable_empty = 2U;
 
-constexpr std::uint32_t page_base(std::uint32_t address) {
-  return address & ~(AddressSpace::page_size - 1U);
-}
+    constexpr std::uint32_t page_base(std::uint32_t address)
+    {
+        return address & ~(AddressSpace::page_size - 1U);
+    }
 
 } // namespace
 
 bool CompatibilityKernel::dispatch_mach_vm_purgable_message(
-    Cpu &cpu, const MachMessageRequest &request) {
-  using namespace mach_support;
-  using namespace mach_vm_support;
+    Cpu& cpu, const MachMessageRequest& request)
+{
+    using namespace mach_support;
+    using namespace mach_vm_support;
 
-  const auto is_mach_vm =
-      request.identifier == mach_vm_purgable_control_identifier;
-  if (request.identifier !=
-          mig_message_id(xnu792::mig::vm_map::Routine::vm_purgable_control) &&
-      !is_mach_vm) {
-    return false;
-  }
+    const auto is_mach_vm =
+        request.identifier == mach_vm_purgable_control_identifier;
+    if (request.identifier !=
+            mig_message_id(xnu792::mig::vm_map::Routine::vm_purgable_control) &&
+        !is_mach_vm) {
+        return false;
+    }
 
-  auto &registers = cpu.registers();
-  const auto fail_transport = [&] {
-    registers[0] = mach_receive_invalid_data;
+    auto& registers = cpu.registers();
+    const auto fail_transport = [&] {
+        registers[0] = mach_receive_invalid_data;
+        return true;
+    };
+    if (registers[2] < request_size || registers[3] < reply_size)
+        return fail_transport();
+
+    const auto& arguments = xnu792::mig::vm_map::vm_purgable_control_arguments;
+    const auto address =
+        memory_.read32(request.address + arguments[1].request_offset);
+    const auto control =
+        memory_.read32(request.address + arguments[2].request_offset);
+    const auto input_state =
+        memory_.read32(request.address + arguments[3].request_offset);
+    if (!address || !control || !input_state)
+        return fail_transport();
+
+    std::uint32_t result = kern_success;
+    std::uint32_t output_state = *input_state;
+    bool targets_current_task = false;
+    {
+        std::lock_guard mach_lock { shared_state_->mach_mutex };
+        targets_current_task =
+            target_task_for_port(*shared_state_, process_.pid,
+                request.remote_port) == process_.pid;
+    }
+
+    if (!targets_current_task) {
+        result = kern_invalid_argument;
+    } else if (!memory_.mapped(*address)) {
+        result = kern_invalid_address;
+    } else if (*control == vm_purgable_get_state) {
+        const auto state = vm_purgable_states_.find(page_base(*address));
+        output_state = state == vm_purgable_states_.end()
+                           ? vm_purgable_nonvolatile
+                           : state->second;
+    } else if (*control == vm_purgable_set_state &&
+               *input_state <= vm_purgable_empty) {
+        const auto key = page_base(*address);
+        const auto previous = vm_purgable_states_.find(key);
+        output_state = previous == vm_purgable_states_.end()
+                           ? vm_purgable_nonvolatile
+                           : previous->second;
+        vm_purgable_states_[key] = *input_state;
+    } else {
+        result = kern_invalid_argument;
+    }
+
+    const std::array<std::uint32_t, reply_size / sizeof(std::uint32_t)> reply {
+        darwin::mig_wire::message_bits(
+            darwin::mig_wire::disposition_move_send_once),
+        reply_size,
+        request.local_port,
+        0U,
+        0U,
+        request.identifier + 100U,
+        0U,
+        1U,
+        result,
+        output_state,
+    };
+    if (!write_words(memory_, request.address, reply))
+        return fail_transport();
+
+    output_.write(
+        "[vm] purgable pid=" + std::to_string(process_.pid) + " interface=" +
+        (is_mach_vm ? std::string { "mach_vm" } : std::string { "vm_map" }) +
+        " address=" + std::to_string(*address) +
+        " control=" + std::to_string(*control) +
+        " input-state=" + std::to_string(*input_state) +
+        " output-state=" + std::to_string(output_state) +
+        " result=" + std::to_string(result) + "\n");
+    registers[0] = kern_success;
     return true;
-  };
-  if (registers[2] < request_size || registers[3] < reply_size)
-    return fail_transport();
-
-  const auto &arguments =
-      xnu792::mig::vm_map::vm_purgable_control_arguments;
-  const auto address =
-      memory_.read32(request.address + arguments[1].request_offset);
-  const auto control =
-      memory_.read32(request.address + arguments[2].request_offset);
-  const auto input_state =
-      memory_.read32(request.address + arguments[3].request_offset);
-  if (!address || !control || !input_state)
-    return fail_transport();
-
-  std::uint32_t result = kern_success;
-  std::uint32_t output_state = *input_state;
-  bool targets_current_task = false;
-  {
-    std::lock_guard mach_lock{shared_state_->mach_mutex};
-    targets_current_task =
-        target_task_for_port(*shared_state_, process_.pid,
-                             request.remote_port) == process_.pid;
-  }
-
-  if (!targets_current_task) {
-    result = kern_invalid_argument;
-  } else if (!memory_.mapped(*address)) {
-    result = kern_invalid_address;
-  } else if (*control == vm_purgable_get_state) {
-    const auto state = vm_purgable_states_.find(page_base(*address));
-    output_state = state == vm_purgable_states_.end()
-                       ? vm_purgable_nonvolatile
-                       : state->second;
-  } else if (*control == vm_purgable_set_state &&
-             *input_state <= vm_purgable_empty) {
-    const auto key = page_base(*address);
-    const auto previous = vm_purgable_states_.find(key);
-    output_state = previous == vm_purgable_states_.end()
-                       ? vm_purgable_nonvolatile
-                       : previous->second;
-    vm_purgable_states_[key] = *input_state;
-  } else {
-    result = kern_invalid_argument;
-  }
-
-  const std::array<std::uint32_t, reply_size / sizeof(std::uint32_t)> reply{
-      darwin::mig_wire::message_bits(
-          darwin::mig_wire::disposition_move_send_once),
-      reply_size,
-      request.local_port,
-      0U,
-      0U,
-      request.identifier + 100U,
-      0U,
-      1U,
-      result,
-      output_state,
-  };
-  if (!write_words(memory_, request.address, reply))
-    return fail_transport();
-
-  output_.write("[vm] purgable pid=" + std::to_string(process_.pid) +
-                " interface=" +
-                (is_mach_vm ? std::string{"mach_vm"}
-                            : std::string{"vm_map"}) +
-                " address=" + std::to_string(*address) +
-                " control=" + std::to_string(*control) +
-                " input-state=" + std::to_string(*input_state) +
-                " output-state=" + std::to_string(output_state) +
-                " result=" + std::to_string(result) + "\n");
-  registers[0] = kern_success;
-  return true;
 }
 
 } // namespace ilemu
