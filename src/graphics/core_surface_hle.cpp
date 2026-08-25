@@ -96,6 +96,18 @@ CoreSurfaceHle::CoreSurfaceHle(
         std::string{core_surface_image},
         std::string{client_buffer_wrap_image_transport},
         [this](UserlandHleCall& call) { dispatch(call); });
+    const auto register_property_symbols = [&registry](
+                                               const surface_transport::Profile&
+                                                   profile) {
+        for (const auto symbol : profile.create_property_symbols) {
+            if (!symbol.empty()) {
+                registry.register_guest_data_symbol(
+                    std::string{profile.image_suffix}, std::string{symbol});
+            }
+        }
+    };
+    register_property_symbols(surface_transport::core_surface_client_buffer);
+    register_property_symbols(surface_transport::io_surface_client);
     registry.register_guest_function(std::string{core_foundation_image},
                                      "_CFDictionaryGetValue");
     registry.register_guest_function(std::string{core_foundation_image},
