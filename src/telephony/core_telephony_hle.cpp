@@ -33,14 +33,6 @@ constexpr std::array<std::string_view, 3> application_image_directories{
     "private/var/mobile/Applications/"};
 constexpr std::string_view offline_sim_status_export{
     "_kCTSIMSupportSIMStatusReady"};
-// These are exported CF objects rather than callable entry points. Register
-// them explicitly so shared-cache mappings can resolve the same firmware
-// objects that the HLE returns to the guest.
-constexpr std::array<std::string_view, 3> firmware_object_exports{
-    "_kCTRegistrationStatusNotRegistered",
-    "_kCTRegistrationNetworkSelectionModeDisabled",
-    offline_sim_status_export,
-};
 constexpr std::string_view create_call_from_info{
     "__CTCallCreateFromCallInfo"};
 constexpr std::string_view copy_next_call{
@@ -68,6 +60,20 @@ constexpr std::string_view cf_dictionary_key_callbacks{
 constexpr std::string_view cf_dictionary_value_callbacks{
     "_kCFTypeDictionaryValueCallBacks"};
 constexpr std::string_view cf_release{"_CFRelease"};
+// These are exported CF objects rather than callable entry points. Keep the
+// data and function dependencies separate so shared-cache mappings publish
+// __DATA exports without treating their bytes as executable code.
+constexpr std::array<std::string_view, 5> core_telephony_data_exports{
+    "_kCTRegistrationStatusNotRegistered",
+    "_kCTRegistrationNetworkSelectionModeDisabled",
+    offline_sim_status_export,
+    call_status_change_notification,
+    call_dictionary_key,
+};
+constexpr std::array<std::string_view, 2> core_foundation_data_exports{
+    cf_dictionary_key_callbacks,
+    cf_dictionary_value_callbacks,
+};
 constexpr std::uint32_t cf_string_encoding_utf8{0x08000100U};
 constexpr std::uint32_t call_argument_words{8U};
 constexpr std::uint32_t call_argument_bytes{
@@ -559,16 +565,18 @@ void register_core_telephony_hle(
     UserlandHleRegistry& registry, WifiStateProvider wifi_state,
     std::function<void(const WifiSnapshot&, const WifiSnapshot&)>
         wifi_state_changed, bool offline_transport) {
-    for (const auto symbol : firmware_object_exports) {
+    for (const auto symbol : core_telephony_data_exports) {
         registry.register_guest_data_symbol(std::string{core_telephony_image},
+                                            std::string{symbol});
+    }
+    for (const auto symbol : core_foundation_data_exports) {
+        registry.register_guest_data_symbol(std::string{core_foundation_image},
                                             std::string{symbol});
     }
     for (const auto symbol : {
              copy_cf_string,
              cf_dictionary_create_mutable,
              cf_dictionary_set_value,
-             cf_dictionary_key_callbacks,
-             cf_dictionary_value_callbacks,
              cf_release,
          }) {
         registry.register_guest_function(
