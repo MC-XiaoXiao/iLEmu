@@ -61,6 +61,7 @@ private:
         std::uint32_t width { };
         std::uint32_t height { };
         std::vector<std::uint32_t> pixels;
+        std::uint64_t backing_cpu_generation { };
         std::set<std::uint32_t> refreshed_textures;
         bool dirty { };
     };
@@ -182,6 +183,8 @@ private:
     [[nodiscard]] std::optional<std::uint32_t> core_surface_identifier(
         UserlandHleCall& call, std::uint32_t surface) const;
     [[nodiscard]] SurfaceState* current_pixmap_surface(UserlandHleCall& call);
+    [[nodiscard]] bool refresh_pixmap_surface(
+        UserlandHleCall& call, std::uint32_t surface);
     [[nodiscard]] const GlesResourceStore::TextureLevel*
     current_framebuffer_level(const ContextState& context) const;
     [[nodiscard]] std::uint32_t ensure_renderbuffer_storage(

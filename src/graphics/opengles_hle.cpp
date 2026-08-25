@@ -561,6 +561,30 @@ OpenGlesHle::SurfaceState* OpenGlesHle::current_pixmap_surface(
                : nullptr;
 }
 
+bool OpenGlesHle::refresh_pixmap_surface(
+    UserlandHleCall& call, std::uint32_t surface)
+{
+    const auto found = surfaces_.find(surface);
+    if (found == surfaces_.end() || !found->second.backing_identifier)
+        return true;
+    auto& state = found->second;
+    const auto host_surface =
+        surface_store_->host_surface(*state.backing_identifier);
+    if (!host_surface)
+        return false;
+    const auto cpu_generation = host_surface->cpu_generation();
+    if (cpu_generation <= state.backing_cpu_generation)
+        return true;
+    // A newer GPU generation is still the authoritative render target. Do not
+    // overwrite its native image with the older guest shadow; record the CPU
+    // watermark so a later completed GPU-to-CPU synchronization is observed.
+    if (host_surface->gpu_generation() > cpu_generation) {
+        state.backing_cpu_generation = cpu_generation;
+        return true;
+    }
+    return reload_surface(call, surface);
+}
+
 const GlesResourceStore::TextureLevel* OpenGlesHle::current_framebuffer_level(
     const ContextState& context) const
 {
@@ -639,6 +663,11 @@ OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
             std::move(host_surface), level->render_target_inverted_vertical };
     }
     if (auto* pixmap = current_pixmap_surface(call)) {
+        if (!refresh_pixmap_surface(call, thread(call).draw_surface))
+            return std::nullopt;
+        pixmap = current_pixmap_surface(call);
+        if (pixmap == nullptr || !pixmap->backing_identifier)
+            return std::nullopt;
         const auto host_surface =
             surface_store_->host_surface(*pixmap->backing_identifier);
         if (!host_surface)
@@ -679,6 +708,7 @@ bool OpenGlesHle::reload_surface(UserlandHleCall& call, std::uint32_t surface)
         host_surface->gpu_generation() > host_surface->cpu_generation()) {
         state.width = backing->width;
         state.height = backing->height;
+        state.backing_cpu_generation = host_surface->cpu_generation();
         state.refreshed_textures.clear();
         state.dirty = false;
         return true;
@@ -690,6 +720,8 @@ bool OpenGlesHle::reload_surface(UserlandHleCall& call, std::uint32_t surface)
     state.width = backing->width;
     state.height = backing->height;
     state.pixels = std::move(*pixels);
+    state.backing_cpu_generation =
+        host_surface ? host_surface->cpu_generation() : 0U;
     state.refreshed_textures.clear();
     state.dirty = false;
     renderer_->invalidate(render_target_key(surface));
@@ -724,6 +756,10 @@ bool OpenGlesHle::flush_surface(UserlandHleCall& call, std::uint32_t surface)
         return false;
     }
     state.dirty = false;
+    if (const auto host_surface =
+            surface_store_->host_surface(*state.backing_identifier)) {
+        state.backing_cpu_generation = host_surface->cpu_generation();
+    }
     state.refreshed_textures.clear();
     return true;
 }
@@ -784,6 +820,8 @@ bool OpenGlesHle::commit_render_target(UserlandHleCall& call,
             return false;
         }
         surface->pixels = std::move(frame.pixels);
+        surface->backing_cpu_generation =
+            binding.host_surface ? binding.host_surface->cpu_generation() : 0U;
         surface->dirty = false;
         return true;
     }
@@ -1455,6 +1493,10 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
             state.width = backing->width;
             state.height = backing->height;
             state.pixels = std::move(*pixels);
+            if (const auto host_surface =
+                    surface_store_->host_surface(*identifier)) {
+                state.backing_cpu_generation = host_surface->cpu_generation();
+            }
         }
         const auto surface = next_surface_++;
         surfaces_.emplace(surface, std::move(state));
