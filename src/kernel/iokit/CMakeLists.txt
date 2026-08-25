@@ -8,6 +8,7 @@ add_subdirectory(mbx)
 add_subdirectory(mobile_file_integrity)
 
 add_library(ilemu_kernel_iokit_power STATIC
+    battery.cpp
     power.cpp)
 add_library(iLEmu::kernel_iokit_power ALIAS
     ilemu_kernel_iokit_power)
