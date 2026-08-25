@@ -772,6 +772,15 @@ std::optional<DisplayFrame> OpenGlesHle::render_target(
         if (!binding.host_surface)
             return std::nullopt;
         const auto descriptor = binding.host_surface->descriptor();
+        if (renderer_->accelerated()) {
+            // Native renderers already own the authoritative image after the
+            // first upload. Carry the HostSurface across the renderer boundary
+            // so it can compare CPU/GPU generations without copying the full
+            // CPU shadow for every draw. Software backends retain the owning
+            // pixel frame below.
+            return DisplayFrame { descriptor.width, descriptor.height, 0, { },
+                binding.host_surface };
+        }
         auto mapping = binding.host_surface->map_cpu(false);
         const auto& frame = mapping.frame();
         if (frame.width != descriptor.width ||

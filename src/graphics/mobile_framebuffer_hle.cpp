@@ -106,6 +106,19 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
     // IOConnectCallScalarMethod(selector 3) and then CoreSurfaceBufferLookup,
     // preserving the real CFRuntime wrapper around our client-buffer HLE.
     add("_IOMobileFramebufferSwapBegin", [this](UserlandHleCall& call) {
+        const auto callback_processor =
+            static_cast<std::uint32_t>(call.cpu().processor_id());
+        bool callback_observed = false;
+        if (shared_state_) {
+            std::lock_guard lock { shared_state_->mach_mutex };
+            callback_observed =
+                shared_state_->observe_display_vsync_frame_begin_locked(
+                    call.process_id(), call.argument(0), callback_processor);
+        }
+        if (callback_observed) {
+            performance_counters().record_vsync_callback(
+                call.process_id(), call.argument(0), 0, callback_processor);
+        }
         const auto swap_id = next_swap_id_++;
         call.set_return(call.write32(call.argument(1), swap_id)
                             ? iokit_abi::success

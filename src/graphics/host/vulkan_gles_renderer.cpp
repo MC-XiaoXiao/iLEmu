@@ -4482,6 +4482,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         // CPU readback takes HostSurface before the renderer mutex.  Resolve
         // the inverse dependency here before serializing Vulkan state so
         // texture selection cannot deadlock a concurrent readback.
+        std::optional<SurfacePreparation> target_surface_preparation;
+        if (frame.host_surface && frame.host_surface->key() == target) {
+            target_surface_preparation =
+                capture_surface_preparation(*frame.host_surface);
+        }
         std::array<std::shared_ptr<HostSurface>, gles_abi::texture_unit_count>
             gpu_newer_host_surfaces { };
         for (std::size_t index = 0; index < gpu_newer_host_surfaces.size();
@@ -4505,9 +4510,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         std::lock_guard lock { mutex_ };
         last_failure_reason_.store(
             PerfFallbackReason::None, std::memory_order_relaxed);
+        const auto cpu_frame_valid =
+            frame.pixels.size() ==
+            static_cast<std::size_t>(frame.width) * frame.height;
         if (frame.width == 0 || frame.height == 0 ||
-            frame.pixels.size() !=
-                static_cast<std::size_t>(frame.width) * frame.height ||
+            (!target_surface_preparation && !cpu_frame_valid) ||
             state.viewport_width == 0 || state.viewport_height == 0) {
             last_failure_reason_.store(
                 PerfFallbackReason::InvalidTarget, std::memory_order_relaxed);
@@ -4601,11 +4608,27 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             }
 
             const auto frame_bytes =
-                static_cast<VkDeviceSize>(frame.pixels.size()) *
+                static_cast<VkDeviceSize>(frame.width) * frame.height *
                 sizeof(std::uint32_t);
             const auto vertex_bytes =
                 static_cast<VkDeviceSize>(expanded.size()) * sizeof(GpuVertex);
-            auto& gpu_target = ensure_target(target, frame.width, frame.height);
+            auto& gpu_target = target_surface_preparation
+                                   ? prepare_host_surface(*frame.host_surface,
+                                         target_surface_preparation->cpu_frame,
+                                         target_surface_preparation
+                                             ->cpu_generation,
+                                         target_surface_preparation
+                                             ->gpu_generation,
+                                         std::move(target_surface_preparation
+                                                       ->cpu_damage))
+                                   : ensure_target(
+                                         target, frame.width, frame.height);
+            if (target_surface_preparation && !gpu_target.valid) {
+                last_failure_reason_.store(
+                    PerfFallbackReason::InvalidTarget,
+                    std::memory_order_relaxed);
+                return false;
+            }
 
             const auto texture_cache_over_budget = [&] {
                 return texture_cache_bytes_ > texture_cache_budget_bytes_ ||

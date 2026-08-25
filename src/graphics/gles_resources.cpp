@@ -874,6 +874,16 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
         level->second = std::move(refreshed);
         return gles_abi::no_error;
     }
+    if (host_surface && level->second.host_surface == host_surface &&
+        level->second.host_generation == host_surface->cpu_generation() &&
+        level->second.width == backing->width &&
+        level->second.height == backing->height &&
+        level->second.internal_format == gles_abi::bgra_apple &&
+        level->second.surface_id == backing->id &&
+        level->second.render_target_inverted_vertical ==
+            render_target_inverted_vertical) {
+        return gles_abi::no_error;
+    }
     auto decoded = decode_surface(memory, surfaces, *backing);
     if (!decoded) {
         return (backing->pixel_format == surface_pixel_format_bgra ||
