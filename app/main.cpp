@@ -5729,6 +5729,7 @@ void boot(const std::vector<std::string>& args, Output& output)
                     continue;
                 }
                 account_runtime_jit_memory(**runtime);
+                guest_deadlines.erase((*runtime)->kernel->process().pid);
                 runtime_index.erase(**runtime);
                 runtime_reaper.retire(std::move(*runtime));
                 runtime = runtimes.erase(runtime);
@@ -6656,6 +6657,14 @@ void boot(const std::vector<std::string>& args, Output& output)
             std::optional<std::uint64_t> next_deadline;
             for (const auto& runtime : runtimes) {
                 const auto process_id = runtime->kernel->process().pid;
+                // An exited Runtime may remain here while asynchronous image
+                // work drains. Its timers no longer have Guest-visible
+                // lifetime, so retire the keyed cache entry immediately rather
+                // than letting a past deadline spin the host loop.
+                if (runtime->kernel->process().exited) {
+                    guest_deadlines.erase(process_id);
+                    continue;
+                }
                 const auto deadline = runtime->kernel->next_timer_deadline();
                 if (deadline)
                     guest_deadlines.upsert(process_id, *deadline);
