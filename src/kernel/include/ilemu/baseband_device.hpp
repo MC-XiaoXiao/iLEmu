@@ -135,10 +135,11 @@ public:
     void flush_buffers(std::uint32_t what);
     // A zero capacity preserves the virtual/replay transport's dynamic channel
     // allocation. Offline transport bounds both its anonymous slots and its
-    // named logical-channel registry; named IDs remain outside the anonymous
-    // slot range.
+    // named logical-channel registry; named channels use the same logical
+    // unit table as the stock serial-mux ABI.
     void set_mux_channel_capacity(std::uint32_t capacity);
-    [[nodiscard]] std::uint32_t register_mux_channel(std::string_view name);
+    [[nodiscard]] std::uint32_t register_mux_channel(std::string_view name,
+        std::optional<std::uint32_t> requested_unit = std::nullopt);
     [[nodiscard]] std::optional<std::uint32_t> mux_channel(
         std::string_view name) const;
     void enqueue_receive(std::span<const std::byte> bytes);

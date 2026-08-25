@@ -577,7 +577,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 bsd_success(cpu, 0);
                 return;
             }
-            if (request == darwin::tty::asm_new_dlci) {
+            if (darwin::tty::is_asm_new_dlci(request)) {
                 const auto payload_size =
                     darwin::tty::parameter_length(request);
                 const auto payload = memory_.read_bytes(argument, payload_size);
@@ -587,6 +587,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 }
                 const auto channel_name =
                     extract_mux_channel_name(memory_, argument, *payload);
+                const auto requested_unit = memory_.read32(
+                    argument + sizeof(std::uint32_t));
                 if (!shared_state_->baseband_device_state
                         .dynamic_channels_available()) {
                     output_.write(
@@ -597,7 +599,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 }
                 const auto channel_unit =
                     shared_state_->baseband_device_state.register_mux_channel(
-                        channel_name ? *channel_name : std::string { });
+                        channel_name ? *channel_name : std::string { },
+                        requested_unit);
                 if (channel_unit == 0) {
                     output_.write(
                         "[baseband] ioctl pid=" + std::to_string(process_.pid) +

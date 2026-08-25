@@ -325,15 +325,10 @@ void State::set_mux_channel_capacity(std::uint32_t capacity)
     const std::lock_guard lock { mutex_ };
     anonymous_mux_channel_capacity_ = capacity;
     next_anonymous_mux_channel_ = 1;
-    // Keep named channels out of the anonymous slot range.  The normal boot
-    // configures this before CommCenter opens the device, so changing a live
-    // transport remains a safe administrative operation as well.
-    if (capacity != 0 && next_mux_channel_ <= capacity) {
-        next_mux_channel_ = capacity + 1U;
-    }
 }
 
-std::uint32_t State::register_mux_channel(std::string_view name)
+std::uint32_t State::register_mux_channel(
+    std::string_view name, std::optional<std::uint32_t> requested_unit)
 {
     const std::lock_guard lock { mutex_ };
     if (!name.empty()) {
@@ -344,15 +339,59 @@ std::uint32_t State::register_mux_channel(std::string_view name)
         }
         if (anonymous_mux_channel_capacity_ != 0 &&
             mux_channels_.size() >= anonymous_mux_channel_capacity_) {
-            // Named channels use a separate ID range so they never alias the
-            // anonymous slots. Keep their registry bounded as well; otherwise
-            // an offline CommCenter retry loop could grow this map
-            // indefinitely.
+            // Keep the finite logical-channel table bounded; otherwise an
+            // offline CommCenter retry loop could grow this map indefinitely.
+            return 0;
+        }
+        if (requested_unit && *requested_unit != 0U) {
+            if (anonymous_mux_channel_capacity_ != 0 &&
+                *requested_unit > anonymous_mux_channel_capacity_) {
+                return 0;
+            }
+            const auto occupied = std::any_of(mux_channels_.begin(),
+                mux_channels_.end(), [requested_unit](const auto& entry) {
+                    return entry.second == *requested_unit;
+                });
+            if (occupied)
+                return 0;
+            mux_channels_.emplace(key, *requested_unit);
+            if (anonymous_mux_channel_capacity_ != 0) {
+                next_mux_channel_ = *requested_unit ==
+                        anonymous_mux_channel_capacity_
+                    ? 1U
+                    : *requested_unit + 1U;
+            }
+            return *requested_unit;
+        }
+        if (anonymous_mux_channel_capacity_ != 0) {
+            auto unit = next_mux_channel_;
+            if (unit == 0 || unit > anonymous_mux_channel_capacity_)
+                unit = 1;
+            const auto first = unit;
+            do {
+                const auto occupied = std::any_of(
+                    mux_channels_.begin(), mux_channels_.end(),
+                    [unit](const auto& entry) { return entry.second == unit; });
+                if (!occupied) {
+                    next_mux_channel_ =
+                        unit == anonymous_mux_channel_capacity_ ? 1U : unit + 1U;
+                    mux_channels_.emplace(key, unit);
+                    return unit;
+                }
+                unit = unit == anonymous_mux_channel_capacity_ ? 1U : unit + 1U;
+            } while (unit != first);
             return 0;
         }
         const auto unit = next_mux_channel_++;
         mux_channels_.emplace(key, unit);
         return unit;
+    }
+    if (requested_unit && *requested_unit != 0U) {
+        if (anonymous_mux_channel_capacity_ != 0 &&
+            *requested_unit > anonymous_mux_channel_capacity_) {
+            return 0;
+        }
+        return *requested_unit;
     }
     if (anonymous_mux_channel_capacity_ != 0) {
         const auto unit = next_anonymous_mux_channel_;

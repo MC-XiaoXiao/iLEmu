@@ -985,6 +985,20 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 bsd_success(cpu, 0);
             }
             return;
+        case darwin::fcntl_command::add_file_signatures:
+            // F_ADDFILESIGS is the corresponding path for a signature stored
+            // in the file itself. iOS 4 dyld uses it for the shared cache
+            // before issuing shared_region_map_file(). Code-signing
+            // enforcement is intentionally outside this compatibility layer;
+            // accept the ABI record so the cache can be mapped by the normal
+            // shared-region implementation.
+            if (registers[2] == 0 ||
+                !memory_.accessible(registers[2], 16, MemoryPermission::Read)) {
+                bsd_error(cpu, bsd_support::bad_address);
+            } else {
+                bsd_success(cpu, 0);
+            }
+            return;
         case darwin::fcntl_command::get_path: {
             auto descriptor = fd;
             if (const auto duplicate = duplicated_descriptors_.find(descriptor);

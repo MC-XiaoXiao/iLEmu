@@ -129,8 +129,24 @@ inline constexpr std::uint32_t set_mux_speed =
 inline constexpr std::size_t ioaos_status_size = sizeof(std::uint32_t);
 inline constexpr std::uint32_t ioaos_status_query =
     sized_command(ioctl_output, 'y', 0x90, ioaos_status_size);
+inline constexpr std::size_t asm_new_dlci_minimum_size = 0x48U;
 inline constexpr std::uint32_t asm_new_dlci =
-    sized_command(ioctl_input | ioctl_output, 'x', 0x0a, 0x48U);
+    sized_command(ioctl_input | ioctl_output, 'x', 0x0a,
+        asm_new_dlci_minimum_size);
+
+// The serial-mux structure grew while retaining the same ioctl group and
+// command. Match the ABI family and its minimum layout rather than one
+// encoded sizeof value, so older and newer Darwin clients can share the
+// same virtual channel allocator.
+constexpr bool is_asm_new_dlci(std::uint32_t command)
+{
+    return (command & (ioctl_input | ioctl_output)) ==
+               (ioctl_input | ioctl_output) &&
+           ((command >> 8U) & 0xffU) ==
+               static_cast<std::uint32_t>(static_cast<unsigned char>('x')) &&
+           (command & 0xffU) == 0x0aU &&
+           parameter_length(command) >= asm_new_dlci_minimum_size;
+}
 inline constexpr std::size_t receive_queue_configuration_size = 0x10U;
 inline constexpr std::uint32_t ioaos_receive_queue =
     sized_command(ioctl_input, 'x', 0x28, receive_queue_configuration_size);

@@ -125,6 +125,10 @@ namespace fcntl_command {
     inline constexpr std::uint32_t set_no_cache = 48;
     inline constexpr std::uint32_t get_path = 50;
     inline constexpr std::uint32_t add_detached_signatures = 59;
+    // F_ADDFILESIGS registers the code signature embedded in the same file.
+    // Older dyld uses it when validating the dyld shared cache before mapping
+    // its logical library images.
+    inline constexpr std::uint32_t add_file_signatures = 61;
 } // namespace fcntl_command
 
 namespace ptrace_request {

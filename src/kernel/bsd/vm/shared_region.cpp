@@ -615,6 +615,28 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
                     shared_cache->immutable_file_view_at(file_index) };
             }
         }
+
+        // dyld may include an auxiliary range, such as the code-signature
+        // tail, in the shared-region request even though it is not listed in
+        // the cache member's VM mapping table. Keep it backed by the exact
+        // immutable cache member, but never accept a range outside that file.
+        const auto descriptor_file = std::find_if(files.begin(), files.end(),
+            [&](const DyldCacheFileView& file) {
+                return std::filesystem::path { file.path } ==
+                       descriptor->second;
+            });
+        if (descriptor_file != files.end()) {
+            const auto cache_file = *descriptor_file;
+            const auto source_size = cache_file.file_size;
+            if (mapping.file_offset <= source_size &&
+                mapping.size <= source_size - mapping.file_offset) {
+                const auto file_index = static_cast<std::size_t>(
+                    std::distance(files.begin(), descriptor_file));
+                return MappingSource { cache_file.path, mapping.file_offset,
+                    cache_file.file_generation, cache_file.content_identity,
+                    shared_cache->immutable_file_view_at(file_index) };
+            }
+        }
         return std::nullopt;
     };
 
