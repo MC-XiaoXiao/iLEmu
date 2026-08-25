@@ -31,6 +31,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <utility>
@@ -182,9 +183,17 @@ bool CompatibilityKernel::display_vsync_callback_pending()
     return std::any_of(shared_state_->iokit_display_vsync.begin(),
         shared_state_->iokit_display_vsync.end(), [this](const auto& entry) {
             const auto& registration = entry.second;
+            // A queued notification is not callback work yet. Its exact
+            // blocked Mach receiver is handled by
+            // display_vsync_dependency_processor(); using the previous
+            // callback processor before this pulse is received can starve the
+            // run-loop dependency that will consume it. The callback becomes
+            // pending only after successful Mach copyout establishes the
+            // receiver watermark.
             return registration.enabled &&
                    registration.owner_pid == process_.pid &&
-                   registration.callback_sequence < registration.sequence;
+                   registration.callback_sequence <
+                       registration.receiver_sequence;
         });
 }
 

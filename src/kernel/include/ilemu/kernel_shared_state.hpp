@@ -1482,6 +1482,36 @@ struct KernelSharedState {
         }
     }
 
+    // The caller holds mach_mutex. Some framebuffer callbacks proceed directly
+    // from their Mach receive to frame construction without querying the
+    // notification count. SwapBegin is then the first common firmware boundary
+    // that proves the already-received notification entered its callback. Do
+    // not consume a merely queued pulse here: only the receive watermark may
+    // advance callback ownership.
+    bool observe_display_vsync_frame_begin_locked(std::uint32_t process_id,
+        std::uint32_t framebuffer_refcon, std::uint32_t processor_id)
+    {
+        bool advanced = false;
+        for (auto& [connection_object, registration] : iokit_display_vsync) {
+            static_cast<void>(connection_object);
+            if (registration.owner_pid != process_id ||
+                registration.async_reference
+                        [iokit_abi::display_vsync::async_refcon_index] !=
+                    framebuffer_refcon) {
+                continue;
+            }
+            if (registration.receiver_sequence <=
+                registration.callback_sequence) {
+                continue;
+            }
+            registration.last_callback_processor = processor_id;
+            registration.callback_sequence = std::min(registration.sequence,
+                registration.receiver_sequence);
+            advanced = true;
+        }
+        return advanced;
+    }
+
     // The caller holds mach_mutex. Observe only a successful Mach copyout of a
     // real kernel-generated VSync message. Registration generation prevents a
     // stale queued message from attaching to a replacement IOUserClient.
