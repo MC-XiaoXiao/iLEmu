@@ -40,6 +40,9 @@ struct GraphicsServicesInputProfile {
   // PathInfo byte 1 is ABI-defined. Early UIKit keeps a stable identity
   // there, while later keyboard layouts consume per-event touch stages.
   std::array<std::uint8_t, 4> path_phase_types{};
+  // GraphicsServices uses this event to keep SpringBoard's idle duration in
+  // sync when input is consumed by an application port.
+  std::uint32_t idle_duration_reset_event_type{};
   SystemEvents system_events{};
 
   [[nodiscard]] std::uint8_t hand_type(TouchPhase phase) const;

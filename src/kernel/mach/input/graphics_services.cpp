@@ -200,10 +200,12 @@ make_simple_event_message(std::uint32_t destination, std::uint64_t timestamp,
                           std::uint64_t input_sequence,
                           KernelSharedState::MachMessage::GraphicsInputKind
                               input_kind,
-                          KernelSharedState::GraphicsInputAbi abi) {
+                          KernelSharedState::GraphicsInputAbi abi,
+                          std::span<const std::byte> event_info = {}) {
   const auto &profile = GraphicsServicesInputProfile::for_abi(abi);
   const auto simple_event_message_size =
-      darwin::mig_wire::message_header_size + profile.event_record_size;
+      darwin::mig_wire::message_header_size + profile.event_record_size +
+      event_info.size();
   KernelSharedState::MachMessage message;
   message.bytes.resize(simple_event_message_size, std::byte{0});
   message.destination = destination;
@@ -225,6 +227,12 @@ make_simple_event_message(std::uint32_t destination, std::uint64_t timestamp,
              static_cast<std::uint32_t>(timestamp));
   write_word(message.bytes, record + profile.record_timestamp_offset + 4,
              static_cast<std::uint32_t>(timestamp >> 32U));
+  write_word(message.bytes, record + profile.record_info_size_offset,
+             static_cast<std::uint32_t>(event_info.size()));
+  for (std::size_t index = 0; index < event_info.size(); ++index) {
+    message.bytes[record + profile.event_record_size + index] =
+        event_info[index];
+  }
   return message;
 }
 
@@ -271,12 +279,39 @@ void queue_simple_event_locked(KernelSharedState &state,
                                std::uint64_t input_sequence,
                                KernelSharedState::MachMessage::GraphicsInputKind
                                    input_kind) {
+  const auto abi = graphics_input_abi_for_object_locked(state, destination);
+  const auto &profile = GraphicsServicesInputProfile::for_abi(abi);
+  std::array<std::byte, sizeof(std::uint64_t)> idle_duration{};
+  const auto event_info =
+      event_type == profile.idle_duration_reset_event_type
+          ? std::span<const std::byte>{idle_duration}
+          : std::span<const std::byte>{};
   state.enqueue_mach_message_locked(
       destination,
       make_simple_event_message(destination, state.clock.now(), event_type,
-                                input_sequence, input_kind,
-                                graphics_input_abi_for_object_locked(
-                                    state, destination)));
+                                input_sequence, input_kind, abi, event_info));
+}
+
+void queue_idle_duration_reset_locked(KernelSharedState &state,
+                                      std::uint64_t input_sequence) {
+  const auto service =
+      state.bootstrap_service_objects.find(std::string{system_event_service});
+  const auto destination =
+      service == state.bootstrap_service_objects.end() ? 0U : service->second;
+  const auto abi = system_graphics_input_abi_locked(state, destination);
+  const auto event_type =
+      GraphicsServicesInputProfile::for_abi(abi).idle_duration_reset_event_type;
+  constexpr auto input_kind =
+      KernelSharedState::MachMessage::GraphicsInputKind::OtherSystem;
+  if (service == state.bootstrap_service_objects.end()) {
+    state.pending_graphics_inputs.push_back(
+        KernelSharedState::PendingGraphicsInput{
+            KernelSharedState::PendingGraphicsInput::Kind::SystemEvent,
+            {}, event_type, input_sequence, input_kind});
+    return;
+  }
+  queue_simple_event_locked(state, service->second, event_type, input_sequence,
+                            input_kind);
 }
 
 bool object_owned_by_process_locked(const KernelSharedState &state,
@@ -1537,7 +1572,37 @@ void register_springboard_lock_observer(
 
 void register_application_suspension_observer(
     UserlandHleRegistry &registry,
-    std::function<void(std::uint32_t, bool)> observer) {
+    std::function<void(std::uint32_t, bool)> observer,
+    std::function<void(std::uint32_t)> under_lock_observer) {
+  const auto native_under_lock_observer = under_lock_observer;
+  registry.register_objc_instance_method(
+      std::string{ui_kit_image}, "UIApplication",
+      "applicationWillSuspendUnderLock",
+      "-[UIApplication applicationWillSuspendUnderLock]",
+      [observer = native_under_lock_observer](UserlandHleCall &call) {
+        const auto process_id = call.process_id();
+        call.resume_original_persistently(
+            [observer, process_id](UserlandHleCall &completed) {
+              static_cast<void>(completed);
+              if (observer)
+                observer(process_id);
+            });
+      });
+  registry.register_objc_instance_method(
+      std::string{ui_kit_image}, "UIApplication", "_setSuspendedUnderLock:",
+      "-[UIApplication _setSuspendedUnderLock:]",
+      [observer = std::move(under_lock_observer)](UserlandHleCall &call) {
+        const auto process_id = call.process_id();
+        const auto suspended = call.argument(2) != 0U;
+        call.resume_original_persistently(
+            [observer, process_id, suspended](UserlandHleCall &completed) {
+              static_cast<void>(completed);
+              // Under-lock resume is completed by the native unlock gesture;
+              // only its entering edge establishes the Lock barrier here.
+              if (observer && suspended)
+                observer(process_id);
+            });
+      });
   registry.register_objc_instance_method(
       std::string{ui_kit_image}, "UIApplication", "_setSuspended:",
       "-[UIApplication _setSuspended:]",
@@ -1942,6 +2007,11 @@ EnqueueResult enqueue_touch(KernelSharedState &state, const TouchInput &input,
     queue_locked(state, route->destination_object,
                  transform_touch(sanitized, route->transform),
                  input_sequence);
+    // App-owned event ports do not pass the physical touch through
+    // SpringBoard. Preserve the firmware's separate idle-duration event so
+    // SpringBoard can run its native resetIdleDuration: path as it would for
+    // input consumed by the system event port.
+    queue_idle_duration_reset_locked(state, input_sequence);
     if (terminal)
       state.active_graphics_touch_route.reset();
     return EnqueueResult::Queued;

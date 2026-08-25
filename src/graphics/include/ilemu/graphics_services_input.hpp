@@ -56,11 +56,15 @@ void register_springboard_lock_observer(
     UserlandHleRegistry &registry, std::function<void(bool)> observer);
 
 // UIKit owns the ordinary application suspension state independently of its
-// event-only and under-lock modes. Observe that native transition after the
-// firmware method completes instead of interpreting private GSEvent numbers.
+// event-only and under-lock modes. Observe the native under-lock transition
+// before the ordinary `_setSuspended:` callback so automatic lock can reuse the
+// same Lock barrier as a physical lock; do not infer lifecycle from GSEvent
+// numbers. The under-lock observer establishes that barrier, while the
+// ordinary observer retains the native suspension state.
 void register_application_suspension_observer(
     UserlandHleRegistry &registry,
-    std::function<void(std::uint32_t, bool)> observer);
+    std::function<void(std::uint32_t, bool)> observer,
+    std::function<void(std::uint32_t)> under_lock_observer);
 
 // Applies one observed alert-stack transition to the shared foreground-layer
 // ordering. This keeps the firmware observer independent of kernel locking.

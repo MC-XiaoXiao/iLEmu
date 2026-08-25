@@ -20,6 +20,7 @@ constexpr GraphicsServicesInputProfile darwin9_0_profile{
     .path_location_offset = 8,
     .hand_phase_types = {1, 2, 6, 3},
     .path_phase_types = {2, 2, 2, 2},
+    .idle_duration_reset_event_type = 0x899,
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -40,6 +41,7 @@ constexpr GraphicsServicesInputProfile darwin9_3_profile{
     .path_location_offset = 12,
     .hand_phase_types = {1, 2, 6, 3},
     .path_phase_types = {1, 2, 5, 3},
+    .idle_duration_reset_event_type = 0x899,
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -60,6 +62,7 @@ constexpr GraphicsServicesInputProfile darwin9_4_profile{
     .path_location_offset = 12,
     .hand_phase_types = {1, 2, 6, 3},
     .path_phase_types = {1, 2, 5, 3},
+    .idle_duration_reset_event_type = 0x899,
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},

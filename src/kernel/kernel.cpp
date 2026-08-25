@@ -353,6 +353,22 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace &memory, Output &output,
         graphics_services_input::record_application_suspension_state(
             *shared_state_, process_id, suspended,
             scene_coordinator_.get());
+      },
+      [this](std::uint32_t process_id) {
+        const auto already_recorded = [&] {
+          std::lock_guard lock{shared_state_->mach_mutex};
+          return shared_state_->application_touch_suspended &&
+                 shared_state_->application_suspension_reason ==
+                     KernelSharedState::ApplicationSuspensionReason::Lock &&
+                 shared_state_->suspended_application_scene_process_id ==
+                     process_id;
+        }();
+        if (already_recorded)
+          return;
+        graphics_services_input::suspend_active_application(
+            *shared_state_,
+            KernelSharedState::ApplicationSuspensionReason::Lock,
+            scene_coordinator_.get(), 0U);
       });
   graphics_services_input::register_springboard_application_handoff_animation(
       userland_hle_, [this] {

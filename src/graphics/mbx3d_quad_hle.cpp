@@ -8,12 +8,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <vector>
 
 #include "ilemu/address_space.hpp"
+#include "ilemu/application_path.hpp"
+#include "ilemu/display.hpp"
 #include "ilemu/gles_renderer.hpp"
 #include "ilemu/mbx2d_abi.hpp"
+#include "ilemu/kernel_shared_state.hpp"
 #include "ilemu/performance.hpp"
 #include "ilemu/userland_hle.hpp"
 
@@ -328,7 +332,7 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call, bool context_api,
   const auto destination = resolve(state.destination);
   const auto positions =
       read_quad(call.memory(), call.argument(first_argument));
-  const auto texture =
+  auto texture =
       read_quad(call.memory(), call.argument(first_argument + 1U));
   std::array<float, 4> perspective{1.0F, 1.0F, 1.0F, 1.0F};
   if (perspective_api) {
@@ -344,6 +348,88 @@ void Mbx2dHle::quad_copy(UserlandHleCall &call, bool context_api,
     call.set_return(mbx2d_abi::failure);
     return;
   }
+  const auto viewport =
+      display_ ? display_->geometry() : default_display_geometry;
+  [&] {
+    if (!shared_state_ || !source->backing || !destination->backing ||
+        source->width != viewport.width || source->height != viewport.height ||
+        destination->width != viewport.width ||
+        destination->height != viewport.height) {
+      return false;
+    }
+    std::lock_guard lock{shared_state_->mach_mutex};
+    const auto source_process =
+        shared_state_->processes.find(source->backing->provenance
+                                          .producer_process_id);
+    const auto destination_process =
+        shared_state_->processes.find(destination->backing->provenance
+                                          .producer_process_id);
+    if (source_process == shared_state_->processes.end() ||
+        destination_process == shared_state_->processes.end() ||
+        !is_application_executable_path(
+            source_process->second.executable_path) ||
+        is_application_executable_path(
+            destination_process->second.executable_path)) {
+      return false;
+    }
+
+    auto left = (*positions)[0].x;
+    auto right = left;
+    auto top = (*positions)[0].y;
+    auto bottom = top;
+    for (const auto &position : *positions) {
+      left = std::min(left, position.x);
+      right = std::max(right, position.x);
+      top = std::min(top, position.y);
+      bottom = std::max(bottom, position.y);
+    }
+    if (!nearly_equal(left, 0.0F) ||
+        !nearly_equal(right, static_cast<float>(viewport.width)) ||
+        top <= edge_tolerance ||
+        !nearly_equal(bottom, static_cast<float>(viewport.height))) {
+      return false;
+    }
+
+    auto minimum_u = (*texture)[0].x;
+    auto maximum_u = minimum_u;
+    auto minimum_v = (*texture)[0].y;
+    auto maximum_v = minimum_v;
+    for (const auto &coordinate : *texture) {
+      minimum_u = std::min(minimum_u, coordinate.x);
+      maximum_u = std::max(maximum_u, coordinate.x);
+      minimum_v = std::min(minimum_v, coordinate.y);
+      maximum_v = std::max(maximum_v, coordinate.y);
+    }
+    // Firmware texture coordinates address pixel centers, so a full source
+    // may end at half a pixel inside its nominal extent.
+    constexpr auto texture_edge_tolerance = 1.0F;
+    if (minimum_u > texture_edge_tolerance ||
+        maximum_u + texture_edge_tolerance <
+            static_cast<float>(source->width) ||
+        minimum_v > texture_edge_tolerance ||
+        maximum_v + texture_edge_tolerance <
+            static_cast<float>(source->height) ||
+        maximum_v <= minimum_v + edge_tolerance) {
+      return false;
+    }
+
+    // The firmware's first full-screen handoff quad reserves the destination
+    // top band but still addresses the whole source surface, squeezing the
+    // application's client snapshot into the remaining extent. Keep the
+    // source at its native client height; the destination position already
+    // accounts for the reserved band. Later quads are fractional zoom bounds
+    // and intentionally retain firmware texture coordinates.
+    const auto source_content_height = std::min(
+        static_cast<float>(source->height), bottom - top);
+    const auto texture_height = maximum_v - minimum_v;
+    for (auto &coordinate : *texture) {
+      const auto normalized = (coordinate.y - minimum_v) / texture_height;
+      coordinate.y = minimum_v +
+                     std::clamp(normalized, 0.0F, 1.0F) *
+                         source_content_height;
+    }
+    return true;
+  }();
   if (!source_surface_allowed(*source)) {
     call.set_return(mbx2d_abi::success);
     return;
