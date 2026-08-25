@@ -19,6 +19,7 @@ namespace {
 struct ScreenVertex {
     float x{};
     float y{};
+    float inverse_w{1.0F};
     std::array<float, 4> color{};
     std::array<std::array<float, 2>, gles_abi::texture_unit_count> texture{};
 };
@@ -328,12 +329,25 @@ void draw_triangle(DisplayFrame& frame,
             const auto w2 = 1.0F - w0 - w1;
             if (w0 < 0.0F || w1 < 0.0F || w2 < 0.0F)
                 continue;
+            // GLES varyings are interpolated in homogeneous space. Using
+            // screen-space barycentric weights directly makes a textured
+            // 3D quad bend at the diagonal where it is split into triangles.
+            const auto inverse_w = triangle[0].inverse_w * w0 +
+                                   triangle[1].inverse_w * w1 +
+                                   triangle[2].inverse_w * w2;
+            if (!std::isfinite(inverse_w) || std::abs(inverse_w) <= 1.0e-6F)
+                continue;
             std::array<float, 4> color{};
             for (std::size_t component = 0; component < color.size();
                  ++component) {
-                color[component] = triangle[0].color[component] * w0 +
-                                   triangle[1].color[component] * w1 +
-                                   triangle[2].color[component] * w2;
+                color[component] =
+                    (triangle[0].color[component] * triangle[0].inverse_w *
+                         w0 +
+                     triangle[1].color[component] * triangle[1].inverse_w *
+                         w1 +
+                     triangle[2].color[component] * triangle[2].inverse_w *
+                         w2) /
+                    inverse_w;
             }
             const auto primary = modulate(0xffffffffU, color);
             auto pixel = primary;
@@ -342,12 +356,22 @@ void draw_triangle(DisplayFrame& frame,
                 const auto& unit = state.texture_units[unit_index];
                 if (!unit.enabled)
                     continue;
-                const auto texture_s = triangle[0].texture[unit_index][0] * w0 +
-                                       triangle[1].texture[unit_index][0] * w1 +
-                                       triangle[2].texture[unit_index][0] * w2;
-                const auto texture_t = triangle[0].texture[unit_index][1] * w0 +
-                                       triangle[1].texture[unit_index][1] * w1 +
-                                       triangle[2].texture[unit_index][1] * w2;
+                const auto texture_s =
+                    (triangle[0].texture[unit_index][0] *
+                         triangle[0].inverse_w * w0 +
+                     triangle[1].texture[unit_index][0] *
+                         triangle[1].inverse_w * w1 +
+                     triangle[2].texture[unit_index][0] *
+                         triangle[2].inverse_w * w2) /
+                    inverse_w;
+                const auto texture_t =
+                    (triangle[0].texture[unit_index][1] *
+                         triangle[0].inverse_w * w0 +
+                     triangle[1].texture[unit_index][1] *
+                         triangle[1].inverse_w * w1 +
+                     triangle[2].texture[unit_index][1] *
+                         triangle[2].inverse_w * w2) /
+                    inverse_w;
                 const auto sampled =
                     sample_texture(state, unit, texture_s, texture_t);
                 pixel = apply_texture_environment(unit.environment, sampled,
@@ -412,8 +436,8 @@ bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
         const auto host_y = state.render_target_inverted_vertical
                                 ? window_y
                                 : static_cast<float>(frame.height) - window_y;
-        screen.push_back(
-            ScreenVertex{window_x, host_y, vertex.color, vertex.texture});
+        screen.push_back(ScreenVertex{window_x, host_y, inverse_w,
+                                      vertex.color, vertex.texture});
     }
     const auto emit = [&](std::size_t a, std::size_t b, std::size_t c) {
         draw_triangle(frame, {screen[a], screen[b], screen[c]}, raster_state);
