@@ -115,11 +115,11 @@ namespace {
             "darwin10.3/RELEASE_ARM" },
         BuildProfileRule { "8C", BuildMatchKind::FamilyPrefix,
             DarwinAbiEpoch::Darwin10,
-            DarwinPthreadAbiProfile::BsdThreadRegisterV1,
+            DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase,
             DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
             DarwinNotifyStateProfile::NativeServerTokens,
             DarwinInitialAppleVectorProfile::LegacyExecutablePath,
-            { true, false, false }, "darwin10.4-arm-v1", "10.4.0", 199506,
+            { true, false, false }, "darwin10.4-arm-v1-tsd", "10.4.0", 199506,
             "Darwin Kernel Version 10.4.0: iLEmu compatibility kernel; "
             "darwin10.4/RELEASE_ARM" },
         build_family_rule("11", DarwinAbiEpoch::Later,

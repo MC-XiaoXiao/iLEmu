@@ -17,6 +17,8 @@ namespace ilemu {
 enum class DarwinPthreadAbiProfile : std::uint8_t {
     LegacyMachThreads,
     BsdThreadRegisterV1,
+    // Darwin 10.4 ARM32 uses an embedded TSD base in pthread_t.
+    BsdThreadRegisterV1TsdBase,
     BsdThreadRegisterV2,
 };
 

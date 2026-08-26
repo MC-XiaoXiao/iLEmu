@@ -16,6 +16,25 @@ namespace {
 
     constexpr std::uint32_t workqueue_stack_size = 512U * 1024U;
     constexpr std::uint32_t pthread_dynamic_base = 0x1000'0000U;
+    // Darwin 10.4 ARM32 passes the embedded TSD base at this pthread_t
+    // member to thread_set_tsd_base. Darwin 10.3 keeps TPIDRURO equal to
+    // pthread_t itself, so select this offset through the ABI Profile.
+    constexpr std::uint32_t pthread_tsd_base_offset = 0x48U;
+
+    [[nodiscard]] bool supports_bsdthread_register_v1(
+        DarwinPthreadAbiProfile profile) noexcept
+    {
+        return profile == DarwinPthreadAbiProfile::BsdThreadRegisterV1 ||
+               profile == DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase;
+    }
+
+    [[nodiscard]] std::uint32_t thread_pointer_for_pthread(
+        DarwinPthreadAbiProfile profile, std::uint32_t pthread_address) noexcept
+    {
+        if (profile == DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase)
+            return pthread_address + pthread_tsd_base_offset;
+        return pthread_address;
+    }
 
     std::uint32_t pthread_start_cpsr(std::uint32_t entry)
     {
@@ -188,6 +207,8 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu& cpu)
     const auto& registration = pthread_runtime_.registration();
     if (!registration || !pthread_runtime_.workqueue_open())
         return false;
+    const auto pthread_profile =
+        shared_state_->darwin_kernel_identity.pthread_abi;
 
     const auto idle_worker = pthread_runtime_.idle_worker();
     const auto next_item = pthread_runtime_.take_workitem();
@@ -229,7 +250,9 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu& cpu)
                 process_.pid, idle_worker->processor, guest_state) &&
             (!thread_pointer_update_handler_ ||
                 thread_pointer_update_handler_(process_.pid,
-                    idle_worker->processor, idle_worker->pthread_address));
+                    idle_worker->processor,
+                    thread_pointer_for_pthread(
+                        pthread_profile, idle_worker->pthread_address)));
         const auto wake_result =
             updated ? thread_wake_handler_(process_.pid, idle_worker->processor)
                     : XnuThreadWakeResult { };
@@ -300,7 +323,9 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu& cpu)
             process_.pid, worker.processor, guest_state) ||
         (thread_pointer_update_handler_ &&
             !thread_pointer_update_handler_(
-                process_.pid, worker.processor, worker.pthread_address)) ||
+                process_.pid, worker.processor,
+                thread_pointer_for_pthread(
+                    pthread_profile, worker.pthread_address))) ||
         !pthread_runtime_.add_worker(worker)) {
         if (thread_terminate_handler_)
             static_cast<void>(
@@ -326,7 +351,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu& cpu)
 bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
 {
     const auto profile = shared_state_->darwin_kernel_identity.pthread_abi;
-    if (profile != DarwinPthreadAbiProfile::BsdThreadRegisterV1)
+    if (!supports_bsdthread_register_v1(profile))
         return false;
 
     auto& registers = cpu.registers();
@@ -414,7 +439,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             (thread_pointer_update_handler_ &&
                 !thread_pointer_update_handler_(process_.pid,
                     static_cast<std::uint32_t>(created->processor),
-                    pthread_address))) {
+                    thread_pointer_for_pthread(profile, pthread_address)))) {
             if (thread_terminate_handler_)
                 static_cast<void>(thread_terminate_handler_(
                     process_.pid, created->processor));
