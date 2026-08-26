@@ -351,6 +351,7 @@ struct KernelSharedState {
     std::string device_hardware_model;
     std::string device_model_number;
     std::uint64_t device_ram_bytes { };
+    std::vector<std::byte> graphics_services_capability_memory;
     std::uint32_t device_cpu_type { arm_mach_cpu_type };
     std::uint32_t device_cpu_subtype { mach_cpu_subtype_for_architecture(
         ArmArchitectureVersion::Armv6K) };
@@ -359,6 +360,10 @@ struct KernelSharedState {
     };
     std::string graphics_driver_bundle;
     std::string framebuffer_service_class;
+    bool apple_key_store_available { };
+    bool effaceable_storage_available { true };
+    bool virtual_effaceable_storage_available { };
+    std::array<std::byte, 52> effaceable_storage_blob { };
 
     struct NetworkInterface {
         std::uint16_t flags { };
@@ -517,6 +522,10 @@ struct KernelSharedState {
         std::uint32_t exit_status { };
         std::uint32_t termination_signal { };
         bool exited { };
+        // Host scheduler state is kept outside the process record; this flag
+        // only records the Darwin pid-level suspension requested by guest
+        // process control so repeated resume operations remain observable.
+        bool pid_suspended { };
         std::string command;
         std::string executable_path;
         std::vector<std::string> arguments;
@@ -577,6 +586,9 @@ struct KernelSharedState {
         JpegAccelerator,
         Audio,
         MobileFileIntegrity,
+        AppleKeyStore,
+        AppleEffaceableStorage,
+        MultitouchHid,
     };
     struct IOKitService {
         std::string class_name;
@@ -649,6 +661,19 @@ struct KernelSharedState {
         // method. It identifies the connection-local namespace; it is not a
         // host pointer and is never dereferenced by the emulator.
         std::uint32_t shared_resource_token { };
+    };
+    struct IOKitMultitouchHidConnectionState {
+        struct MemoryMapping {
+            std::uint32_t address { };
+            std::uint32_t mapped_size { };
+            std::uint32_t exposed_size { };
+        };
+
+        std::uint32_t notification_port { };
+        std::uint32_t notification_type { };
+        std::uint32_t registration_reference { };
+        std::map<std::uint32_t, MemoryMapping> memory_mappings;
+        bool started { };
     };
     struct IOKitInterestNotification {
         std::uint32_t owner_pid { };
@@ -1384,6 +1409,8 @@ struct KernelSharedState {
     std::map<std::uint32_t, IOKitMbxConnectionState> iokit_mbx_connections;
     std::map<std::uint32_t, IOKitGraphicsConnectionState>
         iokit_graphics_connections;
+    std::map<std::uint32_t, IOKitMultitouchHidConnectionState>
+        iokit_multitouch_hid_connections;
     // The physical panel has one power state even though GraphicsServices and
     // LayerKit can open separate IOMobileFramebuffer user clients.
     DisplayGeometry display_geometry { default_display_geometry };
@@ -1396,8 +1423,15 @@ struct KernelSharedState {
     std::uint32_t jpeg_accelerator_service { };
     std::map<std::uint64_t, std::uint64_t> camera_sensor_variables;
     std::uint32_t mobile_file_integrity_service { };
+    std::uint32_t apple_key_store_service { };
+    std::uint32_t effaceable_storage_service { };
+    std::uint32_t keybag_device_tree_defaults_service { };
+    std::uint32_t keybag_device_tree_options_service { };
+    std::uint64_t next_keybag_handle { 1 };
+    std::uint64_t system_keybag_handle { };
     bsd::baseband_device::State baseband_device_state;
     std::uint32_t mobile_framebuffer_service { };
+    std::uint32_t multitouch_hid_service { };
     // IOAudio2 publishes independent Codec/Baseband-style endpoints. Key by
     // firmware-facing UID so a released service can be recreated independently.
     std::map<std::string, std::uint32_t> ioaudio2_services;

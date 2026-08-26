@@ -8,6 +8,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <string_view>
 #include <vector>
 
 #include "ilemu/display.hpp"

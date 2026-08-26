@@ -186,6 +186,40 @@ bool XnuScheduler::make_runnable(XnuThreadId thread)
     return true;
 }
 
+std::size_t XnuScheduler::suspend_process(std::uint32_t process)
+{
+    const auto process_iterator = process_threads_.find(process);
+    if (process_iterator == process_threads_.end())
+        return 0;
+
+    const std::vector<XnuThreadId> process_threads {
+        process_iterator->second.begin(), process_iterator->second.end()
+    };
+    std::size_t changed = 0;
+    for (const auto thread : process_threads) {
+        if (suspend_thread(thread))
+            ++changed;
+    }
+    return changed;
+}
+
+std::size_t XnuScheduler::resume_process(std::uint32_t process)
+{
+    const auto process_iterator = process_threads_.find(process);
+    if (process_iterator == process_threads_.end())
+        return 0;
+
+    const std::vector<XnuThreadId> process_threads {
+        process_iterator->second.begin(), process_iterator->second.end()
+    };
+    std::size_t changed = 0;
+    for (const auto thread : process_threads) {
+        if (resume_thread(thread))
+            ++changed;
+    }
+    return changed;
+}
+
 XnuThreadWakeResult XnuScheduler::wake_thread(XnuThreadId thread)
 {
     const auto iterator = threads_.find(thread);

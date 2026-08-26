@@ -16,6 +16,7 @@
 #include "ilemu/darwin_route_socket.hpp"
 #include "ilemu/dns_configuration_hle.hpp"
 #include "ilemu/graphics_services_input.hpp"
+#include "ilemu/graphics_services_capability_profile.hpp"
 #include "ilemu/graphics_services_profile.hpp"
 #include "ilemu/iokit_abi.hpp"
 #include "ilemu/kernel_bsd_interval_timer.hpp"
@@ -251,12 +252,23 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     shared_state_->device_hardware_model = device_profile_.hardware_model;
     shared_state_->device_model_number = device_profile_.model_number;
     shared_state_->device_ram_bytes = device_profile_.ram_bytes;
+    shared_state_->graphics_services_capability_memory =
+        make_graphics_services_capability_memory(rootfs_, device_profile_);
     shared_state_->device_cpu_type = arm_mach_cpu_type;
     shared_state_->graphics_accelerator = device_profile_.graphics_accelerator;
     shared_state_->graphics_driver_bundle =
         std::string { device_profile_.graphics_driver_bundle };
     shared_state_->framebuffer_service_class =
         std::string { device_profile_.framebuffer_service_class };
+    shared_state_->apple_key_store_available =
+        device_profile_.keybag_capabilities.apple_key_store_available;
+    shared_state_->effaceable_storage_available =
+        device_profile_.keybag_capabilities.effaceable_storage_available;
+    shared_state_->virtual_effaceable_storage_available =
+        device_profile_.keybag_capabilities
+            .virtual_effaceable_storage_available;
+    shared_state_->effaceable_storage_blob =
+        device_profile_.keybag_capabilities.virtual_effaceable_storage_blob;
     shared_state_->device_cpu_subtype = mach_cpu_subtype_for_architecture(
         arm_architecture_for_model(device_profile_.cpu_model));
     const auto virtual_baseband =
@@ -394,7 +406,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         KernelSharedState::ProcessRecord { process_.parent_pid,
             process_.process_group, process_.uid, process_.effective_uid,
             process_.gid, process_.effective_gid, process_.exit_status,
-            process_.termination_signal, process_.exited, "launchd",
+            process_.termination_signal, process_.exited, false, "launchd",
             "/sbin/launchd", { "/sbin/launchd" },
             { "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
                 "SHELL=/bin/sh" },
@@ -2764,6 +2776,25 @@ CompatibilityKernel::allocate_file_descriptor() const
         }
     }
     return std::nullopt;
+}
+
+void CompatibilityKernel::copy_kqueue_descriptor_state(
+    std::uint32_t source, std::uint32_t destination)
+{
+    // dup/dup2 create another descriptor for the same kqueue object. The
+    // descriptor table keeps duplicate aliases separately, so follow the
+    // alias chain before copying the registration set.
+    for (unsigned depth = 0; depth < 256U; ++depth) {
+        if (const auto queue = kqueues_.find(source);
+            queue != kqueues_.end()) {
+            kqueues_[destination] = queue->second;
+            return;
+        }
+        const auto duplicate = duplicated_descriptors_.find(source);
+        if (duplicate == duplicated_descriptors_.end())
+            return;
+        source = duplicate->second;
+    }
 }
 
 void CompatibilityKernel::trace_unknown(

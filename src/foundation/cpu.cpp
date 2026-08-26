@@ -1406,6 +1406,14 @@ public:
     void ExceptionRaised(
         std::uint32_t pc, Dynarmic::A32::Exception exception) override
     {
+        if (exception == Dynarmic::A32::Exception::Yield) {
+            // ARM YIELD is a scheduler hint, not a guest fault.  The
+            // translator has already advanced the guest PC before invoking
+            // this callback, so route it through the existing explicit guest
+            // yield boundary and let XNU choose the next runnable thread.
+            jit_->HaltExecution(Dynarmic::HaltReason::UserDefined8);
+            return;
+        }
         if (exception == Dynarmic::A32::Exception::Breakpoint &&
             owner_->debug_breakpoints_enabled_) {
             breakpoint_ = pc;

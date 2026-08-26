@@ -57,6 +57,7 @@ namespace {
         DarwinPthreadAbiProfile pthread_abi;
         DarwinApple80211IoctlProfile apple80211_ioctl;
         DarwinNotifyStateProfile notify_state_profile;
+        DarwinInitialAppleVectorProfile initial_apple_vector_profile;
         DarwinGuestCapabilities capabilities;
         std::string_view profile_name;
         std::string_view operating_system_release;
@@ -70,8 +71,9 @@ namespace {
     {
         return { matcher, BuildMatchKind::FamilyPrefix, abi_epoch, pthread_abi,
             DarwinApple80211IoctlProfile::AlignedCurrentNetworkRecord,
-            DarwinNotifyStateProfile::NativeServerTokens, capabilities, { },
-            { }, 0, { } };
+            DarwinNotifyStateProfile::NativeServerTokens,
+            DarwinInitialAppleVectorProfile::KeyedExecutablePath, capabilities,
+            { }, { }, 0, { } };
     }
 
     // Keep build recognition data-driven at the ABI-family boundary. Individual
@@ -98,6 +100,7 @@ namespace {
             DarwinPthreadAbiProfile::BsdThreadRegisterV1,
             DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
             DarwinNotifyStateProfile::BootstrapAwareServerTokens,
+            DarwinInitialAppleVectorProfile::KeyedExecutablePath,
             { true, false, false }, "darwin10.3-arm", "10.3.1", 199506,
             "Darwin Kernel Version 10.3.1: iLEmu compatibility kernel; "
             "darwin10.3/RELEASE_ARM" },
@@ -106,6 +109,7 @@ namespace {
             DarwinPthreadAbiProfile::BsdThreadRegisterV1,
             DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
             DarwinNotifyStateProfile::NativeServerTokens,
+            DarwinInitialAppleVectorProfile::LegacyExecutablePath,
             { true, false, false }, "darwin10.3-arm-v1", "10.3.1", 199506,
             "Darwin Kernel Version 10.3.1: iLEmu compatibility kernel; "
             "darwin10.3/RELEASE_ARM" },
@@ -114,6 +118,7 @@ namespace {
             DarwinPthreadAbiProfile::BsdThreadRegisterV1,
             DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
             DarwinNotifyStateProfile::NativeServerTokens,
+            DarwinInitialAppleVectorProfile::LegacyExecutablePath,
             { true, false, false }, "darwin10.4-arm-v1", "10.4.0", 199506,
             "Darwin Kernel Version 10.4.0: iLEmu compatibility kernel; "
             "darwin10.4/RELEASE_ARM" },
@@ -143,6 +148,9 @@ namespace {
         DarwinNotifyStateProfile notify_state_profile {
             DarwinNotifyStateProfile::NativeServerTokens
         };
+        DarwinInitialAppleVectorProfile initial_apple_vector_profile {
+            DarwinInitialAppleVectorProfile::KeyedExecutablePath
+        };
         DarwinGuestCapabilities capabilities { };
         std::string_view profile_name;
         std::string_view operating_system_release;
@@ -156,7 +164,8 @@ namespace {
             if (matches_build(rule, build))
                 return { rule.abi_epoch, rule.pthread_abi,
                     rule.apple80211_ioctl, rule.notify_state_profile,
-                    rule.capabilities, rule.profile_name,
+                    rule.initial_apple_vector_profile, rule.capabilities,
+                    rule.profile_name,
                     rule.operating_system_release,
                     rule.operating_system_revision, rule.kernel_version };
         }
@@ -225,6 +234,8 @@ DarwinKernelIdentityProfile make_darwin_kernel_identity_profile(
     profile.pthread_abi = contract.pthread_abi;
     profile.apple80211_ioctl = contract.apple80211_ioctl;
     profile.notify_state_profile = contract.notify_state_profile;
+    profile.initial_apple_vector_profile =
+        contract.initial_apple_vector_profile;
     profile.capabilities = contract.capabilities;
     if (!contract.profile_name.empty())
         profile.name = contract.profile_name;

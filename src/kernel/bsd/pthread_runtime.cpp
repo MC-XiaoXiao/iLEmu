@@ -95,16 +95,15 @@ bool DarwinPthreadRuntime::remove_workitem(
 }
 
 bool DarwinPthreadRuntime::should_create_worker(
-    std::uint32_t priority, bool overcommit) const noexcept
+    std::uint32_t priority, bool overcommit,
+    std::size_t active_worker_count) const noexcept
 {
     if (!workqueue_open_ || priority >= workqueue_priority_count ||
         workers_.size() >= maximum_workqueue_workers)
         return false;
     if (overcommit)
         return true;
-    const auto running = std::count_if(workers_.begin(), workers_.end(),
-        [](const auto& entry) { return !entry.second.idle; });
-    return static_cast<std::uint32_t>(running) < target_concurrency_[priority];
+    return active_worker_count < target_concurrency_[priority];
 }
 
 bool DarwinPthreadRuntime::add_worker(DarwinWorkqueueWorker worker)
@@ -128,6 +127,18 @@ std::optional<DarwinWorkqueueWorker> DarwinPthreadRuntime::idle_worker() const
         [](const auto& entry) { return entry.second.idle; });
     return found == workers_.end() ? std::nullopt
                                    : std::optional { found->second };
+}
+
+std::vector<std::uint32_t>
+DarwinPthreadRuntime::active_worker_processors() const
+{
+    std::vector<std::uint32_t> processors;
+    processors.reserve(workers_.size());
+    for (const auto& [processor, worker] : workers_) {
+        if (!worker.idle)
+            processors.push_back(processor);
+    }
+    return processors;
 }
 
 void DarwinPthreadRuntime::mark_worker_running(
@@ -182,8 +193,24 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu& cpu)
     const auto next_item = pthread_runtime_.take_workitem();
     if (!next_item)
         return true;
+    std::size_t active_worker_count { };
+    for (const auto processor :
+        pthread_runtime_.active_worker_processors()) {
+        const auto scheduling_state =
+            thread_scheduling_state_query_
+                ? thread_scheduling_state_query_(process_.pid, processor)
+                : std::optional<XnuThreadState> { };
+        // A worker blocked in a Mach/BSD wait is still assigned to the
+        // workqueue, but XNU removes it from the active concurrency count.
+        // Missing scheduler information is conservatively treated as active.
+        if (!scheduling_state ||
+            *scheduling_state != XnuThreadState::Waiting) {
+            ++active_worker_count;
+        }
+    }
     if (!idle_worker && !pthread_runtime_.should_create_worker(
-                            next_item->priority, next_item->overcommit)) {
+                            next_item->priority, next_item->overcommit,
+                            active_worker_count)) {
         static_cast<void>(pthread_runtime_.enqueue_workitem(*next_item, true));
         return true;
     }

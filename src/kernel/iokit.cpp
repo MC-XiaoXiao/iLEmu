@@ -23,7 +23,9 @@
 #include "ilemu/kernel_iokit_camera.hpp"
 #include "ilemu/kernel_iokit_display.hpp"
 #include "ilemu/kernel_iokit_graphics.hpp"
+#include "ilemu/kernel_iokit_hid.hpp"
 #include "ilemu/kernel_iokit_jpeg.hpp"
+#include "ilemu/kernel_iokit_keybag.hpp"
 #include "ilemu/kernel_iokit_mbx.hpp"
 #include "ilemu/kernel_iokit_mobile_file_integrity.hpp"
 #include "ilemu/kernel_shared_state.hpp"
@@ -565,6 +567,12 @@ namespace {
             return "audio";
         case KernelSharedState::IOKitUserClientProfile::MobileFileIntegrity:
             return "mobile-file-integrity";
+        case KernelSharedState::IOKitUserClientProfile::AppleKeyStore:
+            return "apple-key-store";
+        case KernelSharedState::IOKitUserClientProfile::AppleEffaceableStorage:
+            return "apple-effaceable-storage";
+        case KernelSharedState::IOKitUserClientProfile::MultitouchHid:
+            return "multitouch-hid";
         case KernelSharedState::IOKitUserClientProfile::None:
             break;
         }
@@ -584,7 +592,10 @@ namespace {
                 .service_type;
         if (profile == KernelSharedState::IOKitUserClientProfile::Generic ||
             profile ==
-                KernelSharedState::IOKitUserClientProfile::SerialMultiplexer)
+                KernelSharedState::IOKitUserClientProfile::SerialMultiplexer ||
+            profile == KernelSharedState::IOKitUserClientProfile::AppleKeyStore ||
+            profile == KernelSharedState::IOKitUserClientProfile::
+                AppleEffaceableStorage)
             return iokit_abi::generic_user_client_type;
         return requested_type;
     }
@@ -964,6 +975,12 @@ namespace {
             services.push_back(kernel_iokit::graphics::ensure_service_locked(
                 shared_state, platform_expert));
         }
+        if (kernel_iokit::hid::matches_service(matching)) {
+            const auto platform_expert =
+                ensure_platform_expert_service_locked(shared_state);
+            services.push_back(kernel_iokit::hid::ensure_service_locked(
+                shared_state, platform_expert));
+        }
         if (kernel_iokit::mbx::matches_service(matching) &&
             shared_state.graphics_accelerator ==
                 GraphicsAcceleratorProfileKind::MbxLite) {
@@ -1057,6 +1074,22 @@ namespace {
             services.push_back(
                 kernel_iokit::mobile_file_integrity::ensure_service_locked(
                     shared_state));
+        }
+        if (shared_state.apple_key_store_available &&
+            kernel_iokit::keybag::matches_service(matching)) {
+            const auto platform_expert =
+                ensure_platform_expert_service_locked(shared_state);
+            services.push_back(kernel_iokit::keybag::ensure_service_locked(
+                shared_state, platform_expert));
+        }
+        if (shared_state.virtual_effaceable_storage_available &&
+            kernel_iokit::keybag::matches_effaceable_storage_service(
+                matching)) {
+            const auto platform_expert =
+                ensure_platform_expert_service_locked(shared_state);
+            services.push_back(
+                kernel_iokit::keybag::ensure_effaceable_storage_service_locked(
+                    shared_state, platform_expert));
         }
         if (kernel_iokit::battery::matches_service(matching)) {
             services.push_back(
@@ -1166,6 +1199,11 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                 output, shared_state, process, message_id, message_address,
                 send_size, receive_size, remote_object, local_port)) {
         return camera_result;
+    }
+    if (const auto hid_result = kernel_iokit::hid::handle_mach_request(memory,
+            output, shared_state, process, message_id, message_address,
+            send_size, receive_size, remote_object, local_port)) {
+        return hid_result;
     }
     if (message_id == static_cast<std::uint32_t>(
                           iokit_abi::Message::ConnectSetNotificationPort)) {
@@ -2057,6 +2095,30 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         return write_reply(memory, message_address, reply);
     }
 
+    if (message_id == device_mig::id(
+                          device_mig::Routine::io_service_wait_quiet)) {
+        // All modeled services are synchronously published. IOServiceWaitQuiet
+        // therefore completes immediately, which is also the contract needed
+        // by MultitouchSupport before it opens the HID user client.
+        if (receive_size < 36U)
+            return mach_rcv_invalid_data;
+        const std::array<std::uint32_t, 9> reply {
+            mach_reply_bits,
+            36U,
+            local_port,
+            0U,
+            0U,
+            message_id + mig_reply_id_delta,
+            mach_ndr_native,
+            mach_ndr_little_endian,
+            iokit_abi::success,
+        };
+        output.write("[iokit] wait-quiet pid=" + std::to_string(process.pid) +
+                     " service-object=" + std::to_string(remote_object) +
+                     " result=success\n");
+        return write_reply(memory, message_address, reply);
+    }
+
     if (message_id ==
         static_cast<std::uint32_t>(iokit_abi::Message::ServiceOpen)) {
         if (receive_size < 40U)
@@ -2279,6 +2341,44 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                           request->scalar_input_count },
                       request->inband_input, request->scalar_output_capacity,
                       request->inband_output_capacity);
+        const auto apple_key_store_result =
+            display_result || baseband_result || audio_result ||
+                    camera_result || jpeg_result || mbx_result ||
+                    graphics_result || mobile_file_integrity_result
+                ? std::optional<kernel_iokit::keybag::MethodResult> { }
+                : kernel_iokit::keybag::dispatch_connect_method(shared_state,
+                      process, remote_object, request->selector,
+                      std::span<const std::uint64_t> {
+                          request->scalar_input.data(),
+                          request->scalar_input_count },
+                      request->inband_input, request->scalar_output_capacity,
+                      request->inband_output_capacity);
+        const auto effaceable_storage_result =
+            display_result || baseband_result || audio_result ||
+                    camera_result || jpeg_result || mbx_result ||
+                    graphics_result || mobile_file_integrity_result ||
+                    apple_key_store_result
+                ? std::optional<kernel_iokit::keybag::MethodResult> { }
+                : kernel_iokit::keybag::dispatch_effaceable_storage_connect_method(
+                      shared_state, process, remote_object, request->selector,
+                      std::span<const std::uint64_t> {
+                          request->scalar_input.data(),
+                          request->scalar_input_count },
+                      request->inband_input, request->scalar_output_capacity,
+                      request->inband_output_capacity);
+        const auto hid_result =
+            display_result || baseband_result || audio_result ||
+                    camera_result || jpeg_result || mbx_result ||
+                    graphics_result || mobile_file_integrity_result ||
+                    apple_key_store_result || effaceable_storage_result
+                ? std::optional<kernel_iokit::hid::MethodResult> { }
+                : kernel_iokit::hid::dispatch_connect_method(shared_state,
+                      process, remote_object, request->selector,
+                      std::span<const std::uint64_t> {
+                          request->scalar_input.data(),
+                          request->scalar_input_count },
+                      request->inband_input, request->scalar_output_capacity,
+                      request->inband_output_capacity);
         const ConnectMethodResult result =
             display_result ? ConnectMethodResult { display_result->return_code,
                 std::move(display_result->scalar_output), { } }
@@ -2303,6 +2403,18 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                                             ->return_code,
                       { },
                       std::move(mobile_file_integrity_result->inband_output) }
+            : apple_key_store_result
+                ? ConnectMethodResult { apple_key_store_result->return_code,
+                      std::move(apple_key_store_result->scalar_output),
+                      std::move(apple_key_store_result->inband_output) }
+            : effaceable_storage_result
+                ? ConnectMethodResult { effaceable_storage_result->return_code,
+                      std::move(effaceable_storage_result->scalar_output),
+                      std::move(effaceable_storage_result->inband_output) }
+            : hid_result
+                ? ConnectMethodResult { hid_result->return_code,
+                      std::move(hid_result->scalar_output),
+                      std::move(hid_result->inband_output) }
                 : ConnectMethodResult { };
         std::uint64_t method_call_count = 0;
         bool vsync_enabled = false;
@@ -2354,6 +2466,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         kernel_iokit::graphics::close_connection(
             memory, shared_state, remote_object);
         kernel_iokit::mbx::close_connection(
+            memory, shared_state, remote_object);
+        kernel_iokit::hid::close_connection(
             memory, shared_state, remote_object);
         {
             std::lock_guard mach_lock { shared_state.mach_mutex };

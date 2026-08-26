@@ -90,8 +90,12 @@ public:
         std::uint32_t, std::uint32_t, std::optional<std::uint32_t>)>;
     using ThreadRunnableHandler =
         std::function<bool(std::uint32_t, std::uint32_t, bool)>;
+    using ProcessRunnableHandler =
+        std::function<void(std::uint32_t, bool)>;
     using ThreadWakeHandler =
         std::function<XnuThreadWakeResult(std::uint32_t, std::uint32_t)>;
+    using ThreadSchedulingStateQuery = std::function<std::optional<XnuThreadState>(
+        std::uint32_t, std::uint32_t)>;
     using MachMessageWakeHandler =
         std::function<XnuThreadWakeResult(std::uint32_t, std::uint32_t)>;
     using ForkHandler = std::function<std::optional<std::uint32_t>(Cpu&)>;
@@ -170,9 +174,17 @@ public:
     {
         thread_runnable_handler_ = std::move(handler);
     }
+    void set_process_runnable_handler(ProcessRunnableHandler handler)
+    {
+        process_runnable_handler_ = std::move(handler);
+    }
     void set_thread_wake_handler(ThreadWakeHandler handler)
     {
         thread_wake_handler_ = std::move(handler);
+    }
+    void set_thread_scheduling_state_query(ThreadSchedulingStateQuery query)
+    {
+        thread_scheduling_state_query_ = std::move(query);
     }
     void set_mach_message_wake_handler(MachMessageWakeHandler handler)
     {
@@ -567,6 +579,8 @@ private:
         const std::filesystem::path& path, bool follow_symlink) const;
     [[nodiscard]] std::uint32_t file_descriptor_limit() const;
     [[nodiscard]] std::optional<std::uint32_t> allocate_file_descriptor() const;
+    void copy_kqueue_descriptor_state(
+        std::uint32_t source, std::uint32_t destination);
     [[nodiscard]] std::shared_ptr<bsd::RegularFileOpenDescription>
     ensure_regular_file_open_description(std::uint32_t fd);
     bool write_guest_stat(std::uint32_t address,
@@ -777,7 +791,9 @@ private:
     ThreadStateUpdateHandler thread_state_update_handler_;
     ThreadPointerUpdateHandler thread_pointer_update_handler_;
     ThreadRunnableHandler thread_runnable_handler_;
+    ProcessRunnableHandler process_runnable_handler_;
     ThreadWakeHandler thread_wake_handler_;
+    ThreadSchedulingStateQuery thread_scheduling_state_query_;
     MachMessageWakeHandler mach_message_wake_handler_;
     ForkHandler fork_handler_;
     SpawnCreateHandler spawn_create_handler_;

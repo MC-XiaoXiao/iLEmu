@@ -553,6 +553,35 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
             static_cast<std::uint32_t>((wall_time / 1'000ULL) % 1'000'000ULL));
         return;
     }
+    case darwin::syscall::get_resource_usage: { // getrusage
+        // Darwin's 32-bit user ABI is two {time_t, suseconds_t} pairs
+        // followed by fourteen 32-bit long values: 72 bytes total. The
+        // accounting fields are intentionally zero until the scheduler has a
+        // per-process CPU accounting source; the ABI still requires the
+        // complete structure to be copied out so callers cannot receive
+        // SIGSYS merely while collecting migration or launch statistics.
+        if (registers[0] != darwin::resource::rusage_self &&
+            registers[0] != darwin::resource::rusage_children) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return;
+        }
+        if (registers[1] > std::numeric_limits<std::uint32_t>::max() -
+                               darwin::resource::rusage_arm32_size + 1U) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return;
+        }
+        for (std::size_t index = 0;
+            index < darwin::resource::rusage_arm32_word_count; ++index) {
+            const auto address = registers[1] +
+                static_cast<std::uint32_t>(index * sizeof(std::uint32_t));
+            if (!memory_.write32(address, 0)) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+        }
+        bsd_success(cpu, 0);
+        return;
+    }
     case darwin::syscall::set_time_of_day: {
         if (process_.effective_uid != 0) {
             bsd_error(cpu, darwin::error::operation_not_permitted);
@@ -766,6 +795,53 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
                 return;
             }
         }
+        bsd_success(cpu, 0);
+        return;
+    }
+    case 433: // pid_suspend
+    case 434: { // pid_resume
+        const auto target_pid = static_cast<std::int32_t>(registers[0]);
+        const auto resume = number == 434U;
+        std::vector<std::uint32_t> target_processes;
+        {
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            if (target_pid == -1) {
+                for (auto& [pid, record] : shared_state_->processes) {
+                    if (record.exited || (resume && !record.pid_suspended) ||
+                        (!resume && record.pid_suspended)) {
+                        continue;
+                    }
+                    record.pid_suspended = !resume;
+                    target_processes.push_back(pid);
+                }
+            } else if (target_pid <= 0) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            } else {
+                const auto iterator = shared_state_->processes.find(
+                    static_cast<std::uint32_t>(target_pid));
+                if (iterator == shared_state_->processes.end() ||
+                    iterator->second.exited) {
+                    bsd_error(cpu, darwin::error::no_such_process);
+                    return;
+                }
+                if (resume != iterator->second.pid_suspended) {
+                    iterator->second.pid_suspended = !resume;
+                    target_processes.push_back(
+                        static_cast<std::uint32_t>(target_pid));
+                }
+            }
+        }
+
+        if (process_runnable_handler_) {
+            for (const auto pid : target_processes)
+                process_runnable_handler_(pid, resume);
+        }
+        output_.write(
+            std::string { resume ? "[process] pid-resume" :
+                                      "[process] pid-suspend" } +
+            " caller=" + std::to_string(process_.pid) +
+            " target=" + std::to_string(target_pid) + "\n");
         bsd_success(cpu, 0);
         return;
     }

@@ -23,6 +23,15 @@ namespace {
         "_CARenderServerStart",
     };
 
+    // The first ARMv7 CoreAnimation client kept the transaction encoder but
+    // exposed the render-server bootstrap as GetServerPort instead of the
+    // later RPC-range pair. The service port is still resolved from Mach
+    // bootstrap at runtime, so this remains a capability probe rather than a
+    // firmware or application selector.
+    constexpr std::string_view early_render_server_port_symbol {
+        "_CARenderServerGetServerPort"
+    };
+
     std::uint32_t arm_immediate(std::uint32_t instruction)
     {
         const auto immediate = instruction & 0xffU;
@@ -131,6 +140,12 @@ std::optional<CoreAnimationRemoteProfile> CoreAnimationRemoteProfile::detect(
                 return image.find_symbol(symbol_name) != nullptr;
             });
     if (has_render_server_protocol) {
+        return CoreAnimationRemoteProfile {
+            "core-animation-remote-render-server-v1", 0U, 0U, true
+        };
+    }
+
+    if (image.find_symbol(early_render_server_port_symbol) != nullptr) {
         return CoreAnimationRemoteProfile {
             "core-animation-remote-render-server-v1", 0U, 0U, true
         };

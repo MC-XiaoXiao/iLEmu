@@ -13,8 +13,15 @@ namespace ilemu::darwin::sysctl {
 
 inline constexpr std::uint32_t control_unspecified = 0;
 inline constexpr std::uint32_t control_kernel = 1;
+inline constexpr std::uint32_t control_vfs = 3;
 inline constexpr std::uint32_t control_hardware = 6;
 inline constexpr std::uint32_t operation_name_to_oid = 3;
+inline constexpr std::uint32_t vfs_generic = 0;
+inline constexpr std::uint32_t vfs_max_type_number = 1;
+inline constexpr std::uint32_t vfs_conf = 2;
+// XNU's built-in Darwin 9/10 VFS table reserves the type slots through
+// devfs (type 19), so VFS_MAXTYPENUM returns the next available type number.
+inline constexpr std::uint32_t vfs_max_type_number_value = 20;
 inline constexpr std::uint32_t kernel_operating_system_type = 1;
 inline constexpr std::uint32_t kernel_operating_system_release = 2;
 inline constexpr std::uint32_t kernel_operating_system_revision = 3;

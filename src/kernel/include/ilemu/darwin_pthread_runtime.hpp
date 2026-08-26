@@ -5,6 +5,7 @@
 #include <deque>
 #include <map>
 #include <optional>
+#include <vector>
 
 namespace ilemu {
 
@@ -73,11 +74,13 @@ public:
     [[nodiscard]] bool remove_workitem(
         std::uint32_t address, std::uint32_t priority);
     [[nodiscard]] bool should_create_worker(
-        std::uint32_t priority, bool overcommit) const noexcept;
+        std::uint32_t priority, bool overcommit,
+        std::size_t active_worker_count) const noexcept;
     [[nodiscard]] bool add_worker(DarwinWorkqueueWorker worker);
     [[nodiscard]] std::optional<DarwinWorkqueueWorker> worker(
         std::uint32_t processor) const;
     [[nodiscard]] std::optional<DarwinWorkqueueWorker> idle_worker() const;
+    [[nodiscard]] std::vector<std::uint32_t> active_worker_processors() const;
     void mark_worker_running(std::uint32_t processor, std::uint32_t priority);
     void park_worker(std::uint32_t processor);
     void remove_worker(std::uint32_t processor);

@@ -1648,10 +1648,13 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         const auto mib0 = memory_.read32(registers[0]);
         const auto mib1 =
             registers[1] >= 2 ? memory_.read32(registers[0] + 4) : std::nullopt;
+        const auto mib2 =
+            registers[1] >= 3 ? memory_.read32(registers[0] + 8) : std::nullopt;
         const auto old_size = registers[3] != 0
                                   ? memory_.read32(registers[3])
                                   : std::optional<std::uint32_t> { 0 };
-        if (!mib0 || !mib1 || !old_size) {
+        if (!mib0 || !mib1 || !old_size ||
+            (registers[1] >= 3 && !mib2)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
@@ -1735,6 +1738,46 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 }
             }
             bsd_success(cpu, 0);
+            return;
+        }
+        if (*mib0 == darwin::sysctl::control_vfs &&
+            *mib1 == darwin::sysctl::vfs_generic &&
+            registers[1] == 3 && mib2 &&
+            *mib2 == darwin::sysctl::vfs_max_type_number) {
+            constexpr std::uint32_t value_size = sizeof(std::uint32_t);
+            if (registers[4] != 0) {
+                bsd_error(cpu, darwin::error::operation_not_permitted);
+                return;
+            }
+            if (registers[3] == 0 || !memory_.write32(registers[3], value_size)) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            if (registers[2] != 0) {
+                if (*old_size < value_size ||
+                    !memory_.write32(registers[2],
+                        darwin::sysctl::vfs_max_type_number_value)) {
+                    bsd_error(cpu, *old_size < value_size
+                                   ? darwin::error::no_memory
+                                   : bsd_support::bad_address);
+                    return;
+                }
+            }
+            bsd_success(cpu, 0);
+            return;
+        }
+        if (*mib0 == darwin::sysctl::control_vfs &&
+            *mib1 == darwin::sysctl::vfs_generic &&
+            registers[1] >= 4 && mib2 &&
+            *mib2 == darwin::sysctl::vfs_conf) {
+            // vfs.generic.conf.<type> is a sparse table keyed by the
+            // historical filesystem type number. An unregistered type is a
+            // normal ENOTSUP result in XNU, not an unimplemented syscall.
+            if (!memory_.read32(registers[0] + 12U)) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            bsd_error(cpu, darwin::error::not_supported);
             return;
         }
         const auto route_operation = registers[1] == 6
@@ -2508,6 +2551,9 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                         (*filter_flags & darwin::kqueue::user_note_trigger) !=
                             0U) {
                         found->user_triggered = true;
+                        // EV_CLEAR consumes a user event's current trigger,
+                        // not future NOTE_TRIGGER edges with identical data.
+                        found->clear_delivered = false;
                     }
                     const auto operand =
                         *filter_flags & darwin::kqueue::user_note_flags_mask;

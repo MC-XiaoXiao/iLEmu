@@ -6,6 +6,7 @@
 #include "ilemu/darwin_network_abi.hpp"
 #include "ilemu/darwin_resource_abi.hpp"
 #include "ilemu/darwin_route_socket.hpp"
+#include "ilemu/graphics_services_capability_profile.hpp"
 #include "ilemu/kernel_network.hpp"
 #include "ilemu/null_device.hpp"
 #include "ilemu/offline_serial_device.hpp"
@@ -741,6 +742,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                                                 : darwin::open_flag::read_write;
             duplicated_descriptors_.erase(allocated);
         }
+        copy_kqueue_descriptor_state(source, allocated);
         bsd_success(cpu, allocated);
         return;
     }
@@ -926,6 +928,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                     : darwin::open_flag::read_write;
             duplicated_descriptors_.erase(destination);
         }
+        copy_kqueue_descriptor_state(source, destination);
         bsd_success(cpu, destination);
         return;
     }
@@ -1265,6 +1268,10 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         constexpr std::uint32_t o_creat = 0x0200U;
         constexpr std::uint32_t o_trunc = 0x0400U;
         constexpr std::uint32_t o_excl = 0x0800U;
+        const auto seed_capabilities = object_name ==
+                graphics_services_capability_object_name &&
+            (registers[1] & o_creat) == 0 &&
+            !shared_state_->graphics_services_capability_memory.empty();
         std::filesystem::path backing;
         bool created = false;
         {
@@ -1278,7 +1285,8 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 }
                 backing = existing->second;
             } else {
-                if ((registers[1] & o_creat) == 0 || rootfs_.empty()) {
+                if (((registers[1] & o_creat) == 0 && !seed_capabilities) ||
+                    rootfs_.empty()) {
                     bsd_error(cpu, 2); // ENOENT
                     return;
                 }
@@ -1297,7 +1305,15 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                               ".shm");
                 std::ofstream create { backing,
                     std::ios::binary | std::ios::trunc };
-                if (!create) {
+                if (!create ||
+                    (seed_capabilities &&
+                        !create.write(
+                            reinterpret_cast<const char*>(
+                                shared_state_->graphics_services_capability_memory
+                                    .data()),
+                            static_cast<std::streamsize>(
+                                shared_state_->graphics_services_capability_memory
+                                    .size())))) {
                     bsd_error(cpu, 5); // EIO
                     return;
                 }

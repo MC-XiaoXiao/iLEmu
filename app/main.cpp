@@ -37,6 +37,7 @@
 #include "ilemu/baseband_replay.hpp"
 #include "ilemu/cpu.hpp"
 #include "ilemu/darwin_abi.hpp"
+#include "ilemu/darwin_kernel_profile.hpp"
 #include "ilemu/deadline_queue.hpp"
 #include "ilemu/device_profile.hpp"
 #include "ilemu/display.hpp"
@@ -2632,6 +2633,8 @@ void boot(const std::vector<std::string>& args, Output& output)
         option(args, "--catalog")
             .value_or((host_cache / "executable-catalog.bin").string());
     auto device = select_device_profile(args);
+    const auto darwin_kernel_profile =
+        make_darwin_kernel_identity_profile(*rootfs);
     ExecutableCatalog executable_catalog;
     bool catalog_loaded = executable_catalog.load(catalog_manifest);
     std::string catalog_source = catalog_loaded ? "manifest" : "fallback";
@@ -2685,6 +2688,13 @@ void boot(const std::vector<std::string>& args, Output& output)
                 std::to_string(device.display.height) +
                 " ui=" + std::to_string(device.user_interface.width) + "x" +
                 std::to_string(device.user_interface.height));
+    output.line(
+        "[abi-profile] kernel=" + darwin_kernel_profile.name +
+        " initial-apple-vector=" +
+        (darwin_kernel_profile.initial_apple_vector_profile ==
+                DarwinInitialAppleVectorProfile::LegacyExecutablePath
+            ? "legacy-path"
+            : "keyed-path"));
     const auto activation_value =
         option(args, "--activation").value_or("activated");
     const auto activation = parse_lockdown_activation(activation_value);
@@ -3017,7 +3027,7 @@ void boot(const std::vector<std::string>& args, Output& output)
     auto initial_memory = std::make_unique<AddressSpace>();
     initial_memory->set_parallel_access(guest_processor_count > 1);
     ProcessLoader loader { *rootfs, *initial_memory, guest_architecture,
-        catalog_index };
+        catalog_index, darwin_kernel_profile.initial_apple_vector_profile };
     std::vector<std::string> initial_environment {
         "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root", "SHELL=/bin/sh"
     };
@@ -4397,9 +4407,23 @@ void boot(const std::vector<std::string>& args, Output& output)
                 return runnable ? scheduler.resume_thread(thread)
                                 : scheduler.suspend_thread(thread);
             });
+        runtime.kernel->set_process_runnable_handler(
+            [&scheduler](std::uint32_t pid, bool runnable) {
+                if (runnable)
+                    static_cast<void>(scheduler.resume_process(pid));
+                else
+                    static_cast<void>(scheduler.suspend_process(pid));
+            });
         runtime.kernel->set_thread_wake_handler(
             [&scheduler](std::uint32_t pid, std::uint32_t slot) {
                 return scheduler.wake_thread(XnuThreadId { pid, slot });
+            });
+        runtime.kernel->set_thread_scheduling_state_query(
+            [&scheduler](std::uint32_t pid, std::uint32_t slot)
+                -> std::optional<XnuThreadState> {
+                const auto info =
+                    scheduler.info(XnuThreadId { pid, slot });
+                return info ? std::optional { info->state } : std::nullopt;
             });
         runtime.kernel->set_mach_message_wake_handler(
             [&runtime_index, &scheduler](
@@ -4522,7 +4546,8 @@ void boot(const std::vector<std::string>& args, Output& output)
                 std::vector<std::string> environment) {
                 refresh_catalog_after_file_mutations(true);
                 ProcessLoader validator { *rootfs, *runtime_ptr->memory,
-                    guest_architecture, catalog_index };
+                    guest_architecture, catalog_index,
+                    darwin_kernel_profile.initial_apple_vector_profile };
                 if (!validator.validate(path)) {
                     output.line(
                         "[process] exec rejected pid=" +
@@ -4566,7 +4591,8 @@ void boot(const std::vector<std::string>& args, Output& output)
                         PerfLatencyKind::SpawnImageLoad
                     };
                     ProcessLoader loader { *rootfs, *child_runtime->memory,
-                        guest_architecture, catalog_index };
+                        guest_architecture, catalog_index,
+                        darwin_kernel_profile.initial_apple_vector_profile };
                     loaded =
                         loader.load(path, std::move(arguments), environment);
                 }
@@ -6309,7 +6335,8 @@ void boot(const std::vector<std::string>& args, Output& output)
                     debug_target.notify_exec(runtime.kernel->process().pid);
                     runtime.memory->clear();
                     ProcessLoader exec_loader { *rootfs, *runtime.memory,
-                        guest_architecture, catalog_index };
+                        guest_architecture, catalog_index,
+                        darwin_kernel_profile.initial_apple_vector_profile };
                     auto loaded = exec_loader.load(pending.path,
                         std::move(pending.arguments), pending.environment);
                     runtime.kernel->set_process_arguments(

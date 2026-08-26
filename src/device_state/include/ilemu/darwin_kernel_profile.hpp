@@ -6,6 +6,7 @@
 
 #include "ilemu/darwin_abi_route.hpp"
 #include "ilemu/darwin_notify_state_hle.hpp"
+#include "ilemu/darwin_process_start_profile.hpp"
 
 namespace ilemu {
 
@@ -71,6 +72,9 @@ struct DarwinKernelIdentityProfile {
     };
     DarwinNotifyStateProfile notify_state_profile {
         DarwinNotifyStateProfile::NativeServerTokens
+    };
+    DarwinInitialAppleVectorProfile initial_apple_vector_profile {
+        DarwinInitialAppleVectorProfile::KeyedExecutablePath
     };
     DarwinGuestCapabilities capabilities;
 };

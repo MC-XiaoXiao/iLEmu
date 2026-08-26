@@ -16,6 +16,11 @@ inline constexpr std::uint32_t locked_memory = 6;
 inline constexpr std::uint32_t process_count = 7;
 inline constexpr std::uint32_t open_files = 8;
 inline constexpr std::size_t limit_count = 9;
+inline constexpr std::uint32_t rusage_self = 0;
+inline constexpr std::uint32_t rusage_children = 0xffff'ffffU;
+inline constexpr std::size_t rusage_arm32_word_count = 18;
+inline constexpr std::size_t rusage_arm32_size =
+    rusage_arm32_word_count * sizeof(std::uint32_t);
 // Darwin's UNIX03 libc wrappers set this private bit before entering the
 // kernel. xnu-1228 strips it in getrlimit/dosetrlimit after retaining whether
 // strict POSIX error behavior was requested.

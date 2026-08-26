@@ -159,6 +159,10 @@ public:
     std::size_t remove_process(std::uint32_t process);
 
     bool make_runnable(XnuThreadId thread);
+    // Process-level pid_suspend/pid_resume operate on every thread in the
+    // task while retaining each thread's independent suspend count.
+    std::size_t suspend_process(std::uint32_t process);
+    std::size_t resume_process(std::uint32_t process);
     // Device and IPC completion can race a thread's final blocking SVC. Keep
     // that wake pending until complete_slice observes the Block transition.
     // `handled` reports whether the thread identity/state was valid; the

@@ -212,6 +212,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 244: // posix_spawn (xnu-1228 / iPhone OS user ABI)
     case 96:
     case 116:
+    case darwin::syscall::get_resource_usage:
     case darwin::syscall::set_time_of_day:
     case darwin::syscall::set_real_effective_user_id:
     case darwin::syscall::set_real_effective_group_id:
@@ -230,6 +231,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::proc_info::syscall_number:
     case 327:
     case 355:
+    case 433: // pid_suspend
+    case 434: // pid_resume
         dispatch_bsd_process(cpu, number);
         return;
     case darwin::syscall::kill:

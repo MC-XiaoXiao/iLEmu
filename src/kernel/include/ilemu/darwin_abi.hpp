@@ -38,6 +38,7 @@ namespace error {
     inline constexpr std::uint32_t result_too_large = 34;
     inline constexpr std::uint32_t value_too_large = 84;
     inline constexpr std::uint32_t protocol_not_supported = 43;
+    inline constexpr std::uint32_t not_supported = 45;
     inline constexpr std::uint32_t timed_out = 60;
     inline constexpr std::uint32_t operation_not_supported = 102;
     inline constexpr std::uint32_t address_not_available = 49;
@@ -285,6 +286,7 @@ namespace syscall {
     inline constexpr std::uint32_t get_peer_name = 31;
     inline constexpr std::uint32_t get_socket_name = 32;
     inline constexpr std::uint32_t ioctl = 54;
+    inline constexpr std::uint32_t get_resource_usage = 117;
     inline constexpr std::uint32_t memory_protect = 74;
     inline constexpr std::uint32_t memory_advise = 75;
     inline constexpr std::uint32_t set_groups = 80;
