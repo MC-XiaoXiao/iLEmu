@@ -2251,6 +2251,7 @@ EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
                 KernelSharedState::PendingGraphicsInput::Kind::Touch, sanitized,
                 0, input_sequence,
                 KernelSharedState::MachMessage::GraphicsInputKind::Touch });
+        queue_idle_duration_reset_locked(state, input_sequence);
         lock.unlock();
         if (resume_process_id) {
             activate_resolved_application(state, *resume_process_id, scenes);
@@ -2258,6 +2259,11 @@ EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
         return EnqueueResult::Deferred;
     }
     queue_locked(state, service->second, sanitized, input_sequence);
+    // Hardware input reaches SpringBoard through this event port. The device
+    // also emits its separate idle-duration event for the same input, which
+    // lets SpringBoard run resetIdleDuration: even when the touch is consumed
+    // by the desktop or by a SpringBoard launch control.
+    queue_idle_duration_reset_locked(state, input_sequence);
     lock.unlock();
     if (resume_process_id) {
         activate_resolved_application(state, *resume_process_id, scenes);
