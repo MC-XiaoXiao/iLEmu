@@ -87,7 +87,7 @@ namespace {
                 const char bgra[] { static_cast<char>(pixel & 0xffU),
                     static_cast<char>((pixel >> 8U) & 0xffU),
                     static_cast<char>((pixel >> 16U) & 0xffU),
-                    static_cast<char>((pixel >> 24U) & 0xffU) };
+                    static_cast<char>(0xffU) };
                 output.write(bgra, sizeof(bgra));
             }
         }
@@ -95,23 +95,26 @@ namespace {
 
     void write_png(const std::filesystem::path& path, const DisplayFrame& frame)
     {
-        std::vector<std::uint8_t> rgba;
-        rgba.reserve(frame.pixels.size() * 4U);
+        // A DisplayFrame is a physical scanout, not another compositing layer.
+        // Its RGB channels already contain the completed guest composition;
+        // any retained framebuffer alpha is internal coverage metadata and
+        // must not make screenshots depend on the host viewer background.
+        std::vector<std::uint8_t> rgb;
+        rgb.reserve(frame.pixels.size() * 3U);
         for (const auto pixel : frame.pixels) {
-            rgba.push_back(static_cast<std::uint8_t>((pixel >> 16U) & 0xffU));
-            rgba.push_back(static_cast<std::uint8_t>((pixel >> 8U) & 0xffU));
-            rgba.push_back(static_cast<std::uint8_t>(pixel & 0xffU));
-            rgba.push_back(static_cast<std::uint8_t>((pixel >> 24U) & 0xffU));
+            rgb.push_back(static_cast<std::uint8_t>((pixel >> 16U) & 0xffU));
+            rgb.push_back(static_cast<std::uint8_t>((pixel >> 8U) & 0xffU));
+            rgb.push_back(static_cast<std::uint8_t>(pixel & 0xffU));
         }
 
         png_image image { };
         image.version = PNG_IMAGE_VERSION;
         image.width = frame.width;
         image.height = frame.height;
-        image.format = PNG_FORMAT_RGBA;
+        image.format = PNG_FORMAT_RGB;
         const auto path_string = path.string();
         if (png_image_write_to_file(
-                &image, path_string.c_str(), 0, rgba.data(), 0, nullptr) == 0) {
+                &image, path_string.c_str(), 0, rgb.data(), 0, nullptr) == 0) {
             const std::string reason = image.message[0] == '\0'
                                            ? "unknown libpng error"
                                            : image.message;

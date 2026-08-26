@@ -142,6 +142,10 @@ struct SdlDisplay::Impl {
             throw std::runtime_error { "SDL texture creation failed: " +
                                        std::string { SDL_GetError() } };
         }
+        if (SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE) != 0) {
+            throw std::runtime_error { "SDL texture blend mode failed: " +
+                                       std::string { SDL_GetError() } };
+        }
     }
 
     // Wayland configures a toplevel's size asynchronously and does not
