@@ -17,9 +17,20 @@ namespace {
         "IOService:/AppleEffaceableStorage"
     };
     constexpr std::uint32_t init_user_client_selector = 0U;
+    constexpr std::uint32_t get_keybag_lock_state_selector = 7U;
+    constexpr std::uint32_t get_device_lock_state_selector = 17U;
     constexpr std::uint32_t get_system_keybag_selector = 14U;
     constexpr std::uint32_t load_blastable_bytes_selector = 5U;
     constexpr std::uint32_t store_blastable_bytes_selector = 6U;
+    // MobileKeyBag treats device state 3 as an unlocked device with no
+    // passcode. State 0 means a passcode exists but the device is currently
+    // unlocked, so returning zero for a fresh virtual data volume incorrectly
+    // sends the firmware through passcode entry.
+    constexpr std::uint64_t device_lock_state_no_passcode = 3U;
+    // AppleKeyStoreGetLockState bit 2 records that the selected bag has been
+    // unlocked since boot. A no-passcode virtual system bag is always in that
+    // state.
+    constexpr std::uint64_t keybag_unlocked_since_boot = 1U << 2U;
 
     bool matches_class(std::span<const std::byte> matching,
         std::string_view class_name)
@@ -167,11 +178,18 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         inband_output_capacity == 0U) {
         return MethodResult { iokit_abi::success, { }, { } };
     }
-    if ((selector == 7U || selector == 17U) &&
-        (selector == 17U ? scalar_input.empty() : scalar_input.size() == 1U) &&
+    if (selector == get_keybag_lock_state_selector &&
+        scalar_input.size() == 1U &&
         inband_input.empty() && scalar_output_capacity >= 1U &&
         inband_output_capacity == 0U) {
-        return MethodResult { iokit_abi::success, { 0 }, { } };
+        return MethodResult {
+            iokit_abi::success, { keybag_unlocked_since_boot }, { } };
+    }
+    if (selector == get_device_lock_state_selector && scalar_input.empty() &&
+        inband_input.empty() && scalar_output_capacity >= 1U &&
+        inband_output_capacity == 0U) {
+        return MethodResult {
+            iokit_abi::success, { device_lock_state_no_passcode }, { } };
     }
     // Keep the remaining endpoint honest while the firmware-era method
     // contract is being filled in: this exposes selector and argument shape
