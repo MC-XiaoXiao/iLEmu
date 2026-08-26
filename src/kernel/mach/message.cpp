@@ -152,7 +152,9 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
         message_address + darwin::mig_wire::header_local_port_offset);
     const auto message_id = memory_.read32(
         message_address + darwin::mig_wire::header_identifier_offset);
-    if (!bits || !remote_port || !local_port || !message_id) {
+    // A send-only mach_msg legitimately carries MACH_PORT_NULL in the local
+    // header slot.  Keep the optional reply port distinct from a failed read.
+    if (!bits || !remote_port || !message_id) {
         registers[0] = 0x1000000eU; // MACH_SEND_INVALID_MEMORY
         return;
     }
