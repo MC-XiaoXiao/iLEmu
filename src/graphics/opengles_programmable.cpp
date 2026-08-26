@@ -127,11 +127,17 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
                 array_for(std::string { "vertex_texcoord" } + suffix)) {
             result.texture_arrays[unit] = *texture;
         }
-        if (const auto* scale = programs_.uniform(
-                context.current_program, std::string { "texscale" } + suffix);
-            scale != nullptr && scale->value_count >= 2U) {
-            result.texture_scales[unit] = { scale->values[0],
-                scale->values[1] };
+        if (const auto* transform = programs_.uniform(
+                context.current_program, std::string { "texmat" } + suffix);
+            transform != nullptr && transform->value_count >= 4U) {
+            result.texture_transforms[unit] = { transform->values[0],
+                transform->values[1], transform->values[2],
+                transform->values[3] };
+        } else if (const auto* scale = programs_.uniform(context.current_program,
+                       std::string { "texscale" } + suffix);
+                   scale != nullptr && scale->value_count >= 2U) {
+            result.texture_transforms[unit][0] = scale->values[0];
+            result.texture_transforms[unit][1] = scale->values[1];
         }
     }
     if (const auto* matrix =

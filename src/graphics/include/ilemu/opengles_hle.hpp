@@ -142,8 +142,12 @@ private:
         std::array<ContextState::ArrayPointer, gles_abi::texture_unit_count>
             texture_arrays;
         GlesMatrix vertex_matrix;
-        std::array<std::array<float, 2>, gles_abi::texture_unit_count>
-            texture_scales { { { 1.0F, 1.0F }, { 1.0F, 1.0F } } };
+        // Legacy Apple shaders encode a per-unit affine texture transform as
+        // (scale.x, scale.y, offset.x, offset.y) in texmatN. Some drivers use
+        // the older scale-only texscaleN spelling.
+        std::array<std::array<float, 4>, gles_abi::texture_unit_count>
+            texture_transforms { { { 1.0F, 1.0F, 0.0F, 0.0F },
+                { 1.0F, 1.0F, 0.0F, 0.0F } } };
         std::array<GlesTextureEnvironment, gles_abi::texture_unit_count>
             texture_environments;
         std::array<bool, gles_abi::texture_unit_count> sampled_textures { };

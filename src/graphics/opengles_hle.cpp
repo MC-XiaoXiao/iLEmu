@@ -501,10 +501,12 @@ std::optional<GlesRasterVertex> OpenGlesHle::read_vertex(UserlandHleCall& call,
             vertex.texture[unit_index] = { texture[0], texture[1] };
         }
         if (programmable) {
-            vertex.texture[unit_index][0] *=
-                programmable->texture_scales[unit_index][0];
-            vertex.texture[unit_index][1] *=
-                programmable->texture_scales[unit_index][1];
+            const auto& transform =
+                programmable->texture_transforms[unit_index];
+            vertex.texture[unit_index][0] =
+                vertex.texture[unit_index][0] * transform[0] + transform[2];
+            vertex.texture[unit_index][1] =
+                vertex.texture[unit_index][1] * transform[1] + transform[3];
         } else {
             const auto transformed_texture =
                 unit.texture_matrix.transform({ vertex.texture[unit_index][0],
