@@ -470,6 +470,7 @@ private:
         const std::array<std::uint32_t, 16>& state, std::uint32_t cpsr,
         bool start_suspended, std::uint32_t& kernel_error);
     void dispatch_bsd_aio(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_platform(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_process(Cpu& cpu, std::uint32_t number);
     void release_process_mach_rights();
     void release_process_descriptors();
@@ -588,6 +589,8 @@ private:
         int host_descriptor = -1);
     bool write_guest_device_stat(
         std::uint32_t address, std::uint32_t minor, bool character_device);
+    bool write_guest_kqueue_stat(std::uint32_t address,
+        std::uint64_t pending_event_count, bool stat64_layout);
     bool write_guest_stat64(std::uint32_t address,
         const std::filesystem::path& path, bool follow_symlink = true,
         int host_descriptor = -1);

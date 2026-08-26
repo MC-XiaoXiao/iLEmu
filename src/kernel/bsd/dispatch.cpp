@@ -238,6 +238,9 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::kill:
         dispatch_bsd_signal(cpu, number);
         return;
+    case darwin::syscall::get_host_uuid:
+        dispatch_bsd_platform(cpu, number);
+        return;
     case 9:
     case 10:
     case 5:

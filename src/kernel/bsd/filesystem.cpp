@@ -2124,6 +2124,15 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             }
             return true;
         };
+        if (const auto queue = kqueues_.find(descriptor);
+            queue != kqueues_.end()) {
+            if (!write_guest_kqueue_stat(registers[1], 0, true)) {
+                bsd_error(cpu, bsd_support::bad_address);
+            } else if (finish_extended_security()) {
+                bsd_success(cpu, 0);
+            }
+            return;
+        }
         if (const auto block = virtual_block_descriptors_.find(descriptor);
             block != virtual_block_descriptors_.end()) {
             if (!write_guest_device_stat64(
@@ -2242,6 +2251,15 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         if (const auto duplicate = duplicated_descriptors_.find(descriptor);
             duplicate != duplicated_descriptors_.end()) {
             descriptor = duplicate->second;
+        }
+        if (const auto queue = kqueues_.find(descriptor);
+            queue != kqueues_.end()) {
+            if (!write_guest_kqueue_stat(registers[1], 0, false)) {
+                bsd_error(cpu, bsd_support::bad_address);
+            } else {
+                bsd_success(cpu, 0);
+            }
+            return;
         }
         if (const auto block = virtual_block_descriptors_.find(descriptor);
             block != virtual_block_descriptors_.end()) {

@@ -308,6 +308,7 @@ namespace syscall {
     inline constexpr std::uint32_t send_to = 133;
     inline constexpr std::uint32_t shutdown = 134;
     inline constexpr std::uint32_t socket_pair = 135;
+    inline constexpr std::uint32_t get_host_uuid = 142;
     inline constexpr std::uint32_t update_file_times = 138;
     inline constexpr std::uint32_t update_file_times_fd = 139;
     inline constexpr std::uint32_t set_group_id = 181;

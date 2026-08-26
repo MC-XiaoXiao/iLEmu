@@ -2482,6 +2482,44 @@ bool CompatibilityKernel::write_guest_device_stat(
     return memory_.copy_in(address, bytes);
 }
 
+bool CompatibilityKernel::write_guest_kqueue_stat(std::uint32_t address,
+    std::uint64_t pending_event_count, bool stat64_layout)
+{
+    // XNU exposes DTYPE_KQUEUE through fstat as a FIFO. CoreFoundation uses
+    // this contract to validate descriptors before creating run-loop sources.
+    // Keep the legacy and stat64 layouts explicit because ARM32 field offsets
+    // differ even though both carry the same kqueue metadata.
+    std::array<std::byte, 108> bytes { };
+    const auto put16 = [&](std::size_t offset, std::uint16_t value) {
+        bytes[offset] = static_cast<std::byte>(value & 0xffU);
+        bytes[offset + 1] = static_cast<std::byte>(value >> 8U);
+    };
+    const auto put32 = [&](std::size_t offset, std::uint32_t value) {
+        for (std::size_t byte = 0; byte < 4; ++byte) {
+            bytes[offset + byte] =
+                static_cast<std::byte>(value >> (byte * 8U));
+        }
+    };
+    const auto put64 = [&](std::size_t offset, std::uint64_t value) {
+        for (std::size_t byte = 0; byte < 8; ++byte) {
+            bytes[offset + byte] =
+                static_cast<std::byte>(value >> (byte * 8U));
+        }
+    };
+    constexpr std::uint16_t fifo_mode = 0010000U;
+    if (stat64_layout) {
+        put16(4, fifo_mode); // st_mode
+        put64(60, pending_event_count); // st_size
+        put32(76, darwin::kqueue::arm32_event::size); // st_blksize
+        return memory_.copy_in(address, bytes);
+    }
+    put16(8, fifo_mode); // st_mode
+    put64(48, pending_event_count); // st_size
+    put32(64, darwin::kqueue::arm32_event::size); // st_blksize
+    return memory_.copy_in(address,
+        std::span<const std::byte> { bytes }.first(96));
+}
+
 bool CompatibilityKernel::write_guest_stat64(std::uint32_t address,
     const std::filesystem::path& path, bool follow_symlink, int host_descriptor)
 {
