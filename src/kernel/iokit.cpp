@@ -78,6 +78,7 @@ namespace {
     constexpr std::string_view local_mac_address_property {
         "local-mac-address"
     };
+    constexpr std::string_view wifi_wapi_enabled_property { "WAPIEnabled" };
     constexpr std::string_view sdio_device_name { "sdio" };
     constexpr std::size_t maximum_matching_trace_bytes = 256;
     constexpr std::uint32_t io_service_matching_type = 100;
@@ -821,6 +822,14 @@ namespace {
                 KernelSharedState::IOKitRegistryProperty::Kind::Data,
                 std::vector<std::byte> { wifi_interface_mac_address.begin(),
                     wifi_interface_mac_address.end() } });
+        // WiFiManager snapshots controller properties as the firmware device's
+        // capability dictionary. Publish an explicit negative capability for
+        // the unsupported WAPI protocol so clients receive a normal CFBoolean
+        // through the firmware's own property serialization path.
+        service.properties.emplace(std::string { wifi_wapi_enabled_property },
+            KernelSharedState::IOKitRegistryProperty {
+                KernelSharedState::IOKitRegistryProperty::Kind::Boolean,
+                { std::byte { 0 } } });
         shared_state.iokit_services.emplace(object, std::move(service));
         return object;
     }
@@ -2092,6 +2101,52 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         output.write("[iokit] busy-state pid=" + std::to_string(process.pid) +
                      " service-object=" + std::to_string(remote_object) +
                      " state=quiet\n");
+        return write_reply(memory, message_address, reply);
+    }
+
+    if (message_id ==
+        device_mig::id(device_mig::Routine::io_service_get_state)) {
+        // IOService::getState() reports the stable state bits from the
+        // registry entry. All services exposed by the modeled registry have
+        // completed registration, matching, publication, and first-match
+        // notification before they can be returned to a client.
+        constexpr std::uint64_t registered = 1ULL << 1U;
+        constexpr std::uint64_t matched = 1ULL << 2U;
+        constexpr std::uint64_t first_publish = 1ULL << 3U;
+        constexpr std::uint64_t first_match = 1ULL << 4U;
+        constexpr std::uint64_t active_state =
+            registered | matched | first_publish | first_match;
+        constexpr std::uint32_t reply_size = 44U;
+        if (receive_size < reply_size)
+            return mach_rcv_invalid_data;
+
+        bool valid_service = false;
+        {
+            std::lock_guard mach_lock { shared_state.mach_mutex };
+            valid_service = shared_state.iokit_services.contains(remote_object);
+        }
+        const auto result = valid_service ? iokit_abi::success
+                                          : iokit_abi::bad_argument;
+        const std::array<std::uint32_t, reply_size / sizeof(std::uint32_t)>
+            reply {
+                mach_reply_bits,
+                reply_size,
+                local_port,
+                0U,
+                0U,
+                message_id + mig_reply_id_delta,
+                mach_ndr_native,
+                mach_ndr_little_endian,
+                result,
+                valid_service ? static_cast<std::uint32_t>(active_state) : 0U,
+                valid_service ? static_cast<std::uint32_t>(active_state >> 32U)
+                              : 0U,
+            };
+        output.write("[iokit] service-state pid=" +
+                     std::to_string(process.pid) + " service-object=" +
+                     std::to_string(remote_object) + " state=" +
+                     std::to_string(valid_service ? active_state : 0U) +
+                     " result=" + std::to_string(result) + "\n");
         return write_reply(memory, message_address, reply);
     }
 
