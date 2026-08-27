@@ -64,7 +64,13 @@ struct GlesRasterState {
     float line_width { 1.0F };
     bool cull_enabled { };
     bool render_target_inverted_vertical { };
+    // Local GLES framebuffer textures are consumed by the firmware as
+    // premultiplied source-over images. Keep this target-local so imported
+    // CoreSurface scanout layers retain their existing alpha semantics.
+    bool render_target_premultiplied { };
 };
+
+[[nodiscard]] std::uint32_t premultiply_argb(std::uint32_t pixel);
 
 class GlesSoftwareRasterizer {
 public:

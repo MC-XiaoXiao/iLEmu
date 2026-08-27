@@ -403,6 +403,8 @@ namespace {
                     pixel = apply_texture_environment(
                         unit.environment, sampled, primary, pixel);
                 }
+                if (state.render_target_premultiplied)
+                    pixel = premultiply_argb(pixel);
                 const auto offset = static_cast<std::size_t>(y) * frame.width +
                                     static_cast<std::size_t>(x);
                 if (state.blend_enabled &&
@@ -424,6 +426,16 @@ namespace {
     }
 
 } // namespace
+
+std::uint32_t premultiply_argb(std::uint32_t pixel)
+{
+    const auto alpha = (pixel >> 24U) & 0xffU;
+    const auto scale = [alpha](std::uint32_t channel) {
+        return (channel * alpha + 127U) / 255U;
+    };
+    return (alpha << 24U) | (scale((pixel >> 16U) & 0xffU) << 16U) |
+           (scale((pixel >> 8U) & 0xffU) << 8U) | scale(pixel & 0xffU);
+}
 
 bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
     std::span<const GlesRasterVertex> vertices, std::uint32_t mode,

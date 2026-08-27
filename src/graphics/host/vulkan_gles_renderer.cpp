@@ -428,10 +428,12 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     struct alignas(16) GpuFixedFunctionState {
         std::array<GpuTextureEnvironment, gles_abi::texture_unit_count>
             units { };
+        std::array<std::int32_t, 4> target_flags { };
     };
 
     static_assert(sizeof(GpuVertex) == 48);
     static_assert(sizeof(GpuTextureEnvironment) == 128);
+    static_assert(sizeof(GpuFixedFunctionState) == 272);
 
     struct PipelineKey {
         enum class StencilMode : std::uint8_t {
@@ -2511,6 +2513,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             destination.scales_rectangle = { environment.rgb_scale,
                 environment.alpha_scale, source.rectangle ? 1.0F : 0.0F, 0.0F };
         }
+        result.target_flags[0] = state.render_target_premultiplied ? 1 : 0;
         return result;
     }
 

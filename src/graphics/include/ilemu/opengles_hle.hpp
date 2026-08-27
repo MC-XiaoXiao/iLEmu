@@ -166,6 +166,7 @@ private:
         std::uint32_t framebuffer_texture { };
         std::shared_ptr<HostSurface> host_surface;
         bool inverted_vertical { };
+        bool premultiplied { };
     };
 
     [[nodiscard]] ThreadState& thread(UserlandHleCall& call);

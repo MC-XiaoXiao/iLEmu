@@ -662,7 +662,8 @@ OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
             return std::nullopt;
         return RenderTargetBinding { RenderTargetKind::Framebuffer,
             host_surface->key(), std::nullopt, nullptr, texture,
-            std::move(host_surface), level->render_target_inverted_vertical };
+            std::move(host_surface), level->render_target_inverted_vertical,
+            true };
     }
     if (auto* pixmap = current_pixmap_surface(call)) {
         if (!refresh_pixmap_surface(call, thread(call).draw_surface))
@@ -1014,6 +1015,7 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     state.front_face = context->front_face;
     state.line_width = context->line_width;
     state.render_target_inverted_vertical = binding->inverted_vertical;
+    state.render_target_premultiplied = binding->premultiplied;
     auto* pixmap_surface = binding->pixmap_surface;
     for (std::size_t unit_index = 0; unit_index < context->texture_units.size();
         ++unit_index) {
@@ -2188,6 +2190,9 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             return;
         }
         const auto target = binding->key;
+        const auto clear_argb = binding->premultiplied
+                                    ? premultiply_argb(context->clear_argb)
+                                    : context->clear_argb;
         const auto all_channels = std::all_of(context->color_mask.begin(),
             context->color_mask.end(), [](bool enabled) { return enabled; });
         const auto scissor_enabled =
@@ -2235,7 +2240,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                             static_cast<std::int32_t>(top),
                             static_cast<std::uint32_t>(right - left),
                             static_cast<std::uint32_t>(bottom - top) },
-                        context->clear_argb)) {
+                        clear_argb)) {
                     if (binding->framebuffer_texture != 0U) {
                         resources_.update_texture_render_target_generation(
                             binding->framebuffer_texture, 0U);
@@ -2250,7 +2255,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         }
         if (all_channels && !scissor_enabled) {
             std::fill(frame->pixels.begin(), frame->pixels.end(),
-                context->clear_argb);
+                clear_argb);
             if (!commit_render_target(call, *binding, std::move(*frame))) {
                 set_gl_error(call, gles_abi::invalid_operation);
             } else {
@@ -2287,7 +2292,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                     if (!context->color_mask[component])
                         continue;
                     pixel = (pixel & ~channel_masks[component]) |
-                            (context->clear_argb & channel_masks[component]);
+                            (clear_argb & channel_masks[component]);
                 }
                 frame->pixels[offset] = pixel;
             }

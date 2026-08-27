@@ -35,6 +35,7 @@ struct TextureEnvironment {
 
 layout(std140, binding = 0) uniform FixedFunctionState {
     TextureEnvironment units[2];
+    ivec4 target_flags;
 } fixed_state;
 layout(binding = 1) uniform sampler2D image0;
 layout(binding = 2) uniform sampler2D image1;
@@ -170,5 +171,6 @@ void main() {
         result = apply_environment(
             fixed_state.units[1], sampled, primary_color, result);
     }
+    if (fixed_state.target_flags.x != 0) result.rgb *= result.a;
     output_color = clamp(result, 0.0, 1.0);
 }
