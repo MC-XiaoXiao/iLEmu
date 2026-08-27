@@ -28,6 +28,7 @@ namespace {
     constexpr std::uint32_t mig_reply_identifier_delta = 100;
     constexpr std::uint32_t ndr_native = 0;
     constexpr std::uint32_t ndr_little_endian = 1;
+    constexpr std::uint32_t system_sleep_timer_disabled = 0x7fff'ffffU;
 
     std::uint32_t resolve_name_locked(
         const KernelSharedState& state, std::uint32_t task, std::uint32_t name)
@@ -44,6 +45,35 @@ namespace {
             .copyout(
                 task, object, xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
             .value_or(0);
+    }
+
+    KernelSharedState::IOKitRegistryProperty power_profile_override_property()
+    {
+        KernelSharedState::IOKitRegistryProperty timer {
+            KernelSharedState::IOKitRegistryProperty::Kind::Number,
+            std::vector<std::byte>(sizeof(system_sleep_timer_disabled)) };
+        for (std::size_t index = 0; index < timer.value.size(); ++index) {
+            timer.value[index] = static_cast<std::byte>(
+                system_sleep_timer_disabled >> (index * 8U));
+        }
+
+        KernelSharedState::IOKitRegistryProperty override {
+            KernelSharedState::IOKitRegistryProperty::Kind::Dictionary, { } };
+        override.dictionary_value.emplace("System Sleep Timer",
+            std::move(timer));
+        return override;
+    }
+
+    void populate_power_root_properties(
+        KernelSharedState::IOKitService& service)
+    {
+        // AppleARM publishes this platform override on IOPMrootDomain. The
+        // Darwin IOPMLib uses it to turn the immutable default power-profile
+        // plist into its working profile set. Returning not-found here makes
+        // the iPad 4.x client call its private mutable-dictionary path with
+        // the immutable plist object and hit CoreFoundation's BKPT guard.
+        service.properties.insert_or_assign("SystemPowerProfileOverrideDict",
+            power_profile_override_property());
     }
 
     template <std::size_t Size>
@@ -114,10 +144,12 @@ namespace {
             if (!is_power_root_locked(state, process, remote_object))
                 return std::nullopt;
             static_cast<void>(state.mach_port_objects.create(remote_object));
-            state.iokit_services.try_emplace(
+            auto [service, inserted] = state.iokit_services.try_emplace(
                 remote_object, KernelSharedState::IOKitService {
-                                   std::string { power_root_class },
-                                   { std::string { io_service_class } } });
+                    std::string { power_root_class },
+                    { std::string { io_service_class } } });
+            static_cast<void>(inserted);
+            populate_power_root_properties(service->second);
             connection_object = state.allocate_mach_object();
             static_cast<void>(
                 state.mach_port_objects.create(connection_object));
