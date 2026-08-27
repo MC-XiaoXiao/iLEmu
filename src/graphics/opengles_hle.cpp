@@ -174,6 +174,7 @@ void OpenGlesHle::reset()
     contexts_.clear();
     eagl_contexts_.clear();
     surfaces_.clear();
+    scanout_composition_.reset();
     resources_.reset();
     programs_.reset();
     renderer_owner_ = allocate_gles_renderer_owner();
@@ -193,6 +194,7 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
     contexts_ = parent.contexts_;
     eagl_contexts_ = parent.eagl_contexts_;
     surfaces_ = parent.surfaces_;
+    scanout_composition_.reset();
     resources_.inherit_state(parent.resources_);
     programs_ = parent.programs_;
     renderer_owner_ = allocate_gles_renderer_owner();
@@ -981,6 +983,10 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         set_gl_error(call, gles_abi::invalid_operation);
         return;
     }
+    if (binding->backing_identifier && binding->host_surface && display_) {
+        scanout_composition_.begin_draw(binding->key, binding->host_surface,
+            display_->width(), display_->height());
+    }
     auto target = render_target(call, *binding);
     if (!target) {
         set_gl_error(call, gles_abi::invalid_operation);
@@ -1047,6 +1053,34 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
                 pixmap_surface->refreshed_textures.insert(raster_unit.texture);
         }
     }
+    bool restored_scanout_background = false;
+    if (binding->backing_identifier && binding->host_surface && display_ &&
+        command_encoder_ &&
+        !scanout_composition_.restore_background(call.process_id(),
+            binding->key, binding->host_surface, display_->width(),
+            display_->height(), state, resources_, *command_encoder_,
+            restored_scanout_background)) {
+        set_gl_error(call, gles_abi::invalid_operation);
+        return;
+    }
+    if (restored_scanout_background) {
+        target = render_target(call, *binding);
+        if (!target) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+    }
+    const auto capture_scanout_background =
+        binding->backing_identifier && binding->host_surface && display_ &&
+        scanout_composition_.is_background_draw(binding->host_surface,
+            display_->width(), display_->height(), state, vertices);
+    const auto save_scanout_background = [&] {
+        return !capture_scanout_background ||
+               (command_encoder_ &&
+                   scanout_composition_.capture_background(call.process_id(),
+                       renderer_owner_, binding->key, binding->host_surface,
+                       *renderer_, *command_encoder_));
+    };
     const auto target_key = binding->key;
     const auto surface_target = binding->host_surface != nullptr;
     if (!surface_target) {
@@ -1063,13 +1097,16 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
             resources_.update_texture_render_target_generation(
                 binding->framebuffer_texture, 0U);
         }
+        if (!save_scanout_background())
+            set_gl_error(call, gles_abi::invalid_operation);
         return;
     }
     if (rendered && !surface_target) {
         rendered = renderer_->synchronize(*target, target_key);
     }
     if (!rendered ||
-        !commit_render_target(call, *binding, std::move(*target))) {
+        !commit_render_target(call, *binding, std::move(*target)) ||
+        !save_scanout_background()) {
         set_gl_error(call, gles_abi::invalid_operation);
     }
 }

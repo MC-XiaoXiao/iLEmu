@@ -609,6 +609,18 @@ bool HostSurface::presentation_leased() const
     return presentation_lease_count_ != 0;
 }
 
+void HostSurface::mark_scanout_presentation()
+{
+    std::lock_guard lock { mutex_ };
+    ++scanout_presentation_sequence_;
+}
+
+std::uint64_t HostSurface::scanout_presentation_sequence() const
+{
+    std::lock_guard lock { mutex_ };
+    return scanout_presentation_sequence_;
+}
+
 HostSurface::CpuMapping HostSurface::map_cpu(
     bool write, PerfCpuMapReason reason)
 {

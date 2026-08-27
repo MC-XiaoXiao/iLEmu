@@ -19,6 +19,7 @@
 #include "ilemu/gles_renderer.hpp"
 #include "ilemu/gles_resources.hpp"
 #include "ilemu/opengles_guest_profile.hpp"
+#include "ilemu/scanout_composition.hpp"
 
 namespace ilemu {
 
@@ -224,6 +225,7 @@ private:
     std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t>
         eagl_contexts_;
     std::map<std::uint32_t, SurfaceState> surfaces_;
+    ScanoutComposition scanout_composition_;
     GlesResourceStore resources_;
     GlesProgramState programs_;
     std::uint32_t next_context_ { 0x00010001U };

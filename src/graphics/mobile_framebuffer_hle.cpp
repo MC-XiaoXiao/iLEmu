@@ -403,6 +403,8 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
             continue;
         }
         const auto source = surface_store_->host_surface(state.surface_id);
+        if (source)
+            source->mark_scanout_presentation();
         // Page-granular guest dirtiness cannot be merged safely into a surface
         // whose complete contents are newer on the GPU. CPU-owned layers still
         // need their direct mapped writes imported before presentation.
@@ -773,6 +775,10 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
                            backing->provenance.publication_sequence)) {
             continue;
         }
+        const auto source_surface =
+            surface_store_->host_surface(state.surface_id);
+        if (source_surface)
+            source_surface->mark_scanout_presentation();
         auto source_pixels =
             surface_store_->read_argb(call.memory(), state.surface_id);
         if (!backing || !source_pixels || backing->width == 0 ||

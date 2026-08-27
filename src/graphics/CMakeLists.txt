@@ -21,6 +21,7 @@ add_library(ilemu_graphics STATIC
     opengles_hle.cpp
     opengles_programmable.cpp
     presentation_tracker.cpp
+    scanout_composition.cpp
     sdl_display.cpp
     sdl_input.cpp
     surface_store.cpp)

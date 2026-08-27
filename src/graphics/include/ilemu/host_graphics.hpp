@@ -125,6 +125,8 @@ public:
     [[nodiscard]] std::uint64_t cpu_generation() const;
     [[nodiscard]] std::uint64_t gpu_generation() const;
     [[nodiscard]] bool presentation_leased() const;
+    void mark_scanout_presentation();
+    [[nodiscard]] std::uint64_t scanout_presentation_sequence() const;
     [[nodiscard]] CpuMapping map_cpu(
         bool write, PerfCpuMapReason reason = PerfCpuMapReason::Internal);
     void replace_cpu(std::span<const std::uint32_t> pixels);
@@ -171,6 +173,7 @@ private:
     std::deque<DamageRecord> damage_history_;
     std::uint64_t discarded_damage_generation_ { };
     std::uint64_t presentation_lease_count_ { };
+    std::uint64_t scanout_presentation_sequence_ { };
 };
 
 [[nodiscard]] std::shared_ptr<HostSurfacePresentationLease>
