@@ -30,6 +30,14 @@ namespace {
         return (x - a.x) * (b.y - a.y) - (y - a.y) * (b.x - a.x);
     }
 
+    bool includes_triangle_boundary(
+        const ScreenVertex& a, const ScreenVertex& b, float orientation)
+    {
+        const auto dx = orientation * (b.x - a.x);
+        const auto dy = orientation * (b.y - a.y);
+        return dy > 0.0F || (dy == 0.0F && dx < 0.0F);
+    }
+
     std::uint32_t modulate(
         std::uint32_t pixel, const std::array<float, 4>& color)
     {
@@ -348,13 +356,32 @@ namespace {
                         continue;
                     }
                 }
-                const auto w0 =
-                    edge(triangle[1], triangle[2], sample_x, sample_y) / area;
-                const auto w1 =
-                    edge(triangle[2], triangle[0], sample_x, sample_y) / area;
-                const auto w2 = 1.0F - w0 - w1;
-                if (w0 < 0.0F || w1 < 0.0F || w2 < 0.0F)
+                const std::array edge_values { edge(triangle[1], triangle[2],
+                                                   sample_x, sample_y),
+                    edge(triangle[2], triangle[0], sample_x, sample_y),
+                    edge(triangle[0], triangle[1], sample_x, sample_y) };
+                const auto orientation = area > 0.0F ? 1.0F : -1.0F;
+                const std::array boundaries { includes_triangle_boundary(
+                                                  triangle[1], triangle[2],
+                                                  orientation),
+                    includes_triangle_boundary(
+                        triangle[2], triangle[0], orientation),
+                    includes_triangle_boundary(
+                        triangle[0], triangle[1], orientation) };
+                auto covered = true;
+                for (std::size_t index = 0; index < edge_values.size();
+                    ++index) {
+                    const auto value = orientation * edge_values[index];
+                    if (value < 0.0F || (value == 0.0F && !boundaries[index])) {
+                        covered = false;
+                        break;
+                    }
+                }
+                if (!covered)
                     continue;
+                const auto w0 = edge_values[0] / area;
+                const auto w1 = edge_values[1] / area;
+                const auto w2 = edge_values[2] / area;
                 // GLES varyings are interpolated in homogeneous space. Using
                 // screen-space barycentric weights directly makes a textured
                 // 3D quad bend at the diagonal where it is split into
