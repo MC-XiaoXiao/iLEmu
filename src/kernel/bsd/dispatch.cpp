@@ -367,6 +367,10 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::mac_syscall:
         static_cast<void>(dispatch_bsd_security(cpu, number));
         return;
+    case darwin::syscall::fileport_makeport:
+    case darwin::syscall::fileport_makefd:
+        dispatch_bsd_fileport(cpu, number);
+        return;
     default:
         trace_unknown(cpu, "BSD syscall", number);
         dispatch_bsd_nosys(cpu,

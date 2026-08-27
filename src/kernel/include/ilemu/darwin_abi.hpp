@@ -346,6 +346,8 @@ namespace syscall {
     inline constexpr std::uint32_t kqueue = 362;
     inline constexpr std::uint32_t kevent = 363;
     inline constexpr std::uint32_t mac_syscall = 381;
+    inline constexpr std::uint32_t fileport_makeport = 430;
+    inline constexpr std::uint32_t fileport_makefd = 431;
 } // namespace syscall
 
 namespace poll {

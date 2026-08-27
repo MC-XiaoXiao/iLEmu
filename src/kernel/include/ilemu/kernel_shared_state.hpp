@@ -1367,6 +1367,10 @@ struct KernelSharedState {
     // XNU named-memory entries are kernel ipc_port objects. The per-task Mach
     // namespace carries rights; this table carries the referenced VM object.
     std::map<std::uint32_t, MachMemoryEntry> mach_memory_entries;
+    // BSD fileports are send-only Mach objects whose payload is a transferable
+    // open-file description. The key is the global object identifier; callers
+    // hold mach_mutex while accessing this table.
+    std::map<std::uint32_t, DescriptorTransfer> mach_fileports;
     std::map<std::uint64_t, ClockAlarm> clock_alarms;
     std::uint64_t next_clock_alarm { 1 };
     std::map<std::pair<std::uint32_t, std::uint32_t>, MachNotificationRequest>

@@ -101,6 +101,8 @@ namespace mach_support {
     // service port.
     void release_unreferenced_memory_entry_locked(
         KernelSharedState& state, std::uint32_t object);
+    void release_unreferenced_fileport_locked(
+        KernelSharedState& state, std::uint32_t object);
     // Task and thread ports are kernel-owned objects. When their task exits,
     // all outstanding Send names must become DeadName before the backing
     // indexes are dropped, matching ipc_space/task termination in XNU.

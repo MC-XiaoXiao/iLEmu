@@ -470,6 +470,7 @@ private:
         const std::array<std::uint32_t, 16>& state, std::uint32_t cpsr,
         bool start_suspended, std::uint32_t& kernel_error);
     void dispatch_bsd_aio(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_fileport(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_platform(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_process(Cpu& cpu, std::uint32_t number);
     void release_process_mach_rights();

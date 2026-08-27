@@ -553,6 +553,7 @@ namespace mach_support {
         state.mach_semaphores.erase(object);
         state.mach_timers.erase(object);
         state.mach_memory_entries.erase(object);
+        state.mach_fileports.erase(object);
         state.iokit_iterators.erase(object);
         // Every IOServiceClose and receive-right teardown converges here.
         // Retire display timer registrations before erasing the generic
@@ -604,6 +605,28 @@ namespace mach_support {
         // their own GuestPageBacking references, so reclaiming the named port
         // is harmless to an already-established vm_map.
         state.mach_memory_entries.erase(object);
+        remove_port_object_locked(state, object);
+    }
+
+    void release_unreferenced_fileport_locked(
+        KernelSharedState& state, std::uint32_t object)
+    {
+        if (!state.mach_fileports.contains(object) ||
+            state.mach_namespaces.right_reference_count(
+                object, xnu792::ipc::Right::Send) != 0) {
+            return;
+        }
+        const auto inflight = state.mach_inflight_send_rights.find(object);
+        if (inflight != state.mach_inflight_send_rights.end() &&
+            inflight->second != 0) {
+            return;
+        }
+        const auto kernel_hold = state.mach_kernel_send_rights.find(object);
+        if (kernel_hold != state.mach_kernel_send_rights.end() &&
+            kernel_hold->second != 0) {
+            return;
+        }
+        state.mach_fileports.erase(object);
         remove_port_object_locked(state, object);
     }
 
@@ -922,6 +945,7 @@ namespace mach_support {
         }
         static_cast<void>(
             enqueue_no_senders_notification_locked(state, object));
+        release_unreferenced_fileport_locked(state, object);
     }
 
     void retain_kernel_send_right_locked(
@@ -950,6 +974,7 @@ namespace mach_support {
             enqueue_no_senders_notification_locked(state, object));
         release_unreferenced_memory_entry_locked(state, object);
         release_unreferenced_iokit_object_locked(state, object);
+        release_unreferenced_fileport_locked(state, object);
     }
 
     void discard_mach_message_rights_locked(
@@ -1009,6 +1034,9 @@ namespace mach_support {
             terminate_receive_object_locked(state, entry->object);
         } else if (has(xnu792::ipc::Right::PortSet)) {
             remove_port_object_locked(state, entry->object);
+        }
+        if (has(xnu792::ipc::Right::Send)) {
+            release_unreferenced_fileport_locked(state, entry->object);
         }
         return true;
     }
@@ -1095,6 +1123,7 @@ namespace mach_support {
         if (right == xnu792::ipc::Right::Send && updated == 0) {
             static_cast<void>(
                 enqueue_no_senders_notification_locked(state, entry->object));
+            release_unreferenced_fileport_locked(state, entry->object);
         }
         return kern_success;
     }
