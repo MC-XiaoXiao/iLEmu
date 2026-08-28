@@ -8,6 +8,7 @@
 #include "ilemu/gles_rasterizer.hpp"
 #include "ilemu/gles_renderer.hpp"
 #include "ilemu/gles_resources.hpp"
+#include "ilemu/local_scene_background.hpp"
 
 namespace ilemu {
 
@@ -28,8 +29,19 @@ public:
         GlesRenderTargetKey key, const std::shared_ptr<HostSurface>& surface,
         std::uint32_t screen_width, std::uint32_t screen_height,
         const GlesRasterState& state, const GlesResourceStore& resources,
-        std::span<const GlesRasterVertex> vertices, CommandEncoder& encoder,
-        bool& restored);
+        std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
+        CommandEncoder& encoder, bool& restored);
+
+    // Records a direct source layer beneath later translucent draws in a local
+    // scene texture. When that scene is translated onto scanout, the same
+    // source-space layer can be replayed instead of sampling the background at
+    // the scene's destination coordinates.
+    void observe_local_background_draw(
+        const std::shared_ptr<HostSurface>& target,
+        const GlesRasterState& state, const GlesResourceStore& resources,
+        std::span<const GlesRasterVertex> vertices, std::uint32_t mode);
+    void invalidate_local_background(
+        const std::shared_ptr<HostSurface>& target);
 
     [[nodiscard]] bool is_background_draw(
         const std::shared_ptr<HostSurface>& surface, std::uint32_t screen_width,
@@ -61,9 +73,9 @@ private:
         const std::shared_ptr<HostSurface>& source,
         const std::shared_ptr<HostSurface>& destination, HostRectangle region,
         CommandEncoder& encoder);
-
     std::map<GlesRenderTargetKey, FrameState> frames_;
     std::map<std::uint32_t, BackgroundState> backgrounds_;
+    LocalSceneBackground local_scene_background_;
 };
 
 } // namespace ilemu

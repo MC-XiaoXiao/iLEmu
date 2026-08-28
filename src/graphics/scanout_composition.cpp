@@ -13,6 +13,7 @@ namespace ilemu {
 namespace {
 
     constexpr std::uint64_t scanout_background_namespace = 2ULL << 32U;
+
     std::optional<HostRectangle> draw_rectangle(std::uint32_t width,
         std::uint32_t height, const GlesRasterState& state,
         std::span<const GlesRasterVertex> vertices)
@@ -84,6 +85,7 @@ void ScanoutComposition::reset()
 {
     frames_.clear();
     backgrounds_.clear();
+    local_scene_background_.reset();
 }
 
 bool ScanoutComposition::is_screen_surface(
@@ -114,6 +116,20 @@ bool ScanoutComposition::copy_surface(
     }
     return encoder.copy(source, destination, region, region) &&
            encoder.submit(PerfSubmitReason::GlesSync);
+}
+
+void ScanoutComposition::invalidate_local_background(
+    const std::shared_ptr<HostSurface>& target)
+{
+    local_scene_background_.invalidate(target);
+}
+
+void ScanoutComposition::observe_local_background_draw(
+    const std::shared_ptr<HostSurface>& target, const GlesRasterState& state,
+    const GlesResourceStore& resources,
+    std::span<const GlesRasterVertex> vertices, std::uint32_t mode)
+{
+    local_scene_background_.observe(target, state, resources, vertices, mode);
 }
 
 void ScanoutComposition::begin_draw(GlesRenderTargetKey key,
@@ -150,8 +166,8 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
     GlesRenderTargetKey key, const std::shared_ptr<HostSurface>& surface,
     std::uint32_t screen_width, std::uint32_t screen_height,
     const GlesRasterState& state, const GlesResourceStore& resources,
-    std::span<const GlesRasterVertex> vertices, CommandEncoder& encoder,
-    bool& restored)
+    std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
+    CommandEncoder& encoder, bool& restored)
 {
     restored = false;
     if (!is_screen_surface(surface, screen_width, screen_height) ||
@@ -166,29 +182,43 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
         return true;
 
     const auto descriptor = surface->descriptor();
-    const auto covering_scene = std::any_of(state.texture_units.begin(),
-        state.texture_units.end(), [&](const GlesRasterTextureUnit& unit) {
-            if (!unit.enabled)
-                return false;
-            const auto* texture = resources.texture(unit.texture);
-            if (!texture)
-                return false;
-            const auto level = texture->levels.find(0U);
-            return level != texture->levels.end() &&
-                   !level->second.surface_id && level->second.host_surface &&
-                   level->second.internal_format == gles_abi::rgba &&
-                   level->second.width >= descriptor.width;
-        });
-    if (!covering_scene)
+    const GlesResourceStore::TextureLevel* scene_level = nullptr;
+    std::size_t scene_unit_index = 0;
+    for (std::size_t unit_index = 0; unit_index < state.texture_units.size();
+        ++unit_index) {
+        const auto& unit = state.texture_units[unit_index];
+        if (!unit.enabled)
+            continue;
+        const auto* texture = resources.texture(unit.texture);
+        if (!texture)
+            continue;
+        const auto level = texture->levels.find(0U);
+        if (level == texture->levels.end() || level->second.surface_id ||
+            !level->second.host_surface ||
+            level->second.internal_format != gles_abi::rgba ||
+            level->second.width < descriptor.width) {
+            continue;
+        }
+        scene_level = &level->second;
+        scene_unit_index = unit_index;
+        break;
+    }
+    if (!scene_level)
         return true;
 
     const auto frame = frames_.find(key);
     if (frame == frames_.end())
         return true;
     frame->second.scene_composited = true;
-
     const auto background = backgrounds_.find(process_id);
     if (background == backgrounds_.end() || !background->second.valid)
+        return true;
+    if (!local_scene_background_.restore(scene_level->host_surface, surface,
+            scene_unit_index, state, vertices, mode, *rectangle, encoder,
+            restored)) {
+        return false;
+    }
+    if (restored)
         return true;
     // Each local scene is self-contained. Adjacent scene slices can overlap
     // while their separator moves, so the later slice must rebuild its whole

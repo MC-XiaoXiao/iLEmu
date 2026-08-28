@@ -1058,8 +1058,8 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         command_encoder_ &&
         !scanout_composition_.restore_background(call.process_id(),
             binding->key, binding->host_surface, display_->width(),
-            display_->height(), state, resources_, vertices, *command_encoder_,
-            restored_scanout_background)) {
+            display_->height(), state, resources_, vertices, mode,
+            *command_encoder_, restored_scanout_background)) {
         set_gl_error(call, gles_abi::invalid_operation);
         return;
     }
@@ -1088,6 +1088,10 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     }
     performance_counters().record_draw();
     auto rendered = renderer_->draw(*target, target_key, vertices, mode, state);
+    if (rendered && binding->premultiplied && binding->host_surface) {
+        scanout_composition_.observe_local_background_draw(
+            binding->host_surface, state, resources_, vertices, mode);
+    }
     const auto native_rendered =
         rendered && surface_target && renderer_->accelerated() &&
         renderer_->failure_reason() == PerfFallbackReason::None;
@@ -2226,6 +2230,9 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             set_gl_error(call, gles_abi::invalid_operation);
             return;
         }
+        if (binding->premultiplied)
+            scanout_composition_.invalidate_local_background(
+                binding->host_surface);
         const auto target = binding->key;
         const auto clear_argb = binding->premultiplied
                                     ? premultiply_argb(context->clear_argb)

@@ -10,6 +10,7 @@ add_library(ilemu_graphics STATIC
     frame_file_presenter.cpp
     layerkit_compatibility.cpp
     layerkit_hle.cpp
+    local_scene_background.cpp
     mbx_connect_hle.cpp
     mbx2d_hle.cpp
     mbx_client_surface.cpp
