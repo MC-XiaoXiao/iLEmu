@@ -238,7 +238,10 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
             callout;
         vsync.async_reference[iokit_abi::display_vsync::async_refcon_index] =
             refcon;
+        const auto was_enabled = vsync.enabled;
         vsync.enabled = callout != 0 && refcon != 0;
+        if (was_enabled != vsync.enabled)
+            vsync.last_notification_frame_time.reset();
         if (!vsync.enabled) {
             // A message queued before disable belongs to the old registration
             // window. Do not let a sleeping receiver consume it after selector
@@ -540,15 +543,20 @@ void deliver_due_vsync_locked(KernelSharedState& state, std::uint64_t deadline)
         auto& queue = state.mach_queues[registration.notification_port];
         if (!queue_has_vsync(queue, connection_object,
                 registration.registration_generation)) {
+            const auto period = iokit_abi::display_vsync::period_absolute_time;
+            const auto frame_time =
+                registration.last_notification_frame_time
+                    ? *registration.last_notification_frame_time + period
+                    : indexed_deadline;
             ++registration.sequence;
             state.enqueue_mach_message_locked(registration.notification_port,
-                // The callback's frame time is the scheduled pulse that this
-                // notification represents.  `deadline` can be later when the
-                // virtual clock catches up after a long host-side stall; using
-                // it here would make the guest observe a frame timestamp that
-                // skips the fixed VSync phase.
+                // Physical timer deadlines can be coalesced while the prior
+                // callback is pending. Advance the guest-visible sample by one
+                // panel period per notification actually delivered so
+                // animation state cannot jump over undisplayed frames.
                 make_vsync_message(
-                    connection_object, registration, indexed_deadline));
+                    connection_object, registration, frame_time));
+            registration.last_notification_frame_time = frame_time;
             performance_counters().record_vsync_due(registration.owner_pid,
                 registration.async_reference
                     [iokit_abi::display_vsync::async_refcon_index],

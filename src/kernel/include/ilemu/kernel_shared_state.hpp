@@ -712,6 +712,11 @@ struct KernelSharedState {
         // queued Mach-message lifetime or changing any Guest-visible
         // notification state.
         std::uint64_t swap_sequence { };
+        // Guest-visible frame time of the last notification actually queued.
+        // Timer scheduling may skip overdue physical pulses to avoid a busy
+        // catch-up loop, but an animation client must still receive adjacent
+        // frame times when it is slower than the emulated panel.
+        std::optional<std::uint64_t> last_notification_frame_time;
         std::optional<std::uint64_t> next_deadline;
         std::uint64_t sequence { };
         std::uint64_t method_call_count { };
