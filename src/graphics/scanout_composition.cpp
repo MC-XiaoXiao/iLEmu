@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 
 #include "ilemu/gles_abi.hpp"
 
@@ -12,8 +13,70 @@ namespace ilemu {
 namespace {
 
     constexpr std::uint64_t scanout_background_namespace = 2ULL << 32U;
-    constexpr std::uint64_t minimum_scene_height_numerator = 2U;
-    constexpr std::uint64_t minimum_scene_height_denominator = 3U;
+    std::optional<HostRectangle> draw_rectangle(std::uint32_t width,
+        std::uint32_t height, const GlesRasterState& state,
+        std::span<const GlesRasterVertex> vertices)
+    {
+        if (vertices.empty())
+            return std::nullopt;
+
+        auto minimum_x = std::numeric_limits<float>::infinity();
+        auto maximum_x = -std::numeric_limits<float>::infinity();
+        auto minimum_y = std::numeric_limits<float>::infinity();
+        auto maximum_y = -std::numeric_limits<float>::infinity();
+        for (const auto& vertex : vertices) {
+            if (!std::isfinite(vertex.position[3]) ||
+                std::abs(vertex.position[3]) <= 1.0e-6F) {
+                return std::nullopt;
+            }
+            const auto inverse_w = 1.0F / vertex.position[3];
+            const auto window_x =
+                static_cast<float>(state.viewport_x) +
+                (vertex.position[0] * inverse_w * 0.5F + 0.5F) *
+                    static_cast<float>(state.viewport_width);
+            const auto window_y =
+                static_cast<float>(state.viewport_y) +
+                (vertex.position[1] * inverse_w * 0.5F + 0.5F) *
+                    static_cast<float>(state.viewport_height);
+            const auto host_y = state.render_target_inverted_vertical
+                                    ? window_y
+                                    : static_cast<float>(height) - window_y;
+            minimum_x = std::min(minimum_x, window_x);
+            maximum_x = std::max(maximum_x, window_x);
+            minimum_y = std::min(minimum_y, host_y);
+            maximum_y = std::max(maximum_y, host_y);
+        }
+
+        auto left = static_cast<std::int32_t>(std::floor(minimum_x));
+        auto right = static_cast<std::int32_t>(std::ceil(maximum_x));
+        auto top = static_cast<std::int32_t>(std::floor(minimum_y));
+        auto bottom = static_cast<std::int32_t>(std::ceil(maximum_y));
+        left = std::clamp(left, 0, static_cast<std::int32_t>(width));
+        right = std::clamp(right, 0, static_cast<std::int32_t>(width));
+        top = std::clamp(top, 0, static_cast<std::int32_t>(height));
+        bottom = std::clamp(bottom, 0, static_cast<std::int32_t>(height));
+
+        if (state.scissor_enabled) {
+            const auto scissor_left = state.scissor_box[0];
+            const auto scissor_right =
+                state.scissor_box[0] + state.scissor_box[2];
+            const auto scissor_top = state.render_target_inverted_vertical
+                                         ? state.scissor_box[1]
+                                         : static_cast<std::int32_t>(height) -
+                                               state.scissor_box[1] -
+                                               state.scissor_box[3];
+            const auto scissor_bottom = scissor_top + state.scissor_box[3];
+            left = std::max(left, scissor_left);
+            right = std::min(right, scissor_right);
+            top = std::max(top, scissor_top);
+            bottom = std::min(bottom, scissor_bottom);
+        }
+        if (left >= right || top >= bottom)
+            return std::nullopt;
+        return HostRectangle { left, top,
+            static_cast<std::uint32_t>(right - left),
+            static_cast<std::uint32_t>(bottom - top) };
+    }
 
 } // namespace
 
@@ -36,7 +99,8 @@ bool ScanoutComposition::is_screen_surface(
 
 bool ScanoutComposition::copy_surface(
     const std::shared_ptr<HostSurface>& source,
-    const std::shared_ptr<HostSurface>& destination, CommandEncoder& encoder)
+    const std::shared_ptr<HostSurface>& destination, HostRectangle region,
+    CommandEncoder& encoder)
 {
     if (!source || !destination)
         return false;
@@ -48,9 +112,7 @@ bool ScanoutComposition::copy_surface(
         source_descriptor.height != destination_descriptor.height) {
         return false;
     }
-    const auto rectangle = HostRectangle { 0, 0, source_descriptor.width,
-        source_descriptor.height };
-    return encoder.copy(source, destination, rectangle, rectangle) &&
+    return encoder.copy(source, destination, region, region) &&
            encoder.submit(PerfSubmitReason::GlesSync);
 }
 
@@ -88,7 +150,8 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
     GlesRenderTargetKey key, const std::shared_ptr<HostSurface>& surface,
     std::uint32_t screen_width, std::uint32_t screen_height,
     const GlesRasterState& state, const GlesResourceStore& resources,
-    CommandEncoder& encoder, bool& restored)
+    std::span<const GlesRasterVertex> vertices, CommandEncoder& encoder,
+    bool& restored)
 {
     restored = false;
     if (!is_screen_surface(surface, screen_width, screen_height) ||
@@ -96,6 +159,11 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
         state.blend_destination != gles_abi::one_minus_source_alpha) {
         return true;
     }
+
+    const auto rectangle =
+        draw_rectangle(screen_width, screen_height, state, vertices);
+    if (!rectangle || rectangle->width + 1U < screen_width)
+        return true;
 
     const auto descriptor = surface->descriptor();
     const auto covering_scene = std::any_of(state.texture_units.begin(),
@@ -109,11 +177,7 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
             return level != texture->levels.end() &&
                    !level->second.surface_id && level->second.host_surface &&
                    level->second.internal_format == gles_abi::rgba &&
-                   level->second.width >= descriptor.width &&
-                   static_cast<std::uint64_t>(level->second.height) *
-                           minimum_scene_height_denominator >=
-                       static_cast<std::uint64_t>(descriptor.height) *
-                           minimum_scene_height_numerator;
+                   level->second.width >= descriptor.width;
         });
     if (!covering_scene)
         return true;
@@ -121,15 +185,15 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
     const auto frame = frames_.find(key);
     if (frame == frames_.end())
         return true;
-    const auto first_scene_draw = !frame->second.scene_composited;
     frame->second.scene_composited = true;
-    if (!first_scene_draw)
-        return true;
 
     const auto background = backgrounds_.find(process_id);
     if (background == backgrounds_.end() || !background->second.valid)
         return true;
-    if (!copy_surface(background->second.surface, surface, encoder))
+    // Each local scene is self-contained. Adjacent scene slices can overlap
+    // while their separator moves, so the later slice must rebuild its whole
+    // destination instead of inheriting pixels from the earlier slice.
+    if (!copy_surface(background->second.surface, surface, *rectangle, encoder))
         return false;
     restored = true;
     return true;
@@ -191,8 +255,11 @@ bool ScanoutComposition::capture_background(std::uint32_t process_id,
         background.surface = renderer.create_surface(backing_key, descriptor);
         background.valid = false;
     }
-    background.valid = background.surface &&
-                       copy_surface(surface, background.surface, encoder);
+    const auto whole_surface =
+        HostRectangle { 0, 0, descriptor.width, descriptor.height };
+    background.valid =
+        background.surface &&
+        copy_surface(surface, background.surface, whole_surface, encoder);
     return background.valid;
 }
 

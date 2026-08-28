@@ -1058,7 +1058,7 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         command_encoder_ &&
         !scanout_composition_.restore_background(call.process_id(),
             binding->key, binding->host_surface, display_->width(),
-            display_->height(), state, resources_, *command_encoder_,
+            display_->height(), state, resources_, vertices, *command_encoder_,
             restored_scanout_background)) {
         set_gl_error(call, gles_abi::invalid_operation);
         return;

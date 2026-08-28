@@ -28,7 +28,8 @@ public:
         GlesRenderTargetKey key, const std::shared_ptr<HostSurface>& surface,
         std::uint32_t screen_width, std::uint32_t screen_height,
         const GlesRasterState& state, const GlesResourceStore& resources,
-        CommandEncoder& encoder, bool& restored);
+        std::span<const GlesRasterVertex> vertices, CommandEncoder& encoder,
+        bool& restored);
 
     [[nodiscard]] bool is_background_draw(
         const std::shared_ptr<HostSurface>& surface, std::uint32_t screen_width,
@@ -58,7 +59,7 @@ private:
         std::uint32_t screen_height);
     [[nodiscard]] static bool copy_surface(
         const std::shared_ptr<HostSurface>& source,
-        const std::shared_ptr<HostSurface>& destination,
+        const std::shared_ptr<HostSurface>& destination, HostRectangle region,
         CommandEncoder& encoder);
 
     std::map<GlesRenderTargetKey, FrameState> frames_;
