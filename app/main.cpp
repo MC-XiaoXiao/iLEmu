@@ -46,6 +46,7 @@
 #include "ilemu/frame_file_presenter.hpp"
 #include "ilemu/gdb_rsp.hpp"
 #include "ilemu/gles_renderer.hpp"
+#include "ilemu/guest_execution_policy.hpp"
 #include "ilemu/guest_parallelism_policy.hpp"
 #include "ilemu/host_file_watcher.hpp"
 #include "ilemu/host_resource_controller.hpp"
@@ -4203,6 +4204,9 @@ void boot(const std::vector<std::string>& args, Output& output)
                                  xnu792::scheduler::default_preemption_rate,
         guest_ticks_per_second / xnu792::scheduler::scheduler_ticks_per_second,
         guest_processor_count };
+    GuestExecutionPolicy guest_execution_policy { std::chrono::nanoseconds {
+        static_cast<std::int64_t>(
+            iokit_abi::display_vsync::period_absolute_time) } };
     GuestParallelismPolicy guest_parallelism_policy { guest_ticks_per_second };
     std::optional<XnuThreadId> last_serial_thread;
     std::optional<XnuThreadId> scheduler_handoff_thread;
@@ -4339,7 +4343,8 @@ void boot(const std::vector<std::string>& args, Output& output)
                 return allocate_slot(*added);
             });
         runtime.kernel->set_thread_terminate_handler(
-            [runtime_ptr, &scheduler, &guest_parallelism_policy](
+            [runtime_ptr, &scheduler, &guest_execution_policy,
+                &guest_parallelism_policy](
                 std::uint32_t pid, std::size_t processor) {
                 if (pid != runtime_ptr->kernel->process().pid ||
                     processor >= runtime_ptr->allocated.size() ||
@@ -4349,6 +4354,8 @@ void boot(const std::vector<std::string>& args, Output& output)
                     return false;
                 }
                 runtime_ptr->kernel->clear_thread_io_policy(processor);
+                guest_execution_policy.forget(
+                    XnuThreadId { pid, static_cast<std::uint32_t>(processor) });
                 guest_parallelism_policy.forget(
                     XnuThreadId { pid, static_cast<std::uint32_t>(processor) });
                 runtime_ptr->allocated[processor] = false;
@@ -4663,6 +4670,7 @@ void boot(const std::vector<std::string>& args, Output& output)
                             " error=" + error.what());
                 child_runtime->kernel->exit_process(127);
                 scheduler.remove_process(child_pid);
+                guest_execution_policy.forget_process(child_pid);
                 guest_parallelism_policy.forget_process(child_pid);
                 std::fill(child_runtime->allocated.begin(),
                     child_runtime->allocated.end(), false);
@@ -4677,7 +4685,8 @@ void boot(const std::vector<std::string>& args, Output& output)
                         static_cast<std::uint32_t>(thread_slot) });
             });
         runtime.kernel->set_signal_delivery_handler(
-            [&runtime_index, &scheduler, &guest_parallelism_policy](
+            [&runtime_index, &scheduler, &guest_execution_policy,
+                &guest_parallelism_policy](
                 std::uint32_t target_pid, std::uint32_t signal) {
                 auto* target = runtime_index.find(target_pid);
                 if (target == nullptr)
@@ -4685,6 +4694,7 @@ void boot(const std::vector<std::string>& args, Output& output)
                 const auto error = target->kernel->deliver_signal(signal);
                 if (error == 0 && target->kernel->process().exited) {
                     scheduler.remove_process(target_pid);
+                    guest_execution_policy.forget_process(target_pid);
                     guest_parallelism_policy.forget_process(target_pid);
                 }
                 return error;
@@ -6086,12 +6096,13 @@ void boot(const std::vector<std::string>& args, Output& output)
         std::vector<PreparedGuestSlice> prepared_slices;
         prepared_slices.reserve(scheduled_batch.size());
         std::optional<std::uint64_t> display_vsync_tick_budget;
-        if (const auto deadline =
-                initial_runtime->kernel->next_display_vsync_deadline()) {
+        const auto display_vsync_deadline =
+            initial_runtime->kernel->next_display_vsync_deadline();
+        if (display_vsync_deadline) {
             const auto now = initial_runtime->kernel->current_absolute_time();
-            if (*deadline > now) {
+            if (*display_vsync_deadline > now) {
                 display_vsync_tick_budget = std::max<std::uint64_t>(
-                    1, duration_to_guest_ticks(*deadline - now,
+                    1, duration_to_guest_ticks(*display_vsync_deadline - now,
                            darwin::mach::thread_policy::
                                absolute_time_units_per_second,
                            guest_ticks_per_second));
@@ -6100,49 +6111,21 @@ void boot(const std::vector<std::string>& args, Output& output)
         auto batch_ticks = remaining_ticks;
         const auto host_slice_now = std::chrono::steady_clock::now();
         const auto host_control_deadline = next_host_control_deadline();
-        const auto host_slice_budget = [&]() {
-            constexpr auto minimum =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::microseconds { 250 });
-            constexpr auto nominal =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::milliseconds { 2 });
-            constexpr auto maximum =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::milliseconds { 4 });
-            constexpr auto translation_safety =
-                std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::microseconds { 100 });
-            auto budget = nominal;
-            const auto measured_block = std::chrono::nanoseconds {
-                static_cast<std::chrono::nanoseconds::rep>(
-                    performance_counters().jit_block_compile_p99_nanoseconds())
-            };
-            if (measured_block > std::chrono::nanoseconds::zero()) {
-                budget = std::min(maximum,
-                    std::max(budget, measured_block + translation_safety));
-            }
-            const auto limit_budget = [&](std::chrono::nanoseconds until) {
-                if (until <= std::chrono::nanoseconds::zero()) {
-                    budget = minimum;
-                    return;
-                }
-                budget = std::min(budget, std::max(minimum, until / 2));
-            };
-            if (host_control_deadline) {
-                limit_budget(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(
-                        *host_control_deadline - host_slice_now));
-            }
-            if (realtime_pacer) {
-                if (const auto display_deadline = initial_runtime->kernel
-                        ->next_display_vsync_deadline()) {
-                    limit_budget(
-                        realtime_pacer->delay_until(*display_deadline));
-                }
-            }
-            return std::max(minimum, std::min(maximum, budget));
-        }();
+        const auto host_control_delay =
+            host_control_deadline
+                ? std::optional<std::chrono::nanoseconds> { std::chrono::
+                          duration_cast<std::chrono::nanoseconds>(
+                              *host_control_deadline - host_slice_now) }
+                : std::nullopt;
+        const auto display_deadline_delay =
+            realtime_pacer && display_vsync_deadline
+                ? std::optional<std::chrono::nanoseconds> { realtime_pacer
+                          ->delay_until(*display_vsync_deadline) }
+                : std::nullopt;
+        const auto measured_jit_block = std::chrono::nanoseconds {
+            static_cast<std::chrono::nanoseconds::rep>(
+                performance_counters().jit_block_compile_p99_nanoseconds())
+        };
         for (const auto& scheduled_value : scheduled_batch) {
             if (!scheduler.contains(scheduled_value.thread))
                 continue;
@@ -6164,6 +6147,8 @@ void boot(const std::vector<std::string>& args, Output& output)
             if (selected_runtime->kernel->process().exited) {
                 scheduler.remove_process(
                     selected_runtime->kernel->process().pid);
+                guest_execution_policy.forget_process(
+                    selected_runtime->kernel->process().pid);
                 guest_parallelism_policy.forget_process(
                     selected_runtime->kernel->process().pid);
                 continue;
@@ -6172,6 +6157,17 @@ void boot(const std::vector<std::string>& args, Output& output)
                 static_cast<std::size_t>(scheduled_value.thread.thread);
             auto& cpu = selected_runtime->cpus->cpu(index);
             cpu.clear_halt();
+            const auto host_slice_budget = guest_execution_policy.budget(
+                scheduler,
+                GuestExecutionBudgetRequest {
+                    scheduled_value.thread,
+                    measured_jit_block,
+                    host_control_delay,
+                    display_deadline_delay,
+                    display_callback_work_active ||
+                        (input_preferred_thread &&
+                            *input_preferred_thread == scheduled_value.thread),
+                });
             auto slice = bounded_execution ? std::min(batch_ticks,
                                                  scheduled_value.tick_budget)
                                            : scheduled_value.tick_budget;
@@ -6363,6 +6359,8 @@ void boot(const std::vector<std::string>& args, Output& output)
                         XnuSliceCompletion::Terminate,
                         XnuTimeAccounting::Deferred));
                     scheduler.remove_process(runtime.kernel->process().pid);
+                    guest_execution_policy.forget_process(
+                        runtime.kernel->process().pid);
                     guest_parallelism_policy.forget_process(
                         runtime.kernel->process().pid);
                     std::fill(runtime.allocated.begin(),
@@ -6484,12 +6482,15 @@ void boot(const std::vector<std::string>& args, Output& output)
                 display_yielded_thread = scheduled->thread;
             }
             if (!scheduler_completed) {
+                guest_execution_policy.observe(scheduled->thread, completion);
                 static_cast<void>(scheduler.complete_slice(scheduled->thread,
                     result.ticks_consumed, completion,
                     XnuTimeAccounting::Deferred));
                 if (completion == XnuSliceCompletion::Terminate &&
                     runtime.kernel->process().exited) {
                     scheduler.remove_process(runtime.kernel->process().pid);
+                    guest_execution_policy.forget_process(
+                        runtime.kernel->process().pid);
                     guest_parallelism_policy.forget_process(
                         runtime.kernel->process().pid);
                 }

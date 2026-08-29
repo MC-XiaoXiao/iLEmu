@@ -217,6 +217,10 @@ public:
         return processor_run_queues_.size();
     }
     [[nodiscard]] std::size_t runnable_count() const { return runnable_count_; }
+    // Host cooperation may use this read-only count to bound one wall-clock
+    // scheduling round. It does not alter XNU queue order or policy.
+    [[nodiscard]] std::size_t runnable_count_at_or_above_priority(
+        std::int32_t priority) const;
     // Process exit can retire a task's host execution pool while unrelated
     // Guest processes remain runnable. Count only this process's Runnable or
     // Running threads so reclamation never depends on global queue activity.

@@ -1,4 +1,6 @@
 add_library(ilemu_mach STATIC
+    guest_execution_policy.cpp
+    guest_parallelism_policy.cpp
     mach_namespace.cpp
     kernel_mach_ipc.cpp
     xnu_scheduler.cpp)

@@ -129,6 +129,17 @@ std::size_t XnuScheduler::process_runnable_count(std::uint32_t process) const
     return count;
 }
 
+std::size_t XnuScheduler::runnable_count_at_or_above_priority(
+    std::int32_t priority) const
+{
+    const auto minimum = clamp_priority(priority);
+    return static_cast<std::size_t>(std::count_if(
+        threads_.begin(), threads_.end(), [minimum](const auto& entry) {
+            const auto& record = entry.second;
+            return record.queued && record.info.scheduled_priority >= minimum;
+        }));
+}
+
 std::optional<XnuThreadId> XnuScheduler::oldest_runnable_thread(
     std::uint32_t process, std::optional<XnuThreadId> excluded) const
 {
