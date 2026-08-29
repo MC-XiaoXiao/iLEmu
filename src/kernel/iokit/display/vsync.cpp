@@ -563,6 +563,14 @@ void deliver_due_vsync_locked(KernelSharedState& state, std::uint64_t deadline)
                 registration.sequence);
             performance_counters().record_display_vsync_queued();
         } else {
+            // A completed callback can race with retirement of its queued
+            // message. In that case this pulse was not hidden by an active
+            // animation callback, so keep the continuous sample baseline on
+            // the physical panel phase. A genuinely pending callback retains
+            // its last delivered sample and therefore cannot skip animation
+            // states when the host is late.
+            if (registration.callback_sequence >= registration.sequence)
+                registration.last_notification_frame_time = indexed_deadline;
             performance_counters().record_display_vsync_coalesced();
         }
         const auto period = iokit_abi::display_vsync::period_absolute_time;
