@@ -437,6 +437,42 @@ namespace {
         std::filesystem::rename(temporary, path);
     }
 
+    bool ensure_wifi_capability_preferences(
+        const RootfsPathResolver& resolver)
+    {
+        const auto path = resolver.resolve(
+            "/Library/Preferences/SystemConfiguration/com.apple.wifi.plist");
+        const auto bytes = read_file(path);
+        plist_t parsed = nullptr;
+        plist_format_t format = PLIST_FORMAT_XML;
+        if (!bytes.empty()) {
+            if (bytes.size() > std::numeric_limits<std::uint32_t>::max() ||
+                plist_from_memory(bytes.data(),
+                    static_cast<std::uint32_t>(bytes.size()), &parsed,
+                    &format) != PLIST_ERR_SUCCESS ||
+                parsed == nullptr || plist_get_node_type(parsed) != PLIST_DICT) {
+                if (parsed != nullptr)
+                    plist_free(parsed);
+                throw std::runtime_error {
+                    "could not parse Wi-Fi preferences: " + path.string()
+                };
+            }
+        } else {
+            parsed = plist_new_dict();
+            format = PLIST_FORMAT_XML;
+        }
+        PlistOwner root { parsed };
+
+        // WiFiManager on legacy firmware treats a missing capability as an
+        // uninitialized serialized-data response. Add only the default for a
+        // missing key; an explicit guest value remains guest-owned.
+        if (plist_dict_get_item(root.get(), "WAPIEnabled") != nullptr)
+            return false;
+        plist_dict_set_item(root.get(), "WAPIEnabled", plist_new_bool(0));
+        write_plist_atomically(path, root.get(), format);
+        return true;
+    }
+
 #endif
 
 } // namespace
@@ -453,6 +489,9 @@ NetworkPreferencesResult ensure_network_preferences(
 #if defined(ILEMU_HAS_LIBPLIST)
     result.supported = true;
     result.preferred_wifi_networks = preferred_wifi_networks(resolver);
+    bool wifi_capability_changed = false;
+    if (airport_configuration)
+        wifi_capability_changed = ensure_wifi_capability_preferences(resolver);
     auto bytes = read_file(result.path);
     plist_t parsed = nullptr;
     plist_format_t format = PLIST_FORMAT_XML;
@@ -567,7 +606,7 @@ NetworkPreferencesResult ensure_network_preferences(
         ensure_string(airport_preferences, "JoinMode", "Automatic", changed);
     }
 
-    result.changed = changed;
+    result.changed = changed || wifi_capability_changed;
     if (changed)
         write_plist_atomically(result.path, root.get(), format);
 #else
