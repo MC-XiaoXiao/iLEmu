@@ -210,6 +210,13 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
     if (frame == frames_.end())
         return true;
     frame->second.scene_composited = true;
+    // A full-height local scene contains the transition's complete composition.
+    // Injecting an older scanout background into it reintroduces pixels outside
+    // the scene's own geometry; background reconstruction is for partial scene
+    // slices only.
+    if (scene_level->height >= descriptor.height)
+        return true;
+
     const auto background = backgrounds_.find(process_id);
     if (background == backgrounds_.end() || !background->second.valid)
         return true;
