@@ -415,7 +415,9 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
         }
         const auto source_rectangle = exact_rectangle(state.source);
         const auto destination_rectangle = exact_rectangle(state.destination);
-        if (!backing || backing->pixel_format != surface_pixel_format_bgra ||
+        if (!backing ||
+            (backing->pixel_format != surface_pixel_format_bgra &&
+                !surface_is_packed_555(backing->pixel_format)) ||
             !source || !source_rectangle || !destination_rectangle ||
             static_cast<std::uint32_t>(source_rectangle->x) >
                 backing->width -

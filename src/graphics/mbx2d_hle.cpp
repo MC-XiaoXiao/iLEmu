@@ -661,11 +661,12 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_region(
     }
     if (!surface.backing ||
         (surface.backing->pixel_format != surface_pixel_format_bgra &&
-            !surface_is_rgb555(surface.backing->pixel_format))) {
+            !surface_is_packed_555(surface.backing->pixel_format))) {
         return std::nullopt;
     }
     if (surface.host_surface &&
-        surface.backing->pixel_format == surface_pixel_format_bgra &&
+        (surface.backing->pixel_format == surface_pixel_format_bgra ||
+            surface_is_packed_555(surface.backing->pixel_format)) &&
         surface.host_surface->gpu_generation() >
             surface.host_surface->cpu_generation() &&
         !surface_store_->synchronize_for_cpu(
@@ -674,8 +675,7 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_region(
     }
     const auto& backing = *surface.backing;
     const auto backing_bytes_per_pixel =
-        backing.pixel_format == surface_pixel_format_bgra ? bytes_per_pixel
-                                                          : 2U;
+        surface_bytes_per_pixel(backing.pixel_format);
     if (backing.bytes_per_row < surface.width * backing_bytes_per_pixel)
         return std::nullopt;
     const auto final_byte =
@@ -692,17 +692,15 @@ std::optional<std::vector<std::uint32_t>> Mbx2dHle::read_region(
             address, static_cast<std::size_t>(width) * backing_bytes_per_pixel);
         if (!bytes)
             return std::nullopt;
-        if (surface_is_rgb555(backing.pixel_format)) {
+        if (surface_is_packed_555(backing.pixel_format)) {
             for (std::int64_t column = 0; column < width; ++column) {
                 const auto byte = static_cast<std::size_t>(column) * 2U;
                 const auto packed =
                     std::to_integer<std::uint32_t>((*bytes)[byte]) |
                     (std::to_integer<std::uint32_t>((*bytes)[byte + 1U]) << 8U);
-                const auto red = ((packed >> 10U) & 0x1fU) * 255U / 31U;
-                const auto green = ((packed >> 5U) & 0x1fU) * 255U / 31U;
-                const auto blue = (packed & 0x1fU) * 255U / 31U;
                 pixels[static_cast<std::size_t>(row * width + column)] =
-                    0xff000000U | (red << 16U) | (green << 8U) | blue;
+                    surface_decode_packed_555(backing.pixel_format,
+                        static_cast<std::uint16_t>(packed));
             }
             continue;
         }
@@ -751,7 +749,7 @@ bool Mbx2dHle::write_region(const ResolvedSurface& surface, std::int64_t x,
     }
     if (!surface.backing ||
         (surface.backing->pixel_format != surface_pixel_format_bgra &&
-            !surface_is_rgb555(surface.backing->pixel_format))) {
+            !surface_is_packed_555(surface.backing->pixel_format))) {
         return false;
     }
     const auto& backing = *surface.backing;
@@ -766,8 +764,7 @@ bool Mbx2dHle::write_region(const ResolvedSurface& surface, std::int64_t x,
         return false;
     }
     const auto backing_bytes_per_pixel =
-        backing.pixel_format == surface_pixel_format_bgra ? bytes_per_pixel
-                                                          : 2U;
+        surface_bytes_per_pixel(backing.pixel_format);
     if (backing.bytes_per_row < surface.width * backing_bytes_per_pixel)
         return false;
     const auto final_byte =
@@ -778,14 +775,12 @@ bool Mbx2dHle::write_region(const ResolvedSurface& surface, std::int64_t x,
     std::vector<std::byte> encoded(
         static_cast<std::size_t>(width) * backing_bytes_per_pixel);
     for (std::int64_t row = 0; row < height; ++row) {
-        if (surface_is_rgb555(backing.pixel_format)) {
+        if (surface_is_packed_555(backing.pixel_format)) {
             for (std::int64_t column = 0; column < width; ++column) {
                 const auto pixel =
                     pixels[static_cast<std::size_t>(row * width + column)];
-                const auto red = ((pixel >> 16U) & 0xffU) * 31U / 255U;
-                const auto green = ((pixel >> 8U) & 0xffU) * 31U / 255U;
-                const auto blue = (pixel & 0xffU) * 31U / 255U;
-                const auto packed = (red << 10U) | (green << 5U) | blue;
+                const auto packed =
+                    surface_encode_packed_555(backing.pixel_format, pixel);
                 const auto byte = static_cast<std::size_t>(column) * 2U;
                 encoded[byte] = static_cast<std::byte>(packed & 0xffU);
                 encoded[byte + 1U] = static_cast<std::byte>(packed >> 8U);
@@ -799,7 +794,7 @@ bool Mbx2dHle::write_region(const ResolvedSurface& surface, std::int64_t x,
                 const auto pixel =
                     pixels[static_cast<std::size_t>(row * width + column)];
                 const auto byte =
-                    static_cast<std::size_t>(column) * bytes_per_pixel;
+                    static_cast<std::size_t>(column) * backing_bytes_per_pixel;
                 encoded[byte] = static_cast<std::byte>(pixel & 0xffU);
                 encoded[byte + 1U] =
                     static_cast<std::byte>((pixel >> 8U) & 0xffU);
@@ -822,7 +817,8 @@ bool Mbx2dHle::write_region(const ResolvedSurface& surface, std::int64_t x,
             client->second.client_host_source_dirty = true;
     }
     if (surface.host_surface &&
-        backing.pixel_format == surface_pixel_format_bgra) {
+        (backing.pixel_format == surface_pixel_format_bgra ||
+            surface_is_packed_555(backing.pixel_format))) {
         surface.host_surface->replace_cpu_region(
             HostRectangle { static_cast<std::int32_t>(x),
                 static_cast<std::int32_t>(y), static_cast<std::uint32_t>(width),

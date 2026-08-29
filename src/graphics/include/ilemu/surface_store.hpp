@@ -58,6 +58,41 @@ constexpr bool surface_is_rgb555(std::uint32_t pixel_format)
            pixel_format == surface_pixel_format_rgb555_le;
 }
 
+constexpr bool surface_is_packed_555(std::uint32_t pixel_format)
+{
+    return surface_is_rgb555(pixel_format) ||
+           pixel_format == surface_pixel_format_argb1555;
+}
+
+constexpr std::uint32_t surface_decode_packed_555(
+    std::uint32_t pixel_format, std::uint16_t packed)
+{
+    const auto red =
+        (static_cast<std::uint32_t>(packed >> 10U) & 0x1fU) * 255U / 31U;
+    const auto green =
+        (static_cast<std::uint32_t>(packed >> 5U) & 0x1fU) * 255U / 31U;
+    const auto blue = (static_cast<std::uint32_t>(packed) & 0x1fU) * 255U / 31U;
+    const auto alpha =
+        pixel_format == surface_pixel_format_argb1555 && (packed & 0x8000U) == 0
+            ? 0U
+            : 0xffU;
+    return (alpha << 24U) | (red << 16U) | (green << 8U) | blue;
+}
+
+constexpr std::uint16_t surface_encode_packed_555(
+    std::uint32_t pixel_format, std::uint32_t argb)
+{
+    const auto red = ((argb >> 16U) & 0xffU) * 31U / 255U;
+    const auto green = ((argb >> 8U) & 0xffU) * 31U / 255U;
+    const auto blue = (argb & 0xffU) * 31U / 255U;
+    const auto alpha =
+        pixel_format == surface_pixel_format_argb1555 && (argb >> 24U) >= 0x80U
+            ? 0x8000U
+            : 0U;
+    return static_cast<std::uint16_t>(
+        alpha | (red << 10U) | (green << 5U) | blue);
+}
+
 constexpr std::uint32_t surface_bytes_per_pixel(std::uint32_t pixel_format)
 {
     if (pixel_format == surface_pixel_format_bgra)

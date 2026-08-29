@@ -803,8 +803,7 @@ std::uint32_t GlesResourceStore::import_surface_texture(AddressSpace& memory,
     const auto backing = surfaces.find(surface_id);
     if (!backing)
         return gles_abi::invalid_value;
-    if (backing->pixel_format != surface_pixel_format_bgra &&
-        !surface_is_yuv422(backing->pixel_format)) {
+    if (surface_bytes_per_pixel(backing->pixel_format) == 0U) {
         return gles_abi::invalid_enum;
     }
     const auto host_surface = surfaces.host_surface(surface_id);
@@ -886,8 +885,7 @@ std::uint32_t GlesResourceStore::refresh_surface_texture(
     }
     auto decoded = decode_surface(memory, surfaces, *backing);
     if (!decoded) {
-        return (backing->pixel_format == surface_pixel_format_bgra ||
-                   surface_is_yuv422(backing->pixel_format))
+        return surface_bytes_per_pixel(backing->pixel_format) != 0U
                    ? gles_abi::invalid_value
                    : gles_abi::invalid_enum;
     }
