@@ -2513,7 +2513,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             destination.scales_rectangle = { environment.rgb_scale,
                 environment.alpha_scale, source.rectangle ? 1.0F : 0.0F, 0.0F };
         }
-        result.target_flags[0] = state.render_target_premultiplied ? 1 : 0;
+        result.target_flags[0] =
+            state.render_target_premultiplied && !state.blend_enabled ? 1 : 0;
         return result;
     }
 

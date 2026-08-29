@@ -430,7 +430,10 @@ namespace {
                     pixel = apply_texture_environment(
                         unit.environment, sampled, primary, pixel);
                 }
-                if (state.render_target_premultiplied)
+                // Blending already applies the source representation selected
+                // by its factors. Only a direct replacement needs conversion
+                // to the premultiplied render-target representation.
+                if (state.render_target_premultiplied && !state.blend_enabled)
                     pixel = premultiply_argb(pixel);
                 const auto offset = static_cast<std::size_t>(y) * frame.width +
                                     static_cast<std::size_t>(x);
