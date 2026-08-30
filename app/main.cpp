@@ -2348,7 +2348,15 @@ void boot(const std::vector<std::string>& args, Output& output)
         initial_arguments = { binary };
     }
     if (const auto display_size = option(args, "--display-size")) {
+        const auto profile_display = device.display;
         device.display = parse_display_geometry(*display_size);
+        // Preserve the explicit Retina split when a native framebuffer size is
+        // overridden. Legacy profiles have one geometry, so their diagnostic
+        // display-size option keeps the historical window/input behavior.
+        if (device.user_interface.width == profile_display.width &&
+            device.user_interface.height == profile_display.height) {
+            device.user_interface = device.display;
+        }
     }
     output.line("[device] product=" + std::string { device.product_type } +
                 " display=" + std::to_string(device.display.width) + "x" +

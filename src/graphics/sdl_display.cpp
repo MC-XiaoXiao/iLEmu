@@ -72,6 +72,8 @@ struct SdlDisplay::Impl {
     Impl(DisplayGeometry initial_geometry, DisplayGeometry input_geometry)
         : geometry { initial_geometry }
         , guest_geometry { initial_geometry }
+        , input_geometry { input_geometry }
+        , host_geometry { input_geometry }
         , input { input_geometry }
     {
         input.set_display_geometry(geometry);
@@ -87,6 +89,11 @@ struct SdlDisplay::Impl {
 
     DisplayGeometry geometry;
     DisplayGeometry guest_geometry;
+    // The SDL toplevel follows the logical UI size. The guest scanout and
+    // texture remain native-sized, allowing a Retina panel to render at 2x
+    // while presenting at its logical half-size.
+    DisplayGeometry input_geometry;
+    DisplayGeometry host_geometry;
     DisplayOrientation orientation { DisplayOrientation::Portrait };
 #if defined(ILEMU_HAS_SDL2)
     SDL_Window* window { };
@@ -109,8 +116,8 @@ struct SdlDisplay::Impl {
         if (window != nullptr)
             SDL_DestroyWindow(window);
         window = SDL_CreateWindow("iLEmu", SDL_WINDOWPOS_CENTERED,
-            SDL_WINDOWPOS_CENTERED, static_cast<int>(geometry.width),
-            static_cast<int>(geometry.height), SDL_WINDOW_RESIZABLE);
+            SDL_WINDOWPOS_CENTERED, static_cast<int>(host_geometry.width),
+            static_cast<int>(host_geometry.height), SDL_WINDOW_RESIZABLE);
         vulkan_window = false;
     }
 
@@ -172,8 +179,8 @@ struct SdlDisplay::Impl {
             (vulkan_window ? static_cast<Uint32>(SDL_WINDOW_VULKAN) : 0U) |
             (old_flags & SDL_WINDOW_ALLOW_HIGHDPI);
         auto* replacement = SDL_CreateWindow("iLEmu", SDL_WINDOWPOS_CENTERED,
-            SDL_WINDOWPOS_CENTERED, static_cast<int>(geometry.width),
-            static_cast<int>(geometry.height), new_flags);
+            SDL_WINDOWPOS_CENTERED, static_cast<int>(host_geometry.width),
+            static_cast<int>(host_geometry.height), new_flags);
         if (replacement == nullptr)
             return false;
 
@@ -400,6 +407,10 @@ struct SdlDisplay::Impl {
                        ? DisplayGeometry { guest_geometry.height,
                              guest_geometry.width }
                        : guest_geometry;
+        host_geometry = is_landscape(orientation)
+                            ? DisplayGeometry { input_geometry.height,
+                                  input_geometry.width }
+                            : input_geometry;
         input.set_display_geometry(geometry);
         input.set_orientation(orientation);
 #if defined(ILEMU_HAS_SDL2)
@@ -418,8 +429,9 @@ struct SdlDisplay::Impl {
             } else {
                 {
                     std::lock_guard lock { sdl_mutex };
-                    SDL_SetWindowSize(window, static_cast<int>(geometry.width),
-                        static_cast<int>(geometry.height));
+                    SDL_SetWindowSize(window,
+                        static_cast<int>(host_geometry.width),
+                        static_cast<int>(host_geometry.height));
                 }
                 if (native_presentation)
                     start_native_presenter();
@@ -1048,16 +1060,16 @@ SdlDisplay::SdlDisplay(
     if (SDL_Vulkan_LoadLibrary(nullptr) == 0) {
         impl_->vulkan_library_loaded = true;
         impl_->window = SDL_CreateWindow("iLEmu", SDL_WINDOWPOS_CENTERED,
-            SDL_WINDOWPOS_CENTERED, static_cast<int>(impl_->geometry.width),
-            static_cast<int>(impl_->geometry.height),
+            SDL_WINDOWPOS_CENTERED, static_cast<int>(impl_->host_geometry.width),
+            static_cast<int>(impl_->host_geometry.height),
             SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN);
         impl_->vulkan_window = impl_->window != nullptr;
     }
 #endif
     if (impl_->window == nullptr) {
         impl_->window = SDL_CreateWindow("iLEmu", SDL_WINDOWPOS_CENTERED,
-            SDL_WINDOWPOS_CENTERED, static_cast<int>(impl_->geometry.width),
-            static_cast<int>(impl_->geometry.height), SDL_WINDOW_RESIZABLE);
+            SDL_WINDOWPOS_CENTERED, static_cast<int>(impl_->host_geometry.width),
+            static_cast<int>(impl_->host_geometry.height), SDL_WINDOW_RESIZABLE);
         impl_->vulkan_window = false;
     }
     if (impl_->window == nullptr) {
