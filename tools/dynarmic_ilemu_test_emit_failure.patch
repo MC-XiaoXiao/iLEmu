@@ -23,8 +23,8 @@ index b615c06..377ec09 100644
 -#include <cstring>
 @@ -18,0 +17,5 @@
 +#if defined(DYNARMIC_ENABLE_ILEMU_TEST_EMIT_FAILURE)
-+#include <cstdlib>
-+#include <cstring>
++#    include <cstdlib>
++#    include <cstring>
 +#endif
 +
 @@ -125,0 +129 @@ static A32::UserConfig WithFastDispatchTable(A32::UserConfig conf, void* storage
