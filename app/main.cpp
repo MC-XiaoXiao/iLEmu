@@ -46,13 +46,18 @@
 #include "ilemu/frame_file_presenter.hpp"
 #include "ilemu/gdb_rsp.hpp"
 #include "ilemu/gles_renderer.hpp"
+#include "ilemu/guest_dispatch_policy.hpp"
+#include "ilemu/guest_execution_coordinator.hpp"
 #include "ilemu/guest_execution_policy.hpp"
 #include "ilemu/guest_parallelism_policy.hpp"
 #include "ilemu/host_file_watcher.hpp"
 #include "ilemu/host_resource_controller.hpp"
 #include "ilemu/iokit_abi.hpp"
 #include "ilemu/jit_artifact.hpp"
+#include "ilemu/jit_code_cache_governor.hpp"
 #include "ilemu/jit_translation_profile.hpp"
+#include "ilemu/jit_work_signal.hpp"
+#include "ilemu/jit_work_scheduler.hpp"
 #include "ilemu/kernel.hpp"
 #include "ilemu/live_button_scheduler.hpp"
 #include "ilemu/live_control.hpp"
@@ -87,10 +92,6 @@ constexpr std::size_t maximum_shared_monitor_slots =
     maximum_virtual_processors * maximum_shared_monitor_processes;
 constexpr std::size_t maximum_background_workers = 8;
 constexpr std::size_t bytes_per_mebibyte = 1024U * 1024U;
-constexpr std::size_t jit_minimum_shared_slab_bytes = 8U * bytes_per_mebibyte;
-constexpr std::size_t jit_emergency_budget_bytes = 256U * bytes_per_mebibyte;
-constexpr std::size_t jit_maximum_adaptive_budget_bytes =
-    2048U * bytes_per_mebibyte;
 constexpr std::size_t arm_thumb_breakpoint_size = 2;
 constexpr std::size_t arm_breakpoint_size = 4;
 
@@ -442,303 +443,6 @@ struct PendingExec {
     std::vector<std::string> environment;
 };
 
-class JitCodeCacheGovernor;
-
-enum class JitCodeCacheClass : std::uint8_t {
-    BootCritical,
-    Foreground,
-    Background,
-};
-
-class JitCodeCacheReservation {
-public:
-    JitCodeCacheReservation(JitCodeCacheGovernor& governor,
-        std::size_t shared_slab_bytes, std::size_t reserved_bytes,
-        std::size_t maximum_bytes, JitCodeCacheClass cache_class,
-        bool emergency)
-        : governor_ { &governor }
-        , shared_slab_bytes_ { shared_slab_bytes }
-        , reserved_bytes_ { reserved_bytes }
-        , maximum_bytes_ { maximum_bytes }
-        , cache_class_ { cache_class }
-        , emergency_ { emergency }
-    {
-    }
-    ~JitCodeCacheReservation();
-
-    JitCodeCacheReservation(const JitCodeCacheReservation&) = delete;
-    JitCodeCacheReservation& operator=(const JitCodeCacheReservation&) = delete;
-
-    [[nodiscard]] std::size_t shared_slab_bytes() const noexcept
-    {
-        return shared_slab_bytes_;
-    }
-
-private:
-    friend class JitCodeCacheGovernor;
-
-    JitCodeCacheGovernor* governor_ { };
-    std::size_t shared_slab_bytes_ { };
-    std::size_t reserved_bytes_ { };
-    std::size_t maximum_bytes_ { };
-    JitCodeCacheClass cache_class_ { JitCodeCacheClass::Background };
-    std::uint64_t actual_bytes_ { };
-    bool emergency_ { };
-};
-
-class JitCodeCacheGovernor {
-public:
-    JitCodeCacheGovernor(std::size_t shared_slab_cap, std::size_t total_budget)
-        : shared_slab_cap_ { shared_slab_cap }
-        , total_budget_ { std::max({ total_budget, emergency_budget_bytes,
-              minimum_shared_slab_bytes }) }
-        , normal_budget_ { total_budget_ - emergency_budget_bytes }
-    {
-    }
-
-    JitCodeCacheGovernor(const JitCodeCacheGovernor&) = delete;
-    JitCodeCacheGovernor& operator=(const JitCodeCacheGovernor&) = delete;
-
-    [[nodiscard]] std::shared_ptr<JitCodeCacheReservation> reserve(
-        std::size_t processor_count,
-        JitCodeCacheClass cache_class = JitCodeCacheClass::Background)
-    {
-        if (processor_count == 0U)
-            return { };
-        std::lock_guard lock { mutex_ };
-        const auto class_cap = shared_slab_cap_for_locked(cache_class);
-        const auto normal_available =
-            normal_reserved_bytes_ < normal_budget_
-                ? normal_budget_ - normal_reserved_bytes_
-                : 0U;
-        if (class_cap >= minimum_shared_slab_bytes &&
-            normal_available >= minimum_shared_slab_bytes) {
-            const auto shared_slab = std::min(class_cap, normal_available);
-            const auto reserved = shared_slab;
-            auto reservation = std::make_shared<JitCodeCacheReservation>(
-                *this, shared_slab, reserved, class_cap, cache_class, false);
-            normal_reserved_bytes_ += reserved;
-            return reservation;
-        }
-        // Keep a bounded minimum-cache pool so normal firmware process fan-out
-        // does not turn a cache admission failure into an unbounded overcommit.
-        // Once this pool is exhausted, the caller receives the kernel's EAGAIN
-        // process-creation result.
-        const auto emergency_available =
-            emergency_reserved_bytes_ < emergency_budget_bytes
-                ? emergency_budget_bytes - emergency_reserved_bytes_
-                : 0U;
-        if (class_cap < minimum_shared_slab_bytes ||
-            emergency_available < minimum_shared_slab_bytes) {
-            return { };
-        }
-        const auto shared_slab = minimum_shared_slab_bytes;
-        const auto reserved = shared_slab;
-        auto reservation = std::make_shared<JitCodeCacheReservation>(
-            *this, shared_slab, reserved, class_cap, cache_class, true);
-        emergency_reserved_bytes_ += reserved;
-        return reservation;
-    }
-
-    [[nodiscard]] std::size_t shared_slab_cap_for(
-        JitCodeCacheClass cache_class) const noexcept
-    {
-        std::lock_guard lock { mutex_ };
-        return shared_slab_cap_for_locked(cache_class);
-    }
-
-    void set_pressure_limited(bool limited) noexcept
-    {
-        std::lock_guard lock { mutex_ };
-        pressure_limited_ = limited;
-    }
-
-    [[nodiscard]] bool pressure_limited() const noexcept
-    {
-        std::lock_guard lock { mutex_ };
-        return pressure_limited_;
-    }
-
-private:
-    [[nodiscard]] std::size_t shared_slab_cap_for_locked(
-        JitCodeCacheClass cache_class) const noexcept
-    {
-        std::size_t cap { };
-        switch (cache_class) {
-        case JitCodeCacheClass::BootCritical:
-            cap = shared_slab_cap_;
-            break;
-        case JitCodeCacheClass::Foreground:
-            cap =
-                std::max(minimum_shared_slab_bytes, shared_slab_cap_ * 3U / 4U);
-            break;
-        case JitCodeCacheClass::Background:
-            cap = std::max(minimum_shared_slab_bytes, shared_slab_cap_ / 2U);
-            break;
-        default:
-            cap = minimum_shared_slab_bytes;
-            break;
-        }
-        if (pressure_limited_ &&
-            cache_class != JitCodeCacheClass::BootCritical) {
-            cap = std::max(minimum_shared_slab_bytes, cap / 2U);
-        }
-        return cap;
-    }
-
-public:
-    [[nodiscard]] std::optional<std::size_t> reclassify(
-        JitCodeCacheReservation& reservation, JitCodeCacheClass cache_class,
-        bool slab_can_resize) noexcept
-    {
-        std::lock_guard lock { mutex_ };
-        const auto class_cap = shared_slab_cap_for_locked(cache_class);
-        const auto requested_maximum = class_cap;
-        if (!slab_can_resize) {
-            // A live Dynarmic slab cannot be shrunk or grown by changing this
-            // bookkeeping object.  Retain its full existing allowance so
-            // another runtime cannot consume bytes that the live mapping may
-            // still use.
-            reservation.cache_class_ = cache_class;
-            reservation.maximum_bytes_ = reservation.shared_slab_bytes_;
-            return reservation.shared_slab_bytes_;
-        }
-        if (reservation.emergency_) {
-            reservation.cache_class_ = cache_class;
-            reservation.maximum_bytes_ = requested_maximum;
-            return reservation.shared_slab_bytes_;
-        }
-
-        const auto current_maximum = reservation.shared_slab_bytes_;
-        const auto actual_floor =
-            reservation.actual_bytes_ > std::numeric_limits<std::size_t>::max()
-                ? std::numeric_limits<std::size_t>::max()
-                : static_cast<std::size_t>(reservation.actual_bytes_);
-        const auto effective_maximum =
-            std::max(requested_maximum, actual_floor);
-        if (effective_maximum < current_maximum) {
-            const auto release_bytes = current_maximum - effective_maximum;
-            const auto released =
-                std::min(release_bytes, reservation.reserved_bytes_);
-            reservation.reserved_bytes_ -= released;
-            normal_reserved_bytes_ = released > normal_reserved_bytes_
-                                         ? 0U
-                                         : normal_reserved_bytes_ - released;
-            reservation.shared_slab_bytes_ =
-                std::max(minimum_shared_slab_bytes, effective_maximum);
-        } else if (effective_maximum > current_maximum) {
-            const auto growth = effective_maximum - current_maximum;
-            const auto available = normal_reserved_bytes_ < normal_budget_
-                                       ? normal_budget_ - normal_reserved_bytes_
-                                       : 0U;
-            if (growth <= available) {
-                reservation.reserved_bytes_ += growth;
-                normal_reserved_bytes_ += growth;
-                reservation.shared_slab_bytes_ =
-                    std::max(class_cap, effective_maximum);
-            }
-        }
-        reservation.cache_class_ = cache_class;
-        reservation.maximum_bytes_ = reservation.shared_slab_bytes_;
-        return reservation.shared_slab_bytes_;
-    }
-
-    // A reservation is a bounded growth allowance, not a claim that every byte
-    // has already been emitted. Reconcile it with Dynarmic's measured
-    // CodeCacheUsed and current host pressure while the guest is idle.
-    [[nodiscard]] bool refresh_actual(JitCodeCacheReservation& reservation,
-        std::uint64_t actual_bytes,
-        const HostMemoryBudgetSnapshot& memory) noexcept
-    {
-        std::lock_guard lock { mutex_ };
-        static_cast<void>(memory);
-        const auto previous_actual = reservation.actual_bytes_;
-        reservation.actual_bytes_ = actual_bytes;
-        // The slab was created with shared_slab_bytes_ as its maximum.  Keep
-        // that reservation until the Runtime is destroyed; releasing an
-        // apparent unused tail here would let another runtime reserve memory
-        // that this still-live mapping can legally grow into.
-        if (actual_bytes > previous_actual) {
-            const auto delta = actual_bytes - previous_actual;
-            actual_bytes_total_ =
-                delta > std::numeric_limits<std::size_t>::max() -
-                            actual_bytes_total_
-                    ? std::numeric_limits<std::size_t>::max()
-                    : actual_bytes_total_ + static_cast<std::size_t>(delta);
-        } else {
-            const auto delta = previous_actual - actual_bytes;
-            actual_bytes_total_ =
-                delta > actual_bytes_total_ ? 0U : actual_bytes_total_ - delta;
-        }
-        return previous_actual != actual_bytes;
-    }
-
-    void release(std::size_t reserved_bytes, bool emergency,
-        std::uint64_t actual_bytes) noexcept
-    {
-        std::lock_guard lock { mutex_ };
-        auto& reserved =
-            emergency ? emergency_reserved_bytes_ : normal_reserved_bytes_;
-        reserved = reserved_bytes > reserved ? 0U : reserved - reserved_bytes;
-        actual_bytes_total_ =
-            actual_bytes > actual_bytes_total_
-                ? 0U
-                : actual_bytes_total_ - static_cast<std::size_t>(actual_bytes);
-    }
-
-    [[nodiscard]] std::size_t total_budget() const noexcept
-    {
-        return total_budget_;
-    }
-
-    [[nodiscard]] std::size_t total_reserved() const noexcept
-    {
-        std::lock_guard lock { mutex_ };
-        return normal_reserved_bytes_ + emergency_reserved_bytes_;
-    }
-
-    [[nodiscard]] std::size_t total_actual() const noexcept
-    {
-        std::lock_guard lock { mutex_ };
-        return actual_bytes_total_;
-    }
-
-    [[nodiscard]] std::size_t shared_slab_cap(
-        JitCodeCacheClass cache_class) const noexcept
-    {
-        return shared_slab_cap_for(cache_class);
-    }
-
-    [[nodiscard]] std::size_t emergency_budget() const noexcept
-    {
-        return emergency_budget_bytes;
-    }
-
-private:
-    static constexpr std::size_t minimum_shared_slab_bytes =
-        jit_minimum_shared_slab_bytes;
-    static constexpr std::size_t emergency_budget_bytes =
-        jit_emergency_budget_bytes;
-
-    friend class JitCodeCacheReservation;
-
-    const std::size_t shared_slab_cap_;
-    const std::size_t total_budget_;
-    const std::size_t normal_budget_;
-    mutable std::mutex mutex_;
-    std::size_t normal_reserved_bytes_ { };
-    std::size_t emergency_reserved_bytes_ { };
-    std::size_t actual_bytes_total_ { };
-    bool pressure_limited_ { };
-};
-
-JitCodeCacheReservation::~JitCodeCacheReservation()
-{
-    if (governor_ != nullptr) {
-        governor_->release(reserved_bytes_, emergency_, actual_bytes_);
-    }
-}
-
 struct RuntimeWorkEpoch {
     [[nodiscard]] std::uint64_t current() const noexcept
     {
@@ -816,6 +520,8 @@ struct RuntimeJitMemoryAggregate {
         add_saturating(target.queue_block_bytes, stats.queue_block_bytes);
         add_saturating(
             target.profile_recorder_bytes, stats.profile_recorder_bytes);
+        add_saturating(target.native_profile_prediction_bytes,
+            stats.native_profile_prediction_bytes);
         add_saturating(target.native_preimport_tracker_bytes,
             stats.native_preimport_tracker_bytes);
         for (std::size_t index = 0; index < jit_precompile_source_count;
@@ -863,6 +569,8 @@ struct RuntimeJitMemoryAggregate {
         subtract(target.queue_node_bytes, stats.queue_node_bytes);
         subtract(target.queue_block_bytes, stats.queue_block_bytes);
         subtract(target.profile_recorder_bytes, stats.profile_recorder_bytes);
+        subtract(target.native_profile_prediction_bytes,
+            stats.native_profile_prediction_bytes);
         subtract(target.native_preimport_tracker_bytes,
             stats.native_preimport_tracker_bytes);
         for (std::size_t index = 0; index < jit_precompile_source_count;
@@ -903,6 +611,8 @@ struct RuntimeJitMemoryAggregate {
         add_saturating(target.queue_block_bytes, stats.queue_block_bytes_peak);
         add_saturating(
             target.profile_recorder_bytes, stats.profile_recorder_bytes_peak);
+        add_saturating(target.native_profile_prediction_bytes,
+            stats.native_profile_prediction_bytes_peak);
         add_saturating(target.native_preimport_tracker_bytes,
             stats.native_preimport_tracker_bytes_peak);
         for (std::size_t index = 0; index < jit_precompile_source_count;
@@ -958,6 +668,9 @@ struct RuntimeJitMemoryAggregate {
             std::max(target.queue_block_bytes, current.queue_block_bytes);
         target.profile_recorder_bytes = std::max(
             target.profile_recorder_bytes, current.profile_recorder_bytes);
+        target.native_profile_prediction_bytes =
+            std::max(target.native_profile_prediction_bytes,
+                current.native_profile_prediction_bytes);
         target.native_preimport_tracker_bytes =
             std::max(target.native_preimport_tracker_bytes,
                 current.native_preimport_tracker_bytes);
@@ -1028,6 +741,27 @@ private:
     std::unordered_map<const void*, JitPrecompileMemoryStats> live_by_runtime;
 };
 
+struct RuntimePrecompileTask {
+    std::shared_ptr<HostWorkToken> token;
+    JitPrecompileTarget target { JitPrecompileTarget::NativeCode };
+    std::shared_ptr<JitWorkObservationSignal::Activity> work_activity;
+
+    [[nodiscard]] bool finished() const noexcept
+    {
+        return !token || token->finished();
+    }
+    void cancel() const noexcept
+    {
+        if (token)
+            token->cancel();
+    }
+    void wait_finished() const
+    {
+        if (token)
+            token->wait_finished();
+    }
+};
+
 struct Runtime {
     // Keep the reservation before the native runtime fields so its destructor
     // releases the budget only after Dynarmic's code cache has been destroyed.
@@ -1039,36 +773,61 @@ struct Runtime {
     std::unique_ptr<CompatibilityKernel> kernel;
     std::vector<bool> allocated;
     std::optional<PendingExec> pending_exec;
-    std::shared_ptr<HostWorkToken> precompile_task;
+    std::vector<RuntimePrecompileTask> precompile_tasks;
     std::shared_ptr<HostWorkToken> execution_prepare_task;
-    JitPrecompilePhase precompile_phase { JitPrecompilePhase::Remaining };
+    JitPrecompilePhase precompile_phase { JitPrecompilePhase::Opportunistic };
+    std::shared_ptr<JitWorkObservationSignal> jit_work_signal;
     RuntimeWorkEpoch work_epoch;
+    std::shared_ptr<JitWorkObservationSignal::Activity> activation_activity;
     std::optional<std::chrono::steady_clock::time_point>
         execution_reclaim_after;
     bool fresh_spawn_address_space { };
     bool resume_after_execution_prepare { };
+    bool image_activation_pending { };
+    std::optional<std::chrono::steady_clock::time_point>
+        activation_release_deadline;
     bool jit_memory_accounted { };
+    std::uint64_t timer_deadline_generation { };
+    bool timer_deadline_observed { };
 
     [[nodiscard]] std::uint64_t begin_image_transition(
         HostResourceController& host_resources)
     {
         const auto next_epoch = work_epoch.begin_transition();
-        const auto precompile = precompile_task;
+        if (jit_work_signal)
+            jit_work_signal->notify_work();
+        const auto precompiles = precompile_tasks;
         const auto execution_prepare = execution_prepare_task;
-        if (precompile)
-            precompile->cancel();
+        for (const auto& precompile : precompiles)
+            precompile.cancel();
         if (execution_prepare)
             execution_prepare->cancel();
         host_resources.wake();
         if (cpus)
             cpus->quiesce_precompilation();
-        if (precompile)
-            precompile->wait_finished();
+        for (const auto& precompile : precompiles)
+            precompile.wait_finished();
         if (execution_prepare)
             execution_prepare->wait_finished();
         execution_prepare_task.reset();
+        precompile_tasks.clear();
         resume_after_execution_prepare = false;
+        set_image_activation_pending(false);
+        activation_release_deadline.reset();
         return next_epoch;
+    }
+
+    void set_image_activation_pending(bool pending)
+    {
+        if (image_activation_pending == pending)
+            return;
+        image_activation_pending = pending;
+        if (pending && jit_work_signal) {
+            activation_activity = jit_work_signal->track(
+                JitWorkActivityKind::Activation);
+        } else {
+            activation_activity.reset();
+        }
     }
 
     void activate_image_epoch(std::uint64_t epoch) noexcept
@@ -1086,8 +845,8 @@ struct Runtime {
     {
         PerformanceLatencyScope latency { PerfLatencyKind::RuntimeDestructor };
         static_cast<void>(work_epoch.begin_transition());
-        if (precompile_task)
-            precompile_task->cancel();
+        for (const auto& precompile : precompile_tasks)
+            precompile.cancel();
         if (execution_prepare_task)
             execution_prepare_task->cancel();
         if (cpus)
@@ -1231,108 +990,8 @@ struct PreparedGuestSlice {
     XnuScheduledSlice scheduled;
     Runtime* runtime { };
     std::size_t thread_index { };
-    Cpu* cpu { };
-    std::uint64_t tick_budget { };
-    std::chrono::nanoseconds host_slice_budget { };
-    bool single_step { };
+    GuestExecutionRequest execution;
     bool deferred_svc { };
-    CpuRunResult result;
-    std::exception_ptr error;
-};
-
-class GuestSliceWorkerPool {
-public:
-    explicit GuestSliceWorkerPool(std::size_t worker_count)
-    {
-        workers_.reserve(worker_count);
-        for (std::size_t index = 0; index < worker_count; ++index) {
-            workers_.emplace_back([this] { worker_loop(); });
-        }
-    }
-
-    GuestSliceWorkerPool(const GuestSliceWorkerPool&) = delete;
-    GuestSliceWorkerPool& operator=(const GuestSliceWorkerPool&) = delete;
-
-    ~GuestSliceWorkerPool()
-    {
-        {
-            std::lock_guard lock { mutex_ };
-            stopping_ = true;
-        }
-        work_available_.notify_all();
-        for (auto& worker : workers_)
-            worker.join();
-    }
-
-    void run(std::vector<PreparedGuestSlice>& slices)
-    {
-        if (slices.empty())
-            return;
-        {
-            std::lock_guard lock { mutex_ };
-            if (remaining_ != 0)
-                throw std::logic_error { "guest slice worker batch overlaps" };
-            slices_ = slices.data();
-            slice_count_ = slices.size();
-            next_slice_ = 0;
-            remaining_ = slices.size();
-            if (++generation_ == 0)
-                ++generation_;
-        }
-        work_available_.notify_all();
-        std::unique_lock lock { mutex_ };
-        batch_complete_.wait(lock, [this] { return remaining_ == 0; });
-        slices_ = nullptr;
-        slice_count_ = 0;
-    }
-
-    static void execute(PreparedGuestSlice& prepared)
-    {
-        try {
-            prepared.result =
-                prepared.single_step
-                    ? prepared.cpu->step(prepared.scheduled.processor)
-                    : prepared.cpu->run_cooperatively(prepared.tick_budget,
-                          prepared.host_slice_budget,
-                          prepared.scheduled.processor);
-        } catch (...) {
-            prepared.error = std::current_exception();
-        }
-    }
-
-private:
-    void worker_loop()
-    {
-        std::uint64_t observed_generation { };
-        std::unique_lock lock { mutex_ };
-        while (true) {
-            work_available_.wait(lock, [&] {
-                return stopping_ || generation_ != observed_generation;
-            });
-            if (stopping_)
-                return;
-            observed_generation = generation_;
-            while (next_slice_ < slice_count_) {
-                auto* slice = slices_ + next_slice_++;
-                lock.unlock();
-                execute(*slice);
-                lock.lock();
-                if (--remaining_ == 0)
-                    batch_complete_.notify_one();
-            }
-        }
-    }
-
-    std::mutex mutex_;
-    std::condition_variable work_available_;
-    std::condition_variable batch_complete_;
-    std::vector<std::thread> workers_;
-    PreparedGuestSlice* slices_ { };
-    std::size_t slice_count_ { };
-    std::size_t next_slice_ { };
-    std::size_t remaining_ { };
-    std::uint64_t generation_ { };
-    bool stopping_ { };
 };
 
 class BootGdbTarget final : public GdbTarget {
@@ -1567,7 +1226,7 @@ std::string usage()
            "[--thumb]\n"
            "  ilemu boot --rootfs DIR [--device PROFILE] "
            "[--binary /sbin/launchd] [--guest-command COMMAND] [--ticks N] "
-           "[--cores N] [--jit-cache-mib 8..128] "
+           "[--cores N] [--jit-cache-mib 8..512] "
            "[--jit-cache-budget-mib 256..4096] "
            "[--watch-address ADDR] [--gdb PORT] "
            "[--display headless|sdl] [--network isolated|loopback|host] "
@@ -1583,16 +1242,17 @@ std::string usage()
            "[--perf-summary] [--jit-observer-only] [--perf-frame-content] "
            "[--perf-cpu-phases] "
            "[--perf-jit-native-lookups] "
-           "[--jit-profile-mode off|record-only|load-only|idle|startup] "
+           "[--jit-profile-mode "
+           "adaptive|off|record-only|load-only|idle|startup] "
            "[--jit-startup-profile] "
            "[--jit-startup-profile-blocks N] "
            "[--jit-startup-profile-budget-us N] "
            "[--jit-catalog-warming no-enqueue] "
            "[--output FILE]\n"
-           "  ilemu smoke [--cores N] [--jit-cache-mib 8..128] "
+           "  ilemu smoke [--cores N] [--jit-cache-mib 8..512] "
            "[--perf-summary] [--output FILE]\n"
            "  ilemu benchmark arm [--iterations N] "
-           "[--jit-cache-mib 8..128] [--perf-summary] "
+           "[--jit-cache-mib 8..512] [--perf-summary] "
            "[--output FILE]\n";
 }
 
@@ -1661,6 +1321,7 @@ bool flag(const std::vector<std::string>& args, std::string_view name)
 }
 
 enum class JitProfileMode : std::uint8_t {
+    Adaptive,
     Off,
     RecordOnly,
     LoadOnly,
@@ -1709,6 +1370,8 @@ enum class JitCatalogWarmingMode : std::uint8_t { NoEnqueue };
     JitProfileMode mode) noexcept
 {
     switch (mode) {
+    case JitProfileMode::Adaptive:
+        return "adaptive";
     case JitProfileMode::Off:
         return "off";
     case JitProfileMode::RecordOnly:
@@ -1727,9 +1390,11 @@ enum class JitCatalogWarmingMode : std::uint8_t { NoEnqueue };
     const std::vector<std::string>& args)
 {
     const auto configured = option(args, "--jit-profile-mode");
-    JitProfileMode mode = JitProfileMode::Off;
+    JitProfileMode mode = JitProfileMode::Adaptive;
     if (configured) {
-        if (*configured == "off")
+        if (*configured == "adaptive")
+            mode = JitProfileMode::Adaptive;
+        else if (*configured == "off")
             mode = JitProfileMode::Off;
         else if (*configured == "record-only")
             mode = JitProfileMode::RecordOnly;
@@ -1741,8 +1406,8 @@ enum class JitCatalogWarmingMode : std::uint8_t { NoEnqueue };
             mode = JitProfileMode::Startup;
         else {
             throw std::runtime_error {
-                "--jit-profile-mode must be off, record-only, load-only, idle, "
-                "or startup"
+                "--jit-profile-mode must be adaptive, off, record-only, "
+                "load-only, idle, or startup"
             };
         }
     }
@@ -1765,30 +1430,34 @@ enum class JitCatalogWarmingMode : std::uint8_t { NoEnqueue };
 
 [[nodiscard]] bool jit_profile_records(JitProfileMode mode) noexcept
 {
-    return mode == JitProfileMode::RecordOnly || mode == JitProfileMode::Idle ||
+    return mode == JitProfileMode::Adaptive ||
+           mode == JitProfileMode::RecordOnly || mode == JitProfileMode::Idle ||
            mode == JitProfileMode::Startup;
 }
 
 [[nodiscard]] bool jit_profile_loads(JitProfileMode mode) noexcept
 {
-    return mode == JitProfileMode::LoadOnly || mode == JitProfileMode::Idle ||
+    return mode == JitProfileMode::Adaptive ||
+           mode == JitProfileMode::LoadOnly || mode == JitProfileMode::Idle ||
            mode == JitProfileMode::Startup;
 }
 
 [[nodiscard]] bool jit_profile_saves(JitProfileMode mode) noexcept
 {
-    return mode == JitProfileMode::RecordOnly || mode == JitProfileMode::Idle ||
+    return mode == JitProfileMode::Adaptive ||
+           mode == JitProfileMode::RecordOnly || mode == JitProfileMode::Idle ||
            mode == JitProfileMode::Startup;
 }
 
 [[nodiscard]] bool jit_profile_precompiles(JitProfileMode mode) noexcept
 {
-    return mode == JitProfileMode::Idle || mode == JitProfileMode::Startup;
+    return mode == JitProfileMode::Adaptive || mode == JitProfileMode::Idle ||
+           mode == JitProfileMode::Startup;
 }
 
 [[nodiscard]] bool jit_profile_idle_work(JitProfileMode mode) noexcept
 {
-    return mode == JitProfileMode::Idle;
+    return mode == JitProfileMode::Adaptive || mode == JitProfileMode::Idle;
 }
 
 [[nodiscard]] bool jit_profile_startup_work(JitProfileMode mode) noexcept
@@ -1798,12 +1467,24 @@ enum class JitCatalogWarmingMode : std::uint8_t { NoEnqueue };
 
 std::size_t jit_code_cache_size(const std::vector<std::string>& args)
 {
-    const auto value = option(args, "--jit-cache-mib").value_or("64");
+    const auto configured = option(args, "--jit-cache-mib");
+    if (!configured) {
+        const auto memory = host_memory_budget_snapshot();
+        const auto effective = effective_host_memory_limit(memory);
+        return JitWorkPolicy::recommended_native_slab_bytes(
+            effective.value_or(0U), effective.has_value(),
+            memory.available_bytes, memory.available_known);
+    }
+    const auto& value = *configured;
     std::size_t consumed { };
     const auto mebibytes = std::stoull(value, &consumed, 10);
-    if (consumed != value.size() || mebibytes < 8U || mebibytes > 128U) {
+    const auto maximum_mebibytes =
+        JitWorkPolicy::maximum_native_slab_bytes() / bytes_per_mebibyte;
+    if (consumed != value.size() || mebibytes < 8U ||
+        mebibytes > maximum_mebibytes) {
         throw std::runtime_error {
-            "--jit-cache-mib must be in the range 8..128"
+            "--jit-cache-mib must be in the range 8.." +
+            std::to_string(maximum_mebibytes)
         };
     }
     return static_cast<std::size_t>(mebibytes) * 1024U * 1024U;
@@ -1877,12 +1558,12 @@ struct JitCodeCacheBudget {
     const std::vector<std::string>& args)
 {
     const auto memory = host_memory_budget_snapshot();
-    const auto minimum_total =
-        jit_emergency_budget_bytes + jit_minimum_shared_slab_bytes;
     if (const auto configured = option(args, "--jit-cache-budget-mib")) {
         return JitCodeCacheBudget {
             static_cast<std::size_t>(parse_mib_value(
-                *configured, "--jit-cache-budget-mib", 256U, 4096U)),
+                *configured, "--jit-cache-budget-mib", 256U,
+                JitCodeCacheGovernor::maximum_adaptive_budget_bytes /
+                    bytes_per_mebibyte)),
             memory,
             true,
         };
@@ -1890,7 +1571,8 @@ struct JitCodeCacheBudget {
 
     const auto effective_limit_value = effective_host_memory_limit(memory);
     const auto effective_limit = effective_limit_value.value_or(
-        static_cast<std::uint64_t>(jit_maximum_adaptive_budget_bytes));
+        static_cast<std::uint64_t>(
+            JitCodeCacheGovernor::maximum_adaptive_budget_bytes));
     bool headroom_known = memory.available_known;
     auto headroom = memory.available_bytes;
     if (memory.cgroup_limit_known && memory.cgroup_current_known) {
@@ -1917,24 +1599,10 @@ struct JitCodeCacheBudget {
             headroom = std::min(headroom, rss_headroom);
         }
     }
-    // Keep code-cache reservations below both a fraction of total capacity and
-    // a fraction of current headroom. The hard ceiling remains a safety bound;
-    // unlike the old fixed floor, low-memory/cgroup pressure can lower it.
-    const auto capacity_target = effective_limit / 8U;
-    const auto pressure_target = headroom / 2U;
-    auto target = headroom_known ? std::min(capacity_target, pressure_target)
-                                 : capacity_target;
-    // A known zero headroom is real pressure, not missing host information.
-    // Keep only the minimum safety pool in that case. When host information is
-    // unavailable, use the bounded capacity target; never invent a 640 MiB
-    // reservation from an unknown zero.
-    if (target == 0U)
-        target = minimum_total;
-    target = std::clamp<std::uint64_t>(target,
-        static_cast<std::uint64_t>(minimum_total),
-        static_cast<std::uint64_t>(jit_maximum_adaptive_budget_bytes));
-    return JitCodeCacheBudget { static_cast<std::size_t>(target), memory,
-        false };
+    const auto target = JitCodeCacheGovernor::recommended_total_budget(
+        effective_limit, effective_limit_value.has_value(), headroom,
+        headroom_known);
+    return JitCodeCacheBudget { target, memory, false };
 }
 
 std::size_t jit_artifact_memory_limit(const std::vector<std::string>& args)
@@ -2622,8 +2290,6 @@ void benchmark(const std::vector<std::string>& args, Output& output)
 
 void boot(const std::vector<std::string>& args, Output& output)
 {
-    constexpr std::string_view springboard_boot_path =
-        "/System/Library/CoreServices/SpringBoard.app/SpringBoard";
     const auto rootfs = option(args, "--rootfs");
     if (!rootfs) {
         throw std::runtime_error { "boot requires --rootfs" };
@@ -2693,9 +2359,9 @@ void boot(const std::vector<std::string>& args, Output& output)
         "[abi-profile] kernel=" + darwin_kernel_profile.name +
         " initial-apple-vector=" +
         (darwin_kernel_profile.initial_apple_vector_profile ==
-                DarwinInitialAppleVectorProfile::LegacyExecutablePath
-            ? "legacy-path"
-            : "keyed-path"));
+                    DarwinInitialAppleVectorProfile::LegacyExecutablePath
+                ? "legacy-path"
+                : "keyed-path"));
     const auto activation_value =
         option(args, "--activation").value_or("activated");
     const auto activation = parse_lockdown_activation(activation_value);
@@ -2749,6 +2415,12 @@ void boot(const std::vector<std::string>& args, Output& output)
         jit_profile_startup_work(jit_profile_mode);
     const bool idle_profile_enabled = jit_profile_idle_work(jit_profile_mode);
     const bool profile_background_warming_enabled = idle_profile_enabled;
+    // Adaptive mode optimizes the current interactive working set. Portable
+    // persistence across every live process is intentionally an explicit idle
+    // experiment: its low observed hit rate does not justify creating a
+    // compile executor per background process in the default experience.
+    const bool profile_offline_warming_enabled =
+        jit_profile_mode == JitProfileMode::Idle;
     const auto startup_profile_blocks_value =
         option(args, "--jit-startup-profile-blocks");
     const auto startup_profile_budget_us_value =
@@ -2783,6 +2455,8 @@ void boot(const std::vector<std::string>& args, Output& output)
         " load=" + (profile_loading_enabled ? "enabled" : "disabled") +
         " save=" + (profile_saving_enabled ? "enabled" : "disabled") +
         " idle=" + (idle_profile_enabled ? "enabled" : "disabled") +
+        " offline=" +
+        (profile_offline_warming_enabled ? "enabled" : "disabled") +
         " startup-sync=" + (startup_profile_enabled ? "enabled" : "disabled") +
         " catalog-warming=" +
         std::string {
@@ -2868,10 +2542,10 @@ void boot(const std::vector<std::string>& args, Output& output)
         std::string { host_memory_pressure_name(jit_cache_budget.memory) } +
         " total-budget-mib=" +
         std::to_string(jit_cache_budget.total_bytes / bytes_per_mebibyte));
-    std::unique_ptr<GuestSliceWorkerPool> guest_slice_workers;
+    std::unique_ptr<GuestExecutionCoordinator> guest_execution_coordinator;
     if (guest_processor_count > 1) {
-        guest_slice_workers =
-            std::make_unique<GuestSliceWorkerPool>(guest_processor_count);
+        guest_execution_coordinator =
+            std::make_unique<GuestExecutionCoordinator>(guest_processor_count);
     }
     const auto network_policy_value =
         option(args, "--network").value_or("host");
@@ -3034,20 +2708,6 @@ void boot(const std::vector<std::string>& args, Output& output)
     };
     auto process =
         loader.load(binary, std::move(initial_arguments), initial_environment);
-    std::unordered_set<ContentIdentity, ContentIdentityHash>
-        boot_image_identities;
-    boot_image_identities.insert(process.executable.content_identity());
-    if (catalog_index != nullptr) {
-        auto springboard_host_path = std::filesystem::path { *rootfs };
-        springboard_host_path /=
-            std::filesystem::path { springboard_boot_path }.relative_path();
-        if (const auto* springboard =
-                catalog_index->find_path(springboard_host_path)) {
-            boot_image_identities.insert(springboard->content_identity);
-        }
-    }
-    output.line("[jit-artifact] boot-image-roots=" +
-                std::to_string(boot_image_identities.size()));
     // Dynarmic's global monitor indexes reservations by processor id. Reserve
     // disjoint ranges for boot-created Guest processes so same-address shared
     // mappings can invalidate reservations across process boundaries.
@@ -3076,20 +2736,18 @@ void boot(const std::vector<std::string>& args, Output& output)
     output.line(
         "[jit] global-code-cache-budget-mib=" +
         std::to_string(jit_code_cache_governor.total_budget() / 1024U / 1024U));
-    output.line("[jit] emergency-code-cache-budget-mib=" +
-                std::to_string(jit_code_cache_governor.emergency_budget() /
-                               1024U / 1024U));
     output.line(
-        "[jit] shared-slab-cache-mib=boot-critical:" +
+        "[jit] shared-slab-map-mib=" +
         std::to_string(jit_code_cache_governor.shared_slab_cap(
                            JitCodeCacheClass::BootCritical) /
-                       1024U / 1024U) +
-        " foreground:" +
-        std::to_string(jit_code_cache_governor.shared_slab_cap(
+                       1024U / 1024U) + " retention-mib=critical:" +
+        std::to_string(jit_code_cache_governor.retention_target(
+                           JitCodeCacheClass::BootCritical) /
+                       1024U / 1024U) + " interactive:" +
+        std::to_string(jit_code_cache_governor.retention_target(
                            JitCodeCacheClass::Foreground) /
-                       1024U / 1024U) +
-        " background:" +
-        std::to_string(jit_code_cache_governor.shared_slab_cap(
+                       1024U / 1024U) + " background:" +
+        std::to_string(jit_code_cache_governor.retention_target(
                            JitCodeCacheClass::Background) /
                        1024U / 1024U) +
         " pressure-limited=" +
@@ -3173,9 +2831,23 @@ void boot(const std::vector<std::string>& args, Output& output)
             : 0U;
     host_resource_budget.worker_count = std::clamp(
         spare_host_workers, std::size_t { 0 }, maximum_background_workers);
+    const auto translation_lanes =
+        JitWorkScheduler::recommended_translation_lanes(
+            host_resource_budget.worker_count);
+    if (host_resource_budget.worker_count != 0U) {
+        // The core policy reserves at least half of a multi-worker pool for
+        // Guest-adjacent services. Host admission accounts concurrent compile
+        // wall time as aggregate worker-time while retaining per-task deadline
+        // protection.
+        host_resource_budget.interactive_compile_budget =
+            host_resource_budget.duty_period *
+            static_cast<std::int64_t>(translation_lanes);
+    }
     output.line(
         "[host] background-workers=" +
         std::to_string(host_resource_budget.worker_count) +
+        " translation-lanes=" +
+        std::to_string(translation_lanes) +
         " host-concurrency=" + std::to_string(host_concurrency) +
         " guest-workers-reserved=" + std::to_string(reserved_guest_workers));
     HostResourceController host_resources { host_resource_budget };
@@ -3491,15 +3163,11 @@ void boot(const std::vector<std::string>& args, Output& output)
                     elapsed);
             }
         };
-    const auto precompile_phase_for_process =
-        [springboard_boot_path](std::string_view executable_path) {
-            if (executable_path == springboard_boot_path) {
-                return JitPrecompilePhase::SystemUi;
-            }
-            if (is_application_executable_path(executable_path)) {
-                return JitPrecompilePhase::ForegroundApplication;
-            }
-            return JitPrecompilePhase::StartupService;
+    const auto precompile_phase_for_lifecycle =
+        [](bool interactive_activation) {
+            return interactive_activation
+                       ? JitPrecompilePhase::InteractiveActivation
+                       : JitPrecompilePhase::PriorStartup;
         };
     struct PrecompileOutcomeCounters {
         std::atomic<std::uint64_t> elapsed_nanoseconds { };
@@ -3548,17 +3216,43 @@ void boot(const std::vector<std::string>& args, Output& output)
     };
     constexpr auto precompile_schedule_skip_count =
         static_cast<std::size_t>(PrecompileScheduleSkip::Count);
-    struct PrecompileBudgetDecision {
-        std::uint64_t budget { };
-        PrecompileScheduleSkip zero_reason {
-            PrecompileScheduleSkip::ZeroBudget
-        };
-    };
+    JitWorkScheduler jit_work_scheduler;
+    auto jit_work_signal = std::make_shared<JitWorkObservationSignal>();
     std::array<std::uint64_t, precompile_schedule_skip_count>
         precompile_schedule_skips { };
     const auto record_precompile_schedule_skip =
         [&precompile_schedule_skips](PrecompileScheduleSkip reason) {
             ++precompile_schedule_skips[static_cast<std::size_t>(reason)];
+        };
+    const auto record_jit_schedule_skips =
+        [&precompile_schedule_skips](const JitWorkSchedule& schedule) {
+            const auto core_count = [&schedule](JitWorkScheduleSkip reason) {
+                return schedule.skipped[static_cast<std::size_t>(reason)];
+            };
+            precompile_schedule_skips[static_cast<std::size_t>(
+                PrecompileScheduleSkip::NoRuntime)] +=
+                core_count(JitWorkScheduleSkip::NoCandidate);
+            precompile_schedule_skips[static_cast<std::size_t>(
+                PrecompileScheduleSkip::TaskBusy)] +=
+                core_count(JitWorkScheduleSkip::WorkerBusy);
+            precompile_schedule_skips[static_cast<std::size_t>(
+                PrecompileScheduleSkip::NoPhase)] +=
+                core_count(JitWorkScheduleSkip::NoWork);
+            precompile_schedule_skips[static_cast<std::size_t>(
+                PrecompileScheduleSkip::MemoryPressure)] +=
+                core_count(JitWorkScheduleSkip::MemoryPressure);
+            precompile_schedule_skips[static_cast<std::size_t>(
+                PrecompileScheduleSkip::DisplayQuiet)] +=
+                core_count(JitWorkScheduleSkip::DisplayBusy);
+            precompile_schedule_skips[static_cast<std::size_t>(
+                PrecompileScheduleSkip::GuestNotIdle)] +=
+                core_count(JitWorkScheduleSkip::GuestBusy);
+            precompile_schedule_skips[static_cast<std::size_t>(
+                PrecompileScheduleSkip::DeadlineReserve)] +=
+                core_count(JitWorkScheduleSkip::DeadlineReserve);
+            precompile_schedule_skips[static_cast<std::size_t>(
+                PrecompileScheduleSkip::ZeroBudget)] +=
+                core_count(JitWorkScheduleSkip::ZeroBudget);
         };
     const auto record_precompile_outcomes =
         [&precompile_outcomes, &precompile_source_outcomes](
@@ -3622,43 +3316,11 @@ void boot(const std::vector<std::string>& args, Output& output)
                 result.cancelled, std::memory_order_relaxed);
         };
     const auto assign_jit_process_profile =
-        [&translation_profiles, &catalog_index, &boot_image_identities,
-            &jit_code_cache_governor, springboard_boot_path, profile_enabled,
+        [&translation_profiles, profile_enabled,
             profile_recording_enabled, profile_loading_enabled,
             profile_precompile_enabled](Runtime& runtime,
             const LoadedProcess& loaded, JitPrecompilePhase phase) {
             runtime.precompile_phase = phase;
-            const auto retention =
-                boot_image_identities.contains(
-                    loaded.executable.content_identity()) ||
-                        loaded.executable_path == springboard_boot_path
-                    ? JitArtifactRetention::BootWorkingSet
-                    : JitArtifactRetention::Normal;
-            const auto cache_class =
-                retention == JitArtifactRetention::BootWorkingSet
-                    ? JitCodeCacheClass::BootCritical
-                : phase == JitPrecompilePhase::ForegroundApplication
-                    ? JitCodeCacheClass::Foreground
-                    : JitCodeCacheClass::Background;
-            runtime.jit_cache_class = cache_class;
-            if (runtime.jit_cache_reservation) {
-                const auto shared_slab = jit_code_cache_governor.reclassify(
-                    *runtime.jit_cache_reservation, cache_class,
-                    runtime.fresh_spawn_address_space);
-                // A freshly-created spawn has not instantiated Dynarmic yet, so
-                // its role-specific quota can still resize the configured
-                // cache. An ordinary exec may already own a live emitter; its
-                // reservation is still reclassified, while Dynarmic keeps its
-                // immutable size.
-                if (shared_slab && runtime.fresh_spawn_address_space) {
-                    runtime.cpus->set_jit_code_cache_size(*shared_slab);
-                }
-            }
-            if (retention == JitArtifactRetention::BootWorkingSet) {
-                boot_image_identities.insert(
-                    loaded.executable.content_identity());
-            }
-            runtime.cpus->set_jit_artifact_retention(retention);
             if (profile_enabled && translation_profiles) {
                 runtime.jit_translation_profile =
                     translation_profiles->profile_for(
@@ -3672,13 +3334,24 @@ void boot(const std::vector<std::string>& args, Output& output)
                 runtime.cpus->set_translation_profile(
                     nullptr, phase, false, false);
             }
-            if (catalog_index == nullptr)
-                return false;
-            // The catalog remains a metadata/identity source. Its former idle
-            // precompile producer was removed because it admitted work faster
-            // than the scheduler could consume it and permanently retained
-            // pending entries on active/scanout runtimes.
-            return false;
+        };
+    const auto apply_jit_runtime_class =
+        [&jit_code_cache_governor](Runtime& runtime,
+            JitCodeCacheClass cache_class) {
+            if (runtime.jit_cache_class == cache_class)
+                return;
+            runtime.jit_cache_class = cache_class;
+            if (runtime.jit_cache_reservation) {
+                const auto shared_slab = jit_code_cache_governor.reclassify(
+                    *runtime.jit_cache_reservation, cache_class,
+                    runtime.fresh_spawn_address_space);
+                if (shared_slab && runtime.fresh_spawn_address_space)
+                    runtime.cpus->set_jit_code_cache_size(*shared_slab);
+            }
+            runtime.cpus->set_jit_artifact_retention(
+                cache_class == JitCodeCacheClass::BootCritical
+                    ? JitArtifactRetention::BootWorkingSet
+                    : JitArtifactRetention::Normal);
         };
     const auto precompile_startup_profile =
         [&output, &record_precompile_outcomes, startup_profile_enabled,
@@ -3724,6 +3397,7 @@ void boot(const std::vector<std::string>& args, Output& output)
             }
         };
     auto initial = std::make_unique<Runtime>();
+    initial->jit_work_signal = jit_work_signal;
     initial->memory = std::move(initial_memory);
     initial->jit_cache_reservation = jit_code_cache_governor.reserve(
         guest_processor_count, JitCodeCacheClass::BootCritical);
@@ -3734,14 +3408,18 @@ void boot(const std::vector<std::string>& args, Output& output)
     initial->cpus = std::make_unique<CpuCluster>(initial_guest_thread_slots,
         maximum_guest_threads, *initial->memory, guest_processor_count,
         *cpu_model, shared_exclusive_monitor, allocate_shared_monitor_slots(),
-        jit_artifacts, shared_exclusive_address_resolver);
+        jit_artifacts, shared_exclusive_address_resolver,
+        std::max<std::size_t>(1U, translation_lanes));
     initial->cpus->set_jit_code_cache_size(
         initial->jit_cache_reservation->shared_slab_bytes());
+    initial->cpus->set_jit_work_signal(jit_work_signal);
+    initial->cpus->set_jit_artifact_retention(
+        JitArtifactRetention::BootWorkingSet);
     output.line(
         "[jit] initial-runtime-shared-slab-mib=" +
         std::to_string(initial->jit_cache_reservation->shared_slab_bytes() /
                        1024U / 1024U));
-    assign_jit_process_profile(*initial, process, JitPrecompilePhase::Loader);
+    assign_jit_process_profile(*initial, process, JitPrecompilePhase::Bootstrap);
     initial->kernel = std::make_unique<CompatibilityKernel>(*initial->memory,
         output, *rootfs, device, activation_override, lockdown_profile);
     if (baseband_capture_stream) {
@@ -4207,6 +3885,9 @@ void boot(const std::vector<std::string>& args, Output& output)
     GuestExecutionPolicy guest_execution_policy { std::chrono::nanoseconds {
         static_cast<std::int64_t>(
             iokit_abi::display_vsync::period_absolute_time) } };
+    GuestDispatchPolicy guest_dispatch_policy { std::chrono::nanoseconds {
+        static_cast<std::int64_t>(
+            iokit_abi::display_vsync::period_absolute_time) } };
     GuestParallelismPolicy guest_parallelism_policy { guest_ticks_per_second };
     std::optional<XnuThreadId> last_serial_thread;
     std::optional<XnuThreadId> scheduler_handoff_thread;
@@ -4426,10 +4107,9 @@ void boot(const std::vector<std::string>& args, Output& output)
                 return scheduler.wake_thread(XnuThreadId { pid, slot });
             });
         runtime.kernel->set_thread_scheduling_state_query(
-            [&scheduler](std::uint32_t pid, std::uint32_t slot)
-                -> std::optional<XnuThreadState> {
-                const auto info =
-                    scheduler.info(XnuThreadId { pid, slot });
+            [&scheduler](std::uint32_t pid,
+                std::uint32_t slot) -> std::optional<XnuThreadState> {
+                const auto info = scheduler.info(XnuThreadId { pid, slot });
                 return info ? std::optional { info->state } : std::nullopt;
             });
         runtime.kernel->set_mach_message_wake_handler(
@@ -4451,10 +4131,11 @@ void boot(const std::vector<std::string>& args, Output& output)
             -> std::optional<std::uint32_t> {
             const auto child_pid = next_pid++;
             auto child = std::make_unique<Runtime>();
-            const auto child_cache_class =
-                inheritance == CompatibilityKernel::ProcessInheritance::Fork
-                    ? runtime_ptr->jit_cache_class
-                    : JitCodeCacheClass::Foreground;
+            child->jit_work_signal = jit_work_signal;
+            // A child starts without an externally observed interactive role.
+            // Its full slab mapping remains available regardless; later
+            // lifecycle facts change only retention priority.
+            const auto child_cache_class = JitCodeCacheClass::Background;
             child->jit_cache_reservation = jit_code_cache_governor.reserve(
                 guest_processor_count, child_cache_class);
             if (!child->jit_cache_reservation) {
@@ -4485,9 +4166,11 @@ void boot(const std::vector<std::string>& args, Output& output)
                     initial_guest_thread_slots, maximum_guest_threads,
                     *child->memory, guest_processor_count, *cpu_model,
                     shared_exclusive_monitor, allocate_shared_monitor_slots(),
-                    jit_artifacts, shared_exclusive_address_resolver);
+                    jit_artifacts, shared_exclusive_address_resolver,
+                    std::max<std::size_t>(1U, translation_lanes));
                 child->cpus->set_jit_code_cache_size(
                     child->jit_cache_reservation->shared_slab_bytes());
+                child->cpus->set_jit_work_signal(jit_work_signal);
             }
             {
                 PerformanceLatencyScope latency {
@@ -4581,6 +4264,17 @@ void boot(const std::vector<std::string>& args, Output& output)
             if (child_runtime == nullptr)
                 return false;
 
+            const auto transition =
+                initial_runtime->kernel->foreground_transition_snapshot();
+            using TransitionTerminal =
+                KernelSharedState::ForegroundTransitionTerminalState;
+            const auto transition_destination =
+                transition && transition->destination &&
+                transition->destination->process_id == child_pid &&
+                transition->terminal_state == TransitionTerminal::Pending;
+            const auto interactive_activation =
+                transition_destination || start_suspended;
+
             const auto image_epoch =
                 child_runtime->begin_image_transition(host_resources);
             try {
@@ -4611,8 +4305,6 @@ void boot(const std::vector<std::string>& args, Output& output)
                         loaded.arguments, environment);
                     child_runtime->kernel->set_process_image(
                         path, loaded.executable.code_signature_entitlements());
-                    assign_jit_process_profile(*child_runtime, loaded,
-                        precompile_phase_for_process(loaded.executable_path));
                     child_runtime->kernel->prepare_exec(0);
                     auto& child_cpu = child_runtime->cpus->cpu(0);
                     child_cpu.reset();
@@ -4621,6 +4313,16 @@ void boot(const std::vector<std::string>& args, Output& output)
                     child_cpu.registers()[13] = loaded.stack_pointer;
                     child_cpu.registers()[15] = loaded.entry_point;
                     child_cpu.set_cpsr(0x10);
+                    // Install the new image's frozen prediction only after the
+                    // old native cache has been cleared. Otherwise the clear
+                    // immediately restarts the same complete plan.
+                    apply_jit_runtime_class(*child_runtime,
+                        interactive_activation
+                            ? JitCodeCacheClass::Foreground
+                            : JitCodeCacheClass::Background);
+                    assign_jit_process_profile(*child_runtime, loaded,
+                        precompile_phase_for_lifecycle(
+                            interactive_activation));
                     child_runtime->kernel->install_main_image_hle(
                         child_cpu, loaded.executable_path);
                     precompile_startup_profile(
@@ -4629,10 +4331,7 @@ void boot(const std::vector<std::string>& args, Output& output)
                 }
                 child_runtime->activate_image_epoch(image_epoch);
                 child_runtime->fresh_spawn_address_space = false;
-                const auto foreground_application =
-                    precompile_phase_for_process(loaded.executable_path) ==
-                    JitPrecompilePhase::ForegroundApplication;
-                if (foreground_application) {
+                if (transition_destination || start_suspended) {
                     const auto initial_thread = XnuThreadId { child_pid, 0 };
                     const auto held_for_prepare =
                         start_suspended ||
@@ -4655,6 +4354,8 @@ void boot(const std::vector<std::string>& args, Output& output)
                     if (child_runtime->execution_prepare_task) {
                         child_runtime->resume_after_execution_prepare =
                             !start_suspended;
+                        child_runtime->set_image_activation_pending(
+                            transition_destination && !start_suspended);
                     } else if (held_for_prepare && !start_suspended) {
                         static_cast<void>(
                             scheduler.resume_thread(initial_thread));
@@ -4938,6 +4639,37 @@ void boot(const std::vector<std::string>& args, Output& output)
     };
     std::optional<DisplayClockWindow> display_clock_window;
     Runtime* display_scanout_owner = nullptr;
+    const auto refresh_jit_runtime_classes = [&]() {
+        const auto active_process =
+            initial_runtime->kernel->active_client_process_id();
+        const auto transition =
+            initial_runtime->kernel->foreground_transition_snapshot();
+        using TransitionTerminal =
+            KernelSharedState::ForegroundTransitionTerminalState;
+        std::optional<std::uint32_t> transition_destination;
+        if (transition && transition->destination &&
+            transition->terminal_state == TransitionTerminal::Pending) {
+            transition_destination = transition->destination->process_id;
+        }
+        for (auto& runtime : runtimes) {
+            if (runtime->kernel->process().exited)
+                continue;
+            const auto process_id = runtime->kernel->process().pid;
+            const auto critical = runtime.get() == initial_runtime ||
+                                  runtime.get() == display_scanout_owner;
+            const auto interactive = runtime->image_activation_pending ||
+                                     (active_process &&
+                                         *active_process == process_id) ||
+                                     (transition_destination &&
+                                         *transition_destination ==
+                                             process_id);
+            apply_jit_runtime_class(*runtime,
+                critical ? JitCodeCacheClass::BootCritical
+                : interactive
+                    ? JitCodeCacheClass::Foreground
+                    : JitCodeCacheClass::Background);
+        }
+    };
     auto observed_display_submissions =
         initial_runtime->kernel->display_submitted_frames();
     auto last_display_submission = std::chrono::steady_clock::now();
@@ -5162,6 +4894,217 @@ void boot(const std::vector<std::string>& args, Output& output)
         scheduler.synchronize_time(scheduler_time);
         scheduler.set_realtime_clock_ticks(scheduler_time);
     };
+    const auto jit_work_observation_due =
+        [&](std::chrono::steady_clock::time_point now, bool guest_quiet) {
+            const auto activity = jit_work_signal->snapshot();
+            return jit_work_scheduler.observation_due(
+                JitWorkObservationGateRequest { now, activity.generation,
+                    guest_quiet, activity.activation_pending,
+                    activity.worker_active });
+        };
+    const auto schedule_jit_profile_work =
+        [&](JitWorkObservation observation,
+            std::optional<HostResourceController::Clock::time_point>
+                host_compile_deadline,
+            bool guest_quiet) {
+            if (!profile_background_warming_enabled)
+                return;
+            if (!jit_work_observation_due(
+                    std::chrono::steady_clock::now(), guest_quiet)) {
+                return;
+            }
+            const auto transition =
+                initial_runtime->kernel->foreground_transition_snapshot();
+            using TransitionTerminal =
+                KernelSharedState::ForegroundTransitionTerminalState;
+            std::optional<std::uint32_t> transition_destination;
+            if (transition && transition->destination &&
+                transition->terminal_state == TransitionTerminal::Pending) {
+                transition_destination = transition->destination->process_id;
+            }
+            const auto active_process =
+                initial_runtime->kernel->active_client_process_id();
+            const auto scanout_process =
+                display_scanout_owner == nullptr
+                    ? std::optional<std::uint32_t> { }
+                    : std::optional<std::uint32_t> {
+                          display_scanout_owner->kernel->process().pid
+                      };
+
+            std::vector<JitWorkCandidate> candidates;
+            candidates.reserve(runtimes.size());
+            for (const auto& runtime : runtimes) {
+                std::erase_if(runtime->precompile_tasks,
+                    [](const auto& task) { return task.finished(); });
+                const auto process_id = runtime->kernel->process().pid;
+                JitWorkCandidate candidate;
+                candidate.identity = process_id;
+                candidate.exited = runtime->kernel->process().exited;
+                candidate.image_activation_pending =
+                    runtime->image_activation_pending;
+                candidate.foreground_transition_destination =
+                    transition_destination &&
+                    *transition_destination == process_id;
+                candidate.active_client =
+                    active_process && *active_process == process_id;
+                candidate.scanout_owner =
+                    scanout_process && *scanout_process == process_id;
+                candidate.guest_runnable =
+                    scheduler.process_runnable_count(process_id) != 0U;
+                candidate.active_native_workers = static_cast<std::size_t>(
+                    std::count_if(runtime->precompile_tasks.begin(),
+                        runtime->precompile_tasks.end(), [](const auto& task) {
+                            return task.target ==
+                                   JitPrecompileTarget::NativeCode;
+                        }));
+                candidate.active_portable_workers =
+                    runtime->precompile_tasks.size() -
+                    candidate.active_native_workers;
+                candidate.worker_capacity =
+                    runtime->cpus->precompile_lane_count();
+                const auto interactive_role =
+                    candidate.image_activation_pending ||
+                    candidate.foreground_transition_destination ||
+                    candidate.active_client || candidate.scanout_owner;
+                if (!candidate.exited &&
+                    runtime->precompile_tasks.size() <
+                        candidate.worker_capacity &&
+                    runtime->cpus->has_execution_resources() &&
+                    (interactive_role ||
+                        (!guest_quiet && candidate.guest_runnable) ||
+                        (guest_quiet && profile_offline_warming_enabled))) {
+                    // Current demand is merged only at a Guest-quiet safe
+                    // boundary. While Guest code is runnable, the independent
+                    // executor consumes only the frozen prior-image queue.
+                    if (guest_quiet && interactive_role)
+                        runtime->cpus->refresh_translation_profile();
+                    if (interactive_role || !candidate.guest_runnable) {
+                        if (const auto phase =
+                                runtime->cpus->next_precompile_phase(
+                                    JitPrecompileTarget::NativeCode,
+                                    JitPrecompileSource::DemandProfile)) {
+                            candidate.native_phase_priority =
+                                static_cast<std::size_t>(*phase);
+                        }
+                    }
+                    if (candidate.image_activation_pending ||
+                        (guest_quiet && profile_offline_warming_enabled)) {
+                        if (const auto phase =
+                                runtime->cpus->next_precompile_phase(
+                                    JitPrecompileTarget::PortableIr,
+                                    JitPrecompileSource::DemandProfile)) {
+                            candidate.portable_phase_priority =
+                                static_cast<std::size_t>(*phase);
+                        }
+                    }
+                }
+                candidates.push_back(candidate);
+            }
+
+            const auto schedule =
+                jit_work_scheduler.schedule(JitWorkScheduleRequest { candidates,
+                    observation, true, true, guest_quiet,
+                    guest_quiet && profile_offline_warming_enabled,
+                    translation_lanes });
+            record_jit_schedule_skips(schedule);
+            for (const auto& planned : schedule.work()) {
+                auto* runtime = runtime_index.find(
+                    static_cast<std::uint32_t>(planned.candidate_identity));
+                if (runtime == nullptr || runtime->kernel->process().exited) {
+                    record_precompile_schedule_skip(
+                        PrecompileScheduleSkip::NoRuntime);
+                    continue;
+                }
+                if (runtime->precompile_tasks.size() >=
+                    runtime->cpus->precompile_lane_count()) {
+                    record_precompile_schedule_skip(
+                        PrecompileScheduleSkip::TaskBusy);
+                    continue;
+                }
+                if (planned.phase_priority >= jit_precompile_phase_count) {
+                    record_precompile_schedule_skip(
+                        PrecompileScheduleSkip::NoPhase);
+                    continue;
+                }
+                const auto phase =
+                    static_cast<JitPrecompilePhase>(planned.phase_priority);
+                const auto target =
+                    planned.target == JitScheduledTarget::NativeCode
+                        ? JitPrecompileTarget::NativeCode
+                        : JitPrecompileTarget::PortableIr;
+                const auto work_kind =
+                    planned.work_class == JitWorkClass::OfflinePortable
+                        ? HostWorkKind::OfflineCompile
+                        : HostWorkKind::BackgroundCompile;
+                const auto expected_epoch = runtime->work_epoch.current();
+                const auto decision = planned.decision;
+                auto precompile_task = host_resources.submit_cancellable(
+                    work_kind, host_compile_deadline,
+                    [runtime, expected_epoch, decision, phase, target,
+                        &precompile_blocks_by_phase,
+                        &precompile_blocks_by_target,
+                        &record_precompile_outcomes,
+                        jit_work_signal](
+                        const HostWorkToken& token) {
+                        const auto source = JitPrecompileSource::DemandProfile;
+                        const auto result = runtime->cpus->precompile_pending(
+                            decision.maximum_blocks,
+                            decision.budget_nanoseconds, target,
+                            [runtime, expected_epoch, &token] {
+                                return token.cancelled() ||
+                                       runtime->precompile_stop_requested(
+                                           expected_epoch);
+                            },
+                            source);
+                        record_precompile_outcomes(result, source);
+                        const auto compiled =
+                            target == JitPrecompileTarget::NativeCode
+                                ? result.native_compiled
+                                : result.portable_generated;
+                        precompile_blocks_by_phase[static_cast<std::size_t>(
+                                                       phase)]
+                            .fetch_add(compiled, std::memory_order_relaxed);
+                        precompile_blocks_by_target[static_cast<std::size_t>(
+                                                        target)]
+                            .fetch_add(compiled, std::memory_order_relaxed);
+                        jit_work_signal->notify_work();
+                    },
+                    std::chrono::nanoseconds {
+                        static_cast<std::chrono::nanoseconds::rep>(
+                            decision.budget_nanoseconds) });
+                if (precompile_task) {
+                    runtime->precompile_tasks.push_back(RuntimePrecompileTask {
+                        std::move(precompile_task), target,
+                        jit_work_signal->track(
+                            JitWorkActivityKind::Worker) });
+                    ++precompile_tasks_by_phase[static_cast<std::size_t>(
+                        phase)];
+                    ++precompile_tasks_by_target[static_cast<std::size_t>(
+                        target)];
+                } else {
+                    record_precompile_schedule_skip(
+                        PrecompileScheduleSkip::HostRejected);
+                }
+            }
+        };
+    auto last_interactive_host_activity = std::chrono::steady_clock::now();
+    std::uint64_t interaction_generation { 1U };
+    const auto note_interactive_host_activity = [&]() {
+        last_interactive_host_activity = std::chrono::steady_clock::now();
+        if (++interaction_generation == 0U)
+            ++interaction_generation;
+        jit_work_signal->notify_work();
+        // Native prediction shares the demand slab. Tokens are checked between
+        // descriptors, so new interaction stops a live micro-batch at its next
+        // safe publication boundary.
+        for (const auto& runtime : runtimes) {
+            for (const auto& task : runtime->precompile_tasks) {
+                if (task.target == JitPrecompileTarget::NativeCode)
+                    task.cancel();
+            }
+        }
+        host_resources.wake();
+    };
     while ((!bounded_execution || remaining_ticks != 0) &&
            !initial_runtime->kernel->process().exited && !hard_stop) {
         synchronize_device_time_to_host();
@@ -5175,22 +5118,27 @@ void boot(const std::vector<std::string>& args, Output& output)
         }
         if (sdl_display) {
             for (const auto& input : sdl_display->take_touch_events()) {
+                note_interactive_host_activity();
                 initial_runtime->kernel->enqueue_touch_input(input);
             }
             for (const auto& input : sdl_display->take_button_events()) {
+                note_interactive_host_activity();
                 initial_runtime->kernel->enqueue_system_button(input);
             }
             for (const auto& input : sdl_display->take_ringer_switch_events()) {
                 static_cast<void>(input);
+                note_interactive_host_activity();
                 initial_runtime->kernel->toggle_ringer_switch();
             }
         }
         if (touch_replay) {
             for (const auto& input : touch_replay->poll()) {
+                note_interactive_host_activity();
                 initial_runtime->kernel->enqueue_touch_input(input);
             }
         }
         for (const auto& input : live_touch_scheduler.poll()) {
+            note_interactive_host_activity();
             initial_runtime->kernel->enqueue_touch_input(input);
         }
         if (pending_touch_input_completion && live_touch_scheduler.empty()) {
@@ -5198,6 +5146,7 @@ void boot(const std::vector<std::string>& args, Output& output)
             pending_touch_input_completion.reset();
         }
         for (const auto& input : live_button_scheduler.poll()) {
+            note_interactive_host_activity();
             initial_runtime->kernel->enqueue_system_button(input);
             output.line("[control] button=up scheduled event queued");
         }
@@ -5209,11 +5158,13 @@ void boot(const std::vector<std::string>& args, Output& output)
             for (const auto& command : live_control->poll()) {
                 switch (command.kind) {
                 case LiveControlCommandKind::Touch:
+                    note_interactive_host_activity();
                     initial_runtime->kernel->enqueue_touch_input(command.touch);
                     output.line("[control] touch queued");
                     mark_transition_input_complete("touch");
                     break;
                 case LiveControlCommandKind::Gesture:
+                    note_interactive_host_activity();
                     if (command.wake_display &&
                         (command.home_wake_barrier ||
                             !initial_runtime->kernel->display_powered_on())) {
@@ -5245,12 +5196,14 @@ void boot(const std::vector<std::string>& args, Output& output)
                     }
                     break;
                 case LiveControlCommandKind::Button:
+                    note_interactive_host_activity();
                     initial_runtime->kernel->enqueue_system_button(
                         command.system_button);
                     output.line("[control] button event queued");
                     mark_transition_input_complete("button");
                     break;
                 case LiveControlCommandKind::ButtonHold:
+                    note_interactive_host_activity();
                     initial_runtime->kernel->enqueue_system_button(
                         SystemButtonInput { command.system_button.button,
                             SystemButtonPhase::Down });
@@ -5266,6 +5219,7 @@ void boot(const std::vector<std::string>& args, Output& output)
                     }
                     break;
                 case LiveControlCommandKind::Home:
+                    note_interactive_host_activity();
                     initial_runtime->kernel->enqueue_system_button(
                         SystemButtonInput {
                             SystemButton::Home, SystemButtonPhase::Down });
@@ -5276,6 +5230,7 @@ void boot(const std::vector<std::string>& args, Output& output)
                     mark_transition_input_complete("home");
                     break;
                 case LiveControlCommandKind::Lock:
+                    note_interactive_host_activity();
                     initial_runtime->kernel->enqueue_system_button(
                         SystemButtonInput {
                             SystemButton::Lock, SystemButtonPhase::Down });
@@ -5287,6 +5242,7 @@ void boot(const std::vector<std::string>& args, Output& output)
                     break;
                 case LiveControlCommandKind::VolumeUp:
                 case LiveControlCommandKind::VolumeDown: {
+                    note_interactive_host_activity();
                     const auto button =
                         command.kind == LiveControlCommandKind::VolumeUp
                             ? SystemButton::VolumeUp
@@ -5303,6 +5259,7 @@ void boot(const std::vector<std::string>& args, Output& output)
                 }
                 case LiveControlCommandKind::RingerRing:
                 case LiveControlCommandKind::RingerSilent: {
+                    note_interactive_host_activity();
                     const auto active =
                         command.kind == LiveControlCommandKind::RingerRing;
                     initial_runtime->kernel->set_ringer_switch_active(active);
@@ -5570,22 +5527,20 @@ void boot(const std::vector<std::string>& args, Output& output)
         // time; the urgent display thread below is the only exception that may
         // execute while the guest is ahead.
         for (auto& runtime : runtimes) {
-            for (std::size_t processor = 0; processor < runtime->cpus->size();
-                ++processor) {
-                const XnuThreadId thread { runtime->kernel->process().pid,
-                    static_cast<std::uint32_t>(processor) };
-                const auto scheduling_info = scheduler.info(thread);
-                if (!runtime->allocated[processor] || !scheduling_info ||
-                    (scheduling_info->state != XnuThreadState::Waiting &&
-                        scheduling_info->state != XnuThreadState::Runnable)) {
+            const auto display_vsync_receiver =
+                display_urgent_process && runtime->kernel->process().pid ==
+                                              *display_urgent_process
+                    ? runtime->kernel->display_vsync_receiver_processor()
+                    : std::nullopt;
+            for (const auto processor :
+                runtime->kernel->pending_event_poll_candidates()) {
+                if (processor >= runtime->cpus->size() ||
+                    !runtime->allocated[processor]) {
                     continue;
                 }
+                const XnuThreadId thread { runtime->kernel->process().pid,
+                    static_cast<std::uint32_t>(processor) };
                 auto& waiting_cpu = runtime->cpus->cpu(processor);
-                const auto display_vsync_receiver =
-                    display_urgent_process && runtime->kernel->process().pid ==
-                                                  *display_urgent_process
-                        ? runtime->kernel->display_vsync_receiver_processor()
-                        : std::nullopt;
                 const auto delivered_display_vsync =
                     display_vsync_receiver &&
                     *display_vsync_receiver == processor;
@@ -5682,8 +5637,13 @@ void boot(const std::vector<std::string>& args, Output& output)
         // preserving the AddressSpace and exclusive-monitor lifetimes.
         constexpr auto execution_reclaim_grace =
             std::chrono::milliseconds { 1500 };
+        const auto activation_prepare_lead =
+            JitWorkScheduler::activation_preparation_window(
+                translation_lanes);
         const auto reclaim_now = std::chrono::steady_clock::now();
         for (auto& runtime : runtimes) {
+            std::erase_if(runtime->precompile_tasks,
+                [](const auto& task) { return task.finished(); });
             if (!runtime->execution_prepare_task ||
                 !runtime->execution_prepare_task->finished()) {
                 continue;
@@ -5691,21 +5651,40 @@ void boot(const std::vector<std::string>& args, Output& output)
             runtime->execution_prepare_task.reset();
             if (runtime->resume_after_execution_prepare &&
                 !runtime->kernel->process().exited) {
+                if (runtime->image_activation_pending) {
+                    if (!runtime->activation_release_deadline) {
+                        runtime->activation_release_deadline =
+                            reclaim_now + activation_prepare_lead;
+                    }
+                    const auto activation_work_remaining =
+                        runtime->cpus->next_precompile_phase(
+                            JitPrecompileTarget::NativeCode,
+                            JitPrecompileSource::DemandProfile) ||
+                        runtime->cpus->next_precompile_phase(
+                            JitPrecompileTarget::PortableIr,
+                            JitPrecompileSource::DemandProfile);
+                    const auto activation_ready =
+                        runtime->precompile_tasks.empty() &&
+                        !activation_work_remaining;
+                    if (!activation_ready &&
+                        reclaim_now < *runtime->activation_release_deadline) {
+                        continue;
+                    }
+                    runtime->set_image_activation_pending(false);
+                    runtime->activation_release_deadline.reset();
+                }
                 static_cast<void>(scheduler.resume_thread(
                     XnuThreadId { runtime->kernel->process().pid, 0 }));
             }
             runtime->resume_after_execution_prepare = false;
         }
         const auto precompile_finished = [&](Runtime& runtime) {
-            if (!runtime.precompile_task)
+            std::erase_if(runtime.precompile_tasks,
+                [](const auto& task) { return task.finished(); });
+            if (runtime.precompile_tasks.empty())
                 return true;
-            if (!runtime.precompile_task->finished()) {
-                static_cast<void>(
-                    runtime.begin_image_transition(host_resources));
-                return false;
-            }
-            runtime.precompile_task.reset();
-            return true;
+            static_cast<void>(runtime.begin_image_transition(host_resources));
+            return false;
         };
         for (auto& runtime : runtimes) {
             if (runtime->kernel->process().exited &&
@@ -5771,25 +5750,6 @@ void boot(const std::vector<std::string>& args, Output& output)
                 runtime = runtimes.erase(runtime);
             } else {
                 ++runtime;
-            }
-        }
-        std::optional<XnuThreadId> preferred_thread;
-        if (debug_request && debug_request->thread &&
-            debug_request->thread->thread != 0) {
-            preferred_thread = XnuThreadId { debug_request->thread->process,
-                debug_request->thread->thread - 1U };
-        }
-        if (!preferred_thread && scheduler_handoff_thread) {
-            if (const auto info = scheduler.info(*scheduler_handoff_thread);
-                info && info->state == XnuThreadState::Runnable) {
-                // XNU thread_switch(thread_name, ...) removes an eligible
-                // hinted thread from its run queue and hands the processor
-                // directly to it. Preserve that one-shot Guest request ahead of
-                // host-side display and input preferences; it changes no
-                // priority or quantum.
-                preferred_thread = scheduler_handoff_thread;
-            } else {
-                scheduler_handoff_thread.reset();
             }
         }
         const auto display_callback_pending = [&]() {
@@ -5893,105 +5853,52 @@ void boot(const std::vector<std::string>& args, Output& output)
             display_urgent_receiver_thread.reset();
             display_urgent_lease_deadline.reset();
         }
-        if (!preferred_thread && display_callback_work_active &&
-            display_yielded_thread && display_urgent_process) {
-            // thread_switch without an eligible explicit hint asks the
-            // scheduler to let another runnable thread make progress. During a
-            // VSync callback handoff, prefer exactly one oldest same-process
-            // dependency while excluding the yielding source. This avoids both
-            // immediately selecting the source again and dropping the real
-            // pending callback into ordinary system-wide contention. No Guest
-            // priority, quantum, or wait state is changed by this one-shot host
-            // selection.
-            preferred_thread = scheduler.oldest_runnable_thread(
-                *display_urgent_process, display_yielded_thread);
-        }
-        if (!preferred_thread && display_inflight_callback_active &&
-            display_inflight_callback_thread &&
-            display_inflight_callback_thread != display_yielded_thread) {
-            if (const auto info =
-                    scheduler.info(*display_inflight_callback_thread);
-                info && info->state == XnuThreadState::Runnable) {
-                // A synchronous mach_msg receive may run on a different
-                // processor from NotifyFunc. Once firmware has entered
-                // NotifyFunc, follow that exact processor until SwapEnd instead
-                // of continuing to prefer the stale receiver observed before
-                // the callback began.
-                preferred_thread = display_inflight_callback_thread;
-            }
-        }
-        if (!preferred_thread && display_callback_pending &&
-            display_urgent_receiver_thread) {
-            if (const auto info =
-                    scheduler.info(*display_urgent_receiver_thread);
-                info && info->state == XnuThreadState::Runnable &&
-                display_urgent_receiver_thread != display_yielded_thread) {
-                // callback_processor is an observation from the previous
-                // firmware callback until this notification reaches NotifyFunc.
-                // While the current message is still pending, its exact Mach
-                // receiver owns the handoff; selecting the stale callback first
-                // can spin a CFRunLoop thread while the receiver never consumes
-                // the message.
-                preferred_thread = display_urgent_receiver_thread;
-            }
-        }
-        if (!preferred_thread && display_urgent_thread) {
-            if (const auto info = scheduler.info(*display_urgent_thread);
-                info && info->state == XnuThreadState::Runnable &&
-                display_urgent_thread != display_yielded_thread) {
-                preferred_thread = display_urgent_thread;
-            }
-        }
-        if (!preferred_thread && display_urgent_thread &&
-            display_urgent_process &&
-            (display_callback_pending ||
-                (display_urgent_lease_deadline &&
-                    std::chrono::steady_clock::now() <
-                        *display_urgent_lease_deadline))) {
-            const auto callback_info = scheduler.info(*display_urgent_thread);
-            if (callback_info &&
-                callback_info->state != XnuThreadState::Runnable) {
-                // The callback can legitimately be waiting (or still running on
-                // a different guest processor) while handing work to another
-                // SpringBoard thread. First honor the exact receiver that just
-                // consumed the Mach message; only fall back to same-process age
-                // when that receiver is no longer runnable. This does not
-                // change Guest priority, quantum, clock, or callback/frame
-                // count.
-                if (display_urgent_receiver_thread) {
-                    if (const auto receiver_info =
-                            scheduler.info(*display_urgent_receiver_thread);
-                        receiver_info &&
-                        receiver_info->state == XnuThreadState::Runnable) {
-                        preferred_thread = display_urgent_receiver_thread;
-                    }
-                }
-                if (!preferred_thread) {
-                    preferred_thread = scheduler.oldest_runnable_thread(
-                        *display_urgent_process, display_urgent_thread);
-                }
-            }
-        }
-        if (!preferred_thread && display_inflight_callback_active &&
-            display_inflight_callback_thread && display_urgent_process) {
-            const auto callback_info =
-                scheduler.info(*display_inflight_callback_thread);
-            if (callback_info &&
-                callback_info->state != XnuThreadState::Runnable) {
-                // Frame assembly can hand work to another SpringBoard thread.
-                // Preserve the bounded in-flight ownership while allowing that
-                // real dependency to run; no Guest priority or wait state is
-                // changed.
-                preferred_thread = scheduler.oldest_runnable_thread(
-                    *display_urgent_process, display_inflight_callback_thread);
-            }
-        }
-        if (!preferred_thread && input_preferred_thread) {
-            if (const auto info = scheduler.info(*input_preferred_thread);
-                info && info->state == XnuThreadState::Runnable) {
-                preferred_thread = input_preferred_thread;
-            }
-        }
+        const auto debugger_thread =
+            debug_request && debug_request->thread &&
+                debug_request->thread->thread != 0
+                ? std::optional<XnuThreadId> { XnuThreadId {
+                      debug_request->thread->process,
+                      debug_request->thread->thread - 1U } }
+                : std::nullopt;
+        const auto dispatch_now = std::chrono::steady_clock::now();
+        const auto transition =
+            initial_runtime->kernel->foreground_transition_snapshot();
+        using TransitionTerminal =
+            KernelSharedState::ForegroundTransitionTerminalState;
+        const auto transition_process =
+            transition && transition->destination &&
+                transition->terminal_state == TransitionTerminal::Pending
+                ? std::optional<std::uint32_t> {
+                      transition->destination->process_id
+                  }
+                : std::nullopt;
+        const auto active_process =
+            initial_runtime->kernel->active_client_process_id();
+        const auto dispatch = guest_dispatch_policy.decide(scheduler,
+            GuestDispatchObservation {
+                .now = dispatch_now,
+                .debugger_thread = debugger_thread,
+                .explicit_handoff_thread = scheduler_handoff_thread,
+                .realtime_process = display_urgent_process,
+                .realtime_callback_thread = display_urgent_thread,
+                .realtime_receiver_thread = display_urgent_receiver_thread,
+                .realtime_yielded_thread = display_yielded_thread,
+                .realtime_inflight_thread =
+                    display_inflight_callback_thread,
+                .input_target_thread = input_preferred_thread,
+                .foreground_transition_process = transition_process,
+                .active_process = active_process,
+                .interaction_generation = interaction_generation,
+                .realtime_notification_pending = display_callback_pending,
+                .realtime_work_pending = display_callback_work_active,
+                .realtime_inflight = display_inflight_callback_active,
+                .realtime_lease_active =
+                    display_urgent_lease_deadline &&
+                    dispatch_now < *display_urgent_lease_deadline,
+            });
+        if (dispatch.explicit_handoff_stale)
+            scheduler_handoff_thread.reset();
+        const auto preferred_thread = dispatch.preferred_thread;
         // Keep the scanout owner identity across scheduler iterations.  The
         // realtime pacer can take the `guest ahead` path below without
         // executing a guest slice; clearing this identity here would then make
@@ -6183,10 +6090,14 @@ void boot(const std::vector<std::string>& args, Output& output)
                 scheduled_value,
                 selected_runtime,
                 index,
-                &cpu,
-                slice,
-                host_slice_budget,
-                debug_request && debug_request->kind == GdbResumeKind::Step,
+                GuestExecutionRequest {
+                    &cpu,
+                    scheduled_value.processor,
+                    slice,
+                    host_slice_budget,
+                    debug_request &&
+                        debug_request->kind == GdbResumeKind::Step,
+                },
                 false,
             });
         }
@@ -6200,7 +6111,7 @@ void boot(const std::vector<std::string>& args, Output& output)
                 });
         for (auto& prepared : prepared_slices) {
             prepared.deferred_svc = parallel_guest_batch;
-            prepared.cpu->set_svc_dispatch_mode(
+            prepared.execution.cpu->set_svc_dispatch_mode(
                 parallel_guest_batch ? SvcDispatchMode::Deferred
                                      : SvcDispatchMode::Immediate);
         }
@@ -6213,32 +6124,36 @@ void boot(const std::vector<std::string>& args, Output& output)
             // processor, not to the saved register context. Clear it only at a
             // real serialized thread switch; repeated slices of the same thread
             // retain the ordinary Dynarmic fast path.
-            prepared_slices.front().cpu->clear_exclusive_state(
+            prepared_slices.front().execution.cpu->clear_exclusive_state(
                 prepared_slices.front().scheduled.processor);
             last_serial_thread = prepared_slices.front().scheduled.thread;
         }
         if (parallel_guest_batch) {
-            guest_slice_workers->run(prepared_slices);
+            std::vector<GuestExecutionRequest*> execution_requests;
+            execution_requests.reserve(prepared_slices.size());
+            for (auto& prepared : prepared_slices)
+                execution_requests.push_back(&prepared.execution);
+            guest_execution_coordinator->run(execution_requests);
         } else {
             for (auto& prepared : prepared_slices) {
                 if (scheduler.contains(prepared.scheduled.thread))
-                    GuestSliceWorkerPool::execute(prepared);
+                    GuestExecutionCoordinator::execute(prepared.execution);
             }
         }
 
         const bool ran_thread = !prepared_slices.empty();
         std::uint64_t scheduler_round_ticks = 0;
         for (auto& prepared : prepared_slices) {
-            if (prepared.error)
-                std::rethrow_exception(prepared.error);
+            if (prepared.execution.error)
+                std::rethrow_exception(prepared.execution.error);
             const auto scheduled =
                 std::optional<XnuScheduledSlice> { prepared.scheduled };
             if (!scheduler.contains(scheduled->thread))
                 continue;
             auto& runtime = *prepared.runtime;
             const auto index = prepared.thread_index;
-            auto& cpu = *prepared.cpu;
-            auto result = std::move(prepared.result);
+            auto& cpu = *prepared.execution.cpu;
+            auto result = std::move(prepared.execution.result);
             if (performance_counters().cpu_source_diagnostics_enabled() &&
                 result.svc_calls != 0 && result.ticks_consumed < 10'000U) {
                 if (diagnostic_svc_spin_thread != scheduled->thread) {
@@ -6292,7 +6207,8 @@ void boot(const std::vector<std::string>& args, Output& output)
                     std::min(remaining_ticks, result.ticks_consumed);
             }
             bool debug_stop =
-                result.debug_breakpoint.has_value() || prepared.single_step;
+                result.debug_breakpoint.has_value() ||
+                prepared.execution.single_step;
             std::uint8_t debug_signal = gdb_signal::trap;
             const auto fatal_result = result.fault ||
                                       !result.exception.empty() ||
@@ -6339,8 +6255,6 @@ void boot(const std::vector<std::string>& args, Output& output)
                         loaded.arguments, pending.environment);
                     runtime.kernel->set_process_image(pending.path,
                         loaded.executable.code_signature_entitlements());
-                    assign_jit_process_profile(runtime, loaded,
-                        precompile_phase_for_process(loaded.executable_path));
                     runtime.kernel->prepare_exec(pending.processor);
                     auto& exec_cpu = runtime.cpus->cpu(pending.processor);
                     exec_cpu.reset();
@@ -6349,6 +6263,33 @@ void boot(const std::vector<std::string>& args, Output& output)
                     exec_cpu.registers()[13] = loaded.stack_pointer;
                     exec_cpu.registers()[15] = loaded.entry_point;
                     exec_cpu.set_cpsr(0x10);
+                    const auto process_id = runtime.kernel->process().pid;
+                    const auto transition = initial_runtime->kernel
+                                                ->foreground_transition_snapshot();
+                    using TransitionTerminal = KernelSharedState::
+                        ForegroundTransitionTerminalState;
+                    const auto transition_destination =
+                        transition && transition->destination &&
+                        transition->destination->process_id == process_id &&
+                        transition->terminal_state ==
+                            TransitionTerminal::Pending;
+                    const auto active_process = initial_runtime->kernel
+                                                    ->active_client_process_id();
+                    const auto interactive_activation =
+                        transition_destination ||
+                        (active_process && *active_process == process_id);
+                    const auto critical_runtime =
+                        &runtime == initial_runtime ||
+                        display_scanout_owner == &runtime;
+                    apply_jit_runtime_class(runtime,
+                        critical_runtime
+                            ? JitCodeCacheClass::BootCritical
+                        : interactive_activation
+                            ? JitCodeCacheClass::Foreground
+                            : JitCodeCacheClass::Background);
+                    assign_jit_process_profile(runtime, loaded,
+                        precompile_phase_for_lifecycle(
+                            interactive_activation));
                     runtime.kernel->install_main_image_hle(
                         exec_cpu, loaded.executable_path);
                     precompile_startup_profile(runtime, loaded.executable_path);
@@ -6575,6 +6516,7 @@ void boot(const std::vector<std::string>& args, Output& output)
                 static_cast<void>(
                     display_scanout_owner->kernel->refresh_display_scanout());
         }
+        refresh_jit_runtime_classes();
         if (display_scanout_owner != nullptr) {
             // A realtime host-sync step at the top of the loop can advance the
             // device clock and enqueue a VSync message without passing through
@@ -6603,6 +6545,52 @@ void boot(const std::vector<std::string>& args, Output& output)
         } else if (!guest_idle_since) {
             guest_idle_since = std::chrono::steady_clock::now();
         }
+        if (ran_thread && profile_background_warming_enabled) {
+            const auto now = std::chrono::steady_clock::now();
+            std::optional<HostResourceController::Clock::time_point>
+                host_compile_deadline = next_host_control_deadline();
+            if (realtime_pacer) {
+                if (const auto display_deadline = initial_runtime->kernel
+                        ->next_display_vsync_deadline()) {
+                    const auto host_display_deadline =
+                        realtime_pacer->host_deadline_for(*display_deadline);
+                    if (!host_compile_deadline ||
+                        host_display_deadline < *host_compile_deadline) {
+                        host_compile_deadline = host_display_deadline;
+                    }
+                }
+            }
+            host_resources.set_next_deadline(host_compile_deadline);
+            JitWorkObservation observation;
+            observation.memory_pressure =
+                host_memory_is_pressured(latest_host_memory_budget) ||
+                jit_code_cache_governor.total_actual() >
+                    jit_code_cache_governor.total_budget();
+            observation.realtime_work_pending =
+                display_callback_work_active || input_preferred_thread;
+            observation.display_started = observed_display_submissions != 0U;
+            if (now >= last_display_submission)
+                observation.display_quiet_for = now - last_display_submission;
+            if (host_compile_deadline) {
+                observation.deadline_remaining =
+                    *host_compile_deadline > now
+                        ? std::chrono::duration_cast<std::chrono::nanoseconds>(
+                              *host_compile_deadline - now)
+                        : std::chrono::nanoseconds::zero();
+            }
+            if (now >= last_interactive_host_activity) {
+                observation.interaction_quiet_for =
+                    now - last_interactive_host_activity;
+            }
+            observation.block_compile_p95_nanoseconds =
+                performance_counters().jit_block_compile_p95_nanoseconds();
+            observation.block_compile_p99_nanoseconds =
+                performance_counters().jit_block_compile_p99_nanoseconds();
+            // Guest-busy admission is intentionally role-only. Generic
+            // prediction and portable persistence remain idle-bound.
+            schedule_jit_profile_work(
+                observation, host_compile_deadline, false);
+        }
         if (!ran_thread) {
             constexpr auto jit_quota_refresh_period =
                 std::chrono::milliseconds { 250 };
@@ -6614,17 +6602,40 @@ void boot(const std::vector<std::string>& args, Output& output)
                 latest_host_memory_budget = memory;
                 const auto memory_pressured = host_memory_is_pressured(memory);
                 jit_code_cache_governor.set_pressure_limited(memory_pressured);
-                if (memory_pressured && !pressure_reclamation_applied) {
+                for (auto& runtime : runtimes) {
+                    if (!runtime->jit_cache_reservation ||
+                        !runtime->cpus->has_execution_resources()) {
+                        continue;
+                    }
+                    const auto actual = runtime->cpus->jit_code_cache_bytes();
+                    jit_code_cache_governor.refresh_actual(
+                        *runtime->jit_cache_reservation, actual);
+                }
+                const auto cache_budget_exceeded =
+                    jit_code_cache_governor.total_actual() >
+                    jit_code_cache_governor.total_budget();
+                const auto reclamation_needed =
+                    memory_pressured || cache_budget_exceeded;
+                if (reclamation_needed && !pressure_reclamation_applied) {
                     // Pressure handling is ordered: cancel optional compile
                     // work first, then stop artifact writeback, then reclaim
                     // unreferenced artifacts.
                     for (auto& runtime : runtimes) {
-                        if (runtime->precompile_task &&
-                            !runtime->precompile_task->finished()) {
-                            runtime->precompile_task->cancel();
-                            runtime->cpus->quiesce_precompilation();
-                            runtime->precompile_task->wait_finished();
+                        bool active_precompile { };
+                        for (const auto& task : runtime->precompile_tasks) {
+                            if (!task.finished()) {
+                                task.cancel();
+                                active_precompile = true;
+                            }
                         }
+                        if (active_precompile) {
+                            runtime->cpus->quiesce_precompilation();
+                            for (const auto& task :
+                                runtime->precompile_tasks) {
+                                task.wait_finished();
+                            }
+                        }
+                        runtime->precompile_tasks.clear();
                     }
                     jit_artifacts->cancel_writeback();
                     const auto artifact_before = jit_artifacts->stats();
@@ -6639,17 +6650,50 @@ void boot(const std::vector<std::string>& args, Output& output)
                         std::to_string(reclaimed) +
                         " target-resident-bytes=" + std::to_string(target));
                     pressure_reclamation_applied = true;
-                } else if (!memory_pressured) {
-                    pressure_reclamation_applied = false;
                 }
-                for (auto& runtime : runtimes) {
-                    if (!runtime->jit_cache_reservation ||
-                        !runtime->cpus->has_execution_resources()) {
-                        continue;
+                if (reclamation_needed) {
+                    // Native mappings stay intact. At a global Guest-idle safe
+                    // point, discard only an ordinary runtime whose measured
+                    // live code exceeds its core-owned retention target. This
+                    // is intentionally after optional work cancellation.
+                    std::uint64_t native_reclaimed { };
+                    std::size_t native_runtimes { };
+                    for (auto& runtime : runtimes) {
+                        if (!runtime->jit_cache_reservation ||
+                            !runtime->cpus->has_execution_resources() ||
+                            runtime->jit_cache_class !=
+                                JitCodeCacheClass::Background ||
+                            scheduler.process_runnable_count(
+                                runtime->kernel->process().pid) != 0U ||
+                            jit_code_cache_governor.reclaimable_bytes(
+                                *runtime->jit_cache_reservation) == 0U) {
+                            continue;
+                        }
+                        const auto before =
+                            runtime->cpus->jit_code_cache_bytes();
+                        runtime->cpus->clear_cache();
+                        const auto after =
+                            runtime->cpus->jit_code_cache_bytes();
+                        jit_code_cache_governor.refresh_actual(
+                            *runtime->jit_cache_reservation, after);
+                        native_reclaimed += before > after ? before - after : 0U;
+                        ++native_runtimes;
                     }
-                    const auto actual = runtime->cpus->jit_code_cache_bytes();
-                    static_cast<void>(jit_code_cache_governor.refresh_actual(
-                        *runtime->jit_cache_reservation, actual, memory));
+                    if (native_runtimes != 0U) {
+                        output.line(
+                            "[jit-pressure] native-runtimes=" +
+                            std::to_string(native_runtimes) +
+                            " native-reclaimed-bytes=" +
+                            std::to_string(native_reclaimed) +
+                            " live-code-bytes=" +
+                            std::to_string(
+                                jit_code_cache_governor.total_actual()) +
+                            " live-code-budget-bytes=" +
+                            std::to_string(
+                                jit_code_cache_governor.total_budget()));
+                    }
+                } else {
+                    pressure_reclamation_applied = false;
                 }
             }
             if (gdb_server && gdb_server->poll_interrupt()) {
@@ -6693,11 +6737,19 @@ void boot(const std::vector<std::string>& args, Output& output)
                     guest_deadlines.erase(process_id);
                     continue;
                 }
-                const auto deadline = runtime->kernel->next_timer_deadline();
-                if (deadline)
-                    guest_deadlines.upsert(process_id, *deadline);
-                else
-                    guest_deadlines.erase(process_id);
+                const auto deadline =
+                    runtime->kernel->timer_deadline_snapshot();
+                if (!runtime->timer_deadline_observed ||
+                    runtime->timer_deadline_generation !=
+                        deadline.generation) {
+                    if (deadline.deadline) {
+                        guest_deadlines.upsert(process_id, *deadline.deadline);
+                    } else {
+                        guest_deadlines.erase(process_id);
+                    }
+                    runtime->timer_deadline_generation = deadline.generation;
+                    runtime->timer_deadline_observed = true;
+                }
             }
             next_deadline = guest_deadlines.next_deadline();
             const auto next_host_deadline = next_host_control_deadline();
@@ -6866,257 +6918,47 @@ void boot(const std::vector<std::string>& args, Output& output)
                 }
             };
             if (profile_background_warming_enabled) {
-                Runtime* active_runtime = nullptr;
-                if (const auto active_process =
-                        initial_runtime->kernel->active_client_process_id()) {
-                    active_runtime = runtime_index.find(*active_process);
+                const auto now = std::chrono::steady_clock::now();
+                JitWorkObservation observation;
+                observation.memory_pressure =
+                    host_memory_is_pressured(latest_host_memory_budget) ||
+                    jit_code_cache_governor.total_actual() >
+                        jit_code_cache_governor.total_budget();
+                observation.realtime_work_pending =
+                    display_callback_work_active || input_preferred_thread;
+                observation.display_started =
+                    observed_display_submissions != 0U;
+                if (now >= last_display_submission) {
+                    observation.display_quiet_for =
+                        now - last_display_submission;
                 }
-                constexpr std::size_t idle_precompile_block_budget = 32;
-                constexpr std::size_t idle_precompile_portable_block_budget =
-                    16;
-                constexpr std::uint64_t idle_precompile_time_budget_ns = 500000;
-                // A Dynarmic block compile is not preemptible. Keep a
-                // conservative reserve beyond the nominal batch budget so
-                // profile warming cannot consume the next guest timer or
-                // host-input deadline.
-                const auto historical_block_reserve = std::chrono::nanoseconds {
-                    static_cast<std::chrono::nanoseconds::rep>(
-                        std::max(performance_counters()
-                                     .jit_block_compile_p95_nanoseconds(),
-                            performance_counters()
-                                .jit_block_compile_p99_nanoseconds()))
-                };
-                // Keep the existing conservative floor until enough history
-                // exists; then let the measured P95/P99 of one non-preemptible
-                // block extend it.
-                const auto idle_precompile_deadline_reserve = std::max(
-                    std::chrono::nanoseconds {
-                        std::chrono::milliseconds { 20 } },
-                    historical_block_reserve);
-                constexpr auto idle_precompile_display_quiet_period =
-                    std::chrono::milliseconds { 100 };
-                constexpr auto idle_precompile_no_deadline_quiet_period =
-                    std::chrono::milliseconds { 20 };
-                const auto host_memory_pressure = [&]() {
-                    return host_memory_is_pressured(latest_host_memory_budget);
-                };
-                const auto available_precompile_budget = [&](HostWorkKind
-                                                                 work_kind) {
-                    const auto memory_pressure = host_memory_pressure();
-                    // Both optional compile streams yield under pressure.
-                    // Demand JIT for a running foreground process remains
-                    // available through the normal execution path and is never
-                    // submitted as background work here.
-                    if (memory_pressure &&
-                        (work_kind == HostWorkKind::OfflineCompile ||
-                            work_kind == HostWorkKind::BackgroundCompile))
-                        return PrecompileBudgetDecision { 0U,
-                            PrecompileScheduleSkip::MemoryPressure };
-                    if (!realtime_pacer)
-                        return PrecompileBudgetDecision {
-                            memory_pressure
-                                ? idle_precompile_time_budget_ns / 4U
-                                : idle_precompile_time_budget_ns,
-                            PrecompileScheduleSkip::ZeroBudget
-                        };
-                    const auto now = std::chrono::steady_clock::now();
-                    if (now - last_display_submission <
-                        idle_precompile_display_quiet_period) {
-                        return PrecompileBudgetDecision { 0U,
-                            PrecompileScheduleSkip::DisplayQuiet };
-                    }
+                if (guest_idle_since && now >= *guest_idle_since) {
+                    observation.guest_idle_for = now - *guest_idle_since;
+                }
+                if (now >= last_interactive_host_activity) {
+                    observation.interaction_quiet_for =
+                        now - last_interactive_host_activity;
+                }
+                if (realtime_pacer) {
                     auto available = std::chrono::nanoseconds::max();
                     if (next_deadline) {
                         available = realtime_pacer->delay_until(*next_deadline);
-                    } else if (!guest_idle_since ||
-                               now - *guest_idle_since <
-                                   idle_precompile_no_deadline_quiet_period) {
-                        return PrecompileBudgetDecision { 0U,
-                            PrecompileScheduleSkip::GuestNotIdle };
                     }
                     available = realtime_pacer->limit_delay(
                         available, next_host_control_deadline());
-                    if (available <= idle_precompile_deadline_reserve)
-                        return PrecompileBudgetDecision { 0U,
-                            PrecompileScheduleSkip::DeadlineReserve };
-                    const auto budget =
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            available - idle_precompile_deadline_reserve);
-                    const auto paced_budget =
-                        std::min(idle_precompile_time_budget_ns,
-                            static_cast<std::uint64_t>(budget.count()));
-                    return PrecompileBudgetDecision {
-                        memory_pressure ? paced_budget / 4U : paced_budget,
-                        PrecompileScheduleSkip::ZeroBudget
-                    };
-                };
-                const auto schedule_precompile_runtime =
-                    [&](Runtime* runtime, HostWorkKind work_kind,
-                        JitPrecompileTarget target,
-                        std::optional<JitPrecompileSource> source =
-                            std::nullopt) {
-                        if (runtime == nullptr ||
-                            runtime->kernel->process().exited) {
-                            record_precompile_schedule_skip(
-                                PrecompileScheduleSkip::NoRuntime);
-                            return;
-                        }
-                        if (runtime->precompile_task) {
-                            if (!runtime->precompile_task->finished()) {
-                                record_precompile_schedule_skip(
-                                    PrecompileScheduleSkip::TaskBusy);
-                                return;
-                            }
-                            runtime->precompile_task.reset();
-                        }
-                        const auto next_phase =
-                            runtime->cpus->next_precompile_phase(
-                                target, source);
-                        if (!next_phase) {
-                            record_precompile_schedule_skip(
-                                PrecompileScheduleSkip::NoPhase);
-                            return;
-                        }
-                        const auto phase = *next_phase;
-                        const auto budget =
-                            available_precompile_budget(work_kind);
-                        if (budget.budget == 0U) {
-                            record_precompile_schedule_skip(budget.zero_reason);
-                            return;
-                        }
-                        const auto expected_epoch =
-                            runtime->work_epoch.current();
-                        const auto block_budget =
-                            target == JitPrecompileTarget::PortableIr
-                                ? idle_precompile_portable_block_budget
-                                : idle_precompile_block_budget;
-                        runtime
-                            ->precompile_task = host_resources.submit_cancellable(
-                            work_kind, host_compile_deadline,
-                            [runtime, expected_epoch, budget, block_budget,
-                                phase, target, source,
-                                &precompile_blocks_by_phase,
-                                &precompile_blocks_by_target,
-                                &record_precompile_outcomes](
-                                const HostWorkToken& token) {
-                                const auto result =
-                                    runtime->cpus->precompile_pending(
-                                        block_budget, budget.budget, target,
-                                        [runtime, expected_epoch, &token] {
-                                            return token.cancelled() ||
-                                                   runtime
-                                                       ->precompile_stop_requested(
-                                                           expected_epoch);
-                                        },
-                                        source);
-                                record_precompile_outcomes(
-                                    result, source.value_or(
-                                                JitPrecompileSource::Other));
-                                const auto compiled =
-                                    target == JitPrecompileTarget::NativeCode
-                                        ? result.native_compiled
-                                        : result.portable_generated;
-                                precompile_blocks_by_phase
-                                    [static_cast<std::size_t>(phase)]
-                                        .fetch_add(compiled,
-                                            std::memory_order_relaxed);
-                                precompile_blocks_by_target
-                                    [static_cast<std::size_t>(target)]
-                                        .fetch_add(compiled,
-                                            std::memory_order_relaxed);
-                            },
-                            std::chrono::nanoseconds {
-                                static_cast<std::chrono::nanoseconds::rep>(
-                                    budget.budget) });
-                        if (runtime->precompile_task) {
-                            ++precompile_tasks_by_phase
-                                [static_cast<std::size_t>(phase)];
-                            ++precompile_tasks_by_target
-                                [static_cast<std::size_t>(target)];
-                        } else {
-                            record_precompile_schedule_skip(
-                                PrecompileScheduleSkip::HostRejected);
-                        }
-                    };
-                const auto schedule_profile_warm =
-                    [&, profile_background_warming_enabled](Runtime* runtime) {
-                        if (!profile_background_warming_enabled)
-                            return;
-                        if (runtime == nullptr ||
-                            runtime->kernel->process().exited) {
-                            return;
-                        }
-                        runtime->cpus->refresh_translation_profile();
-                        // Native warming is preferred for the active and
-                        // scanout owners. Once their native queue is exhausted,
-                        // spend a small idle slice generating reusable Portable
-                        // IR for the same profile hints.
-                        const auto native_phase =
-                            runtime->cpus->next_precompile_phase(
-                                JitPrecompileTarget::NativeCode,
-                                JitPrecompileSource::DemandProfile);
-                        if (native_phase) {
-                            schedule_precompile_runtime(runtime,
-                                HostWorkKind::BackgroundCompile,
-                                JitPrecompileTarget::NativeCode,
-                                JitPrecompileSource::DemandProfile);
-                        } else {
-                            schedule_precompile_runtime(runtime,
-                                HostWorkKind::OfflineCompile,
-                                JitPrecompileTarget::PortableIr,
-                                JitPrecompileSource::DemandProfile);
-                        }
-                    };
-                schedule_profile_warm(active_runtime);
-                schedule_artifact_compaction();
-                // The scanout publisher may be a background compositor while an
-                // App is active. Its cached exit/unlock paths are just as
-                // latency-sensitive as the foreground process, so consume their
-                // host-only profile hints while every guest thread is idle.
-                if (display_scanout_owner != active_runtime) {
-                    schedule_profile_warm(display_scanout_owner);
-                }
-                Runtime* offline_precompile_runtime = nullptr;
-                std::optional<JitPrecompilePhase> offline_precompile_phase;
-                // Active and scanout owners were submitted above for native
-                // warming. Use one remaining worker slot to generate reusable
-                // portable IR for the earliest phase across every other live
-                // process; creation order breaks equal-phase ties and therefore
-                // preserves startup-service age.
-                if (profile_background_warming_enabled) {
-                    for (const auto& runtime : runtimes) {
-                        if (runtime.get() == active_runtime ||
-                            runtime.get() == display_scanout_owner ||
-                            runtime->kernel->process().exited ||
-                            (runtime->precompile_task &&
-                                !runtime->precompile_task->finished())) {
-                            continue;
-                        }
-                        runtime->cpus->refresh_translation_profile();
-                        const auto phase = runtime->cpus->next_precompile_phase(
-                            JitPrecompileTarget::PortableIr,
-                            JitPrecompileSource::DemandProfile);
-                        if (phase && (!offline_precompile_phase ||
-                                         static_cast<std::uint8_t>(*phase) <
-                                             static_cast<std::uint8_t>(
-                                                 *offline_precompile_phase))) {
-                            offline_precompile_runtime = runtime.get();
-                            offline_precompile_phase = phase;
-                        }
+                    if (available != std::chrono::nanoseconds::max()) {
+                        observation.deadline_remaining = available;
                     }
                 }
-                schedule_precompile_runtime(offline_precompile_runtime,
-                    HostWorkKind::OfflineCompile,
-                    JitPrecompileTarget::PortableIr,
-                    JitPrecompileSource::DemandProfile);
-            } else {
-                // Profile-off remains a demand-JIT run: do not resolve active
-                // runtimes, refresh profile phases, compute compile reserves,
-                // or submit a null-runtime precompile task. Artifact
-                // maintenance is independent of profile warming and remains
-                // eligible here.
-                schedule_artifact_compaction();
+                observation.block_compile_p95_nanoseconds =
+                    performance_counters().jit_block_compile_p95_nanoseconds();
+                observation.block_compile_p99_nanoseconds =
+                    performance_counters().jit_block_compile_p99_nanoseconds();
+                schedule_jit_profile_work(
+                    observation, host_compile_deadline, true);
             }
+            // Artifact maintenance is independent of profile warming.
+            schedule_artifact_compaction();
             if (next_deadline) {
                 if (realtime_pacer) {
                     const auto guest_ahead_delay =
@@ -7407,6 +7249,10 @@ void boot(const std::vector<std::string>& args, Output& output)
     PerformanceSnapshot stopped_guest;
     FilePageCacheStats file_cache_stats;
     std::uint64_t file_page_cache_bytes { };
+    // Guest and display pacing have stopped, so the last interactive deadline
+    // is no longer meaningful. Let already-admitted bounded host work drain
+    // instead of leaving it permanently ineligible behind a stale deadline.
+    host_resources.set_next_deadline(std::nullopt);
     host_resources.wait_idle();
     refresh_catalog_after_file_mutations(true, false);
     static_cast<void>(host_file_watcher.publish_stable(host_resources,
@@ -7967,6 +7813,8 @@ void boot(const std::vector<std::string>& args, Output& output)
             " deduplicated=" + std::to_string(profile_stats.deduplicated) +
             " dropped-capacity=" +
             std::to_string(profile_stats.dropped_capacity) +
+            " working-set-evicted=" +
+            std::to_string(profile_stats.working_set_evicted) +
             " unstable-dropped=" +
             std::to_string(profile_stats.unstable_dropped) +
             " disk-descriptors-loaded=" +
@@ -8082,6 +7930,8 @@ void boot(const std::vector<std::string>& args, Output& output)
                        std::to_string(stats.queue_block_bytes) +
                        "-recorder-bytes=" +
                        std::to_string(stats.profile_recorder_bytes) +
+                       "-native-prediction-bytes=" +
+                       std::to_string(stats.native_profile_prediction_bytes) +
                        "-tracker-bytes=" +
                        std::to_string(stats.native_preimport_tracker_bytes);
             };
@@ -8387,6 +8237,8 @@ void boot(const std::vector<std::string>& args, Output& output)
             std::to_string(queue.estimated_queue_entry_bytes) +
             " atomic-queue-snapshot-recorder-bytes=" +
             std::to_string(queue.profile_recorder_bytes) +
+            " atomic-queue-snapshot-native-prediction-bytes=" +
+            std::to_string(queue.native_profile_prediction_bytes) +
             " atomic-queue-snapshot-tracker-bytes=" +
             std::to_string(queue.native_preimport_tracker_bytes));
     }
