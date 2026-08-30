@@ -2532,14 +2532,47 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                         *filter_flags & darwin::kqueue::user_note_flags_mask;
                 }
                 if (signed_filter == darwin::kqueue::filter_process) {
-                    std::lock_guard lock { shared_state_->mach_mutex };
-                    const auto process =
-                        shared_state_->process_kevent_states.find(*ident);
-                    if (process != shared_state_->process_kevent_states.end()) {
+                    std::uint64_t current_exec_generation = 0;
+                    std::uint64_t current_exit_generation = 0;
+                    {
+                        std::lock_guard lock { shared_state_->mach_mutex };
+                        const auto process =
+                            shared_state_->process_kevent_states.find(*ident);
+                        if (process !=
+                            shared_state_->process_kevent_states.end()) {
+                            current_exec_generation =
+                                process->second.exec_generation;
+                            current_exit_generation =
+                                process->second.exit_generation;
+                        }
+                    }
+                    if (found != queue->second.end()) {
+                        // EV_ADD modifies an existing knote. Preserve the
+                        // consumed position of notes that remain selected so an
+                        // edge arriving before the update remains pending. A
+                        // newly selected note starts at the current generation
+                        // and does not synthesize historical activity.
+                        const auto retains_exec_note =
+                            (found->filter_flags &
+                                darwin::kqueue::process_note_exec) != 0U &&
+                            (*filter_flags &
+                                darwin::kqueue::process_note_exec) != 0U;
+                        const auto retains_exit_note =
+                            (found->filter_flags &
+                                darwin::kqueue::process_note_exit) != 0U &&
+                            (*filter_flags &
+                                darwin::kqueue::process_note_exit) != 0U;
                         registration.process_exec_generation =
-                            process->second.exec_generation;
+                            retains_exec_note ? found->process_exec_generation
+                                              : current_exec_generation;
                         registration.process_exit_generation =
-                            process->second.exit_generation;
+                            retains_exit_note ? found->process_exit_generation
+                                              : current_exit_generation;
+                    } else {
+                        registration.process_exec_generation =
+                            current_exec_generation;
+                        registration.process_exit_generation =
+                            current_exit_generation;
                     }
                 }
                 if (found == queue->second.end()) {

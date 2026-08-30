@@ -1563,6 +1563,10 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         registration != queue->second.end();) {
         std::uint32_t filter_flags = 0;
         std::uint32_t available = 1;
+        auto process_exec_generation_at_evaluation =
+            registration->process_exec_generation;
+        auto process_exit_generation_at_evaluation =
+            registration->process_exit_generation;
         auto result_flags = static_cast<std::uint16_t>(
             registration->flags &
             (darwin::kqueue::event_clear | darwin::kqueue::event_dispatch |
@@ -1573,6 +1577,10 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             const auto process =
                 shared_state_->process_kevent_states.find(registration->ident);
             if (process != shared_state_->process_kevent_states.end()) {
+                process_exec_generation_at_evaluation =
+                    process->second.exec_generation;
+                process_exit_generation_at_evaluation =
+                    process->second.exit_generation;
                 if ((registration->filter_flags &
                         darwin::kqueue::process_note_exec) != 0U &&
                     process->second.exec_generation !=
@@ -1636,7 +1644,12 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                     listener->second->pending_endpoints.size());
             }
         }
-        if (clears_after_delivery && registration->clear_delivered &&
+        // Process readiness is already edge-consumed by its observed
+        // generations. Comparing only `data` can collapse distinct process
+        // events (for example NOTE_EXEC data=1 followed by signal-1 exit).
+        if (clears_after_delivery &&
+            registration->filter != darwin::kqueue::filter_process &&
+            registration->clear_delivered &&
             registration->clear_available == available) {
             ++registration;
             continue;
@@ -1683,14 +1696,19 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             registration = queue->second.erase(registration);
         } else {
             if (registration->filter == darwin::kqueue::filter_process) {
-                std::lock_guard lock { shared_state_->mach_mutex };
-                const auto process = shared_state_->process_kevent_states.find(
-                    registration->ident);
-                if (process != shared_state_->process_kevent_states.end()) {
+                // A later process edge can arrive after readiness was
+                // evaluated but before the event has been copied out. Only
+                // acknowledge generations represented by this delivery, and
+                // use the values captured by that evaluation. Re-reading and
+                // copying every current generation here can consume an edge
+                // that was never returned to the guest.
+                if ((filter_flags & darwin::kqueue::process_note_exec) != 0U) {
                     registration->process_exec_generation =
-                        process->second.exec_generation;
+                        process_exec_generation_at_evaluation;
+                }
+                if ((filter_flags & darwin::kqueue::process_note_exit) != 0U) {
                     registration->process_exit_generation =
-                        process->second.exit_generation;
+                        process_exit_generation_at_evaluation;
                 }
             }
             ++registration;
