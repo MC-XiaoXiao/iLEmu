@@ -99,6 +99,11 @@ struct KeventRegistration {
     bool enabled { true };
     bool clear_delivered { };
     std::uint32_t clear_available { };
+    // EVFILT_MACHPORT readiness is immutable while the shared Mach queue
+    // generation is unchanged. Cache only a negative observation; positive
+    // readiness is always re-evaluated so consuming a message cannot leave a
+    // stale ready result.
+    mutable std::uint64_t empty_mach_queue_generation { };
 };
 
 struct PendingWait {
@@ -1165,6 +1170,14 @@ struct KernelSharedState {
     // the queue and every generation transition remain serialized by
     // mach_mutex.
     std::atomic_uint64_t mach_queue_generation { 1 };
+    // Timer/deadline topology can change at any Guest kernel entry. Keep this
+    // conservative generation separate from descriptor readiness: ordinary
+    // syscalls must not invalidate every unrelated blocked kqueue.
+    std::atomic_uint64_t kernel_event_generation { 1 };
+    // Non-Mach readiness producers advance this generation at the mutation
+    // boundary. Asynchronous host descriptors remain protected by their
+    // bounded wall-clock probe cadence.
+    std::atomic_uint64_t io_event_generation { 1 };
 
     // The caller holds mach_mutex. Centralizing enqueue makes it impossible for
     // a new message source to publish data without also waking cached empty
@@ -1186,6 +1199,26 @@ struct KernelSharedState {
     [[nodiscard]] std::uint64_t mach_queue_generation_snapshot() const
     {
         return mach_queue_generation.load(std::memory_order_acquire);
+    }
+
+    void note_kernel_event_transition()
+    {
+        kernel_event_generation.fetch_add(1, std::memory_order_release);
+    }
+
+    [[nodiscard]] std::uint64_t kernel_event_generation_snapshot() const
+    {
+        return kernel_event_generation.load(std::memory_order_acquire);
+    }
+
+    void note_io_event_transition()
+    {
+        io_event_generation.fetch_add(1, std::memory_order_release);
+    }
+
+    [[nodiscard]] std::uint64_t io_event_generation_snapshot() const
+    {
+        return io_event_generation.load(std::memory_order_acquire);
     }
     // launchd remains the authority for the bootstrap namespace. These caches
     // only remember replies already observed on the emulated Mach IPC path so

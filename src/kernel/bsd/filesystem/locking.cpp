@@ -435,6 +435,7 @@ bool CompatibilityKernel::dispatch_bsd_record_locking(
     if (guest->type == darwin::record_lock::unlock) {
         shared_state_->advisory_file_locks->unlock_record_lock(
             permanent_file_id, process_.pid, range);
+        shared_state_->note_io_event_transition();
         output_.write("[vfs] fcntl unlock pid=" + std::to_string(process_.pid) +
                       " fd=" + std::to_string(fd) + "\n");
         bsd_success(cpu, 0);
@@ -492,6 +493,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_locking(
 
     if ((how & darwin::flock_operation::unlock) != 0) {
         shared_state_->advisory_file_locks->release(*description);
+        shared_state_->note_io_event_transition();
         output_.write("[vfs] flock unlock pid=" + std::to_string(process_.pid) +
                       " fd=" + std::to_string(fd) + "\n");
         bsd_success(cpu, 0);

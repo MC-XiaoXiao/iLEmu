@@ -2439,6 +2439,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                                : bsd_support::invalid_argument);
             return;
         }
+        if (registers[2] != 0U)
+            shared_state_->note_io_event_transition();
         std::uint32_t receipts_written = 0;
         const auto write_receipt = [&](std::uint32_t ident, std::int16_t filter,
                                        std::uint16_t flags,

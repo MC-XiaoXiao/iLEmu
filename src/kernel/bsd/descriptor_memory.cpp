@@ -477,6 +477,7 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 shared_state_->socket_pair_buffers[endpoint->second.pair]
                                                   [1U - endpoint->second.side];
             destination.insert(destination.end(), bytes->begin(), bytes->end());
+            shared_state_->note_io_event_transition();
             bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));
             return;
         }

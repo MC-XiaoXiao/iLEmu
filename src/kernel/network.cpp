@@ -999,6 +999,7 @@ void CompatibilityKernel::post_network_event(std::string_view interface_name,
            darwin::network::maximum_retained_kernel_events) {
         shared_state_->kernel_events.pop_front();
     }
+    shared_state_->note_io_event_transition();
 }
 
 void CompatibilityKernel::post_data_link_event(
@@ -1119,6 +1120,7 @@ void CompatibilityKernel::post_route_message(std::vector<std::byte> bytes,
            darwin::route::maximum_retained_messages) {
         shared_state_->route_socket_messages.pop_front();
     }
+    shared_state_->note_io_event_transition();
 }
 
 void CompatibilityKernel::synchronize_interface_routes(
@@ -1288,7 +1290,7 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
                    (event.filter == darwin::kqueue::filter_write &&
                        descriptor_writable(event.ident)) ||
                    (event.filter == darwin::kqueue::filter_mach_port &&
-                       ready_mach_port_name(event.ident).has_value());
+                       ready_mach_kevent_name(event).has_value());
         });
 }
 
@@ -1319,6 +1321,48 @@ bool CompatibilityKernel::descriptor_writable(std::uint32_t fd) const
             descriptor->second ==
                 bsd::offline_serial_device::descriptor_kind)) {
         return true;
+    }
+    return false;
+}
+
+bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd) const
+{
+    std::unordered_set<std::uint32_t> visited;
+    return descriptor_requires_host_poll(fd, visited);
+}
+
+bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd,
+    std::unordered_set<std::uint32_t>& visited) const
+{
+    // A descriptor cycle is invalid Guest state, but treating it as host
+    // sensitive preserves forward progress without recursively polling it.
+    if (!visited.insert(fd).second)
+        return true;
+    if (const auto duplicate = duplicated_descriptors_.find(fd);
+        duplicate != duplicated_descriptors_.end()) {
+        return descriptor_requires_host_poll(duplicate->second, visited);
+    }
+    if (host_sockets_.contains(fd) || virtual_udp_sockets_.contains(fd) ||
+        bpf_descriptors_.contains(fd) || wifi_driver_event_streams_.contains(fd)) {
+        return true;
+    }
+    if (const auto kind = virtual_descriptors_.find(fd);
+        kind != virtual_descriptors_.end() &&
+        (kind->second == bsd::baseband_device::descriptor_kind ||
+            kind->second == bsd::offline_serial_device::descriptor_kind)) {
+        return true;
+    }
+    const auto queue = kqueues_.find(fd);
+    if (queue == kqueues_.end())
+        return false;
+    for (const auto& registration : queue->second) {
+        if (!registration.enabled ||
+            (registration.filter != darwin::kqueue::filter_read &&
+                registration.filter != darwin::kqueue::filter_write)) {
+            continue;
+        }
+        if (descriptor_requires_host_poll(registration.ident, visited))
+            return true;
     }
     return false;
 }
@@ -1402,6 +1446,28 @@ std::optional<std::uint32_t> CompatibilityKernel::ready_mach_port_name(
     if ((entry->type & xnu792::ipc::type_mask(Right::Receive)) != 0U &&
         queue_has_message(entry->object)) {
         return name;
+    }
+    return std::nullopt;
+}
+
+std::optional<std::uint32_t> CompatibilityKernel::ready_mach_kevent_name(
+    const KeventRegistration& registration) const
+{
+    const auto generation_before =
+        shared_state_->mach_queue_generation_snapshot();
+    if (registration.empty_mach_queue_generation == generation_before)
+        return std::nullopt;
+
+    if (const auto ready = ready_mach_port_name(registration.ident)) {
+        registration.empty_mach_queue_generation = 0;
+        return ready;
+    }
+
+    // Do not publish a negative result if a producer changed the queue while
+    // the namespace/port-set lookup was in progress. A later enqueue after the
+    // second snapshot also advances the generation and invalidates this value.
+    if (shared_state_->mach_queue_generation_snapshot() == generation_before) {
+        registration.empty_mach_queue_generation = generation_before;
     }
     return std::nullopt;
 }
@@ -1525,7 +1591,7 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             }
             result_flags |= darwin::kqueue::event_clear;
         } else if (registration->filter == darwin::kqueue::filter_mach_port) {
-            ready_mach_name = ready_mach_port_name(registration->ident);
+            ready_mach_name = ready_mach_kevent_name(*registration);
             if (ready_mach_name)
                 available = *ready_mach_name;
         } else if (registration->filter == darwin::kqueue::filter_user) {

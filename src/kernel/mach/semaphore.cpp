@@ -146,6 +146,7 @@ void CompatibilityKernel::wake_thread_and_maybe_preempt(
 {
     if (!thread || !thread_wake_handler_)
         return;
+    shared_state_->note_io_event_transition();
     const auto wake_result =
         thread_wake_handler_(thread->first, thread->second);
     if (wake_result.preemption_needed && scheduler_preemption_query_ &&
@@ -163,6 +164,8 @@ void CompatibilityKernel::wake_threads_and_maybe_preempt(
 {
     if (!thread_wake_handler_)
         return;
+    if (!threads.empty())
+        shared_state_->note_io_event_transition();
     bool preemption_needed = false;
     for (const auto& [process, processor] : threads) {
         preemption_needed |=

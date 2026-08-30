@@ -211,6 +211,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                       " bytes=" + std::to_string(total) +
                       " control=" + std::to_string(control_size) +
                       " rights=" + std::to_string(transfer_count) + "\n");
+        shared_state_->note_io_event_transition();
         bsd_success(cpu, total);
         return;
     }
@@ -686,6 +687,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             pair, std::array<std::deque<std::byte>, 2> { });
         socket_pair_endpoints_[fd] = std::move(endpoints.first);
         listener->pending_endpoints.push_back(std::move(endpoints.second));
+        shared_state_->note_io_event_transition();
         output_.write("[network] connected pair=" + std::to_string(pair) +
                       " listener-pid=" + std::to_string(listener->owner_pid) +
                       "\n");
@@ -1207,6 +1209,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 shared_state_->socket_pair_buffers[endpoint->second.pair]
                                                   [1U - endpoint->second.side];
             destination.insert(destination.end(), bytes->begin(), bytes->end());
+            shared_state_->note_io_event_transition();
             bsd_success(cpu, static_cast<std::uint32_t>(bytes->size()));
             return;
         }
@@ -1280,6 +1283,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 how == darwin::socket::shutdown_read_write) {
                 endpoint->second.shutdown_write();
             }
+            shared_state_->note_io_event_transition();
             bsd_success(cpu, 0);
         } else {
             bsd_error(cpu, virtual_descriptors_.contains(fd)

@@ -125,7 +125,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                     shared_state_->mach_port_sets.contains(*receive_object), 0,
                     shared_state_->allocate_mach_wait_queue_sequence_locked() };
             process_.waiting_for_events = true;
-            if (deliver_pending_mach_locked(cpu))
+            if (deliver_pending_mach_locked(cpu, false))
                 return;
         }
         if (timeout_enabled && timeout_milliseconds == 0) {

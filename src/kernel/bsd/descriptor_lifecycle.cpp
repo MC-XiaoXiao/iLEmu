@@ -37,6 +37,8 @@ bool CompatibilityKernel::release_file_descriptor(std::uint32_t descriptor)
     bound_socket_names_.erase(descriptor);
     listening_sockets_.erase(descriptor);
     socket_options_.erase(descriptor);
+    if (erased != 0)
+        shared_state_->note_io_event_transition();
     return erased != 0;
 }
 

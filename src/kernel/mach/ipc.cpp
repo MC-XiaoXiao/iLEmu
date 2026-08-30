@@ -79,7 +79,7 @@ namespace {
 bool CompatibilityKernel::deliver_pending_mach(Cpu& cpu)
 {
     std::lock_guard kernel_lock { mutex_ };
-    return deliver_pending_mach_if_ready_locked(cpu);
+    return deliver_pending_mach_if_ready_locked(cpu, true);
 }
 
 std::optional<std::size_t>
@@ -205,11 +205,26 @@ std::optional<std::size_t> CompatibilityKernel::pending_mach_receiver_processor(
     return preferred_pending_mach_receiver_locked(object);
 }
 
-bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(Cpu& cpu)
+bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(
+    Cpu& cpu, bool waking_blocked_receiver)
 {
     const auto pending = pending_mach_receives_.find(cpu.processor_id());
     if (pending == pending_mach_receives_.end())
         return false;
+
+    // Every enqueue, receive-right invalidation and port-set topology change
+    // advances this generation while holding mach_mutex. If neither it nor the
+    // Guest deadline changed, the previous empty-queue result is still valid;
+    // avoid taking the global IPC lock and walking the task namespace for every
+    // host scheduler pass.
+    const auto queue_generation =
+        shared_state_->mach_queue_generation_snapshot();
+    if (pending->second.receive_object &&
+        pending->second.observed_queue_generation == queue_generation &&
+        (!pending->second.deadline ||
+            shared_state_->clock.now() < *pending->second.deadline)) {
+        return false;
+    }
 
     // A blocked receive is attached to the object selected at receive start.
     // XNU wakes it with MACH_RCV_PORT_CHANGED when that queue is destroyed or
@@ -225,15 +240,7 @@ bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(Cpu& cpu)
         cpu.clear_halt();
         return true;
     }
-    const auto queue_generation =
-        shared_state_->mach_queue_generation_snapshot();
-    if (pending->second.receive_object &&
-        pending->second.observed_queue_generation == queue_generation &&
-        (!pending->second.deadline ||
-            shared_state_->clock.now() < *pending->second.deadline)) {
-        return false;
-    }
-    return deliver_pending_mach_locked(cpu);
+    return deliver_pending_mach_locked(cpu, waking_blocked_receiver);
 }
 
 std::optional<std::size_t>
@@ -304,7 +311,8 @@ CompatibilityKernel::preferred_pending_mach_receiver_locked(
     return selected->processor;
 }
 
-bool CompatibilityKernel::deliver_pending_mach_locked(Cpu& cpu)
+bool CompatibilityKernel::deliver_pending_mach_locked(
+    Cpu& cpu, bool waking_blocked_receiver)
 {
     const auto pending = pending_mach_receives_.find(cpu.processor_id());
     if (pending == pending_mach_receives_.end())
@@ -817,11 +825,24 @@ bool CompatibilityKernel::deliver_pending_mach_locked(Cpu& cpu)
             delivered_input_kind !=
                 KernelSharedState::MachMessage::GraphicsInputKind::None) {
             const auto entered_at = std::chrono::steady_clock::now();
-            last_delivered_graphics_inputs_[cpu.processor_id()] =
-                delivered_input_sequence;
             performance_counters().record_diagnostic_input_guest(
                 delivered_input_sequence, process_.pid,
                 static_cast<std::uint32_t>(cpu.processor_id()), entered_at);
+            if (waking_blocked_receiver) {
+                last_delivered_graphics_inputs_[cpu.processor_id()] =
+                    delivered_input_sequence;
+            } else {
+                // The receive found a message while this thread was already
+                // executing. It has no later Waiting -> Runnable transition;
+                // attributing a future host-side delivery to this sequence
+                // creates a false input stall.
+                performance_counters().record_diagnostic_input_runnable(
+                    delivered_input_sequence, process_.pid,
+                    static_cast<std::uint32_t>(cpu.processor_id()), entered_at);
+                performance_counters().record_diagnostic_input_execute(
+                    process_.pid,
+                    static_cast<std::uint32_t>(cpu.processor_id()), entered_at);
+            }
         }
         if (delivered_graphics_event_type) {
             // Bootstrap service ports remain owned by launchd while a cold app

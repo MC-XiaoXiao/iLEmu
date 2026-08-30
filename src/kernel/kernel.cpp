@@ -487,11 +487,13 @@ void CompatibilityKernel::enqueue_baseband_input(
     std::span<const std::byte> bytes)
 {
     shared_state_->baseband_device_state.enqueue_receive(bytes);
+    shared_state_->note_io_event_transition();
 }
 
 void CompatibilityKernel::set_baseband_receive_eof(bool eof)
 {
     shared_state_->baseband_device_state.set_receive_eof(eof);
+    shared_state_->note_io_event_transition();
 }
 
 void CompatibilityKernel::enqueue_touch_input(const TouchInput& input)
@@ -1103,6 +1105,7 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
         if (events.exec_generation == 0U)
             events.exec_generation = 1U;
     }
+    shared_state_->note_io_event_transition();
 }
 
 void CompatibilityKernel::set_process_arguments(
@@ -1274,15 +1277,261 @@ std::optional<std::uint32_t> CompatibilityKernel::import_descriptor(
 bool CompatibilityKernel::deliver_pending_io(Cpu& cpu)
 {
     std::lock_guard lock { mutex_ };
-    return deliver_pending_io_locked(cpu);
+    const auto delivered = deliver_pending_io_locked(cpu);
+    if (delivered) {
+        pending_io_poll_cache_.erase(cpu.processor_id());
+        shared_state_->note_kernel_event_transition();
+    }
+    refresh_pending_event_processor_locked(cpu.processor_id());
+    return delivered;
 }
 
 bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
 {
     std::lock_guard lock { mutex_ };
-    if (pending_mach_receives_.contains(cpu.processor_id()))
-        return deliver_pending_mach_if_ready_locked(cpu);
-    return deliver_pending_io_locked(cpu);
+    bool delivered = false;
+    if (pending_mach_receives_.contains(cpu.processor_id())) {
+        delivered = deliver_pending_mach_if_ready_locked(cpu, true);
+        if (delivered)
+            shared_state_->note_kernel_event_transition();
+    } else if (pending_io_poll_required_locked(cpu.processor_id())) {
+        const auto io_generation =
+            shared_state_->io_event_generation_snapshot();
+        const auto mach_generation =
+            shared_state_->mach_queue_generation_snapshot();
+        delivered = deliver_pending_io_locked(cpu);
+        if (delivered) {
+            pending_io_poll_cache_.erase(cpu.processor_id());
+            shared_state_->note_kernel_event_transition();
+        } else {
+            remember_pending_io_not_ready_locked(
+                cpu.processor_id(), io_generation, mach_generation);
+        }
+    }
+    refresh_pending_event_processor_locked(cpu.processor_id());
+    return delivered;
+}
+
+std::vector<std::size_t>
+CompatibilityKernel::pending_event_poll_candidates()
+{
+    std::lock_guard lock { mutex_ };
+    const auto io_generation = shared_state_->io_event_generation_snapshot();
+    const auto mach_generation =
+        shared_state_->mach_queue_generation_snapshot();
+    const auto host_now = std::chrono::steady_clock::now();
+    const auto guest_now = shared_state_->clock.now();
+    const auto topology_changed = !pending_event_poll_observed_ ||
+                                  pending_event_poll_topology_generation_ !=
+                                      pending_event_topology_generation_;
+    const auto readiness_changed = !pending_event_poll_observed_ ||
+                                   pending_event_poll_io_generation_ !=
+                                       io_generation ||
+                                   pending_event_poll_mach_generation_ !=
+                                       mach_generation;
+    const auto deadline_due = pending_event_poll_deadline_ &&
+                              guest_now >= *pending_event_poll_deadline_;
+    const auto host_probe_due = host_now >= pending_event_host_probe_;
+    if (!topology_changed && !readiness_changed && !deadline_due &&
+        !host_probe_due) {
+        return { };
+    }
+
+    pending_event_poll_observed_ = true;
+    pending_event_poll_topology_generation_ =
+        pending_event_topology_generation_;
+    pending_event_poll_io_generation_ = io_generation;
+    pending_event_poll_mach_generation_ = mach_generation;
+
+    std::vector<std::size_t> processors;
+    processors.reserve(pending_event_processors_.size());
+    std::optional<std::uint64_t> next_deadline;
+    bool requires_host_probe = false;
+    for (const auto processor : pending_event_processors_) {
+        if (pending_mach_receives_.contains(processor) ||
+            pending_io_poll_required_locked(processor)) {
+            processors.push_back(processor);
+        }
+        if (const auto deadline = pending_io_deadline_locked(processor);
+            deadline && *deadline > guest_now &&
+            (!next_deadline || *deadline < *next_deadline)) {
+            next_deadline = deadline;
+        }
+        requires_host_probe = requires_host_probe ||
+                              pending_io_requires_host_poll_locked(processor);
+    }
+    pending_event_poll_deadline_ = next_deadline;
+    constexpr auto host_probe_interval = std::chrono::milliseconds { 1 };
+    pending_event_host_probe_ = requires_host_probe
+                                    ? host_now + host_probe_interval
+                                    : std::chrono::steady_clock::time_point::max();
+    return processors;
+}
+
+bool CompatibilityKernel::has_pending_event_locked(
+    std::size_t processor) const
+{
+    return pending_mach_receives_.contains(processor) ||
+           pending_record_locks_.contains(processor) ||
+           pending_flocks_.contains(processor) ||
+           pending_host_connects_.contains(processor) ||
+           pending_host_accepts_.contains(processor) ||
+           pending_host_writes_.contains(processor) ||
+           pending_baseband_writes_.contains(processor) ||
+           pending_unix_accepts_.contains(processor) ||
+           pending_semaphore_waits_.contains(processor) ||
+           pending_timers_.contains(processor) ||
+           pending_selects_.contains(processor) ||
+           pending_polls_.contains(processor) ||
+           pending_socket_reads_.contains(processor) ||
+           pending_recvmsgs_.contains(processor) ||
+           pending_kevents_.contains(processor);
+}
+
+void CompatibilityKernel::refresh_pending_event_processor_locked(
+    std::size_t processor)
+{
+    const auto pending = has_pending_event_locked(processor);
+    const auto indexed = pending_event_processors_.contains(processor);
+    if (pending == indexed)
+        return;
+    if (pending)
+        pending_event_processors_.insert(processor);
+    else
+        pending_event_processors_.erase(processor);
+    ++pending_event_topology_generation_;
+}
+
+bool CompatibilityKernel::pending_io_poll_required_locked(
+    std::size_t processor) const
+{
+    const auto cached = pending_io_poll_cache_.find(processor);
+    if (cached == pending_io_poll_cache_.end())
+        return true;
+    if (cached->second.io_generation !=
+            shared_state_->io_event_generation_snapshot() ||
+        cached->second.mach_generation !=
+            shared_state_->mach_queue_generation_snapshot()) {
+        return true;
+    }
+    if (const auto deadline = pending_io_deadline_locked(processor);
+        deadline && shared_state_->clock.now() >= *deadline) {
+        return true;
+    }
+    return cached->second.host_probe_required &&
+           std::chrono::steady_clock::now() >=
+               cached->second.next_host_probe;
+}
+
+void CompatibilityKernel::remember_pending_io_not_ready_locked(
+    std::size_t processor, std::uint64_t io_generation,
+    std::uint64_t mach_generation)
+{
+    // A producer may race the readiness walk through another task. Do not
+    // publish a negative stamp unless both shared generations stayed stable.
+    if (io_generation != shared_state_->io_event_generation_snapshot() ||
+        mach_generation != shared_state_->mach_queue_generation_snapshot()) {
+        pending_io_poll_cache_.erase(processor);
+        return;
+    }
+    constexpr auto host_probe_interval = std::chrono::milliseconds { 1 };
+    const auto host_probe_required =
+        pending_io_requires_host_poll_locked(processor);
+    pending_io_poll_cache_[processor] = PendingIoPollCache {
+        io_generation, mach_generation,
+        host_probe_required
+            ? std::chrono::steady_clock::now() + host_probe_interval
+            : std::chrono::steady_clock::time_point::max(),
+        host_probe_required
+    };
+}
+
+std::optional<std::uint64_t>
+CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
+{
+    std::optional<std::uint64_t> deadline;
+    const auto consider = [&deadline](std::optional<std::uint64_t> candidate) {
+        if (candidate && (!deadline || *candidate < *deadline))
+            deadline = candidate;
+    };
+    if (const auto found = pending_timers_.find(processor);
+        found != pending_timers_.end()) {
+        consider(found->second.deadline);
+    }
+    if (const auto found = pending_semaphore_waits_.find(processor);
+        found != pending_semaphore_waits_.end()) {
+        consider(found->second.deadline);
+    }
+    if (const auto found = pending_kevents_.find(processor);
+        found != pending_kevents_.end()) {
+        consider(found->second.deadline);
+    }
+    if (const auto found = pending_selects_.find(processor);
+        found != pending_selects_.end()) {
+        consider(found->second.deadline);
+    }
+    if (const auto found = pending_polls_.find(processor);
+        found != pending_polls_.end()) {
+        consider(found->second.deadline);
+    }
+    if (const auto found = pending_socket_reads_.find(processor);
+        found != pending_socket_reads_.end()) {
+        consider(found->second.deadline);
+    }
+    if (!scheduled_wifi_driver_events_.empty())
+        consider(scheduled_wifi_driver_events_.begin()->first);
+    return deadline;
+}
+
+bool CompatibilityKernel::pending_io_requires_host_poll_locked(
+    std::size_t processor) const
+{
+    if (pending_host_connects_.contains(processor) ||
+        pending_host_accepts_.contains(processor) ||
+        pending_host_writes_.contains(processor) ||
+        pending_baseband_writes_.contains(processor)) {
+        return true;
+    }
+    if (const auto found = pending_socket_reads_.find(processor);
+        found != pending_socket_reads_.end()) {
+        return descriptor_requires_host_poll(found->second.fd);
+    }
+    if (const auto found = pending_recvmsgs_.find(processor);
+        found != pending_recvmsgs_.end()) {
+        return descriptor_requires_host_poll(found->second.fd);
+    }
+    if (const auto found = pending_kevents_.find(processor);
+        found != pending_kevents_.end()) {
+        return descriptor_requires_host_poll(found->second.queue_fd);
+    }
+    if (const auto found = pending_polls_.find(processor);
+        found != pending_polls_.end()) {
+        return std::any_of(found->second.entries.begin(),
+            found->second.entries.end(), [this](const auto& entry) {
+                return entry.fd >= 0 && descriptor_requires_host_poll(
+                                            static_cast<std::uint32_t>(
+                                                entry.fd));
+            });
+    }
+    if (const auto found = pending_selects_.find(processor);
+        found != pending_selects_.end()) {
+        for (std::size_t word = 0; word < found->second.read_words.size();
+            ++word) {
+            const auto requested = found->second.read_words[word] |
+                                   found->second.write_words[word];
+            for (std::uint32_t bit = 0; bit < 32U; ++bit) {
+                const auto descriptor =
+                    static_cast<std::uint32_t>(word * 32U + bit);
+                if (descriptor >= found->second.descriptor_count)
+                    break;
+                if ((requested & (std::uint32_t { 1 } << bit)) != 0U &&
+                    descriptor_requires_host_poll(descriptor)) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
 }
 
 std::optional<std::uint64_t>
@@ -1825,89 +2074,92 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const
 
 std::optional<std::uint64_t> CompatibilityKernel::next_timer_deadline() const
 {
-    std::optional<std::uint64_t> deadline;
-    for (const auto& [processor, timer] : pending_timers_) {
-        static_cast<void>(processor);
-        if (!deadline || timer.deadline < *deadline)
-            deadline = timer.deadline;
+    return timer_deadline_snapshot().deadline;
+}
+
+CompatibilityKernel::TimerDeadlineSnapshot
+CompatibilityKernel::timer_deadline_snapshot() const
+{
+    const auto generation =
+        shared_state_->kernel_event_generation_snapshot();
+    if (timer_deadline_cache_valid_ &&
+        timer_deadline_cache_generation_ == generation) {
+        return TimerDeadlineSnapshot { generation, timer_deadline_cache_ };
     }
-    for (const auto& [processor, wait] : pending_semaphore_waits_) {
-        static_cast<void>(processor);
-        if (wait.deadline && (!deadline || *wait.deadline < *deadline)) {
-            deadline = wait.deadline;
+
+    const auto compute_deadline = [&]() {
+        std::optional<std::uint64_t> deadline;
+        const auto consider =
+            [&deadline](std::optional<std::uint64_t> candidate) {
+                if (candidate && (!deadline || *candidate < *deadline))
+                    deadline = candidate;
+            };
+        for (const auto& [processor, timer] : pending_timers_) {
+            static_cast<void>(processor);
+            consider(timer.deadline);
         }
-    }
-    for (const auto& [processor, wait] : pending_kevents_) {
-        static_cast<void>(processor);
-        if (wait.deadline && (!deadline || *wait.deadline < *deadline)) {
-            deadline = wait.deadline;
+        for (const auto& [processor, wait] : pending_semaphore_waits_) {
+            static_cast<void>(processor);
+            consider(wait.deadline);
         }
-    }
-    for (const auto& [processor, wait] : pending_selects_) {
-        static_cast<void>(processor);
-        if (wait.deadline && (!deadline || *wait.deadline < *deadline)) {
-            deadline = wait.deadline;
+        for (const auto& [processor, wait] : pending_kevents_) {
+            static_cast<void>(processor);
+            consider(wait.deadline);
         }
-    }
-    for (const auto& [processor, wait] : pending_polls_) {
-        static_cast<void>(processor);
-        if (wait.deadline && (!deadline || *wait.deadline < *deadline)) {
-            deadline = wait.deadline;
+        for (const auto& [processor, wait] : pending_selects_) {
+            static_cast<void>(processor);
+            consider(wait.deadline);
         }
-    }
-    for (const auto& [event_deadline, event] : scheduled_wifi_driver_events_) {
-        static_cast<void>(event);
-        if (!deadline || event_deadline < *deadline) {
-            deadline = event_deadline;
+        for (const auto& [processor, wait] : pending_polls_) {
+            static_cast<void>(processor);
+            consider(wait.deadline);
         }
-    }
-    for (const auto& [processor, read] : pending_socket_reads_) {
-        static_cast<void>(processor);
-        if (read.deadline && (!deadline || *read.deadline < *deadline)) {
-            deadline = read.deadline;
+        if (!scheduled_wifi_driver_events_.empty())
+            consider(scheduled_wifi_driver_events_.begin()->first);
+        for (const auto& [processor, read] : pending_socket_reads_) {
+            static_cast<void>(processor);
+            consider(read.deadline);
         }
-    }
-    for (const auto& [processor, receive] : pending_mach_receives_) {
-        static_cast<void>(processor);
-        if (receive.deadline && (!deadline || *receive.deadline < *deadline)) {
-            deadline = receive.deadline;
+        for (const auto& [processor, receive] : pending_mach_receives_) {
+            static_cast<void>(processor);
+            consider(receive.deadline);
         }
-    }
-    if (const auto audio = core_audio_hle_.next_io_proc_deadline();
-        audio && (!deadline || *audio < *deadline)) {
-        deadline = audio;
-    }
-    if (const auto interval_timer = kernel_bsd::interval_timer::next_deadline(
-            *shared_state_, process_.pid);
-        interval_timer && (!deadline || *interval_timer < *deadline)) {
-        deadline = interval_timer;
-    }
-    {
-        std::lock_guard mach_lock { shared_state_->mach_mutex };
-        for (const auto& [port, timer] : shared_state_->mach_timers) {
-            static_cast<void>(port);
-            if (timer.deadline && (!deadline || *timer.deadline < *deadline)) {
-                deadline = timer.deadline;
+        consider(core_audio_hle_.next_io_proc_deadline());
+        consider(kernel_bsd::interval_timer::next_deadline(
+            *shared_state_, process_.pid));
+        {
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            for (const auto& [port, timer] : shared_state_->mach_timers) {
+                static_cast<void>(port);
+                consider(timer.deadline);
             }
+            consider(next_clock_alarm_deadline_locked(*shared_state_));
+            consider(kernel_iokit::display::next_vsync_deadline_locked(
+                *shared_state_));
+            consider(kernel_iokit::camera::next_capture_deadline_locked(
+                *shared_state_));
         }
-        if (const auto alarm = next_clock_alarm_deadline_locked(*shared_state_);
-            alarm && (!deadline || *alarm < *deadline)) {
-            deadline = alarm;
+        return deadline;
+    };
+
+    auto deadline = compute_deadline();
+    auto stable_generation =
+        shared_state_->kernel_event_generation_snapshot();
+    if (stable_generation != generation) {
+        // A producer changed a deadline while the aggregate was inspected.
+        // Recompute once from the newer state and publish only a stable result.
+        deadline = compute_deadline();
+        const auto after_retry =
+            shared_state_->kernel_event_generation_snapshot();
+        if (after_retry != stable_generation) {
+            return TimerDeadlineSnapshot { after_retry, deadline };
         }
-        if (const auto vsync =
-                kernel_iokit::display::next_vsync_deadline_locked(
-                    *shared_state_);
-            vsync && (!deadline || *vsync < *deadline)) {
-            deadline = vsync;
-        }
-        if (const auto capture =
-                kernel_iokit::camera::next_capture_deadline_locked(
-                    *shared_state_);
-            capture && (!deadline || *capture < *deadline)) {
-            deadline = capture;
-        }
+        stable_generation = after_retry;
     }
-    return deadline;
+    timer_deadline_cache_generation_ = stable_generation;
+    timer_deadline_cache_ = deadline;
+    timer_deadline_cache_valid_ = true;
+    return TimerDeadlineSnapshot { stable_generation, deadline };
 }
 
 std::optional<std::uint64_t>
@@ -1919,7 +2171,10 @@ CompatibilityKernel::next_display_vsync_deadline() const
 
 void CompatibilityKernel::advance_absolute_time(std::uint64_t deadline)
 {
+    const auto next_service_deadline = next_timer_deadline();
     shared_state_->clock.advance_to(deadline);
+    if (!next_service_deadline || *next_service_deadline > deadline)
+        return;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         for (auto& [port, timer] : shared_state_->mach_timers) {
@@ -1951,10 +2206,14 @@ void CompatibilityKernel::advance_absolute_time(std::uint64_t deadline)
             *shared_state_, deadline);
     }
     service_time_dependent_devices(deadline);
+    shared_state_->note_kernel_event_transition();
 }
 
 void CompatibilityKernel::service_time_dependent_devices(std::uint64_t deadline)
 {
+    const auto next_service_deadline = next_timer_deadline();
+    if (!next_service_deadline || *next_service_deadline > deadline)
+        return;
     kernel_iokit::camera::service_due_captures(
         *shared_state_, process_.pid, memory_, *surface_store_, deadline);
     if (kernel_bsd::interval_timer::service_due(
@@ -1963,6 +2222,7 @@ void CompatibilityKernel::service_time_dependent_devices(std::uint64_t deadline)
             deliver_signal(kernel_bsd::interval_timer::expiration_signal));
     }
     schedule_due_audio_io(deadline);
+    shared_state_->note_kernel_event_transition();
 }
 
 void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline)
@@ -2038,6 +2298,7 @@ void CompatibilityKernel::inject_wifi_driver_event(
             stream->enqueue(event);
         }
     }
+    shared_state_->note_io_event_transition();
 }
 
 void CompatibilityKernel::reap_stopped_audio_threads()
@@ -2238,38 +2499,40 @@ void CompatibilityKernel::dispatch(Cpu& cpu, std::uint32_t svc_immediate)
 {
     const SvcDispatchDiagnostics diagnostics { process_.pid, cpu,
         svc_immediate };
+    // Guest kernel entries conservatively invalidate timer topology. I/O
+    // readiness has a narrower producer generation so drawing and unrelated
+    // syscalls cannot force every blocked descriptor tree to be rescanned.
+    shared_state_->note_kernel_event_transition();
     std::lock_guard lock { mutex_ };
     if (apple80211_hle_.deliver_pending_event(
             cpu, process_.pid, svc_immediate)) {
         output_.write(
             "[wifi-service] event-deliver pid=" + std::to_string(process_.pid) +
             " cpu=" + std::to_string(cpu.processor_id()) + "\n");
-        return;
-    }
-    if (userland_hle_.dispatch(cpu, process_.pid, svc_immediate)) {
+    } else if (userland_hle_.dispatch(
+                   cpu, process_.pid, svc_immediate)) {
         reap_stopped_audio_threads();
-        return;
-    }
-    if (svc_immediate != 0x80) {
+    } else if (svc_immediate != 0x80) {
         trace_unknown(cpu, "SVC", svc_immediate);
         // An unexpected SVC immediate is an invalid instruction encoding for
         // the supported ARM userspace ABI, rather than an unimplemented kernel
         // entry. Keep that fatal policy explicit and separate from unknown-ABI
         // tracing.
         cpu.halt(Dynarmic::HaltReason::UserDefined4);
-        return;
-    }
-    if (cpu.registers()[12] == darwin::arm_fast_trap::syscall_number) {
+    } else if (cpu.registers()[12] ==
+               darwin::arm_fast_trap::syscall_number) {
         dispatch_arm_fast_trap(cpu);
-        return;
-    }
-    const auto number = static_cast<std::int32_t>(cpu.registers()[12]);
-    if (number < 0) {
-        dispatch_mach(cpu,
-            static_cast<std::uint32_t>(-static_cast<std::int64_t>(number)));
     } else {
-        dispatch_bsd(cpu, static_cast<std::uint32_t>(number));
+        const auto number = static_cast<std::int32_t>(cpu.registers()[12]);
+        if (number < 0) {
+            dispatch_mach(cpu,
+                static_cast<std::uint32_t>(
+                    -static_cast<std::int64_t>(number)));
+        } else {
+            dispatch_bsd(cpu, static_cast<std::uint32_t>(number));
+        }
     }
+    refresh_pending_event_processor_locked(cpu.processor_id());
 }
 
 void CompatibilityKernel::dispatch_arm_fast_trap(Cpu& cpu)

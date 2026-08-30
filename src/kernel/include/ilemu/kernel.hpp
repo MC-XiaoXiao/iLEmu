@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -15,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -66,6 +68,11 @@ public:
     enum class ProcessInheritance : std::uint8_t {
         Fork,
         SpawnExec,
+    };
+
+    struct TimerDeadlineSnapshot {
+        std::uint64_t generation { };
+        std::optional<std::uint64_t> deadline;
     };
 
     struct SchedulerYieldRequest {
@@ -395,12 +402,17 @@ public:
     // Scheduler-facing event dispatch. A guest thread can block in only one
     // syscall at a time, so this avoids probing every unrelated pending table.
     bool deliver_pending_event(Cpu& cpu);
+    // Return only blocked CPU contexts whose readiness may have changed. The
+    // kernel owns the topology/generation/deadline gate so an idle frontend has
+    // an O(1) fast path and never rediscovers wait state by scanning CPUs.
+    [[nodiscard]] std::vector<std::size_t> pending_event_poll_candidates();
     // Returns the graphics input sequence delivered while waking this guest
     // thread. The scheduler consumes it immediately to record runnable/dispatch
     // latency without assigning meaning to unrelated wakeups.
     [[nodiscard]] std::optional<std::uint64_t>
     take_last_delivered_graphics_input(std::size_t processor);
     [[nodiscard]] std::optional<std::uint64_t> next_timer_deadline() const;
+    [[nodiscard]] TimerDeadlineSnapshot timer_deadline_snapshot() const;
     [[nodiscard]] std::optional<std::uint64_t>
     next_display_vsync_deadline() const;
     [[nodiscard]] std::optional<std::size_t> display_vsync_receiver_processor();
@@ -607,11 +619,23 @@ private:
         bool shared_cache_mapping = false);
     void install_commpage();
     void configure_darwin_notify_state();
-    bool deliver_pending_mach_if_ready_locked(Cpu& cpu);
+    bool deliver_pending_mach_if_ready_locked(
+        Cpu& cpu, bool waking_blocked_receiver);
     [[nodiscard]] std::optional<std::size_t>
     preferred_pending_mach_receiver_locked(std::uint32_t queued_port);
-    bool deliver_pending_mach_locked(Cpu& cpu);
+    bool deliver_pending_mach_locked(Cpu& cpu, bool waking_blocked_receiver);
     bool deliver_pending_io_locked(Cpu& cpu);
+    [[nodiscard]] bool pending_io_poll_required_locked(
+        std::size_t processor) const;
+    void remember_pending_io_not_ready_locked(std::size_t processor,
+        std::uint64_t io_generation, std::uint64_t mach_generation);
+    [[nodiscard]] std::optional<std::uint64_t>
+    pending_io_deadline_locked(std::size_t processor) const;
+    [[nodiscard]] bool pending_io_requires_host_poll_locked(
+        std::size_t processor) const;
+    [[nodiscard]] bool has_pending_event_locked(
+        std::size_t processor) const;
+    void refresh_pending_event_processor_locked(std::size_t processor);
     bool receive_socket_message(
         Cpu& cpu, std::uint32_t fd, std::uint32_t message_address);
     bool send_socket_message(Cpu& cpu, std::uint32_t fd,
@@ -662,6 +686,10 @@ private:
         const KernelSharedState::DescriptorTransfer& transfer);
     [[nodiscard]] bool descriptor_readable(std::uint32_t fd) const;
     [[nodiscard]] bool descriptor_writable(std::uint32_t fd) const;
+    [[nodiscard]] bool descriptor_requires_host_poll(
+        std::uint32_t fd) const;
+    [[nodiscard]] bool descriptor_requires_host_poll(std::uint32_t fd,
+        std::unordered_set<std::uint32_t>& visited) const;
     [[nodiscard]] bool descriptor_valid(std::uint32_t fd) const;
     [[nodiscard]] std::uint16_t descriptor_poll_revents(
         std::int32_t fd, std::uint16_t events) const;
@@ -670,6 +698,8 @@ private:
     // name.
     [[nodiscard]] std::optional<std::uint32_t> ready_mach_port_name(
         std::uint32_t name) const;
+    [[nodiscard]] std::optional<std::uint32_t> ready_mach_kevent_name(
+        const KeventRegistration& registration) const;
     [[nodiscard]] std::optional<std::uint32_t> socket_pending_byte_count(
         std::uint32_t fd, std::uint32_t& darwin_error) const;
     [[nodiscard]] std::shared_ptr<bsd::baseband_device::OpenDescription>
@@ -831,6 +861,26 @@ private:
     std::map<std::size_t, PendingSelect> pending_selects_;
     std::map<std::size_t, PendingTimer> pending_timers_;
     std::map<std::size_t, PendingSemaphoreWait> pending_semaphore_waits_;
+    struct PendingIoPollCache {
+        std::uint64_t io_generation { };
+        std::uint64_t mach_generation { };
+        std::chrono::steady_clock::time_point next_host_probe;
+        bool host_probe_required { };
+    };
+    std::map<std::size_t, PendingIoPollCache> pending_io_poll_cache_;
+    std::set<std::size_t> pending_event_processors_;
+    std::uint64_t pending_event_topology_generation_ { 1 };
+    std::uint64_t pending_event_poll_topology_generation_ { };
+    std::uint64_t pending_event_poll_io_generation_ { };
+    std::uint64_t pending_event_poll_mach_generation_ { };
+    std::optional<std::uint64_t> pending_event_poll_deadline_;
+    std::chrono::steady_clock::time_point pending_event_host_probe_ {
+        std::chrono::steady_clock::time_point::min()
+    };
+    bool pending_event_poll_observed_ { };
+    mutable std::uint64_t timer_deadline_cache_generation_ { };
+    mutable std::optional<std::uint64_t> timer_deadline_cache_;
+    mutable bool timer_deadline_cache_valid_ { };
     std::uint32_t timer_trace_count_ { };
     std::uint32_t port_status_trace_count_ { };
     std::uint32_t thread_trace_count_ { };
