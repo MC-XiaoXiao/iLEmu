@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -66,7 +67,7 @@ public:
 
     [[nodiscard]] HostSocketResult connect(
         std::span<const std::byte> darwin_address);
-    [[nodiscard]] HostSocketResult finish_connect() const;
+    [[nodiscard]] HostSocketResult finish_connect();
     [[nodiscard]] HostSocketResult bind(
         std::span<const std::byte> darwin_address);
     [[nodiscard]] HostSocketResult listen(std::uint32_t backlog);
@@ -79,7 +80,7 @@ public:
     [[nodiscard]] HostSocketResult local_address() const;
     [[nodiscard]] HostSocketResult peer_address() const;
     [[nodiscard]] HostSocketResult pending_bytes() const;
-    [[nodiscard]] HostSocketResult socket_error() const;
+    [[nodiscard]] HostSocketResult socket_error();
     [[nodiscard]] HostSocketResult shutdown(std::uint32_t how);
     [[nodiscard]] bool readable() const;
     [[nodiscard]] bool writable() const;
@@ -89,13 +90,22 @@ public:
     [[nodiscard]] std::uint32_t darwin_type() const { return darwin_type_; }
 
 private:
+    enum class StreamState : std::uint8_t {
+        Initial,
+        Connecting,
+        Connected,
+        Listening,
+    };
+
     HostSocket(int descriptor, HostNetworkPolicy policy,
-        std::uint32_t darwin_family, std::uint32_t darwin_type);
+        std::uint32_t darwin_family, std::uint32_t darwin_type,
+        StreamState stream_state = StreamState::Initial);
 
     int descriptor_ { -1 };
     HostNetworkPolicy policy_ { HostNetworkPolicy::Isolated };
     std::uint32_t darwin_family_ { };
     std::uint32_t darwin_type_ { };
+    std::atomic<StreamState> stream_state_ { StreamState::Initial };
     std::optional<std::vector<std::byte>> presented_peer_address_;
     bool presents_virtual_local_ipv4_address_ { };
     bool receive_destination_address_ { };

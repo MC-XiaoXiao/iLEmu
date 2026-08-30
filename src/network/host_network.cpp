@@ -523,11 +523,13 @@ HostSocketCreateResult HostSocket::create(HostNetworkPolicy policy,
 }
 
 HostSocket::HostSocket(int descriptor, HostNetworkPolicy policy,
-    std::uint32_t darwin_family, std::uint32_t darwin_type)
+    std::uint32_t darwin_family, std::uint32_t darwin_type,
+    StreamState stream_state)
     : descriptor_ { descriptor }
     , policy_ { policy }
     , darwin_family_ { darwin_family }
     , darwin_type_ { darwin_type }
+    , stream_state_ { stream_state }
 {
 }
 
@@ -553,14 +555,30 @@ HostSocketResult HostSocket::connect(std::span<const std::byte> darwin_address)
     if (::connect(descriptor_,
             reinterpret_cast<const sockaddr*>(&address->storage),
             address->length) == 0) {
+        if (darwin_type_ == darwin_socket_stream) {
+            stream_state_.store(
+                StreamState::Connected, std::memory_order_relaxed);
+        }
         return { };
     }
-    if (errno == EISCONN)
+    if (errno == EISCONN) {
+        if (darwin_type_ == darwin_socket_stream) {
+            stream_state_.store(
+                StreamState::Connected, std::memory_order_relaxed);
+        }
         return { };
-    return error_result(errno);
+    }
+    const auto result = error_result(errno);
+    if (darwin_type_ == darwin_socket_stream) {
+        stream_state_.store(result.status == HostSocketStatus::WouldBlock
+                                ? StreamState::Connecting
+                                : StreamState::Initial,
+            std::memory_order_relaxed);
+    }
+    return result;
 }
 
-HostSocketResult HostSocket::finish_connect() const
+HostSocketResult HostSocket::finish_connect()
 {
     int socket_error = 0;
     socklen_t size = sizeof(socket_error);
@@ -568,8 +586,18 @@ HostSocketResult HostSocket::finish_connect() const
         0) {
         return error_result(errno);
     }
-    return socket_error == 0 ? HostSocketResult { }
-                             : error_result(socket_error);
+    const auto result =
+        socket_error == 0 ? HostSocketResult { } : error_result(socket_error);
+    if (darwin_type_ == darwin_socket_stream &&
+        stream_state_.load(std::memory_order_relaxed) ==
+            StreamState::Connecting &&
+        result.status != HostSocketStatus::WouldBlock) {
+        stream_state_.store(result.status == HostSocketStatus::Success
+                                ? StreamState::Connected
+                                : StreamState::Initial,
+            std::memory_order_relaxed);
+    }
+    return result;
 }
 
 HostSocketResult HostSocket::bind(std::span<const std::byte> darwin_address)
@@ -593,8 +621,12 @@ HostSocketResult HostSocket::listen(std::uint32_t backlog)
 {
     const auto host_backlog = static_cast<int>(std::min<std::uint32_t>(
         backlog, static_cast<std::uint32_t>(std::numeric_limits<int>::max())));
-    return ::listen(descriptor_, host_backlog) == 0 ? HostSocketResult { }
-                                                    : error_result(errno);
+    if (::listen(descriptor_, host_backlog) != 0)
+        return error_result(errno);
+    if (darwin_type_ == darwin_socket_stream) {
+        stream_state_.store(StreamState::Listening, std::memory_order_relaxed);
+    }
+    return { };
 }
 
 HostSocketResult HostSocket::accept()
@@ -612,8 +644,9 @@ HostSocketResult HostSocket::accept()
     }
     HostSocketResult result;
     result.address = to_darwin_address(address, length);
-    result.accepted_socket = std::shared_ptr<HostSocket> { new HostSocket {
-        accepted, policy_, darwin_family_, darwin_type_ } };
+    result.accepted_socket =
+        std::shared_ptr<HostSocket> { new HostSocket { accepted, policy_,
+            darwin_family_, darwin_type_, StreamState::Connected } };
     return result;
 }
 
@@ -1018,7 +1051,7 @@ HostSocketResult HostSocket::pending_bytes() const
     return result;
 }
 
-HostSocketResult HostSocket::socket_error() const
+HostSocketResult HostSocket::socket_error()
 {
     int socket_error = 0;
     socklen_t size = sizeof(socket_error);
@@ -1028,6 +1061,13 @@ HostSocketResult HostSocket::socket_error() const
     }
     HostSocketResult result;
     result.darwin_error = translate_error(socket_error);
+    if (darwin_type_ == darwin_socket_stream &&
+        stream_state_.load(std::memory_order_relaxed) ==
+            StreamState::Connecting) {
+        stream_state_.store(
+            socket_error == 0 ? StreamState::Connected : StreamState::Initial,
+            std::memory_order_relaxed);
+    }
     return result;
 }
 
@@ -1043,6 +1083,12 @@ HostSocketResult HostSocket::shutdown(std::uint32_t how)
 
 bool HostSocket::readable() const
 {
+    // Linux projects POLLHUP on a never-connected TCP stream. XNU does not
+    // consider that initial connection-required state readable.
+    if (darwin_type_ == darwin_socket_stream &&
+        stream_state_.load(std::memory_order_relaxed) == StreamState::Initial) {
+        return false;
+    }
     pollfd descriptor { descriptor_, POLLIN, 0 };
     return ::poll(&descriptor, 1, 0) > 0 &&
            (descriptor.revents & (POLLIN | POLLHUP | POLLERR)) != 0;
@@ -1050,6 +1096,11 @@ bool HostSocket::readable() const
 
 bool HostSocket::writable() const
 {
+    if (darwin_type_ == darwin_socket_stream) {
+        const auto state = stream_state_.load(std::memory_order_relaxed);
+        if (state == StreamState::Initial || state == StreamState::Listening)
+            return false;
+    }
     pollfd descriptor { descriptor_, POLLOUT, 0 };
     return ::poll(&descriptor, 1, 0) > 0 &&
            (descriptor.revents & (POLLOUT | POLLHUP | POLLERR)) != 0;
