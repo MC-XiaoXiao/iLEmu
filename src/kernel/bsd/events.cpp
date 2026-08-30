@@ -1945,8 +1945,10 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                             static_cast<std::byte>(value >> (byte * 8U));
                     }
                 };
-                bytes[20] = static_cast<std::byte>(
-                    record.exited ? 5U : 2U); // SZOMB/SRUN
+                const auto process_status = record.exited           ? 5U
+                                            : record.signal_stopped ? 4U
+                                                                    : 2U;
+                bytes[20] = static_cast<std::byte>(process_status);
                 put32(24, pid);
                 if (const auto state =
                         shared_state_->process_kevent_states.find(pid);

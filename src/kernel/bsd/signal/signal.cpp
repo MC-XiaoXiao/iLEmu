@@ -1,6 +1,7 @@
 #include "ilemu/kernel.hpp"
 
 #include "ilemu/darwin_abi.hpp"
+#include <algorithm>
 #include <cstdint>
 #include <vector>
 
@@ -32,6 +33,32 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal)
         return signal == 0 ? 0U : darwin::error::invalid_argument;
     }
 
+    const auto transition_job_control_stop = [this](bool stopped) {
+        bool changed = false;
+        {
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            const auto record = shared_state_->processes.find(process_.pid);
+            if (record != shared_state_->processes.end() &&
+                !record->second.exited &&
+                record->second.signal_stopped != stopped) {
+                record->second.signal_stopped = stopped;
+                changed = true;
+            }
+        }
+        if (changed && process_runnable_handler_)
+            process_runnable_handler_(process_.pid, !stopped);
+        return changed;
+    };
+
+    // POSIX job control resumes a stopped task even when SIGCONT is ignored,
+    // caught, or masked. Handler disposition is evaluated only after the
+    // independent scheduler hold has been released.
+    if (signal == darwin::signal::resume &&
+        transition_job_control_stop(false)) {
+        output_.write(
+            "[signal] continued pid=" + std::to_string(process_.pid) + "\n");
+    }
+
     const auto handler = signal_actions_[signal][0];
     const bool unmaskable =
         signal == darwin::signal::kill || signal == darwin::signal::stop;
@@ -60,9 +87,11 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal)
         return 0;
     }
     if (default_signal_stops(signal)) {
-        output_.write(
-            "[signal] stop-pending pid=" + std::to_string(process_.pid) +
-            " signal=" + std::to_string(signal) + "\n");
+        const auto changed = transition_job_control_stop(true);
+        output_.write("[signal] " +
+                      std::string { changed ? "stopped" : "already-stopped" } +
+                      " pid=" + std::to_string(process_.pid) +
+                      " signal=" + std::to_string(signal) + "\n");
         return 0;
     }
 
@@ -150,6 +179,17 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
     bsd_success(cpu, 0);
     if (process_.exited) {
         cpu.halt(Dynarmic::HaltReason::UserDefined1);
+    } else if (std::find(targets.begin(), targets.end(), process_.pid) !=
+               targets.end()) {
+        bool signal_stopped = false;
+        {
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            const auto record = shared_state_->processes.find(process_.pid);
+            signal_stopped = record != shared_state_->processes.end() &&
+                             record->second.signal_stopped;
+        }
+        if (signal_stopped)
+            cpu.request_guest_preemption();
     }
 }
 

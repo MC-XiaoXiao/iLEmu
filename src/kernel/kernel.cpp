@@ -406,8 +406,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         KernelSharedState::ProcessRecord { process_.parent_pid,
             process_.process_group, process_.uid, process_.effective_uid,
             process_.gid, process_.effective_gid, process_.exit_status,
-            process_.termination_signal, process_.exited, false, "launchd",
-            "/sbin/launchd", { "/sbin/launchd" },
+            process_.termination_signal, process_.exited, false, false,
+            "launchd", "/sbin/launchd", { "/sbin/launchd" },
             { "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
                 "SHELL=/bin/sh" },
             KernelSharedState::GraphicsInputAbi::Darwin9_0, { }, { } };
@@ -1078,6 +1078,8 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
         record.incarnation = shared_state_->next_process_incarnation++;
         if (record.incarnation == 0U)
             record.incarnation = shared_state_->next_process_incarnation++;
+        record.pid_suspended = false;
+        record.signal_stopped = false;
     }
     record.exited = false;
     record.exit_status = 0;
@@ -2487,6 +2489,8 @@ void CompatibilityKernel::inherit_process_state(
     child_record.exit_status = 0;
     child_record.termination_signal = 0;
     child_record.exited = false;
+    child_record.pid_suspended = false;
+    child_record.signal_stopped = false;
     child_record.incarnation = shared_state_->next_process_incarnation++;
     if (child_record.incarnation == 0U)
         child_record.incarnation = shared_state_->next_process_incarnation++;

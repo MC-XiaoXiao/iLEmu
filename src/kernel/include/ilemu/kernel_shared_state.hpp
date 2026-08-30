@@ -531,6 +531,9 @@ struct KernelSharedState {
         // only records the Darwin pid-level suspension requested by guest
         // process control so repeated resume operations remain observable.
         bool pid_suspended { };
+        // Job-control suspension is an independent scheduler hold. SIGCONT
+        // must release this hold without undoing a concurrent pid_suspend.
+        bool signal_stopped { };
         std::string command;
         std::string executable_path;
         std::vector<std::string> arguments;
