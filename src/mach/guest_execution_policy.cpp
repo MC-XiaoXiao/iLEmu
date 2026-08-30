@@ -1,4 +1,5 @@
 #include "ilemu/guest_execution_policy.hpp"
+#include "ilemu/performance.hpp"
 
 #include <algorithm>
 #include <stdexcept>
@@ -34,6 +35,8 @@ std::chrono::nanoseconds GuestExecutionPolicy::budget(
     const XnuScheduler& scheduler,
     const GuestExecutionBudgetRequest& request) const
 {
+    PerformanceLatencyScope latency { PerfLatencyKind::GuestExecutionBudget,
+        performance_counters().cpu_source_diagnostics_enabled() };
     const auto scheduling_info = scheduler.info(request.thread);
     if (!scheduling_info) {
         throw std::invalid_argument {

@@ -233,6 +233,11 @@ public:
     [[nodiscard]] std::optional<XnuThreadId> oldest_runnable_thread(
         std::uint32_t process,
         std::optional<XnuThreadId> excluded = std::nullopt) const;
+    // Host role dispatch uses the process's own XNU ordering: highest
+    // scheduled priority first, realtime deadline next, then FIFO age.
+    [[nodiscard]] std::optional<XnuThreadId>
+    highest_priority_runnable_thread(std::uint32_t process,
+        std::optional<XnuThreadId> excluded = std::nullopt) const;
     [[nodiscard]] std::size_t waiting_count() const;
     [[nodiscard]] std::int32_t highest_runnable_priority() const;
     [[nodiscard]] std::uint64_t scheduler_tick() const
@@ -295,6 +300,9 @@ private:
     static std::uint32_t priority_usage_shift(
         std::uint64_t scheduler_tick_ticks);
     static void begin_runnable_generation(ThreadRecord& record);
+    [[nodiscard]] static bool is_runnable_state(XnuThreadState state);
+    void transition_state(XnuThreadId thread, ThreadRecord& record,
+        XnuThreadState state);
     void enqueue(XnuThreadId thread, QueuePosition position);
     void remove_from_queue(XnuThreadId thread, ThreadRecord& record);
     void index_depression(XnuThreadId thread, const ThreadRecord& record);
@@ -332,6 +340,10 @@ private:
     std::unordered_map<std::uint32_t,
         std::unordered_set<XnuThreadId, XnuThreadIdHash>>
         process_threads_;
+    // Runnable/Running membership is a scheduler state-machine invariant.
+    // Keep its per-task projection beside the run queues so host cooperation
+    // and JIT policy observations do not rescan every thread on each turn.
+    std::unordered_map<std::uint32_t, std::size_t> process_runnable_counts_;
     std::set<std::pair<std::uint64_t, XnuThreadId>> depression_order_;
     std::set<std::pair<std::uint64_t, XnuThreadId>> failsafe_order_;
     std::size_t runnable_count_ { };

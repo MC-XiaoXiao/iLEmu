@@ -1,4 +1,5 @@
 add_library(ilemu_mach STATIC
+    guest_dispatch_policy.cpp
     guest_execution_policy.cpp
     guest_parallelism_policy.cpp
     mach_namespace.cpp
