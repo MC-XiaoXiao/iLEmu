@@ -244,9 +244,13 @@ HostResourceController::HostResourceController(HostResourceBudget budget)
     : budget_ { std::move(budget) }
     , duty_window_start_ { Clock::now() }
 {
+    const auto aggregate_interactive_limit =
+        budget_.duty_period * static_cast<std::int64_t>(
+                                  std::max<std::size_t>(1U,
+                                      budget_.worker_count));
     if (budget_.duty_period <= std::chrono::nanoseconds::zero() ||
         budget_.interactive_compile_budget < std::chrono::nanoseconds::zero() ||
-        budget_.interactive_compile_budget > budget_.duty_period ||
+        budget_.interactive_compile_budget > aggregate_interactive_limit ||
         budget_.offline_compile_budget < std::chrono::nanoseconds::zero() ||
         budget_.deadline_reserve < std::chrono::nanoseconds::zero()) {
         throw std::invalid_argument { "invalid host resource budget" };

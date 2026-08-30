@@ -138,6 +138,10 @@ enum class PerfLatencyKind : std::uint8_t {
     CpuRunSaveState,
     CpuRunCacheAccounting,
     CpuRunTotal,
+    SchedulerSelection,
+    GuestExecutionBudget,
+    SchedulerPreemptionCheck,
+    SchedulerSliceCompletion,
     SchedulerRunnableToDispatch,
     SchedulerPreemptionRequestToReturn,
     MachMessageSendToReceive,
@@ -149,6 +153,7 @@ inline constexpr auto perf_latency_kind_count =
 
 struct PerfLatencySnapshot {
     std::uint64_t samples { };
+    std::uint64_t total_nanoseconds { };
     std::uint64_t p50_nanoseconds { };
     std::uint64_t p95_nanoseconds { };
     std::uint64_t p99_nanoseconds { };
@@ -189,6 +194,13 @@ struct DiagnosticProcessSnapshot {
     std::uint64_t svc_calls { };
     std::uint64_t host_yield_checks { };
     std::uint64_t host_yields { };
+    std::uint64_t jit_demand_translations { };
+    std::uint64_t jit_demand_translation_nanoseconds { };
+    std::uint64_t jit_segment_recycles { };
+    std::uint64_t jit_recycled_descriptors { };
+    std::uint64_t jit_recycled_code_bytes { };
+    std::uint64_t jit_full_generation_clears { };
+    std::uint64_t jit_slab_generation_transitions { };
 };
 
 enum class PerfDiagnosticSourceKind : std::uint8_t {
@@ -239,6 +251,10 @@ struct PerformanceSnapshot {
     std::uint64_t jit_shared_descriptor_count { };
     std::uint64_t jit_invalidated_descriptors { };
     std::uint64_t jit_retired_code_bytes { };
+    std::uint64_t jit_segment_recycles { };
+    std::uint64_t jit_recycled_descriptors { };
+    std::uint64_t jit_recycled_code_bytes { };
+    std::uint64_t jit_full_generation_clears { };
     std::uint64_t jit_fast_link_hits { };
     std::uint64_t jit_fast_link_misses { };
     std::uint64_t jit_stable_table_probes { };
@@ -410,15 +426,20 @@ public:
         std::uint64_t reserved_bytes, std::uint64_t committed_bytes,
         std::uint64_t used_bytes);
     void record_jit_shared_cache_state(std::uint64_t slab_id,
+        std::uint32_t process_id,
         std::uint64_t range_count, std::uint64_t descriptor_count,
-        std::uint64_t invalidated_descriptors,
-        std::uint64_t retired_code_bytes);
+        std::uint64_t invalidated_descriptors, std::uint64_t retired_code_bytes,
+        std::uint64_t segment_recycles, std::uint64_t recycled_descriptors,
+        std::uint64_t recycled_code_bytes,
+        std::uint64_t full_generation_clears);
     void record_jit_executor_memory_usage(std::uint64_t slab_id,
         std::uint32_t process_id, std::uint32_t slot,
         std::uint64_t current_bytes);
     void release_jit_memory_context(std::uint64_t slab_id);
     void record_jit_shared_invalidation(bool full);
-    void record_jit_slab_generation_transition();
+    void record_jit_slab_generation_transition(std::uint32_t process_id);
+    void record_jit_demand_translation(
+        std::uint32_t process_id, std::uint64_t nanoseconds);
     void record_jit_dispatch(std::uint64_t fast_link_hits,
         std::uint64_t fast_link_misses, std::uint64_t stable_table_probes,
         std::uint64_t stable_table_collisions, std::uint64_t rsb_hits,
@@ -555,6 +576,7 @@ private:
         std::array<std::atomic<std::uint64_t>, latency_bucket_count>
             buckets { };
         std::atomic<std::uint64_t> samples { };
+        std::atomic<std::uint64_t> total_nanoseconds { };
         std::atomic<std::uint64_t> maximum_nanoseconds { };
         std::atomic<std::uint64_t> over_16_7ms { };
         std::atomic<std::uint64_t> over_20ms { };
@@ -565,6 +587,7 @@ private:
     struct DisplayWindowLatencyHistogram {
         std::array<std::uint64_t, latency_bucket_count> buckets { };
         std::uint64_t samples { };
+        std::uint64_t total_nanoseconds { };
         std::uint64_t maximum_nanoseconds { };
         std::uint64_t over_16_7ms { };
         std::uint64_t over_20ms { };
@@ -613,6 +636,10 @@ private:
     std::atomic<std::uint64_t> jit_shared_descriptor_count_ { };
     std::atomic<std::uint64_t> jit_invalidated_descriptors_ { };
     std::atomic<std::uint64_t> jit_retired_code_bytes_ { };
+    std::atomic<std::uint64_t> jit_segment_recycles_ { };
+    std::atomic<std::uint64_t> jit_recycled_descriptors_ { };
+    std::atomic<std::uint64_t> jit_recycled_code_bytes_ { };
+    std::atomic<std::uint64_t> jit_full_generation_clears_ { };
     std::atomic<std::uint64_t> jit_fast_link_hits_ { };
     std::atomic<std::uint64_t> jit_fast_link_misses_ { };
     std::atomic<std::uint64_t> jit_stable_table_probes_ { };
@@ -725,6 +752,10 @@ private:
         std::uint64_t descriptor_count { };
         std::uint64_t invalidated_descriptors { };
         std::uint64_t retired_code_bytes { };
+        std::uint64_t segment_recycles { };
+        std::uint64_t recycled_descriptors { };
+        std::uint64_t recycled_code_bytes { };
+        std::uint64_t full_generation_clears { };
     };
     mutable std::mutex jit_memory_mutex_;
     std::map<std::uint64_t, SharedSlabUsage> jit_shared_slabs_;
@@ -772,7 +803,7 @@ private:
 
 class PerformanceLatencyScope {
 public:
-    explicit PerformanceLatencyScope(PerfLatencyKind kind);
+    explicit PerformanceLatencyScope(PerfLatencyKind kind, bool enabled = true);
     PerformanceLatencyScope(const PerformanceLatencyScope&) = delete;
     PerformanceLatencyScope& operator=(const PerformanceLatencyScope&) = delete;
     ~PerformanceLatencyScope();

@@ -208,7 +208,7 @@ namespace {
         bool historical_profile { };
         bool boot_working_set { };
         unsigned priority { };
-        JitPrecompilePhase phase { JitPrecompilePhase::Remaining };
+        JitPrecompilePhase phase { JitPrecompilePhase::Opportunistic };
     };
 
     void collect_artifact_result(
@@ -434,11 +434,11 @@ FirmwarePrepareStats FirmwarePreparer::run()
                               : foreground                    ? 2U
                                                               : 3U;
         candidate->phase =
-            loader                          ? JitPrecompilePhase::Loader
-            : springboard                   ? JitPrecompilePhase::SystemUi
-            : candidate->historical_profile ? JitPrecompilePhase::StartupService
-            : foreground ? JitPrecompilePhase::ForegroundApplication
-                         : JitPrecompilePhase::Remaining;
+            loader                          ? JitPrecompilePhase::Bootstrap
+            : springboard                   ? JitPrecompilePhase::Scanout
+            : candidate->historical_profile ? JitPrecompilePhase::PriorStartup
+            : foreground ? JitPrecompilePhase::InteractiveActivation
+                         : JitPrecompilePhase::Opportunistic;
         const bool has_seed_candidate =
             limits_.artifact_seed_mode ==
                 FirmwareArtifactSeedMode::CatalogOnly ||
@@ -476,7 +476,7 @@ FirmwarePrepareStats FirmwarePreparer::run()
                 candidates[candidate_index].critical_closure = true;
                 candidates[candidate_index].priority = 0U;
                 candidates[candidate_index].phase =
-                    JitPrecompilePhase::StartupService;
+                    JitPrecompilePhase::PriorStartup;
                 if (queued.insert(candidate_index).second) {
                     closure_queue.push(candidate_index);
                 }

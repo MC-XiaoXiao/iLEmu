@@ -13,12 +13,17 @@ add_library(ilemu_foundation STATIC
     display.cpp
     executable_catalog.cpp
     firmware_prepare.cpp
+    guest_execution_coordinator.cpp
     guest_cpu_topology.cpp
     guest_exclusive_address_resolver.cpp
     host_resource_controller.cpp
     host_file_watcher.cpp
     jit_artifact.cpp
+    jit_code_cache_governor.cpp
+    jit_execution_budget.cpp
     jit_translation_profile.cpp
+    jit_work_policy.cpp
+    jit_work_scheduler.cpp
     macho.cpp
     output.cpp
     performance.cpp

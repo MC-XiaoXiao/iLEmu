@@ -26,6 +26,9 @@ enum class HostWorkKind : std::uint8_t {
 struct HostResourceBudget {
     std::size_t worker_count { 1 };
     std::chrono::nanoseconds duty_period { std::chrono::seconds { 1 } };
+    // Aggregate worker-time per duty window. A multi-worker controller may
+    // spend more than one wall-clock period, but never more than worker_count
+    // periods, across concurrently executing interactive compile tasks.
     std::chrono::nanoseconds interactive_compile_budget {
         std::chrono::milliseconds { 100 }
     };

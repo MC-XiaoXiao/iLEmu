@@ -17,22 +17,24 @@
 #include "ilemu/address_space.hpp"
 #include "ilemu/arm_cpu_model.hpp"
 #include "ilemu/guest_exclusive_address_resolver.hpp"
+#include "ilemu/jit_work_signal.hpp"
 
 namespace ilemu {
 
-// Offline work is ordered by boot usefulness. Entries still remain advisory:
-// an executor compiles them only after their exact file generation is mapped
-// executable in that process.
+// Offline work is ordered by observed lifecycle usefulness. Entries still
+// remain advisory: an executor compiles them only after their exact file
+// generation is mapped executable in that process. These are generic runtime
+// roles, not executable, App, page, device or firmware identities.
 enum class JitPrecompilePhase : std::uint8_t {
-    Loader,
-    SystemUi,
-    StartupService,
-    ForegroundApplication,
-    Remaining,
+    Bootstrap,
+    Scanout,
+    PriorStartup,
+    InteractiveActivation,
+    Opportunistic,
 };
 
 inline constexpr std::size_t jit_precompile_phase_count =
-    static_cast<std::size_t>(JitPrecompilePhase::Remaining) + 1U;
+    static_cast<std::size_t>(JitPrecompilePhase::Opportunistic) + 1U;
 
 enum class JitPrecompileTarget : std::uint8_t {
     NativeCode,
@@ -116,6 +118,10 @@ struct JitPrecompileMemoryStats {
     std::size_t queue_node_bytes { };
     std::size_t queue_block_bytes { };
     std::size_t profile_recorder_bytes { };
+    // Frozen prior-image descriptors are retained so a shared code-cache
+    // generation change can replay prediction without consulting a profile
+    // that the current process is concurrently training.
+    std::size_t native_profile_prediction_bytes { };
     std::size_t native_preimport_tracker_bytes { };
     std::size_t profile_queue_entries_peak { };
     std::size_t catalog_queue_entries_peak { };
@@ -129,6 +135,7 @@ struct JitPrecompileMemoryStats {
     std::size_t queue_node_bytes_peak { };
     std::size_t queue_block_bytes_peak { };
     std::size_t profile_recorder_bytes_peak { };
+    std::size_t native_profile_prediction_bytes_peak { };
     std::size_t native_preimport_tracker_bytes_peak { };
 };
 
@@ -283,7 +290,8 @@ public:
         std::size_t execution_slot_count, const ArmCpuModel& cpu_model,
         Dynarmic::ExclusiveMonitor& monitor, std::size_t monitor_processor_base,
         std::shared_ptr<JitArtifactStore> artifact_store = { },
-        std::shared_ptr<GuestExclusiveAddressResolver> address_resolver = { });
+        std::shared_ptr<GuestExclusiveAddressResolver> address_resolver = { },
+        std::size_t precompile_lane_count = 1U);
 
     [[nodiscard]] std::size_t size() const { return cpus_.size(); }
     [[nodiscard]] std::size_t capacity() const
@@ -303,11 +311,16 @@ public:
     // initial Guest thread remains suspended, keeping the non-preemptible
     // constructor off the interactive scheduler thread.
     void prepare_primary_execution_resource();
+    [[nodiscard]] std::size_t precompile_lane_count() const noexcept;
+    // Publish demand-recorder changes into the simulator-wide O(1) work
+    // signal without requiring the frontend to scan runtime executors.
+    void set_jit_work_signal(
+        std::shared_ptr<JitWorkObservationSignal> signal);
     [[nodiscard]] std::uint64_t jit_code_cache_bytes();
     void clear_cache();
     void invalidate_cache_range(std::uint32_t address, std::size_t length);
     void set_translation_profile(std::shared_ptr<JitTranslationProfile> profile,
-        JitPrecompilePhase phase = JitPrecompilePhase::Remaining,
+        JitPrecompilePhase phase = JitPrecompilePhase::Opportunistic,
         bool record = true, bool precompile = true);
     // Append descriptors merged by the safe-point recorder since the last
     // profile assignment. This is called only from an idle/precompile
@@ -320,7 +333,7 @@ public:
     void set_jit_artifact_retention(JitArtifactRetention retention);
     void add_precompile_entries(
         const std::vector<std::uint64_t>& location_descriptors,
-        JitPrecompilePhase phase = JitPrecompilePhase::Remaining,
+        JitPrecompilePhase phase = JitPrecompilePhase::Opportunistic,
         JitPrecompileSource source = JitPrecompileSource::Other);
     [[nodiscard]] std::optional<JitPrecompilePhase> next_precompile_phase(
         JitPrecompileTarget target = JitPrecompileTarget::NativeCode,

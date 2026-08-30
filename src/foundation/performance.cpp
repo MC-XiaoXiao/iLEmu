@@ -447,6 +447,10 @@ namespace {
         case PerfLatencyKind::CpuRunSaveState:
         case PerfLatencyKind::CpuRunCacheAccounting:
         case PerfLatencyKind::CpuRunTotal:
+        case PerfLatencyKind::SchedulerSelection:
+        case PerfLatencyKind::GuestExecutionBudget:
+        case PerfLatencyKind::SchedulerPreemptionCheck:
+        case PerfLatencyKind::SchedulerSliceCompletion:
         case PerfLatencyKind::SchedulerRunnableToDispatch:
         case PerfLatencyKind::SchedulerPreemptionRequestToReturn:
         case PerfLatencyKind::MachMessageSendToReceive:
@@ -509,6 +513,10 @@ void PerformanceCounters::reset(bool enabled)
     jit_shared_descriptor_count_.store(0, std::memory_order_relaxed);
     jit_invalidated_descriptors_.store(0, std::memory_order_relaxed);
     jit_retired_code_bytes_.store(0, std::memory_order_relaxed);
+    jit_segment_recycles_.store(0, std::memory_order_relaxed);
+    jit_recycled_descriptors_.store(0, std::memory_order_relaxed);
+    jit_recycled_code_bytes_.store(0, std::memory_order_relaxed);
+    jit_full_generation_clears_.store(0, std::memory_order_relaxed);
     jit_fast_link_hits_.store(0, std::memory_order_relaxed);
     jit_fast_link_misses_.store(0, std::memory_order_relaxed);
     jit_stable_table_probes_.store(0, std::memory_order_relaxed);
@@ -596,6 +604,7 @@ void PerformanceCounters::reset(bool enabled)
         for (auto& bucket : histogram.buckets)
             bucket.store(0, std::memory_order_relaxed);
         histogram.samples.store(0, std::memory_order_relaxed);
+        histogram.total_nanoseconds.store(0, std::memory_order_relaxed);
         histogram.maximum_nanoseconds.store(0, std::memory_order_relaxed);
         histogram.over_16_7ms.store(0, std::memory_order_relaxed);
         histogram.over_20ms.store(0, std::memory_order_relaxed);
@@ -717,12 +726,42 @@ bool PerformanceCounters::begin_display_window()
         jit_instances_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.jit_creation_nanoseconds =
         jit_creation_nanoseconds_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_shared_invalidation_requests =
+        jit_shared_invalidation_requests_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_full_invalidation_requests =
+        jit_full_invalidation_requests_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_range_invalidation_requests =
+        jit_range_invalidation_requests_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_slab_generation_transitions =
+        jit_slab_generation_transitions_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_invalidated_descriptors =
+        jit_invalidated_descriptors_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_retired_code_bytes =
+        jit_retired_code_bytes_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_segment_recycles =
+        jit_segment_recycles_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_recycled_descriptors =
+        jit_recycled_descriptors_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_recycled_code_bytes =
+        jit_recycled_code_bytes_.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.jit_full_generation_clears =
+        jit_full_generation_clears_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.jit_demand_artifact_probes =
         jit_demand_artifact_probes_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.jit_demand_artifact_hits =
         jit_demand_artifact_hits_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.jit_demand_artifact_misses =
         jit_demand_artifact_misses_.load(std::memory_order_relaxed);
+    // Demand translation stays out of the display-window histogram lock.
+    // Snapshot only its monotonic totals so interaction windows can attribute
+    // translation without synchronizing every newly compiled block.
+    constexpr auto jit_demand_index =
+        static_cast<std::size_t>(PerfLatencyKind::JitDemandTranslation);
+    diagnostic_work_baseline.latencies[jit_demand_index].samples =
+        latencies_[jit_demand_index].samples.load(std::memory_order_relaxed);
+    diagnostic_work_baseline.latencies[jit_demand_index].total_nanoseconds =
+        latencies_[jit_demand_index].total_nanoseconds.load(
+            std::memory_order_relaxed);
     diagnostic_work_baseline.translation_blocks =
         translation_blocks_.load(std::memory_order_relaxed);
     diagnostic_work_baseline.cpu_executions =
@@ -828,6 +867,7 @@ std::optional<PerformanceSnapshot> PerformanceCounters::end_display_window()
         const auto& histogram = display_window_latencies_[index];
         auto& latency = result.latencies[index];
         latency.samples = histogram.samples;
+        latency.total_nanoseconds = histogram.total_nanoseconds;
         latency.maximum_nanoseconds = histogram.maximum_nanoseconds;
         latency.over_16_7ms = histogram.over_16_7ms;
         latency.over_20ms = histogram.over_20ms;
@@ -858,6 +898,36 @@ std::optional<PerformanceSnapshot> PerformanceCounters::end_display_window()
     result.jit_creation_nanoseconds = diagnostic_delta(
         jit_creation_nanoseconds_.load(std::memory_order_relaxed),
         diagnostic_work_baseline.jit_creation_nanoseconds);
+    result.jit_shared_invalidation_requests = diagnostic_delta(
+        jit_shared_invalidation_requests_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.jit_shared_invalidation_requests);
+    result.jit_full_invalidation_requests = diagnostic_delta(
+        jit_full_invalidation_requests_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.jit_full_invalidation_requests);
+    result.jit_range_invalidation_requests = diagnostic_delta(
+        jit_range_invalidation_requests_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.jit_range_invalidation_requests);
+    result.jit_slab_generation_transitions = diagnostic_delta(
+        jit_slab_generation_transitions_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.jit_slab_generation_transitions);
+    result.jit_invalidated_descriptors = diagnostic_delta(
+        jit_invalidated_descriptors_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.jit_invalidated_descriptors);
+    result.jit_retired_code_bytes = diagnostic_delta(
+        jit_retired_code_bytes_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.jit_retired_code_bytes);
+    result.jit_segment_recycles =
+        diagnostic_delta(jit_segment_recycles_.load(std::memory_order_relaxed),
+            diagnostic_work_baseline.jit_segment_recycles);
+    result.jit_recycled_descriptors = diagnostic_delta(
+        jit_recycled_descriptors_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.jit_recycled_descriptors);
+    result.jit_recycled_code_bytes = diagnostic_delta(
+        jit_recycled_code_bytes_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.jit_recycled_code_bytes);
+    result.jit_full_generation_clears = diagnostic_delta(
+        jit_full_generation_clears_.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.jit_full_generation_clears);
     result.jit_demand_artifact_probes = diagnostic_delta(
         jit_demand_artifact_probes_.load(std::memory_order_relaxed),
         diagnostic_work_baseline.jit_demand_artifact_probes);
@@ -867,6 +937,15 @@ std::optional<PerformanceSnapshot> PerformanceCounters::end_display_window()
     result.jit_demand_artifact_misses = diagnostic_delta(
         jit_demand_artifact_misses_.load(std::memory_order_relaxed),
         diagnostic_work_baseline.jit_demand_artifact_misses);
+    constexpr auto jit_demand_index =
+        static_cast<std::size_t>(PerfLatencyKind::JitDemandTranslation);
+    result.latencies[jit_demand_index].samples = diagnostic_delta(
+        latencies_[jit_demand_index].samples.load(std::memory_order_relaxed),
+        diagnostic_work_baseline.latencies[jit_demand_index].samples);
+    result.latencies[jit_demand_index].total_nanoseconds = diagnostic_delta(
+        latencies_[jit_demand_index].total_nanoseconds.load(
+            std::memory_order_relaxed),
+        diagnostic_work_baseline.latencies[jit_demand_index].total_nanoseconds);
     result.scheduler_runnable_transitions = diagnostic_delta(
         scheduler_runnable_transitions_.load(std::memory_order_relaxed),
         diagnostic_work_baseline.scheduler_runnable_transitions);
@@ -1134,26 +1213,82 @@ void PerformanceCounters::record_jit_shared_slab_usage(std::uint64_t slab_id,
 }
 
 void PerformanceCounters::record_jit_shared_cache_state(std::uint64_t slab_id,
-    std::uint64_t range_count, std::uint64_t descriptor_count,
-    std::uint64_t invalidated_descriptors, std::uint64_t retired_code_bytes)
+    std::uint32_t process_id, std::uint64_t range_count,
+    std::uint64_t descriptor_count,
+    std::uint64_t invalidated_descriptors, std::uint64_t retired_code_bytes,
+    std::uint64_t segment_recycles, std::uint64_t recycled_descriptors,
+    std::uint64_t recycled_code_bytes, std::uint64_t full_generation_clears)
 {
     if (!enabled())
         return;
-    std::lock_guard lock { jit_memory_mutex_ };
-    auto& slab = jit_shared_slabs_[slab_id];
-    slab.range_count = range_count;
-    slab.descriptor_count = descriptor_count;
-    slab.invalidated_descriptors = invalidated_descriptors;
-    slab.retired_code_bytes = retired_code_bytes;
-    refresh_jit_shared_cache_stats_locked();
+    std::uint64_t segment_recycle_delta { };
+    std::uint64_t recycled_descriptor_delta { };
+    std::uint64_t recycled_code_delta { };
+    std::uint64_t full_clear_delta { };
+    const auto delta = [](std::uint64_t current, std::uint64_t previous) {
+        // Exact-range counters reset when Dynarmic performs an explicit full
+        // clear. Treat that reset as a new monotonic epoch while centralizing
+        // duplicate executor observations by slab id.
+        return current >= previous ? current - previous : current;
+    };
+    {
+        std::lock_guard lock { jit_memory_mutex_ };
+        auto& slab = jit_shared_slabs_[slab_id];
+        const auto invalidated_delta =
+            delta(invalidated_descriptors, slab.invalidated_descriptors);
+        const auto retired_delta =
+            delta(retired_code_bytes, slab.retired_code_bytes);
+        segment_recycle_delta =
+            delta(segment_recycles, slab.segment_recycles);
+        recycled_descriptor_delta =
+            delta(recycled_descriptors, slab.recycled_descriptors);
+        recycled_code_delta =
+            delta(recycled_code_bytes, slab.recycled_code_bytes);
+        full_clear_delta =
+            delta(full_generation_clears, slab.full_generation_clears);
+        jit_invalidated_descriptors_.fetch_add(
+            invalidated_delta, std::memory_order_relaxed);
+        jit_retired_code_bytes_.fetch_add(
+            retired_delta, std::memory_order_relaxed);
+        jit_segment_recycles_.fetch_add(
+            segment_recycle_delta, std::memory_order_relaxed);
+        jit_recycled_descriptors_.fetch_add(
+            recycled_descriptor_delta, std::memory_order_relaxed);
+        jit_recycled_code_bytes_.fetch_add(
+            recycled_code_delta, std::memory_order_relaxed);
+        jit_full_generation_clears_.fetch_add(
+            full_clear_delta, std::memory_order_relaxed);
+        slab.range_count = range_count;
+        slab.descriptor_count = descriptor_count;
+        slab.invalidated_descriptors = invalidated_descriptors;
+        slab.retired_code_bytes = retired_code_bytes;
+        slab.segment_recycles = segment_recycles;
+        slab.recycled_descriptors = recycled_descriptors;
+        slab.recycled_code_bytes = recycled_code_bytes;
+        slab.full_generation_clears = full_generation_clears;
+        refresh_jit_shared_cache_stats_locked();
+    }
+    if (!display_window_active_.load(std::memory_order_relaxed) ||
+        (segment_recycle_delta == 0U && recycled_descriptor_delta == 0U &&
+            recycled_code_delta == 0U && full_clear_delta == 0U)) {
+        return;
+    }
+    std::lock_guard process_lock { diagnostic_process_mutex_ };
+    auto [found, inserted] = diagnostic_processes_.try_emplace(
+        process_id, DiagnosticProcessSnapshot { });
+    auto& process = found->second;
+    if (inserted)
+        process.process_id = process_id;
+    process.jit_segment_recycles += segment_recycle_delta;
+    process.jit_recycled_descriptors += recycled_descriptor_delta;
+    process.jit_recycled_code_bytes += recycled_code_delta;
+    process.jit_full_generation_clears += full_clear_delta;
 }
 
 void PerformanceCounters::refresh_jit_shared_cache_stats_locked()
 {
     std::uint64_t ranges { };
     std::uint64_t descriptors { };
-    std::uint64_t invalidated { };
-    std::uint64_t retired { };
     for (const auto& [id, usage] : jit_shared_slabs_) {
         static_cast<void>(id);
         ranges = std::min(std::numeric_limits<std::uint64_t>::max() - ranges,
@@ -1163,18 +1298,9 @@ void PerformanceCounters::refresh_jit_shared_cache_stats_locked()
             std::min(std::numeric_limits<std::uint64_t>::max() - descriptors,
                 usage.descriptor_count) +
             descriptors;
-        invalidated =
-            std::min(std::numeric_limits<std::uint64_t>::max() - invalidated,
-                usage.invalidated_descriptors) +
-            invalidated;
-        retired = std::min(std::numeric_limits<std::uint64_t>::max() - retired,
-                      usage.retired_code_bytes) +
-                  retired;
     }
     jit_shared_range_count_.store(ranges, std::memory_order_relaxed);
     jit_shared_descriptor_count_.store(descriptors, std::memory_order_relaxed);
-    jit_invalidated_descriptors_.store(invalidated, std::memory_order_relaxed);
-    jit_retired_code_bytes_.store(retired, std::memory_order_relaxed);
 }
 
 void PerformanceCounters::record_jit_executor_memory_usage(
@@ -1268,11 +1394,37 @@ void PerformanceCounters::record_jit_shared_invalidation(bool full)
     scoped_counter.fetch_add(1, std::memory_order_relaxed);
 }
 
-void PerformanceCounters::record_jit_slab_generation_transition()
+void PerformanceCounters::record_jit_slab_generation_transition(
+    std::uint32_t process_id)
 {
     if (!enabled())
         return;
     jit_slab_generation_transitions_.fetch_add(1, std::memory_order_relaxed);
+    if (!display_window_active_.load(std::memory_order_relaxed))
+        return;
+    std::lock_guard lock { diagnostic_process_mutex_ };
+    auto [found, inserted] = diagnostic_processes_.try_emplace(
+        process_id, DiagnosticProcessSnapshot { });
+    auto& process = found->second;
+    if (inserted)
+        process.process_id = process_id;
+    ++process.jit_slab_generation_transitions;
+}
+
+void PerformanceCounters::record_jit_demand_translation(
+    std::uint32_t process_id, std::uint64_t nanoseconds)
+{
+    record_latency(PerfLatencyKind::JitDemandTranslation, nanoseconds);
+    if (!cpu_source_diagnostics_enabled())
+        return;
+    std::lock_guard lock { diagnostic_process_mutex_ };
+    auto [found, inserted] = diagnostic_processes_.try_emplace(
+        process_id, DiagnosticProcessSnapshot { });
+    auto& process = found->second;
+    if (inserted)
+        process.process_id = process_id;
+    ++process.jit_demand_translations;
+    process.jit_demand_translation_nanoseconds += nanoseconds;
 }
 
 void PerformanceCounters::record_jit_dispatch(std::uint64_t fast_link_hits,
@@ -2501,6 +2653,8 @@ void PerformanceCounters::record_global_latency(
     histogram.buckets[latency_bucket(nanoseconds)].fetch_add(
         1, std::memory_order_relaxed);
     histogram.samples.fetch_add(1, std::memory_order_relaxed);
+    histogram.total_nanoseconds.fetch_add(
+        nanoseconds, std::memory_order_relaxed);
     if (nanoseconds > one_sixtieth_second)
         histogram.over_16_7ms.fetch_add(1, std::memory_order_relaxed);
     if (nanoseconds > twenty_milliseconds)
@@ -2528,6 +2682,7 @@ void PerformanceCounters::record_display_window_latency_locked(
     auto& histogram = display_window_latencies_[index];
     ++histogram.buckets[latency_bucket(nanoseconds)];
     ++histogram.samples;
+    histogram.total_nanoseconds += nanoseconds;
     if (nanoseconds > one_sixtieth_second)
         ++histogram.over_16_7ms;
     if (nanoseconds > twenty_milliseconds)
@@ -2608,6 +2763,14 @@ PerformanceSnapshot PerformanceCounters::snapshot() const
         jit_invalidated_descriptors_.load(std::memory_order_relaxed);
     result.jit_retired_code_bytes =
         jit_retired_code_bytes_.load(std::memory_order_relaxed);
+    result.jit_segment_recycles =
+        jit_segment_recycles_.load(std::memory_order_relaxed);
+    result.jit_recycled_descriptors =
+        jit_recycled_descriptors_.load(std::memory_order_relaxed);
+    result.jit_recycled_code_bytes =
+        jit_recycled_code_bytes_.load(std::memory_order_relaxed);
+    result.jit_full_generation_clears =
+        jit_full_generation_clears_.load(std::memory_order_relaxed);
     result.jit_fast_link_hits =
         jit_fast_link_hits_.load(std::memory_order_relaxed);
     result.jit_fast_link_misses =
@@ -2751,6 +2914,8 @@ PerformanceSnapshot PerformanceCounters::snapshot() const
         const auto& histogram = latencies_[index];
         auto& latency = result.latencies[index];
         latency.samples = histogram.samples.load(std::memory_order_relaxed);
+        latency.total_nanoseconds =
+            histogram.total_nanoseconds.load(std::memory_order_relaxed);
         latency.maximum_nanoseconds =
             histogram.maximum_nanoseconds.load(std::memory_order_relaxed);
         latency.over_16_7ms =
@@ -2835,9 +3000,10 @@ PerformanceCounters& performance_counters()
     return counters;
 }
 
-PerformanceLatencyScope::PerformanceLatencyScope(PerfLatencyKind kind)
+PerformanceLatencyScope::PerformanceLatencyScope(
+    PerfLatencyKind kind, bool enabled)
     : kind_ { kind }
-    , enabled_ { performance_counters().enabled() }
+    , enabled_ { enabled && performance_counters().enabled() }
     , started_ { enabled_ ? std::chrono::steady_clock::now()
                           : std::chrono::steady_clock::time_point { } }
 {
@@ -3010,6 +3176,14 @@ std::string_view perf_latency_kind_name(PerfLatencyKind kind)
         return "cpu-run-cache-accounting";
     case PerfLatencyKind::CpuRunTotal:
         return "cpu-run-total";
+    case PerfLatencyKind::SchedulerSelection:
+        return "scheduler-selection";
+    case PerfLatencyKind::GuestExecutionBudget:
+        return "guest-execution-budget";
+    case PerfLatencyKind::SchedulerPreemptionCheck:
+        return "scheduler-preemption-check";
+    case PerfLatencyKind::SchedulerSliceCompletion:
+        return "scheduler-slice-completion";
     case PerfLatencyKind::SchedulerRunnableToDispatch:
         return "scheduler-runnable-dispatch";
     case PerfLatencyKind::SchedulerPreemptionRequestToReturn:
@@ -3027,7 +3201,9 @@ void append_diagnostic_process_summary(std::ostringstream& text,
 {
     text << " diagnostic-process-format="
             "pid:runs/ticks/execute-ns/total-ns/ensure-jit-ns/"
-            "invalidation-ns/artifact-preload-ns/svc/yields/yield-checks"
+            "invalidation-ns/artifact-preload-ns/svc/yields/yield-checks/"
+            "jit-demand/jit-demand-ns/segment-recycles/recycled-descriptors/"
+            "recycled-code-bytes/full-generation-clears/jit-slab-generations"
          << " diagnostic-process=";
     if (processes.empty()) {
         text << "none";
@@ -3044,7 +3220,14 @@ void append_diagnostic_process_summary(std::ostringstream& text,
              << process.cpu_invalidation_nanoseconds << '/'
              << process.cpu_artifact_preload_nanoseconds << '/'
              << process.svc_calls << '/' << process.host_yields << '/'
-             << process.host_yield_checks;
+             << process.host_yield_checks << '/'
+             << process.jit_demand_translations << '/'
+             << process.jit_demand_translation_nanoseconds << '/'
+             << process.jit_segment_recycles << '/'
+             << process.jit_recycled_descriptors << '/'
+             << process.jit_recycled_code_bytes << '/'
+             << process.jit_full_generation_clears << '/'
+             << process.jit_slab_generation_transitions;
     }
 }
 
@@ -3084,6 +3267,11 @@ std::string format_performance_summary(const PerformanceSnapshot& snapshot)
          << " jit-invalidated-descriptors="
          << snapshot.jit_invalidated_descriptors
          << " jit-retired-code-bytes=" << snapshot.jit_retired_code_bytes
+         << " jit-segment-recycles=" << snapshot.jit_segment_recycles
+         << " jit-recycled-descriptors=" << snapshot.jit_recycled_descriptors
+         << " jit-recycled-code-bytes=" << snapshot.jit_recycled_code_bytes
+         << " jit-full-generation-clears="
+         << snapshot.jit_full_generation_clears
          << " jit-fast-link=" << snapshot.jit_fast_link_hits << "/"
          << snapshot.jit_fast_link_misses << " jit-stable-table-collision-rate="
          << snapshot.jit_stable_table_collisions << "/"
@@ -3215,7 +3403,8 @@ std::string format_performance_summary(const PerformanceSnapshot& snapshot)
     text << " jit-demand-translation=" << jit_demand.samples << '/'
          << jit_demand.p50_nanoseconds << '/' << jit_demand.p95_nanoseconds
          << '/' << jit_demand.p99_nanoseconds << '/'
-         << jit_demand.maximum_nanoseconds;
+         << jit_demand.maximum_nanoseconds
+         << " jit-demand-translation-total-ns=" << jit_demand.total_nanoseconds;
     text << " jit-cache-slots=";
     first = true;
     for (const auto& usage : snapshot.jit_cache_slots) {
@@ -3290,7 +3479,27 @@ std::string format_display_performance_summary(
          << snapshot.scheduler_quantum_expirations
          << " jit-demand-artifact=" << snapshot.jit_demand_artifact_probes
          << "/" << snapshot.jit_demand_artifact_hits << "/"
-         << snapshot.jit_demand_artifact_misses
+         << snapshot.jit_demand_artifact_misses << " jit-demand-translation="
+         << snapshot
+                .latencies[static_cast<std::size_t>(
+                    PerfLatencyKind::JitDemandTranslation)]
+                .samples
+         << "/"
+         << snapshot
+                .latencies[static_cast<std::size_t>(
+                    PerfLatencyKind::JitDemandTranslation)]
+                .total_nanoseconds
+         << " jit-full-invalidations="
+         << snapshot.jit_full_invalidation_requests
+         << " jit-range-invalidations="
+         << snapshot.jit_range_invalidation_requests
+         << " jit-slab-generations=" << snapshot.jit_slab_generation_transitions
+         << " jit-cache-retire=" << snapshot.jit_invalidated_descriptors << "/"
+         << snapshot.jit_retired_code_bytes
+         << " jit-segment-recycle=" << snapshot.jit_segment_recycles << "/"
+         << snapshot.jit_recycled_descriptors << "/"
+         << snapshot.jit_recycled_code_bytes << " jit-full-generation-clears="
+         << snapshot.jit_full_generation_clears
          << " native-attempt=" << snapshot.native_present_attempts
          << " native-coalesced=" << snapshot.native_present_mailbox_coalesced
          << " native-queued=" << snapshot.native_presents
@@ -3343,6 +3552,10 @@ std::string format_display_performance_summary(
         PerfLatencyKind::CpuRunSaveState,
         PerfLatencyKind::CpuRunCacheAccounting,
         PerfLatencyKind::CpuRunTotal,
+        PerfLatencyKind::SchedulerSelection,
+        PerfLatencyKind::GuestExecutionBudget,
+        PerfLatencyKind::SchedulerPreemptionCheck,
+        PerfLatencyKind::SchedulerSliceCompletion,
         PerfLatencyKind::SchedulerRunnableToDispatch,
         PerfLatencyKind::SchedulerPreemptionRequestToReturn,
     };
@@ -3358,6 +3571,16 @@ std::string format_display_performance_summary(
              << latency.p99_nanoseconds << '/' << latency.maximum_nanoseconds
              << '/' << latency.over_16_7ms << '/' << latency.over_20ms << '/'
              << latency.over_33_3ms << '/' << latency.over_50ms;
+    }
+    text << " diagnostic-cpu-total-ns=";
+    for (std::size_t index = 0; index < cpu_source_latencies.size(); ++index) {
+        if (index != 0)
+            text << ',';
+        const auto kind = cpu_source_latencies[index];
+        const auto& latency =
+            snapshot.latencies[static_cast<std::size_t>(kind)];
+        text << perf_latency_kind_name(kind) << ':'
+             << latency.total_nanoseconds;
     }
     text << " diagnostic-cpu-run-format="
             "pid:processor:slot:start-us/end-us:"

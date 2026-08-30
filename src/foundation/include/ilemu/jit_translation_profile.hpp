@@ -16,24 +16,52 @@
 #include <vector>
 
 #include "ilemu/content_identity.hpp"
+#include "ilemu/jit_work_signal.hpp"
 
 namespace ilemu {
 
-inline constexpr std::size_t jit_translation_profile_maximum_locations = 32'768;
+// Keep one prior working set plus the next run's bounded activation/recent
+// sample. This prevents a long boot or launch from replacing every learned
+// interaction while the store still applies a global byte limit across
+// processes.
+inline constexpr std::size_t jit_translation_profile_maximum_locations =
+    262'144;
 
 // A recorder belongs to one JIT executor. Its arrays are allocated with the
 // executor, so ordinary demand translation never allocates or contends on the
 // profile's merge mutex. The hash table is deliberately larger than the
 // descriptor array so a full recorder still has an empty probe slot.
-inline constexpr std::size_t jit_translation_profile_recorder_capacity = 4'096;
-inline constexpr std::size_t jit_translation_profile_recorder_hash_capacity =
-    8'192;
+// Hold one complete sustained foreground burst between Guest safe points.
+// Validation and profile merging are intentionally absent from Cpu::run, so a
+// full recorder must not force synchronous work onto an interactive slice.
+// The bounded executor-local storage costs about 3 MiB. Half preserves the
+// activation prefix and two rotating quarter-size banks retain the newest
+// unique interaction tail after a sustained run exceeds the recorder.
+inline constexpr std::size_t jit_translation_profile_recorder_capacity =
+    131'072;
+inline constexpr std::size_t jit_translation_profile_recorder_prefix_capacity =
+    jit_translation_profile_recorder_capacity / 2U;
+inline constexpr std::size_t jit_translation_profile_recorder_recent_capacity =
+    jit_translation_profile_recorder_capacity / 4U;
+// A native slab is filled in two useful tiers: retain the deterministic image
+// activation path, then spend the remaining capacity on the newest observed
+// interaction before considering older history.
+inline constexpr std::size_t
+    jit_translation_profile_activation_prediction_capacity =
+        jit_translation_profile_recorder_prefix_capacity;
+inline constexpr std::size_t
+    jit_translation_profile_recent_prediction_capacity =
+        jit_translation_profile_recorder_recent_capacity * 2U;
+inline constexpr std::size_t jit_translation_profile_recorder_prefix_hash_capacity =
+    jit_translation_profile_recorder_prefix_capacity * 2U;
+inline constexpr std::size_t jit_translation_profile_recorder_recent_hash_capacity =
+    jit_translation_profile_recorder_recent_capacity * 2U;
 
 inline constexpr std::size_t jit_translation_profile_maximum_profiles = 256;
 inline constexpr std::size_t jit_translation_profile_maximum_file_bytes =
-    1U * 1024U * 1024U;
+    4U * 1024U * 1024U;
 inline constexpr std::size_t jit_translation_profile_maximum_storage_bytes =
-    16U * 1024U * 1024U;
+    64U * 1024U * 1024U;
 
 enum class JitTranslationProfileRecordResult : std::uint8_t {
     Recorded,
@@ -48,13 +76,25 @@ class JitTranslationProfileRecorder {
 public:
     JitTranslationProfileRecorder() noexcept = default;
 
+    void set_work_signal(
+        std::shared_ptr<JitWorkObservationSignal> signal) noexcept
+    {
+        work_signal_ = std::move(signal);
+    }
+
     [[nodiscard]] JitTranslationProfileRecordResult record(
         std::uint64_t location_descriptor) noexcept;
-    [[nodiscard]] std::span<const std::uint64_t> locations() const noexcept
+    // Safe-point snapshot order is activation prefix, older recent bank, then
+    // newest bank. Recording itself remains allocation-free and lock-free.
+    [[nodiscard]] std::vector<std::uint64_t> snapshot() const;
+    [[nodiscard]] std::size_t size() const noexcept
     {
-        return { locations_.data(), size_ };
+        return prefix_size_ + recent_sizes_[0] + recent_sizes_[1];
     }
-    [[nodiscard]] std::size_t size() const noexcept { return size_; }
+    [[nodiscard]] std::size_t prefix_size() const noexcept
+    {
+        return prefix_size_;
+    }
     [[nodiscard]] std::uint64_t deduplicated() const noexcept
     {
         return deduplicated_;
@@ -68,14 +108,34 @@ public:
 private:
     [[nodiscard]] static std::size_t hash(
         std::uint64_t location_descriptor) noexcept;
+    [[nodiscard]] static bool contains(
+        std::span<const std::uint64_t> table,
+        std::uint64_t location_descriptor) noexcept;
+    [[nodiscard]] static bool insert(std::span<std::uint64_t> table,
+        std::uint64_t location_descriptor) noexcept;
 
-    std::array<std::uint64_t, jit_translation_profile_recorder_capacity>
-        locations_ { };
-    std::array<std::uint64_t, jit_translation_profile_recorder_hash_capacity>
-        known_locations_ { };
-    std::size_t size_ { };
+    std::array<std::uint64_t,
+        jit_translation_profile_recorder_prefix_capacity>
+        prefix_locations_ { };
+    std::array<std::array<std::uint64_t,
+                   jit_translation_profile_recorder_recent_capacity>,
+        2>
+        recent_locations_ { };
+    std::array<std::uint64_t,
+        jit_translation_profile_recorder_prefix_hash_capacity>
+        prefix_hash_ { };
+    std::array<std::array<std::uint64_t,
+                   jit_translation_profile_recorder_recent_hash_capacity>,
+        2>
+        recent_hashes_ { };
+    std::array<std::size_t, 2> recent_sizes_ { };
+    std::array<std::uint64_t, 2> recent_sequences_ { 1U, 0U };
+    std::size_t prefix_size_ { };
+    std::size_t active_recent_bank_ { };
+    std::uint64_t next_recent_sequence_ { 2U };
     std::uint64_t deduplicated_ { };
     std::uint64_t dropped_capacity_ { };
+    std::shared_ptr<JitWorkObservationSignal> work_signal_;
 };
 
 struct JitTranslationProfileStats {
@@ -89,6 +149,7 @@ struct JitTranslationProfileStats {
     std::uint64_t recorder_deduplicated { };
     std::uint64_t recorder_dropped_capacity { };
     std::uint64_t dropped_capacity { };
+    std::uint64_t working_set_evicted { };
     std::uint64_t unstable_dropped { };
     std::uint64_t profile_loaded { };
     std::uint64_t disk_descriptors_loaded { };
@@ -133,6 +194,21 @@ struct JitTranslationProfileStats {
     std::size_t resident_bytes { };
 };
 
+struct JitTranslationProfilePrediction {
+    // Activation first, newest interaction second, then older history. Every
+    // live profile descriptor appears exactly once.
+    std::vector<std::uint64_t> ordered_locations;
+    // Frozen newest-first tail used for bounded recovery after range
+    // invalidations without reversing the tiered plan above.
+    std::vector<std::uint64_t> recent_locations;
+};
+
+struct JitTranslationProfilePredictionLimits {
+    std::size_t activation_locations { };
+    std::size_t recent_locations { };
+    std::size_t historical_locations { };
+};
+
 // A process-image profile contains only complete A32 location descriptors that
 // previously reached successful host-code emission. It does not own or share
 // generated machine code, callbacks, page tables, or guest memory.
@@ -145,20 +221,42 @@ public:
     // Profiling is an optional bounded working-set optimization and must
     // never interrupt guest translation if host memory is constrained.
     void record(std::uint64_t location_descriptor) noexcept;
-    // Merge a recorder batch at a Guest safe point. Recorder-local duplicate
-    // and overflow counts are supplied so all capacity decisions remain
-    // visible without adding hot-path atomics.
+    // Merge a recorder batch at a Guest safe point. The bounded profile is a
+    // recency-ordered working set: newly demanded locations displace the
+    // oldest hints once it is full. Recorder-local duplicate and overflow
+    // counts are supplied so all capacity decisions remain visible without
+    // adding hot-path atomics.
     void merge(std::span<const std::uint64_t> location_descriptors,
         std::uint64_t recorder_deduplicated = 0,
-        std::uint64_t recorder_dropped_capacity = 0) noexcept;
+        std::uint64_t recorder_dropped_capacity = 0,
+        std::size_t activation_prefix_locations = 0) noexcept;
     // A hint can become invalid when a prior run's slid image occupied the same
     // executable address. Discarding is advisory and takes effect when the
     // profile is next saved; guest execution never depends on the hint.
     void discard(std::uint64_t location_descriptor) noexcept;
     [[nodiscard]] std::vector<std::uint64_t> snapshot() const;
+    [[nodiscard]] JitTranslationProfilePrediction snapshot_prediction() const;
+    [[nodiscard]] JitTranslationProfilePrediction snapshot_prediction(
+        JitTranslationProfilePredictionLimits limits) const;
     [[nodiscard]] std::pair<std::vector<std::uint64_t>, std::size_t>
     snapshot_range(std::size_t offset, std::size_t maximum) const;
+    // Offset zero is the most recently observed descriptor. This is the order
+    // used for prediction; snapshot_range retains storage order for persistence
+    // and diagnostics.
+    [[nodiscard]] std::pair<std::vector<std::uint64_t>, std::size_t>
+    snapshot_recent_range(std::size_t offset, std::size_t maximum) const;
+    // Portable scans advance across locations already confirmed in the live
+    // artifact catalog without re-enqueuing them after every profile revision.
+    [[nodiscard]] std::pair<std::vector<std::uint64_t>, std::size_t>
+    snapshot_recent_missing_portable_range(
+        std::size_t offset, std::size_t maximum) const;
     [[nodiscard]] std::size_t storage_size() const noexcept;
+    // Changes whenever the ordered working set changes. Consumers use this
+    // to restart bounded scans without coupling profile mutation to a queue.
+    [[nodiscard]] std::uint64_t revision() const noexcept
+    {
+        return revision_.load(std::memory_order_acquire);
+    }
     [[nodiscard]] JitTranslationProfileStats stats() const noexcept;
 
     void note_profile_loaded(std::uint64_t descriptors) noexcept;
@@ -201,6 +299,7 @@ private:
     std::atomic<std::uint64_t> recorder_deduplicated_ { };
     std::atomic<std::uint64_t> recorder_dropped_capacity_ { };
     std::atomic<std::uint64_t> dropped_capacity_ { };
+    std::atomic<std::uint64_t> working_set_evicted_ { };
     std::atomic<std::uint64_t> unstable_dropped_ { };
     std::atomic<std::uint64_t> profile_loaded_ { };
     std::atomic<std::uint64_t> profile_files_loaded_ { };
@@ -232,6 +331,7 @@ private:
     std::atomic<std::uint64_t> load_nanoseconds_ { };
     std::atomic<std::uint64_t> profile_bytes_ { };
     std::atomic<std::uint64_t> profile_save_failures_ { };
+    std::atomic<std::uint64_t> revision_ { 1U };
     std::unordered_set<std::uint64_t> profile_portable_artifact_locations_;
 };
 

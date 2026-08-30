@@ -5500,6 +5500,11 @@ std::uint64_t ExecutionContext::request_cache_clear()
 {
     const std::lock_guard lock { invalidation_mutex_ };
     native_code_slab_->request_cache_clear();
+    auto clear_epoch =
+        cache_clear_epoch_.fetch_add(1U, std::memory_order_acq_rel) + 1U;
+    if (clear_epoch == 0U) {
+        cache_clear_epoch_.store(1U, std::memory_order_release);
+    }
     auto epoch =
         cache_invalidation_epoch_.fetch_add(1U, std::memory_order_acq_rel) + 1U;
     if (epoch == 0U) {

@@ -681,6 +681,13 @@ public:
     {
         return cache_invalidation_epoch_.load(std::memory_order_acquire);
     }
+    // Range invalidations retire only overlapping native blocks. Prediction
+    // plans use this narrower epoch so one local executable-page change does
+    // not restart a complete process-image scan.
+    [[nodiscard]] std::uint64_t cache_clear_epoch() const noexcept
+    {
+        return cache_clear_epoch_.load(std::memory_order_acquire);
+    }
     // Returns true exactly once for each observed post-initial slab generation.
     // Executors may call this concurrently; the shared context owns the
     // observation so metrics are not multiplied by executor count.
@@ -705,6 +712,7 @@ private:
     mutable std::mutex mutex_;
     bool process_id_bound_ { };
     std::atomic<std::uint64_t> cache_invalidation_epoch_ { };
+    std::atomic<std::uint64_t> cache_clear_epoch_ { };
     std::atomic<std::uint64_t> observed_slab_generation_ { };
     mutable std::mutex invalidation_mutex_;
     std::vector<std::unique_ptr<LinkCell>> link_cells_;

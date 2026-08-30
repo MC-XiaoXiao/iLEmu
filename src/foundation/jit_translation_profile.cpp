@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <fstream>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <span>
@@ -359,41 +360,111 @@ std::size_t JitTranslationProfileRecorder::hash(
     return static_cast<std::size_t>(value);
 }
 
+bool JitTranslationProfileRecorder::contains(
+    std::span<const std::uint64_t> table,
+    std::uint64_t location_descriptor) noexcept
+{
+    auto slot = hash(location_descriptor) & (table.size() - 1U);
+    for (std::size_t probe = 0; probe < table.size(); ++probe) {
+        const auto known = table[slot];
+        if (known == location_descriptor)
+            return true;
+        if (known == 0U)
+            return false;
+        slot = (slot + 1U) & (table.size() - 1U);
+    }
+    return false;
+}
+
+bool JitTranslationProfileRecorder::insert(std::span<std::uint64_t> table,
+    std::uint64_t location_descriptor) noexcept
+{
+    auto slot = hash(location_descriptor) & (table.size() - 1U);
+    for (std::size_t probe = 0; probe < table.size(); ++probe) {
+        auto& known = table[slot];
+        if (known == location_descriptor)
+            return true;
+        if (known == 0U) {
+            known = location_descriptor;
+            return true;
+        }
+        slot = (slot + 1U) & (table.size() - 1U);
+    }
+    return false;
+}
+
 JitTranslationProfileRecordResult JitTranslationProfileRecorder::record(
     std::uint64_t location_descriptor) noexcept
 {
     if (location_descriptor == 0) {
         return JitTranslationProfileRecordResult::Ignored;
     }
-    auto slot = hash(location_descriptor) &
-                (jit_translation_profile_recorder_hash_capacity - 1U);
-    for (std::size_t probe = 0;
-        probe < jit_translation_profile_recorder_hash_capacity; ++probe) {
-        auto& known = known_locations_[slot];
-        if (known == location_descriptor) {
-            ++deduplicated_;
-            return JitTranslationProfileRecordResult::Deduplicated;
-        }
-        if (known == 0) {
-            if (size_ == jit_translation_profile_recorder_capacity) {
-                ++dropped_capacity_;
-                return JitTranslationProfileRecordResult::DroppedCapacity;
-            }
-            known = location_descriptor;
-            locations_[size_++] = location_descriptor;
-            return JitTranslationProfileRecordResult::Recorded;
-        }
-        slot =
-            (slot + 1U) & (jit_translation_profile_recorder_hash_capacity - 1U);
+    if (contains(prefix_hash_, location_descriptor) ||
+        contains(recent_hashes_[0], location_descriptor) ||
+        contains(recent_hashes_[1], location_descriptor)) {
+        ++deduplicated_;
+        return JitTranslationProfileRecordResult::Deduplicated;
     }
-    ++dropped_capacity_;
-    return JitTranslationProfileRecordResult::DroppedCapacity;
+    if (prefix_size_ < prefix_locations_.size()) {
+        if (!insert(prefix_hash_, location_descriptor)) {
+            ++dropped_capacity_;
+            return JitTranslationProfileRecordResult::DroppedCapacity;
+        }
+        prefix_locations_[prefix_size_++] = location_descriptor;
+        if (work_signal_)
+            work_signal_->notify_work();
+        return JitTranslationProfileRecordResult::Recorded;
+    }
+
+    if (recent_sizes_[active_recent_bank_] ==
+        recent_locations_[active_recent_bank_].size()) {
+        active_recent_bank_ = 1U - active_recent_bank_;
+        dropped_capacity_ += recent_sizes_[active_recent_bank_];
+        recent_sizes_[active_recent_bank_] = 0U;
+        recent_hashes_[active_recent_bank_].fill(0U);
+        recent_sequences_[active_recent_bank_] = next_recent_sequence_++;
+        if (next_recent_sequence_ == 0U)
+            next_recent_sequence_ = 1U;
+    }
+    if (!insert(recent_hashes_[active_recent_bank_], location_descriptor)) {
+        ++dropped_capacity_;
+        return JitTranslationProfileRecordResult::DroppedCapacity;
+    }
+    recent_locations_[active_recent_bank_]
+                     [recent_sizes_[active_recent_bank_]++] =
+        location_descriptor;
+    if (work_signal_)
+        work_signal_->notify_work();
+    return JitTranslationProfileRecordResult::Recorded;
+}
+
+std::vector<std::uint64_t> JitTranslationProfileRecorder::snapshot() const
+{
+    std::vector<std::uint64_t> result;
+    result.reserve(size());
+    result.insert(result.end(), prefix_locations_.begin(),
+        std::next(prefix_locations_.begin(),
+            static_cast<std::ptrdiff_t>(prefix_size_)));
+    const auto first_recent =
+        recent_sequences_[0] <= recent_sequences_[1] ? 0U : 1U;
+    for (const auto bank : { first_recent, 1U - first_recent }) {
+        result.insert(result.end(), recent_locations_[bank].begin(),
+            std::next(recent_locations_[bank].begin(),
+                static_cast<std::ptrdiff_t>(recent_sizes_[bank])));
+    }
+    return result;
 }
 
 void JitTranslationProfileRecorder::reset() noexcept
 {
-    known_locations_.fill(0);
-    size_ = 0;
+    prefix_hash_.fill(0U);
+    for (auto& hash_table : recent_hashes_)
+        hash_table.fill(0U);
+    prefix_size_ = 0U;
+    recent_sizes_.fill(0U);
+    recent_sequences_ = { 1U, 0U };
+    active_recent_bank_ = 0U;
+    next_recent_sequence_ = 2U;
     deduplicated_ = 0;
     dropped_capacity_ = 0;
 }
@@ -420,86 +491,114 @@ void JitTranslationProfile::record(std::uint64_t location_descriptor) noexcept
 {
     if (location_descriptor == 0)
         return;
-    try {
-        const std::lock_guard lock { mutex_ };
-        if (known_locations_.contains(location_descriptor) ||
-            discarded_locations_.contains(location_descriptor)) {
-            deduplicated_.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-        if (known_locations_.size() >=
-            jit_translation_profile_maximum_locations) {
-            dropped_capacity_.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-        const auto [entry, inserted] =
-            known_locations_.insert(location_descriptor);
-        if (!inserted) {
-            deduplicated_.fetch_add(1, std::memory_order_relaxed);
-            return;
-        }
-        try {
-            locations_.push_back(location_descriptor);
-            recorded_.fetch_add(1, std::memory_order_relaxed);
-        } catch (...) {
-            known_locations_.erase(entry);
-            dropped_capacity_.fetch_add(1, std::memory_order_relaxed);
-        }
-    } catch (...) {
-        dropped_capacity_.fetch_add(1, std::memory_order_relaxed);
-    }
+    merge(std::span<const std::uint64_t> { &location_descriptor, 1U });
 }
 
 void JitTranslationProfile::merge(
     std::span<const std::uint64_t> location_descriptors,
     std::uint64_t recorder_deduplicated,
-    std::uint64_t recorder_dropped_capacity) noexcept
+    std::uint64_t recorder_dropped_capacity,
+    std::size_t activation_prefix_locations) noexcept
 {
     const auto started = std::chrono::steady_clock::now();
     std::uint64_t recorded = 0;
     std::uint64_t deduplicated = recorder_deduplicated;
     std::uint64_t dropped = recorder_dropped_capacity;
+    std::uint64_t evicted = 0;
     try {
         const std::lock_guard lock { mutex_ };
+
+        // Build the replacement off to the side so allocation failure leaves
+        // the current profile intact. Recorder batches are already unique,
+        // but merge() is public and still validates arbitrary callers.
+        std::vector<std::uint64_t> recent_locations;
+        recent_locations.reserve(std::min(location_descriptors.size(),
+            jit_translation_profile_maximum_locations));
+        std::unordered_set<std::uint64_t> recent_set;
+        recent_set.reserve(recent_locations.capacity());
         for (const auto location_descriptor : location_descriptors) {
             if (location_descriptor == 0 ||
-                known_locations_.contains(location_descriptor) ||
                 discarded_locations_.contains(location_descriptor)) {
                 ++deduplicated;
                 continue;
             }
-            if (known_locations_.size() >=
-                jit_translation_profile_maximum_locations) {
-                ++dropped;
-                continue;
-            }
-            const auto [entry, inserted] =
-                known_locations_.insert(location_descriptor);
-            if (!inserted) {
+            if (!recent_set.insert(location_descriptor).second) {
                 ++deduplicated;
                 continue;
             }
-            try {
-                locations_.push_back(location_descriptor);
+            recent_locations.push_back(location_descriptor);
+            if (known_locations_.contains(location_descriptor)) {
+                ++deduplicated;
+            } else {
                 ++recorded;
-            } catch (...) {
-                known_locations_.erase(entry);
-                ++dropped;
             }
         }
-        if (locations_.size() >
-            jit_translation_profile_maximum_locations * 2U) {
-            std::vector<std::uint64_t> compacted;
-            compacted.reserve(known_locations_.size());
-            for (const auto location : locations_) {
-                if (known_locations_.contains(location))
-                    compacted.push_back(location);
+
+        if (recent_locations.size() >
+            jit_translation_profile_maximum_locations) {
+            const auto excess = recent_locations.size() -
+                                jit_translation_profile_maximum_locations;
+            for (std::size_t index = 0; index < excess; ++index) {
+                if (!known_locations_.contains(recent_locations[index]))
+                    --recorded;
             }
-            locations_.swap(compacted);
-            discarded_locations_.clear();
+            recent_locations.erase(recent_locations.begin(),
+                std::next(recent_locations.begin(),
+                    static_cast<std::ptrdiff_t>(excess)));
+            dropped += excess;
+            recent_set.clear();
+            recent_set.reserve(recent_locations.size());
+            recent_set.insert(recent_locations.begin(), recent_locations.end());
+        }
+
+        const auto activation_count = std::min(
+            activation_prefix_locations, recent_locations.size());
+        std::vector<std::uint64_t> replacement;
+        replacement.reserve(jit_translation_profile_maximum_locations);
+        replacement.insert(replacement.end(), recent_locations.begin(),
+            std::next(recent_locations.begin(),
+                static_cast<std::ptrdiff_t>(activation_count)));
+        std::vector<std::uint64_t> historical_locations;
+        historical_locations.reserve(locations_.size());
+        for (const auto location : locations_) {
+            if (known_locations_.contains(location) &&
+                !recent_set.contains(location)) {
+                historical_locations.push_back(location);
+            }
+        }
+        const auto retained_old =
+            jit_translation_profile_maximum_locations - recent_locations.size();
+        if (historical_locations.size() > retained_old) {
+            const auto excess = historical_locations.size() - retained_old;
+            historical_locations.erase(historical_locations.begin(),
+                std::next(historical_locations.begin(),
+                    static_cast<std::ptrdiff_t>(excess)));
+            evicted += excess;
+        }
+        replacement.insert(replacement.end(), historical_locations.begin(),
+            historical_locations.end());
+        replacement.insert(replacement.end(),
+            std::next(recent_locations.begin(),
+                static_cast<std::ptrdiff_t>(activation_count)),
+            recent_locations.end());
+
+        if (replacement != locations_) {
+            std::unordered_set<std::uint64_t> replacement_known;
+            replacement_known.reserve(replacement.size());
+            replacement_known.insert(replacement.begin(), replacement.end());
+            for (const auto location : known_locations_) {
+                if (!replacement_known.contains(location)) {
+                    profile_portable_artifact_locations_.erase(location);
+                }
+            }
+            locations_.swap(replacement);
+            known_locations_.swap(replacement_known);
+            revision_.fetch_add(1U, std::memory_order_release);
         }
     } catch (...) {
         dropped += location_descriptors.size();
+        recorded = 0;
+        evicted = 0;
     }
     recorded_.fetch_add(recorded, std::memory_order_relaxed);
     deduplicated_.fetch_add(deduplicated, std::memory_order_relaxed);
@@ -508,6 +607,7 @@ void JitTranslationProfile::merge(
     recorder_dropped_capacity_.fetch_add(
         recorder_dropped_capacity, std::memory_order_relaxed);
     dropped_capacity_.fetch_add(dropped, std::memory_order_relaxed);
+    working_set_evicted_.fetch_add(evicted, std::memory_order_relaxed);
     const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - started);
     merge_calls_.fetch_add(1, std::memory_order_relaxed);
@@ -527,6 +627,7 @@ void JitTranslationProfile::discard(std::uint64_t location_descriptor) noexcept
             return;
         discarded_locations_.insert(location_descriptor);
         known_locations_.erase(location_descriptor);
+        revision_.fetch_add(1U, std::memory_order_release);
     } catch (...) {
         // Invalidating a host optimization hint must not affect the guest.
     }
@@ -544,6 +645,61 @@ std::vector<std::uint64_t> JitTranslationProfile::snapshot() const
     return result;
 }
 
+JitTranslationProfilePrediction
+JitTranslationProfile::snapshot_prediction() const
+{
+    return snapshot_prediction(JitTranslationProfilePredictionLimits {
+        jit_translation_profile_activation_prediction_capacity,
+        jit_translation_profile_recent_prediction_capacity,
+        jit_translation_profile_maximum_locations });
+}
+
+JitTranslationProfilePrediction JitTranslationProfile::snapshot_prediction(
+    JitTranslationProfilePredictionLimits limits) const
+{
+    const std::lock_guard lock { mutex_ };
+    JitTranslationProfilePrediction result;
+    const auto maximum = std::min(known_locations_.size(),
+        limits.activation_locations + limits.recent_locations +
+            limits.historical_locations);
+    result.ordered_locations.reserve(maximum);
+
+    std::size_t activation_end { };
+    for (; activation_end < locations_.size() &&
+         result.ordered_locations.size() < limits.activation_locations;
+         ++activation_end) {
+        const auto location = locations_[activation_end];
+        if (known_locations_.contains(location))
+            result.ordered_locations.push_back(location);
+    }
+
+    std::size_t recent_begin = locations_.size();
+    result.recent_locations.reserve(
+        std::min(limits.recent_locations, known_locations_.size()));
+    while (recent_begin > activation_end &&
+           result.recent_locations.size() < limits.recent_locations) {
+        --recent_begin;
+        const auto location = locations_[recent_begin];
+        if (!known_locations_.contains(location))
+            continue;
+        result.ordered_locations.push_back(location);
+        result.recent_locations.push_back(location);
+    }
+
+    std::size_t historical_count { };
+    for (auto index = activation_end;
+         index < recent_begin &&
+         historical_count < limits.historical_locations;
+         ++index) {
+        const auto location = locations_[index];
+        if (!known_locations_.contains(location))
+            continue;
+        result.ordered_locations.push_back(location);
+        ++historical_count;
+    }
+    return result;
+}
+
 std::pair<std::vector<std::uint64_t>, std::size_t>
 JitTranslationProfile::snapshot_range(
     std::size_t offset, std::size_t maximum) const
@@ -557,6 +713,43 @@ JitTranslationProfile::snapshot_range(
         const auto location = locations_[cursor];
         if (known_locations_.contains(location))
             result.push_back(location);
+    }
+    return { std::move(result), cursor };
+}
+
+std::pair<std::vector<std::uint64_t>, std::size_t>
+JitTranslationProfile::snapshot_recent_range(
+    std::size_t offset, std::size_t maximum) const
+{
+    const std::lock_guard lock { mutex_ };
+    const auto start = std::min(offset, locations_.size());
+    std::vector<std::uint64_t> result;
+    result.reserve(std::min(maximum, locations_.size() - start));
+    std::size_t cursor = start;
+    for (; cursor < locations_.size() && result.size() < maximum; ++cursor) {
+        const auto location = locations_[locations_.size() - cursor - 1U];
+        if (known_locations_.contains(location))
+            result.push_back(location);
+    }
+    return { std::move(result), cursor };
+}
+
+std::pair<std::vector<std::uint64_t>, std::size_t>
+JitTranslationProfile::snapshot_recent_missing_portable_range(
+    std::size_t offset, std::size_t maximum) const
+{
+    const std::lock_guard lock { mutex_ };
+    const auto start = std::min(offset, locations_.size());
+    std::vector<std::uint64_t> result;
+    result.reserve(std::min(maximum, locations_.size() - start));
+    std::size_t cursor = start;
+    for (; cursor < locations_.size() && result.size() < maximum; ++cursor) {
+        const auto location =
+            locations_[locations_.size() - cursor - 1U];
+        if (known_locations_.contains(location) &&
+            !profile_portable_artifact_locations_.contains(location)) {
+            result.push_back(location);
+        }
     }
     return { std::move(result), cursor };
 }
@@ -579,6 +772,8 @@ JitTranslationProfileStats JitTranslationProfile::stats() const noexcept
     result.recorder_dropped_capacity =
         recorder_dropped_capacity_.load(std::memory_order_relaxed);
     result.dropped_capacity = dropped_capacity_.load(std::memory_order_relaxed);
+    result.working_set_evicted =
+        working_set_evicted_.load(std::memory_order_relaxed);
     result.unstable_dropped = unstable_dropped_.load(std::memory_order_relaxed);
     result.profile_loaded = profile_loaded_.load(std::memory_order_relaxed);
     result.disk_descriptors_loaded = result.profile_loaded;
@@ -979,6 +1174,7 @@ JitTranslationProfileStats JitTranslationProfileStore::stats() const noexcept
         result.recorder_deduplicated += current.recorder_deduplicated;
         result.recorder_dropped_capacity += current.recorder_dropped_capacity;
         result.dropped_capacity += current.dropped_capacity;
+        result.working_set_evicted += current.working_set_evicted;
         result.unstable_dropped += current.unstable_dropped;
         result.profile_loaded += current.profile_loaded;
         result.profile_files_loaded += current.profile_files_loaded;
