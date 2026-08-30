@@ -110,8 +110,11 @@ namespace {
                     std::string_view { include_name,
                         static_cast<std::size_t>(length) },
                     visiting);
-                merge_dictionary(merged,
-                    plist_dict_get_item(include, "capabilities"));
+                // load_capabilities returns the already-flattened capability
+                // dictionary. Do not look for a second "capabilities" wrapper
+                // here; inherited flags such as homescreen-wallpaper live at
+                // this level in the recursive result.
+                merge_dictionary(merged, include);
                 plist_free(include);
             }
         }
@@ -154,7 +157,8 @@ namespace {
         ensure_uint("height", profile.display.height);
         ensure_uint("main-screen-width", profile.display.width);
         ensure_uint("main-screen-height", profile.display.height);
-        ensure_uint("main-screen-scale", 1);
+        ensure_uint("main-screen-scale",
+            display_scale_factor(profile.display, profile.user_interface));
         if (plist_dict_get_item(dimensions, "main-screen-orientation") ==
             nullptr) {
             plist_dict_set_item(
@@ -178,6 +182,8 @@ namespace {
             profile.graphics_services_capabilities.marketing_name);
         ensure_bool(capabilities, "multitasking",
             profile.graphics_services_capabilities.supports_multitasking);
+        ensure_bool(capabilities, "cellular-data",
+            profile.graphics_services_capabilities.supports_cellular_data);
         ensure_screen_dimensions(capabilities, profile);
 
         char* serialized = nullptr;
@@ -214,6 +220,7 @@ namespace {
         xml += "\t\t<key>marketing-name</key><string>" +
                std::string { capabilities.marketing_name } + "</string>\n";
         xml += boolean("multitasking", capabilities.supports_multitasking);
+        xml += boolean("cellular-data", capabilities.supports_cellular_data);
         xml += boolean("wifi", true);
         xml += boolean("accelerometer", true);
         xml += boolean("location-services", true);
@@ -228,7 +235,10 @@ namespace {
                std::to_string(profile.display.width) +
                "</integer><key>main-screen-height</key><integer>" +
                std::to_string(profile.display.height) +
-               "</integer><key>main-screen-scale</key><integer>1</integer>"
+               "</integer><key>main-screen-scale</key><integer>" +
+               std::to_string(display_scale_factor(
+                   profile.display, profile.user_interface)) +
+               "</integer>"
                "<key>main-screen-orientation</key><real>0</real></dict>\n";
         xml += "</dict></plist>\n";
         return pack_payload(xml);

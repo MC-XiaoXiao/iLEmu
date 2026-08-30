@@ -75,6 +75,7 @@ struct GraphicsServicesCapabilityProfile {
     std::string_view device_name;
     std::string_view marketing_name;
     bool supports_multitasking { };
+    bool supports_cellular_data { };
 };
 
 inline constexpr std::array<std::byte, 52>

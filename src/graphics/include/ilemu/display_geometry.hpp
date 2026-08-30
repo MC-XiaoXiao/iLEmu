@@ -40,6 +40,23 @@ struct DisplayGeometry {
     }
 };
 
+// Return the integral native-to-logical scale advertised by a device profile.
+// A non-integral or invalid relationship is kept at the legacy scale so a
+// custom geometry cannot silently distort input or capability data.
+[[nodiscard]] constexpr std::uint32_t display_scale_factor(
+    DisplayGeometry native, DisplayGeometry logical)
+{
+    if (!native.valid() || !logical.valid() ||
+        native.width % logical.width != 0U ||
+        native.height % logical.height != 0U) {
+        return 1U;
+    }
+    const auto width_scale = native.width / logical.width;
+    const auto height_scale = native.height / logical.height;
+    return width_scale != 0U && width_scale == height_scale ? width_scale
+                                                              : 1U;
+}
+
 struct DisplayViewport {
     std::int32_t x { };
     std::int32_t y { };

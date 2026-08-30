@@ -6,7 +6,7 @@ namespace ilemu {
 
 namespace {
 
-    constexpr std::array<DeviceProfile, 6> profiles {
+    constexpr std::array<DeviceProfile, 7> profiles {
         DeviceProfile {
             "iPhone1,1",
             "M68AP",
@@ -30,7 +30,7 @@ namespace {
             GraphicsAcceleratorProfileKind::MbxLite,
             "",
             "AppleH1CLCD",
-            { "iPhone", "iPhone", false },
+            { "iPhone", "iPhone", false, true },
             { false },
             BasebandTransportProfile::Offline,
             true,
@@ -58,7 +58,7 @@ namespace {
             GraphicsAcceleratorProfileKind::MbxLite,
             "",
             "AppleH1CLCD",
-            { "iPhone", "iPhone 3G", false },
+            { "iPhone", "iPhone 3G", false, true },
             // iPhone OS 4 still routes its no-passcode bootstrap through the
             // AppleKeyStore contract.  The service is virtualized here; the
             // profile describes the guest capability rather than physical
@@ -92,10 +92,40 @@ namespace {
             GraphicsAcceleratorProfileKind::Sgx535,
             "IMGSGX535GLDriver",
             "AppleM2CLCD",
-            { "iPhone", "iPhone 3GS", true },
+            { "iPhone", "iPhone 3GS", true, true },
             { true, false, true },
             BasebandTransportProfile::Offline,
             false,
+        },
+        DeviceProfile {
+            "iPhone3,1",
+            "N90AP",
+            "N90AP",
+            "N90DEV",
+            "MC603",
+            "Apple A4 (S5L8930)",
+            "Cortex-A8",
+            "ARMv7 + Thumb-2",
+            ArmCpuModelKind::CortexA8,
+            1'000'000'000,
+            100'000'000,
+            512ULL * 1024ULL * 1024ULL,
+            16ULL * 1024ULL * 1024ULL * 1024ULL,
+            GuestCpuTopology::single_core(1'000'000'000U,
+                GuestCpuPerformanceClass::Performance,
+                guest_cpu_isa::armv7 | guest_cpu_isa::thumb |
+                    guest_cpu_isa::thumb2,
+                7U),
+            DisplayGeometry { 640U, 960U },
+            DisplayGeometry { 320U, 480U },
+            classic_compact_system_gestures,
+            GraphicsAcceleratorProfileKind::Sgx535,
+            "IMGSGX535GLDriver",
+            "AppleM2CLCD",
+            { "iPhone", "iPhone 4", true, true },
+            { true, false, true },
+            BasebandTransportProfile::Offline,
+            true,
         },
         DeviceProfile {
             "iPod1,1",
@@ -120,7 +150,7 @@ namespace {
             GraphicsAcceleratorProfileKind::MbxLite,
             "",
             "AppleH1CLCD",
-            { "iPod", "iPod touch", false },
+            { "iPod", "iPod touch", false, false },
             { false },
             BasebandTransportProfile::Offline,
             false,
@@ -148,7 +178,7 @@ namespace {
             GraphicsAcceleratorProfileKind::MbxLite,
             "",
             "AppleH1CLCD",
-            { "iPod", "iPod touch", false },
+            { "iPod", "iPod touch", false, false },
             { false },
             BasebandTransportProfile::Offline,
             false,
@@ -178,7 +208,7 @@ namespace {
             GraphicsAcceleratorProfileKind::Sgx535,
             "IMGSGX535GLDriver",
             "AppleM2CLCD",
-            { "iPad", "iPad", true },
+            { "iPad", "iPad", true, false },
             { true, false, true },
             BasebandTransportProfile::Offline,
             false,
