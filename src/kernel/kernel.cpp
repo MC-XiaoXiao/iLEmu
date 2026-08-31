@@ -1480,6 +1480,10 @@ CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
         found != pending_socket_reads_.end()) {
         consider(found->second.deadline);
     }
+    if (const auto found = pending_mach_receives_.find(processor);
+        found != pending_mach_receives_.end()) {
+        consider(found->second.deadline);
+    }
     if (!scheduled_wifi_driver_events_.empty())
         consider(scheduled_wifi_driver_events_.begin()->first);
     return deadline;
