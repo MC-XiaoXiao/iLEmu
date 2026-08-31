@@ -2454,11 +2454,14 @@ std::optional<std::uint32_t> UserlandHleRegistry::install_continuation(Cpu& cpu,
                 MemoryPermission::Execute)) {
         return std::nullopt;
     }
-    const auto instruction = little_endian_word(
-        arm_svc_opcode | userland_hle_svc_namespace | continuation_hle_call);
-    if (!memory_.copy_in(address, instruction))
-        return std::nullopt;
-    cpu.invalidate_cache_range(address, instruction.size());
+    const auto opcode =
+        arm_svc_opcode | userland_hle_svc_namespace | continuation_hle_call;
+    if (memory_.read32(address) != opcode) {
+        const auto instruction = little_endian_word(opcode);
+        if (!memory_.copy_in(address, instruction))
+            return std::nullopt;
+        cpu.invalidate_cache_range(address, instruction.size());
+    }
     pending_continuations_.emplace(address,
         PendingContinuation { return_address, std::move(continuation) });
     return address;
