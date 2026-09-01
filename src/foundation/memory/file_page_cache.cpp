@@ -1596,6 +1596,11 @@ void GuestPageBacking::mark_shared_write()
 {
     if (!shared_write_tracking_enabled())
         return;
+    publish_shared_write();
+}
+
+void GuestPageBacking::publish_shared_write() noexcept
+{
     static_cast<void>(
         shared_write_generation_.fetch_add(1, std::memory_order_release));
 }

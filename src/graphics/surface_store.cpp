@@ -737,6 +737,13 @@ bool SurfaceStore::synchronize_from_guest(
     if (!sync_state)
         return false;
     std::unique_lock sync_lock { sync_state->mutex };
+    // CoreSurface/IOSurface consumers call this at the firmware's CPU-to-GPU
+    // synchronization boundary. Publish the completed Guest writes once per
+    // page here so untracked shared pixels can retain direct JIT stores.
+    if (!memory.publish_write_generation(
+            backing->base, backing->allocation_size)) {
+        return false;
+    }
     const auto shared_changes =
         memory.shared_write_generation_changes(backing->base,
             backing->allocation_size, sync_state->shared_page_generations);

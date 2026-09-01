@@ -232,6 +232,8 @@ void AddressSpace::disable_jit_write_page_table()
     if (jit_write_page_table_)
         jit_write_page_table_->clear();
     direct_jit_write_pages_.clear();
+    exclusive_write_tracked_pages_.clear();
+    exclusive_write_tracking_active_.store(false, std::memory_order_release);
 }
 
 void AddressSpace::track_exclusive_access(
@@ -242,10 +244,101 @@ void AddressSpace::track_exclusive_access(
     const auto first = page_base(address);
     const auto end = page_range_end(address, size);
     auto lock = write_lock();
+    if (!jit_write_page_table_enabled_)
+        return;
+    std::vector<const GuestPageBacking*> shared_backings;
     for (std::uint64_t base = first; base < end; base += page_size) {
         const auto page_address = static_cast<std::uint32_t>(base);
-        exclusive_write_tracked_pages_.insert(page_address);
+        const auto inserted =
+            exclusive_write_tracked_pages_.insert(page_address).second;
+        if (inserted) {
+            const auto* page = find_page_locked(page_address);
+            if (page != nullptr && page->shared_writable && page->backing &&
+                std::find(shared_backings.begin(), shared_backings.end(),
+                    page->backing.get()) == shared_backings.end()) {
+                shared_backings.push_back(page->backing.get());
+            }
+            refresh_jit_page_locked(page_address);
+        }
+    }
+    // On a serialized processor, untracked shared pages can use their common
+    // physical backing directly. Revoke every virtual alias in this address
+    // space before LDREX so an ordinary store through another alias cannot
+    // bypass reservation invalidation. Other address spaces cannot execute
+    // until the real Guest thread-switch boundary clears the reservation.
+    if (!shared_backings.empty()) {
+        std::vector<std::uint32_t> direct_write_aliases;
+        for (const auto page_address : direct_jit_write_pages_) {
+            const auto* page = find_page_locked(page_address);
+            if (page == nullptr || !page->shared_writable || !page->backing ||
+                std::find(shared_backings.begin(), shared_backings.end(),
+                    page->backing.get()) == shared_backings.end()) {
+                continue;
+            }
+            direct_write_aliases.push_back(page_address);
+        }
+        for (const auto page_address : direct_write_aliases) {
+            if (exclusive_write_tracked_pages_.insert(page_address).second)
+                refresh_jit_page_locked(page_address);
+        }
+    }
+    exclusive_write_tracking_active_.store(
+        !exclusive_write_tracked_pages_.empty(), std::memory_order_release);
+}
+
+void AddressSpace::clear_exclusive_access_tracking()
+{
+    if (!exclusive_write_tracking_active_.load(std::memory_order_acquire))
+        return;
+    auto lock = write_lock();
+    for (auto page = exclusive_write_tracked_pages_.begin();
+        page != exclusive_write_tracked_pages_.end();) {
+        const auto address = *page;
+        page = exclusive_write_tracked_pages_.erase(page);
+        refresh_jit_page_locked(address);
+    }
+    exclusive_write_tracking_active_.store(false, std::memory_order_release);
+}
+
+void AddressSpace::release_exclusive_write_tracking_locked(
+    std::uint32_t address, std::size_t size)
+{
+    if (size == 0 || range_overflows(address, size) ||
+        !exclusive_write_tracking_active_.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const auto first = page_base(address);
+    const auto end = page_range_end(address, size);
+    if (!jit_write_page_table_enabled_)
+        return;
+    for (auto marker = exclusive_write_tracked_pages_.begin();
+        marker != exclusive_write_tracked_pages_.end();) {
+        const auto page_address = *marker;
+        bool release = page_address >= first && page_address < end;
+        const auto* marker_page =
+            release ? nullptr : find_page_locked(page_address);
+        if (!release && marker_page != nullptr &&
+            marker_page->shared_writable && marker_page->backing) {
+            for (std::uint64_t base = first; base < end; base += page_size) {
+                const auto* written_page =
+                    find_page_locked(static_cast<std::uint32_t>(base));
+                if (written_page != nullptr && written_page->shared_writable &&
+                    written_page->backing == marker_page->backing) {
+                    release = true;
+                    break;
+                }
+            }
+        }
+        if (!release) {
+            ++marker;
+            continue;
+        }
+        marker = exclusive_write_tracked_pages_.erase(marker);
         refresh_jit_page_locked(page_address);
+    }
+    if (exclusive_write_tracked_pages_.empty()) {
+        exclusive_write_tracking_active_.store(
+            false, std::memory_order_release);
     }
 }
 
@@ -331,6 +424,10 @@ void AddressSpace::unmap_range_locked(std::uint32_t address, std::uint64_t end)
     for (std::uint64_t base = address; base < end; base += page_size) {
         exclusive_write_tracked_pages_.erase(static_cast<std::uint32_t>(base));
     }
+    if (exclusive_write_tracked_pages_.empty()) {
+        exclusive_write_tracking_active_.store(
+            false, std::memory_order_release);
+    }
     clear_page_permissions_locked(address, end);
     refresh_jit_page_range_locked(address, end);
     bump_executable_content_generation_locked();
@@ -374,7 +471,9 @@ void AddressSpace::clear()
         chunk.reset();
     clear_jit_page_table_locked();
     exclusive_write_tracked_pages_.clear();
+    exclusive_write_tracking_active_.store(false, std::memory_order_release);
     tracked_write_ranges_.clear();
+    write_tracked_pages_.clear();
     mapping_leases_.clear();
     bump_executable_content_generation_locked();
 }
@@ -1149,7 +1248,6 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
         return;
     }
     if (page == nullptr || !page->backing || page->file_cached ||
-        page->shared_writable ||
         (page->copy_on_write_possible && !page->shared_writable)) {
         return;
     }
@@ -1220,8 +1318,11 @@ std::byte AddressSpace::read_byte_locked(const Page* page, std::uint32_t offset)
     return page->backing->bytes[offset];
 }
 
-GuestPageBacking& AddressSpace::writable_backing_locked(Page& page)
+GuestPageBacking& AddressSpace::writable_backing_locked(
+    Page& page, bool* jit_eligibility_changed)
 {
+    const bool eligibility_changed =
+        !page.backing || page.file_cached || page.copy_on_write_possible;
     if (!page.backing) {
         page.backing = std::make_shared<GuestPageBacking>();
     } else {
@@ -1236,6 +1337,8 @@ GuestPageBacking& AddressSpace::writable_backing_locked(Page& page)
     }
     page.file_cached = false;
     page.copy_on_write_possible = false;
+    if (jit_eligibility_changed)
+        *jit_eligibility_changed = eligibility_changed;
     return *page.backing;
 }
 
@@ -1249,10 +1352,24 @@ AddressSpaceWriteStats address_space_write_stats() noexcept
         write_copy_on_write_detaches.load(std::memory_order_relaxed) };
 }
 
+bool AddressSpace::reservation_invalidation_required_locked(
+    const Page& page) const noexcept
+{
+    // A serialized address space has no reservation to invalidate once its
+    // last exclusive page marker is consumed. Shared physical pages can carry
+    // a reservation from another address-space alias, while parallel execution
+    // and modes without the guarded direct-write table cannot make that proof.
+    return page.shared_writable ||
+           (page.backing && page.backing->shared_write_tracking_enabled()) ||
+           parallel_access_ || !jit_write_page_table_enabled_ ||
+           exclusive_write_tracking_active_.load(std::memory_order_relaxed);
+}
+
 void AddressSpace::mark_shared_backing_written_locked(Page& page)
 {
     if (page.backing) {
-        page.backing->invalidate_reservation_identity();
+        if (reservation_invalidation_required_locked(page))
+            page.backing->invalidate_reservation_identity();
         page.backing->mark_shared_write();
     }
     if (exclusive_write_observer_)
@@ -1262,14 +1379,15 @@ void AddressSpace::mark_shared_backing_written_locked(Page& page)
 bool AddressSpace::tracks_write_locked(
     std::uint32_t address, std::size_t size) const
 {
-    if (tracked_write_ranges_.empty() || size == 0)
+    if (write_tracked_pages_.empty() || size == 0)
         return false;
-    const auto begin = static_cast<std::uint64_t>(address);
-    const auto end = begin + size;
-    return std::ranges::any_of(
-        tracked_write_ranges_, [begin, end](const TrackedWriteRange& range) {
-            return begin < range.end && range.begin < end;
-        });
+    const auto end = static_cast<std::uint64_t>(address) + size;
+    for (std::uint64_t base = page_base(address); base < end;
+        base += page_size) {
+        if (write_tracked_pages_.contains(static_cast<std::uint32_t>(base)))
+            return true;
+    }
+    return false;
 }
 
 void AddressSpace::mark_written_locked(std::uint32_t address, std::size_t size)
@@ -1398,8 +1516,10 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
         auto& page = resident != nullptr && resident->backing
                          ? *resident
                          : ensure_page_locked(address);
-        auto& backing = writable_backing_locked(page);
-        refresh_jit_page_locked(address);
+        bool jit_eligibility_changed = false;
+        auto& backing = writable_backing_locked(page, &jit_eligibility_changed);
+        if (jit_eligibility_changed)
+            refresh_jit_page_locked(address);
         for (std::size_t index = 0; index < sizeof(T); ++index) {
             backing.bytes[offset + index] = static_cast<std::byte>(
                 (value >> (index * 8U)) & static_cast<T>(0xffU));
@@ -1408,6 +1528,10 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
         if (tracks_write_locked(address, sizeof(T))) {
             page.write_generation = ++write_generation_;
         }
+        // Invalidate the physical reservation before removing its virtual
+        // page guard. The refresh can then restore only an otherwise eligible
+        // direct-write entry without a second AddressSpace pass.
+        release_exclusive_write_tracking_locked(address, sizeof(T));
         return true;
     }
     for (std::size_t i = 0; i < sizeof(T); ++i) {
@@ -1416,13 +1540,16 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
         auto& page = resident != nullptr && resident->backing
                          ? *resident
                          : ensure_page_locked(current);
-        auto& backing = writable_backing_locked(page);
-        refresh_jit_page_locked(current);
+        bool jit_eligibility_changed = false;
+        auto& backing = writable_backing_locked(page, &jit_eligibility_changed);
+        if (jit_eligibility_changed)
+            refresh_jit_page_locked(current);
         backing.bytes[current & (page_size - 1U)] =
             static_cast<std::byte>((value >> (i * 8U)) & static_cast<T>(0xffU));
         mark_shared_backing_written_locked(page);
     }
     mark_written_locked(address, sizeof(T));
+    release_exclusive_write_tracking_locked(address, sizeof(T));
     return true;
 }
 
@@ -1434,6 +1561,7 @@ bool AddressSpace::compare_exchange_integer(
     auto lock = write_lock();
     if (!range_accessible_locked(address, sizeof(T),
             MemoryPermission::Read | MemoryPermission::Write)) {
+        release_exclusive_write_tracking_locked(address, sizeof(T));
         return false;
     }
     ensure_unique_page_map_locked();
@@ -1450,10 +1578,14 @@ bool AddressSpace::compare_exchange_integer(
                                    offset + static_cast<std::uint32_t>(index)))
                                << (index * 8U));
         }
-        if (current_value != expected)
+        if (current_value != expected) {
+            release_exclusive_write_tracking_locked(address, sizeof(T));
             return false;
-        auto& backing = writable_backing_locked(page);
-        refresh_jit_page_locked(address);
+        }
+        bool jit_eligibility_changed = false;
+        auto& backing = writable_backing_locked(page, &jit_eligibility_changed);
+        if (jit_eligibility_changed)
+            refresh_jit_page_locked(address);
         for (std::size_t index = 0; index < sizeof(T); ++index) {
             backing.bytes[offset + index] = static_cast<std::byte>(
                 (value >> (index * 8U)) & static_cast<T>(0xffU));
@@ -1462,6 +1594,7 @@ bool AddressSpace::compare_exchange_integer(
         if (tracks_write_locked(address, sizeof(T))) {
             page.write_generation = ++write_generation_;
         }
+        release_exclusive_write_tracking_locked(address, sizeof(T));
         return true;
     }
     T current_value = 0;
@@ -1476,6 +1609,7 @@ bool AddressSpace::compare_exchange_integer(
                                         << (i * 8U));
     }
     if (current_value != expected) {
+        release_exclusive_write_tracking_locked(address, sizeof(T));
         return false;
     }
     for (std::size_t i = 0; i < sizeof(T); ++i) {
@@ -1484,13 +1618,16 @@ bool AddressSpace::compare_exchange_integer(
         auto& page = resident != nullptr && resident->backing
                          ? *resident
                          : ensure_page_locked(current);
-        auto& backing = writable_backing_locked(page);
-        refresh_jit_page_locked(current);
+        bool jit_eligibility_changed = false;
+        auto& backing = writable_backing_locked(page, &jit_eligibility_changed);
+        if (jit_eligibility_changed)
+            refresh_jit_page_locked(current);
         backing.bytes[current & (page_size - 1U)] =
             static_cast<std::byte>((value >> (i * 8U)) & static_cast<T>(0xffU));
         mark_shared_backing_written_locked(page);
     }
     mark_written_locked(address, sizeof(T));
+    release_exclusive_write_tracking_locked(address, sizeof(T));
     return true;
 }
 
@@ -1517,8 +1654,10 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
                                    offset + static_cast<std::uint32_t>(index)))
                                << (index * 8U));
         }
-        auto& backing = writable_backing_locked(page);
-        refresh_jit_page_locked(address);
+        bool jit_eligibility_changed = false;
+        auto& backing = writable_backing_locked(page, &jit_eligibility_changed);
+        if (jit_eligibility_changed)
+            refresh_jit_page_locked(address);
         for (std::size_t index = 0; index < sizeof(T); ++index) {
             backing.bytes[offset + index] = static_cast<std::byte>(
                 (value >> (index * 8U)) & static_cast<T>(0xffU));
@@ -1527,6 +1666,7 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
         if (tracks_write_locked(address, sizeof(T))) {
             page.write_generation = ++write_generation_;
         }
+        release_exclusive_write_tracking_locked(address, sizeof(T));
         return previous;
     }
     T previous = 0;
@@ -1546,13 +1686,16 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
         auto& page = resident != nullptr && resident->backing
                          ? *resident
                          : ensure_page_locked(current);
-        auto& backing = writable_backing_locked(page);
-        refresh_jit_page_locked(current);
+        bool jit_eligibility_changed = false;
+        auto& backing = writable_backing_locked(page, &jit_eligibility_changed);
+        if (jit_eligibility_changed)
+            refresh_jit_page_locked(current);
         backing.bytes[current & (page_size - 1U)] = static_cast<std::byte>(
             (value >> (index * 8U)) & static_cast<T>(0xffU));
         mark_shared_backing_written_locked(page);
     }
     mark_written_locked(address, sizeof(T));
+    release_exclusive_write_tracking_locked(address, sizeof(T));
     return previous;
 }
 
@@ -1775,6 +1918,7 @@ bool AddressSpace::track_write_generation(
     const auto tracking_end = page_range_end(address, size);
     for (std::uint64_t base = page_base(address); base < tracking_end;
         base += page_size) {
+        write_tracked_pages_.insert(static_cast<std::uint32_t>(base));
         auto* page = find_page_locked(static_cast<std::uint32_t>(base));
         if (page == nullptr || !page->shared_writable || !page->backing)
             continue;
@@ -1809,6 +1953,32 @@ std::optional<std::uint64_t> AddressSpace::range_write_generation(
             generation = std::max(generation, page->write_generation);
     }
     return generation;
+}
+
+bool AddressSpace::publish_write_generation(
+    std::uint32_t address, std::size_t size)
+{
+    if (size == 0 || range_overflows(address, size))
+        return size == 0;
+    const auto end = static_cast<std::uint64_t>(address) + size;
+    auto lock = write_lock();
+    if (!range_accessible_locked(address, size, MemoryPermission::None))
+        return false;
+
+    ensure_unique_page_map_locked();
+    const auto generation = ++write_generation_;
+    const auto first = page_base(address);
+    const auto page_end = page_range_end(address, size);
+    for (std::uint64_t base = first; base < page_end; base += page_size) {
+        auto* page = find_page_locked(static_cast<std::uint32_t>(base));
+        if (page == nullptr || !page->backing)
+            continue;
+        page->write_generation = generation;
+        page->backing->publish_shared_write();
+    }
+    if (vm_map_.accessible(address, end, MemoryPermission::Execute))
+        bump_executable_content_generation_locked();
+    return true;
 }
 
 std::optional<AddressSpace::WriteGenerationChanges>
@@ -1981,6 +2151,7 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
     result->rebuild_page_lookup_locked();
     result->page_permissions_ = page_permissions_;
     result->tracked_write_ranges_ = tracked_write_ranges_;
+    result->write_tracked_pages_ = write_tracked_pages_;
     result->write_generation_ = write_generation_;
     result->executable_content_generation_.store(
         executable_content_generation_.load(std::memory_order_acquire),
@@ -1989,6 +2160,9 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
     result->next_mapping_lease_token_ = next_mapping_lease_token_;
     result->file_page_cache_ = file_page_cache_;
     result->exclusive_write_tracked_pages_ = exclusive_write_tracked_pages_;
+    result->exclusive_write_tracking_active_.store(
+        !result->exclusive_write_tracked_pages_.empty(),
+        std::memory_order_release);
     result->parallel_access_ = parallel_access_;
     result->jit_page_table_enabled_ =
         jit_page_table_enabled_ && !parallel_access_;

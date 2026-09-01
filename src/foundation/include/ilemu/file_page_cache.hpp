@@ -277,6 +277,10 @@ struct GuestPageBacking {
     [[nodiscard]] static std::uint64_t shared_write_tracking_epoch();
     [[nodiscard]] std::uint64_t shared_write_generation() const;
     void mark_shared_write();
+    // A firmware synchronization boundary can publish a completed range of
+    // direct Guest writes once, without keeping every individual store on the
+    // checked callback path.
+    void publish_shared_write() noexcept;
     [[nodiscard]] bool file_backed() const;
     // Persists a MAP_SHARED page without affecting private file mappings.
     [[nodiscard]] bool flush_file();

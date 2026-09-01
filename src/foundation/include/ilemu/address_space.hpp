@@ -101,6 +101,10 @@ public:
     // otherwise a later ordinary store could bypass reservation invalidation
     // through an already compiled direct-write block.
     void track_exclusive_access(std::uint32_t address, std::size_t size);
+    // A serialized processor loses its local reservation at a real Guest
+    // thread switch. Restore direct writes for pages that no longer need the
+    // checked exclusive-monitor path; every other write restriction remains.
+    void clear_exclusive_access_tracking();
     // A physical page can become write-tracked after another AddressSpace has
     // already cached a direct JIT write pointer to it. The execution boundary
     // calls this safe point before re-entering Dynarmic so those old aliases
@@ -239,6 +243,10 @@ public:
     // Graphics scanout uses this to avoid copying an unchanged framebuffer.
     [[nodiscard]] std::optional<std::uint64_t> range_write_generation(
         std::uint32_t address, std::size_t size) const;
+    // Publishes direct Guest writes at a firmware-provided synchronization
+    // boundary. Every resident page in the range receives one local and shared
+    // generation update, independent of per-store write tracking.
+    bool publish_write_generation(std::uint32_t address, std::size_t size);
     struct WrittenRange {
         std::uint32_t address { };
         std::uint32_t size { };
@@ -358,7 +366,12 @@ private:
     void clear_jit_page_table_locked();
     [[nodiscard]] static std::byte read_byte_locked(
         const Page* page, std::uint32_t offset);
-    [[nodiscard]] static GuestPageBacking& writable_backing_locked(Page& page);
+    [[nodiscard]] static GuestPageBacking& writable_backing_locked(
+        Page& page, bool* jit_eligibility_changed = nullptr);
+    [[nodiscard]] bool reservation_invalidation_required_locked(
+        const Page& page) const noexcept;
+    void release_exclusive_write_tracking_locked(
+        std::uint32_t address, std::size_t size);
     void mark_shared_backing_written_locked(Page& page);
     [[nodiscard]] bool tracks_write_locked(
         std::uint32_t address, std::size_t size) const;
@@ -407,11 +420,14 @@ private:
     std::unordered_set<std::uint32_t> direct_jit_write_pages_;
     bool jit_page_table_enabled_ { };
     bool jit_write_page_table_enabled_ { true };
-    // Tracking is monotonic for a resident mapping generation. Unmapping the
-    // range drops the marker so a new backing can start on the fast path again.
+    // Tracking lasts until a checked write invalidates the page's reservation,
+    // or until the serialized processor's next Guest thread switch. Unmapping
+    // also drops markers for the discarded mapping.
     std::unordered_set<std::uint32_t> exclusive_write_tracked_pages_;
+    std::atomic<bool> exclusive_write_tracking_active_ { };
     std::atomic<std::uint64_t> observed_shared_write_tracking_epoch_ { };
     std::vector<TrackedWriteRange> tracked_write_ranges_;
+    std::unordered_set<std::uint32_t> write_tracked_pages_;
     std::uint64_t write_generation_ { };
     std::atomic<std::uint64_t> executable_content_generation_ { 1U };
     std::map<std::uint64_t, MappingLease> mapping_leases_;

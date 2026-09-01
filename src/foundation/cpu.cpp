@@ -3383,6 +3383,15 @@ public:
         return *executors_.at(slot);
     }
 
+    void clear_exclusive_state(std::size_t slot)
+    {
+        executor(slot).clear_exclusive_state();
+        // Only a single-executor pool can prove that no other virtual
+        // processor still owns a reservation in this address space.
+        if (executors_.size() == 1U)
+            memory_.clear_exclusive_access_tracking();
+    }
+
     void set_process_id(std::uint32_t process_id)
     {
         execution_context_->bind_process_id(process_id);
@@ -5070,7 +5079,7 @@ void Cpu::clear_exclusive_state(std::size_t execution_slot)
     // The local state gates STREX. The next LDREX overwrites this serialized
     // processor's single global slot, so clearing the local state is enough
     // and avoids taking the global monitor lock on every context switch.
-    execution_pool_->executor(execution_slot).clear_exclusive_state();
+    execution_pool_->clear_exclusive_state(execution_slot);
 }
 
 CpuCluster::CpuCluster(std::size_t processor_count, AddressSpace& memory)

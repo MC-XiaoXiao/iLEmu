@@ -513,7 +513,11 @@ std::uint32_t CoreSurfaceHle::create_buffer(UserlandHleCall& call,
     auto backing = SurfaceStore::Backing { id, base, size, width, height,
         bytes_per_row, pixel_format, { } };
     backing.provenance.producer_process_id = call.process_id();
+    // Only the legacy continuously scanned display surface needs per-store
+    // generations. Ordinary CoreSurface/IOSurface buffers publish completed
+    // CPU writes at their explicit synchronization boundary instead.
     if (pixel_format == surface_pixel_format_bgra &&
+        id == iokit_abi::mobile_framebuffer_default_surface_id &&
         !call.memory().track_write_generation(base, size)) {
         recycle_client_buffer(client, profile);
         return 0;
