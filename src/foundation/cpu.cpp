@@ -1352,38 +1352,26 @@ public:
     bool MemoryWriteExclusive8(std::uint32_t address, std::uint8_t value,
         std::uint8_t expected) override
     {
-        const auto written =
-            memory_.compare_exchange8(address, expected, value);
-        if (written)
-            notify_memory_write(address, sizeof(value), value);
-        return written;
+        return write_exclusive(
+            address, value, expected, &AddressSpace::compare_exchange8);
     }
     bool MemoryWriteExclusive16(std::uint32_t address, std::uint16_t value,
         std::uint16_t expected) override
     {
-        const auto written =
-            memory_.compare_exchange16(address, expected, value);
-        if (written)
-            notify_memory_write(address, sizeof(value), value);
-        return written;
+        return write_exclusive(
+            address, value, expected, &AddressSpace::compare_exchange16);
     }
     bool MemoryWriteExclusive32(std::uint32_t address, std::uint32_t value,
         std::uint32_t expected) override
     {
-        const auto written =
-            memory_.compare_exchange32(address, expected, value);
-        if (written)
-            notify_memory_write(address, sizeof(value), value);
-        return written;
+        return write_exclusive(
+            address, value, expected, &AddressSpace::compare_exchange32);
     }
     bool MemoryWriteExclusive64(std::uint32_t address, std::uint64_t value,
         std::uint64_t expected) override
     {
-        const auto written =
-            memory_.compare_exchange64(address, expected, value);
-        if (written)
-            notify_memory_write(address, sizeof(value), value);
-        return written;
+        return write_exclusive(
+            address, value, expected, &AddressSpace::compare_exchange64);
     }
 
     bool IsReadOnlyMemory(std::uint32_t address) override
@@ -1914,6 +1902,16 @@ private:
         }
         notify_memory_write(address, sizeof(T), value);
         return *previous;
+    }
+
+    template <typename T, typename Member>
+    bool write_exclusive(
+        std::uint32_t address, T value, T expected, Member member)
+    {
+        const auto written = (memory_.*member)(address, expected, value);
+        if (written)
+            notify_memory_write(address, sizeof(T), value);
+        return written;
     }
 
     void notify_memory_write(
