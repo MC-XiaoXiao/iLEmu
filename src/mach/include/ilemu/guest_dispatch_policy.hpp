@@ -22,6 +22,7 @@ struct GuestDispatchObservation {
     std::optional<XnuThreadId> realtime_yielded_thread;
     std::optional<XnuThreadId> realtime_inflight_thread;
     std::optional<XnuThreadId> input_target_thread;
+    std::optional<std::uint32_t> input_receiver_process;
     std::optional<std::uint32_t> foreground_transition_process;
     std::optional<std::uint32_t> active_process;
     std::uint64_t interaction_generation { };
@@ -42,6 +43,7 @@ enum class GuestDispatchReason : std::uint8_t {
     RealtimeDependency,
     InputTarget,
     ForegroundTransition,
+    InputProcess,
     InteractiveProcess,
 };
 
@@ -73,6 +75,7 @@ private:
     std::chrono::nanoseconds interaction_lease_;
     std::chrono::steady_clock::time_point interaction_deadline_ { };
     std::uint64_t observed_interaction_generation_ { };
+    std::optional<std::uint32_t> input_process_;
     std::optional<std::uint32_t> preferred_process_;
     std::size_t preferred_process_burst_ { };
 };

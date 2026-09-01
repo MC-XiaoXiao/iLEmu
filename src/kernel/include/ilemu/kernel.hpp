@@ -373,6 +373,11 @@ public:
         bsd::baseband_device::State::TransmitSink sink);
     void enqueue_touch_input(const TouchInput& input);
     void enqueue_system_button(const SystemButtonInput& input);
+    // Returns the live receive owner of the firmware's hardware-input service.
+    // Host scheduling may use this identity as a bounded dependency hint; the
+    // Guest still owns event routing, thread state, and priority.
+    [[nodiscard]] std::optional<std::uint32_t>
+    graphics_input_receiver_process_id() const;
     void set_ringer_switch_active(bool active);
     void toggle_ringer_switch();
     [[nodiscard]] bool display_powered_on() const;

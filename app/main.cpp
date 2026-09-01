@@ -5097,8 +5097,11 @@ void boot(const std::vector<std::string>& args, Output& output)
         };
     auto last_interactive_host_activity = std::chrono::steady_clock::now();
     std::uint64_t interaction_generation { 1U };
+    std::optional<std::uint32_t> input_receiver_process;
     const auto note_interactive_host_activity = [&]() {
         last_interactive_host_activity = std::chrono::steady_clock::now();
+        input_receiver_process =
+            initial_runtime->kernel->graphics_input_receiver_process_id();
         if (++interaction_generation == 0U)
             ++interaction_generation;
         jit_work_signal->notify_work();
@@ -5875,7 +5878,8 @@ void boot(const std::vector<std::string>& args, Output& output)
             KernelSharedState::ForegroundTransitionTerminalState;
         const auto transition_process =
             transition && transition->destination &&
-                transition->terminal_state == TransitionTerminal::Pending
+                transition->terminal_state == TransitionTerminal::Pending &&
+                !transition->destination_first_frame
                 ? std::optional<std::uint32_t> {
                       transition->destination->process_id
                   }
@@ -5894,6 +5898,7 @@ void boot(const std::vector<std::string>& args, Output& output)
                 .realtime_inflight_thread =
                     display_inflight_callback_thread,
                 .input_target_thread = input_preferred_thread,
+                .input_receiver_process = input_receiver_process,
                 .foreground_transition_process = transition_process,
                 .active_process = active_process,
                 .interaction_generation = interaction_generation,

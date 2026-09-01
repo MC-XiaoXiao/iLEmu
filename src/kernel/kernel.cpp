@@ -543,6 +543,24 @@ void CompatibilityKernel::enqueue_system_button(const SystemButtonInput& input)
     enqueue_system_button_impl(input, false);
 }
 
+std::optional<std::uint32_t>
+CompatibilityKernel::graphics_input_receiver_process_id() const
+{
+    std::lock_guard lock { shared_state_->mach_mutex };
+    const auto service = shared_state_->bootstrap_service_objects.find(
+        std::string { graphics_services_input::system_event_service });
+    if (service == shared_state_->bootstrap_service_objects.end())
+        return std::nullopt;
+    const auto port =
+        shared_state_->mach_port_objects.lookup(service->second);
+    if (!port || port->receive_owner == 0U)
+        return std::nullopt;
+    const auto process = shared_state_->processes.find(port->receive_owner);
+    if (process == shared_state_->processes.end() || process->second.exited)
+        return std::nullopt;
+    return port->receive_owner;
+}
+
 void CompatibilityKernel::enqueue_system_button_impl(
     const SystemButtonInput& input, bool force_home_transition)
 {

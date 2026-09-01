@@ -60,6 +60,11 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
         observed_interaction_generation_ =
             observation.interaction_generation;
         interaction_deadline_ = observation.now + interaction_lease_;
+        // Do not carry the receiver of an older interaction into a new one.
+        // Reacquire the process from the real service receive owner; an exact
+        // consuming Guest thread can refine the same identity below. No
+        // application or firmware identity is inferred here.
+        input_process_ = observation.input_receiver_process;
     }
 
     GuestDispatchDecision result;
@@ -87,7 +92,8 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
     if (observation.realtime_work_pending &&
         observation.realtime_yielded_thread && observation.realtime_process) {
         if (const auto dependency =
-                scheduler.oldest_runnable_thread(*observation.realtime_process,
+                scheduler.highest_priority_runnable_thread(
+                    *observation.realtime_process,
                     observation.realtime_yielded_thread)) {
             return direct(dependency,
                 GuestDispatchReason::RealtimeYieldDependency);
@@ -130,9 +136,10 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
                 return direct(observation.realtime_receiver_thread,
                     GuestDispatchReason::RealtimeReceiver);
             }
-            if (const auto dependency = scheduler.oldest_runnable_thread(
-                    *observation.realtime_process,
-                    observation.realtime_callback_thread)) {
+            if (const auto dependency =
+                    scheduler.highest_priority_runnable_thread(
+                        *observation.realtime_process,
+                        observation.realtime_callback_thread)) {
                 return direct(dependency,
                     GuestDispatchReason::RealtimeDependency);
             }
@@ -144,9 +151,10 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
         const auto callback_info =
             scheduler.info(*observation.realtime_inflight_thread);
         if (callback_info && callback_info->state != XnuThreadState::Runnable) {
-            if (const auto dependency = scheduler.oldest_runnable_thread(
-                    *observation.realtime_process,
-                    observation.realtime_inflight_thread)) {
+            if (const auto dependency =
+                    scheduler.highest_priority_runnable_thread(
+                        *observation.realtime_process,
+                        observation.realtime_inflight_thread)) {
                 return direct(dependency,
                     GuestDispatchReason::RealtimeDependency);
             }
@@ -155,6 +163,8 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
 
     if (observation.input_target_thread &&
         runnable(scheduler, *observation.input_target_thread)) {
+        input_process_ = observation.input_target_thread->process;
+        interaction_deadline_ = observation.now + interaction_lease_;
         return direct(observation.input_target_thread,
             GuestDispatchReason::InputTarget);
     }
@@ -165,6 +175,22 @@ GuestDispatchDecision GuestDispatchPolicy::decide(
             GuestDispatchReason::ForegroundTransition);
         decision.explicit_handoff_stale = result.explicit_handoff_stale;
         return decision;
+    }
+    if (input_process_ && observation.now < interaction_deadline_) {
+        // Input delivery often wakes a run-loop receiver which then hands work
+        // to another thread in the same process. Keep that real dependency
+        // preferred for a bounded lease instead of discarding all input
+        // locality after one exact-thread dispatch. If it blocks, immediately
+        // fall through to the active process; if it remains runnable, the
+        // existing burst limit still yields every fourth selection to XNU's
+        // ordinary queue.
+        if (scheduler.highest_priority_runnable_thread(*input_process_)) {
+            auto decision = decide_interactive_process(scheduler,
+                *input_process_, GuestDispatchReason::InputProcess);
+            decision.explicit_handoff_stale = result.explicit_handoff_stale;
+            return decision;
+        }
+        input_process_.reset();
     }
     if (observation.active_process &&
         observation.now < interaction_deadline_) {
