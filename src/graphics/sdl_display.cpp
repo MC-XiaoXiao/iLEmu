@@ -34,6 +34,21 @@
 namespace ilemu {
 namespace {
 
+#if defined(ILEMU_HAS_SDL2)
+    // sdl2-compat defaults to emulating X11's non-DPI-aware behavior on
+    // Wayland. Opt into logical window coordinates backed by the compositor's
+    // full pixel density. Classic SDL2 and non-Wayland backends safely retain
+    // this unknown/backend-specific hint without changing their behavior.
+    constexpr auto sdl_wayland_scale_to_display_hint =
+        "SDL_VIDEO_WAYLAND_SCALE_TO_DISPLAY";
+
+    void configure_sdl_dpi_awareness()
+    {
+        SDL_SetHintWithPriority(sdl_wayland_scale_to_display_hint, "0",
+            SDL_HINT_OVERRIDE);
+    }
+#endif
+
     // Guest owners and firmware surface identifiers are narrower than the host
     // surface key. Reserve this owner for frames synthesized by the SDL
     // presenter itself, such as the black panel emitted while display power is
@@ -1065,6 +1080,7 @@ SdlDisplay::SdlDisplay(
           input_geometry.valid() ? input_geometry : default_display_geometry) }
 {
 #if defined(ILEMU_HAS_SDL2)
+    configure_sdl_dpi_awareness();
     if (SDL_InitSubSystem(SDL_INIT_VIDEO) != 0) {
         throw std::runtime_error { "SDL video initialization failed: " +
                                    std::string { SDL_GetError() } };
