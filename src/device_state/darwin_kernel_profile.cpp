@@ -56,6 +56,7 @@ namespace {
         DarwinAbiEpoch abi_epoch;
         DarwinPthreadAbiProfile pthread_abi;
         DarwinApple80211IoctlProfile apple80211_ioctl;
+        DarwinIOConnectMethodProfile io_connect_method;
         DarwinNotifyStateProfile notify_state_profile;
         DarwinInitialAppleVectorProfile initial_apple_vector_profile;
         DarwinGuestCapabilities capabilities;
@@ -71,6 +72,7 @@ namespace {
     {
         return { matcher, BuildMatchKind::FamilyPrefix, abi_epoch, pthread_abi,
             DarwinApple80211IoctlProfile::AlignedCurrentNetworkRecord,
+            DarwinIOConnectMethodProfile::ScalarThenStructureOutputCounts,
             DarwinNotifyStateProfile::NativeServerTokens,
             DarwinInitialAppleVectorProfile::KeyedExecutablePath, capabilities,
             { }, { }, 0, { } };
@@ -99,6 +101,7 @@ namespace {
             DarwinAbiEpoch::Darwin10,
             DarwinPthreadAbiProfile::BsdThreadRegisterV1,
             DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
+            DarwinIOConnectMethodProfile::ScalarThenStructureOutputCounts,
             DarwinNotifyStateProfile::BootstrapAwareServerTokens,
             DarwinInitialAppleVectorProfile::KeyedExecutablePath,
             { true, false, false }, "darwin10.3-arm", "10.3.1", 199506,
@@ -108,6 +111,7 @@ namespace {
             DarwinAbiEpoch::Darwin10,
             DarwinPthreadAbiProfile::BsdThreadRegisterV1,
             DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
+            DarwinIOConnectMethodProfile::ScalarThenStructureOutputCounts,
             DarwinNotifyStateProfile::NativeServerTokens,
             DarwinInitialAppleVectorProfile::LegacyExecutablePath,
             { true, false, false }, "darwin10.3-arm-v1", "10.3.1", 199506,
@@ -117,11 +121,22 @@ namespace {
             DarwinAbiEpoch::Darwin10,
             DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase,
             DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
+            DarwinIOConnectMethodProfile::ScalarThenStructureOutputCounts,
             DarwinNotifyStateProfile::NativeServerTokens,
             DarwinInitialAppleVectorProfile::LegacyExecutablePath,
             { true, false, false }, "darwin10.4-arm-v1-tsd", "10.4.0", 199506,
             "Darwin Kernel Version 10.4.0: iLEmu compatibility kernel; "
             "darwin10.4/RELEASE_ARM" },
+        BuildProfileRule { "8F", BuildMatchKind::FamilyPrefix,
+            DarwinAbiEpoch::Darwin11,
+            DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase,
+            DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
+            DarwinIOConnectMethodProfile::StructureThenScalarOutputCounts,
+            DarwinNotifyStateProfile::NativeServerTokens,
+            DarwinInitialAppleVectorProfile::LegacyExecutablePath,
+            { true, false, false }, "darwin11.0-arm-v1-tsd", "11.0.0", 199506,
+            "Darwin Kernel Version 11.0.0: iLEmu compatibility kernel; "
+            "darwin11.0/RELEASE_ARM" },
         build_family_rule("11", DarwinAbiEpoch::Later,
             DarwinPthreadAbiProfile::BsdThreadRegisterV2,
             { true, false, false }),
@@ -145,6 +160,9 @@ namespace {
         DarwinApple80211IoctlProfile apple80211_ioctl {
             DarwinApple80211IoctlProfile::AlignedCurrentNetworkRecord
         };
+        DarwinIOConnectMethodProfile io_connect_method {
+            DarwinIOConnectMethodProfile::ScalarThenStructureOutputCounts
+        };
         DarwinNotifyStateProfile notify_state_profile {
             DarwinNotifyStateProfile::NativeServerTokens
         };
@@ -163,10 +181,10 @@ namespace {
         for (const auto& rule : build_profile_rules) {
             if (matches_build(rule, build))
                 return { rule.abi_epoch, rule.pthread_abi,
-                    rule.apple80211_ioctl, rule.notify_state_profile,
+                    rule.apple80211_ioctl, rule.io_connect_method,
+                    rule.notify_state_profile,
                     rule.initial_apple_vector_profile, rule.capabilities,
-                    rule.profile_name,
-                    rule.operating_system_release,
+                    rule.profile_name, rule.operating_system_release,
                     rule.operating_system_revision, rule.kernel_version };
         }
         // Unknown epochs intentionally expose no version-sensitive capability.
@@ -233,6 +251,7 @@ DarwinKernelIdentityProfile make_darwin_kernel_identity_profile(
     profile.abi_epoch = contract.abi_epoch;
     profile.pthread_abi = contract.pthread_abi;
     profile.apple80211_ioctl = contract.apple80211_ioctl;
+    profile.io_connect_method = contract.io_connect_method;
     profile.notify_state_profile = contract.notify_state_profile;
     profile.initial_apple_vector_profile =
         contract.initial_apple_vector_profile;

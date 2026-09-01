@@ -31,6 +31,15 @@ enum class DarwinApple80211IoctlProfile : std::uint8_t {
     CompactCurrentNetworkRecord,
 };
 
+// The private io_connect_method request retained the same MIG routine number
+// while Darwin 11 reordered its two inline output-capacity words. Keep that
+// wire detail independent of both the user-client selector and broad kernel
+// epoch so unknown firmware cannot be guessed from caller-provided counts.
+enum class DarwinIOConnectMethodProfile : std::uint8_t {
+    ScalarThenStructureOutputCounts,
+    StructureThenScalarOutputCounts,
+};
+
 struct DarwinGuestCapabilities {
     // XNU's nosys entry returns ENOSYS and raises SIGSYS on the audited
     // production epochs. Unknown profiles conservatively suppress the signal
@@ -71,6 +80,9 @@ struct DarwinKernelIdentityProfile {
     };
     DarwinApple80211IoctlProfile apple80211_ioctl {
         DarwinApple80211IoctlProfile::AlignedCurrentNetworkRecord
+    };
+    DarwinIOConnectMethodProfile io_connect_method {
+        DarwinIOConnectMethodProfile::ScalarThenStructureOutputCounts
     };
     DarwinNotifyStateProfile notify_state_profile {
         DarwinNotifyStateProfile::NativeServerTokens

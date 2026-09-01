@@ -10,6 +10,7 @@ enum class DarwinAbiEpoch {
     IphoneOs2,
     IphoneOs3,
     Darwin10,
+    Darwin11,
     Later,
 };
 

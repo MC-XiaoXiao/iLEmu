@@ -27,8 +27,7 @@ namespace {
     constexpr std::uint32_t arm_mapping_size = 5U * sizeof(std::uint32_t);
     constexpr std::uint32_t mach_vm_mapping_size =
         (3U * sizeof(std::uint64_t)) + (2U * sizeof(std::uint32_t));
-    constexpr std::uint32_t arm_shared_text_base = 0x3000'0000U;
-    constexpr std::uint32_t arm_shared_data_base = 0x3800'0000U;
+    constexpr std::uint32_t arm_shared_region_base = 0x3000'0000U;
     constexpr std::uint32_t arm_shared_region_end = 0x4000'0000U;
     constexpr std::uint32_t arm_shared_half_size = 0x0800'0000U;
     constexpr std::uint32_t vm_protection_copy_on_write = 0x08U;
@@ -38,7 +37,7 @@ namespace {
     constexpr std::uint32_t maximum_mapping_count =
         (2U * arm_shared_half_size) / AddressSpace::page_size;
     constexpr std::uint32_t maximum_range_count =
-        (arm_shared_region_end - arm_shared_text_base) /
+        (arm_shared_region_end - arm_shared_region_base) /
         AddressSpace::page_size;
 
     struct Mapping {
@@ -146,10 +145,12 @@ namespace {
         if (size == 0 || add_overflows(address, size))
             return false;
         const auto end = address + size;
-        return (address >= arm_shared_text_base &&
-                   end <= arm_shared_data_base) ||
-               (address >= arm_shared_data_base &&
-                   end <= arm_shared_region_end);
+        // XNU validates these mappings against the complete ARM shared-region
+        // VM map.  The pmap nesting boundary is an implementation detail, not
+        // a forbidden gap: newer unslid caches legitimately have a mapping
+        // that crosses the older 0x38000000 nesting boundary.
+        return address >= arm_shared_region_base &&
+               end <= arm_shared_region_end;
     }
 
     [[nodiscard]] SharedRegionRangeRead read_shared_region_ranges(
@@ -216,14 +217,15 @@ namespace {
     {
         std::vector<SharedRegionRange> release;
         std::size_t keep_index = 0;
-        for (std::uint64_t cursor = arm_shared_text_base;
+        for (std::uint64_t cursor = arm_shared_region_base;
             cursor < arm_shared_region_end;) {
             const auto region = memory.mapping_region_at_or_after(
                 static_cast<std::uint32_t>(cursor));
             if (!region)
                 break;
-            const auto mapped_start = std::max<std::uint64_t>(cursor,
-                std::max<std::uint64_t>(region->address, arm_shared_text_base));
+            const auto mapped_start = std::max<std::uint64_t>(
+                cursor, std::max<std::uint64_t>(
+                            region->address, arm_shared_region_base));
             if (mapped_start >= arm_shared_region_end)
                 break;
             const auto mapped_end =
@@ -371,7 +373,7 @@ namespace {
     [[nodiscard]] std::optional<std::uint32_t> first_mapped_shared_region_page(
         const AddressSpace& memory)
     {
-        for (std::uint64_t address = arm_shared_text_base;
+        for (std::uint64_t address = arm_shared_region_base;
             address < arm_shared_region_end;
             address += AddressSpace::page_size) {
             const auto page = static_cast<std::uint32_t>(address);
