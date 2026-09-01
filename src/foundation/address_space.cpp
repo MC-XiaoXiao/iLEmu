@@ -543,7 +543,17 @@ void AddressSpace::mark_translation_profile_stable(
     auto lock = write_lock();
     if (!vm_map_.accessible(first, end, MemoryPermission::Execute))
         return;
+    if (translation_profile_map_.accessible(
+            first, end, MemoryPermission::Execute)) {
+        return;
+    }
     translation_profile_map_.map_or(first, end, MemoryPermission::Execute);
+    auto generation = translation_profile_mapping_generation_.load(
+        std::memory_order_relaxed);
+    if (++generation == 0U)
+        generation = 1U;
+    translation_profile_mapping_generation_.store(
+        generation, std::memory_order_release);
 }
 
 bool AddressSpace::translation_profile_stable(
@@ -1846,6 +1856,13 @@ std::uint64_t AddressSpace::executable_content_generation() const noexcept
     return executable_content_generation_.load(std::memory_order_acquire);
 }
 
+std::uint64_t
+AddressSpace::translation_profile_mapping_generation() const noexcept
+{
+    return translation_profile_mapping_generation_.load(
+        std::memory_order_acquire);
+}
+
 bool AddressSpace::compare_exchange8(
     std::uint32_t address, std::uint8_t expected, std::uint8_t value)
 {
@@ -2155,6 +2172,10 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
     result->write_generation_ = write_generation_;
     result->executable_content_generation_.store(
         executable_content_generation_.load(std::memory_order_acquire),
+        std::memory_order_release);
+    result->translation_profile_mapping_generation_.store(
+        translation_profile_mapping_generation_.load(
+            std::memory_order_acquire),
         std::memory_order_release);
     result->mapping_leases_ = mapping_leases_;
     result->next_mapping_lease_token_ = next_mapping_lease_token_;

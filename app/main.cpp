@@ -787,6 +787,7 @@ struct Runtime {
     std::optional<std::chrono::steady_clock::time_point>
         activation_release_deadline;
     bool jit_memory_accounted { };
+    std::uint64_t translation_profile_mapping_generation { };
     std::uint64_t timer_deadline_generation { };
     bool timer_deadline_observed { };
 
@@ -3342,6 +3343,8 @@ void boot(const std::vector<std::string>& args, Output& output)
                 runtime.cpus->set_translation_profile(
                     nullptr, phase, false, false);
             }
+            runtime.translation_profile_mapping_generation =
+                runtime.memory->translation_profile_mapping_generation();
         };
     const auto apply_jit_runtime_class =
         [&jit_code_cache_governor](Runtime& runtime,
@@ -6156,6 +6159,24 @@ void boot(const std::vector<std::string>& args, Output& output)
             for (auto& prepared : prepared_slices) {
                 if (scheduler.contains(prepared.scheduled.thread))
                     GuestExecutionCoordinator::execute(prepared.execution);
+            }
+        }
+
+        // Guest dyld can publish its fixed shared-cache mappings from an SVC.
+        // Observe that publication only after every Cpu::run has returned: the
+        // profile queue has its own lock, while executing JIT callbacks must
+        // remain free of cross-executor lock acquisition. Repeated slices for
+        // one process collapse through the monotonic generation comparison.
+        for (auto& prepared : prepared_slices) {
+            auto& runtime = *prepared.runtime;
+            const auto generation =
+                runtime.memory->translation_profile_mapping_generation();
+            if (generation !=
+                runtime.translation_profile_mapping_generation) {
+                runtime.translation_profile_mapping_generation = generation;
+                runtime.cpus->retry_deferred_translation_profile();
+                if (runtime.jit_work_signal)
+                    runtime.jit_work_signal->notify_work();
             }
         }
 

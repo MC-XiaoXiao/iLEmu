@@ -206,6 +206,13 @@ public:
     // It changes on mapping mutations and writes to executable ranges; it is a
     // validity token only, never an artifact identity or a hash filter.
     [[nodiscard]] std::uint64_t executable_content_generation() const noexcept;
+    // Monotonic notification stamp for executable ranges that have become
+    // eligible for persistent translation-profile reuse. Unlike the broader
+    // executable content generation, this advances only when a newly stable
+    // range is published, so deferred profile work is not retried for ordinary
+    // writes, protection changes, or invalidations.
+    [[nodiscard]] std::uint64_t
+    translation_profile_mapping_generation() const noexcept;
     // Resolves an exclusive-access address to the physical GuestPageBacking
     // identity when resident. Shared aliases therefore reserve the same
     // monitor granule, while unmapped/lazy pages conservatively retain a
@@ -430,6 +437,7 @@ private:
     std::unordered_set<std::uint32_t> write_tracked_pages_;
     std::uint64_t write_generation_ { };
     std::atomic<std::uint64_t> executable_content_generation_ { 1U };
+    std::atomic<std::uint64_t> translation_profile_mapping_generation_ { 1U };
     std::map<std::uint64_t, MappingLease> mapping_leases_;
     std::uint64_t next_mapping_lease_token_ { 1 };
     std::shared_ptr<FilePageCache> file_page_cache_;

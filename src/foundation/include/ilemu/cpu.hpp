@@ -326,6 +326,10 @@ public:
     // profile assignment. This is called only from an idle/precompile
     // scheduler boundary and remains bounded by the profile queue capacity.
     void refresh_translation_profile();
+    // A loader has published additional fixed executable mappings. Requeue
+    // only profile entries that were deferred for unavailable Guest memory;
+    // this safe-point operation does not flush the live demand recorder.
+    void retry_deferred_translation_profile();
     [[nodiscard]] JitPrecompileMemoryStats precompile_memory_stats() const;
     // Boot-critical processes mark every executable artifact they actually
     // consume, naturally covering dyld and the mapped dependency closure

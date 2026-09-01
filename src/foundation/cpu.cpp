@@ -3624,6 +3624,24 @@ public:
         assert_queue_counter_invariants_locked();
     }
 
+    void retry_deferred_translation_profile()
+    {
+        const std::lock_guard queue_lock { precompile_queue_mutex_ };
+        if (precompile_quiescing_ || !translation_profile_ ||
+            !profile_precompile_enabled_) {
+            return;
+        }
+        promote_retryable_deferred_entries_locked(
+            JitPrecompileSource::DemandProfile);
+        for (std::size_t target = 0; target < jit_precompile_target_count;
+            ++target) {
+            refill_profile_entries_locked(
+                static_cast<JitPrecompileTarget>(target));
+        }
+        update_memory_peaks_locked();
+        assert_queue_counter_invariants_locked();
+    }
+
     [[nodiscard]] JitPrecompileMemoryStats precompile_memory_stats() const
     {
         return memory_snapshot_.read();
@@ -5265,6 +5283,12 @@ void CpuCluster::refresh_translation_profile()
 {
     if (execution_pool_)
         execution_pool_->refresh_translation_profile();
+}
+
+void CpuCluster::retry_deferred_translation_profile()
+{
+    if (execution_pool_)
+        execution_pool_->retry_deferred_translation_profile();
 }
 
 JitPrecompileMemoryStats CpuCluster::precompile_memory_stats() const
