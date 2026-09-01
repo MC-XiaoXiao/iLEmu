@@ -46,6 +46,15 @@ public:
         redraw_requested_ = false;
         return requested;
     }
+    // Native presentation surfaces own drawable-sized swapchains. Keep their
+    // resize edge separate from ordinary expose/focus redraws so the host
+    // backend only rebuilds the surface when its pixel extent can change.
+    [[nodiscard]] bool take_surface_change_request()
+    {
+        const auto requested = surface_change_requested_;
+        surface_change_requested_ = false;
+        return requested;
+    }
 
 private:
     void process_event(const SDL_Event& event, int window_width,
@@ -58,6 +67,7 @@ private:
     std::vector<SystemButtonInput> button_events_;
     std::vector<RingerSwitchInput> ringer_switch_events_;
     bool redraw_requested_ { };
+    bool surface_change_requested_ { };
     bool mouse_active_ { };
     std::unordered_set<std::int64_t> active_fingers_;
     bool running_ { true };

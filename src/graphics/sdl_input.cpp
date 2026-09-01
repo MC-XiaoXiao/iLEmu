@@ -167,9 +167,12 @@ void SdlInput::process_event(const SDL_Event& event, int window_width,
         case SDL_WINDOWEVENT_EXPOSED:
         case SDL_WINDOWEVENT_SHOWN:
         case SDL_WINDOWEVENT_RESTORED:
+        case SDL_WINDOWEVENT_FOCUS_GAINED:
+            redraw_requested_ = true;
+            break;
         case SDL_WINDOWEVENT_SIZE_CHANGED:
         case SDL_WINDOWEVENT_RESIZED:
-        case SDL_WINDOWEVENT_FOCUS_GAINED:
+            surface_change_requested_ = true;
             redraw_requested_ = true;
             break;
         default:

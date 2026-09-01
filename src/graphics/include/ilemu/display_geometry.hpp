@@ -64,32 +64,32 @@ struct DisplayViewport {
     std::uint32_t height { };
 };
 
-// Fits a guest image into a host output without changing aspect ratio.
-// Upscaling prefers the largest whole-number factor; outputs smaller than the
-// guest use a nearest-filtered fractional fit rather than cropping.
+// Fits a guest image into a host output without changing aspect ratio. The
+// viewport follows every host size, including fractional upscales, so device
+// profiles with native and logical geometries of any scale share one policy.
 [[nodiscard]] constexpr DisplayViewport fit_display_viewport(
     DisplayGeometry source, DisplayGeometry output)
 {
     if (!source.valid() || !output.valid())
         return { };
-    const auto integer_scale =
-        std::min(output.width / source.width, output.height / source.height);
+    const auto scaled_extent = [](std::uint32_t output_extent,
+                                   std::uint32_t source_extent,
+                                   std::uint32_t source_axis) {
+        return std::max(
+            1U, static_cast<std::uint32_t>(
+                    (static_cast<std::uint64_t>(output_extent) * source_extent +
+                        source_axis / 2U) /
+                    source_axis));
+    };
     std::uint32_t width { };
     std::uint32_t height { };
-    if (integer_scale != 0U) {
-        width = source.width * integer_scale;
-        height = source.height * integer_scale;
-    } else if (static_cast<std::uint64_t>(output.width) * source.height <=
-               static_cast<std::uint64_t>(output.height) * source.width) {
+    if (static_cast<std::uint64_t>(output.width) * source.height <=
+        static_cast<std::uint64_t>(output.height) * source.width) {
         width = output.width;
-        height = std::max(1U, static_cast<std::uint32_t>(
-                                  static_cast<std::uint64_t>(output.width) *
-                                  source.height / source.width));
+        height = scaled_extent(output.width, source.height, source.width);
     } else {
         height = output.height;
-        width = std::max(1U, static_cast<std::uint32_t>(
-                                 static_cast<std::uint64_t>(output.height) *
-                                 source.width / source.height));
+        width = scaled_extent(output.height, source.width, source.height);
     }
     return { static_cast<std::int32_t>((output.width - width) / 2U),
         static_cast<std::int32_t>((output.height - height) / 2U), width,

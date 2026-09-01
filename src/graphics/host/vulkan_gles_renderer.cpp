@@ -705,6 +705,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         VkSurfaceKHR presentation_surface_ { };
         VkSwapchainKHR presentation_swapchain_ { };
         VkFormat presentation_format_ { };
+        VkFilter presentation_filter_ { VK_FILTER_NEAREST };
         VkExtent2D presentation_extent_ { };
         std::vector<VkImage> presentation_images_;
         std::vector<VkImageLayout> presentation_layouts_;
@@ -1099,6 +1100,13 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 throw std::runtime_error {
                     "Vulkan exposes no hardware graphics queue"
                 };
+            }
+            VkFormatProperties color_properties { };
+            vkGetPhysicalDeviceFormatProperties(
+                physical_device_, color_format, &color_properties);
+            if ((color_properties.optimalTilingFeatures &
+                    VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) != 0) {
+                presentation_filter_ = VK_FILTER_LINEAR;
             }
             for (const auto format :
                 { VK_FORMAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT,
@@ -2916,7 +2924,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         vkCmdBlitImage(commands.command, target.image.image,
             VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
             presentation_images_[image_index],
-            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit,
+            presentation_filter_);
         transition_image(commands.command, presentation_images_[image_index],
             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, VK_PIPELINE_STAGE_TRANSFER_BIT,

@@ -108,6 +108,31 @@ struct SdlDisplay::Impl {
     bool vulkan_window { };
     std::atomic<bool> surface_created { };
 
+    [[nodiscard]] static Uint32 window_flags(bool vulkan)
+    {
+        return SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
+               (vulkan ? static_cast<Uint32>(SDL_WINDOW_VULKAN) : 0U);
+    }
+
+    [[nodiscard]] SDL_Window* create_window(bool vulkan) const
+    {
+        return SDL_CreateWindow("iLEmu", SDL_WINDOWPOS_CENTERED,
+            SDL_WINDOWPOS_CENTERED, static_cast<int>(host_geometry.width),
+            static_cast<int>(host_geometry.height), window_flags(vulkan));
+    }
+
+    [[nodiscard]] static SDL_Renderer* create_renderer(SDL_Window* target)
+    {
+        // SDL applies this hint when a texture is created. Linear filtering
+        // removes nearest-neighbour stair stepping while retaining the host
+        // renderer's accelerated path and software fallback.
+        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+        auto* result = SDL_CreateRenderer(target, -1, SDL_RENDERER_ACCELERATED);
+        if (result == nullptr)
+            result = SDL_CreateRenderer(target, -1, SDL_RENDERER_SOFTWARE);
+        return result;
+    }
+
     void ensure_cpu_window()
     {
         std::lock_guard lock { sdl_mutex };
@@ -115,9 +140,7 @@ struct SdlDisplay::Impl {
             return;
         if (window != nullptr)
             SDL_DestroyWindow(window);
-        window = SDL_CreateWindow("iLEmu", SDL_WINDOWPOS_CENTERED,
-            SDL_WINDOWPOS_CENTERED, static_cast<int>(host_geometry.width),
-            static_cast<int>(host_geometry.height), SDL_WINDOW_RESIZABLE);
+        window = create_window(false);
         vulkan_window = false;
     }
 
@@ -130,11 +153,7 @@ struct SdlDisplay::Impl {
             // rather than in the scheduler thread that owns the SDL event pump.
             if (window == nullptr || vulkan_window)
                 ensure_cpu_window();
-            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
-            renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-            if (renderer == nullptr)
-                renderer =
-                    SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+            renderer = create_renderer(window);
         }
         if (renderer == nullptr) {
             throw std::runtime_error { "SDL renderer creation failed: " +
@@ -149,6 +168,12 @@ struct SdlDisplay::Impl {
             throw std::runtime_error { "SDL texture creation failed: " +
                                        std::string { SDL_GetError() } };
         }
+#if SDL_VERSION_ATLEAST(2, 0, 12)
+        if (SDL_SetTextureScaleMode(texture, SDL_ScaleModeLinear) != 0) {
+            throw std::runtime_error { "SDL texture scale mode failed: " +
+                                       std::string { SDL_GetError() } };
+        }
+#endif
         if (SDL_SetTextureBlendMode(texture, SDL_BLENDMODE_NONE) != 0) {
             throw std::runtime_error { "SDL texture blend mode failed: " +
                                        std::string { SDL_GetError() } };
@@ -173,25 +198,13 @@ struct SdlDisplay::Impl {
             SDL_DestroyWindow(retired_window);
             retired_window = nullptr;
         }
-        const auto old_flags = SDL_GetWindowFlags(window);
-        const auto new_flags =
-            SDL_WINDOW_RESIZABLE |
-            (vulkan_window ? static_cast<Uint32>(SDL_WINDOW_VULKAN) : 0U) |
-            (old_flags & SDL_WINDOW_ALLOW_HIGHDPI);
-        auto* replacement = SDL_CreateWindow("iLEmu", SDL_WINDOWPOS_CENTERED,
-            SDL_WINDOWPOS_CENTERED, static_cast<int>(host_geometry.width),
-            static_cast<int>(host_geometry.height), new_flags);
+        auto* replacement = create_window(vulkan_window);
         if (replacement == nullptr)
             return false;
 
         SDL_Renderer* replacement_renderer = nullptr;
         if (!vulkan_window) {
-            SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
-            replacement_renderer =
-                SDL_CreateRenderer(replacement, -1, SDL_RENDERER_ACCELERATED);
-            if (replacement_renderer == nullptr)
-                replacement_renderer =
-                    SDL_CreateRenderer(replacement, -1, SDL_RENDERER_SOFTWARE);
+            replacement_renderer = create_renderer(replacement);
             if (replacement_renderer == nullptr) {
                 SDL_DestroyWindow(replacement);
                 return false;
@@ -1059,17 +1072,12 @@ SdlDisplay::SdlDisplay(
 #if defined(ILEMU_HAS_VULKAN)
     if (SDL_Vulkan_LoadLibrary(nullptr) == 0) {
         impl_->vulkan_library_loaded = true;
-        impl_->window = SDL_CreateWindow("iLEmu", SDL_WINDOWPOS_CENTERED,
-            SDL_WINDOWPOS_CENTERED, static_cast<int>(impl_->host_geometry.width),
-            static_cast<int>(impl_->host_geometry.height),
-            SDL_WINDOW_RESIZABLE | SDL_WINDOW_VULKAN);
+        impl_->window = impl_->create_window(true);
         impl_->vulkan_window = impl_->window != nullptr;
     }
 #endif
     if (impl_->window == nullptr) {
-        impl_->window = SDL_CreateWindow("iLEmu", SDL_WINDOWPOS_CENTERED,
-            SDL_WINDOWPOS_CENTERED, static_cast<int>(impl_->host_geometry.width),
-            static_cast<int>(impl_->host_geometry.height), SDL_WINDOW_RESIZABLE);
+        impl_->window = impl_->create_window(false);
         impl_->vulkan_window = false;
     }
     if (impl_->window == nullptr) {
@@ -1350,6 +1358,14 @@ bool SdlDisplay::poll_events()
     if (!input_running)
         impl_->presentation_available.notify_all();
     const auto redraw_requested = impl_->input.take_redraw_request();
+    const auto surface_change_requested =
+        impl_->input.take_surface_change_request();
+    if (surface_change_requested && impl_->host_graphics &&
+        impl_->host_graphics->native_presentation_available()) {
+        impl_->stop_native_presenter();
+        static_cast<void>(impl_->host_graphics->refresh_presentation_surface());
+        impl_->start_native_presenter();
+    }
     std::optional<DisplayFrame> frame;
     bool native_failed { };
     bool repainting { };
