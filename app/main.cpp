@@ -5483,7 +5483,7 @@ void boot(const std::vector<std::string>& args, Output& output)
                         scheduled_snapshots.front().second.string());
             scheduled_snapshots.erase(scheduled_snapshots.begin());
         }
-        const auto resolve_display_urgent_thread = [&]() {
+        const auto resolve_display_urgent_threads = [&]() {
             if (!display_urgent_process)
                 return;
             for (auto& runtime : runtimes) {
@@ -5491,28 +5491,19 @@ void boot(const std::vector<std::string>& args, Output& output)
                     runtime->kernel->process().exited) {
                     continue;
                 }
-                // Prefer an exact blocked Mach receiver or a notification
-                // already received synchronously by a running thread. If the
-                // message is only queued and no receiver is waiting yet, the
-                // most recent real NotifyFunc processor is the sole observed
-                // dependency that can drain its CFRunLoop. A Guest
-                // thread_switch from that fallback is honored by the one-shot
-                // display_yielded_thread exclusion below, so it cannot be
-                // reselected into the old zero-work spin. This changes no guest
-                // clock, callback count, or frame content.
-                auto processor =
+                // Keep the Mach receiver and firmware NotifyFunc continuation
+                // as distinct dependencies. After receive copyout, the former
+                // remains the dependency processor until NotifyFunc advances
+                // its watermark; storing it as the callback would discard the
+                // last processor observed at the real callback boundary.
+                if (const auto processor =
                     runtime->kernel->display_vsync_dependency_processor();
-                if (!processor &&
-                    runtime->kernel->display_vsync_callback_pending()) {
-                    processor =
-                        runtime->kernel->display_vsync_callback_processor();
-                }
-                if (processor) {
+                    processor) {
                     const XnuThreadId receiver_thread { *display_urgent_process,
                         static_cast<std::uint32_t>(*processor) };
-                    if (!display_urgent_thread ||
-                        *display_urgent_thread != receiver_thread) {
-                        display_urgent_thread = receiver_thread;
+                    if (!display_urgent_receiver_thread ||
+                        *display_urgent_receiver_thread != receiver_thread) {
+                        display_urgent_receiver_thread = receiver_thread;
                         // Keep the receive itself preferred until the queued
                         // message has been materialized. The callback lease
                         // starts after delivery.
@@ -5521,16 +5512,33 @@ void boot(const std::vector<std::string>& args, Output& output)
                             std::chrono::milliseconds { 50 };
                     }
                 }
+                if (runtime->kernel->display_vsync_callback_pending()) {
+                    if (const auto processor =
+                            runtime->kernel
+                                ->display_vsync_callback_processor()) {
+                        const XnuThreadId callback_thread {
+                            *display_urgent_process,
+                            static_cast<std::uint32_t>(*processor)
+                        };
+                        if (!display_urgent_thread ||
+                            *display_urgent_thread != callback_thread) {
+                            display_urgent_thread = callback_thread;
+                            display_urgent_lease_deadline =
+                                std::chrono::steady_clock::now() +
+                                std::chrono::milliseconds { 50 };
+                        }
+                    }
+                }
                 break;
             }
         };
-        resolve_display_urgent_thread();
+        resolve_display_urgent_threads();
         synchronize_device_time_to_host();
         synchronize_scheduler_time();
         // Host synchronization can deliver a VSync notification without guest
         // execution consuming a slice. Re-resolve here so the already-pending
         // receive gets the same bounded callback lease in this iteration.
-        resolve_display_urgent_thread();
+        resolve_display_urgent_threads();
         // Materialize a queued VSync receive before realtime pacing. If guest
         // execution is slightly ahead of the fixed host mapping, sleeping first
         // hides the already-due display callback and turns a small pacing lead
@@ -5557,9 +5565,6 @@ void boot(const std::vector<std::string>& args, Output& output)
                     *display_vsync_receiver == processor;
                 if (runtime->kernel->deliver_pending_event(waiting_cpu)) {
                     if (delivered_display_vsync) {
-                        performance_counters().record_vsync_receiver(
-                            runtime->kernel->process().pid,
-                            static_cast<std::uint32_t>(processor));
                         auto callback_processor =
                             runtime->kernel->display_vsync_callback_processor();
                         if (!callback_processor ||
@@ -5916,7 +5921,7 @@ void boot(const std::vector<std::string>& args, Output& output)
         // realtime pacer can take the `guest ahead` path below without
         // executing a guest slice; clearing this identity here would then make
         // the next host-synchronized VSync wake an ordinary runnable thread
-        // instead of allowing resolve_display_urgent_thread() to select its
+        // instead of allowing resolve_display_urgent_threads() to select its
         // receiver. Ownership is refreshed after guest execution and stale
         // identities are harmless because resolution still requires a live
         // matching runtime and a pending VSync receive.
@@ -6535,7 +6540,7 @@ void boot(const std::vector<std::string>& args, Output& output)
             // device clock and enqueue a VSync message without passing through
             // the guest-time advance above. Keep the scanout owner marked for
             // the next polling iteration in both cases;
-            // resolve_display_urgent_thread() still selects a thread only when
+            // resolve_display_urgent_threads() still selects a thread only when
             // it has a pending VSync receive.
             display_urgent_process =
                 display_scanout_owner->kernel->process().pid;

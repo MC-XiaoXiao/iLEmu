@@ -823,6 +823,9 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
                 *delivered_vsync_connection, delivered_vsync_generation,
                 delivered_vsync_sequence,
                 static_cast<std::uint32_t>(cpu.processor_id()));
+            performance_counters().record_vsync_receiver(process_.pid,
+                static_cast<std::uint32_t>(cpu.processor_id()),
+                delivered_vsync_sequence);
         }
         if (delivered_input_sequence != 0U &&
             delivered_input_kind !=

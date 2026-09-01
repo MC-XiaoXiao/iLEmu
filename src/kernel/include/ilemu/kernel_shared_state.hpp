@@ -1543,9 +1543,11 @@ struct KernelSharedState {
     // The caller holds mach_mutex. Observe only the boundary executed by the
     // firmware callback; no host-generated callback or payload interpretation
     // participates in this bookkeeping.
-    void observe_display_vsync_callback_locked(std::uint32_t process_id,
+    std::optional<std::uint64_t> observe_display_vsync_callback_locked(
+        std::uint32_t process_id,
         std::uint32_t framebuffer_refcon, std::uint32_t processor_id)
     {
+        std::optional<std::uint64_t> observed_sequence;
         for (auto& [connection_object, registration] : iokit_display_vsync) {
             static_cast<void>(connection_object);
             if (registration.owner_pid != process_id ||
@@ -1565,7 +1567,9 @@ struct KernelSharedState {
                     : registration.sequence;
             registration.callback_sequence = std::min(registration.sequence,
                 std::max(registration.callback_sequence, completed_sequence));
+            observed_sequence = registration.callback_sequence;
         }
+        return observed_sequence;
     }
 
     // The caller holds mach_mutex. Some framebuffer callbacks proceed directly
@@ -1574,10 +1578,11 @@ struct KernelSharedState {
     // that proves the already-received notification entered its callback. Do
     // not consume a merely queued pulse here: only the receive watermark may
     // advance callback ownership.
-    bool observe_display_vsync_frame_begin_locked(std::uint32_t process_id,
+    std::optional<std::uint64_t> observe_display_vsync_frame_begin_locked(
+        std::uint32_t process_id,
         std::uint32_t framebuffer_refcon, std::uint32_t processor_id)
     {
-        bool advanced = false;
+        std::optional<std::uint64_t> advanced_sequence;
         for (auto& [connection_object, registration] : iokit_display_vsync) {
             static_cast<void>(connection_object);
             if (registration.owner_pid != process_id ||
@@ -1593,9 +1598,9 @@ struct KernelSharedState {
             registration.last_callback_processor = processor_id;
             registration.callback_sequence = std::min(registration.sequence,
                 registration.receiver_sequence);
-            advanced = true;
+            advanced_sequence = registration.callback_sequence;
         }
-        return advanced;
+        return advanced_sequence;
     }
 
     // The caller holds mach_mutex. Observe only a successful Mach copyout of a

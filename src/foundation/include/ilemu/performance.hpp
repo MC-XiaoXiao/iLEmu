@@ -531,8 +531,8 @@ public:
     void record_cpu_map(bool write, PerfCpuMapReason reason);
     void record_vsync_due(std::uint32_t process_id, std::uint32_t framebuffer,
         std::uint64_t sequence);
-    void record_vsync_receiver(
-        std::uint32_t process_id, std::uint32_t processor_id);
+    void record_vsync_receiver(std::uint32_t process_id,
+        std::uint32_t processor_id, std::uint64_t sequence = 0);
     void record_vsync_callback(std::uint32_t process_id,
         std::uint32_t framebuffer, std::uint64_t sequence,
         std::uint32_t processor_id = 0);
@@ -726,6 +726,7 @@ private:
     struct VsyncTimeline {
         std::uint64_t sequence { };
         std::chrono::steady_clock::time_point due;
+        std::chrono::steady_clock::time_point received;
         std::chrono::steady_clock::time_point callback;
         std::chrono::steady_clock::time_point swap_end;
         std::uint32_t receiver_processor { };

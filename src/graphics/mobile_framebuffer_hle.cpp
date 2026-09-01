@@ -89,17 +89,20 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
         [this](UserlandHleCall& call) {
             const auto callback_processor =
                 static_cast<std::uint32_t>(call.cpu().processor_id());
-            performance_counters().record_vsync_callback(
-                call.process_id(), call.argument(0), 0, callback_processor);
+            std::optional<std::uint64_t> callback_sequence;
             if (shared_state_) {
                 std::lock_guard lock { shared_state_->mach_mutex };
                 // This records the processor and consumes the host-only pending
                 // watermark at the real firmware callback boundary, after Mach
                 // delivery and before the original routine resumes. Guest
                 // callback semantics are unchanged.
-                shared_state_->observe_display_vsync_callback_locked(
+                callback_sequence =
+                    shared_state_->observe_display_vsync_callback_locked(
                     call.process_id(), call.argument(0), callback_processor);
             }
+            performance_counters().record_vsync_callback(call.process_id(),
+                call.argument(0), callback_sequence.value_or(0),
+                callback_processor);
             call.resume_original_persistently();
         });
     // GetLayerDefaultSurface intentionally remains firmware code. It calls
@@ -108,16 +111,17 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
     add("_IOMobileFramebufferSwapBegin", [this](UserlandHleCall& call) {
         const auto callback_processor =
             static_cast<std::uint32_t>(call.cpu().processor_id());
-        bool callback_observed = false;
+        std::optional<std::uint64_t> callback_sequence;
         if (shared_state_) {
             std::lock_guard lock { shared_state_->mach_mutex };
-            callback_observed =
+            callback_sequence =
                 shared_state_->observe_display_vsync_frame_begin_locked(
                     call.process_id(), call.argument(0), callback_processor);
         }
-        if (callback_observed) {
+        if (callback_sequence) {
             performance_counters().record_vsync_callback(
-                call.process_id(), call.argument(0), 0, callback_processor);
+                call.process_id(), call.argument(0), *callback_sequence,
+                callback_processor);
         }
         const auto swap_id = next_swap_id_++;
         call.set_return(call.write32(call.argument(1), swap_id)

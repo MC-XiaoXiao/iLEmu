@@ -87,6 +87,7 @@ namespace {
         std::uint32_t framebuffer { };
         std::uint64_t display_sequence { };
         std::chrono::steady_clock::time_point due;
+        std::chrono::steady_clock::time_point received;
         std::chrono::steady_clock::time_point callback;
         std::chrono::steady_clock::time_point swap_end;
         std::chrono::steady_clock::time_point guest_submit;
@@ -2128,11 +2129,13 @@ void PerformanceCounters::record_vsync_due(
     if (timelines.size() == maximum_pending_timelines)
         timelines.pop_front();
     timelines.push_back(
-        VsyncTimeline { sequence, std::chrono::steady_clock::now(), { }, { } });
+        VsyncTimeline {
+            sequence, std::chrono::steady_clock::now(), { }, { }, { } });
 }
 
 void PerformanceCounters::record_vsync_receiver(
-    std::uint32_t process_id, std::uint32_t processor_id)
+    std::uint32_t process_id, std::uint32_t processor_id,
+    std::uint64_t sequence)
 {
     if (!enabled() || process_id == 0)
         return;
@@ -2143,7 +2146,8 @@ void PerformanceCounters::record_vsync_receiver(
             continue;
         for (auto iterator = timelines.rbegin(); iterator != timelines.rend();
             ++iterator) {
-            if (iterator->callback !=
+            if ((sequence != 0 && iterator->sequence != sequence) ||
+                iterator->callback !=
                     std::chrono::steady_clock::time_point { } ||
                 iterator->receiver_processor != 0) {
                 continue;
@@ -2153,8 +2157,10 @@ void PerformanceCounters::record_vsync_receiver(
             break;
         }
     }
-    if (best != nullptr)
+    if (best != nullptr) {
+        best->received = std::chrono::steady_clock::now();
         best->receiver_processor = processor_id;
+    }
 }
 
 void PerformanceCounters::record_vsync_callback(std::uint32_t process_id,
@@ -2165,6 +2171,7 @@ void PerformanceCounters::record_vsync_callback(std::uint32_t process_id,
         return;
     const auto now = std::chrono::steady_clock::now();
     std::optional<std::uint64_t> due_to_callback;
+    std::vector<VsyncTimeline> superseded;
     {
         std::lock_guard lock { vsync_timeline_mutex_ };
         const auto found = vsync_timelines_.find({ process_id, framebuffer });
@@ -2196,6 +2203,7 @@ void PerformanceCounters::record_vsync_callback(std::uint32_t process_id,
         // A newer firmware callback supersedes an older callback that did not
         // submit a frame. Discard those unconsumed prefixes so a later
         // input-driven SwapEnd cannot be paired with a stale VSync.
+        superseded.assign(found->second.begin(), timeline);
         found->second.erase(found->second.begin(), timeline);
         auto& current = found->second.front();
         current.callback = now;
@@ -2206,6 +2214,33 @@ void PerformanceCounters::record_vsync_callback(std::uint32_t process_id,
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     now - current.due)
                     .count());
+        }
+    }
+    if (!superseded.empty() &&
+        display_window_active_.load(std::memory_order_acquire)) {
+        std::lock_guard window_lock { display_window_mutex_ };
+        if (display_window_active_.load(std::memory_order_relaxed)) {
+            for (const auto& timeline : superseded) {
+                if (diagnostic_vsync_frames.size() >=
+                    maximum_diagnostic_sequence_samples) {
+                    break;
+                }
+                diagnostic_vsync_frames.push_back(DiagnosticVsyncFrame {
+                    timeline.sequence,
+                    process_id,
+                    framebuffer,
+                    0,
+                    timeline.due,
+                    timeline.received,
+                    timeline.callback,
+                    timeline.swap_end,
+                    { },
+                    timeline.receiver_processor,
+                    timeline.callback_processor,
+                    timeline.swap_end_processor,
+                    { },
+                });
+            }
         }
     }
     if (due_to_callback)
@@ -2354,6 +2389,7 @@ void PerformanceCounters::record_vsync_guest_submit(
             framebuffer,
             display_sequence,
             completed_timeline->due,
+            completed_timeline->received,
             completed_timeline->callback,
             completed_timeline->swap_end,
             now,
@@ -3692,7 +3728,7 @@ std::string format_display_performance_summary(
             "submit/display-dequeue/native-queue/native-dequeue/"
             "present-return:present-kind|"
          << "v:vsync:pid:fb:frame:"
-            "due/callback/swap-end/guest-submit:"
+            "due/received/callback/swap-end/guest-submit:"
             "receiver/callback-processor/swap-end-processor:"
             "blocks/cpu-exec/cpu-ticks/svc/page-miss/page-fault/"
             "draw/submit/fence/fence-ns:"
@@ -3749,6 +3785,8 @@ std::string format_display_performance_summary(
             text << '-';
         text << ':';
         append_diagnostic_timestamp(text, frame.due);
+        text << '/';
+        append_diagnostic_timestamp(text, frame.received);
         text << '/';
         append_diagnostic_timestamp(text, frame.callback);
         text << '/';
