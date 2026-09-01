@@ -1121,37 +1121,43 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             return;
         }
         const auto mapped_size = static_cast<std::uint32_t>(mapped_size_64);
+        constexpr auto address_space_end = std::uint64_t { 1 } << 32U;
         const auto overlaps = [&](std::uint32_t candidate) {
-            if (mapped_size - 1U >
-                std::numeric_limits<std::uint32_t>::max() - candidate) {
+            const auto end =
+                static_cast<std::uint64_t>(candidate) + mapped_size;
+            if (end > address_space_end) {
                 return true;
             }
-            for (std::uint64_t page = 0; page < mapped_size;
-                page += AddressSpace::page_size) {
-                if (memory_.mapped(
-                        candidate + static_cast<std::uint32_t>(page))) {
-                    return true;
-                }
-            }
-            return false;
+            const auto region = memory_.mapping_region_at_or_after(candidate);
+            return region && static_cast<std::uint64_t>(region->address) < end;
         };
         if ((flags & darwin::map_flag::fixed) == 0) {
             if (address == 0 || overlaps(address)) {
-                address = 0x10000000U;
-                while (overlaps(address) &&
-                       address <= std::numeric_limits<std::uint32_t>::max() -
-                                      AddressSpace::page_size) {
-                    address += AddressSpace::page_size;
+                std::uint64_t candidate = 0x10000000U;
+                bool found = false;
+                while (candidate + mapped_size <= address_space_end) {
+                    const auto region = memory_.mapping_region_at_or_after(
+                        static_cast<std::uint32_t>(candidate));
+                    const auto end = candidate + mapped_size;
+                    if (!region ||
+                        static_cast<std::uint64_t>(region->address) >= end) {
+                        address = static_cast<std::uint32_t>(candidate);
+                        found = true;
+                        break;
+                    }
+                    candidate =
+                        (region->end + AddressSpace::page_size - 1U) &
+                        ~(static_cast<std::uint64_t>(AddressSpace::page_size) -
+                            1U);
                 }
-                if (overlaps(address)) {
+                if (!found) {
                     bsd_error(cpu, darwin::error::no_memory);
                     return;
                 }
             }
         } else {
-            if (overlaps(address) &&
-                mapped_size - 1U >
-                    std::numeric_limits<std::uint32_t>::max() - address) {
+            if (static_cast<std::uint64_t>(address) + mapped_size >
+                address_space_end) {
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return;
             }
