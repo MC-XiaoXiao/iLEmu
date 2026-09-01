@@ -51,7 +51,7 @@ public:
     [[nodiscard]] bool capture_background(std::uint32_t process_id,
         std::uint64_t renderer_owner, GlesRenderTargetKey key,
         const std::shared_ptr<HostSurface>& surface, GlesRenderer& renderer,
-        CommandEncoder& encoder);
+        CommandEncoder& encoder, bool textured_candidate);
 
 private:
     struct FrameState {
@@ -59,11 +59,15 @@ private:
         std::uint64_t observed_presentation { };
         bool active { };
         bool scene_composited { };
+        bool previous_scene_composited { };
+        bool solid_background_deferred { };
+        bool previous_solid_background_deferred { };
     };
 
     struct BackgroundState {
         std::shared_ptr<HostSurface> surface;
         bool valid { };
+        bool textured { };
     };
 
     [[nodiscard]] static bool is_screen_surface(

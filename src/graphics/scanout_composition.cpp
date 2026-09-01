@@ -13,6 +13,8 @@ namespace ilemu {
 namespace {
 
     constexpr std::uint64_t scanout_background_namespace = 2ULL << 32U;
+    constexpr std::uint64_t primary_scene_height_numerator = 2U;
+    constexpr std::uint64_t primary_scene_height_denominator = 3U;
 
     std::optional<HostRectangle> draw_rectangle(std::uint32_t width,
         std::uint32_t height, const GlesRasterState& state,
@@ -147,19 +149,24 @@ void ScanoutComposition::begin_draw(GlesRenderTargetKey key,
             frame.surface->scanout_presentation_sequence();
         if (presentation == frame.observed_presentation)
             continue;
+        frame.previous_scene_composited = frame.scene_composited;
+        frame.previous_solid_background_deferred =
+            frame.solid_background_deferred;
         frame.observed_presentation = presentation;
         frame.active = false;
     }
 
     auto& frame = frames_[key];
     if (frame.surface != surface) {
-        frame = { surface, surface->scanout_presentation_sequence(), false,
-            false };
+        frame = { };
+        frame.surface = surface;
+        frame.observed_presentation = surface->scanout_presentation_sequence();
     }
     if (frame.active)
         return;
     frame.active = true;
     frame.scene_composited = false;
+    frame.solid_background_deferred = false;
 }
 
 bool ScanoutComposition::restore_background(std::uint32_t process_id,
@@ -210,11 +217,19 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
     if (frame == frames_.end())
         return true;
     frame->second.scene_composited = true;
-    // A full-height local scene contains the transition's complete composition.
-    // Injecting an older scanout background into it reintroduces pixels outside
-    // the scene's own geometry; background reconstruction is for partial scene
-    // slices only.
-    if (scene_level->height >= descriptor.height)
+    const auto primary_scene = static_cast<std::uint64_t>(scene_level->height) *
+                                   primary_scene_height_denominator >=
+                               static_cast<std::uint64_t>(descriptor.height) *
+                                   primary_scene_height_numerator;
+    const auto covers_scanout_from_origin =
+        static_cast<std::uint64_t>(scene_level->height) +
+            static_cast<std::uint32_t>(rectangle->y) >=
+        descriptor.height;
+    // A primary local scene may begin below a system bar while still containing
+    // the transition's complete composition. Injecting an older scanout
+    // background into it reintroduces pixels outside the scene's own geometry;
+    // background reconstruction is for smaller moving scene slices only.
+    if (primary_scene && covers_scanout_from_origin)
         return true;
 
     const auto background = backgrounds_.find(process_id);
@@ -276,7 +291,7 @@ bool ScanoutComposition::is_background_draw(
 bool ScanoutComposition::capture_background(std::uint32_t process_id,
     std::uint64_t renderer_owner, GlesRenderTargetKey key,
     const std::shared_ptr<HostSurface>& surface, GlesRenderer& renderer,
-    CommandEncoder& encoder)
+    CommandEncoder& encoder, bool textured_candidate)
 {
     const auto frame = frames_.find(key);
     if (!surface || (frame != frames_.end() && frame->second.scene_composited))
@@ -291,12 +306,30 @@ bool ScanoutComposition::capture_background(std::uint32_t process_id,
             scanout_background_namespace | process_id };
         background.surface = renderer.create_surface(backing_key, descriptor);
         background.valid = false;
+        background.textured = false;
+    }
+    const auto confirmed_solid_background =
+        frame != frames_.end() &&
+        frame->second.previous_solid_background_deferred &&
+        !frame->second.previous_scene_composited;
+    // Legacy compositors clear each scanout page to a solid before replaying
+    // translucent transition scenes. Defer that solid while a textured base is
+    // retained. A later texture cancels the deferral; a real solid-only base is
+    // accepted after the preceding presentation completed without a scene.
+    if (!textured_candidate && background.valid && background.textured &&
+        !confirmed_solid_background) {
+        if (frame != frames_.end())
+            frame->second.solid_background_deferred = true;
+        return true;
     }
     const auto whole_surface =
         HostRectangle { 0, 0, descriptor.width, descriptor.height };
     background.valid =
         background.surface &&
         copy_surface(surface, background.surface, whole_surface, encoder);
+    background.textured = background.valid && textured_candidate;
+    if (background.valid && frame != frames_.end())
+        frame->second.solid_background_deferred = false;
     return background.valid;
 }
 

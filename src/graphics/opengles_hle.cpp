@@ -1074,12 +1074,15 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
         binding->backing_identifier && binding->host_surface && display_ &&
         scanout_composition_.is_background_draw(binding->host_surface,
             display_->width(), display_->height(), state, vertices);
+    const auto textured_background_candidate = std::ranges::any_of(
+        state.texture_units, [](const auto& unit) { return unit.enabled; });
     const auto save_scanout_background = [&] {
         return !capture_scanout_background ||
                (command_encoder_ &&
                    scanout_composition_.capture_background(call.process_id(),
                        renderer_owner_, binding->key, binding->host_surface,
-                       *renderer_, *command_encoder_));
+                       *renderer_, *command_encoder_,
+                       textured_background_candidate));
     };
     const auto target_key = binding->key;
     const auto surface_target = binding->host_surface != nullptr;
