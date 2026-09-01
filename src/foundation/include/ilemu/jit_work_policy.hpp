@@ -24,7 +24,6 @@ enum class JitNativeBackendProfile : std::uint8_t {
 enum class JitWorkClass : std::uint8_t {
     ActivationNative,
     ActivationPortable,
-    ForegroundNative,
     InteractiveNative,
     PredictiveNative,
     OfflinePortable,

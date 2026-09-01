@@ -4662,6 +4662,19 @@ private:
                 }
                 next_cursor = start + count;
             }
+        } else if (translation_profile_phase_ ==
+                   JitPrecompilePhase::InteractiveActivation) {
+            // A live foreground transition can begin only after dyld has
+            // published its shared-cache mappings. Consume the learned
+            // activation prefix so independent Portable workers run ahead of
+            // demand, rather than starting at the recent interaction tail
+            // used for offline maintenance. This path remains useful even
+            // when the native slab has no speculative capacity.
+            auto snapshot = profile->snapshot_range(profile_location_cursor,
+                std::min(jit_profile_precompile_batch_size,
+                    available_entries));
+            locations = std::move(snapshot.first);
+            next_cursor = snapshot.second;
         } else {
             auto& observed_revision = observed_profile_revisions_[target_index];
             const auto profile_revision = profile->revision();

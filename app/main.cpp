@@ -1452,13 +1452,12 @@ enum class JitCatalogWarmingMode : std::uint8_t { NoEnqueue };
 
 [[nodiscard]] bool jit_profile_precompiles(JitProfileMode mode) noexcept
 {
-    return mode == JitProfileMode::Adaptive || mode == JitProfileMode::Idle ||
-           mode == JitProfileMode::Startup;
+    return mode == JitProfileMode::Idle || mode == JitProfileMode::Startup;
 }
 
 [[nodiscard]] bool jit_profile_idle_work(JitProfileMode mode) noexcept
 {
-    return mode == JitProfileMode::Adaptive || mode == JitProfileMode::Idle;
+    return mode == JitProfileMode::Idle;
 }
 
 [[nodiscard]] bool jit_profile_startup_work(JitProfileMode mode) noexcept
@@ -2424,10 +2423,10 @@ void boot(const std::vector<std::string>& args, Output& output)
         jit_profile_startup_work(jit_profile_mode);
     const bool idle_profile_enabled = jit_profile_idle_work(jit_profile_mode);
     const bool profile_background_warming_enabled = idle_profile_enabled;
-    // Adaptive mode optimizes the current interactive working set. Portable
-    // persistence across every live process is intentionally an explicit idle
-    // experiment: its low observed hit rate does not justify creating a
-    // compile executor per background process in the default experience.
+    // Adaptive mode learns and reuses the current interactive working set only
+    // on actual demand. Predictive Native imports and Portable persistence are
+    // explicit idle/startup experiments: their host work must not become a
+    // default foreground-launch tenant merely because a profile is present.
     const bool profile_offline_warming_enabled =
         jit_profile_mode == JitProfileMode::Idle;
     const auto startup_profile_blocks_value =
@@ -5660,6 +5659,10 @@ void boot(const std::vector<std::string>& args, Output& output)
             JitWorkScheduler::activation_preparation_window(
                 translation_lanes);
         const auto reclaim_now = std::chrono::steady_clock::now();
+        const auto foreground_transition =
+            initial_runtime->kernel->foreground_transition_snapshot();
+        using ForegroundTransitionTerminal =
+            KernelSharedState::ForegroundTransitionTerminalState;
         for (auto& runtime : runtimes) {
             std::erase_if(runtime->precompile_tasks,
                 [](const auto& task) { return task.finished(); });
@@ -5671,6 +5674,13 @@ void boot(const std::vector<std::string>& args, Output& output)
             if (runtime->resume_after_execution_prepare &&
                 !runtime->kernel->process().exited) {
                 if (runtime->image_activation_pending) {
+                    const auto foreground_destination =
+                        foreground_transition &&
+                        foreground_transition->destination &&
+                        foreground_transition->terminal_state ==
+                            ForegroundTransitionTerminal::Pending &&
+                        foreground_transition->destination->process_id ==
+                            runtime->kernel->process().pid;
                     if (!runtime->activation_release_deadline) {
                         runtime->activation_release_deadline =
                             reclaim_now + activation_prepare_lead;
@@ -5684,7 +5694,8 @@ void boot(const std::vector<std::string>& args, Output& output)
                             JitPrecompileSource::DemandProfile);
                     const auto activation_ready =
                         runtime->precompile_tasks.empty() &&
-                        !activation_work_remaining;
+                        (foreground_destination ||
+                            !activation_work_remaining);
                     if (!activation_ready &&
                         reclaim_now < *runtime->activation_release_deadline) {
                         continue;

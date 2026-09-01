@@ -87,15 +87,25 @@ JitWorkSchedule JitWorkScheduler::schedule(
     const auto transition = find_first([](const JitWorkCandidate& candidate) {
         return candidate.foreground_transition_destination;
     });
+    // A pending foreground transition is demand-only. Even independent
+    // Portable workers share host cores, memory bandwidth and the artifact
+    // store with the Guest, while Native prediction additionally publishes
+    // into the demand slab. Defer every speculative candidate until the
+    // transition reaches a terminal state rather than attempting to infer
+    // spare frame time from an incomplete animation.
+    if (transition != nullptr) {
+        note_skip(result, JitWorkScheduleSkip::GuestBusy);
+        return result;
+    }
     const auto activation = find_first([](const JitWorkCandidate& candidate) {
         return candidate.image_activation_pending;
     });
-    const auto active = activation != nullptr ? activation
-                        : transition != nullptr
-                            ? transition
-                            : find_first([](const JitWorkCandidate& candidate) {
-                                  return candidate.active_client;
-                              });
+    const auto active =
+        activation != nullptr
+            ? activation
+            : find_first([](const JitWorkCandidate& candidate) {
+                  return candidate.active_client;
+              });
     const auto scanout = find_first([](const JitWorkCandidate& candidate) {
         return candidate.scanout_owner;
     });
@@ -170,7 +180,6 @@ JitWorkSchedule JitWorkScheduler::schedule(
         // InteractiveNative, whose core policy requires an interaction quiet
         // period, no realtime dependency and bounded deadline slack.
         const auto live_image_native =
-            work_class == JitWorkClass::ForegroundNative ||
             work_class == JitWorkClass::InteractiveNative;
         if (target == JitScheduledTarget::NativeCode &&
             candidate->guest_runnable && !candidate->image_activation_pending &&
@@ -221,8 +230,6 @@ JitWorkSchedule JitWorkScheduler::schedule(
     const auto active_native_class =
         active != nullptr && active->image_activation_pending
             ? JitWorkClass::ActivationNative
-        : active != nullptr && active->foreground_transition_destination
-            ? JitWorkClass::ForegroundNative
             : JitWorkClass::InteractiveNative;
     admit(active, false, active_native_class);
     if (active != nullptr && active->image_activation_pending)

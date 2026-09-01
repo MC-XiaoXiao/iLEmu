@@ -39,11 +39,6 @@ namespace {
     constexpr std::uint64_t activation_budget_nanoseconds = 8'000'000U;
     constexpr std::uint64_t activation_portable_budget_nanoseconds =
         8'000'000U;
-    // Once Guest execution begins, prediction may overlap a foreground
-    // transition only as a deadline-aware micro-batch. This is intentionally
-    // smaller than held-image activation work and larger than post-interaction
-    // idle maintenance.
-    constexpr std::uint64_t foreground_budget_nanoseconds = 4'000'000U;
     // Same-slab prediction for a live interactive image is deliberately a
     // micro-batch. It can make progress between display callbacks without
     // becoming a frame-sized lock or host-CPU tenant.
@@ -57,7 +52,6 @@ namespace {
     constexpr auto offline_display_quiet = std::chrono::milliseconds { 100 };
     constexpr auto offline_guest_quiet = std::chrono::milliseconds { 20 };
     constexpr std::size_t activation_block_limit = 256U;
-    constexpr std::size_t foreground_block_limit = 128U;
     constexpr std::size_t interactive_block_limit = 32U;
     constexpr std::size_t predictive_block_limit = 64U;
     constexpr std::size_t offline_block_limit = 16U;
@@ -186,17 +180,6 @@ JitWorkDecision JitWorkPolicy::decide(
                 historical_block, compile_reserve_margin_nanoseconds));
         maximum_blocks = activation_block_limit;
         deadline_budget_divisor = 2U;
-    } else if (work == JitWorkClass::ForegroundNative) {
-        if (observation.realtime_work_pending) {
-            return { 0U, 0U, JitWorkBlockReason::GuestBusy };
-        }
-        maximum_budget = foreground_budget_nanoseconds;
-        deadline_reserve = std::max(interactive_reserve_floor_nanoseconds,
-            saturating_add(
-                historical_block, compile_reserve_margin_nanoseconds));
-        maximum_blocks = foreground_block_limit;
-        // Preserve most frame slack while a visible transition is in flight.
-        deadline_budget_divisor = 4U;
     } else if (work == JitWorkClass::InteractiveNative) {
         if (observation.realtime_work_pending ||
             !observation.interaction_quiet_for ||
