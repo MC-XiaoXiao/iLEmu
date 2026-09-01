@@ -348,6 +348,16 @@ namespace syscall {
     inline constexpr std::uint32_t mac_syscall = 381;
     inline constexpr std::uint32_t fileport_makeport = 430;
     inline constexpr std::uint32_t fileport_makefd = 431;
+    inline constexpr std::uint32_t pid_suspend = 433;
+    inline constexpr std::uint32_t pid_resume = 434;
+    inline constexpr std::uint32_t pid_hibernate = 435;
+    inline constexpr std::uint32_t posix_semaphore_open = 268;
+    inline constexpr std::uint32_t posix_semaphore_close = 269;
+    inline constexpr std::uint32_t posix_semaphore_unlink = 270;
+    inline constexpr std::uint32_t posix_semaphore_wait = 271;
+    inline constexpr std::uint32_t posix_semaphore_try_wait = 272;
+    inline constexpr std::uint32_t posix_semaphore_post = 273;
+    inline constexpr std::uint32_t posix_semaphore_get_value = 274;
 } // namespace syscall
 
 namespace poll {

@@ -239,6 +239,11 @@ struct PendingSemaphoreWait {
     bool bsd_result { };
 };
 
+struct PendingSignalSuspend {
+    std::uint32_t mask { };
+    bool interrupted { };
+};
+
 enum class PendingTimerKind {
     MachWaitUntil,
     ThreadSwitch,
@@ -1410,6 +1415,9 @@ struct KernelSharedState {
         active_springboard_alert_items;
     std::deque<PendingGraphicsInput> pending_graphics_inputs;
     std::map<std::uint32_t, MachSemaphore> mach_semaphores;
+    // POSIX named semaphores use file descriptors in Darwin userland while
+    // sharing the same kernel semaphore primitive underneath.
+    std::map<std::string, std::uint32_t> posix_named_semaphore_objects;
     std::map<std::uint32_t, MachTimer> mach_timers;
     std::map<std::uint32_t, ProcessIntervalTimer> process_interval_timers;
     // XNU named-memory entries are kernel ipc_port objects. The per-task Mach

@@ -15,6 +15,7 @@ target_sources(ilemu_kernel PRIVATE
     aio.cpp
     fileport.cpp
     process.cpp
+    posix_semaphore.cpp
     filesystem.cpp
     descriptor_lifecycle.cpp
     descriptor_memory.cpp

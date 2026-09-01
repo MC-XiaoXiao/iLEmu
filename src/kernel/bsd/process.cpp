@@ -43,6 +43,7 @@ void CompatibilityKernel::release_process_mach_rights()
     // consume a stale message or semaphore wakeup.
     pending_mach_receives_.clear();
     pending_semaphore_waits_.clear();
+    pending_signal_suspends_.clear();
     process_.waiting_for_events = false;
     std::lock_guard mach_lock { shared_state_->mach_mutex };
     auto entries = shared_state_->mach_namespaces.entries(process_.pid);
@@ -100,6 +101,7 @@ void CompatibilityKernel::release_process_descriptors()
     file_status_flags_.clear();
     descriptor_flags_.clear();
     virtual_descriptors_.clear();
+    posix_semaphore_descriptors_.clear();
     baseband_open_descriptions_.clear();
     bpf_descriptors_.clear();
     host_sockets_.clear();
@@ -800,10 +802,10 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         bsd_success(cpu, 0);
         return;
     }
-    case 433: // pid_suspend
-    case 434: { // pid_resume
+    case darwin::syscall::pid_suspend:
+    case darwin::syscall::pid_resume: {
         const auto target_pid = static_cast<std::int32_t>(registers[0]);
-        const auto resume = number == 434U;
+        const auto resume = number == darwin::syscall::pid_resume;
         std::vector<std::uint32_t> target_processes;
         {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
@@ -844,6 +846,21 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
                                       "[process] pid-suspend" } +
             " caller=" + std::to_string(process_.pid) +
             " target=" + std::to_string(target_pid) + "\n");
+        bsd_success(cpu, 0);
+        return;
+    }
+    case darwin::syscall::pid_hibernate: {
+        // Darwin's embedded ABI currently accepts only -1 here. XNU uses it
+        // to wake the asynchronous memory-freeze worker; it does not suspend
+        // the caller or synchronously change another process. There is no
+        // guest-visible work when the emulator has no freeze backend.
+        const auto target_pid = static_cast<std::int32_t>(registers[0]);
+        if (target_pid != -1) {
+            bsd_error(cpu, darwin::error::permission_denied);
+            return;
+        }
+        output_.write("[process] pid-hibernate caller=" +
+                      std::to_string(process_.pid) + " target=-1\n");
         bsd_success(cpu, 0);
         return;
     }

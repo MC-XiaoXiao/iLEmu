@@ -67,15 +67,12 @@ std::optional<XnuThreadId> CompatibilityKernel::consume_scheduler_handoff(
     return result;
 }
 
-std::uint32_t CompatibilityKernel::signal_semaphore_locked(std::uint32_t name,
-    bool all, bool prepost, std::optional<WokenThread>* woken_thread,
+std::uint32_t CompatibilityKernel::signal_semaphore_object_locked(
+    std::uint32_t object, bool all, bool prepost,
+    std::optional<WokenThread>* woken_thread,
     std::vector<WokenThread>* woken_threads)
 {
-    const auto object = resolve_name_with_right(
-        *shared_state_, process_.pid, name, xnu792::ipc::Right::Send);
-    if (!object)
-        return 4; // KERN_INVALID_ARGUMENT
-    const auto semaphore = shared_state_->mach_semaphores.find(*object);
+    const auto semaphore = shared_state_->mach_semaphores.find(object);
     if (semaphore == shared_state_->mach_semaphores.end()) {
         return 4; // KERN_INVALID_ARGUMENT
     }
@@ -100,6 +97,17 @@ std::uint32_t CompatibilityKernel::signal_semaphore_locked(std::uint32_t name,
         ++semaphore->second.count;
     }
     return 0;
+}
+
+std::uint32_t CompatibilityKernel::signal_semaphore_locked(std::uint32_t name,
+    bool all, bool prepost, std::optional<WokenThread>* woken_thread,
+    std::vector<WokenThread>* woken_threads)
+{
+    const auto object = resolve_name_with_right(
+        *shared_state_, process_.pid, name, xnu792::ipc::Right::Send);
+    return object ? signal_semaphore_object_locked(
+                        *object, all, prepost, woken_thread, woken_threads)
+                  : 4U; // KERN_INVALID_ARGUMENT
 }
 
 std::uint32_t CompatibilityKernel::signal_semaphore_thread_locked(
@@ -186,24 +194,49 @@ void CompatibilityKernel::wait_on_semaphore(Cpu& cpu, std::uint32_t wait_name,
     bool bsd_result)
 {
     constexpr std::uint32_t kern_invalid_argument = 4;
+    std::optional<std::uint32_t> wait_object;
+    std::optional<std::uint32_t> signal_object;
+    {
+        std::lock_guard mach_lock { shared_state_->mach_mutex };
+        wait_object = resolve_name_with_right(
+            *shared_state_, process_.pid, wait_name, xnu792::ipc::Right::Send);
+        signal_object =
+            signal_name == 0
+                ? std::optional<std::uint32_t> { }
+                : resolve_name_with_right(*shared_state_, process_.pid,
+                      signal_name, xnu792::ipc::Right::Send);
+    }
+    if (!wait_object || (signal_name != 0 && !signal_object)) {
+        if (bsd_result) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+        } else {
+            cpu.registers()[0] = kern_invalid_argument;
+        }
+        return;
+    }
+    wait_on_semaphore_object(cpu, *wait_object, signal_object, timeout_interval,
+        bsd_result, wait_name,
+        signal_name == 0 ? std::nullopt
+                         : std::optional<std::uint32_t> { signal_name });
+}
+
+void CompatibilityKernel::wait_on_semaphore_object(Cpu& cpu,
+    std::uint32_t wait_object, std::optional<std::uint32_t> signal_object,
+    std::optional<std::uint64_t> timeout_interval, bool bsd_result,
+    std::uint32_t wait_trace_identifier,
+    std::optional<std::uint32_t> signal_trace_identifier)
+{
+    constexpr std::uint32_t kern_invalid_argument = 4;
     constexpr std::uint32_t kern_operation_timed_out = 49;
     std::uint32_t result = 0;
     bool blocked = false;
     std::optional<WokenThread> woken_thread;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
-        const auto wait_object = resolve_name_with_right(
-            *shared_state_, process_.pid, wait_name, xnu792::ipc::Right::Send);
-        const auto signal_object =
-            signal_name == 0
-                ? std::optional<std::uint32_t> { }
-                : resolve_name_with_right(*shared_state_, process_.pid,
-                      signal_name, xnu792::ipc::Right::Send);
-        const auto wait =
-            wait_object ? shared_state_->mach_semaphores.find(*wait_object)
-                        : shared_state_->mach_semaphores.end();
+        const auto wait = shared_state_->mach_semaphores.find(wait_object);
         if (wait == shared_state_->mach_semaphores.end() ||
-            (signal_name != 0 && !signal_object)) {
+            (signal_object &&
+                !shared_state_->mach_semaphores.contains(*signal_object))) {
             result = kern_invalid_argument;
         } else if (wait->second.count > 0) {
             --wait->second.count;
@@ -214,7 +247,7 @@ void CompatibilityKernel::wait_on_semaphore(Cpu& cpu, std::uint32_t wait_name,
                 static_cast<std::uint32_t>(cpu.processor_id());
             wait->second.waiters.emplace_back(process_.pid, processor);
             pending_semaphore_waits_[cpu.processor_id()] =
-                PendingSemaphoreWait { *wait_object, cpu.processor_id(),
+                PendingSemaphoreWait { wait_object, cpu.processor_id(),
                     timeout_interval
                         ? std::optional<std::uint64_t> { shared_state_->clock
                                                              .now() +
@@ -225,9 +258,9 @@ void CompatibilityKernel::wait_on_semaphore(Cpu& cpu, std::uint32_t wait_name,
         }
         // XNU first establishes/consumes the wait and only then performs the
         // paired signal, keeping pthread condition-variable handoff atomic.
-        if (result == 0 && signal_name != 0) {
-            result = signal_semaphore_locked(
-                signal_name, false, true, &woken_thread);
+        if (result == 0 && signal_object) {
+            result = signal_semaphore_object_locked(
+                *signal_object, false, true, &woken_thread);
         }
     }
 
@@ -255,9 +288,10 @@ void CompatibilityKernel::wait_on_semaphore(Cpu& cpu, std::uint32_t wait_name,
         output_.write(
             "[semaphore] wait pid=" + std::to_string(process_.pid) +
             " cpu=" + std::to_string(cpu.processor_id()) +
-            " sem=" + std::to_string(wait_name) +
-            (signal_name == 0 ? std::string { }
-                              : " signal=" + std::to_string(signal_name)) +
+            " sem=" + std::to_string(wait_trace_identifier) +
+            (signal_trace_identifier
+                    ? " signal=" + std::to_string(*signal_trace_identifier)
+                    : std::string { }) +
             "\n");
         ++semaphore_wait_trace_count_;
     }

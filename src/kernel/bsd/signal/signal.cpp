@@ -62,6 +62,11 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal)
     const auto handler = signal_actions_[signal][0];
     const bool unmaskable =
         signal == darwin::signal::kill || signal == darwin::signal::stop;
+    const auto suspended = std::find_if(pending_signal_suspends_.begin(),
+        pending_signal_suspends_.end(), [&](const auto& pending) {
+            return unmaskable ||
+                   (pending.second.mask & (1U << (signal - 1U))) == 0;
+        });
     if (!unmaskable && handler == darwin::signal::ignore_action) {
         output_.write("[signal] ignored pid=" + std::to_string(process_.pid) +
                       " signal=" + std::to_string(signal) + "\n");
@@ -75,6 +80,10 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal)
         output_.write(
             "[signal] caught-pending pid=" + std::to_string(process_.pid) +
             " signal=" + std::to_string(signal) + "\n");
+        if (suspended != pending_signal_suspends_.end()) {
+            suspended->second.interrupted = true;
+            shared_state_->note_io_event_transition();
+        }
         return 0;
     }
     if (!unmaskable && (signal_mask_ & (1U << (signal - 1U))) != 0) {
@@ -101,6 +110,18 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal)
 
 void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
 {
+    if (number == 111U) { // sigsuspend
+        constexpr std::uint32_t unblockable =
+            (1U << (darwin::signal::kill - 1U)) |
+            (1U << (darwin::signal::stop - 1U));
+        pending_signal_suspends_[cpu.processor_id()] =
+            PendingSignalSuspend { cpu.registers()[0] & ~unblockable, false };
+        process_.waiting_for_events = true;
+        output_.write("[signal] suspend pid=" + std::to_string(process_.pid) +
+                      " cpu=" + std::to_string(cpu.processor_id()) + "\n");
+        cpu.halt(Dynarmic::HaltReason::UserDefined5);
+        return;
+    }
     if (number != darwin::syscall::kill) {
         trace_unknown(cpu, "BSD signal syscall", number);
         bsd_error(cpu, bsd_support::not_implemented);

@@ -62,10 +62,14 @@ namespace {
             return darwin::syscall::select;
         case 417: // poll_nocancel
             return darwin::syscall::poll;
+        case 420: // sem_wait_nocancel
+            return darwin::syscall::posix_semaphore_wait;
         case 408: // fsync_nocancel
             return darwin::syscall::synchronize_file;
         case 409: // connect_nocancel
             return darwin::syscall::connect;
+        case 410: // sigsuspend_nocancel
+            return 111U;
         case 412: // writev_nocancel
             return darwin::syscall::write_vector;
         case 413: // sendto_nocancel
@@ -231,10 +235,21 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::proc_info::syscall_number:
     case 327:
     case 355:
-    case 433: // pid_suspend
-    case 434: // pid_resume
+    case darwin::syscall::pid_suspend:
+    case darwin::syscall::pid_resume:
+    case darwin::syscall::pid_hibernate:
         dispatch_bsd_process(cpu, number);
         return;
+    case darwin::syscall::posix_semaphore_open:
+    case darwin::syscall::posix_semaphore_close:
+    case darwin::syscall::posix_semaphore_unlink:
+    case darwin::syscall::posix_semaphore_wait:
+    case darwin::syscall::posix_semaphore_try_wait:
+    case darwin::syscall::posix_semaphore_post:
+    case darwin::syscall::posix_semaphore_get_value:
+        dispatch_bsd_posix_semaphore(cpu, number);
+        return;
+    case 111: // sigsuspend
     case darwin::syscall::kill:
         dispatch_bsd_signal(cpu, number);
         return;

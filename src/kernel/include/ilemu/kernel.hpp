@@ -490,6 +490,7 @@ private:
     void dispatch_bsd_fileport(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_platform(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_process(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_posix_semaphore(Cpu& cpu, std::uint32_t number);
     void release_process_mach_rights();
     void release_process_descriptors();
     [[nodiscard]] bool release_file_descriptor(std::uint32_t descriptor);
@@ -715,6 +716,10 @@ private:
         std::uint32_t event_count);
     void detach_kevents_for_descriptor(std::uint32_t fd);
     using WokenThread = std::pair<std::uint32_t, std::uint32_t>;
+    [[nodiscard]] std::uint32_t signal_semaphore_object_locked(
+        std::uint32_t object, bool all, bool prepost = true,
+        std::optional<WokenThread>* woken_thread = nullptr,
+        std::vector<WokenThread>* woken_threads = nullptr);
     [[nodiscard]] std::uint32_t signal_semaphore_locked(std::uint32_t name,
         bool all, bool prepost = true,
         std::optional<WokenThread>* woken_thread = nullptr,
@@ -729,6 +734,11 @@ private:
     void wait_on_semaphore(Cpu& cpu, std::uint32_t wait_name,
         std::uint32_t signal_name,
         std::optional<std::uint64_t> timeout_interval, bool bsd_result);
+    void wait_on_semaphore_object(Cpu& cpu, std::uint32_t wait_object,
+        std::optional<std::uint32_t> signal_object,
+        std::optional<std::uint64_t> timeout_interval, bool bsd_result,
+        std::uint32_t wait_trace_identifier,
+        std::optional<std::uint32_t> signal_trace_identifier = std::nullopt);
     void schedule_due_audio_io(std::uint64_t deadline);
     void inject_wifi_driver_event(
         std::uint32_t descriptor, std::uint32_t event);
@@ -785,6 +795,7 @@ private:
     std::map<std::uint32_t, std::uint32_t> descriptor_flags_;
     std::map<std::uint32_t, AioCompletion> aio_completions_;
     std::unordered_map<std::uint32_t, std::string> virtual_descriptors_;
+    std::map<std::uint32_t, std::uint32_t> posix_semaphore_descriptors_;
     std::map<std::uint32_t,
         std::shared_ptr<bsd::baseband_device::OpenDescription>>
         baseband_open_descriptions_;
@@ -867,6 +878,7 @@ private:
     std::map<std::size_t, PendingSelect> pending_selects_;
     std::map<std::size_t, PendingTimer> pending_timers_;
     std::map<std::size_t, PendingSemaphoreWait> pending_semaphore_waits_;
+    std::map<std::size_t, PendingSignalSuspend> pending_signal_suspends_;
     struct PendingIoPollCache {
         std::uint64_t io_generation { };
         std::uint64_t mach_generation { };
