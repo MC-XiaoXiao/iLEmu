@@ -127,6 +127,7 @@ namespace {
     constexpr std::string_view platform_serial_number_property {
         "IOPlatformSerialNumber"
     };
+    constexpr std::string_view display_scale_property { "display-scale" };
     constexpr std::string_view compatible_property { "compatible" };
     constexpr std::string_view apple_arm_compatible { "AppleARM" };
 
@@ -179,7 +180,7 @@ namespace {
 
     std::optional<ConnectMethodRequest> read_connect_method_request(
         AddressSpace& memory, std::uint32_t address, std::uint32_t send_size,
-        std::uint32_t receive_size)
+        std::uint32_t receive_size, DarwinIOConnectMethodProfile profile)
     {
         using namespace iokit_abi::connect_method;
         if (send_size < minimum_request_size ||
@@ -233,14 +234,22 @@ namespace {
         }
         // ool_input occupies the first two trailing words. The two CountInOut
         // capacities immediately follow it in the firmware-generated request.
-        request.scalar_output_capacity =
+        const auto first_output_capacity =
             memory
                 .read32(address + trailing_offset + 2U * sizeof(std::uint32_t))
                 .value_or(0);
-        request.inband_output_capacity =
+        const auto second_output_capacity =
             memory
                 .read32(address + trailing_offset + 3U * sizeof(std::uint32_t))
                 .value_or(0);
+        if (profile ==
+            DarwinIOConnectMethodProfile::StructureThenScalarOutputCounts) {
+            request.inband_output_capacity = first_output_capacity;
+            request.scalar_output_capacity = second_output_capacity;
+        } else {
+            request.scalar_output_capacity = first_output_capacity;
+            request.inband_output_capacity = second_output_capacity;
+        }
         if (request.scalar_output_capacity > maximum_scalar_count ||
             request.inband_output_capacity > maximum_inband_size) {
             return std::nullopt;
@@ -251,7 +260,7 @@ namespace {
     std::uint32_t write_connect_method_reply(AddressSpace& memory,
         std::uint32_t address, std::uint32_t local_port,
         std::uint32_t message_id, std::uint32_t receive_size,
-        const ConnectMethodResult& result)
+        const ConnectMethodResult& result, DarwinIOConnectMethodProfile profile)
     {
         using namespace iokit_abi::connect_method;
         const auto scalar_count =
@@ -260,7 +269,29 @@ namespace {
         const auto inband_count =
             static_cast<std::uint32_t>(std::min<std::size_t>(
                 result.inband_output.size(), maximum_inband_size));
-        const auto encoded_reply_size = reply_size(scalar_count, inband_count);
+        std::uint32_t scalar_count_offset { };
+        std::uint32_t scalar_bytes_offset { };
+        std::uint32_t inband_count_offset { };
+        std::uint32_t inband_bytes_offset { };
+        std::uint32_t ool_size_offset { };
+        if (profile ==
+            DarwinIOConnectMethodProfile::StructureThenScalarOutputCounts) {
+            inband_count_offset = return_code_offset + sizeof(std::uint32_t);
+            inband_bytes_offset = inband_count_offset + sizeof(std::uint32_t);
+            scalar_count_offset =
+                inband_bytes_offset + aligned_inband_output_size(inband_count);
+            scalar_bytes_offset = scalar_count_offset + sizeof(std::uint32_t);
+            ool_size_offset = scalar_bytes_offset + scalar_count * scalar_size;
+        } else {
+            scalar_count_offset = scalar_output_count_offset;
+            scalar_bytes_offset = scalar_output_offset;
+            inband_count_offset = inband_output_count_offset(scalar_count);
+            inband_bytes_offset = inband_output_offset(scalar_count);
+            ool_size_offset =
+                out_of_line_output_size_offset(scalar_count, inband_count);
+        }
+        const auto encoded_reply_size =
+            static_cast<std::uint32_t>(ool_size_offset + sizeof(std::uint32_t));
         if (encoded_reply_size > receive_size)
             return mach_rcv_invalid_data;
         const std::vector<std::byte> cleared_reply(encoded_reply_size);
@@ -279,12 +310,13 @@ namespace {
                        darwin::mig_wire::word_size,
                 mach_ndr_little_endian) ||
             !write(return_code_offset, result.return_code) ||
-            !write(scalar_output_count_offset, scalar_count)) {
+            !write(scalar_count_offset, scalar_count) ||
+            !write(inband_count_offset, inband_count)) {
             return mach_rcv_invalid_data;
         }
         for (std::uint32_t index = 0; index < scalar_count; ++index) {
             const auto scalar_offset =
-                scalar_output_offset + index * scalar_size;
+                scalar_bytes_offset + index * scalar_size;
             if (!write(scalar_offset,
                     static_cast<std::uint32_t>(result.scalar_output[index])) ||
                 !write(scalar_offset + sizeof(std::uint32_t),
@@ -293,17 +325,13 @@ namespace {
                 return mach_rcv_invalid_data;
             }
         }
-        if (!write(inband_output_count_offset(scalar_count), inband_count)) {
-            return mach_rcv_invalid_data;
-        }
         if (inband_count != 0 &&
-            !memory.copy_in(address + inband_output_offset(scalar_count),
+            !memory.copy_in(address + inband_bytes_offset,
                 std::span<const std::byte> {
                     result.inband_output.data(), inband_count })) {
             return mach_rcv_invalid_data;
         }
-        if (!write(out_of_line_output_size_offset(scalar_count, inband_count),
-                0)) {
+        if (!write(ool_size_offset, 0)) {
             return mach_rcv_invalid_data;
         }
         return 0;
@@ -328,6 +356,16 @@ namespace {
         return bytes;
     }
 
+    KernelSharedState::IOKitRegistryProperty uint32_data_property(
+        std::uint32_t value)
+    {
+        return { KernelSharedState::IOKitRegistryProperty::Kind::Data,
+            { static_cast<std::byte>(value & 0xffU),
+                static_cast<std::byte>((value >> 8U) & 0xffU),
+                static_cast<std::byte>((value >> 16U) & 0xffU),
+                static_cast<std::byte>((value >> 24U) & 0xffU) } };
+    }
+
     std::vector<std::byte> platform_compatible_bytes(
         std::string_view board_config)
     {
@@ -348,6 +386,18 @@ namespace {
             KernelSharedState::IOKitRegistryProperty {
                 KernelSharedState::IOKitRegistryProperty::Kind::Data,
                 platform_compatible_bytes(shared_state.device_board_config) });
+        return properties;
+    }
+
+    std::map<std::string, KernelSharedState::IOKitRegistryProperty>
+    registry_options_properties(const KernelSharedState& shared_state)
+    {
+        std::map<std::string, KernelSharedState::IOKitRegistryProperty>
+            properties;
+        properties.emplace(std::string { display_scale_property },
+            uint32_data_property(
+                display_scale_factor(shared_state.display_geometry,
+                    shared_state.user_interface_geometry)));
         return properties;
     }
 
@@ -1829,6 +1879,11 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                 }
                 serialized = serialize_properties(properties);
                 property_count = properties.size();
+            } else if (resolve_task_name_locked(shared_state, process.pid,
+                           process.io_registry_options_port) == remote_object) {
+                auto properties = registry_options_properties(shared_state);
+                serialized = serialize_properties(properties);
+                property_count = properties.size();
             } else if (const auto service =
                            shared_state.iokit_services.find(remote_object);
                 service != shared_state.iokit_services.end()) {
@@ -1945,6 +2000,15 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
             std::lock_guard mach_lock { shared_state.mach_mutex };
             if (shared_state.iokit_registry_root_object == remote_object) {
                 const auto properties = registry_root_properties(shared_state);
+                const auto value = properties.find(property_name);
+                if (value != properties.end())
+                    property = value->second;
+            }
+            if (!property &&
+                resolve_task_name_locked(shared_state, process.pid,
+                    process.io_registry_options_port) == remote_object) {
+                const auto properties =
+                    registry_options_properties(shared_state);
                 const auto value = properties.find(property_name);
                 if (value != properties.end())
                     property = value->second;
@@ -2312,8 +2376,9 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
 
     if (message_id ==
         static_cast<std::uint32_t>(iokit_abi::Message::ConnectMethod)) {
-        const auto request = read_connect_method_request(
-            memory, message_address, send_size, receive_size);
+        const auto request = read_connect_method_request(memory,
+            message_address, send_size, receive_size,
+            shared_state.darwin_kernel_identity.io_connect_method);
         if (!request)
             return mach_rcv_invalid_data;
         const auto display_result =
@@ -2509,7 +2574,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                 "\n");
         }
         return write_connect_method_reply(memory, message_address, local_port,
-            message_id, receive_size, result);
+            message_id, receive_size, result,
+            shared_state.darwin_kernel_identity.io_connect_method);
     }
 
     if (message_id ==
