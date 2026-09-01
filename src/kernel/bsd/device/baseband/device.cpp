@@ -6,6 +6,7 @@
 #include <array>
 #include <charconv>
 #include <cstdint>
+#include <iterator>
 #include <mutex>
 #include <optional>
 #include <utility>
@@ -327,6 +328,14 @@ void State::set_mux_channel_capacity(std::uint32_t capacity)
     next_anonymous_mux_channel_ = 1;
 }
 
+void State::set_offline_control_enabled(bool enabled)
+{
+    const std::lock_guard lock { mutex_ };
+    offline_control_enabled_ = enabled;
+    offline_control_.reset();
+    offline_response_deadline_ = { };
+}
+
 std::uint32_t State::register_mux_channel(
     std::string_view name, std::optional<std::uint32_t> requested_unit)
 {
@@ -415,6 +424,34 @@ std::optional<std::uint32_t> State::mux_channel(std::string_view name) const
     return found->second;
 }
 
+std::string State::mux_channel_device_path(std::uint32_t unit) const
+{
+    const std::lock_guard lock { mutex_ };
+    const auto prefix = h5_transport_mode_ ? "/dev/dlci.h5.baseband."
+                                           : "/dev/dlci.spi-baseband.";
+    return prefix + std::to_string(unit);
+}
+
+bool State::configure_mux_network_interface(
+    std::uint32_t unit, std::string_view name)
+{
+    if (unit == 0U || name.empty() ||
+        name.size() >= darwin::tty::asm_network_interface_name_capacity ||
+        !std::all_of(name.begin(), name.end(), [](unsigned char character) {
+            return character >= 0x20U && character <= 0x7eU;
+        })) {
+        return false;
+    }
+    const std::lock_guard lock { mutex_ };
+    const auto registered =
+        std::any_of(mux_channels_.begin(), mux_channels_.end(),
+            [unit](const auto& entry) { return entry.second == unit; });
+    if (!registered)
+        return false;
+    mux_network_interfaces_[unit] = std::string { name };
+    return true;
+}
+
 void State::enqueue_receive(std::span<const std::byte> bytes)
 {
     enqueue_receive(0U, bytes);
@@ -441,6 +478,7 @@ std::vector<std::byte> State::receive_channel(
     const auto channel = channels_.find(channel_number);
     if (channel == channels_.end())
         return { };
+    promote_ready_receive(channel->second);
     const auto& state = channel->second;
     if (state.minimum_receive_bytes != 0 &&
         state.receive_queue.size() < state.minimum_receive_bytes &&
@@ -468,13 +506,18 @@ std::size_t State::pending_receive_channel(std::uint32_t channel_number) const
     const auto channel = channels_.find(channel_number);
     if (channel == channels_.end())
         return 0U;
+    const auto now = std::chrono::steady_clock::now();
+    auto available = channel->second.receive_queue.size();
+    for (const auto& scheduled : channel->second.scheduled_receive_queue) {
+        if (scheduled.ready_at > now)
+            break;
+        available += scheduled.bytes.size();
+    }
     if (channel->second.minimum_receive_bytes != 0 &&
-        channel->second.receive_queue.size() <
-            channel->second.minimum_receive_bytes &&
-        !receive_eof_) {
+        available < channel->second.minimum_receive_bytes && !receive_eof_) {
         return 0U;
     }
-    return channel->second.receive_queue.size();
+    return available;
 }
 
 bool State::receive_eof_channel(std::uint32_t channel_number) const
@@ -494,6 +537,20 @@ std::size_t State::write_channel(
     const std::lock_guard lock { mutex_ };
     if (!transmit_queue_writable_ || transmit_sink_failed_)
         return 0U;
+    if (offline_control_enabled_ && !transmit_sink_ &&
+        !transmit_capture_enabled_) {
+        const auto response = offline_control_.consume(channel_number, bytes);
+        if (!response.empty()) {
+            const auto now = std::chrono::steady_clock::now();
+            const auto response_base =
+                std::max(now, offline_response_deadline_);
+            offline_response_deadline_ =
+                response_base + offline_control_response_interval;
+            channels_[channel_number].scheduled_receive_queue.push_back(
+                ScheduledReceive { offline_response_deadline_, response });
+        }
+        return bytes.size();
+    }
     // Logical DLCI endpoints are real bounded endpoints, but Offline has no
     // modem peer. Their successful writes terminate at this null sink and do
     // not share the fixed TTY's capture history.
@@ -546,8 +603,32 @@ void State::flush_channel(std::uint32_t channel_number, std::uint32_t what)
     // Darwin's TIOCFLUSH treats zero as both FREAD and FWRITE. The offline
     // endpoint has no asynchronous transmit queue; only its receive side can
     // contain bytes that need to be discarded here.
-    if (what == 0 || (what & 0x1U) != 0)
+    if (what == 0 || (what & 0x1U) != 0) {
         channels_[channel_number].receive_queue.clear();
+        channels_[channel_number].scheduled_receive_queue.clear();
+        const auto any_scheduled = std::any_of(
+            channels_.begin(), channels_.end(), [](const auto& entry) {
+                return !entry.second.scheduled_receive_queue.empty();
+            });
+        if (!any_scheduled)
+            offline_response_deadline_ = { };
+    }
+    if (what == 0 || (what & 0x2U) != 0)
+        offline_control_.reset(channel_number);
+}
+
+void State::promote_ready_receive(ChannelState& channel)
+{
+    const auto now = std::chrono::steady_clock::now();
+    while (!channel.scheduled_receive_queue.empty() &&
+           channel.scheduled_receive_queue.front().ready_at <= now) {
+        auto response =
+            std::move(channel.scheduled_receive_queue.front().bytes);
+        channel.scheduled_receive_queue.pop_front();
+        channel.receive_queue.insert(channel.receive_queue.end(),
+            std::make_move_iterator(response.begin()),
+            std::make_move_iterator(response.end()));
+    }
 }
 
 void State::release_description(const OpenDescription& description)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -16,6 +17,7 @@
 #include <vector>
 
 #include "ilemu/darwin_tty_abi.hpp"
+#include "ilemu/offline_baseband_control.hpp"
 
 namespace ilemu::bsd::baseband_device {
 
@@ -35,6 +37,11 @@ inline constexpr unsigned device_minor = 3;
 // table expected by stock CommCenter. These channels are not backed by a
 // modem and never synthesize receive data.
 inline constexpr std::uint32_t offline_mux_channel_capacity = 16;
+// Keep the firmware's modem setup asynchronous even when no physical or
+// replay peer is attached. A real multiplexed serial modem cannot complete an
+// arbitrary number of commands in the same scheduler turn.
+inline constexpr auto offline_control_response_interval =
+    std::chrono::milliseconds { 25 };
 // In-memory capture is a test/embedding diagnostic, not the production
 // transport. Keep it bounded even when a caller explicitly enables it; the
 // application uses the streaming sink for unbounded captures.
@@ -138,8 +145,14 @@ public:
     // named logical-channel registry; named channels use the same logical
     // unit table as the stock serial-mux ABI.
     void set_mux_channel_capacity(std::uint32_t capacity);
+    // Offline transports retain the modem's small command/control handshake
+    // while omitting radio state and unsolicited traffic.
+    void set_offline_control_enabled(bool enabled);
     [[nodiscard]] std::uint32_t register_mux_channel(std::string_view name,
         std::optional<std::uint32_t> requested_unit = std::nullopt);
+    [[nodiscard]] std::string mux_channel_device_path(std::uint32_t unit) const;
+    [[nodiscard]] bool configure_mux_network_interface(
+        std::uint32_t unit, std::string_view name);
     [[nodiscard]] std::optional<std::uint32_t> mux_channel(
         std::string_view name) const;
     void enqueue_receive(std::span<const std::byte> bytes);
@@ -160,8 +173,14 @@ public:
     [[nodiscard]] bool transmit_sink_failed() const;
 
 private:
+    struct ScheduledReceive {
+        std::chrono::steady_clock::time_point ready_at;
+        std::vector<std::byte> bytes;
+    };
+
     struct ChannelState {
         std::deque<std::byte> receive_queue;
+        std::deque<ScheduledReceive> scheduled_receive_queue;
         std::size_t minimum_receive_bytes { };
     };
 
@@ -183,6 +202,7 @@ private:
         std::uint32_t channel, std::span<const std::byte> bytes);
     [[nodiscard]] bool writable_channel(std::uint32_t channel) const;
     [[nodiscard]] bool sink_failed_channel(std::uint32_t channel) const;
+    void promote_ready_receive(ChannelState& channel);
     void flush_channel(std::uint32_t channel, std::uint32_t what);
     void release_description(const OpenDescription& description);
 
@@ -201,6 +221,7 @@ private:
     std::uint32_t anonymous_mux_channel_capacity_ { };
     std::uint32_t next_anonymous_mux_channel_ { 1 };
     std::map<std::string, std::uint32_t> mux_channels_;
+    std::map<std::uint32_t, std::string> mux_network_interfaces_;
     std::uint32_t next_mux_channel_ { 1 };
     darwin::tty::Arm32Attributes attributes_ {
         darwin::tty::default_attributes()
@@ -211,6 +232,9 @@ private:
     TransmitSink transmit_sink_;
     bool transmit_capture_enabled_ { };
     bool transmit_sink_failed_ { };
+    bool offline_control_enabled_ { };
+    OfflineControlPlane offline_control_;
+    std::chrono::steady_clock::time_point offline_response_deadline_ { };
     std::shared_ptr<OpenDescriptionLifetime> lifetime_;
 };
 

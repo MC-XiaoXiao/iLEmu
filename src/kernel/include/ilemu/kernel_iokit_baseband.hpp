@@ -30,6 +30,11 @@ namespace kernel_iokit::baseband {
         GetTime = 2,
     };
 
+    enum class BasebandSelector : std::uint32_t {
+        SetPower = 1,
+        PowerCycle = 7,
+    };
+
     struct MethodResult {
         std::uint32_t return_code { };
         std::vector<std::uint64_t> scalar_output;

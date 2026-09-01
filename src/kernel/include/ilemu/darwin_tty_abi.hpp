@@ -129,7 +129,17 @@ inline constexpr std::uint32_t set_mux_speed =
 inline constexpr std::size_t ioaos_status_size = sizeof(std::uint32_t);
 inline constexpr std::uint32_t ioaos_status_query =
     sized_command(ioctl_output, 'y', 0x90, ioaos_status_size);
+// The adjacent extended query follows AT+XGENDATA and returns the driver's
+// bounded general-data record. Offline exposes an all-zero record: no modem
+// metadata or pending event is available.
+inline constexpr std::size_t ioaos_general_data_size = 0x100U;
+inline constexpr std::uint32_t ioaos_general_data_query =
+    sized_command(ioctl_output, 'y', 0x91, ioaos_general_data_size);
 inline constexpr std::size_t asm_new_dlci_minimum_size = 0x48U;
+// Newer ASMCreateDLCIInfo_t layouts append a 64-byte driver-owned device path
+// at byte 48. The original 72-byte layout ends after its channel metadata.
+inline constexpr std::size_t asm_new_dlci_path_offset = 48U;
+inline constexpr std::size_t asm_new_dlci_path_capacity = 64U;
 inline constexpr std::uint32_t asm_new_dlci =
     sized_command(ioctl_input | ioctl_output, 'x', 0x0a,
         asm_new_dlci_minimum_size);
@@ -150,5 +160,16 @@ constexpr bool is_asm_new_dlci(std::uint32_t command)
 inline constexpr std::size_t receive_queue_configuration_size = 0x10U;
 inline constexpr std::uint32_t ioaos_receive_queue =
     sized_command(ioctl_input, 'x', 0x28, receive_queue_configuration_size);
+// ASMCreateNetworkInterfaceInfo_t: logical DLCI at byte 0 and a bounded
+// interface name at byte 16. The request registers firmware-visible metadata;
+// it does not itself attach a host network transport.
+inline constexpr std::size_t asm_network_interface_size = 0x30U;
+inline constexpr std::size_t asm_network_interface_name_offset = 0x10U;
+inline constexpr std::size_t asm_network_interface_name_capacity = 0x20U;
+inline constexpr std::uint32_t asm_create_network_interface =
+    sized_command(ioctl_input, 'x', 0x64, asm_network_interface_size);
+// ASMInterfacePrivate::engage() issues this parameter-less transition after
+// AT+CMUX. Registered DLCIs must already contain openable driver-owned paths.
+inline constexpr std::uint32_t asm_engage = void_command('x', 0x32);
 
 } // namespace ilemu::darwin::tty

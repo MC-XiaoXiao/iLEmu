@@ -1,5 +1,6 @@
 add_library(ilemu_kernel_bsd_baseband_device STATIC
     device.cpp
+    offline_control.cpp
     replay.cpp)
 add_library(iLEmu::kernel_bsd_baseband_device ALIAS
     ilemu_kernel_bsd_baseband_device)

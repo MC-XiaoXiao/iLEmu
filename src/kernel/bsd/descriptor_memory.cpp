@@ -564,6 +564,8 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 bsd_error(cpu, darwin::error::io);
                 return;
             }
+            if (endpoint->pending_receive_bytes() != 0U)
+                shared_state_->note_io_event_transition();
             bsd_success(cpu, static_cast<std::uint32_t>(written));
             return;
         }

@@ -76,9 +76,40 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     }
     const auto service =
         state.iokit_services.find(connection->second.service_port);
-    if (service == state.iokit_services.end() ||
-        service->second.user_client_profile !=
-            KernelSharedState::IOKitUserClientProfile::SerialMultiplexer) {
+    if (service == state.iokit_services.end()) {
+        return std::nullopt;
+    }
+
+    if (service->second.class_name == service_class) {
+        if (selector ==
+            static_cast<std::uint32_t>(BasebandSelector::SetPower)) {
+            if (scalar_input.size() != 1U || scalar_input[0] > 1U ||
+                !inband_input.empty() || scalar_output_capacity != 0U) {
+                return MethodResult { iokit_abi::bad_argument, { } };
+            }
+            // This user-client call controls a physical modem power rail. An
+            // offline endpoint has no rail to switch, so acknowledge either
+            // boolean state without changing transport availability or
+            // fabricating modem input.
+            return MethodResult { iokit_abi::success, { } };
+        }
+        if (selector ==
+            static_cast<std::uint32_t>(BasebandSelector::PowerCycle)) {
+            if (!scalar_input.empty() || !inband_input.empty() ||
+                scalar_output_capacity != 0U) {
+                return MethodResult { iokit_abi::bad_argument, { } };
+            }
+            // The offline transport has no physical power rail or modem state
+            // to reset. Completing the firmware's recovery command is
+            // state-neutral; subsequent reads still observe the same empty
+            // offline channel.
+            return MethodResult { iokit_abi::success, { } };
+        }
+        return MethodResult { iokit_abi::unsupported, { } };
+    }
+
+    if (service->second.user_client_profile !=
+        KernelSharedState::IOKitUserClientProfile::SerialMultiplexer) {
         return std::nullopt;
     }
 
@@ -101,8 +132,16 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     if (selector !=
         static_cast<std::uint32_t>(SerialMultiplexerSelector::GetTime))
         return MethodResult { iokit_abi::unsupported, { } };
-    if (!scalar_input.empty() || !inband_input.empty() ||
-        scalar_output_capacity < 2U)
+    if (!scalar_input.empty() || !inband_input.empty())
+        return MethodResult { iokit_abi::bad_argument, { } };
+
+    // The selector is shape-overloaded across AppleSerialMultiplexer clients.
+    // A command form has no output, while the query form requests a timeval
+    // pair. Preserve both firmware-owned contracts without inventing a modem
+    // response for the command form.
+    if (scalar_output_capacity == 0U)
+        return MethodResult { iokit_abi::success, { } };
+    if (scalar_output_capacity < 2U)
         return MethodResult { iokit_abi::bad_argument, { } };
 
     // AppleSerialMultiplexer reports the kernel calendar as a timeval pair.

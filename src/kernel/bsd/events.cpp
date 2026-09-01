@@ -489,6 +489,19 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 bsd_success(cpu, 0);
                 return;
             }
+            if (request == darwin::tty::ioaos_general_data_query) {
+                std::array<std::byte, darwin::tty::ioaos_general_data_size>
+                    data { };
+                if (!memory_.copy_in(argument, data)) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                    return;
+                }
+                output_.write(
+                    "[baseband] ioctl pid=" + std::to_string(process_.pid) +
+                    " IOAOSGENDATA available=0\n");
+                bsd_success(cpu, 0);
+                return;
+            }
             if (request == darwin::tty::get_modem_control_bits) {
                 const auto bits =
                     shared_state_->baseband_device_state.modem_control_bits();
@@ -559,6 +572,43 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 bsd_success(cpu, 0);
                 return;
             }
+            if (request == darwin::tty::asm_create_network_interface) {
+                const auto payload = memory_.read_bytes(
+                    argument, darwin::tty::asm_network_interface_size);
+                if (!payload) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                    return;
+                }
+                const auto unit = memory_.read32(argument);
+                const auto name_begin =
+                    payload->begin() +
+                    static_cast<std::ptrdiff_t>(
+                        darwin::tty::asm_network_interface_name_offset);
+                const auto name_end =
+                    std::find(name_begin, payload->end(), std::byte { });
+                const std::string name(
+                    reinterpret_cast<const char*>(&*name_begin),
+                    static_cast<std::size_t>(name_end - name_begin));
+                if (!unit ||
+                    !shared_state_->baseband_device_state
+                        .configure_mux_network_interface(*unit, name)) {
+                    bsd_error(cpu, darwin::error::invalid_argument);
+                    return;
+                }
+                output_.write(
+                    "[baseband] ioctl pid=" + std::to_string(process_.pid) +
+                    " ASMIOCCREATENETWORKINTERFACE unit=" +
+                    std::to_string(*unit) + " name=" + name + "\n");
+                bsd_success(cpu, 0);
+                return;
+            }
+            if (request == darwin::tty::asm_engage) {
+                output_.write(
+                    "[baseband] ioctl pid=" + std::to_string(process_.pid) +
+                    " ASMIOCENGAGE configured=1\n");
+                bsd_success(cpu, 0);
+                return;
+            }
             if (request == darwin::tty::set_receive_threshold) {
                 const auto threshold = memory_.read32(argument);
                 if (!threshold) {
@@ -608,6 +658,18 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     bsd_error(cpu, darwin::error::no_space_on_device);
                     return;
                 }
+                const auto channel_path =
+                    shared_state_->baseband_device_state
+                        .mux_channel_device_path(channel_unit);
+                const auto carries_channel_path =
+                    payload_size >= darwin::tty::asm_new_dlci_path_offset +
+                                        darwin::tty::asm_new_dlci_path_capacity;
+                if (carries_channel_path &&
+                    channel_path.size() >=
+                        darwin::tty::asm_new_dlci_path_capacity) {
+                    bsd_error(cpu, darwin::error::invalid_argument);
+                    return;
+                }
                 if (!memory_.copy_in(argument, *payload) ||
                     !memory_.write32(argument, 0U) ||
                     !memory_.write32(
@@ -615,9 +677,26 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     bsd_error(cpu, bsd_support::bad_address);
                     return;
                 }
+                if (carries_channel_path &&
+                    (!memory_.copy_in(
+                         argument + static_cast<std::uint32_t>(
+                                        darwin::tty::asm_new_dlci_path_offset),
+                         std::as_bytes(std::span {
+                             channel_path.data(), channel_path.size() })) ||
+                        !memory_.write8(
+                            argument +
+                                static_cast<std::uint32_t>(
+                                    darwin::tty::asm_new_dlci_path_offset +
+                                    channel_path.size()),
+                            0U))) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                    return;
+                }
                 std::ostringstream message;
                 message << "[baseband] ioctl pid=" << process_.pid
                         << " ASMIOCNEWDLCI unit=" << channel_unit;
+                if (carries_channel_path)
+                    message << " path=" << channel_path;
                 if (channel_name) {
                     message << " name=" << *channel_name;
                 }

@@ -291,6 +291,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         offline_baseband && baseband_device_available
             ? bsd::baseband_device::offline_mux_channel_capacity
             : 0U);
+    shared_state_->baseband_device_state.set_offline_control_enabled(
+        offline_baseband);
     shared_state_->mounts.clear();
     for (const auto& volume : hfs_volumes_.volumes()) {
         shared_state_->mounts.push_back({ "hfs", volume.mount_point,
