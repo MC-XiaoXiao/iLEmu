@@ -1177,6 +1177,13 @@ struct KernelSharedState {
     // conservative generation separate from descriptor readiness: ordinary
     // syscalls must not invalidate every unrelated blocked kqueue.
     std::atomic_uint64_t kernel_event_generation { 1 };
+    // Process-local deadline trees are cached by their owning kernel. The
+    // shared half is computed once per conservative generation instead of
+    // making every process rescan the same Mach/device timer collections.
+    // These cache fields are protected by mach_mutex.
+    std::uint64_t shared_timer_deadline_cache_generation { };
+    std::optional<std::uint64_t> shared_timer_deadline_cache;
+    bool shared_timer_deadline_cache_valid { };
     // Non-Mach readiness producers advance this generation at the mutation
     // boundary. Asynchronous host descriptors remain protected by their
     // bounded wall-clock probe cadence.

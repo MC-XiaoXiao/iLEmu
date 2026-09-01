@@ -79,7 +79,10 @@ namespace {
 bool CompatibilityKernel::deliver_pending_mach(Cpu& cpu)
 {
     std::lock_guard kernel_lock { mutex_ };
-    return deliver_pending_mach_if_ready_locked(cpu, true);
+    const auto delivered = deliver_pending_mach_if_ready_locked(cpu, true);
+    if (delivered)
+        note_timer_deadline_transition();
+    return delivered;
 }
 
 std::optional<std::size_t>

@@ -636,6 +636,7 @@ private:
     [[nodiscard]] bool has_pending_event_locked(
         std::size_t processor) const;
     void refresh_pending_event_processor_locked(std::size_t processor);
+    void note_timer_deadline_transition() noexcept;
     bool receive_socket_message(
         Cpu& cpu, std::uint32_t fd, std::uint32_t message_address);
     bool send_socket_message(Cpu& cpu, std::uint32_t fd,
@@ -878,9 +879,8 @@ private:
         std::chrono::steady_clock::time_point::min()
     };
     bool pending_event_poll_observed_ { };
-    mutable std::uint64_t timer_deadline_cache_generation_ { };
-    mutable std::optional<std::uint64_t> timer_deadline_cache_;
-    mutable bool timer_deadline_cache_valid_ { };
+    mutable std::optional<std::uint64_t> local_timer_deadline_cache_;
+    mutable bool local_timer_deadline_cache_valid_ { };
     std::uint32_t timer_trace_count_ { };
     std::uint32_t port_status_trace_count_ { };
     std::uint32_t thread_trace_count_ { };
