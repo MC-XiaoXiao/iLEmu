@@ -153,10 +153,15 @@ struct SdlDisplay::Impl {
         std::lock_guard lock { sdl_mutex };
         if (window != nullptr && !vulkan_window)
             return;
-        if (window != nullptr)
-            SDL_DestroyWindow(window);
-        window = create_window(false);
+        auto* replacement = create_window(false);
+        if (replacement == nullptr)
+            return;
+        auto* previous = window;
+        window = replacement;
         vulkan_window = false;
+        surface_created = false;
+        if (previous != nullptr)
+            SDL_DestroyWindow(previous);
     }
 
     void ensure_cpu_presenter()
@@ -1062,6 +1067,31 @@ struct SdlDisplay::Impl {
         presentation_available.notify_all();
         return false;
     }
+
+    [[nodiscard]] bool transition_to_cpu_presentation()
+    {
+#if defined(ILEMU_HAS_SDL2)
+        {
+            std::lock_guard lock { sdl_mutex };
+            if (window != nullptr && !vulkan_window)
+                return true;
+        }
+        stop_native_presenter();
+        std::shared_ptr<HostGraphicsDevice> graphics;
+        {
+            std::lock_guard lock { frame_mutex };
+            graphics = host_graphics;
+        }
+        if (!graphics || !graphics->release_presentation_surface())
+            return false;
+        surface_created.store(false, std::memory_order_release);
+        ensure_cpu_window();
+        std::lock_guard lock { sdl_mutex };
+        return window != nullptr && !vulkan_window;
+#else
+        return false;
+#endif
+    }
 };
 
 bool SdlDisplay::available()
@@ -1408,6 +1438,15 @@ bool SdlDisplay::poll_events()
             frame = *impl_->last_presented_frame;
             repainting = true;
         }
+    }
+    if (native_failed && !impl_->transition_to_cpu_presentation()) {
+        if (frame && queued_frame)
+            impl_->release_queued_frame(&*frame);
+        {
+            std::lock_guard lock { impl_->frame_mutex };
+            impl_->fail_presentation_locked();
+        }
+        return false;
     }
     if (frame) {
         const auto requested_orientation = frame->orientation;

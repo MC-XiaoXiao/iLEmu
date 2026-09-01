@@ -272,6 +272,15 @@ public:
     [[nodiscard]] virtual PresentResult present(
         const std::shared_ptr<HostSurface>& surface) = 0;
     [[nodiscard]] virtual bool native_presentation_available() const = 0;
+    // Quiesce and release only the native window-presentation objects while
+    // retaining render targets and the rest of the graphics device. Frontends
+    // call this before replacing a window during software presentation
+    // fallback. A backend that still has native presentation state must opt in
+    // explicitly rather than allowing its window to be destroyed underneath it.
+    [[nodiscard]] virtual bool release_presentation_surface()
+    {
+        return !native_presentation_available();
+    }
     // Rebind a native presentation surface after a host window is recreated.
     // Software backends have no surface to refresh and keep the default no-op.
     [[nodiscard]] virtual bool refresh_presentation_surface() { return false; }

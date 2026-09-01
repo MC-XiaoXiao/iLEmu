@@ -230,6 +230,10 @@ namespace {
         {
             return primary_->native_presentation_available();
         }
+        [[nodiscard]] bool release_presentation_surface() override
+        {
+            return primary_->release_presentation_surface();
+        }
         [[nodiscard]] bool refresh_presentation_surface() override
         {
             return primary_->refresh_presentation_surface();

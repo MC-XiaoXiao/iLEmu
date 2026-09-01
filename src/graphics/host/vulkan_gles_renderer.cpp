@@ -497,6 +497,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         {
             return presentation_swapchain_ != VK_NULL_HANDLE;
         }
+        [[nodiscard]] bool release_presentation_surface() override;
         [[nodiscard]] bool refresh_presentation_surface() override;
 
     private:
@@ -4480,12 +4481,30 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             return false;
         }
         try {
+            std::lock_guard lock { mutex_ };
             return recreate_presentation_surface();
         } catch (...) {
             last_failure_reason_.store(
                 PerfFallbackReason::BackendFailure, std::memory_order_relaxed);
             return false;
         }
+    }
+
+    bool VulkanGlesRenderer::release_presentation_surface()
+    {
+        std::lock_guard lock { mutex_ };
+        if (device_ != VK_NULL_HANDLE &&
+            vkDeviceWaitIdle(device_) != VK_SUCCESS) {
+            last_failure_reason_.store(
+                PerfFallbackReason::BackendFailure, std::memory_order_relaxed);
+        }
+        destroy_presentation_swapchain();
+        if (presentation_surface_ != VK_NULL_HANDLE &&
+            instance_ != VK_NULL_HANDLE) {
+            vkDestroySurfaceKHR(instance_, presentation_surface_, nullptr);
+        }
+        presentation_surface_ = VK_NULL_HANDLE;
+        return true;
     }
 
     bool VulkanGlesRenderer::draw(DisplayFrame& frame,
