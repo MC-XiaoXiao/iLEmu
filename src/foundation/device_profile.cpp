@@ -212,6 +212,7 @@ namespace {
             { true, false, true },
             BasebandTransportProfile::Offline,
             false,
+            247ULL * 1024ULL * 1024ULL,
         },
     };
 

@@ -2444,6 +2444,11 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                         break;
                     }
                 } else {
+                    const auto configured_memory_size =
+                        device_profile_.memory_size_bytes != 0
+                        ? std::min(device_profile_.memory_size_bytes,
+                            shared_state_->device_ram_bytes)
+                        : shared_state_->device_ram_bytes;
                     switch (*mib1) {
                     case 4:
                         value = 1234;
@@ -2451,7 +2456,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     case 5:
                         value =
                             static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                                shared_state_->device_ram_bytes,
+                                configured_memory_size,
                                 std::numeric_limits<std::uint32_t>::max()));
                         break; // HW_PHYSMEM
                     case 6:

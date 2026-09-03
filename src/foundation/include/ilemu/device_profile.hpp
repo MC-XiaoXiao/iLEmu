@@ -177,6 +177,9 @@ struct DeviceProfile {
     // it is not a firmware-version or process-name rule. An explicit replay
     // transport always makes the endpoint available at boot.
     bool baseband_device_available { true };
+    // Guest-visible memory after platform-reserved carve-outs. Zero follows
+    // ram_bytes when the profile has no separate memory-size boundary.
+    std::uint64_t memory_size_bytes { };
 
     static const DeviceProfile& default_profile();
     [[nodiscard]] static std::span<const DeviceProfile> available_profiles();

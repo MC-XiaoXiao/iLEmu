@@ -10,7 +10,7 @@
 #include "ilemu/kernel_mach_ipc.hpp"
 #include "ilemu/kernel_network.hpp"
 #include "ilemu/mach_clock_abi.hpp"
-#include "ilemu/mach_host_mig_ids.hpp"
+#include "ilemu/mach_host_statistics_profile.hpp"
 #include "ilemu/mach_port_mig_ids.hpp"
 #include "ilemu/mach_scheduler_abi.hpp"
 #include "ilemu/mach_thread_policy_abi.hpp"
@@ -40,6 +40,25 @@ namespace ilemu {
 
 using namespace mach_support;
 
+namespace {
+
+    using namespace darwin::mach::xnu;
+
+    bool write_message_words(AddressSpace& memory, std::uint32_t address,
+        std::span<const std::uint32_t> words)
+    {
+        for (std::size_t index = 0; index < words.size(); ++index) {
+            if (!memory.write32(address + static_cast<std::uint32_t>(
+                                            index * sizeof(std::uint32_t)),
+                    words[index])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+} // namespace
+
 bool CompatibilityKernel::dispatch_mach_host_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
@@ -49,40 +68,74 @@ bool CompatibilityKernel::dispatch_mach_host_message(
     const std::optional<std::uint32_t> remote_port { request.remote_port };
     const std::optional<std::uint32_t> local_port { request.local_port };
     const std::optional<std::uint32_t> message_id { request.identifier };
-    if (*message_id ==
-            mig_message_id(xnu792::mig::mach_host::Routine::host_info) &&
-        registers[3] >= 72) {
+    const auto write_result_reply = [&](std::uint32_t result) {
+        if (registers[3] < darwin::mig_wire::simple_reply_payload_base) {
+            registers[0] = darwin::mach_message::receive_invalid_data;
+            return;
+        }
+        const std::array<std::uint32_t, 9> reply {
+            darwin::mig_wire::message_bits(
+                darwin::mig_wire::disposition_move_send_once),
+            darwin::mig_wire::simple_reply_payload_base,
+            *local_port,
+            0,
+            0,
+            *message_id + 100U,
+            0,
+            1,
+            result,
+        };
+        registers[0] = write_message_words(memory_, message_address, reply)
+                           ? darwin::mach::success
+                           : darwin::mach_message::receive_invalid_data;
+    };
+    const auto write_counted_reply = [&](std::uint32_t result,
+                                         std::span<const std::uint32_t> data) {
+        const auto reply_size = static_cast<std::uint32_t>(
+            message::inline_data_reply_offset +
+            data.size() * sizeof(std::uint32_t));
+        if (registers[3] < reply_size) {
+            registers[0] = darwin::mach_message::receive_invalid_data;
+            return;
+        }
+        std::vector<std::uint32_t> reply {
+            darwin::mig_wire::message_bits(
+                darwin::mig_wire::disposition_move_send_once),
+            reply_size,
+            *local_port,
+            0,
+            0,
+            *message_id + 100U,
+            0,
+            1,
+            result,
+            static_cast<std::uint32_t>(data.size()),
+        };
+        reply.insert(reply.end(), data.begin(), data.end());
+        registers[0] = write_message_words(memory_, message_address, reply)
+                           ? darwin::mach::success
+                           : darwin::mach_message::receive_invalid_data;
+    };
+    if (*message_id == routine::host_info) {
         const auto flavor =
-            memory_
-                .read32(message_address +
-                        xnu792::mig::mach_host::host_info_arguments[1]
-                            .request_offset)
-                .value_or(0);
+            memory_.read32(message_address + message::flavor_offset).value_or(0);
         const auto requested_count =
-            memory_
-                .read32(message_address +
-                        xnu792::mig::mach_host::host_info_arguments[2]
-                            .request_count_offset)
+            memory_.read32(message_address + message::count_inout_request_offset)
                 .value_or(0);
-        if (flavor == 1 && requested_count >= 12) { // HOST_BASIC_INFO
-            // Darwin 8's host_basic_info is 12 natural_t words. The device CPU
-            // and memory identity come from the selected profile; the virtual
-            // topology remains an explicit emulator extension for scheduler
-            // testing.
+        if (flavor == host_info::basic_flavor &&
+            requested_count >= host_info::basic_old_word_count) {
+            // The host_basic_info ABI accepts the five-word legacy prefix and
+            // returns the full structure when it fits.
+            const auto configured_memory_size =
+                device_profile_.memory_size_bytes != 0
+                ? std::min(device_profile_.memory_size_bytes,
+                    shared_state_->device_ram_bytes)
+                : shared_state_->device_ram_bytes;
             const auto memory_size = static_cast<std::uint32_t>(
-                std::min<std::uint64_t>(shared_state_->device_ram_bytes,
+                std::min<std::uint64_t>(configured_memory_size,
                     std::numeric_limits<std::uint32_t>::max()));
-            const std::array<std::uint32_t, 22> reply {
-                18,
-                88,
-                *local_port,
-                0,
-                0,
-                *message_id + 100,
-                0x00000000U,
-                0x00000001U,
-                0, // KERN_SUCCESS
-                12, // host_info_outCnt
+            const auto max_mem = shared_state_->device_ram_bytes;
+            const std::array<std::uint32_t, host_info::basic_word_count> info {
                 virtual_processor_count_, // max_cpus
                 virtual_processor_count_, // avail_cpus
                 memory_size,
@@ -93,32 +146,18 @@ bool CompatibilityKernel::dispatch_mach_host_message(
                 virtual_processor_count_, // physical_cpu_max
                 virtual_processor_count_, // logical_cpu
                 virtual_processor_count_, // logical_cpu_max
-                memory_size, // max_mem, low 32 bits
-                0, // max_mem, high 32 bits
+                static_cast<std::uint32_t>(max_mem), // max_mem, low 32 bits
+                static_cast<std::uint32_t>(max_mem >> 32U), // high 32 bits
             };
-            for (std::size_t index = 0; index < reply.size(); ++index) {
-                if (!memory_.write32(message_address +
-                                         static_cast<std::uint32_t>(index * 4U),
-                        reply[index])) {
-                    registers[0] = 0x10004008U;
-                    return true;
-                }
-            }
-            registers[0] = 0;
+            const auto count = requested_count >= info.size()
+                                   ? info.size()
+                                   : host_info::basic_old_word_count;
+            write_counted_reply(0, std::span { info }.first(count));
             return true;
         }
-        if (flavor == 5 && requested_count >= 8) { // HOST_PRIORITY_INFO
-            const std::array<std::uint32_t, 18> reply {
-                18,
-                72,
-                *local_port,
-                0,
-                0,
-                *message_id + 100,
-                0x00000000U,
-                0x00000001U,
-                0, // KERN_SUCCESS
-                8, // host_info_outCnt
+        if (flavor == host_info::priority_flavor &&
+            requested_count >= host_info::priority_word_count) {
+            const std::array<std::uint32_t, host_info::priority_word_count> info {
                 80, // MINPRI_KERNEL
                 80, // MINPRI_KERNEL
                 64, // MINPRI_RESERVED
@@ -128,21 +167,61 @@ bool CompatibilityKernel::dispatch_mach_host_message(
                 0, // MINPRI_USER
                 79, // MAXPRI_RESERVED
             };
-            for (std::size_t index = 0; index < reply.size(); ++index) {
-                if (!memory_.write32(message_address +
-                                         static_cast<std::uint32_t>(index * 4U),
-                        reply[index])) {
-                    registers[0] = 0x10004008U;
-                    return true;
-                }
-            }
-            registers[0] = 0;
+            write_counted_reply(0, info);
             return true;
         }
+        write_result_reply(darwin::mach::failure);
+        return true;
     }
-    if (*message_id ==
-            mig_message_id(xnu792::mig::mach_host::Routine::host_page_size) &&
-        registers[3] >= 40) {
+    if (*message_id == routine::host_statistics) {
+        const auto flavor =
+            memory_.read32(message_address + message::flavor_offset).value_or(0);
+        const auto requested_count =
+            memory_.read32(message_address + message::count_inout_request_offset)
+                .value_or(0);
+        if (flavor == host_statistics::load_flavor &&
+            requested_count >= host_statistics::load_word_count) {
+            const std::array<std::uint32_t, host_statistics::load_word_count>
+                info { };
+            write_counted_reply(0, info);
+            return true;
+        }
+        if (flavor == host_statistics::vm_flavor &&
+            requested_count >= host_statistics::vm_rev0_word_count) {
+            const auto total_pages = std::min<std::uint64_t>(
+                shared_state_->device_ram_bytes / AddressSpace::page_size +
+                    (shared_state_->device_ram_bytes % AddressSpace::page_size !=
+                            0),
+                std::numeric_limits<std::uint32_t>::max());
+            const auto resident_pages = std::min<std::uint64_t>(
+                memory_.resident_page_count(), total_pages);
+            std::array<std::uint32_t, host_statistics::vm_rev2_word_count>
+                info { };
+            // vm_statistics free count includes speculative pages. The
+            // emulator has no separate global VM queues, so project the
+            // address space's resident pages into active memory and keep the
+            // total-page invariant visible to host consumers.
+            info[0] = static_cast<std::uint32_t>(total_pages - resident_pages);
+            info[1] = static_cast<std::uint32_t>(resident_pages);
+            const auto count = requested_count >= host_statistics::vm_rev2_word_count
+                                   ? host_statistics::vm_rev2_word_count
+                                   : requested_count >= host_statistics::vm_rev1_word_count
+                                   ? host_statistics::vm_rev1_word_count
+                                   : host_statistics::vm_rev0_word_count;
+            write_counted_reply(0, std::span { info }.first(count));
+            return true;
+        }
+        if (flavor == host_statistics::cpu_load_flavor &&
+            requested_count >= host_statistics::cpu_load_word_count) {
+            const std::array<std::uint32_t, host_statistics::cpu_load_word_count>
+                info { };
+            write_counted_reply(0, info);
+            return true;
+        }
+        write_result_reply(darwin::mach::failure);
+        return true;
+    }
+    if (*message_id == routine::host_page_size && registers[3] >= 40) {
         const std::array<std::uint32_t, 10> reply {
             18, // MOVE_SEND_ONCE reply right
             40, // message size
