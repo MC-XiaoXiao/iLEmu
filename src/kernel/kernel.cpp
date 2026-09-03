@@ -49,6 +49,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <fstream>
 #include <iterator>
 #include <limits>
@@ -507,6 +508,64 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput& input)
     const auto result = graphics_services_input::enqueue_touch(*shared_state_,
         input, scene_coordinator_.get(), presentation_tracker_.get(),
         &home_recovery_requested, &input_sequence);
+    if (input.phase == TouchPhase::Down || input.phase == TouchPhase::Up) {
+        std::lock_guard lock { shared_state_->mach_mutex };
+        std::fprintf(stderr,
+            "[scene-debug] touch phase=%u sequence=%llu lock=%u "
+            "unlock-pending=%u unlock-active=%u app-suspended=%u "
+            "reason=%u active-scene=%u active-event=%u fg-attempt=%u\n",
+            static_cast<unsigned>(input.phase),
+            static_cast<unsigned long long>(input_sequence),
+            shared_state_->springboard_lock_screen_active.value_or(false)
+                ? 1U
+                : 0U,
+            shared_state_->springboard_unlock_touch_pending ? 1U : 0U,
+            shared_state_->springboard_unlock_touch_active ? 1U : 0U,
+            shared_state_->application_touch_suspended ? 1U : 0U,
+            static_cast<unsigned>(shared_state_->application_suspension_reason),
+            shared_state_->active_application_scene
+                ? shared_state_->active_application_scene->process_id
+                : 0U,
+            shared_state_->active_application_event_object,
+            shared_state_->foreground_application_attempt_process_id.value_or(
+                0U));
+        std::fflush(stderr);
+    }
+    {
+        std::lock_guard mach_lock { shared_state_->mach_mutex };
+        const auto service = shared_state_->bootstrap_service_objects.find(
+            std::string { graphics_services_input::system_event_service });
+        if (service != shared_state_->bootstrap_service_objects.end()) {
+            const auto queue = shared_state_->mach_queues.find(service->second);
+            const auto port = shared_state_->mach_port_objects.lookup(service->second);
+            std::string sets;
+            for (const auto& [set_object, members] : shared_state_->mach_port_sets) {
+                if (std::find(members.begin(), members.end(), service->second) != members.end()) {
+                    if (!sets.empty())
+                        sets += ",";
+                    const auto pending = std::find_if(
+                        pending_mach_receives_.begin(),
+                        pending_mach_receives_.end(),
+                        [set_object](const auto& entry) {
+                            return entry.second.receive_is_port_set &&
+                                   entry.second.receive_object == set_object;
+                        });
+                    sets += std::to_string(set_object) +
+                            (pending == pending_mach_receives_.end() ? "(idle)"
+                                                                       : "(wait)");
+                }
+            }
+            output_.line("[input-debug] destination=" +
+                         std::to_string(service->second) + " queue=" +
+                         std::to_string(queue == shared_state_->mach_queues.end()
+                                            ? 0U
+                                            : queue->second.size()) +
+                         " owner=" +
+                         std::to_string(port ? port->receive_owner : 0U) +
+                         " sets=" + (sets.empty() ? std::string { "none" } : sets));
+        }
+    }
+    wake_graphics_input_receivers();
     const auto enqueued_at = std::chrono::steady_clock::now();
     const auto phase = [phase = input.phase] {
         switch (phase) {
@@ -577,6 +636,25 @@ void CompatibilityKernel::enqueue_system_button_impl(
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto display_asleep =
             shared_state_->requested_display_power_state.value_or(1U) == 0U;
+        std::fprintf(stderr,
+            "[scene-debug] button-down button=%u display-asleep=%u "
+            "lock=%u unlock-pending=%u unlock-active=%u app-suspended=%u "
+            "reason=%u active-scene=%u active-event=%u fg-attempt=%u\n",
+            static_cast<unsigned>(input.button), display_asleep ? 1U : 0U,
+            shared_state_->springboard_lock_screen_active.value_or(false)
+                ? 1U
+                : 0U,
+            shared_state_->springboard_unlock_touch_pending ? 1U : 0U,
+            shared_state_->springboard_unlock_touch_active ? 1U : 0U,
+            shared_state_->application_touch_suspended ? 1U : 0U,
+            static_cast<unsigned>(shared_state_->application_suspension_reason),
+            shared_state_->active_application_scene
+                ? shared_state_->active_application_scene->process_id
+                : 0U,
+            shared_state_->active_application_event_object,
+            shared_state_->foreground_application_attempt_process_id.value_or(
+                0U));
+        std::fflush(stderr);
         if (display_asleep && !force_home_transition) {
             wake_button_pressed_while_display_asleep = true;
             wake_only_system_button = true;
@@ -619,6 +697,7 @@ void CompatibilityKernel::enqueue_system_button_impl(
     const auto result =
         graphics_services_input::enqueue_system_button(*shared_state_, input,
             &system_input_sequence, begins_display_lock_transaction);
+    wake_graphics_input_receivers();
     const auto enqueued_at = std::chrono::steady_clock::now();
     // A sleeping Home or Sleep/Wake button is a wake request for SpringBoard,
     // not a new suspend transition. The firmware prepares its lock scene and
@@ -658,6 +737,78 @@ void CompatibilityKernel::enqueue_system_button_impl(
                           : " deferred\n"));
 }
 
+void CompatibilityKernel::wake_graphics_input_receivers()
+{
+    if (!mach_message_wake_handler_ && !graphics_input_wake_handler_)
+        return;
+
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> receivers;
+    std::vector<std::uint32_t> input_processes;
+    {
+        std::lock_guard mach_lock { shared_state_->mach_mutex };
+        for (const auto& [object, queue] : shared_state_->mach_queues) {
+            if (queue.empty() ||
+                !std::any_of(queue.begin(), queue.end(), [](const auto& message) {
+                    return message.graphics_input_sequence != 0U &&
+                           message.graphics_input_kind !=
+                               KernelSharedState::MachMessage::GraphicsInputKind::
+                                   None;
+                })) {
+                continue;
+            }
+            const auto port = shared_state_->mach_port_objects.lookup(object);
+            if (!port || port->receive_owner == 0U)
+                continue;
+            receivers.emplace_back(port->receive_owner, object);
+            input_processes.push_back(port->receive_owner);
+            // A Mach receive may block on a port set rather than on the
+            // member port itself.  Host-originated input has no sender CPU
+            // whose send path can walk the set links, so notify every set
+            // containing this queued member as well.  The app-level wake
+            // callback resolves the actual FIFO waiter and keeps the guest
+            // receive ABI unchanged.
+            if (const auto links =
+                shared_state_->mach_port_set_links_by_member.find(object);
+                links != shared_state_->mach_port_set_links_by_member.end()) {
+                for (const auto& link : links->second) {
+                    // Port sets are namespace objects and therefore do not
+                    // necessarily have a MachPortObject entry of their own;
+                    // the member receive right identifies their owner.
+                    receivers.emplace_back(port->receive_owner,
+                        link.set_object);
+                }
+            }
+        }
+    }
+
+    std::sort(receivers.begin(), receivers.end());
+    receivers.erase(std::unique(receivers.begin(), receivers.end()),
+        receivers.end());
+    if (mach_message_wake_handler_) {
+        for (const auto& [process_id, object] : receivers) {
+            const auto wake = mach_message_wake_handler_(process_id, object);
+            output_.line("[input-debug] host-wake pid=" +
+                         std::to_string(process_id) + " object=" +
+                         std::to_string(object) + " handled=" +
+                         std::to_string(wake.handled) + " preempt=" +
+                         std::to_string(wake.preemption_needed));
+        }
+    }
+    if (graphics_input_wake_handler_) {
+        std::sort(input_processes.begin(), input_processes.end());
+        input_processes.erase(
+            std::unique(input_processes.begin(), input_processes.end()),
+            input_processes.end());
+        for (const auto process_id : input_processes) {
+            const auto wake = graphics_input_wake_handler_(process_id);
+            output_.line("[input-debug] host-input-wake pid=" +
+                         std::to_string(process_id) + " handled=" +
+                         std::to_string(wake.handled) + " preempt=" +
+                         std::to_string(wake.preemption_needed));
+        }
+    }
+}
+
 void CompatibilityKernel::set_ringer_switch_active(bool active)
 {
     if (!ringer_switch_state_->set_active(active))
@@ -668,6 +819,7 @@ void CompatibilityKernel::set_ringer_switch_active(bool active)
         springboard_ringer_switch_notification_name);
     const auto result = graphics_services_input::enqueue_ringer_switch_change(
         *shared_state_, active);
+    wake_graphics_input_receivers();
     output_.write(
         "[input] ringer-switch=" + std::string { active ? "ring" : "silent" } +
         (result == graphics_services_input::EnqueueResult::Queued
@@ -684,6 +836,7 @@ void CompatibilityKernel::toggle_ringer_switch()
         springboard_ringer_switch_notification_name);
     const auto result = graphics_services_input::enqueue_ringer_switch_change(
         *shared_state_, active);
+    wake_graphics_input_receivers();
     output_.write(
         "[input] ringer-switch=" + std::string { active ? "ring" : "silent" } +
         (result == graphics_services_input::EnqueueResult::Queued
@@ -818,6 +971,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     signal_actions_ = { };
     signal_mask_ = 0;
     pthread_runtime_.prepare_exec();
+    shared_state_->psynch_runtime->clear_process(process_.pid);
     process_.waiting_for_events = false;
     const auto current_thread_port =
         thread_ports_.find(processor_id) != thread_ports_.end()
@@ -858,6 +1012,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     thread_ports_.clear();
     thread_ports_.emplace(processor_id, current_thread_port);
     last_delivered_graphics_inputs_.clear();
+    graphics_input_receiver_processors_.clear();
     disabled_thread_signals_.clear();
     pending_waits_.clear();
     pending_mach_receives_.clear();
@@ -875,6 +1030,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     pending_selects_.clear();
     pending_timers_.clear();
     pending_semaphore_waits_.clear();
+    pending_psynch_waits_.clear();
     pending_signal_suspends_.clear();
     scheduler_yields_.clear();
     scheduler_handoffs_.clear();
@@ -954,6 +1110,14 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
             if (path.ends_with(graphics_services_image)) {
                 const auto profile =
                     GraphicsServicesInputProfile::detect(*image);
+                output_.line("[input-debug] profile-detect path=" + path +
+                             " result=" +
+                             (profile
+                                     ? std::string {
+                                           GraphicsServicesInputProfile::for_abi(
+                                               *profile)
+                                               .name }
+                                     : std::string { "none" }));
                 if (!profile)
                     return;
                 std::lock_guard mach_lock { shared_state_->mach_mutex };
@@ -1026,6 +1190,11 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
             std::shared_ptr<const MachOImage> parsed_image;
             if (profile_relevant) {
                 parsed_image = cache->parse_image(image.index, architecture);
+                if (image.path.ends_with(graphics_services_image)) {
+                    output_.line("[input-debug] profile-image index=" +
+                                 std::to_string(image.index) + " parsed=" +
+                                 std::to_string(parsed_image != nullptr));
+                }
             }
             installed += userland_hle_.install_mapped_shared_cache_image(cpu,
                 process_.pid, image.path, std::filesystem::path { source.path },
@@ -1404,6 +1573,7 @@ bool CompatibilityKernel::has_pending_event_locked(
            pending_baseband_writes_.contains(processor) ||
            pending_unix_accepts_.contains(processor) ||
            pending_semaphore_waits_.contains(processor) ||
+           pending_psynch_waits_.contains(processor) ||
            pending_signal_suspends_.contains(processor) ||
            pending_timers_.contains(processor) ||
            pending_selects_.contains(processor) ||
@@ -1485,6 +1655,10 @@ CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
     }
     if (const auto found = pending_semaphore_waits_.find(processor);
         found != pending_semaphore_waits_.end()) {
+        consider(found->second.deadline);
+    }
+    if (const auto found = pending_psynch_waits_.find(processor);
+        found != pending_psynch_waits_.end()) {
         consider(found->second.deadline);
     }
     if (const auto found = pending_kevents_.find(processor);
@@ -1789,6 +1963,27 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         cpu.clear_halt();
         return true;
     }
+    if (const auto pending = pending_psynch_waits_.find(cpu.processor_id());
+        pending != pending_psynch_waits_.end()) {
+        const DarwinPsynchThread thread { process_.pid,
+            static_cast<std::uint32_t>(cpu.processor_id()) };
+        const auto result = shared_state_->psynch_runtime->take_result(thread);
+        const auto timed_out = !result && pending->second.deadline &&
+                               shared_state_->clock.now() >=
+                                   *pending->second.deadline;
+        if (!result && !timed_out)
+            return false;
+        if (timed_out) {
+            shared_state_->psynch_runtime->cancel_wait(thread);
+            bsd_error(cpu, 60U); // ETIMEDOUT
+        } else {
+            bsd_success(cpu, *result);
+        }
+        pending_psynch_waits_.erase(pending);
+        process_.waiting_for_events = false;
+        cpu.clear_halt();
+        return true;
+    }
     if (const auto timer = pending_timers_.find(cpu.processor_id());
         timer != pending_timers_.end()) {
         bool bootstrap_ready = false;
@@ -2050,6 +2245,24 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const
         return "semaphore(port=" + std::to_string(pending->second.semaphore) +
                ")";
     }
+    if (const auto pending = pending_psynch_waits_.find(processor);
+        pending != pending_psynch_waits_.end()) {
+        const auto kind = [&] {
+            switch (pending->second.kind) {
+            case DarwinPsynchWaitKind::Mutex:
+                return "mutex";
+            case DarwinPsynchWaitKind::Condition:
+                return "condition";
+            case DarwinPsynchWaitKind::ReadLock:
+                return "rw-read";
+            case DarwinPsynchWaitKind::WriteLock:
+                return "rw-write";
+            }
+            return "unknown";
+        }();
+        return "psynch(" + std::string { kind } + ",address=" +
+               std::to_string(pending->second.address) + ")";
+    }
     if (const auto timer = pending_timers_.find(processor);
         timer != pending_timers_.end()) {
         const auto operation = [&] {
@@ -2143,6 +2356,10 @@ CompatibilityKernel::timer_deadline_snapshot() const
             consider(local_deadline, timer.deadline);
         }
         for (const auto& [processor, wait] : pending_semaphore_waits_) {
+            static_cast<void>(processor);
+            consider(local_deadline, wait.deadline);
+        }
+        for (const auto& [processor, wait] : pending_psynch_waits_) {
             static_cast<void>(processor);
             consider(local_deadline, wait.deadline);
         }
@@ -2267,6 +2484,15 @@ void CompatibilityKernel::service_time_dependent_devices(std::uint64_t deadline)
     const auto next_service_deadline = next_timer_deadline();
     if (!next_service_deadline || *next_service_deadline > deadline)
         return;
+    {
+        std::lock_guard mach_lock { shared_state_->mach_mutex };
+        // Non-primary runtimes are advanced through this service path by the
+        // host scheduler. Keep their display clients equivalent to the
+        // primary runtime: a registered VSYNC deadline must materialize its
+        // notification in the owning runtime's Mach queue.
+        kernel_iokit::display::deliver_due_vsync_locked(
+            *shared_state_, deadline);
+    }
     kernel_iokit::camera::service_due_captures(
         *shared_state_, process_.pid, memory_, *surface_store_, deadline);
     if (kernel_bsd::interval_timer::service_due(
