@@ -1082,6 +1082,16 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
     std::span<const std::byte> code_signature_entitlements)
 {
     process_image_ = guest_path;
+    if (is_application_executable_path(guest_path) &&
+        guest_working_directory_ == std::filesystem::path { "/" }) {
+        guest_working_directory_ =
+            std::filesystem::path { guest_path }
+                .parent_path()
+                .lexically_normal();
+        output_.write(
+            "[vfs] application-cwd " +
+            guest_working_directory_.string() + "\n");
+    }
     auto name = std::filesystem::path { guest_path }.filename().string();
     if (name.empty())
         name = "unknown";
