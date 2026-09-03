@@ -53,7 +53,7 @@ namespace {
     },
 };
 
-    constexpr GraphicsServicesInputProfile darwin9_4_profile{
+constexpr GraphicsServicesInputProfile darwin9_4_profile{
     .name = "darwin9.4",
     .event_record_size = 52,
     .record_timestamp_offset = 28,
@@ -80,7 +80,7 @@ namespace {
     // sends a 52-byte record with no trailing event-info payload.  Keep this
     // ABI separate from the older 101 profile so the wire record follows the
     // accessor implementation loaded by the guest.
-    constexpr GraphicsServicesInputProfile darwin11_0_profile{
+constexpr GraphicsServicesInputProfile darwin11_0_profile{
     .name = "darwin11.0",
     .event_record_size = 52,
     .record_timestamp_offset = 28,
@@ -93,8 +93,10 @@ namespace {
     // hand+33.
     .hand_path_count_offset = 34,
     .path_location_offset = 12,
-    .hand_phase_types = {1, 2, 6, 3},
-    .path_phase_types = {1, 2, 5, 3},
+    // GSEvent's hand enum is Down/Dragged/Moved/Up; pathIdentity remains
+    // stable for the lifetime of one contact.
+    .hand_phase_types = {0, 1, 4, 5},
+    .path_phase_types = {1, 1, 1, 1},
     .idle_duration_reset_event_type = 100,
     .idle_duration_reset_info_size = 0,
     .system_events = {
