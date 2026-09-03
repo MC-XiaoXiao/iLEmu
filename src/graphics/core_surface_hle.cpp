@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ilemu/address_space.hpp"
+#include "ilemu/application_display_profile.hpp"
 #include "ilemu/application_path.hpp"
 #include "ilemu/core_surface_abi.hpp"
 #include "ilemu/cpu.hpp"
@@ -70,6 +71,29 @@ namespace {
     // Bytes in guest memory are B,G,R,A; when read as a little-endian uint32_t
     // this is the DisplayState 0xAARRGGBB representation without conversion.
     constexpr std::uint32_t success = 0;
+
+    std::optional<ApplicationDisplayProfile> application_profile_for_process(
+        const std::shared_ptr<KernelSharedState>& shared_state,
+        std::uint32_t process_id)
+    {
+        if (!shared_state)
+            return std::nullopt;
+        std::lock_guard lock { shared_state->mach_mutex };
+        const auto process = shared_state->processes.find(process_id);
+        return process == shared_state->processes.end()
+                   ? std::nullopt
+                   : std::optional<ApplicationDisplayProfile> {
+                         process->second.display_profile };
+    }
+
+    DisplayGeometry display_geometry_for_process(
+        const std::shared_ptr<KernelSharedState>& shared_state,
+        std::uint32_t process_id, DisplayGeometry output)
+    {
+        const auto profile =
+            application_profile_for_process(shared_state, process_id);
+        return profile ? application_display_geometry(*profile, output) : output;
+    }
 
 } // namespace
 
@@ -202,8 +226,26 @@ bool CoreSurfaceHle::refresh_default_scanout(
         return false;
     }
 
+    std::optional<ApplicationDisplayProfile> profile;
+    if (shared_state_) {
+        std::lock_guard lock { shared_state_->mach_mutex };
+        const auto process = shared_state_->processes.find(owner_process_id);
+        if (process != shared_state_->processes.end() &&
+            process->second.display_profile.kind !=
+                ApplicationDisplayProfileKind::Native) {
+            profile = process->second.display_profile;
+        }
+    }
+    auto display_pixels = *pixels;
+    if (profile) {
+        display_pixels = compose_application_display_pixels(*profile,
+            { backing->width, backing->height }, display_->geometry(),
+            display_pixels);
+        if (display_pixels.empty())
+            return false;
+    }
     last_scanout_pixels_ = *pixels;
-    display_->replace_pixels(*pixels, owner_process_id);
+    display_->replace_pixels(std::move(display_pixels), owner_process_id);
     display_->present(owner_process_id);
     return true;
 }
@@ -366,8 +408,9 @@ void CoreSurfaceHle::finish_create_from_dictionary(
 std::uint32_t CoreSurfaceHle::create_default_buffer(UserlandHleCall& call,
     std::uint32_t requested_id, surface_transport::Kind transport)
 {
-    const auto geometry =
-        display_ ? display_->geometry() : default_display_geometry;
+    const auto geometry = display_geometry_for_process(shared_state_,
+        call.process_id(),
+        display_ ? display_->geometry() : default_display_geometry);
     const auto width = geometry.width;
     const auto height = geometry.height;
     const auto pitch = width * core_surface_abi::bytes_per_bgra_pixel;
@@ -386,8 +429,9 @@ std::uint32_t CoreSurfaceHle::wrap_client_memory(UserlandHleCall& call,
         !call.memory().mapped(base, size)) {
         return 0;
     }
-    const auto geometry =
-        display_ ? display_->geometry() : default_display_geometry;
+    const auto geometry = display_geometry_for_process(shared_state_,
+        call.process_id(),
+        display_ ? display_->geometry() : default_display_geometry);
     const auto full_screen_size = geometry.width * geometry.height *
                                   core_surface_abi::bytes_per_bgra_pixel;
     const auto width =
@@ -700,24 +744,35 @@ void CoreSurfaceHle::release_imported_mapping(AddressSpace& memory,
 
 void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call)
 {
-    if (!display_ || buffer.width != display_->width() ||
-        buffer.height != display_->height() ||
+    if (!display_)
+        return;
+    const auto output_geometry = display_->geometry();
+    const auto guest_geometry = display_geometry_for_process(shared_state_,
+        call.process_id(), output_geometry);
+    if (buffer.width != guest_geometry.width ||
+        buffer.height != guest_geometry.height ||
         buffer.bytes_per_row !=
-            display_->width() * core_surface_abi::bytes_per_bgra_pixel) {
+            guest_geometry.width * core_surface_abi::bytes_per_bgra_pixel) {
         return;
     }
+    std::optional<ApplicationDisplayProfile> profile;
     if (shared_state_) {
         std::lock_guard lock { shared_state_->mach_mutex };
         const auto process = shared_state_->processes.find(call.process_id());
         if (process != shared_state_->processes.end() &&
-            is_application_executable_path(process->second.executable_path) &&
-            !active_application_owns_display_locked(*shared_state_,
+            is_application_executable_path(process->second.executable_path)) {
+            if (!active_application_owns_display_locked(*shared_state_,
                 call.process_id(),
                 scene_coordinator_
                     ? std::optional<bool> { scene_coordinator_
                               ->client_scene_presentable(call.process_id()) }
                     : std::nullopt)) {
-            return;
+                return;
+            }
+            if (process->second.display_profile.kind !=
+                ApplicationDisplayProfileKind::Native) {
+                profile = process->second.display_profile;
+            }
         }
     }
     // Unlock publishes guest writes to the CoreSurface backing. Once the
@@ -728,12 +783,12 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call)
     }
     const auto bytes =
         call.memory().read_bytes(buffer.base, buffer.allocation_size);
-    if (!bytes || bytes->size() < static_cast<std::size_t>(display_->width()) *
-                                      display_->height() *
+    if (!bytes || bytes->size() < static_cast<std::size_t>(guest_geometry.width) *
+                                      guest_geometry.height *
                                       core_surface_abi::bytes_per_bgra_pixel) {
         return;
     }
-    std::vector<std::uint32_t> pixels(display_->geometry().pixel_count());
+    std::vector<std::uint32_t> pixels(guest_geometry.pixel_count());
     for (std::size_t index = 0; index < pixels.size(); ++index) {
         const auto offset = index * core_surface_abi::bytes_per_bgra_pixel;
         pixels[index] =
@@ -742,6 +797,11 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call)
             (std::to_integer<std::uint32_t>((*bytes)[offset + 2U]) << 16U) |
             (std::to_integer<std::uint32_t>((*bytes)[offset + 3U]) << 24U);
     }
+    if (profile)
+        pixels = compose_application_display_pixels(*profile,
+            guest_geometry, output_geometry, pixels);
+    if (profile && pixels.empty())
+        return;
     display_->replace_pixels(std::move(pixels), call.process_id());
 }
 

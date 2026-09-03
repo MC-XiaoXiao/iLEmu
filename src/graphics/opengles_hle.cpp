@@ -13,6 +13,7 @@
 #include <utility>
 
 #include "ilemu/address_space.hpp"
+#include "ilemu/application_display_profile.hpp"
 #include "ilemu/application_path.hpp"
 #include "ilemu/cpu.hpp"
 #include "ilemu/display.hpp"
@@ -67,6 +68,8 @@ namespace {
     constexpr std::uint32_t egl_pixmap_bit = 0x0002;
     constexpr std::uint32_t egl_opengl_es_bit = 0x0001;
     constexpr std::uint64_t texture_render_target_namespace = 1ULL << 32U;
+    constexpr std::uint64_t compatibility_surface_namespace = 2ULL << 32U;
+    constexpr std::size_t compatibility_surface_ring_size = 4;
 
     struct EglConfigDescriptor {
         std::uint32_t handle;
@@ -86,6 +89,29 @@ namespace {
         EglConfigDescriptor { 3, 5, 6, 5, 0, 0, 0 },
         EglConfigDescriptor { 4, 4, 4, 4, 4, 0, 0 },
     };
+
+    std::optional<ApplicationDisplayProfile> application_profile_for_process(
+        const std::shared_ptr<KernelSharedState>& shared_state,
+        std::uint32_t process_id)
+    {
+        if (!shared_state)
+            return std::nullopt;
+        std::lock_guard lock { shared_state->mach_mutex };
+        const auto process = shared_state->processes.find(process_id);
+        return process == shared_state->processes.end()
+                   ? std::nullopt
+                   : std::optional<ApplicationDisplayProfile> {
+                         process->second.display_profile };
+    }
+
+    DisplayGeometry display_geometry_for_process(
+        const std::shared_ptr<KernelSharedState>& shared_state,
+        std::uint32_t process_id, DisplayGeometry output)
+    {
+        const auto profile =
+            application_profile_for_process(shared_state, process_id);
+        return profile ? application_display_geometry(*profile, output) : output;
+    }
 
     const EglConfigDescriptor* egl_config(std::uint32_t handle)
     {
@@ -174,6 +200,11 @@ void OpenGlesHle::reset()
     contexts_.clear();
     eagl_contexts_.clear();
     surfaces_.clear();
+    compatibility_display_surface_ = { };
+    compatibility_display_process_id_ = 0;
+    compatibility_surfaces_.clear();
+    compatibility_surface_index_ = 0;
+    next_compatibility_surface_ = 0;
     scanout_composition_.reset();
     resources_.reset();
     programs_.reset();
@@ -194,6 +225,11 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
     contexts_ = parent.contexts_;
     eagl_contexts_ = parent.eagl_contexts_;
     surfaces_ = parent.surfaces_;
+    compatibility_display_surface_ = { };
+    compatibility_display_process_id_ = 0;
+    compatibility_surfaces_.clear();
+    compatibility_surface_index_ = 0;
+    next_compatibility_surface_ = 0;
     scanout_composition_.reset();
     resources_.inherit_state(parent.resources_);
     programs_ = parent.programs_;
@@ -681,9 +717,33 @@ OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
             render_target_key(thread(call).draw_surface),
             pixmap->backing_identifier, pixmap, 0U, host_surface };
     }
-    return RenderTargetBinding { RenderTargetKind::Display,
-        render_target_key(thread(call).draw_surface), std::nullopt, nullptr, 0U,
-        nullptr };
+    const auto draw_surface = thread(call).draw_surface;
+    auto binding = RenderTargetBinding { RenderTargetKind::Display,
+        render_target_key(draw_surface), std::nullopt, nullptr, 0U, nullptr };
+    const auto profile =
+        application_profile_for_process(shared_state_, call.process_id());
+    if (profile && profile->kind != ApplicationDisplayProfileKind::Native) {
+        const auto surface = surfaces_.find(draw_surface);
+        if (surface != surfaces_.end() &&
+            !surface->second.backing_identifier) {
+            binding.display_surface = &surface->second;
+        } else {
+            const auto geometry = application_display_geometry(
+                *profile, display_ ? display_->geometry() : default_display_geometry);
+            if (compatibility_display_process_id_ != call.process_id() ||
+                compatibility_display_surface_.width != geometry.width ||
+                compatibility_display_surface_.height != geometry.height) {
+                compatibility_display_surface_ = { };
+                compatibility_display_process_id_ = call.process_id();
+                compatibility_display_surface_.width = geometry.width;
+                compatibility_display_surface_.height = geometry.height;
+                compatibility_display_surface_.pixels.assign(
+                    geometry.pixel_count(), 0xff000000U);
+            }
+            binding.display_surface = &compatibility_display_surface_;
+        }
+    }
+    return binding;
 }
 
 GlesRenderTargetKey OpenGlesHle::render_target_key(std::uint32_t surface) const
@@ -739,18 +799,39 @@ bool OpenGlesHle::flush_surface(UserlandHleCall& call, std::uint32_t surface)
     if (found == surfaces_.end())
         return false;
     auto& state = found->second;
+    const auto profile = application_profile_for_process(
+        shared_state_, call.process_id());
+    const auto compatibility_surface =
+        profile && profile->kind != ApplicationDisplayProfileKind::Native &&
+        !state.backing_identifier;
+    if (compatibility_surface && state.pixels.size() !=
+            static_cast<std::size_t>(state.width) * state.height) {
+        state.pixels.assign(
+            static_cast<std::size_t>(state.width) * state.height,
+            0xff000000U);
+    }
     auto frame = state.backing_identifier ? DisplayFrame { state.width,
         state.height, 0, state.pixels }
-                 : display_               ? display_->snapshot()
-                                          : DisplayFrame { };
+                 : compatibility_surface
+                     ? DisplayFrame { state.width, state.height, 0,
+                           state.pixels }
+                     : display_ ? display_->snapshot() : DisplayFrame { };
     if (frame.width == 0 || frame.height == 0 ||
         !renderer_->synchronize(frame, render_target_key(surface))) {
         return false;
     }
     if (!state.backing_identifier) {
-        if (display_ && display_write_allowed(call))
-            display_->replace_pixels(
-                std::move(frame.pixels), call.process_id());
+        if (display_ && display_write_allowed(call)) {
+            auto pixels = std::move(frame.pixels);
+            if (profile &&
+                profile->kind != ApplicationDisplayProfileKind::Native) {
+                pixels = compose_application_display_pixels(*profile,
+                    { frame.width, frame.height }, display_->geometry(), pixels);
+                if (pixels.empty())
+                    return false;
+            }
+            display_->replace_pixels(std::move(pixels), call.process_id());
+        }
         state.refreshed_textures.clear();
         return true;
     }
@@ -773,6 +854,17 @@ std::optional<DisplayFrame> OpenGlesHle::render_target(
     UserlandHleCall& call, const RenderTargetBinding& binding)
 {
     static_cast<void>(call);
+    if (binding.display_surface != nullptr) {
+        auto& surface = *binding.display_surface;
+        if (surface.width == 0U || surface.height == 0U)
+            return std::nullopt;
+        const auto expected =
+            static_cast<std::size_t>(surface.width) * surface.height;
+        if (surface.pixels.size() != expected)
+            surface.pixels.assign(expected, 0xff000000U);
+        return DisplayFrame { surface.width, surface.height, 0,
+            surface.pixels };
+    }
     if (binding.kind == RenderTargetKind::Framebuffer) {
         if (!binding.host_surface)
             return std::nullopt;
@@ -841,6 +933,31 @@ bool OpenGlesHle::commit_render_target(UserlandHleCall& call,
     }
     if (binding.kind == RenderTargetKind::Framebuffer)
         return binding.host_surface != nullptr;
+    if (binding.display_surface != nullptr) {
+        auto& surface = *binding.display_surface;
+        if (frame.width != surface.width || frame.height != surface.height ||
+            frame.pixels.size() !=
+                static_cast<std::size_t>(surface.width) * surface.height) {
+            return false;
+        }
+        surface.pixels = std::move(frame.pixels);
+        surface.dirty = false;
+        if (!display_ || !display_write_allowed(call))
+            return true;
+        const auto profile = application_profile_for_process(
+            shared_state_, call.process_id());
+        auto pixels = surface.pixels;
+        if (profile &&
+            profile->kind != ApplicationDisplayProfileKind::Native) {
+            pixels = compose_application_display_pixels(*profile,
+                { surface.width, surface.height }, display_->geometry(),
+                pixels);
+            if (pixels.empty())
+                return false;
+        }
+        display_->replace_pixels(std::move(pixels), call.process_id());
+        return true;
+    }
     if (!display_)
         return false;
     if (display_write_allowed(call)) {
@@ -849,32 +966,137 @@ bool OpenGlesHle::commit_render_target(UserlandHleCall& call,
     return true;
 }
 
+std::shared_ptr<HostSurface> OpenGlesHle::acquire_compatibility_surface(
+    HostSurfaceDescriptor descriptor)
+{
+    const auto matches = [&descriptor](
+                             const std::shared_ptr<HostSurface>& surface) {
+        if (!surface)
+            return false;
+        const auto candidate = surface->descriptor();
+        return candidate.width == descriptor.width &&
+               candidate.height == descriptor.height &&
+               candidate.bytes_per_row == descriptor.bytes_per_row &&
+               candidate.pixel_format == descriptor.pixel_format &&
+               candidate.kind == descriptor.kind;
+    };
+    while (compatibility_surfaces_.size() < compatibility_surface_ring_size) {
+        auto surface = renderer_->create_surface(
+            { renderer_owner_, compatibility_surface_namespace |
+                  next_compatibility_surface_++ },
+            descriptor);
+        if (!surface)
+            return { };
+        compatibility_surfaces_.push_back(std::move(surface));
+    }
+    for (std::size_t attempt = 0; attempt < compatibility_surfaces_.size();
+        ++attempt) {
+        const auto index = compatibility_surface_index_ %
+                           compatibility_surfaces_.size();
+        compatibility_surface_index_ = (index + 1U) %
+                                       compatibility_surfaces_.size();
+        const auto& candidate = compatibility_surfaces_[index];
+        if (matches(candidate) && !candidate->presentation_leased())
+            return candidate;
+    }
+    auto surface = renderer_->create_surface(
+        { renderer_owner_, compatibility_surface_namespace |
+              next_compatibility_surface_++ },
+        descriptor);
+    if (surface)
+        compatibility_surfaces_.push_back(surface);
+    return surface;
+}
+
 bool OpenGlesHle::publish_display_surface(
     UserlandHleCall& call, const std::shared_ptr<HostSurface>& surface)
 {
     if (!surface || !display_ || !display_write_allowed(call))
         return false;
     const auto descriptor = surface->descriptor();
-    if (descriptor.width != display_->width() ||
-        descriptor.height != display_->height()) {
+    const auto output_geometry = display_->geometry();
+    const auto profile =
+        application_profile_for_process(shared_state_, call.process_id());
+    const auto logical_geometry = profile
+                                      ? application_display_geometry(
+                                            *profile, output_geometry)
+                                      : output_geometry;
+    const auto is_geometry = [&](DisplayGeometry geometry) {
+        return descriptor.width == geometry.width &&
+               descriptor.height == geometry.height;
+    };
+    if ((!profile && !is_geometry(output_geometry)) ||
+        (profile && !is_geometry(logical_geometry) &&
+            !is_geometry(output_geometry))) {
         return false;
+    }
+    if (profile && profile->kind != ApplicationDisplayProfileKind::Native &&
+        (!renderer_->accelerated() || !command_encoder_)) {
+        if (!renderer_->map_cpu(
+                *surface, true, PerfCpuMapReason::DeferredDisplayRead)) {
+            return false;
+        }
+        const auto mapping =
+            surface->map_cpu(false, PerfCpuMapReason::DeferredDisplayRead);
+        auto pixels = compose_application_display_pixels(*profile,
+            { descriptor.width, descriptor.height }, output_geometry,
+            mapping.frame().pixels);
+        if (pixels.empty())
+            return false;
+        display_->replace_pixels(std::move(pixels), call.process_id());
+        return true;
+    }
+    std::shared_ptr<HostSurface> published_surface = surface;
+    if (profile && profile->kind != ApplicationDisplayProfileKind::Native) {
+        const auto viewport =
+            application_display_viewport(*profile, output_geometry);
+        const auto source_width = std::min(profile->logical_geometry.width,
+            descriptor.width);
+        const auto source_height = std::min(profile->logical_geometry.height,
+            descriptor.height);
+        if (viewport.width == 0U || viewport.height == 0U ||
+            source_width == 0U || source_height == 0U || !command_encoder_) {
+            return false;
+        }
+        const auto destination_descriptor = HostSurfaceDescriptor {
+            output_geometry.width, output_geometry.height,
+            output_geometry.width * static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+            surface_pixel_format_bgra, PerfSurfaceKind::Scanout };
+        auto compatibility_surface =
+            acquire_compatibility_surface(destination_descriptor);
+        if (!compatibility_surface ||
+            !command_encoder_->fill(compatibility_surface,
+                { 0, 0, output_geometry.width, output_geometry.height },
+                0xff000000U) ||
+            !command_encoder_->copy(surface, compatibility_surface,
+                { 0, 0, source_width, source_height },
+                { viewport.x, viewport.y, viewport.width, viewport.height },
+                HostCompositeMode::Copy, 0xffU, HostFilter::Nearest,
+                HostRotation::Identity) ||
+            !command_encoder_->submit(PerfSubmitReason::Presentation)) {
+            return false;
+        }
+        published_surface = std::move(compatibility_surface);
     }
     auto renderer = renderer_;
     display_->replace_surface(
-        surface,
-        [renderer = std::move(renderer), surface] {
+        published_surface,
+        [renderer = std::move(renderer), published_surface] {
             if (!renderer->map_cpu(
-                    *surface, true, PerfCpuMapReason::DeferredDisplayRead)) {
+                    *published_surface, true,
+                    PerfCpuMapReason::DeferredDisplayRead)) {
                 return std::vector<std::uint32_t> { };
             }
             auto mapping =
-                surface->map_cpu(false, PerfCpuMapReason::DeferredDisplayRead);
+                published_surface->map_cpu(
+                    false, PerfCpuMapReason::DeferredDisplayRead);
             return mapping.frame().pixels;
         },
         call.process_id(),
-        [surface] {
+        [published_surface] {
             return std::max(
-                surface->cpu_generation(), surface->gpu_generation());
+                published_surface->cpu_generation(),
+                published_surface->gpu_generation());
         });
     return true;
 }
@@ -1244,7 +1466,8 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                 return;
             }
             const auto geometry =
-                display_ ? display_->geometry() : default_display_geometry;
+                display_geometry_for_process(shared_state_, call.process_id(),
+                    display_ ? display_->geometry() : default_display_geometry);
             const auto error = ensure_renderbuffer_storage(*context,
                 context->bound_renderbuffer, geometry.width, geometry.height,
                 gles_abi::bgra_apple);
@@ -1529,8 +1752,9 @@ void OpenGlesHle::register_egl(UserlandHleRegistry& registry)
             return;
         }
         SurfaceState state;
-        const auto geometry =
-            display_ ? display_->geometry() : default_display_geometry;
+        const auto geometry = display_geometry_for_process(shared_state_,
+            call.process_id(),
+            display_ ? display_->geometry() : default_display_geometry);
         state.width = geometry.width;
         state.height = geometry.height;
         if (call.symbol() == "_eglCreatePixmapSurface") {

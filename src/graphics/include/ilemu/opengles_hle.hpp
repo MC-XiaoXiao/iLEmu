@@ -168,6 +168,7 @@ private:
         std::shared_ptr<HostSurface> host_surface;
         bool inverted_vertical { };
         bool premultiplied { };
+        SurfaceState* display_surface { };
     };
 
     [[nodiscard]] ThreadState& thread(UserlandHleCall& call);
@@ -212,6 +213,8 @@ private:
         const RenderTargetBinding& binding, DisplayFrame frame);
     [[nodiscard]] bool publish_display_surface(
         UserlandHleCall& call, const std::shared_ptr<HostSurface>& surface);
+    [[nodiscard]] std::shared_ptr<HostSurface> acquire_compatibility_surface(
+        HostSurfaceDescriptor descriptor);
     void draw(UserlandHleCall& call, bool indexed);
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
     void register_eagl(UserlandHleRegistry& registry);
@@ -225,6 +228,8 @@ private:
     std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t>
         eagl_contexts_;
     std::map<std::uint32_t, SurfaceState> surfaces_;
+    SurfaceState compatibility_display_surface_;
+    std::uint32_t compatibility_display_process_id_ { };
     ScanoutComposition scanout_composition_;
     GlesResourceStore resources_;
     GlesProgramState programs_;
@@ -238,6 +243,9 @@ private:
     std::shared_ptr<DisplayState> display_;
     std::shared_ptr<SurfaceStore> surface_store_;
     std::uint64_t renderer_owner_ { };
+    std::vector<std::shared_ptr<HostSurface>> compatibility_surfaces_;
+    std::size_t compatibility_surface_index_ { };
+    std::uint64_t next_compatibility_surface_ { };
     std::shared_ptr<GlesRenderer> renderer_;
     std::unique_ptr<CommandEncoder> command_encoder_;
     OpenGlesGuestProfileKind default_guest_profile_kind_ {
