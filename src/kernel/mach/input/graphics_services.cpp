@@ -11,6 +11,8 @@
 #include "ilemu/application_path.hpp"
 #include "ilemu/cpu.hpp"
 #include "ilemu/graphics_services_profile.hpp"
+#include "ilemu/iokit_abi.hpp"
+#include "ilemu/kernel_iokit_display.hpp"
 #include "ilemu/mig_wire_abi.hpp"
 #include "ilemu/presentation_tracker.hpp"
 #include "ilemu/scene_coordinator.hpp"
@@ -1772,6 +1774,21 @@ void record_springboard_lock_state(KernelSharedState& state, bool active)
 {
     std::lock_guard lock { state.mach_mutex };
     state.springboard_lock_screen_active = active;
+    if (!active) {
+        const auto period = iokit_abi::display_vsync::period_absolute_time;
+        const auto now = state.clock.now();
+        for (auto& [connection_object, registration] :
+            state.iokit_display_vsync) {
+            if (!registration.enabled)
+                continue;
+            if (!registration.next_deadline ||
+                *registration.next_deadline <= now) {
+                registration.next_deadline = now - now % period + period;
+            }
+            kernel_iokit::display::index_vsync_deadline_locked(
+                state, connection_object);
+        }
+    }
     if (active) {
         const auto in_flight_touch_begin =
             state.springboard_enqueued_active_touch_begin_sequence != 0U
