@@ -1,5 +1,6 @@
 #include "ilemu/application_display_profile.hpp"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <fstream>
@@ -26,6 +27,12 @@ namespace {
         if (value == "UIInterfaceOrientationLandscapeRight")
             return DisplayOrientation::LandscapeRight;
         return std::nullopt;
+    }
+
+    bool tablet_sized(DisplayGeometry geometry)
+    {
+        return geometry.valid() &&
+               std::min(geometry.width, geometry.height) > 480U;
     }
 
     std::filesystem::path info_plist_path(
@@ -120,9 +127,149 @@ namespace {
         // this host.
         return std::nullopt;
     }
+
+    bool plist_is_iphone_only(plist_t root)
+    {
+        const auto families = plist_dict_get_item(root, "UIDeviceFamily");
+        if (families == nullptr || plist_get_node_type(families) != PLIST_ARRAY)
+            return false;
+        bool iphone = false;
+        bool ipad = false;
+        for (std::uint32_t index = 0; index < plist_array_get_size(families);
+            ++index) {
+            const auto family = plist_array_get_item(families, index);
+            if (family == nullptr || plist_get_node_type(family) != PLIST_UINT)
+                continue;
+            std::uint64_t value { };
+            plist_get_uint_val(family, &value);
+            iphone = iphone || value == 1U;
+            ipad = ipad || value == 2U;
+        }
+        return iphone && !ipad;
+    }
 #endif
 
 } // namespace
+
+ApplicationDisplayProfile detect_application_display_profile(
+    const std::filesystem::path& rootfs, std::string_view executable_path,
+    DisplayGeometry user_interface_geometry)
+{
+    ApplicationDisplayProfile profile;
+    if (!tablet_sized(user_interface_geometry) || rootfs.empty() ||
+        executable_path.empty()) {
+        return profile;
+    }
+
+#if defined(ILEMU_HAS_LIBPLIST)
+    const auto path = info_plist_path(rootfs, executable_path);
+    std::ifstream input { path, std::ios::binary };
+    if (!input)
+        return profile;
+    const std::string bytes { std::istreambuf_iterator<char> { input },
+        std::istreambuf_iterator<char> { } };
+    plist_t parsed = nullptr;
+    plist_format_t format = PLIST_FORMAT_NONE;
+    if (plist_from_memory(bytes.data(),
+            static_cast<std::uint32_t>(bytes.size()), &parsed, &format) !=
+            PLIST_ERR_SUCCESS ||
+        parsed == nullptr || plist_get_node_type(parsed) != PLIST_DICT) {
+        if (parsed != nullptr)
+            plist_free(parsed);
+        return profile;
+    }
+    PlistOwner root { parsed };
+    if (plist_is_iphone_only(root.get())) {
+        profile.kind = ApplicationDisplayProfileKind::IPhoneCompatibility1x;
+        profile.logical_geometry = default_display_geometry;
+    }
+#else
+    static_cast<void>(rootfs);
+    static_cast<void>(executable_path);
+#endif
+    return profile;
+}
+
+DisplayGeometry application_display_geometry(
+    const ApplicationDisplayProfile& profile, DisplayGeometry output)
+{
+    if (profile.kind != ApplicationDisplayProfileKind::Native &&
+        profile.logical_geometry.valid()) {
+        return profile.logical_geometry;
+    }
+    return output;
+}
+
+DisplayViewport application_display_viewport(
+    const ApplicationDisplayProfile& profile, DisplayGeometry output)
+{
+    if (!output.valid())
+        return { };
+    if (profile.kind == ApplicationDisplayProfileKind::Native ||
+        !profile.logical_geometry.valid()) {
+        return { 0, 0, output.width, output.height };
+    }
+    if (profile.logical_geometry.width <= output.width &&
+        profile.logical_geometry.height <= output.height) {
+        return { static_cast<std::int32_t>(
+                     (output.width - profile.logical_geometry.width) / 2U),
+            static_cast<std::int32_t>(
+                (output.height - profile.logical_geometry.height) / 2U),
+            profile.logical_geometry.width, profile.logical_geometry.height };
+    }
+    return fit_display_viewport(profile.logical_geometry, output);
+}
+
+std::vector<std::uint32_t> compose_application_display_pixels(
+    const ApplicationDisplayProfile& profile, DisplayGeometry source,
+    DisplayGeometry output, std::span<const std::uint32_t> pixels)
+{
+    if (!source.valid() || !output.valid() ||
+        pixels.size() != source.pixel_count()) {
+        return { };
+    }
+    if (profile.kind == ApplicationDisplayProfileKind::Native) {
+        if (source.width != output.width || source.height != output.height)
+            return { };
+        return { pixels.begin(), pixels.end() };
+    }
+    if (!profile.logical_geometry.valid())
+        return { };
+    const auto viewport = application_display_viewport(profile, output);
+    const auto source_width =
+        std::min(profile.logical_geometry.width, source.width);
+    const auto source_height =
+        std::min(profile.logical_geometry.height, source.height);
+    if (viewport.width == 0U || viewport.height == 0U || source_width == 0U ||
+        source_height == 0U || viewport.x < 0 || viewport.y < 0 ||
+        viewport.width > output.width || viewport.height > output.height ||
+        static_cast<std::uint32_t>(viewport.x) >
+            output.width - viewport.width ||
+        static_cast<std::uint32_t>(viewport.y) >
+            output.height - viewport.height) {
+        return { };
+    }
+    std::vector<std::uint32_t> composed(output.pixel_count(), 0xff000000U);
+    for (std::uint32_t y = 0; y < viewport.height; ++y) {
+        const auto source_y = std::min(
+            source_height - 1U,
+            static_cast<std::uint32_t>(static_cast<std::uint64_t>(y) *
+                                        source_height / viewport.height));
+        for (std::uint32_t x = 0; x < viewport.width; ++x) {
+            const auto source_x = std::min(
+                source_width - 1U,
+                static_cast<std::uint32_t>(static_cast<std::uint64_t>(x) *
+                                            source_width / viewport.width));
+            composed[static_cast<std::size_t>(viewport.y +
+                                               static_cast<std::int32_t>(y)) *
+                         output.width +
+                     static_cast<std::uint32_t>(viewport.x) + x] =
+                pixels[static_cast<std::size_t>(source_y) * source.width +
+                       source_x];
+        }
+    }
+    return composed;
+}
 
 DisplayOrientation detect_application_display_orientation(
     const std::filesystem::path& rootfs, std::string_view executable_path)
