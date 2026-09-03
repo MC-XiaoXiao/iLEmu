@@ -2787,6 +2787,28 @@ std::optional<std::uint32_t> record_application_scene_transform(
     std::lock_guard lock { state.mach_mutex };
     const auto context_key = std::pair { render_process_id, context };
     auto owner = state.application_scene_context_owners.find(context_key);
+    // During early boot launchd can start the first UIKit client before
+    // SpringBoard has delivered its event-port/lifecycle rendezvous.  The
+    // client's own LayerKit transform is nevertheless a process-owned display
+    // admission signal.  Bind a lifecycle attempt here so the normal scene
+    // activation path can consume the transform and establish touch routing;
+    // do not steal an already-resolved foreground route.
+    if (!process_is_springboard_locked(state, render_process_id) &&
+        !has_active_application_route_locked(state) &&
+        state.application_suspension_reason ==
+            KernelSharedState::ApplicationSuspensionReason::None) {
+        const auto process = state.processes.find(render_process_id);
+        if (process != state.processes.end() && !process->second.exited &&
+            is_application_executable_path(process->second.executable_path) &&
+            !launch_attempt_locked(state, render_process_id)) {
+            auto& attempt = begin_launch_attempt_locked(state, render_process_id,
+                0U, KernelSharedState::ApplicationLaunchOrigin::
+                         ForegroundLifecycle);
+            attempt.phase =
+                KernelSharedState::ApplicationLaunchPhase::Launching;
+            state.foreground_application_attempt_process_id = render_process_id;
+        }
+    }
     const auto exact_scene_target = [&state](std::uint32_t candidate) {
         const auto* attempt = launch_attempt_locked(state, candidate);
         if (!attempt)
