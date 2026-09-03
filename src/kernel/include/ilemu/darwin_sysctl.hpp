@@ -19,8 +19,8 @@ inline constexpr std::uint32_t operation_name_to_oid = 3;
 inline constexpr std::uint32_t vfs_generic = 0;
 inline constexpr std::uint32_t vfs_max_type_number = 1;
 inline constexpr std::uint32_t vfs_conf = 2;
-// XNU's built-in Darwin 9/10 VFS table reserves the type slots through
-// devfs (type 19), so VFS_MAXTYPENUM returns the next available type number.
+// The built-in VFS table reserves the type slots through devfs (type 19), so
+// VFS_MAXTYPENUM returns the next available type number.
 inline constexpr std::uint32_t vfs_max_type_number_value = 20;
 inline constexpr std::uint32_t kernel_operating_system_type = 1;
 inline constexpr std::uint32_t kernel_operating_system_release = 2;
@@ -34,6 +34,12 @@ inline constexpr std::uint32_t kernel_process_arguments2 = 49;
 inline constexpr std::uint32_t kernel_build_version = 65;
 inline constexpr std::uint32_t kernel_process_all = 0;
 inline constexpr std::uint32_t kernel_process_id = 1;
+inline constexpr std::uint32_t kernel_process_pgrp = 2;
+inline constexpr std::uint32_t kernel_process_session = 3;
+inline constexpr std::uint32_t kernel_process_tty = 4;
+inline constexpr std::uint32_t kernel_process_uid = 5;
+inline constexpr std::uint32_t kernel_process_ruid = 6;
+inline constexpr std::uint32_t kernel_process_lcid = 7;
 inline constexpr std::uint32_t arm32_kernel_process_info_size = 492;
 inline constexpr std::uint32_t process_flag_exec = 0x00004000;
 
@@ -45,8 +51,8 @@ struct ObjectIdentifier {
     std::size_t size { };
 };
 
-// Resolves the fixed Darwin 8 nodes currently projected by the compatibility
-// kernel. Dynamic OID_AUTO nodes can be added here as their values are exposed.
+// Resolves the fixed nodes currently projected by the compatibility kernel.
+// Dynamic OID_AUTO nodes can be added here as their values are exposed.
 [[nodiscard]] std::optional<ObjectIdentifier> resolve_name(
     std::string_view name);
 
@@ -54,7 +60,7 @@ struct ObjectIdentifier {
 [[nodiscard]] std::optional<std::string_view> hardware_string(
     std::uint32_t selector, std::string_view machine, std::string_view model);
 
-// Encodes the stable prefix consumed by Darwin 8 KERN_PROCARGS clients:
+// Encodes the stable prefix consumed by KERN_PROCARGS clients:
 // executable path, word alignment, argv strings, then environment strings.
 [[nodiscard]] std::vector<std::byte> encode_process_arguments(
     std::string_view executable_path, std::span<const std::string> arguments,
