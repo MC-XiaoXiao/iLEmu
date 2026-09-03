@@ -826,6 +826,23 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
 {
     if (display_ == nullptr)
         return;
+    if (shared_state_) {
+        std::lock_guard lock { shared_state_->mach_mutex };
+        const auto process = shared_state_->processes.find(call.process_id());
+        const auto active_app = shared_state_->active_application_scene;
+        const auto app_presentable = active_app && scene_coordinator_
+            ? scene_coordinator_->client_scene_presentable(
+                  active_app->process_id)
+            : false;
+        if (process != shared_state_->processes.end() && active_app &&
+            active_app->process_id != call.process_id() &&
+            !is_application_executable_path(process->second.executable_path) &&
+            app_presentable && active_application_owns_display_locked(
+                *shared_state_, active_app->process_id, app_presentable)) {
+            call.set_return(iokit_abi::success);
+            return;
+        }
+    }
     if (submit_host_layers(call))
         return;
     scanout_contents_valid_ = false;
