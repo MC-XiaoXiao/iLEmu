@@ -1320,9 +1320,13 @@ void Mbx2dHle::submit_destination(UserlandHleCall& call, bool context_api)
         destination->height != display_->height()) {
         return;
     }
-    // MBX submits are firmware-owned render targets. During handoff animation
-    // the firmware emits each intermediate quad into this target; publish it
-    // so the native zoom frames remain visible even after prior MFB presents.
+    // Once firmware has completed a transactional hardware-layer frame,
+    // IOMobileFramebuffer SwapEnd owns scanout. MBX finish/swap still commits
+    // pixels to its CoreSurface backing, but presenting that individual render
+    // target would bypass the other retained layers.
+    if (presentation_tracker_ && presentation_tracker_->has_presented_frame()) {
+        return;
+    }
     if (host_graphics_->accelerated() && destination->host_surface) {
         auto graphics = host_graphics_;
         auto surface = destination->host_surface;
