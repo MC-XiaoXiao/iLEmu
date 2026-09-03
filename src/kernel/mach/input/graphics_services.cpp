@@ -1779,8 +1779,15 @@ void record_springboard_lock_state(KernelSharedState& state, bool active)
         const auto now = state.clock.now();
         for (auto& [connection_object, registration] :
             state.iokit_display_vsync) {
-            if (!registration.enabled)
+            if (registration.notification_port == 0U)
                 continue;
+            // GraphicsServices disables selector 9 while the panel is off and
+            // some early display clients do not issue a matching enable after
+            // the wake transition.  The registration itself is still valid;
+            // restore its callback window at the same lifecycle boundary as
+            // the panel wake, rather than leaving the client waiting forever.
+            registration.enabled = true;
+            registration.last_notification_frame_time.reset();
             if (!registration.next_deadline ||
                 *registration.next_deadline <= now) {
                 registration.next_deadline = now - now % period + period;
