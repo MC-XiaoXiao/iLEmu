@@ -3082,6 +3082,12 @@ void record_application_remote_scene_commit_locked(KernelSharedState& state,
         KernelSharedState::ForegroundTransitionMilestone::SceneCommitted,
         sender_pid);
     scenes->commit_client_scene(sender_pid, std::nullopt);
+    // Early boot clients can publish their remote scene before SpringBoard
+    // delivers the application event port. Preserve the semantic foreground
+    // state in that interval; event delivery will still establish the input
+    // route and full activation later.
+    if (!scenes->active_client_scene())
+        scenes->activate_client_scene(sender_pid);
     activate_resolved_application_locked(state, sender_pid, scenes);
 }
 
