@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "ilemu/arm_cpu_model.hpp"
+#include "ilemu/application_display_profile.hpp"
 #include "ilemu/baseband_device.hpp"
 #include "ilemu/bsd_file_lock.hpp"
 #include "ilemu/core_animation_remote_profile.hpp"
@@ -547,6 +548,7 @@ struct KernelSharedState {
         std::vector<std::byte> code_signature_entitlements;
         std::optional<CoreAnimationRemoteProfile> core_animation_remote_profile;
         DisplayOrientation display_orientation { DisplayOrientation::Portrait };
+        ApplicationDisplayProfile display_profile;
         // A PID can be reused after its zombie record is reaped. Keep a
         // monotonic product-internal identity so transition observations never
         // join facts from two different processes that share a PID.
