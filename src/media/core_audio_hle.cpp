@@ -926,8 +926,12 @@ void CoreAudioHle::stream_set_property(UserlandHleCall& call)
 
 void CoreAudioHle::object_property(UserlandHleCall& call)
 {
+    // The adapter owns synthetic devices only.  Letting an unknown HAL object
+    // fall through to the firmware route implementation can dereference a
+    // route table before a host-backed device exists; report the normal
+    // unsupported-property status and keep the media service alive.
     if (find_device(call.argument(0)) == nullptr) {
-        call.resume_original_persistently();
+        call.set_return(unsupported_property);
         return;
     }
     const auto address = call.argument(1);
@@ -959,7 +963,7 @@ void CoreAudioHle::object_property(UserlandHleCall& call)
 void CoreAudioHle::object_set_property(UserlandHleCall& call)
 {
     if (find_device(call.argument(0)) == nullptr) {
-        call.resume_original_persistently();
+        call.set_return(unsupported_property);
         return;
     }
     const auto property = call.memory().read32(call.argument(1)).value_or(0);
