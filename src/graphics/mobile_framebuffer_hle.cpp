@@ -826,6 +826,23 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
 {
     if (display_ == nullptr)
         return;
+    if (shared_state_) {
+        std::lock_guard lock { shared_state_->mach_mutex };
+        const auto process = shared_state_->processes.find(call.process_id());
+        const auto active_app = shared_state_->active_application_scene;
+        if (process != shared_state_->processes.end() && active_app &&
+            active_app->process_id != call.process_id() &&
+            !is_application_executable_path(process->second.executable_path) &&
+            active_application_owns_display_locked(*shared_state_,
+                active_app->process_id)) {
+            // Once a foreground application owns the panel, a stale
+            // system-layer transaction must not replace its direct surface
+            // with the lock-screen backing. Keep system status/lifecycle
+            // bookkeeping, but leave the app's scanout surface intact.
+            call.set_return(iokit_abi::success);
+            return;
+        }
+    }
     if (submit_host_layers(call))
         return;
     scanout_contents_valid_ = false;
