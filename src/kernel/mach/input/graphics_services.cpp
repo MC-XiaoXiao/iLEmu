@@ -295,10 +295,13 @@ namespace {
             graphics_input_abi_for_object_locked(state, destination);
         const auto& profile = GraphicsServicesInputProfile::for_abi(abi);
         std::array<std::byte, sizeof(std::uint64_t)> idle_duration { };
-        const auto event_info =
+        const auto event_info_size =
             event_type == profile.idle_duration_reset_event_type
-                ? std::span<const std::byte> { idle_duration }
-                : std::span<const std::byte> { };
+                ? std::min(profile.idle_duration_reset_info_size,
+                      idle_duration.size())
+                : 0U;
+        const auto event_info = std::span<const std::byte> {
+            idle_duration.data(), event_info_size };
         state.enqueue_mach_message_locked(destination,
             make_simple_event_message(destination, state.clock.now(),
                 event_type, input_sequence, input_kind, abi, event_info));
@@ -1915,8 +1918,9 @@ void record_bootstrap_lookup_locked(KernelSharedState& state,
     if (reply_object != 0 && !service_name.empty()) {
         const auto origin_touch_sequence =
             springboard_launch_origin_touch_sequence_locked(state);
-        state.pending_bootstrap_service_lookups[reply_object].push_back(
-            KernelSharedState::PendingBootstrapServiceLookup {
+        state.pending_bootstrap_service_requests[reply_object].push_back(
+            KernelSharedState::PendingBootstrapServiceRequest {
+                KernelSharedState::PendingBootstrapServiceRequest::Kind::Lookup,
                 std::string { service_name }, requester_process_id,
                 origin_touch_sequence,
                 process_is_springboard_locked(state, requester_process_id) &&
@@ -1924,6 +1928,18 @@ void record_bootstrap_lookup_locked(KernelSharedState& state,
                     !state.springboard_unlock_touch_active &&
                     origin_touch_sequence != 0U });
     }
+}
+
+void record_bootstrap_check_in_locked(KernelSharedState& state,
+    std::uint32_t reply_object, std::string_view service_name,
+    std::uint32_t requester_process_id)
+{
+    if (reply_object == 0 || service_name.empty())
+        return;
+    state.pending_bootstrap_service_requests[reply_object].push_back(
+        KernelSharedState::PendingBootstrapServiceRequest {
+            KernelSharedState::PendingBootstrapServiceRequest::Kind::CheckIn,
+            std::string { service_name }, requester_process_id, 0, false });
 }
 
 void record_bootstrap_registration_locked(
@@ -1944,27 +1960,32 @@ ServiceResolution record_bootstrap_reply_locked(KernelSharedState& state,
     std::uint32_t receiver_process_id)
 {
     const auto pending =
-        state.pending_bootstrap_service_lookups.find(reply_object);
-    if (pending == state.pending_bootstrap_service_lookups.end() ||
+        state.pending_bootstrap_service_requests.find(reply_object);
+    if (pending == state.pending_bootstrap_service_requests.end() ||
         pending->second.empty()) {
         return { };
     }
 
-    const auto lookup = std::move(pending->second.front());
+    const auto request = std::move(pending->second.front());
     pending->second.pop_front();
     if (pending->second.empty())
-        state.pending_bootstrap_service_lookups.erase(pending);
-    const auto service_name = lookup.service_name;
-    const auto service = std::find_if(
-        transfers.begin(), transfers.end(), [](const auto& transfer) {
-            return transfer.right == xnu792::ipc::Right::Send;
+        state.pending_bootstrap_service_requests.erase(pending);
+    const auto service_name = request.service_name;
+    const auto check_in =
+        request.kind ==
+        KernelSharedState::PendingBootstrapServiceRequest::Kind::CheckIn;
+    const auto expected_right = check_in ? xnu792::ipc::Right::Receive
+                                         : xnu792::ipc::Right::Send;
+    const auto service = std::find_if(transfers.begin(), transfers.end(),
+        [expected_right](const auto& transfer) {
+            return transfer.right == expected_right;
         });
     const auto reply_port = state.mach_port_objects.lookup(reply_object);
     const auto receiver = reply_port && reply_port->receive_owner != 0U
                               ? reply_port->receive_owner
                               : receiver_process_id;
     if (service == transfers.end()) {
-        if (receiver != 0U) {
+        if (!check_in && receiver != 0U) {
             const auto generation =
                 state.bootstrap_service_generations[service_name];
             state.pending_bootstrap_retries[receiver] =
@@ -1972,7 +1993,7 @@ ServiceResolution record_bootstrap_reply_locked(KernelSharedState& state,
         }
         return ServiceResolution { 0, 0, false, service_name };
     }
-    if (receiver != 0U) {
+    if (!check_in && receiver != 0U) {
         const auto retry = state.pending_bootstrap_retries.find(receiver);
         if (retry != state.pending_bootstrap_retries.end() &&
             retry->second.service_name == service_name) {
@@ -2003,15 +2024,16 @@ ServiceResolution record_bootstrap_reply_locked(KernelSharedState& state,
             ++flushed;
         }
     } else if (const auto port =
-                   state.mach_port_objects.lookup(service->object)) {
+                   state.mach_port_objects.lookup(service->object);
+               !check_in && port) {
         const auto exact_springboard_request =
-            lookup.requester_process_id == receiver &&
+            request.requester_process_id == receiver &&
             process_is_springboard_locked(state, receiver);
         const auto exact_pending_gesture =
-            lookup.application_launch_candidate &&
+            request.application_launch_candidate &&
             state.springboard_pending_launch_touch_sequence != 0U &&
             state.springboard_pending_launch_touch_sequence ==
-                lookup.origin_touch_sequence;
+                request.origin_touch_sequence;
         const auto process = state.processes.find(port->receive_owner);
         if (process != state.processes.end() && !process->second.exited &&
             is_application_executable_path(process->second.executable_path)) {
@@ -2020,22 +2042,22 @@ ServiceResolution record_bootstrap_reply_locked(KernelSharedState& state,
                     launch_attempt_locked(state, port->receive_owner);
                 const auto exact_existing_intent =
                     existing &&
-                    (lookup.origin_touch_sequence == 0U ||
+                    (request.origin_touch_sequence == 0U ||
                         existing->origin_touch_sequence ==
-                            lookup.origin_touch_sequence) &&
+                            request.origin_touch_sequence) &&
                     (state.foreground_application_attempt_process_id ==
                             port->receive_owner ||
                         attempt_held_by_lock(*existing) ||
                         attempt_is_home_exit_target_locked(
                             state, port->receive_owner, *existing));
                 const auto effective_origin_touch_sequence =
-                    lookup.origin_touch_sequence != 0U
-                        ? lookup.origin_touch_sequence
+                    request.origin_touch_sequence != 0U
+                        ? request.origin_touch_sequence
                     : exact_existing_intent ? existing->origin_touch_sequence
                                             : 0U;
                 const auto exact_effective_pending_gesture =
                     exact_pending_gesture &&
-                    lookup.origin_touch_sequence ==
+                    request.origin_touch_sequence ==
                         effective_origin_touch_sequence;
                 if (exact_existing_intent || exact_effective_pending_gesture) {
                     record_resident_lookup_locked(state, port->receive_owner,
@@ -2071,7 +2093,7 @@ ServiceResolution record_bootstrap_reply_locked(KernelSharedState& state,
             state.pending_application_event_launches.insert_or_assign(
                 service->object,
                 KernelSharedState::PendingApplicationEventLaunch {
-                    receiver, lookup.origin_touch_sequence });
+                    receiver, request.origin_touch_sequence });
         }
     }
     return ServiceResolution { service->object, flushed, application_event_port,
@@ -2531,6 +2553,41 @@ namespace {
     void activate_resolved_application_locked(KernelSharedState& state,
         std::uint32_t process_id, SceneCoordinator* scenes)
     {
+        const auto debug_process = state.processes.find(process_id);
+        if (debug_process != state.processes.end() &&
+            is_application_executable_path(debug_process->second.executable_path)) {
+            const auto existing_attempt = launch_attempt_locked(state, process_id);
+            std::fprintf(stderr,
+                "[scene-debug] activate pid=%u attempt=%u phase=%u origin=%u "
+                "origin-seq=%llu active-scene=%u active-event=%u fg=%u "
+                "touch-suspended=%u lock=%u unlock-end=%llu pending-launch=%llu "
+                "scene=%u event=%u\n",
+                process_id, existing_attempt ? 1U : 0U,
+                existing_attempt ? static_cast<unsigned>(existing_attempt->phase)
+                                 : 0U,
+                existing_attempt
+                    ? static_cast<unsigned>(existing_attempt->origin)
+                    : 0U,
+                existing_attempt
+                    ? static_cast<unsigned long long>(
+                          existing_attempt->origin_touch_sequence)
+                    : 0ULL,
+                state.active_application_scene
+                    ? state.active_application_scene->process_id
+                    : 0U,
+                state.active_application_event_object,
+                state.foreground_application_attempt_process_id.value_or(0U),
+                state.application_touch_suspended ? 1U : 0U,
+                state.springboard_lock_screen_active.value_or(false) ? 1U : 0U,
+                static_cast<unsigned long long>(
+                    state.springboard_unlock_touch_end_sequence),
+                static_cast<unsigned long long>(
+                    state.springboard_pending_launch_touch_sequence),
+                scenes && scenes->client_scene(process_id).has_value() ? 1U : 0U,
+                application_event_object_for_process_locked(state, process_id)
+                    .value_or(0U));
+            std::fflush(stderr);
+        }
         const auto route_was_active =
             has_active_application_route_locked(state) &&
             state.active_application_scene->process_id == process_id;
@@ -2574,8 +2631,24 @@ namespace {
             std::find(process->second.arguments.begin(),
                 process->second.arguments.end(),
                 "--suspended") != process->second.arguments.end();
-        static_cast<void>(resolve_flattened_display_scene_locked(
-            state, process_id, *attempt, requests_userspace_prewarm, scenes));
+        const auto timing_client =
+            process_has_display_timing_client_locked(state, process_id);
+        const auto resolved = resolve_flattened_display_scene_locked(
+            state, process_id, *attempt, requests_userspace_prewarm, scenes);
+        if (debug_process != state.processes.end() &&
+            is_application_executable_path(debug_process->second.executable_path)) {
+            std::fprintf(stderr,
+                "[scene-debug] activate-check pid=%u resolved=%u timing=%u "
+                "phase=%u scene=%u event=%u route=%u reason=%u\n",
+                process_id, resolved ? 1U : 0U, timing_client ? 1U : 0U,
+                static_cast<unsigned>(attempt->phase),
+                scenes && scenes->client_scene(process_id).has_value() ? 1U : 0U,
+                application_event_object_for_process_locked(state, process_id)
+                    .value_or(0U),
+                has_active_application_route_locked(state) ? 1U : 0U,
+                static_cast<unsigned>(state.application_suspension_reason));
+            std::fflush(stderr);
+        }
         const auto resumes_locked_scene =
             attempt->phase ==
                 KernelSharedState::ApplicationLaunchPhase::Suspended &&
@@ -2661,7 +2734,66 @@ namespace {
                 state.held_application_launch.reset();
             if (scenes)
                 scenes->activate_client_scene(process_id);
+            if (debug_process != state.processes.end() &&
+                is_application_executable_path(debug_process->second.executable_path)) {
+                std::fprintf(stderr,
+                    "[scene-debug] activate-done pid=%u active-scene=%u "
+                    "active-event=%u fg=%u phase=%u\n",
+                    process_id,
+                    state.active_application_scene
+                        ? state.active_application_scene->process_id
+                        : 0U,
+                    state.active_application_event_object,
+                    state.foreground_application_attempt_process_id.value_or(0U),
+                    static_cast<unsigned>(attempt->phase));
+                std::fflush(stderr);
+            }
         }
+    }
+
+    // A prewarmed application can receive its first lifecycle event only after
+    // the lock slider has completed.  That event is the firmware's foreground
+    // rendezvous for the application that was already rendering behind the
+    // lock scene; it is not an icon-selection lookup and therefore has no
+    // launch attempt to consume.  Bind a normal lifecycle-origin attempt to
+    // this exact completed unlock so the existing scene admission path can
+    // promote it without naming an application or page.
+    bool promote_application_after_unlock_locked(
+        KernelSharedState& state, std::uint32_t process_id)
+    {
+        if (state.springboard_lock_screen_active != false ||
+            state.springboard_unlock_touch_pending ||
+            state.springboard_unlock_touch_active ||
+            state.springboard_unlock_touch_end_sequence == 0U ||
+            state.springboard_pending_launch_touch_sequence != 0U ||
+            has_active_application_route_locked(state) ||
+            state.application_touch_suspended ||
+            !application_event_object_for_process_locked(state, process_id)) {
+            return false;
+        }
+        const auto process = state.processes.find(process_id);
+        if (process == state.processes.end() || process->second.exited ||
+            !is_application_executable_path(process->second.executable_path)) {
+            return false;
+        }
+        const auto existing = launch_attempt_locked(state, process_id);
+        if (existing && existing->phase !=
+                            KernelSharedState::ApplicationLaunchPhase::Suspended) {
+            return false;
+        }
+        auto& attempt = begin_launch_attempt_locked(state, process_id, 0U,
+            KernelSharedState::ApplicationLaunchOrigin::ForegroundLifecycle);
+        // The lifecycle event is already the post-unlock foreground proof.
+        // Display timing may still be disabled while SpringBoard is handing
+        // the panel back, so do not wait for the first VSync registration to
+        // authorize this exact route; the normal scene/event checks below
+        // still gate ownership.
+        attempt.phase = KernelSharedState::ApplicationLaunchPhase::Launching;
+        state.foreground_application_attempt_process_id = process_id;
+        release_application_fullscreen_suppression_locked(state, process_id);
+        ensure_foreground_transition_snapshot_locked(
+            state, process_id, attempt, true, false);
+        return true;
     }
 
 } // namespace
@@ -2802,6 +2934,13 @@ std::optional<std::uint32_t> record_application_scene_transform(
         KernelSharedState::PendingApplicationSceneTransform { process_id,
             transform };
     state.application_scene_transforms[process_id] = transform;
+    std::fprintf(stderr,
+        "[scene-debug] transform render-pid=%u context=%u app=%u "
+        "offset=%f,%f origin-y=%f\n",
+        render_process_id, context, process_id,
+        transform.presentation_offset_x, transform.presentation_offset_y,
+        transform.screen_origin_y);
+    std::fflush(stderr);
     if (owns_active_route && !exact_held_launch) {
         state.active_application_scene->touch_transform = transform;
         state.active_application_event_object =
@@ -2922,6 +3061,20 @@ void record_application_event_delivery_locked(KernelSharedState& state,
         return;
     }
     const auto process_id = destination_port->receive_owner;
+    std::fprintf(stderr,
+        "[scene-debug] event sender=%u destination=%u type=%u app=%u "
+        "lock=%u unlock-pending=%u unlock-active=%u active-scene=%u "
+        "active-event=%u fg-attempt=%u\n",
+        sender_pid, destination, event_type, process_id,
+        state.springboard_lock_screen_active.value_or(false) ? 1U : 0U,
+        state.springboard_unlock_touch_pending ? 1U : 0U,
+        state.springboard_unlock_touch_active ? 1U : 0U,
+        state.active_application_scene
+            ? state.active_application_scene->process_id
+            : 0U,
+        state.active_application_event_object,
+        state.foreground_application_attempt_process_id.value_or(0U));
+    std::fflush(stderr);
     const auto resume_origin_touch_sequence =
         event_type == application_transition_event_type
             ? state.springboard_pending_launch_touch_sequence
@@ -2945,6 +3098,9 @@ void record_application_event_delivery_locked(KernelSharedState& state,
             state, process_id, resume_origin_touch_sequence);
     }
     state.application_event_objects_by_process[process_id] = destination;
+    const auto unlock_promotion =
+        event_type == application_transition_event_type &&
+        promote_application_after_unlock_locked(state, process_id);
     state.mark_foreground_transition_locked(
         KernelSharedState::ForegroundTransitionMilestone::EventPortReady,
         process_id);
@@ -2956,6 +3112,12 @@ void record_application_event_delivery_locked(KernelSharedState& state,
     // arrives after a LayerKit commit, or after display timing becomes live,
     // cannot strand an otherwise authorized foreground launch.
     activate_resolved_application_locked(state, process_id, scenes);
+    if (unlock_promotion && state.active_application_scene &&
+        state.active_application_scene->process_id == process_id &&
+        state.active_application_event_object == destination) {
+        state.springboard_unlock_touch_begin_sequence = 0U;
+        state.springboard_unlock_touch_end_sequence = 0U;
+    }
 }
 
 void record_application_remote_scene_commit_locked(KernelSharedState& state,
@@ -2964,6 +3126,16 @@ void record_application_remote_scene_commit_locked(KernelSharedState& state,
 {
     const auto application = state.processes.find(sender_pid);
     const auto destination_port = state.mach_port_objects.lookup(destination);
+    if (application != state.processes.end() &&
+        is_application_executable_path(application->second.executable_path)) {
+        std::fprintf(stderr,
+            "[scene-debug] remote sender=%u destination=%u owner=%u "
+            "path=%s\n",
+            sender_pid, destination,
+            destination_port ? destination_port->receive_owner : 0U,
+            application->second.executable_path.c_str());
+        std::fflush(stderr);
+    }
     if (application == state.processes.end() || application->second.exited ||
         !is_application_executable_path(application->second.executable_path) ||
         !destination_port ||
@@ -2977,6 +3149,10 @@ void record_application_remote_scene_commit_locked(KernelSharedState& state,
         KernelSharedState::ForegroundTransitionMilestone::SceneCommitted,
         sender_pid);
     scenes->commit_client_scene(sender_pid, std::nullopt);
+    std::fprintf(stderr,
+        "[scene-debug] remote-committed sender=%u destination=%u\n",
+        sender_pid, destination);
+    std::fflush(stderr);
     activate_resolved_application_locked(state, sender_pid, scenes);
 }
 
@@ -2997,6 +3173,19 @@ void record_application_suspension_state(KernelSharedState& state,
         !destination_port || destination_port->receive_owner != process_id) {
         return;
     }
+
+    std::fprintf(stderr,
+        "[scene-debug] suspension pid=%u suspended=%u active-scene=%u "
+        "active-event=%u fg-attempt=%u lock=%u reason=%u\n",
+        process_id, suspended ? 1U : 0U,
+        state.active_application_scene
+            ? state.active_application_scene->process_id
+            : 0U,
+        state.active_application_event_object,
+        state.foreground_application_attempt_process_id.value_or(0U),
+        state.springboard_lock_screen_active.value_or(false) ? 1U : 0U,
+        static_cast<unsigned>(state.application_suspension_reason));
+    std::fflush(stderr);
 
     if (!suspended) {
         auto* attempt = launch_attempt_locked(state, process_id);

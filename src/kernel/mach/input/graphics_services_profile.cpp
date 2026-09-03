@@ -21,6 +21,7 @@ namespace {
     .hand_phase_types = {1, 2, 6, 3},
     .path_phase_types = {2, 2, 2, 2},
     .idle_duration_reset_event_type = 101,
+    .idle_duration_reset_info_size = sizeof(std::uint64_t),
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -42,6 +43,7 @@ namespace {
     .hand_phase_types = {1, 2, 6, 3},
     .path_phase_types = {1, 2, 5, 3},
     .idle_duration_reset_event_type = 101,
+    .idle_duration_reset_info_size = sizeof(std::uint64_t),
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -63,6 +65,38 @@ namespace {
     .hand_phase_types = {1, 2, 6, 3},
     .path_phase_types = {1, 2, 5, 3},
     .idle_duration_reset_event_type = 101,
+    .idle_duration_reset_info_size = sizeof(std::uint64_t),
+    .system_events = {
+        .home = {1000, 1001},
+        .lock = {1010, 1011},
+        .volume_up = {1006, 1007},
+        .volume_down = {1008, 1009},
+        .ringer_switch = {1012, 1013},
+    },
+};
+
+    // Darwin 11's GraphicsServices keeps the modern hand/path layout but
+    // exposes the reset-idle operation as GSEventResetIdleTimer (100) and
+    // sends a 52-byte record with no trailing event-info payload.  Keep this
+    // ABI separate from the older 101 profile so the wire record follows the
+    // accessor implementation loaded by the guest.
+    constexpr GraphicsServicesInputProfile darwin11_0_profile{
+    .name = "darwin11.0",
+    .event_record_size = 52,
+    .record_timestamp_offset = 28,
+    .record_info_size_offset = 48,
+    .hand_info_size = 36,
+    .path_info_size = 24,
+    // UIKit 9A334 reads this byte at GSEventRecord+0x56 (hand+34); the
+    // preceding hand byte is reserved in this ABI.  Keep the offset in the
+    // profile because earlier GraphicsServices layouts place the count at
+    // hand+33.
+    .hand_path_count_offset = 34,
+    .path_location_offset = 12,
+    .hand_phase_types = {1, 2, 6, 3},
+    .path_phase_types = {1, 2, 5, 3},
+    .idle_duration_reset_event_type = 100,
+    .idle_duration_reset_info_size = 0,
     .system_events = {
         .home = {1000, 1001},
         .lock = {1010, 1011},
@@ -118,11 +152,84 @@ namespace {
         return std::nullopt;
     }
 
+    std::optional<std::uint32_t> thumb_add_w_immediate(
+        const MachOImage& image, const MachSymbol& symbol,
+        std::uint8_t source)
+    {
+        // ADD.W (immediate) is used by the ARMv7 GraphicsServices accessors
+        // when they advance past the CFRuntime header. Ignore the i bit so the
+        // full 12-bit immediate form is accepted, while bit 7 excludes SUB.W.
+        constexpr std::uint16_t add_w_mask = 0xfb80U;
+        constexpr std::uint16_t add_w = 0xf100U;
+        for (std::uint32_t offset = 0; offset < 64U; offset += 2U) {
+            const auto first = read_thumb_halfword(image, symbol, offset);
+            const auto second =
+                read_thumb_halfword(image, symbol, offset + 2U);
+            if (!first || !second || (*first & add_w_mask) != add_w ||
+                (*first & 0xfU) != source || (*second & 0x8000U) != 0U) {
+                continue;
+            }
+            const auto immediate =
+                (((*first >> 10U) & 1U) << 11U) |
+                (((*second >> 12U) & 0x7U) << 8U) | (*second & 0xffU);
+            return immediate;
+        }
+        return std::nullopt;
+    }
+
     std::uint32_t thumb_register_count(std::uint16_t register_list)
     {
         return static_cast<std::uint32_t>(
                    std::popcount(static_cast<unsigned>(register_list))) *
                static_cast<std::uint32_t>(sizeof(std::uint32_t));
+    }
+
+    std::optional<std::uint32_t> thumb_inline_store_size(
+        const MachOImage& image, const MachSymbol& symbol)
+    {
+        // A newer compiler may emit individual stores instead of one
+        // contiguous LDM/STM copy. Recover the output structure extent from
+        // stores based at ABI argument r0.
+        std::uint32_t size = 0;
+        for (std::uint32_t offset = 0; offset < 128U; offset += 2U) {
+            const auto first = read_thumb_halfword(image, symbol, offset);
+            if (!first)
+                break;
+            // Accessors are leaf functions; do not read the following
+            // function when an inline store sequence ends with POP {...,pc}
+            // (or the equivalent BX LR).
+            if ((*first & 0xff00U) == 0xbd00U || *first == 0x4770U)
+                break;
+
+            // STR (word, immediate), Thumb-1: 0110 imm5 Rn Rt.
+            if ((*first & 0xf800U) == 0x6000U &&
+                ((*first >> 3U) & 0x7U) == 0U) {
+                size = std::max(size,
+                    (((*first >> 6U) & 0x1fU) * 4U) + 4U);
+                continue;
+            }
+
+            // STMIA.W r0!, {registers}.
+            if ((*first & 0xfff0U) == 0xe880U) {
+                const auto second =
+                    read_thumb_halfword(image, symbol, offset + 2U);
+                if (second)
+                    size = std::max(size, thumb_register_count(*second));
+                // The loop advances by one halfword after this body; skip the
+                // second halfword of the wide instruction as well.
+                offset += 2U;
+                continue;
+            }
+
+            // STMIA r0!, {registers}, Thumb-1.
+            if ((*first & 0xf800U) == 0xc000U &&
+                ((*first >> 8U) & 0x7U) == 0U) {
+                size = std::max(size,
+                    thumb_register_count(*first & 0xffU));
+            }
+        }
+        return size == 0U ? std::nullopt
+                          : std::optional<std::uint32_t> { size };
     }
 
     std::optional<std::uint32_t> thumb_inline_copy_size(
@@ -235,6 +342,8 @@ namespace {
             return inline_copy_size;
         if (const auto size = thumb_movs_immediate(image, *symbol, 2U); size)
             return size;
+        if (const auto size = thumb_inline_store_size(image, *symbol); size)
+            return size;
         return thumb_inline_copy_size(image, *symbol);
     }
 
@@ -274,6 +383,30 @@ namespace {
         if (const auto record_offset = thumb_adds_immediate(image, *symbol, 1U);
             record_offset && *record_offset >= cf_runtime_base_size) {
             return *record_offset - cf_runtime_base_size;
+        }
+        if (const auto record_offset = thumb_add_w_immediate(image, *symbol, 1U);
+            record_offset && *record_offset >= cf_runtime_base_size) {
+            return *record_offset - cf_runtime_base_size;
+        }
+        return std::nullopt;
+    }
+
+    std::optional<std::uint32_t> detected_idle_reset_event_type(
+        const MachOImage& image)
+    {
+        // GraphicsServices has used both GSEventResetIdleDuration and
+        // GSEventResetIdleTimer.  Read the event type emitted by the exported
+        // helper instead of assuming it from a firmware/build identifier.
+        for (const auto symbol_name : { "_GSEventResetIdleTimer",
+                 "_GSEventResetIdleDuration" }) {
+            const auto* symbol = image.find_symbol(symbol_name);
+            if (symbol == nullptr)
+                continue;
+            if (const auto event_type =
+                    thumb_movs_immediate(image, *symbol, 0U);
+                event_type) {
+                return event_type;
+            }
         }
         return std::nullopt;
     }
@@ -319,6 +452,8 @@ const GraphicsServicesInputProfile& GraphicsServicesInputProfile::for_abi(
     switch (abi) {
     case KernelSharedState::GraphicsInputAbi::Darwin9_4:
         return darwin9_4_profile;
+    case KernelSharedState::GraphicsInputAbi::Darwin11_0:
+        return darwin11_0_profile;
     case KernelSharedState::GraphicsInputAbi::Darwin9_3:
         return darwin9_3_profile;
     case KernelSharedState::GraphicsInputAbi::LegacyMouse:
@@ -348,6 +483,11 @@ GraphicsServicesInputProfile::detect(const MachOImage& image)
     if (record_size == darwin9_4_profile.event_record_size &&
         hand_size == darwin9_4_profile.hand_info_size &&
         path_size == darwin9_4_profile.path_info_size) {
+        if (const auto event_type = detected_idle_reset_event_type(image);
+            event_type &&
+            *event_type == darwin11_0_profile.idle_duration_reset_event_type) {
+            return KernelSharedState::GraphicsInputAbi::Darwin11_0;
+        }
         return KernelSharedState::GraphicsInputAbi::Darwin9_4;
     }
     return std::nullopt;

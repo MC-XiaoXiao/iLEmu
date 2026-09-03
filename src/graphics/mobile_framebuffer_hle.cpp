@@ -357,6 +357,7 @@ std::shared_ptr<HostSurface> MobileFramebufferHle::acquire_composition_surface()
 
 bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
 {
+    constexpr bool debug_submission = false;
     if (!display_ || !host_graphics_->accelerated() || !command_encoder_)
         return false;
     ensure_scanout_surface();
@@ -401,14 +402,56 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
     prepared_layers.reserve(layers_.size());
     for (const auto& [layer, state] : layers_) {
         const auto backing = surface_store_->find(state.surface_id);
-        if (backing && !application_surface_allowed(
-                           backing->provenance.producer_process_id,
-                           backing->provenance.publication_sequence)) {
+        const auto allowed =
+            !backing || application_surface_allowed(
+                            backing->provenance.producer_process_id,
+                            backing->provenance.publication_sequence);
+        if (!allowed) {
             continue;
         }
         const auto source = surface_store_->host_surface(state.surface_id);
         if (source)
             source->mark_scanout_presentation();
+        if (debug_submission) {
+            std::string message =
+                "[mfb-debug] layer pid=" + std::to_string(call.process_id()) +
+                " order=" + std::to_string(layer) +
+                " id=" + std::to_string(state.surface_id) +
+                " allowed=" + (allowed ? "1" : "0") +
+                " src=" + std::to_string(state.source.x) + "," +
+                std::to_string(state.source.y) + "," +
+                std::to_string(state.source.width) + "," +
+                std::to_string(state.source.height) +
+                " dst=" + std::to_string(state.destination.x) + "," +
+                std::to_string(state.destination.y) + "," +
+                std::to_string(state.destination.width) + "," +
+                std::to_string(state.destination.height);
+            if (backing) {
+                message += " backing=" + std::to_string(backing->width) +
+                           "x" + std::to_string(backing->height) +
+                           " pitch=" + std::to_string(backing->bytes_per_row) +
+                           " fmt=" + std::to_string(backing->pixel_format) +
+                           " producer=" +
+                           std::to_string(backing->provenance.producer_process_id) +
+                           " publication=" +
+                           std::to_string(backing->provenance.publication_sequence);
+            } else {
+                message += " backing=missing";
+            }
+            if (source) {
+                const auto descriptor = source->descriptor();
+                message += " host=" + std::to_string(descriptor.width) + "x" +
+                           std::to_string(descriptor.height) +
+                           " hostfmt=" + std::to_string(descriptor.pixel_format) +
+                           " cpu=" + std::to_string(source->cpu_generation()) +
+                           " gpu=" + std::to_string(source->gpu_generation()) +
+                           " damage=" +
+                           std::to_string(source->cpu_damage_rectangles().size());
+            } else {
+                message += " host=missing";
+            }
+            call.output().write(message + "\n");
+        }
         // Page-granular guest dirtiness cannot be merged safely into a surface
         // whose complete contents are newer on the GPU. CPU-owned layers still
         // need their direct mapped writes imported before presentation.
@@ -444,6 +487,15 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
         prepared_layers.push_back(
             { layer, state, source, *source_rectangle, *destination_rectangle,
                 std::max(source->cpu_generation(), source->gpu_generation()) });
+    }
+
+    if (debug_submission) {
+        call.output().write(
+            "[mfb-debug] submit pid=" + std::to_string(call.process_id()) +
+            " layers=" + std::to_string(layers_.size()) +
+            " prepared=" + std::to_string(prepared_layers.size()) +
+            " scanout-valid=" + (scanout_contents_valid_ ? "1" : "0") +
+            " background=" + std::to_string(background_argb_) + "\n");
     }
 
     const auto right = [](const HostRectangle& rectangle) {
@@ -606,6 +658,13 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
         }
     }
 
+    if (debug_submission) {
+        call.output().write(
+            "[mfb-debug] damage pid=" + std::to_string(call.process_id()) +
+            " rects=" + std::to_string(damage.size()) +
+            " submitted=" + std::to_string(submitted_layers_.size()) + "\n");
+    }
+
     auto composition_surface = scanout_surface_;
     if (!damage.empty()) {
         composition_surface = acquire_composition_surface();
@@ -675,6 +734,13 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
             return std::max(
                 scanout->cpu_generation(), scanout->gpu_generation());
         });
+    if (debug_submission) {
+        call.output().write(
+            "[mfb-debug] published pid=" + std::to_string(call.process_id()) +
+            " scanout=" + std::to_string(scanout->key().surface) +
+            " cpu=" + std::to_string(scanout->cpu_generation()) +
+            " gpu=" + std::to_string(scanout->gpu_generation()) + "\n");
+    }
     return true;
 }
 
