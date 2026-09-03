@@ -826,6 +826,26 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
 {
     if (display_ == nullptr)
         return;
+    // A remote client can already be the semantic foreground scene while its
+    // compositor-owned surface is still retained by SpringBoard.  Do not let
+    // a late system-layer transaction replace that retained scene with the
+    // lock-screen backing.  This is capability/state based and applies to any
+    // client, including transitions that start another application.
+    if (shared_state_ && scene_coordinator_) {
+        std::lock_guard lock { shared_state_->mach_mutex };
+        const auto process = shared_state_->processes.find(call.process_id());
+        const auto active_scene = shared_state_->active_application_scene;
+        const auto presentable = active_scene &&
+            scene_coordinator_->client_scene_presentable(
+                active_scene->process_id);
+        if (process != shared_state_->processes.end() && active_scene &&
+            active_scene->process_id != call.process_id() && presentable &&
+            !is_application_executable_path(process->second.executable_path) &&
+            !shared_state_->application_touch_suspended) {
+            call.set_return(iokit_abi::success);
+            return;
+        }
+    }
     if (submit_host_layers(call))
         return;
     scanout_contents_valid_ = false;
