@@ -63,16 +63,7 @@ namespace {
         const AddressSpace& memory, std::uint32_t start, std::uint32_t size,
         std::uint32_t mask)
     {
-        auto candidate = find_free_guest_region(memory, start, size);
-        while (candidate && (*candidate & mask) != 0U) {
-            if (*candidate > std::numeric_limits<std::uint32_t>::max() -
-                                 AddressSpace::page_size) {
-                return std::nullopt;
-            }
-            candidate = find_free_guest_region(
-                memory, *candidate + AddressSpace::page_size, size);
-        }
-        return candidate;
+        return find_free_guest_region(memory, start, size, mask);
     }
 
 } // namespace
