@@ -508,29 +508,6 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput& input)
     const auto result = graphics_services_input::enqueue_touch(*shared_state_,
         input, scene_coordinator_.get(), presentation_tracker_.get(),
         &home_recovery_requested, &input_sequence);
-    if (input.phase == TouchPhase::Down || input.phase == TouchPhase::Up) {
-        std::lock_guard lock { shared_state_->mach_mutex };
-        std::fprintf(stderr,
-            "[scene-debug] touch phase=%u sequence=%llu lock=%u "
-            "unlock-pending=%u unlock-active=%u app-suspended=%u "
-            "reason=%u active-scene=%u active-event=%u fg-attempt=%u\n",
-            static_cast<unsigned>(input.phase),
-            static_cast<unsigned long long>(input_sequence),
-            shared_state_->springboard_lock_screen_active.value_or(false)
-                ? 1U
-                : 0U,
-            shared_state_->springboard_unlock_touch_pending ? 1U : 0U,
-            shared_state_->springboard_unlock_touch_active ? 1U : 0U,
-            shared_state_->application_touch_suspended ? 1U : 0U,
-            static_cast<unsigned>(shared_state_->application_suspension_reason),
-            shared_state_->active_application_scene
-                ? shared_state_->active_application_scene->process_id
-                : 0U,
-            shared_state_->active_application_event_object,
-            shared_state_->foreground_application_attempt_process_id.value_or(
-                0U));
-        std::fflush(stderr);
-    }
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto service = shared_state_->bootstrap_service_objects.find(
@@ -636,25 +613,6 @@ void CompatibilityKernel::enqueue_system_button_impl(
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto display_asleep =
             shared_state_->requested_display_power_state.value_or(1U) == 0U;
-        std::fprintf(stderr,
-            "[scene-debug] button-down button=%u display-asleep=%u "
-            "lock=%u unlock-pending=%u unlock-active=%u app-suspended=%u "
-            "reason=%u active-scene=%u active-event=%u fg-attempt=%u\n",
-            static_cast<unsigned>(input.button), display_asleep ? 1U : 0U,
-            shared_state_->springboard_lock_screen_active.value_or(false)
-                ? 1U
-                : 0U,
-            shared_state_->springboard_unlock_touch_pending ? 1U : 0U,
-            shared_state_->springboard_unlock_touch_active ? 1U : 0U,
-            shared_state_->application_touch_suspended ? 1U : 0U,
-            static_cast<unsigned>(shared_state_->application_suspension_reason),
-            shared_state_->active_application_scene
-                ? shared_state_->active_application_scene->process_id
-                : 0U,
-            shared_state_->active_application_event_object,
-            shared_state_->foreground_application_attempt_process_id.value_or(
-                0U));
-        std::fflush(stderr);
         if (display_asleep && !force_home_transition) {
             wake_button_pressed_while_display_asleep = true;
             wake_only_system_button = true;
