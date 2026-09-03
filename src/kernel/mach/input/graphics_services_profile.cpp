@@ -41,7 +41,9 @@ namespace {
     .hand_path_count_offset = 33,
     .path_location_offset = 12,
     .hand_phase_types = {1, 2, 6, 3},
-    .path_phase_types = {1, 2, 5, 3},
+    // GSPathInfo+0x01 is pathIdentity, not a phase field. Keep the contact
+    // identity stable for the complete down/move/up lifetime.
+    .path_phase_types = {2, 2, 2, 2},
     .idle_duration_reset_event_type = 101,
     .idle_duration_reset_info_size = sizeof(std::uint64_t),
     .system_events = {
@@ -63,7 +65,7 @@ namespace {
     .hand_path_count_offset = 33,
     .path_location_offset = 12,
     .hand_phase_types = {1, 2, 6, 3},
-    .path_phase_types = {1, 2, 5, 3},
+    .path_phase_types = {2, 2, 2, 2},
     .idle_duration_reset_event_type = 101,
     .idle_duration_reset_info_size = sizeof(std::uint64_t),
     .system_events = {
@@ -94,7 +96,7 @@ namespace {
     .hand_path_count_offset = 34,
     .path_location_offset = 12,
     .hand_phase_types = {1, 2, 6, 3},
-    .path_phase_types = {1, 2, 5, 3},
+    .path_phase_types = {2, 2, 2, 2},
     .idle_duration_reset_event_type = 100,
     .idle_duration_reset_info_size = 0,
     .system_events = {
