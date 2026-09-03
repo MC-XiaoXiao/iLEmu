@@ -826,6 +826,22 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
 {
     if (display_ == nullptr)
         return;
+    if (shared_state_ && scene_coordinator_) {
+        std::lock_guard lock { shared_state_->mach_mutex };
+        const auto process = shared_state_->processes.find(call.process_id());
+        const auto active_app = shared_state_->active_application_scene;
+        const auto app_scene_active = active_app &&
+            scene_coordinator_->client_scene_active(active_app->process_id);
+        if (process != shared_state_->processes.end() && active_app &&
+            active_app->process_id != call.process_id() && app_scene_active &&
+            !is_application_executable_path(process->second.executable_path)) {
+            // A foreground remote scene owns the panel. System-layer submits
+            // that belong to the preceding lock transaction must not replace
+            // the application's retained display surface.
+            call.set_return(iokit_abi::success);
+            return;
+        }
+    }
     if (submit_host_layers(call))
         return;
     scanout_contents_valid_ = false;
