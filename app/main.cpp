@@ -2393,7 +2393,13 @@ void boot(const std::vector<std::string>& args, Output& output)
             ? std::optional<bool> { }
             : std::optional<bool> { *activation ==
                                     LockdownActivation::Activated };
-    if (activation_override && *activation_override) {
+    const auto activation_hardware_model_policy =
+        darwin_kernel_profile.abi_epoch != DarwinAbiEpoch::Unknown
+            ? darwin_kernel_profile.activation_hardware_model_profile
+            : device.activation_hardware_model_policy;
+    if (activation_override && *activation_override &&
+        activation_hardware_model_policy ==
+            ActivationHardwareModelPolicy::DevelopmentBoard) {
         // The stock daemon has a firmware-supported development-board escape
         // hatch for a device without a baseband/activation record. Selecting it
         // only for the explicit activated simulator profile leaves preserve
@@ -4123,17 +4129,54 @@ void boot(const std::vector<std::string>& args, Output& output)
                 return info ? std::optional { info->state } : std::nullopt;
             });
         runtime.kernel->set_mach_message_wake_handler(
-            [&runtime_index, &scheduler](
+            [&runtime_index, &scheduler, &output](
                 std::uint32_t pid, std::uint32_t object) {
                 auto* receiver = runtime_index.find(pid);
-                if (receiver == nullptr)
+                if (receiver == nullptr) {
+                    output.line("[input-debug] host-wake-request pid=" +
+                                std::to_string(pid) + " object=" +
+                                std::to_string(object) + " runtime=none");
                     return XnuThreadWakeResult { };
+                }
                 const auto processor =
                     receiver->kernel->pending_mach_receiver_processor(object);
-                if (!processor)
+                if (!processor) {
+                    output.line("[input-debug] host-wake-request pid=" +
+                                std::to_string(pid) + " object=" +
+                                std::to_string(object) + " pending=none");
                     return XnuThreadWakeResult { };
-                return scheduler.wake_thread(XnuThreadId {
+                }
+                const auto wake = scheduler.wake_thread(XnuThreadId {
                     pid, static_cast<std::uint32_t>(*processor) });
+                output.line("[input-debug] host-wake-request pid=" +
+                            std::to_string(pid) + " object=" +
+                            std::to_string(object) + " pending=" +
+                            std::to_string(*processor) + " handled=" +
+                            std::to_string(wake.handled) + " preempt=" +
+                            std::to_string(wake.preemption_needed));
+                return wake;
+            });
+        runtime.kernel->set_graphics_input_wake_handler(
+            [&runtime_index, &scheduler, &output](std::uint32_t pid) {
+                auto* receiver = runtime_index.find(pid);
+                if (receiver == nullptr) {
+                    output.line("[input-debug] host-input-wake pid=" +
+                                std::to_string(pid) + " runtime=none");
+                    return XnuThreadWakeResult { };
+                }
+                XnuThreadWakeResult result { };
+                for (const auto processor :
+                    receiver->kernel->wake_graphics_input_waiters()) {
+                    const auto wake = scheduler.wake_thread(XnuThreadId {
+                        pid, static_cast<std::uint32_t>(processor) });
+                    result.handled |= wake.handled;
+                    result.preemption_needed |= wake.preemption_needed;
+                }
+                output.line("[input-debug] host-input-wake pid=" +
+                            std::to_string(pid) + " handled=" +
+                            std::to_string(result.handled) + " preempt=" +
+                            std::to_string(result.preemption_needed));
+                return result;
             });
         const auto create_child_runtime =
             [&, runtime_ptr](Cpu* parent_cpu,
@@ -6035,8 +6078,17 @@ void boot(const std::vector<std::string>& args, Output& output)
         std::vector<PreparedGuestSlice> prepared_slices;
         prepared_slices.reserve(scheduled_batch.size());
         std::optional<std::uint64_t> display_vsync_tick_budget;
-        const auto display_vsync_deadline =
-            initial_runtime->kernel->next_display_vsync_deadline();
+        std::optional<std::uint64_t> display_vsync_deadline;
+        for (auto& runtime : runtimes) {
+            if (runtime->kernel->process().exited)
+                continue;
+            const auto deadline =
+                runtime->kernel->next_display_vsync_deadline();
+            if (deadline &&
+                (!display_vsync_deadline ||
+                    *deadline < *display_vsync_deadline))
+                display_vsync_deadline = deadline;
+        }
         if (display_vsync_deadline) {
             const auto now = initial_runtime->kernel->current_absolute_time();
             if (*display_vsync_deadline > now) {
@@ -6474,9 +6526,11 @@ void boot(const std::vector<std::string>& args, Output& output)
             }
             if (!scheduler_completed) {
                 guest_execution_policy.observe(scheduled->thread, completion);
-                static_cast<void>(scheduler.complete_slice(scheduled->thread,
-                    result.ticks_consumed, completion,
-                    XnuTimeAccounting::Deferred));
+                const auto slice_completed = scheduler.complete_slice(
+                    scheduled->thread, result.ticks_consumed, completion,
+                    XnuTimeAccounting::Deferred);
+                if (slice_completed && completion == XnuSliceCompletion::Block)
+                    runtime.kernel->notify_thread_blocked(index);
                 if (completion == XnuSliceCompletion::Terminate &&
                     runtime.kernel->process().exited) {
                     scheduler.remove_process(runtime.kernel->process().pid);
@@ -6574,8 +6628,23 @@ void boot(const std::vector<std::string>& args, Output& output)
             // the next polling iteration in both cases;
             // resolve_display_urgent_threads() still selects a thread only when
             // it has a pending VSync receive.
-            display_urgent_process =
-                display_scanout_owner->kernel->process().pid;
+            display_urgent_process.reset();
+            std::optional<std::uint64_t> earliest_vsync;
+            for (auto& runtime : runtimes) {
+                if (runtime->kernel->process().exited)
+                    continue;
+                const auto deadline =
+                    runtime->kernel->next_display_vsync_deadline();
+                if (deadline &&
+                    (!earliest_vsync || *deadline < *earliest_vsync)) {
+                    earliest_vsync = deadline;
+                    display_urgent_process =
+                        runtime->kernel->process().pid;
+                }
+            }
+            if (!display_urgent_process)
+                display_urgent_process =
+                    display_scanout_owner->kernel->process().pid;
         }
         const auto display_submissions =
             initial_runtime->kernel->display_submitted_frames();
@@ -6600,8 +6669,18 @@ void boot(const std::vector<std::string>& args, Output& output)
             std::optional<HostResourceController::Clock::time_point>
                 host_compile_deadline = next_host_control_deadline();
             if (realtime_pacer) {
-                if (const auto display_deadline = initial_runtime->kernel
-                        ->next_display_vsync_deadline()) {
+                std::optional<std::uint64_t> display_deadline;
+                for (auto& runtime : runtimes) {
+                    if (runtime->kernel->process().exited)
+                        continue;
+                    const auto candidate =
+                        runtime->kernel->next_display_vsync_deadline();
+                    if (candidate &&
+                        (!display_deadline ||
+                            *candidate < *display_deadline))
+                        display_deadline = candidate;
+                }
+                if (display_deadline) {
                     const auto host_display_deadline =
                         realtime_pacer->host_deadline_for(*display_deadline);
                     if (!host_compile_deadline ||
