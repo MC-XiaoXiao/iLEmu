@@ -2793,20 +2793,40 @@ std::optional<std::uint32_t> record_application_scene_transform(
     // admission signal.  Bind a lifecycle attempt here so the normal scene
     // activation path can consume the transform and establish touch routing;
     // do not steal an already-resolved foreground route.
-    if (!process_is_springboard_locked(state, render_process_id) &&
-        !has_active_application_route_locked(state) &&
+    if (!has_active_application_route_locked(state) &&
         state.application_suspension_reason ==
             KernelSharedState::ApplicationSuspensionReason::None) {
-        const auto process = state.processes.find(render_process_id);
+        // LayerKit may be serviced by a shared renderer (for example lsd),
+        // so the caller PID is not necessarily the UIKit client's PID. When
+        // that happens, use the pending event right as the capability-bound
+        // client identity rather than dropping the first live transform.
+        auto candidate_process_id = render_process_id;
+        const auto render_process = state.processes.find(render_process_id);
+        if (render_process == state.processes.end() ||
+            !is_application_executable_path(
+                render_process->second.executable_path)) {
+            if (const auto pending = state.mach_port_objects.lookup(
+                    state.pending_application_event_object);
+                pending && pending->receive_owner != 0U) {
+                candidate_process_id = pending->receive_owner;
+            }
+        }
+        const auto process = state.processes.find(candidate_process_id);
         if (process != state.processes.end() && !process->second.exited &&
-            is_application_executable_path(process->second.executable_path) &&
-            !launch_attempt_locked(state, render_process_id)) {
-            auto& attempt = begin_launch_attempt_locked(state, render_process_id,
-                0U, KernelSharedState::ApplicationLaunchOrigin::
-                         ForegroundLifecycle);
+            is_application_executable_path(process->second.executable_path)) {
+            auto* existing = launch_attempt_locked(state, candidate_process_id);
+            auto& attempt = existing
+                ? *existing
+                : begin_launch_attempt_locked(state, candidate_process_id, 0U,
+                      KernelSharedState::ApplicationLaunchOrigin::
+                          ForegroundLifecycle);
+            // A stale prewarm/lookup token must not mask the first live root;
+            // the capability-bound pending event and transform re-authorize
+            // this client while no other foreground route is active.
             attempt.phase =
                 KernelSharedState::ApplicationLaunchPhase::Launching;
-            state.foreground_application_attempt_process_id = render_process_id;
+            state.foreground_application_attempt_process_id =
+                candidate_process_id;
         }
     }
     const auto exact_scene_target = [&state](std::uint32_t candidate) {
