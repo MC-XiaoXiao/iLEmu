@@ -706,24 +706,27 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call)
             display_->width() * core_surface_abi::bytes_per_bgra_pixel) {
         return;
     }
+    bool foreground_application_owner = false;
     if (shared_state_) {
         std::lock_guard lock { shared_state_->mach_mutex };
         const auto process = shared_state_->processes.find(call.process_id());
         if (process != shared_state_->processes.end() &&
-            is_application_executable_path(process->second.executable_path) &&
-            !active_application_owns_display_locked(*shared_state_,
-                call.process_id(),
+            is_application_executable_path(process->second.executable_path)) {
+            foreground_application_owner = active_application_owns_display_locked(
+                *shared_state_, call.process_id(),
                 scene_coordinator_
                     ? std::optional<bool> { scene_coordinator_
                               ->client_scene_presentable(call.process_id()) }
-                    : std::nullopt)) {
-            return;
+                    : std::nullopt);
+            if (!foreground_application_owner)
+                return;
         }
     }
     // Unlock publishes guest writes to the CoreSurface backing. Once the
     // firmware has entered transactional hardware-layer presentation, only
     // IOMobileFramebuffer SwapEnd may turn those backing updates into scanout.
-    if (presentation_tracker_ && presentation_tracker_->has_presented_frame()) {
+    if (presentation_tracker_ && presentation_tracker_->has_presented_frame() &&
+        !foreground_application_owner) {
         return;
     }
     const auto bytes =

@@ -217,7 +217,14 @@ Mbx2dHle::Mbx2dHle(UserlandHleRegistry& registry,
         static_cast<void>(
             submit_host_commands(false, PerfSubmitReason::MbxFlush));
         submit_destination(call, false);
-        if (display_ && (!presentation_tracker_ ||
+        bool foreground_application_owner = false;
+        if (shared_state_) {
+            std::lock_guard lock { shared_state_->mach_mutex };
+            foreground_application_owner = active_application_owns_display_locked(
+                *shared_state_, call.process_id(), std::nullopt);
+        }
+        if (display_ && (foreground_application_owner ||
+                            !presentation_tracker_ ||
                             !presentation_tracker_->has_presented_frame()))
             display_->present(call.process_id());
         call.set_return(mbx_success);
@@ -1324,7 +1331,14 @@ void Mbx2dHle::submit_destination(UserlandHleCall& call, bool context_api)
     // IOMobileFramebuffer SwapEnd owns scanout. MBX finish/swap still commits
     // pixels to its CoreSurface backing, but presenting that individual render
     // target would bypass the other retained layers.
-    if (presentation_tracker_ && presentation_tracker_->has_presented_frame()) {
+    bool foreground_application_owner = false;
+    if (shared_state_) {
+        std::lock_guard lock { shared_state_->mach_mutex };
+        foreground_application_owner = active_application_owns_display_locked(
+            *shared_state_, call.process_id(), std::nullopt);
+    }
+    if (presentation_tracker_ && presentation_tracker_->has_presented_frame() &&
+        !foreground_application_owner) {
         return;
     }
     if (host_graphics_->accelerated() && destination->host_surface) {
