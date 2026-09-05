@@ -1,5 +1,7 @@
 #include "ilemu/opengles_guest_profile.hpp"
 
+#include "ilemu/userland_hle.hpp"
+
 namespace ilemu {
 namespace {
 
@@ -82,6 +84,13 @@ namespace {
     };
 
 } // namespace
+
+EaglContextProfileKind detect_eagl_context_profile(const UserlandHleCall& call)
+{
+    return call.symbol_address("-[EAGLContext GetMacroContextPrivate]")
+               ? EaglContextProfileKind::FirmwareMacroDispatch
+               : EaglContextProfileKind::HostManagedPublicAbi;
+}
 
 const OpenGlesGuestProfile& open_gles_guest_profile(
     OpenGlesGuestProfileKind kind)

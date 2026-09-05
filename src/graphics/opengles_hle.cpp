@@ -173,6 +173,7 @@ void OpenGlesHle::reset()
     threads_.clear();
     contexts_.clear();
     eagl_contexts_.clear();
+    eagl_context_profile_.reset();
     surfaces_.clear();
     scanout_composition_.reset();
     resources_.reset();
@@ -193,6 +194,7 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
     threads_ = parent.threads_;
     contexts_ = parent.contexts_;
     eagl_contexts_ = parent.eagl_contexts_;
+    eagl_context_profile_ = parent.eagl_context_profile_;
     surfaces_ = parent.surfaces_;
     scanout_composition_.reset();
     resources_.inherit_state(parent.resources_);
@@ -1120,6 +1122,9 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
 
 void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
 {
+    // Resolve the native capability without patching its Objective-C entry.
+    registry.register_guest_function(std::string { opengles_image },
+        "-[EAGLContext GetMacroContextPrivate]");
     registry.register_objc_instance_method(std::string { opengles_image },
         "EAGLContext",
         "initWithAPI:properties:", "-[EAGLContext initWithAPI:properties:]",
@@ -1130,13 +1135,32 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                 call.set_return(0U);
                 return;
             }
-            const auto key = std::pair { call.process_id(), object };
-            if (!eagl_contexts_.contains(key)) {
+            const auto process_id = call.process_id();
+            if (!eagl_context_profile_)
+                eagl_context_profile_ = detect_eagl_context_profile(call);
+            if (*eagl_context_profile_ ==
+                EaglContextProfileKind::HostManagedPublicAbi) {
+                const auto key = std::pair { process_id, object };
+                if (!eagl_contexts_.contains(key)) {
+                    const auto handle = next_context_++;
+                    contexts_.emplace(handle, default_context_state());
+                    eagl_contexts_.emplace(key, handle);
+                }
+                call.set_return(object);
+                return;
+            }
+            call.resume_original_persistently([this, process_id](
+                                                  UserlandHleCall& completed) {
+                const auto initialized_object = completed.argument(0);
+                if (initialized_object == 0U)
+                    return;
+                const auto key = std::pair { process_id, initialized_object };
+                if (eagl_contexts_.contains(key))
+                    return;
                 const auto handle = next_context_++;
                 contexts_.emplace(handle, default_context_state());
                 eagl_contexts_.emplace(key, handle);
-            }
-            call.set_return(object);
+            });
         });
     registry.register_objc_class_method(std::string { opengles_image },
         "EAGLContext",
@@ -1144,6 +1168,30 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
         [this](UserlandHleCall& call) {
             const auto process_id = call.process_id();
             const auto object = call.argument(2);
+            if (!eagl_context_profile_)
+                eagl_context_profile_ = detect_eagl_context_profile(call);
+            if (*eagl_context_profile_ ==
+                EaglContextProfileKind::FirmwareMacroDispatch) {
+                call.resume_original_persistently(
+                    [this, process_id, object](UserlandHleCall& completed) {
+                        if (completed.argument(0) == 0U)
+                            return;
+                        auto& current = thread(completed);
+                        if (object == 0U) {
+                            current.context = 0U;
+                            return;
+                        }
+                        const auto key = std::pair { process_id, object };
+                        auto context = eagl_contexts_.find(key);
+                        if (context == eagl_contexts_.end()) {
+                            const auto handle = next_context_++;
+                            contexts_.emplace(handle, default_context_state());
+                            context = eagl_contexts_.emplace(key, handle).first;
+                        }
+                        current.context = context->second;
+                    });
+                return;
+            }
             auto& current = thread(call);
             const auto key = std::pair { process_id, object };
             const auto hle_context = eagl_contexts_.find(key);
@@ -2301,8 +2349,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             return;
         }
         if (all_channels && !scissor_enabled) {
-            std::fill(frame->pixels.begin(), frame->pixels.end(),
-                clear_argb);
+            std::fill(frame->pixels.begin(), frame->pixels.end(), clear_argb);
             if (!commit_render_target(call, *binding, std::move(*frame))) {
                 set_gl_error(call, gles_abi::invalid_operation);
             } else {

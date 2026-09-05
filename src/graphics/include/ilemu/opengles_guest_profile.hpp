@@ -5,6 +5,16 @@
 
 namespace ilemu {
 
+class UserlandHleCall;
+
+enum class EaglContextProfileKind {
+    HostManagedPublicAbi,
+    FirmwareMacroDispatch,
+};
+
+[[nodiscard]] EaglContextProfileKind detect_eagl_context_profile(
+    const UserlandHleCall& call);
+
 enum class OpenGlesGuestProfileKind {
     MbxLiteLegacy,
     MbxLiteFramebufferObjects,

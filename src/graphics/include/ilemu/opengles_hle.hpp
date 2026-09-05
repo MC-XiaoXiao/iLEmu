@@ -224,6 +224,7 @@ private:
     std::map<std::uint32_t, ContextState> contexts_;
     std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t>
         eagl_contexts_;
+    std::optional<EaglContextProfileKind> eagl_context_profile_;
     std::map<std::uint32_t, SurfaceState> surfaces_;
     ScanoutComposition scanout_composition_;
     GlesResourceStore resources_;
