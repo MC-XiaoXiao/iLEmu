@@ -808,6 +808,8 @@ std::vector<std::uint32_t> ensure_services_locked(KernelSharedState& state)
             string_property(device.manufacturer));
         properties.emplace(
             profile.registry.device_uid, string_property(device.uid));
+        properties.emplace(profile.registry.transport_type,
+            number_property(device.transport_type));
         properties.emplace(profile.registry.exclusive_access_owner,
             number_property(~std::uint32_t { 0 }));
         properties.emplace(profile.registry.io_buffer_frame_size,

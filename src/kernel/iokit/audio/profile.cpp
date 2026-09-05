@@ -13,6 +13,7 @@ namespace {
             .device_name = "device name",
             .device_manufacturer = "device manufacturer",
             .device_uid = "device UID",
+            .transport_type = "transport type",
             .exclusive_access_owner = "exclusive access owner",
             .io_buffer_frame_size = "io buffer frame size",
             .input_safety_offset = "input safety offset",

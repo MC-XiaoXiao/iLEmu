@@ -14,6 +14,9 @@ struct IOKitAudioAbiProfile {
         std::string_view device_name;
         std::string_view device_manufacturer;
         std::string_view device_uid;
+        // Newer IOAudio2 clients use this numeric capability to classify the
+        // physical transport before constructing their route database.
+        std::string_view transport_type;
         std::string_view exclusive_access_owner;
         std::string_view io_buffer_frame_size;
         std::string_view input_safety_offset;

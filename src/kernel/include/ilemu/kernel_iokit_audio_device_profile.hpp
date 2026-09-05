@@ -58,6 +58,10 @@ struct IOAudio2DeviceDescription {
     std::string_view name;
     std::string_view manufacturer;
     std::string_view uid;
+    // AudioHardware transport four-character code (for example, 'bltn' for a
+    // device integrated into the platform).  It is part of the firmware-facing
+    // registry contract, independent of the host audio backend.
+    std::uint32_t transport_type;
     std::uint32_t io_buffer_frame_size;
     std::span<const IOAudio2StreamDescription> streams;
     std::span<const IOAudio2ControlDescription> controls;

@@ -19,6 +19,10 @@ namespace {
     }
 
     constexpr std::uint32_t linear_pcm_format = four_cc('l', 'p', 'c', 'm');
+    // kAudioDeviceTransportTypeBuiltIn.  The value is a four-character code
+    // represented in the same big-endian form used by CoreAudio properties.
+    constexpr std::uint32_t built_in_transport_type =
+        four_cc('b', 'l', 't', 'n');
     constexpr std::uint32_t linear_pcm_flags = 0x0cU;
     constexpr std::uint32_t selector_control_base_class =
         four_cc('s', 'l', 'c', 't');
@@ -65,7 +69,11 @@ namespace {
         0xfffffff340000000ULL, 64U, 0U, 0x00000000c0000000ULL
     };
 
-    constexpr std::array<IOAudio2ControlDescription, 13> codec_controls { {
+    // Output elements identify codec endpoints, not PCM stream channels:
+    // headphones, line out, receiver and speaker.  The native HAL discovers
+    // each endpoint through its volume/mute controls, including the built-in
+    // outputs that remain available when no external jack is connected.
+    constexpr std::array<IOAudio2ControlDescription, 17> codec_controls { {
         { 3U, boolean_control_base_class, jack_control_class, output_scope, 0U,
             0U, true, std::nullopt, { } },
         { 16U, boolean_control_base_class, playthrough_route_control_class,
@@ -89,6 +97,14 @@ namespace {
         { 10U, level_control_base_class, volume_control_class, output_scope, 2U,
             63U, false, channel_output_range, { } },
         { 11U, boolean_control_base_class, mute_control_class, output_scope, 2U,
+            0U, false, std::nullopt, { } },
+        { 12U, level_control_base_class, volume_control_class, output_scope, 3U,
+            63U, false, channel_output_range, { } },
+        { 13U, boolean_control_base_class, mute_control_class, output_scope, 3U,
+            0U, false, std::nullopt, { } },
+        { 14U, level_control_base_class, volume_control_class, output_scope, 4U,
+            63U, false, channel_output_range, { } },
+        { 15U, boolean_control_base_class, mute_control_class, output_scope, 4U,
             0U, false, std::nullopt, { } },
         { 19U, level_control_base_class, volume_control_class, input_scope, 0U,
             17U, false, input_gain_range, { } },
@@ -193,6 +209,7 @@ namespace {
             .name = "Built-in Audio",
             .manufacturer = "Apple Computer, Inc.",
             .uid = "Codec",
+            .transport_type = built_in_transport_type,
             .io_buffer_frame_size = 1024,
             .streams = codec_streams,
             .controls = codec_controls,
@@ -201,6 +218,7 @@ namespace {
             .name = "Baseband",
             .manufacturer = "Apple Computer, Inc.",
             .uid = "Baseband",
+            .transport_type = built_in_transport_type,
             .io_buffer_frame_size = 1024,
             .streams = baseband_streams,
             .controls = { },
