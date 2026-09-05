@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "../support.hpp"
+#include "wire_profile.hpp"
 #include "wire_reply.hpp"
 
 namespace ilemu {
@@ -23,14 +24,8 @@ namespace {
     constexpr std::uint32_t basic_info_flavor = 10U;
     constexpr std::uint32_t basic_info_64_word_count = 9U;
     constexpr std::uint32_t basic_info_word_count = 8U;
-    constexpr std::uint32_t copy_inheritance = 1U;
-    // XNU 792 publishes the same ARM32 request/reply contract in its mach_vm
-    // subsystem. The 5A347 libSystem stub sends 44 bytes and reads the same
-    // address/size/count offsets as vm_region_64; only the routine number
-    // differs.
+    constexpr std::uint32_t vm_region_identifier = 3800U;
     constexpr std::uint32_t mach_vm_region_identifier = 4816U;
-    constexpr std::uint32_t region_request_size = 44U;
-    constexpr std::uint32_t region_reply_prefix_size = 60U;
     constexpr std::uint32_t kern_invalid_argument = 4U;
 
     [[nodiscard]] std::uint32_t darwin_permissions(MemoryPermission permissions)
@@ -51,24 +46,30 @@ bool CompatibilityKernel::dispatch_mach_vm_region_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
     using xnu792::mig::vm_map::Routine;
+    const auto is_vm_region = request.identifier == vm_region_identifier;
     const auto is_mach_vm = request.identifier == mach_vm_region_identifier;
     if (request.identifier != mig_message_id(Routine::vm_region_64) &&
-        !is_mach_vm) {
+        !is_vm_region && !is_mach_vm) {
         return false;
     }
 
     auto& registers = cpu.registers();
+    const auto profile = MachVmWireProfile::for_interface(
+        is_mach_vm, shared_state_->darwin_kernel_identity.mach_vm_address);
+    const auto width = profile.address_size();
+    constexpr auto payload = darwin::mig_wire::simple_request_payload_base;
+    const auto region_request_size = payload + width + 8U;
+    const auto region_reply_prefix_size =
+        darwin::mig_wire::complex_request_word(1, 0) + 2U * width + 4U;
     if (registers[2] < region_request_size) {
         registers[0] = mach_receive_invalid_data;
         return true;
     }
-    const auto& arguments = xnu792::mig::vm_map::vm_region_64_arguments;
     const auto address =
-        memory_.read32(request.address + arguments[1].request_offset);
-    const auto flavor =
-        memory_.read32(request.address + arguments[3].request_offset);
+        profile.read_address(memory_, request.address + payload);
+    const auto flavor = memory_.read32(request.address + payload + width);
     const auto capacity =
-        memory_.read32(request.address + arguments[4].request_count_offset);
+        memory_.read32(request.address + payload + width + 4U);
     if (!address || !flavor || !capacity) {
         registers[0] = mach_receive_invalid_data;
         return true;
@@ -94,8 +95,9 @@ bool CompatibilityKernel::dispatch_mach_vm_region_message(
         output_.write("[vm] region caller=" + std::to_string(process_.pid) +
                       " target=" + std::to_string(target_pid.value_or(0)) +
                       " interface=" +
-                      (is_mach_vm ? std::string { "mach_vm" }
-                                  : std::string { "vm_map" }) +
+                      (is_mach_vm        ? std::string { "mach_vm" }
+                          : is_vm_region ? std::string { "vm_region" }
+                                         : std::string { "vm_map" }) +
                       " address=" + std::to_string(*address) +
                       " flavor=" + std::to_string(*flavor) +
                       " capacity=" + std::to_string(*capacity) +
@@ -104,12 +106,16 @@ bool CompatibilityKernel::dispatch_mach_vm_region_message(
     };
     if (!target_pid || requested_count == 0U || *capacity < requested_count)
         return fail_kernel(kern_invalid_argument);
+    if (*address > UINT32_MAX)
+        return fail_kernel(kern_invalid_address);
 
     std::optional<AddressSpace::MappingRegion> region;
     if (*target_pid == process_.pid) {
-        region = memory_.mapping_region_at_or_after(*address);
+        region = memory_.mapping_region_at_or_after(
+            static_cast<std::uint32_t>(*address));
     } else if (task_memory_region_query_) {
-        region = task_memory_region_query_(*target_pid, *address);
+        region = task_memory_region_query_(
+            *target_pid, static_cast<std::uint32_t>(*address));
     }
     if (!region || region->end <= region->address ||
         region->end - region->address >
@@ -129,7 +135,7 @@ bool CompatibilityKernel::dispatch_mach_vm_region_message(
     std::vector<std::uint32_t> info {
         protection,
         protection,
-        copy_inheritance,
+        static_cast<std::uint32_t>(region->inheritance),
         0U,
         0U,
         0U,
@@ -154,26 +160,28 @@ bool CompatibilityKernel::dispatch_mach_vm_region_message(
             darwin::mig_wire::disposition_move_send),
         0U,
         1U,
-        kern_success,
-        region->address,
-        static_cast<std::uint32_t>(region->end - region->address),
-        requested_count,
     };
+    // A complex MIG success reply has no RetCode between NDR and outputs.
+    // Error replies use the ordinary simple NDR/RetCode form instead.
+    profile.append_address(reply, region->address);
+    profile.append_address(reply, region->end - region->address);
+    reply.push_back(requested_count);
     reply.insert(reply.end(), info.begin(), info.end());
     if (!write_words(memory_, request.address, reply)) {
         registers[0] = mach_receive_invalid_data;
         return true;
     }
 
-    output_.write(
-        "[vm] region caller=" + std::to_string(process_.pid) +
-        " target=" + std::to_string(*target_pid) + " interface=" +
-        (is_mach_vm ? std::string { "mach_vm" } : std::string { "vm_map" }) +
-        " requested=" + std::to_string(*address) +
-        " address=" + std::to_string(region->address) +
-        " size=" + std::to_string(region->end - region->address) +
-        " protection=" + std::to_string(protection) +
-        " flavor=" + std::to_string(*flavor) + " result=0\n");
+    output_.write("[vm] region caller=" + std::to_string(process_.pid) +
+                  " target=" + std::to_string(*target_pid) + " interface=" +
+                  (is_mach_vm        ? std::string { "mach_vm" }
+                      : is_vm_region ? std::string { "vm_region" }
+                                     : std::string { "vm_map" }) +
+                  " requested=" + std::to_string(*address) +
+                  " address=" + std::to_string(region->address) +
+                  " size=" + std::to_string(region->end - region->address) +
+                  " protection=" + std::to_string(protection) +
+                  " flavor=" + std::to_string(*flavor) + " result=0\n");
     registers[0] = kern_success;
     return true;
 }
