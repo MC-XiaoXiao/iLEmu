@@ -44,13 +44,6 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # point.
 set(ILEMU_WORKSPACE_DIR "${CMAKE_CURRENT_SOURCE_DIR}" CACHE PATH
     "Workspace containing optional tools, tests, docs, and firmware data")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../sources")
-    set(_ilemu_default_sources_dir "${CMAKE_CURRENT_SOURCE_DIR}/../sources")
-else()
-    set(_ilemu_default_sources_dir "${CMAKE_CURRENT_SOURCE_DIR}/sources")
-endif()
-set(ILEMU_SOURCES_DIR "${_ilemu_default_sources_dir}" CACHE PATH
-    "XNU/configd/launchd sources used by the MIG metadata generator")
 set(ILEMU_TESTS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/tests" CACHE PATH
     "Compatibility test source tree; may live in the surrounding workspace")
 
@@ -240,7 +233,6 @@ function(ilemu_configure_module target)
     ilemu_configure_target(${target})
 endfunction()
 
-add_subdirectory(tools/mig)
 add_subdirectory(src)
 add_subdirectory(app)
 add_subdirectory(tools/guest)
