@@ -415,7 +415,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
             "launchd", "/sbin/launchd", { "/sbin/launchd" },
             { "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
                 "SHELL=/bin/sh" },
-            KernelSharedState::GraphicsInputAbi::Darwin9_0, { }, { } };
+            KernelSharedState::GraphicsInputAbi::Darwin9_0, { }, { },
+            DisplayOrientation::Portrait, { }, 0U };
     install_commpage();
 }
 
@@ -1144,6 +1145,16 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
     std::span<const std::byte> code_signature_entitlements)
 {
     process_image_ = guest_path;
+    if (is_application_executable_path(guest_path) &&
+        guest_working_directory_ == std::filesystem::path { "/" }) {
+        guest_working_directory_ =
+            std::filesystem::path { guest_path }
+                .parent_path()
+                .lexically_normal();
+        output_.write(
+            "[vfs] application-cwd " +
+            guest_working_directory_.string() + "\n");
+    }
     auto name = std::filesystem::path { guest_path }.filename().string();
     if (name.empty())
         name = "unknown";
@@ -1174,6 +1185,13 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
         code_signature_entitlements.begin(), code_signature_entitlements.end());
     record.display_orientation =
         detect_application_display_orientation(rootfs_, guest_path);
+    record.display_profile = detect_application_display_profile(rootfs_,
+        guest_path, shared_state_->user_interface_geometry);
+    if (record.display_profile.kind !=
+        ApplicationDisplayProfileKind::Native) {
+        output_.write("[display] application profile=iphone-compatibility-1x "
+                      "pid=" + std::to_string(process_.pid) + "\n");
+    }
     if (record.display_orientation != DisplayOrientation::Portrait) {
         output_.write("[display] application orientation=" +
                       std::string { display_orientation_name(

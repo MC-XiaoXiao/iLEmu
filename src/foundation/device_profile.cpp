@@ -213,6 +213,8 @@ namespace {
             { true, false, true },
             BasebandTransportProfile::Offline,
             false,
+            ActivationHardwareModelPolicy::Retail,
+            247ULL * 1024ULL * 1024ULL,
         },
     };
 

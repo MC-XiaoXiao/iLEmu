@@ -192,6 +192,9 @@ struct DeviceProfile {
     ActivationHardwareModelPolicy activation_hardware_model_policy {
         ActivationHardwareModelPolicy::Retail
     };
+    // Guest-visible memory after platform-reserved carve-outs. Zero follows
+    // ram_bytes when the profile has no separate memory-size boundary.
+    std::uint64_t memory_size_bytes { };
 
     static const DeviceProfile& default_profile();
     [[nodiscard]] static std::span<const DeviceProfile> available_profiles();

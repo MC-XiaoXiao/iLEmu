@@ -75,6 +75,9 @@ private:
 
         bool operator==(const LayerState&) const = default;
     };
+    void apply_application_display_profile(LayerState& state,
+        std::uint32_t producer_process_id, std::uint32_t source_width,
+        std::uint32_t source_height) const;
     struct SubmittedLayer {
         LayerState state;
         HostSurfaceKey surface_key;

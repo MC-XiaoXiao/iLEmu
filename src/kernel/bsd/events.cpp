@@ -1729,11 +1729,14 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             registers[1] >= 2 ? memory_.read32(registers[0] + 4) : std::nullopt;
         const auto mib2 =
             registers[1] >= 3 ? memory_.read32(registers[0] + 8) : std::nullopt;
+        const auto mib3 =
+            registers[1] >= 4 ? memory_.read32(registers[0] + 12) : std::nullopt;
         const auto old_size = registers[3] != 0
                                   ? memory_.read32(registers[3])
                                   : std::optional<std::uint32_t> { 0 };
         if (!mib0 || !mib1 || !old_size ||
-            (registers[1] >= 3 && !mib2)) {
+            (registers[1] >= 3 && !mib2) ||
+            (registers[1] >= 4 && !mib3)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
@@ -2008,7 +2011,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         const auto encode_process_info =
             [this](std::uint32_t pid,
                 const KernelSharedState::ProcessRecord& record) {
-                // XNU 792's 32-bit kinfo_proc is 492 bytes
+                // The 32-bit kinfo_proc layout is 492 bytes
                 // (extern_proc=196, eproc=296).
                 std::vector<std::byte> bytes(
                     darwin::sysctl::arm32_kernel_process_info_size);
@@ -2059,15 +2062,39 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 put32(420, record.process_group);
                 return bytes;
             };
-        const auto process_selector =
+        const auto process_table_request =
             *mib0 == darwin::sysctl::control_kernel &&
-                    *mib1 == darwin::sysctl::kernel_process &&
-                    (registers[1] == 3 || registers[1] == 4)
-                ? memory_.read32(registers[0] + 8)
-                : std::nullopt;
-        if (process_selector &&
-            *process_selector == darwin::sysctl::kernel_process_all &&
-            registers[1] == 3) {
+            *mib1 == darwin::sysctl::kernel_process && mib2 &&
+            (registers[1] == 3 || registers[1] == 4);
+        if (process_table_request) {
+            const auto selector = *mib2;
+            const auto selector_argument = mib3;
+            const auto is_all_request =
+                selector == darwin::sysctl::kernel_process_all &&
+                (registers[1] == 3 ||
+                    (registers[1] == 4 && selector_argument &&
+                        *selector_argument == 0));
+            const auto is_filtered_request =
+                selector != darwin::sysctl::kernel_process_all &&
+                registers[1] == 4 && selector_argument;
+            if (!is_all_request && !is_filtered_request) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
+            switch (selector) {
+            case darwin::sysctl::kernel_process_all:
+            case darwin::sysctl::kernel_process_id:
+            case darwin::sysctl::kernel_process_pgrp:
+            case darwin::sysctl::kernel_process_session:
+            case darwin::sysctl::kernel_process_tty:
+            case darwin::sysctl::kernel_process_uid:
+            case darwin::sysctl::kernel_process_ruid:
+            case darwin::sysctl::kernel_process_lcid:
+                break;
+            default:
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
             if (registers[3] == 0) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
@@ -2076,89 +2103,94 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, darwin::error::operation_not_permitted);
                 return;
             }
+
+            using ProcessMatch =
+                std::pair<std::uint32_t,
+                    const KernelSharedState::ProcessRecord*>;
+            std::vector<ProcessMatch> matching_processes;
+            matching_processes.reserve(shared_state_->processes.size());
+            for (const auto& [pid, record] : shared_state_->processes) {
+                bool matches = false;
+                switch (selector) {
+                case darwin::sysctl::kernel_process_all:
+                    matches = true;
+                    break;
+                case darwin::sysctl::kernel_process_id:
+                    matches = pid == *selector_argument;
+                    break;
+                case darwin::sysctl::kernel_process_pgrp:
+                    matches = record.process_group == *selector_argument;
+                    break;
+                case darwin::sysctl::kernel_process_uid:
+                    matches = record.effective_uid == *selector_argument;
+                    break;
+                case darwin::sysctl::kernel_process_ruid:
+                    matches = record.uid == *selector_argument;
+                    break;
+                case darwin::sysctl::kernel_process_session:
+                case darwin::sysctl::kernel_process_tty:
+                case darwin::sysctl::kernel_process_lcid:
+                    // These attributes are not represented by the shared
+                    // process record, so an unsupported attribute cannot
+                    // accidentally match every process.
+                    matches = false;
+                    break;
+                default:
+                    break;
+                }
+                if (matches)
+                    matching_processes.emplace_back(pid, &record);
+            }
+
             const auto record_size =
                 darwin::sysctl::arm32_kernel_process_info_size;
+            const auto bytes_for_records = [record_size](std::size_t count)
+                -> std::optional<std::uint32_t> {
+                if (count > std::numeric_limits<std::uint32_t>::max() /
+                                record_size)
+                    return std::nullopt;
+                return static_cast<std::uint32_t>(count * record_size);
+            };
+            if (matching_processes.size() >
+                std::numeric_limits<std::size_t>::max() - 5U) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
+            const auto estimated = bytes_for_records(
+                matching_processes.size() + 5U);
+            const auto required = bytes_for_records(matching_processes.size());
+            if (!estimated || !required) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
             if (registers[2] == 0) {
-                const auto estimated =
-                    static_cast<std::uint32_t>(
-                        shared_state_->processes.size() + 5U) *
-                    record_size;
-                if (!memory_.write32(registers[3], estimated)) {
+                if (!memory_.write32(registers[3], *estimated))
                     bsd_error(cpu, bsd_support::bad_address);
-                } else {
+                else
                     bsd_success(cpu, 0);
-                }
                 return;
             }
-            const auto required =
-                static_cast<std::uint32_t>(shared_state_->processes.size()) *
-                record_size;
-            if (*old_size < required) {
-                if (!memory_.write32(registers[3], required)) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                } else {
-                    bsd_error(cpu, darwin::error::no_memory);
-                }
-                return;
-            }
+
+            const auto record_count = std::min<std::size_t>(
+                matching_processes.size(), *old_size / record_size);
             auto destination = registers[2];
-            for (const auto& [pid, record] : shared_state_->processes) {
-                const auto bytes = encode_process_info(pid, record);
+            for (std::size_t index = 0; index < record_count; ++index) {
+                const auto [pid, record] = matching_processes[index];
+                const auto bytes = encode_process_info(pid, *record);
                 if (!memory_.copy_in(destination, bytes)) {
                     bsd_error(cpu, bsd_support::bad_address);
                     return;
                 }
                 destination += record_size;
             }
-            if (!memory_.write32(registers[3], required)) {
+            const auto copied = static_cast<std::uint32_t>(
+                record_count * record_size);
+            if (!memory_.write32(registers[3], copied)) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
             }
-            bsd_success(cpu, 0);
-            return;
-        }
-        if (process_selector &&
-            *process_selector == darwin::sysctl::kernel_process_id &&
-            registers[1] == 4) {
-            // CTL_KERN/KERN_PROC/KERN_PROC_PID.
-            const auto kinfo_proc_size =
-                darwin::sysctl::arm32_kernel_process_info_size;
-            const auto requested_pid = memory_.read32(registers[0] + 12);
-            if (!requested_pid || registers[3] == 0) {
-                bsd_error(cpu, bsd_support::bad_address);
-                return;
-            }
-            const auto process = shared_state_->processes.find(*requested_pid);
-            if (registers[2] == 0) {
-                const auto required = process == shared_state_->processes.end()
-                                          ? 5U * kinfo_proc_size
-                                          : 6U * kinfo_proc_size;
-                if (!memory_.write32(registers[3], required)) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                } else {
-                    bsd_success(cpu, 0);
-                }
-                return;
-            }
-            if (process == shared_state_->processes.end()) {
-                if (!memory_.write32(registers[3], 0))
-                    bsd_error(cpu, bsd_support::bad_address);
-                else
-                    bsd_success(cpu, 0);
-                return;
-            }
-            if (*old_size < kinfo_proc_size) {
-                if (!memory_.write32(registers[3], 0))
-                    bsd_error(cpu, bsd_support::bad_address);
-                else
-                    bsd_error(cpu, 12); // ENOMEM
-                return;
-            }
-            const auto& record = process->second;
-            const auto bytes = encode_process_info(*requested_pid, record);
-            if (!memory_.copy_in(registers[2], bytes) ||
-                !memory_.write32(registers[3], kinfo_proc_size)) {
-                bsd_error(cpu, bsd_support::bad_address);
+            if (copied < *required) {
+                bsd_error(cpu, darwin::error::no_memory);
                 return;
             }
             bsd_success(cpu, 0);
@@ -2399,7 +2431,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             (*mib0 == 6 &&
                 (*mib1 == 3 || *mib1 == 4 || *mib1 == 5 || *mib1 == 6 ||
                     *mib1 == 7 || *mib1 == 11 || *mib1 == 13 || *mib1 == 25))) {
-            // Common read-only Darwin 8 capacity/boot values plus HW_NCPU.
+            // Common read-only capacity/boot values plus HW_NCPU.
             if (registers[4] != 0) {
                 bsd_error(cpu, 1); // EPERM: read-only MIB
                 return;
@@ -2444,6 +2476,11 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                         break;
                     }
                 } else {
+                    const auto configured_memory_size =
+                        device_profile_.memory_size_bytes != 0
+                        ? std::min(device_profile_.memory_size_bytes,
+                            shared_state_->device_ram_bytes)
+                        : shared_state_->device_ram_bytes;
                     switch (*mib1) {
                     case 4:
                         value = 1234;
@@ -2451,7 +2488,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     case 5:
                         value =
                             static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                                shared_state_->device_ram_bytes,
+                                configured_memory_size,
                                 std::numeric_limits<std::uint32_t>::max()));
                         break; // HW_PHYSMEM
                     case 6:

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ilemu/address_space.hpp"
+#include "ilemu/application_display_profile.hpp"
 #include "ilemu/application_path.hpp"
 #include "ilemu/core_surface_abi.hpp"
 #include "ilemu/cpu.hpp"
@@ -38,6 +39,29 @@ namespace {
         "IOMobileFramebuffer"
     };
     std::atomic<std::uint64_t> next_scanout_surface { 1 };
+
+    std::optional<ApplicationDisplayProfile> application_profile_for_process(
+        const std::shared_ptr<KernelSharedState>& shared_state,
+        std::uint32_t process_id)
+    {
+        if (!shared_state)
+            return std::nullopt;
+        std::lock_guard lock { shared_state->mach_mutex };
+        const auto process = shared_state->processes.find(process_id);
+        return process == shared_state->processes.end()
+                   ? std::nullopt
+                   : std::optional<ApplicationDisplayProfile> {
+                         process->second.display_profile };
+    }
+
+    DisplayGeometry display_geometry_for_process(
+        const std::shared_ptr<KernelSharedState>& shared_state,
+        std::uint32_t process_id, DisplayGeometry output)
+    {
+        const auto profile =
+            application_profile_for_process(shared_state, process_id);
+        return profile ? application_display_geometry(*profile, output) : output;
+    }
 } // namespace
 
 MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
@@ -64,8 +88,10 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
     // handle.
     add("_IOMobileFramebufferGetDisplaySize", [this](UserlandHleCall& call) {
         const auto output = call.argument(1);
-        const auto geometry =
+        const auto output_geometry =
             display_ ? display_->geometry() : default_display_geometry;
+        const auto geometry = display_geometry_for_process(
+            shared_state_, call.process_id(), output_geometry);
         const auto width =
             std::bit_cast<std::uint32_t>(static_cast<float>(geometry.width));
         const auto height =
@@ -276,6 +302,46 @@ bool MobileFramebufferHle::has_active_layers() const
     return !layers_.empty();
 }
 
+void MobileFramebufferHle::apply_application_display_profile(
+    LayerState& state, std::uint32_t producer_process_id,
+    std::uint32_t source_width, std::uint32_t source_height) const
+{
+    if (!display_ || producer_process_id == 0U)
+        return;
+    const auto profile = application_profile_for_process(
+        shared_state_, producer_process_id);
+    if (!profile || profile->kind == ApplicationDisplayProfileKind::Native)
+        return;
+    const auto output = display_->geometry();
+    const auto logical = application_display_geometry(*profile, output);
+    if (!logical.valid() || source_width == 0U || source_height == 0U)
+        return;
+    const auto is_origin = [](float value) { return value == 0.0F; };
+    const auto is_full_rectangle = [&](const Rectangle& rectangle,
+                                       DisplayGeometry geometry) {
+        return is_origin(rectangle.x) && is_origin(rectangle.y) &&
+               rectangle.width == static_cast<float>(geometry.width) &&
+               rectangle.height == static_cast<float>(geometry.height);
+    };
+    if (!is_origin(state.source.x) || !is_origin(state.source.y) ||
+        (!is_full_rectangle(state.destination, logical) &&
+            !is_full_rectangle(state.destination, output))) {
+        return;
+    }
+    const auto viewport = application_display_viewport(*profile, output);
+    const auto width = std::min(logical.width, source_width);
+    const auto height = std::min(logical.height, source_height);
+    if (viewport.width == 0U || viewport.height == 0U || width == 0U ||
+        height == 0U) {
+        return;
+    }
+    state.source = { 0.0F, 0.0F, static_cast<float>(width),
+        static_cast<float>(height) };
+    state.destination = { static_cast<float>(viewport.x),
+        static_cast<float>(viewport.y), static_cast<float>(viewport.width),
+        static_cast<float>(viewport.height) };
+}
+
 bool MobileFramebufferHle::application_surface_allowed(
     std::uint32_t producer_process_id, std::uint64_t publication_sequence) const
 {
@@ -409,7 +475,14 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
         if (!allowed) {
             continue;
         }
-        const auto source = surface_store_->host_surface(state.surface_id);
+        auto effective_state = state;
+        if (backing) {
+            apply_application_display_profile(effective_state,
+                backing->provenance.producer_process_id, backing->width,
+                backing->height);
+        }
+        const auto source =
+            surface_store_->host_surface(effective_state.surface_id);
         if (source)
             source->mark_scanout_presentation();
         if (debug_submission) {
@@ -457,11 +530,12 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
         // need their direct mapped writes imported before presentation.
         if (source && source->gpu_generation() <= source->cpu_generation() &&
             !surface_store_->synchronize_from_guest(
-                call.memory(), state.surface_id)) {
+                call.memory(), effective_state.surface_id)) {
             return false;
         }
-        const auto source_rectangle = exact_rectangle(state.source);
-        const auto destination_rectangle = exact_rectangle(state.destination);
+        const auto source_rectangle = exact_rectangle(effective_state.source);
+        const auto destination_rectangle =
+            exact_rectangle(effective_state.destination);
         if (!backing ||
             (backing->pixel_format != surface_pixel_format_bgra &&
                 !surface_is_packed_555(backing->pixel_format)) ||
@@ -485,7 +559,8 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
             return false;
         }
         prepared_layers.push_back(
-            { layer, state, source, *source_rectangle, *destination_rectangle,
+            { layer, effective_state, source, *source_rectangle,
+                *destination_rectangle,
                 std::max(source->cpu_generation(), source->gpu_generation()) });
     }
 
@@ -847,12 +922,18 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
                            backing->provenance.publication_sequence)) {
             continue;
         }
+        auto effective_state = state;
+        if (backing) {
+            apply_application_display_profile(effective_state,
+                backing->provenance.producer_process_id, backing->width,
+                backing->height);
+        }
         const auto source_surface =
-            surface_store_->host_surface(state.surface_id);
+            surface_store_->host_surface(effective_state.surface_id);
         if (source_surface)
             source_surface->mark_scanout_presentation();
         auto source_pixels =
-            surface_store_->read_argb(call.memory(), state.surface_id);
+            surface_store_->read_argb(call.memory(), effective_state.surface_id);
         if (!backing || !source_pixels || backing->width == 0 ||
             backing->height == 0) {
             continue;
@@ -862,14 +943,16 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
                 std::floor(value + 0.5), 0.0, static_cast<double>(maximum)));
         };
         const auto destination_left =
-            clipped_edge(state.destination.x, geometry.width);
+            clipped_edge(effective_state.destination.x, geometry.width);
         const auto destination_top =
-            clipped_edge(state.destination.y, geometry.height);
+            clipped_edge(effective_state.destination.y, geometry.height);
         const auto destination_right = clipped_edge(
-            static_cast<double>(state.destination.x) + state.destination.width,
+            static_cast<double>(effective_state.destination.x) +
+                effective_state.destination.width,
             geometry.width);
         const auto destination_bottom = clipped_edge(
-            static_cast<double>(state.destination.y) + state.destination.height,
+            static_cast<double>(effective_state.destination.y) +
+                effective_state.destination.height,
             geometry.height);
         if (destination_right <= destination_left ||
             destination_bottom <= destination_top) {
@@ -879,12 +962,17 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
             destination_left == 0 && destination_top == 0 &&
             destination_right == static_cast<int>(geometry.width) &&
             destination_bottom == static_cast<int>(geometry.height) &&
-            state.destination.x == 0.0F && state.destination.y == 0.0F &&
-            state.destination.width == static_cast<float>(geometry.width) &&
-            state.destination.height == static_cast<float>(geometry.height) &&
-            state.source.x == 0.0F && state.source.y == 0.0F &&
-            state.source.width == static_cast<float>(backing->width) &&
-            state.source.height == static_cast<float>(backing->height) &&
+            effective_state.destination.x == 0.0F &&
+            effective_state.destination.y == 0.0F &&
+            effective_state.destination.width ==
+                static_cast<float>(geometry.width) &&
+            effective_state.destination.height ==
+                static_cast<float>(geometry.height) &&
+            effective_state.source.x == 0.0F &&
+            effective_state.source.y == 0.0F &&
+            effective_state.source.width == static_cast<float>(backing->width) &&
+            effective_state.source.height ==
+                static_cast<float>(backing->height) &&
             backing->width == geometry.width &&
             backing->height == geometry.height &&
             std::all_of(source_pixels->begin(), source_pixels->end(),
@@ -897,21 +985,23 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
             static_cast<std::size_t>(destination_right - destination_left));
         for (auto x = destination_left; x < destination_right; ++x) {
             const auto horizontal =
-                (static_cast<float>(x) + 0.5F - state.destination.x) /
-                state.destination.width;
+                (static_cast<float>(x) + 0.5F - effective_state.destination.x) /
+                effective_state.destination.width;
             source_columns[static_cast<std::size_t>(x - destination_left)] =
                 static_cast<std::uint32_t>(
-                    std::floor(std::clamp(static_cast<double>(state.source.x) +
-                                              horizontal * state.source.width,
+                    std::floor(std::clamp(
+                        static_cast<double>(effective_state.source.x) +
+                            horizontal * effective_state.source.width,
                         0.0, static_cast<double>(backing->width - 1U))));
         }
         for (auto y = destination_top; y < destination_bottom; ++y) {
             const auto vertical =
-                (static_cast<float>(y) + 0.5F - state.destination.y) /
-                state.destination.height;
+                (static_cast<float>(y) + 0.5F - effective_state.destination.y) /
+                effective_state.destination.height;
             const auto source_y = static_cast<std::uint32_t>(
-                std::floor(std::clamp(static_cast<double>(state.source.y) +
-                                          vertical * state.source.height,
+                std::floor(std::clamp(
+                    static_cast<double>(effective_state.source.y) +
+                        vertical * effective_state.source.height,
                     0.0, static_cast<double>(backing->height - 1U))));
             for (auto x = destination_left; x < destination_right; ++x) {
                 const auto source_x = source_columns[static_cast<std::size_t>(
@@ -961,18 +1051,28 @@ std::optional<std::uint32_t> MobileFramebufferHle::record_presentation(
                             backing->provenance.producer_process_id,
                             backing->provenance.publication_sequence))
             continue;
-        const auto scale_x = state.source.width / state.destination.width;
-        const auto scale_y = state.source.height / state.destination.height;
+        auto effective_state = state;
+        apply_application_display_profile(effective_state,
+            backing->provenance.producer_process_id, backing->width,
+            backing->height);
+        const auto scale_x =
+            effective_state.source.width / effective_state.destination.width;
+        const auto scale_y =
+            effective_state.source.height / effective_state.destination.height;
         presented_layers.push_back(PresentationLayer { order, state.surface_id,
             backing->provenance,
-            PresentationRectangle { state.source.x, state.source.y,
-                state.source.width, state.source.height },
-            PresentationRectangle { state.destination.x, state.destination.y,
-                state.destination.width, state.destination.height },
+            PresentationRectangle { effective_state.source.x,
+                effective_state.source.y, effective_state.source.width,
+                effective_state.source.height },
+            PresentationRectangle { effective_state.destination.x,
+                effective_state.destination.y, effective_state.destination.width,
+                effective_state.destination.height },
             PresentationTransform { scale_x, 0.0F, 0.0F, scale_y,
-                state.source.x - state.destination.x * scale_x,
-                state.source.y - state.destination.y * scale_y },
-            state.flags });
+                effective_state.source.x -
+                    effective_state.destination.x * scale_x,
+                effective_state.source.y -
+                    effective_state.destination.y * scale_y },
+            effective_state.flags });
     }
     auto logical_client_scene = scene_coordinator_
                                     ? scene_coordinator_->active_client_scene()

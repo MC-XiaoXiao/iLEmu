@@ -75,18 +75,34 @@ namespace mach_support {
         const AddressSpace& memory, std::uint32_t start, std::uint32_t size,
         std::uint32_t alignment_mask)
     {
-        auto candidate = start & ~(AddressSpace::page_size - 1U);
-        while (size != 0 &&
+        if (size == 0U)
+            return std::nullopt;
+
+        const auto align_candidate = [alignment_mask](std::uint64_t value)
+            -> std::optional<std::uint32_t> {
+            const auto aligned =
+                (value + alignment_mask) & ~std::uint64_t { alignment_mask };
+            if (aligned > std::numeric_limits<std::uint32_t>::max())
+                return std::nullopt;
+            return static_cast<std::uint32_t>(aligned);
+        };
+
+        auto candidate = align_candidate(
+            start & ~(AddressSpace::page_size - 1U));
+        while (candidate &&
                size - 1U <=
-                   std::numeric_limits<std::uint32_t>::max() - candidate) {
-            if ((candidate & alignment_mask) == 0U &&
-                !guest_region_overlaps(memory, candidate, size))
+                   std::numeric_limits<std::uint32_t>::max() - *candidate) {
+            if (!guest_region_overlaps(memory, *candidate, size))
                 return candidate;
-            if (candidate > std::numeric_limits<std::uint32_t>::max() -
-                                AddressSpace::page_size) {
+
+            const auto next_page = static_cast<std::uint64_t>(*candidate) +
+                                   AddressSpace::page_size;
+            if (next_page > std::numeric_limits<std::uint32_t>::max())
                 break;
-            }
-            candidate += AddressSpace::page_size;
+            const auto next = align_candidate(next_page);
+            if (!next || *next <= *candidate)
+                break;
+            candidate = next;
         }
         return std::nullopt;
     }

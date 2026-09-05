@@ -11,8 +11,8 @@ namespace {
         std::uint32_t selector;
     };
 
-    // These selectors are fixed by xnu-792 bsd/sys/sysctl.h. Keep this table
-    // limited to nodes for which the compatibility kernel has a value handler.
+    // Keep this table limited to nodes for which the compatibility kernel has
+    // a value handler.
     constexpr std::array named_objects {
         NamedObject {
             "kern.ostype", control_kernel, kernel_operating_system_type },

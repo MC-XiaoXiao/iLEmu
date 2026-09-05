@@ -30,6 +30,9 @@ namespace {
     constexpr std::uint32_t kern_no_space = 3U;
     constexpr std::uint32_t kern_invalid_argument = 4U;
     constexpr std::uint32_t vm_protection_mask = 0x7U;
+    constexpr std::uint32_t vm_flags_user_map =
+        0x00000001U | 0x00000002U | 0x00000010U | 0x00070000U |
+        0xff000000U;
 
     [[nodiscard]] MemoryPermission memory_permissions(std::uint32_t protection)
     {
@@ -112,8 +115,8 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
     const auto size = round_page_size(*requested_size);
     std::uint32_t result = kern_success;
     if (!size ||
+        ((*flags & ~vm_flags_user_map) != 0) ||
         ((*protection | *maximum_protection) & ~vm_protection_mask) != 0 ||
-        (*protection & *maximum_protection) != *protection ||
         *inheritance > static_cast<std::uint32_t>(VmInheritance::None)) {
         result = kern_invalid_argument;
     }

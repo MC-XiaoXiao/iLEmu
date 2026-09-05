@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "ilemu/application_display_profile.hpp"
 #include "ilemu/application_path.hpp"
 #include "ilemu/cpu.hpp"
 #include "ilemu/graphics_services_profile.hpp"
@@ -453,6 +454,29 @@ namespace {
                        state.application_scene_transforms.find(process_id);
             cached != state.application_scene_transforms.end()) {
             transform = cached->second;
+        }
+        if (!transform) {
+            const auto process = state.processes.find(process_id);
+            if (process != state.processes.end() &&
+                process->second.display_profile.kind !=
+                    ApplicationDisplayProfileKind::Native) {
+                const auto& profile = process->second.display_profile;
+                const auto viewport = application_display_viewport(
+                    profile, state.display_geometry);
+                if (viewport.width == 0U || viewport.height == 0U ||
+                    !profile.logical_geometry.valid())
+                    return std::nullopt;
+                const auto scale_x =
+                    static_cast<float>(profile.logical_geometry.width) /
+                    static_cast<float>(viewport.width);
+                const auto scale_y =
+                    static_cast<float>(profile.logical_geometry.height) /
+                    static_cast<float>(viewport.height);
+                return KernelSharedState::GraphicsTouchTransform {
+                    scale_x, 0.0F, 0.0F, scale_y,
+                    -static_cast<float>(viewport.x) * scale_x,
+                    -static_cast<float>(viewport.y) * scale_y };
+            }
         }
         if (!transform)
             return std::nullopt;
