@@ -127,6 +127,11 @@ public:
         std::uint32_t size, MemoryPermission permissions);
     bool protect(std::uint32_t address, std::uint32_t size,
         MemoryPermission permissions);
+    // Applies Mach vm_inherit metadata to a fully mapped, page-rounded range.
+    // clone() consumes it to select shared, copy-on-write, or absent child
+    // mappings.
+    bool inherit(std::uint32_t address, std::uint32_t size,
+        VmInheritance inheritance);
     struct CopyInOperation {
         std::uint32_t address { };
         std::span<const std::byte> data;
@@ -356,9 +361,12 @@ private:
     void unmap_file_mappings_locked(std::uint32_t address, std::uint64_t end);
     void flush_shared_file_pages_locked(
         std::uint32_t address, std::uint64_t end);
-    void unmap_range_locked(std::uint32_t address, std::uint64_t end);
+    void unmap_range_locked(std::uint32_t address, std::uint64_t end,
+        bool flush_shared_files = true);
     void invalidate_mapping_leases_locked(
         std::uint32_t address, std::uint64_t end);
+    void share_pages_locked(std::uint32_t address, std::uint64_t end,
+        std::vector<std::shared_ptr<GuestPageBacking>>* output);
     void cache_page_locked(std::uint32_t address, Page& page);
     void uncache_page_locked(std::uint32_t address);
     void ensure_unique_page_map_locked();

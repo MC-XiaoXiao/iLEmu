@@ -409,9 +409,11 @@ bool AddressSpace::unmap(std::uint32_t address, std::uint32_t size)
     return true;
 }
 
-void AddressSpace::unmap_range_locked(std::uint32_t address, std::uint64_t end)
+void AddressSpace::unmap_range_locked(
+    std::uint32_t address, std::uint64_t end, bool flush_shared_files)
 {
-    flush_shared_file_pages_locked(address, end);
+    if (flush_shared_files)
+        flush_shared_file_pages_locked(address, end);
     vm_map_.unmap(address, end);
     translation_profile_map_.unmap(address, end);
     unmap_file_mappings_locked(address, end);
@@ -531,6 +533,17 @@ bool AddressSpace::protect(
     std::uint32_t address, std::uint32_t size, MemoryPermission permissions)
 {
     return protect_with_result(address, size, permissions).succeeded;
+}
+
+bool AddressSpace::inherit(std::uint32_t address, std::uint32_t size,
+    VmInheritance inheritance)
+{
+    if (size == 0 || range_overflows(address, size))
+        return size == 0;
+    const auto first = page_base(address);
+    const auto end = page_range_end(address, size);
+    auto lock = write_lock();
+    return vm_map_.inherit(first, end, inheritance);
 }
 
 void AddressSpace::mark_translation_profile_stable(
@@ -741,6 +754,13 @@ AddressSpace::share_pages(std::uint32_t address, std::uint32_t size)
 
     std::vector<std::shared_ptr<GuestPageBacking>> result;
     result.reserve(size / page_size);
+    share_pages_locked(address, end, &result);
+    return result;
+}
+
+void AddressSpace::share_pages_locked(std::uint32_t address, std::uint64_t end,
+    std::vector<std::shared_ptr<GuestPageBacking>>* output)
+{
     const auto initial_tracking_epoch =
         GuestPageBacking::shared_write_tracking_epoch();
     std::size_t tracking_transitions = 0;
@@ -769,14 +789,14 @@ AddressSpace::share_pages(std::uint32_t address, std::uint32_t size)
             has_tracked_shared_backing = true;
         }
         refresh_jit_page_locked(static_cast<std::uint32_t>(base));
-        result.push_back(page.backing);
+        if (output)
+            output->push_back(page.backing);
     }
     if (has_tracked_shared_backing) {
         finish_shared_write_tracking_locked(initial_tracking_epoch,
             tracking_transitions, tracked_backing_may_have_aliases);
     }
     bump_executable_content_generation_locked();
-    return result;
 }
 
 bool AddressSpace::map_page_backings(std::uint32_t address, std::uint32_t size,
@@ -2155,10 +2175,46 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
     auto result = std::make_unique<AddressSpace>();
     std::unique_lock source_lock { mutex_ };
     std::unique_lock destination_lock { result->mutex_ };
+
+    constexpr auto address_space_end = std::uint64_t { 1 } << 32U;
+    std::vector<MappingRegion> non_copy_regions;
+    for (std::uint64_t cursor = 0; cursor < address_space_end;) {
+        const auto region =
+            vm_map_.region_at_or_after(static_cast<std::uint32_t>(cursor));
+        if (!region)
+            break;
+        if (region->inheritance != VmInheritance::Copy)
+            non_copy_regions.push_back(*region);
+        if (region->end >= address_space_end)
+            break;
+        cursor = region->end;
+    }
+
+    // VM_INHERIT_SHARE makes anonymous/private pages aliases in the new task.
+    // Materialize demand-zero or lazy file pages before publishing the clone so
+    // a later first write in either address space observes the same backing.
+    for (const auto& region : non_copy_regions) {
+        if (region.inheritance == VmInheritance::Share) {
+            const_cast<AddressSpace*>(this)->share_pages_locked(
+                region.address, region.end, nullptr);
+        }
+    }
+
     result->vm_map_ = vm_map_;
     result->translation_profile_map_ = translation_profile_map_;
+    std::size_t non_copy_index = 0;
     for (const auto& [address, page] : *pages_) {
-        if (page.backing && !page.shared_writable) {
+        while (non_copy_index < non_copy_regions.size() &&
+               non_copy_regions[non_copy_index].end <= address) {
+            ++non_copy_index;
+        }
+        const auto absent_from_child =
+            non_copy_index < non_copy_regions.size() &&
+            non_copy_regions[non_copy_index].address <= address &&
+            non_copy_regions[non_copy_index].end > address &&
+            non_copy_regions[non_copy_index].inheritance ==
+                VmInheritance::None;
+        if (!absent_from_child && page.backing && !page.shared_writable) {
             page.copy_on_write_possible = true;
             const_cast<AddressSpace*>(this)->refresh_jit_page_locked(address);
         }
@@ -2187,6 +2243,15 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
     result->parallel_access_ = parallel_access_;
     result->jit_page_table_enabled_ =
         jit_page_table_enabled_ && !parallel_access_;
+
+    // VM_INHERIT_NONE removes the complete mapping from the child while the
+    // parent's interval and resident backing remain intact.
+    for (const auto& region : non_copy_regions) {
+        if (region.inheritance != VmInheritance::None)
+            continue;
+        result->invalidate_mapping_leases_locked(region.address, region.end);
+        result->unmap_range_locked(region.address, region.end, false);
+    }
     return result;
 }
 

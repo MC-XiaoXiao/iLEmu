@@ -9,21 +9,32 @@
 
 namespace ilemu {
 
+enum class VmInheritance : std::uint8_t {
+    Share = 0,
+    Copy = 1,
+    None = 2,
+};
+
 // Compact, non-overlapping vm_map-style metadata. Callers retain their own
-// synchronization; this class only owns mapping and protection intervals.
+// synchronization; this class only owns mapping, protection, and fork
+// inheritance intervals.
 class VmMap {
 public:
     struct MappingRegion {
         std::uint32_t address { };
         std::uint64_t end { };
         MemoryPermission permissions { MemoryPermission::None };
+        VmInheritance inheritance { VmInheritance::Copy };
     };
 
-    void map_or(
-        std::uint32_t start, std::uint64_t end, MemoryPermission permissions);
+    void map_or(std::uint32_t start, std::uint64_t end,
+        MemoryPermission permissions,
+        VmInheritance inheritance = VmInheritance::Copy);
     void unmap(std::uint32_t start, std::uint64_t end);
     [[nodiscard]] bool protect(
         std::uint32_t start, std::uint64_t end, MemoryPermission permissions);
+    [[nodiscard]] bool inherit(std::uint32_t start, std::uint64_t end,
+        VmInheritance inheritance);
 
     [[nodiscard]] bool accessible(
         std::uint32_t start, std::uint64_t end, MemoryPermission access) const;
@@ -38,6 +49,7 @@ private:
     struct Region {
         std::uint64_t end { };
         MemoryPermission permissions { MemoryPermission::None };
+        VmInheritance inheritance { VmInheritance::Copy };
     };
 
     void split_at(std::uint64_t point);
