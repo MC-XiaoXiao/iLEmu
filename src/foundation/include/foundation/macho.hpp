@@ -46,10 +46,18 @@ struct MachSegment {
     std::vector<MachSection> sections;
 };
 
+struct MachDylibVersion {
+    std::uint32_t current { };
+    std::uint32_t compatibility { };
+};
+
 struct MachDylib {
     std::string path;
     std::uint32_t command { };
     bool prebound { };
+    // LC_PREBOUND_DYLIB has no version fields. Keep absence distinct from a
+    // dylib command whose explicitly encoded version is zero.
+    std::optional<MachDylibVersion> version;
 };
 
 struct MachSymbol {
@@ -117,6 +125,7 @@ public:
     {
         return dylibs_;
     }
+    [[nodiscard]] const MachDylib* dylib_identity() const;
     [[nodiscard]] const std::vector<MachSymbol>& symbols() const
     {
         return symbols_;

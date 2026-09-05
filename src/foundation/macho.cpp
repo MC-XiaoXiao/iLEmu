@@ -752,7 +752,9 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
             image.dylibs_.push_back(
                 MachDylib { command_string(bytes, offset, command_size,
                                 read_u32(bytes, offset + 8)),
-                    command, false });
+                    command, false,
+                    MachDylibVersion { read_u32(bytes, offset + 16),
+                        read_u32(bytes, offset + 20) } });
         } else if (command == lc_prebound_dylib) {
             if (command_size < 20) {
                 throw std::runtime_error { "truncated LC_PREBOUND_DYLIB" };
@@ -760,7 +762,7 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
             image.dylibs_.push_back(
                 MachDylib { command_string(bytes, offset, command_size,
                                 read_u32(bytes, offset + 8)),
-                    command, true });
+                    command, true, std::nullopt });
         } else if (command == lc_load_dylinker || command == lc_id_dylinker) {
             if (command_size < 12) {
                 throw std::runtime_error { "truncated dylinker load command" };
@@ -882,6 +884,15 @@ std::span<const std::byte> MachOImage::byte_span() const noexcept
     if (immutable_file_view_)
         return immutable_file_view_->bytes();
     return { };
+}
+
+const MachDylib* MachOImage::dylib_identity() const
+{
+    for (const auto& dylib : dylibs_) {
+        if (dylib.command == lc_id_dylib)
+            return &dylib;
+    }
+    return nullptr;
 }
 
 const MachSymbol* MachOImage::find_symbol(std::string_view name) const

@@ -34,6 +34,7 @@
 #include "foundation/address_space.hpp"
 #include "foundation/cpu.hpp"
 #include "foundation/device_model.hpp"
+#include "foundation/dyld_shared_cache.hpp"
 #include "foundation/executable_catalog.hpp"
 #include "foundation/firmware_prepare.hpp"
 #include "foundation/jit_artifact.hpp"
@@ -60,7 +61,8 @@ std::string usage()
     return "Usage:\n"
            "  ilemu profile [--device PROFILE] [--output FILE]\n"
            "  ilemu inspect --rootfs DIR [--binary /sbin/launchd] "
-           "[--device PROFILE] [--symbols SUBSTRING] [--output FILE]\n"
+           "[--device PROFILE] [--shared-cache GUEST_PATH] "
+           "[--symbols SUBSTRING] [--output FILE]\n"
            "  ilemu catalog --rootfs DIR [--device PROFILE] [--manifest FILE] "
            "[--host-cache DIR] "
            "[--output FILE]\n"
@@ -76,7 +78,7 @@ std::string usage()
            "[--jit-artifact-disk-mib 0..4096] [--output FILE]\n"
            "  ilemu disasm --rootfs DIR --binary PATH "
            "(--symbol NAME | --address ADDR) [--device PROFILE] [--count N] "
-           "[--thumb]\n"
+           "[--shared-cache GUEST_PATH] [--thumb]\n"
            "  ilemu boot --rootfs DIR [--device PROFILE] "
            "[--binary /sbin/launchd] [--guest-command COMMAND] [--ticks N] "
            "[--cores N] [--jit-cache-mib 8..512] "
@@ -386,6 +388,49 @@ void profile(const std::vector<std::string>& args, Output& output)
     output.line(text.str());
 }
 
+std::shared_ptr<const MachOImage> inspection_image(
+    const std::vector<std::string>& args, std::string_view guest_binary)
+{
+    const auto rootfs = option(args, "--rootfs");
+    if (!rootfs)
+        throw std::runtime_error { "image inspection requires --rootfs" };
+    const auto architecture =
+        arm_architecture_for_model(select_device_model(args).cpu_model);
+    if (const auto cache_path = option(args, "--shared-cache")) {
+        const auto host_cache =
+            std::filesystem::path { *rootfs } /
+            std::filesystem::path { *cache_path }.relative_path();
+        DyldSharedCacheOptions options;
+        options.architecture = architecture == ArmArchitectureVersion::Armv7
+                                   ? "armv7"
+                                   : "armv6k";
+        const auto cache = DyldSharedCache::parse(host_cache, options);
+        if (!cache)
+            throw std::runtime_error { "invalid dyld shared cache: " +
+                                       host_cache.string() };
+        const auto entry = cache->find_image(guest_binary);
+        if (!entry)
+            throw std::runtime_error { "image not found in dyld shared cache: " +
+                                       std::string { guest_binary } };
+        const auto image = cache->parse_image(entry->index, architecture);
+        if (!image)
+            throw std::runtime_error { "cannot parse image in dyld shared cache: " +
+                                       std::string { guest_binary } };
+        return image;
+    }
+    return std::make_shared<MachOImage>(MachOImage::parse(
+        std::filesystem::path { *rootfs } /
+            std::filesystem::path { guest_binary }.relative_path(),
+        architecture));
+}
+
+std::string dylib_version_string(std::uint32_t version)
+{
+    return std::to_string(version >> 16U) + "." +
+           std::to_string((version >> 8U) & 0xffU) + "." +
+           std::to_string(version & 0xffU);
+}
+
 void inspect(const std::vector<std::string>& args, Output& output)
 {
     const auto rootfs = option(args, "--rootfs");
@@ -399,8 +444,8 @@ void inspect(const std::vector<std::string>& args, Output& output)
         relative = relative.relative_path();
     }
     const auto host_path = std::filesystem::path { *rootfs } / relative;
-    const auto image = MachOImage::parse(host_path,
-        arm_architecture_for_model(select_device_model(args).cpu_model));
+    const auto selected_image = inspection_image(args, guest_binary);
+    const auto& image = *selected_image;
 
     std::ostringstream text;
     text << "path: " << host_path.string() << '\n'
@@ -415,6 +460,8 @@ void inspect(const std::vector<std::string>& args, Output& output)
         text << "unknown";
     }
     text << '\n' << "dyld: " << image.dynamic_linker().value_or("none") << '\n';
+    if (option(args, "--shared-cache"))
+        text << "storage: " << image.path().string() << '\n';
     for (const auto& segment : image.segments()) {
         text << "segment " << segment.name << " vm=0x" << std::hex
              << segment.vm_address << " size=0x" << segment.vm_size
@@ -429,8 +476,17 @@ void inspect(const std::vector<std::string>& args, Output& output)
                  << std::dec << '\n';
         }
     }
+    const auto* dylib_identity = image.dylib_identity();
     for (const auto& dylib : image.dylibs()) {
-        text << (dylib.prebound ? "prebound " : "dylib ") << dylib.path << '\n';
+        text << (dylib.prebound ? "prebound "
+                 : &dylib == dylib_identity ? "dylib-id " : "dylib ")
+             << dylib.path;
+        if (dylib.version) {
+            text << " current=" << dylib_version_string(dylib.version->current)
+                 << " compatibility="
+                 << dylib_version_string(dylib.version->compatibility);
+        }
+        text << '\n';
     }
     if (!image.unknown_commands().empty()) {
         text << "unknown_commands:";
@@ -459,9 +515,11 @@ void inspect(const std::vector<std::string>& args, Output& output)
         }
     }
 
-    AddressSpace memory;
-    image.map_into(memory);
-    text << "mapped_pages: " << memory.mapped_page_count();
+    if (!option(args, "--shared-cache")) {
+        AddressSpace memory;
+        image.map_into(memory);
+        text << "mapped_pages: " << memory.mapped_page_count();
+    }
     output.line(text.str());
 }
 
@@ -759,12 +817,8 @@ void disasm(const std::vector<std::string>& args, Output& output)
             "one of --symbol/--address"
         };
     }
-    std::filesystem::path relative = *binary;
-    if (relative.is_absolute())
-        relative = relative.relative_path();
-    const auto image =
-        MachOImage::parse(std::filesystem::path { *rootfs } / relative,
-            arm_architecture_for_model(select_device_model(args).cpu_model));
+    const auto selected_image = inspection_image(args, *binary);
+    const auto& image = *selected_image;
     const MachSymbol* symbol = nullptr;
     std::uint32_t start_address = 0;
     if (symbol_name) {
