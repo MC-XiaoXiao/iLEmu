@@ -12,7 +12,7 @@
 #include "runtime/realtime_pacer.hpp"
 #include "runtime/session_host.hpp"
 #include "session_debugger.hpp"
-#include <dynarmic/interface/A32/disassembler.h>
+#include "session_diagnostics.hpp"
 
 #include <algorithm>
 #include <array>
@@ -456,7 +456,7 @@ void EmulatorSession::run()
             throw std::runtime_error {
                 "host did not provide a control channel"
             };
-        output.line("[control] ready; use help for commands");
+        output.marker("[control] ready; use help for commands");
     }
     const auto gdb_port = options.gdb_port;
     const auto watch_address = options.watch_address;
@@ -2880,6 +2880,8 @@ void EmulatorSession::run()
         }
         host_resources.wake();
     };
+    SessionDiagnostics diagnostics { *initial_runtime, runtimes, scheduler,
+        display_presenter.get(), output };
     while ((!bounded_execution || remaining_ticks != 0) &&
            !initial_runtime->kernel->process().exited && !hard_stop) {
         synchronize_device_time_to_host();
@@ -2924,7 +2926,7 @@ void EmulatorSession::run()
         for (const auto& input : live_button_scheduler.poll()) {
             note_interactive_host_activity();
             initial_runtime->kernel->enqueue_system_button(input);
-            output.line("[control] button=up scheduled event queued");
+            output.marker("[control] button=up scheduled event queued");
         }
         if (pending_button_input_completion && live_button_scheduler.empty()) {
             mark_transition_input_complete(*pending_button_input_completion);
@@ -2936,7 +2938,7 @@ void EmulatorSession::run()
                 case LiveControlCommandKind::Touch:
                     note_interactive_host_activity();
                     initial_runtime->kernel->enqueue_touch_input(command.touch);
-                    output.line("[control] touch queued");
+                    output.marker("[control] touch queued");
                     mark_transition_input_complete("touch");
                     break;
                 case LiveControlCommandKind::Gesture:
@@ -2950,7 +2952,7 @@ void EmulatorSession::run()
                         initial_runtime->kernel->enqueue_system_button(
                             SystemButtonInput {
                                 SystemButton::Home, SystemButtonPhase::Up });
-                        output.line(
+                        output.marker(
                             "[control] home requested before unlock gesture");
                     }
                     pending_touch_input_completion = "gesture";
@@ -2962,7 +2964,7 @@ void EmulatorSession::run()
                     for (const auto& input : live_touch_scheduler.poll()) {
                         initial_runtime->kernel->enqueue_touch_input(input);
                     }
-                    output.line("[control] gesture=" + command.message +
+                    output.marker("[control] gesture=" + command.message +
                                 " scheduled events=" +
                                 std::to_string(command.gesture.size()));
                     if (live_touch_scheduler.empty()) {
@@ -2975,7 +2977,7 @@ void EmulatorSession::run()
                     note_interactive_host_activity();
                     initial_runtime->kernel->enqueue_system_button(
                         command.system_button);
-                    output.line("[control] button event queued");
+                    output.marker("[control] button event queued");
                     mark_transition_input_complete("button");
                     break;
                 case LiveControlCommandKind::ButtonHold:
@@ -2986,7 +2988,7 @@ void EmulatorSession::run()
                     live_button_scheduler.schedule(
                         command.system_button, command.button_hold);
                     pending_button_input_completion = "button-hold";
-                    output.line("[control] button hold scheduled duration-ms=" +
+                    output.marker("[control] button hold scheduled duration-ms=" +
                                 std::to_string(command.button_hold.count()));
                     if (live_button_scheduler.empty()) {
                         mark_transition_input_complete(
@@ -3002,7 +3004,7 @@ void EmulatorSession::run()
                     initial_runtime->kernel->enqueue_system_button(
                         SystemButtonInput {
                             SystemButton::Home, SystemButtonPhase::Up });
-                    output.line("[control] home requested");
+                    output.marker("[control] home requested");
                     mark_transition_input_complete("home");
                     break;
                 case LiveControlCommandKind::Lock:
@@ -3013,7 +3015,7 @@ void EmulatorSession::run()
                     initial_runtime->kernel->enqueue_system_button(
                         SystemButtonInput {
                             SystemButton::Lock, SystemButtonPhase::Up });
-                    output.line("[control] display lock requested");
+                    output.marker("[control] display lock requested");
                     mark_transition_input_complete("lock");
                     break;
                 case LiveControlCommandKind::VolumeUp:
@@ -3027,7 +3029,7 @@ void EmulatorSession::run()
                         SystemButtonInput { button, SystemButtonPhase::Down });
                     initial_runtime->kernel->enqueue_system_button(
                         SystemButtonInput { button, SystemButtonPhase::Up });
-                    output.line(command.kind == LiveControlCommandKind::VolumeUp
+                    output.marker(command.kind == LiveControlCommandKind::VolumeUp
                                     ? "[control] volume up requested"
                                     : "[control] volume down requested");
                     mark_transition_input_complete("volume");
@@ -3039,7 +3041,7 @@ void EmulatorSession::run()
                     const auto active =
                         command.kind == LiveControlCommandKind::RingerRing;
                     initial_runtime->kernel->set_ringer_switch_active(active);
-                    output.line(active ? "[control] ringer set to ring"
+                    output.marker(active ? "[control] ringer set to ring"
                                        : "[control] ringer set to silent");
                     break;
                 }
@@ -3048,7 +3050,7 @@ void EmulatorSession::run()
                     const auto frame =
                         initial_runtime->kernel->display_snapshot();
                     snapshot_writer.present(frame);
-                    output.line("[control] snapshot=" + command.path.string() +
+                    output.marker("[control] snapshot=" + command.path.string() +
                                 " frame=" + std::to_string(frame.sequence));
                     break;
                 }
@@ -3068,7 +3070,7 @@ void EmulatorSession::run()
                         [](const auto& left, const auto& right) {
                             return left.first < right.first;
                         });
-                    output.line(
+                    output.marker(
                         "[control] snapshot-sequence prefix=" +
                         command.path.string() + " interval-ms=" +
                         std::to_string(command.snapshot_interval.count()) +
@@ -3077,17 +3079,17 @@ void EmulatorSession::run()
                 }
                 case LiveControlCommandKind::PerfBegin:
                     if (!performance_counters().enabled()) {
-                        output.line("[control] error: perf-begin requires "
+                        output.marker("[control] error: perf-begin requires "
                                     "--perf-summary");
                     } else if (display_performance_window) {
-                        output.line("[control] error: perf window already "
+                        output.marker("[control] error: perf window already "
                                     "active label=" +
                                     *display_performance_window);
                     } else {
                         if (display_presenter)
                             display_presenter->flush_presentation();
                         if (!performance_counters().begin_display_window()) {
-                            output.line(
+                            output.marker(
                                 "[control] error: perf window could not begin");
                         } else {
                             if (performance_counters()
@@ -3119,7 +3121,7 @@ void EmulatorSession::run()
                     break;
                 case LiveControlCommandKind::PerfEnd:
                     if (!display_performance_window) {
-                        output.line("[control] error: no active perf window");
+                        output.marker("[control] error: no active perf window");
                     } else {
                         const auto clock_ended_at =
                             std::chrono::steady_clock::now();
@@ -3142,7 +3144,7 @@ void EmulatorSession::run()
                             output.line(format_display_performance_summary(
                                 *snapshot, *display_performance_window));
                         } else {
-                            output.line(
+                            output.marker(
                                 "[control] error: perf window could not end");
                         }
                         if (display_clock_window) {
@@ -3187,33 +3189,17 @@ void EmulatorSession::run()
                         display_performance_window.reset();
                     }
                     break;
-                case LiveControlCommandKind::Status: {
-                    const auto submitted_frame =
-                        initial_runtime->kernel->display_submitted_frames();
-                    const auto frame =
-                        display_presenter
-                            ? display_presenter->presented_frames()
-                            : submitted_frame;
-                    const auto active_process =
-                        initial_runtime->kernel->active_client_process_id();
-                    output.line(
-                        "[control] status frame=" + std::to_string(frame) +
-                        " submitted-frame=" + std::to_string(submitted_frame) +
-                        " processes=" + std::to_string(runtimes.size()) +
-                        " threads=" + std::to_string(scheduler.thread_count()) +
-                        " runnable=" +
-                        std::to_string(scheduler.runnable_count()) +
-                        " active-process=" +
-                        (active_process ? std::to_string(*active_process)
-                                        : "none") +
-                        " display-power=" +
-                        (initial_runtime->kernel->display_powered_on()
-                                ? "on"
-                                : "off"));
+                case LiveControlCommandKind::Status:
+                    diagnostics.status();
                     break;
-                }
+                case LiveControlCommandKind::Processes:
+                    diagnostics.processes(command.message);
+                    break;
+                case LiveControlCommandKind::Threads:
+                    diagnostics.threads(command.message);
+                    break;
                 case LiveControlCommandKind::Help:
-                    output.line(
+                    output.marker(
                         "[control] commands: touch down|move|up|cancel x y; "
                         "tap x y [hold-ms]; unlock; "
                         "drag x1 y1 x2 y2 [duration-ms] [steps]; "
@@ -3223,14 +3209,14 @@ void EmulatorSession::run()
                         "ringer ring|silent; "
                         "snapshot-sequence PATH-PREFIX INTERVAL-MS COUNT; "
                         "perf-begin LABEL; perf-end; "
-                        "status; quit");
+                        "status; ps [PID|NAME]; threads PID|NAME; quit");
                     break;
                 case LiveControlCommandKind::Quit:
-                    output.line("[control] quit requested");
+                    output.marker("[control] quit requested");
                     hard_stop = true;
                     break;
                 case LiveControlCommandKind::Error:
-                    output.line("[control] error: " + command.message);
+                    output.marker("[control] error: " + command.message);
                     break;
                 }
             }
@@ -3245,7 +3231,7 @@ void EmulatorSession::run()
             };
             snapshot_writer.present(
                 initial_runtime->kernel->display_snapshot());
-            output.line("[control] snapshot-sequence frame=" +
+            output.marker("[control] snapshot-sequence frame=" +
                         scheduled_snapshots.front().second.string());
             scheduled_snapshots.erase(scheduled_snapshots.begin());
         }
@@ -4930,146 +4916,7 @@ void EmulatorSession::run()
         " stability-last-content=" +
         std::to_string(
             transition_attribution.stability_last_observed_content_revision));
-    const auto checked_in_services =
-        initial_runtime->kernel->bootstrap_checked_in_service_count();
-    output.line("[boot] milestone=service-check-in service-state=" +
-                std::string { checked_in_services == 0 ? "waiting" : "ready" } +
-                " checked-in-services=" + std::to_string(checked_in_services));
-    std::size_t allocated_count = 0;
-    std::size_t runnable_count = 0;
-    std::size_t waiting_count = 0;
-    std::size_t mapped_pages = 0;
-    std::size_t resident_pages = 0;
-    std::size_t shared_page_mappings = 0;
-    std::size_t cached_file_mappings = 0;
-    std::size_t mapping_regions = 0;
-    Runtime* stopped_runtime = initial_runtime;
-    for (auto& runtime : runtimes) {
-        mapped_pages += runtime->memory->mapped_page_count();
-        resident_pages += runtime->memory->resident_page_count();
-        shared_page_mappings += runtime->memory->shared_page_count();
-        cached_file_mappings += runtime->memory->cached_file_mapping_count();
-        mapping_regions += runtime->memory->mapping_region_count();
-        allocated_count += std::count(
-            runtime->allocated.begin(), runtime->allocated.end(), true);
-        std::size_t process_runnable = 0;
-        std::size_t process_waiting = 0;
-        for (std::size_t processor = 0; processor < runtime->allocated.size();
-            ++processor) {
-            if (!runtime->allocated[processor])
-                continue;
-            const auto scheduling_info =
-                scheduler.info(XnuThreadId { runtime->kernel->process().pid,
-                    static_cast<std::uint32_t>(processor) });
-            if (!scheduling_info)
-                continue;
-            process_runnable +=
-                scheduling_info->state == XnuThreadState::Runnable ||
-                scheduling_info->state == XnuThreadState::Running;
-            process_waiting +=
-                scheduling_info->state == XnuThreadState::Waiting;
-        }
-        runnable_count += process_runnable;
-        waiting_count += process_waiting;
-        runtime->kernel->process().waiting_for_events =
-            process_runnable == 0 && process_waiting != 0;
-        if (!runtime->kernel->process().exited) {
-            for (std::size_t processor = 0;
-                processor < runtime->allocated.size(); ++processor) {
-                if (!runtime->allocated[processor])
-                    continue;
-                const auto scheduling_info =
-                    scheduler.info(XnuThreadId { runtime->kernel->process().pid,
-                        static_cast<std::uint32_t>(processor) });
-                const auto runnable =
-                    scheduling_info &&
-                    (scheduling_info->state == XnuThreadState::Runnable ||
-                        scheduling_info->state == XnuThreadState::Running);
-                const auto waiting =
-                    scheduling_info &&
-                    scheduling_info->state == XnuThreadState::Waiting;
-                output.line(
-                    "[scheduler] pid=" +
-                    std::to_string(runtime->kernel->process().pid) +
-                    " cpu=" + std::to_string(processor) +
-                    " runnable=" + std::to_string(runnable) +
-                    " waiting=" + std::to_string(waiting) + " priority=" +
-                    std::to_string(scheduling_info
-                                       ? scheduling_info->scheduled_priority
-                                       : -1) +
-                    " wait=" + runtime->kernel->wait_reason(processor));
-            }
-        }
-        if (runtime->kernel->process().pid == stopped_pid)
-            stopped_runtime = runtime.get();
-    }
-    std::ostringstream message;
-    message << "[cpu] stopped pid=" << stopped_pid << " cpu=" << stopped_cpu
-            << " pc=0x" << std::hex
-            << stopped_runtime->cpus->cpu(stopped_cpu).registers()[15]
-            << std::dec << " ticks=" << consumed_ticks
-            << " processes=" << runtimes.size()
-            << " threads=" << allocated_count << " runnable=" << runnable_count
-            << " mapped-pages=" << mapped_pages
-            << " resident-pages=" << resident_pages
-            << " mapping-regions=" << mapping_regions
-            << " shared-page-mappings=" << shared_page_mappings
-            << " cached-file-mappings=" << cached_file_mappings
-            << " cached-file-pages="
-            << initial_runtime->memory->cached_file_page_count();
-    const auto& stopped_registers =
-        stopped_runtime->cpus->cpu(stopped_cpu).registers();
-    if (const auto instruction = stopped_runtime->memory->read32(
-            stopped_registers[15], MemoryPermission::Execute)) {
-        message << " insn=0x" << std::hex << *instruction << "("
-                << Dynarmic::A32::DisassembleArm(*instruction) << ")"
-                << " lr=0x" << stopped_registers[14] << std::dec;
-    }
-    if (stopped_result.fault) {
-        message << " fault=0x" << std::hex << stopped_result.fault->address
-                << " access="
-                << static_cast<unsigned>(stopped_result.fault->access)
-                << " size=0x" << stopped_result.fault->size;
-        for (std::size_t index = 0; index < 14; ++index) {
-            message << " r" << std::dec << index << "=0x" << std::hex
-                    << stopped_registers[index];
-        }
-        message << " stack=";
-        for (std::size_t index = 0; index < fault_stack_word_count; ++index) {
-            const auto address =
-                stopped_registers[13] +
-                static_cast<std::uint32_t>(index * sizeof(std::uint32_t));
-            const auto word = stopped_runtime->memory->read32(address);
-            if (!word)
-                break;
-            if (index != 0)
-                message << ',';
-            message << "0x" << *word;
-        }
-        message << " code=";
-        const auto code_base =
-            stopped_registers[15] - 8U * sizeof(std::uint32_t);
-        for (std::size_t index = 0; index < 16; ++index) {
-            const auto word = stopped_runtime->memory->read32(
-                code_base + static_cast<std::uint32_t>(index * 4U));
-            if (!word)
-                break;
-            if (index != 0)
-                message << ',';
-            message << "0x" << *word;
-        }
-        message << std::dec;
-    }
-    if (!stopped_result.exception.empty()) {
-        message << " exception=" << stopped_result.exception;
-    }
-    if (initial_runtime->kernel->process().exited) {
-        message << " exit=" << initial_runtime->kernel->process().exit_status;
-    }
-    if (runnable_count == 0 && waiting_count != 0) {
-        message << " state=waiting-for-events";
-    }
-    output.line(message.str());
+    diagnostics.stopped(stopped_pid, stopped_cpu, consumed_ticks, stopped_result);
     if (baseband_capture_stream) {
         baseband_capture_stream->flush();
         if (!*baseband_capture_stream) {

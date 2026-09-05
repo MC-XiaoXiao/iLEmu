@@ -1064,6 +1064,12 @@ int main(int argc, char** argv)
         for (int i = 2; i < argc; ++i) {
             args.emplace_back(argv[i]);
         }
+        const std::string_view command { argv[1] };
+        if (command == "help" || command == "--help" || command == "-h" ||
+            flag(args, "--help") || flag(args, "-h")) {
+            std::cout << usage();
+            return 0;
+        }
         auto output = make_output(args);
         const auto perf_summary = flag(args, "--perf-summary");
         const auto jit_observer_only = flag(args, "--jit-observer-only");
@@ -1097,7 +1103,6 @@ int main(int argc, char** argv)
         }
         performance_counters().set_native_lookup_diagnostics(
             perf_jit_native_lookups);
-        const std::string_view command { argv[1] };
         try {
             if (command == "profile") {
                 profile(args, *output);

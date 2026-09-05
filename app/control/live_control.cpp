@@ -216,6 +216,23 @@ std::vector<LiveControlCommand> LiveControl::parse_line(std::string line)
         return { simple_command(LiveControlCommandKind::Status) };
     if (operation == "help")
         return { simple_command(LiveControlCommandKind::Help) };
+    if (operation == "ps" || operation == "processes" ||
+        operation == "threads") {
+        std::string filter;
+        std::string trailing;
+        parser >> filter;
+        if ((parser >> trailing) ||
+            (operation == "threads" && filter.empty())) {
+            return { error_command(operation == "threads"
+                    ? "threads requires one PID or name"
+                    : "ps accepts at most one PID or name") };
+        }
+        auto command = simple_command(operation == "threads"
+                ? LiveControlCommandKind::Threads
+                : LiveControlCommandKind::Processes);
+        command.message = std::move(filter);
+        return { std::move(command) };
+    }
     if (operation == "perf-begin") {
         std::string label;
         std::string trailing;

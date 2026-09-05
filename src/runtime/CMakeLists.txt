@@ -3,6 +3,7 @@ add_library(ilemu_runtime STATIC
     emulator_session.cpp
     realtime_pacer.cpp
     resource_policy.cpp
+    session_diagnostics.cpp
     input/live_button_scheduler.cpp
     input/live_touch_scheduler.cpp)
 add_library(iLEmu::runtime ALIAS ilemu_runtime)

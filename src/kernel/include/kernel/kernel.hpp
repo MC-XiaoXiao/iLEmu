@@ -41,6 +41,7 @@
 #include "network/host_network.hpp"
 #include "kernel/kernel_control.hpp"
 #include "kernel/kernel_shared_state.hpp"
+#include "kernel/process_snapshot.hpp"
 #include "graphics/layerkit_hle.hpp"
 #include "device_state/lockdown_profile.hpp"
 #include "kernel/mach_arm_thread_abi.hpp"
@@ -153,6 +154,7 @@ public:
 
     [[nodiscard]] ProcessContext& process() { return process_; }
     [[nodiscard]] const ProcessContext& process() const { return process_; }
+    [[nodiscard]] std::vector<ProcessSnapshot> process_snapshots() const;
     [[nodiscard]] std::shared_ptr<GuestFileGenerationRegistry>
     guest_file_generation_registry() const
     {
