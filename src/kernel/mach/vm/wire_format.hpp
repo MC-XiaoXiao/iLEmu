@@ -1,7 +1,7 @@
 #pragma once
 
 #include "foundation/address_space.hpp"
-#include "device_state/darwin_kernel_profile.hpp"
+#include "device_state/darwin_kernel_identity.hpp"
 
 #include <cstdint>
 #include <optional>
@@ -12,14 +12,14 @@ namespace ilemu::mach_vm_support {
 // Later ARM32 mach_vm clients widened addresses and sizes within Darwin 11.
 // The vm_map subsystem retains natural-sized fields. Both use four-byte MIG
 // alignment, including for an eight-byte address following a scalar word.
-class MachVmWireProfile {
+class MachVmWireFormat {
 public:
-    [[nodiscard]] static constexpr MachVmWireProfile for_interface(
-        bool mach_vm, DarwinMachVmAddressProfile address_profile)
+    [[nodiscard]] static constexpr MachVmWireFormat for_interface(
+        bool mach_vm, DarwinMachVmAddressWidth address_width)
     {
         const auto wide =
-            mach_vm && address_profile == DarwinMachVmAddressProfile::Wide64;
-        return MachVmWireProfile { wide ? 8U : 4U };
+            mach_vm && address_width == DarwinMachVmAddressWidth::Wide64;
+        return MachVmWireFormat { wide ? 8U : 4U };
     }
 
     [[nodiscard]] constexpr std::uint32_t address_size() const { return size_; }
@@ -43,7 +43,7 @@ public:
     }
 
 private:
-    explicit constexpr MachVmWireProfile(std::uint32_t size)
+    explicit constexpr MachVmWireFormat(std::uint32_t size)
         : size_ { size }
     {
     }

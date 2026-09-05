@@ -13,9 +13,9 @@ namespace ilemu::hfs {
 // Guest-visible HFS volumes discovered from the firmware's own fstab. This
 // keeps partition identity in the filesystem layer and avoids leaking host
 // filesystem geometry through statfs/getattrlist.
-class VolumeProfile {
+class VolumeLayout {
 public:
-    VolumeProfile(std::filesystem::path rootfs, std::uint64_t storage_bytes);
+    VolumeLayout(std::filesystem::path rootfs, std::uint64_t storage_bytes);
 
     [[nodiscard]] const VolumeMetadata& for_guest_path(
         std::string_view path) const;

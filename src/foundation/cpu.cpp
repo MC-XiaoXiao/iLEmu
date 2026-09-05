@@ -1445,7 +1445,7 @@ public:
             }
             if (instruction &&
                 emulate_arm_unpredictable_instruction(
-                    cpu_model_.unpredictable_instruction_profile(), thumb,
+                    cpu_model_.unpredictable_instruction_policy(), thumb,
                     *instruction, jit_->ExtRegs())) {
                 return;
             }

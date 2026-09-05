@@ -33,17 +33,17 @@
 #include "foundation/darwin_notify_state_hle.hpp"
 #include "kernel/darwin_pthread_runtime.hpp"
 #include "kernel/darwin_tty_abi.hpp"
-#include "foundation/device_profile.hpp"
+#include "foundation/device_model.hpp"
 #include "graphics/display.hpp"
 #include "foundation/dyld_shared_cache.hpp"
 #include "filesystem/hfs_metadata.hpp"
-#include "filesystem/hfs_volume_profile.hpp"
+#include "filesystem/hfs_volume_layout.hpp"
 #include "network/host_network.hpp"
 #include "kernel/kernel_control.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "kernel/process_snapshot.hpp"
 #include "kernel/layerkit_hle.hpp"
-#include "device_state/lockdown_profile.hpp"
+#include "device_state/lockdown_state.hpp"
 #include "kernel/mach_arm_thread_abi.hpp"
 #include "kernel/mbx2d_hle.hpp"
 #include "kernel/mobile_framebuffer_hle.hpp"
@@ -140,9 +140,9 @@ public:
 
     CompatibilityKernel(AddressSpace& memory, Output& output,
         std::filesystem::path rootfs = { },
-        DeviceProfile device = DeviceProfile::default_profile(),
+        DeviceModel device = DeviceModel::default_model(),
         std::optional<bool> activated = std::nullopt,
-        LockdownFirmwareProfile lockdown_profile = { });
+        LockdownCapabilities lockdown_capabilities = { });
 
     void attach(Cpu& cpu);
     void dispatch(Cpu& cpu, std::uint32_t svc_immediate);
@@ -782,8 +782,8 @@ private:
     std::shared_ptr<const DyldSharedCache> dyld_shared_cache_;
     std::filesystem::path dyld_shared_cache_path_;
     bool dyld_shared_cache_attempted_ { };
-    DeviceProfile device_profile_;
-    hfs::VolumeProfile hfs_volumes_;
+    DeviceModel device_model_;
+    hfs::VolumeLayout hfs_volumes_;
     hfs::MetadataProvider hfs_metadata_;
     std::shared_ptr<DisplayState> display_state_;
     std::shared_ptr<WifiState> wifi_state_ { std::make_shared<WifiState>() };

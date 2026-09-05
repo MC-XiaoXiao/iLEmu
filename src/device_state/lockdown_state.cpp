@@ -1,4 +1,4 @@
-#include "device_state/lockdown_profile.hpp"
+#include "device_state/lockdown_state.hpp"
 
 #include <cstdint>
 #include <fstream>
@@ -208,10 +208,10 @@ std::optional<LockdownActivation> parse_lockdown_activation(
     return std::nullopt;
 }
 
-LockdownFirmwareProfile detect_lockdown_firmware_profile(
+LockdownCapabilities detect_lockdown_capabilities(
     const std::filesystem::path& rootfs, ArmArchitectureVersion architecture)
 {
-    LockdownFirmwareProfile profile;
+    LockdownCapabilities profile;
     // Early prototype firmware can own a different UI process and legitimately
     // omit SpringBoard altogether.  The profile fields below are optional
     // capabilities discovered from the image; absence of that capability must
@@ -229,9 +229,9 @@ LockdownFirmwareProfile detect_lockdown_firmware_profile(
     return profile;
 }
 
-LockdownProfileResult apply_lockdown_profile(
+LockdownStateUpdate apply_lockdown_state(
     const std::filesystem::path& rootfs, LockdownActivation activation,
-    const LockdownFirmwareProfile& profile)
+    const LockdownCapabilities& profile)
 {
     const auto path =
         rootfs / "private/var/root/Library/Lockdown/data_ark.plist";

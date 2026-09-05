@@ -14,7 +14,7 @@
 #include <vector>
 
 #include "foundation/address_space.hpp"
-#include "foundation/application_display_profile.hpp"
+#include "foundation/application_display.hpp"
 #include "foundation/application_path.hpp"
 #include "graphics/core_surface_abi.hpp"
 #include "foundation/cpu.hpp"
@@ -28,7 +28,7 @@
 #include "graphics/presentation_tracker.hpp"
 #include "foundation/scene_coordinator.hpp"
 #include "graphics/surface_store.hpp"
-#include "graphics/surface_transport_profile.hpp"
+#include "graphics/surface_transport_abi.hpp"
 #include "foundation/userland_hle.hpp"
 
 namespace ilemu {
@@ -40,7 +40,7 @@ namespace {
     };
     std::atomic<std::uint64_t> next_scanout_surface { 1 };
 
-    std::optional<ApplicationDisplayProfile> application_profile_for_process(
+    std::optional<ApplicationDisplay> application_display_for_process(
         const std::shared_ptr<KernelSharedState>& shared_state,
         std::uint32_t process_id)
     {
@@ -50,8 +50,8 @@ namespace {
         const auto process = shared_state->processes.find(process_id);
         return process == shared_state->processes.end()
                    ? std::nullopt
-                   : std::optional<ApplicationDisplayProfile> {
-                         process->second.display_profile };
+                   : std::optional<ApplicationDisplay> {
+                         process->second.application_display };
     }
 
     DisplayGeometry display_geometry_for_process(
@@ -59,7 +59,7 @@ namespace {
         std::uint32_t process_id, DisplayGeometry output)
     {
         const auto profile =
-            application_profile_for_process(shared_state, process_id);
+            application_display_for_process(shared_state, process_id);
         return profile ? application_display_geometry(*profile, output) : output;
     }
 } // namespace
@@ -302,15 +302,15 @@ bool MobileFramebufferHle::has_active_layers() const
     return !layers_.empty();
 }
 
-void MobileFramebufferHle::apply_application_display_profile(
+void MobileFramebufferHle::apply_application_display(
     LayerState& state, std::uint32_t producer_process_id,
     std::uint32_t source_width, std::uint32_t source_height) const
 {
     if (!display_ || producer_process_id == 0U)
         return;
-    const auto profile = application_profile_for_process(
+    const auto profile = application_display_for_process(
         shared_state_, producer_process_id);
-    if (!profile || profile->kind == ApplicationDisplayProfileKind::Native)
+    if (!profile || profile->kind == ApplicationDisplayMode::Native)
         return;
     const auto output = display_->geometry();
     const auto logical = application_display_geometry(*profile, output);
@@ -477,7 +477,7 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
         }
         auto effective_state = state;
         if (backing) {
-            apply_application_display_profile(effective_state,
+            apply_application_display(effective_state,
                 backing->provenance.producer_process_id, backing->width,
                 backing->height);
         }
@@ -924,7 +924,7 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
         }
         auto effective_state = state;
         if (backing) {
-            apply_application_display_profile(effective_state,
+            apply_application_display(effective_state,
                 backing->provenance.producer_process_id, backing->width,
                 backing->height);
         }
@@ -1052,7 +1052,7 @@ std::optional<std::uint32_t> MobileFramebufferHle::record_presentation(
                             backing->provenance.publication_sequence))
             continue;
         auto effective_state = state;
-        apply_application_display_profile(effective_state,
+        apply_application_display(effective_state,
             backing->provenance.producer_process_id, backing->width,
             backing->height);
         const auto scale_x =

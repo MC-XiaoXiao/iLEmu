@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include "foundation/device_profile.hpp"
+#include "foundation/device_model.hpp"
 #include "foundation/display_geometry.hpp"
 #include "foundation/system_button_input.hpp"
 #include "foundation/touch_input.hpp"

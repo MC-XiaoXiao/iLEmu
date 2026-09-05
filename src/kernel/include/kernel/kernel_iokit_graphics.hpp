@@ -20,7 +20,7 @@ namespace kernel_iokit::graphics {
     [[nodiscard]] bool matches_service(std::span<const std::byte> matching);
 
     // The caller holds KernelSharedState::mach_mutex. The service is published
-    // only by the device Profile that advertises this accelerator family.
+    // only by the device model that advertises this accelerator family.
     [[nodiscard]] std::uint32_t ensure_service_locked(
         KernelSharedState& state, std::uint32_t platform_expert_object);
 

@@ -9,9 +9,9 @@ class DesktopHost final : public SessionHost {
 public:
     void initialize_graphics() override;
     [[nodiscard]] std::unique_ptr<DisplayPresenter> create_display(
-        const DeviceProfile& device) override;
+        const DeviceModel& device) override;
     [[nodiscard]] std::unique_ptr<ControlChannel> create_control(
-        const DeviceProfile& device) override;
+        const DeviceModel& device) override;
     [[nodiscard]] SessionAudio create_audio() override;
     [[nodiscard]] HostMemorySnapshot memory_snapshot() const override;
     [[nodiscard]] HostMemoryBudgetSnapshot

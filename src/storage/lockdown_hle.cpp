@@ -51,7 +51,7 @@ namespace {
 } // namespace
 
 void register_lockdown_hle(UserlandHleRegistry& registry,
-    std::optional<bool> activated, LockdownFirmwareProfile profile)
+    std::optional<bool> activated, LockdownCapabilities profile)
 {
     if (!activated)
         return;

@@ -23,20 +23,20 @@ namespace {
 
 } // namespace
 
-std::optional<ServiceProfile> matching_service(
+std::optional<ServiceKind> matching_service(
     std::span<const std::byte> matching)
 {
     if (contains(matching, serial_multiplexer_class))
-        return ServiceProfile::SerialMultiplexer;
+        return ServiceKind::SerialMultiplexer;
     if (contains(matching, service_class) || contains(matching, registry_name))
-        return ServiceProfile::Baseband;
+        return ServiceKind::Baseband;
     return std::nullopt;
 }
 
 std::uint32_t ensure_service_locked(
-    KernelSharedState& state, ServiceProfile profile)
+    KernelSharedState& state, ServiceKind profile)
 {
-    auto& cached_object = profile == ServiceProfile::SerialMultiplexer
+    auto& cached_object = profile == ServiceKind::SerialMultiplexer
                               ? state.serial_multiplexer_service
                               : state.baseband_service;
     if (cached_object != 0)
@@ -47,15 +47,15 @@ std::uint32_t ensure_service_locked(
     static_cast<void>(state.mach_port_objects.create(object));
     state.mach_queues.try_emplace(object);
     const auto serial_multiplexer =
-        profile == ServiceProfile::SerialMultiplexer;
+        profile == ServiceKind::SerialMultiplexer;
     state.iokit_services.emplace(object,
         KernelSharedState::IOKitService {
             std::string {
                 serial_multiplexer ? serial_multiplexer_class : service_class },
             { "IOService" }, { }, { }, 0,
             serial_multiplexer
-                ? KernelSharedState::IOKitUserClientProfile::SerialMultiplexer
-                : KernelSharedState::IOKitUserClientProfile::Generic });
+                ? KernelSharedState::IOKitUserClientKind::SerialMultiplexer
+                : KernelSharedState::IOKitUserClientKind::Generic });
     return object;
 }
 
@@ -108,8 +108,8 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         return MethodResult { iokit_abi::unsupported, { } };
     }
 
-    if (service->second.user_client_profile !=
-        KernelSharedState::IOKitUserClientProfile::SerialMultiplexer) {
+    if (service->second.user_client_kind !=
+        KernelSharedState::IOKitUserClientKind::SerialMultiplexer) {
         return std::nullopt;
     }
 

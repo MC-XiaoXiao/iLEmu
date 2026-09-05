@@ -14,7 +14,7 @@
 #include <vector>
 
 #include "foundation/address_space.hpp"
-#include "foundation/application_display_profile.hpp"
+#include "foundation/application_display.hpp"
 #include "foundation/application_path.hpp"
 #include "graphics/core_surface_abi.hpp"
 #include "foundation/cpu.hpp"
@@ -72,7 +72,7 @@ namespace {
     // this is the DisplayState 0xAARRGGBB representation without conversion.
     constexpr std::uint32_t success = 0;
 
-    std::optional<ApplicationDisplayProfile> application_profile_for_process(
+    std::optional<ApplicationDisplay> application_display_for_process(
         const std::shared_ptr<KernelSharedState>& shared_state,
         std::uint32_t process_id)
     {
@@ -82,8 +82,8 @@ namespace {
         const auto process = shared_state->processes.find(process_id);
         return process == shared_state->processes.end()
                    ? std::nullopt
-                   : std::optional<ApplicationDisplayProfile> {
-                         process->second.display_profile };
+                   : std::optional<ApplicationDisplay> {
+                         process->second.application_display };
     }
 
     DisplayGeometry display_geometry_for_process(
@@ -91,7 +91,7 @@ namespace {
         std::uint32_t process_id, DisplayGeometry output)
     {
         const auto profile =
-            application_profile_for_process(shared_state, process_id);
+            application_display_for_process(shared_state, process_id);
         return profile ? application_display_geometry(*profile, output) : output;
     }
 
@@ -126,7 +126,7 @@ CoreSurfaceHle::CoreSurfaceHle(UserlandHleRegistry& registry,
         std::string { client_buffer_wrap_image_transport },
         [this](UserlandHleCall& call) { dispatch(call); });
     const auto register_property_symbols =
-        [&registry](const surface_transport::Profile& profile) {
+        [&registry](const surface_transport::ClientAbi& profile) {
             for (const auto symbol : profile.create_property_symbols) {
                 if (!symbol.empty()) {
                     registry.register_guest_data_symbol(
@@ -226,14 +226,14 @@ bool CoreSurfaceHle::refresh_default_scanout(
         return false;
     }
 
-    std::optional<ApplicationDisplayProfile> profile;
+    std::optional<ApplicationDisplay> profile;
     if (shared_state_) {
         std::lock_guard lock { shared_state_->mach_mutex };
         const auto process = shared_state_->processes.find(owner_process_id);
         if (process != shared_state_->processes.end() &&
-            process->second.display_profile.kind !=
-                ApplicationDisplayProfileKind::Native) {
-            profile = process->second.display_profile;
+            process->second.application_display.kind !=
+                ApplicationDisplayMode::Native) {
+            profile = process->second.application_display;
         }
     }
     auto display_pixels = *pixels;
@@ -620,7 +620,7 @@ std::uint32_t CoreSurfaceHle::create_buffer(UserlandHleCall& call,
 }
 
 std::uint32_t CoreSurfaceHle::acquire_client_buffer(
-    UserlandHleCall& call, const surface_transport::Profile& profile)
+    UserlandHleCall& call, const surface_transport::ClientAbi& profile)
 {
     constexpr auto permissions =
         MemoryPermission::Read | MemoryPermission::Write;
@@ -646,7 +646,7 @@ std::uint32_t CoreSurfaceHle::acquire_client_buffer(
 }
 
 void CoreSurfaceHle::recycle_client_buffer(
-    std::uint32_t client, const surface_transport::Profile& profile)
+    std::uint32_t client, const surface_transport::ClientAbi& profile)
 {
     if (client != 0)
         free_client_buffers_[profile.client_structure_size].push_back(client);
@@ -755,7 +755,7 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call)
             guest_geometry.width * core_surface_abi::bytes_per_bgra_pixel) {
         return;
     }
-    std::optional<ApplicationDisplayProfile> profile;
+    std::optional<ApplicationDisplay> profile;
     if (shared_state_) {
         std::lock_guard lock { shared_state_->mach_mutex };
         const auto process = shared_state_->processes.find(call.process_id());
@@ -769,9 +769,9 @@ void CoreSurfaceHle::submit(Buffer& buffer, UserlandHleCall& call)
                     : std::nullopt)) {
                 return;
             }
-            if (process->second.display_profile.kind !=
-                ApplicationDisplayProfileKind::Native) {
-                profile = process->second.display_profile;
+            if (process->second.application_display.kind !=
+                ApplicationDisplayMode::Native) {
+                profile = process->second.application_display;
             }
         }
     }
@@ -925,20 +925,20 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
         call.set_return(0);
         return;
     }
-    const auto& buffer_profile = surface_transport::for_kind(buffer->transport);
+    const auto& buffer_abi = surface_transport::for_kind(buffer->transport);
     if (operation == "CreateMachPort") {
         call.set_return(create_mach_port(call, *buffer));
     } else if (operation == "Retain") {
         ++buffer->references;
         static_cast<void>(call.memory().write32(
-            buffer->client + buffer_profile.reference_count_offset,
+            buffer->client + buffer_abi.reference_count_offset,
             buffer->references));
         call.set_return(argument);
     } else if (operation == "Release") {
         if (buffer->references != 0)
             --buffer->references;
         static_cast<void>(call.memory().write32(
-            buffer->client + buffer_profile.reference_count_offset,
+            buffer->client + buffer_abi.reference_count_offset,
             buffer->references));
         if (buffer->references == 0) {
             const auto client = buffer->client;
@@ -955,7 +955,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
             surfaces_->release(id);
             release_imported_mapping(call.memory(), imported_mapping_base,
                 imported_mapping_size, imported_mapping_lease_token);
-            recycle_client_buffer(client, buffer_profile);
+            recycle_client_buffer(client, buffer_abi);
         }
         call.set_return(0);
     } else if (operation == "GetID") {
@@ -1013,7 +1013,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
             });
         if (synchronized)
             buffer->lock_options.push_back(options);
-        if (synchronized && buffer_profile.lock_seed_output &&
+        if (synchronized && buffer_abi.lock_seed_output &&
             call.argument(2) != 0) {
             static_cast<void>(
                 call.memory().write32(call.argument(2), buffer->seed));
@@ -1038,7 +1038,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
             ++buffer->seed;
             submit(*buffer, call);
         }
-        if (buffer_profile.lock_seed_output && call.argument(2) != 0) {
+        if (buffer_abi.lock_seed_output && call.argument(2) != 0) {
             static_cast<void>(
                 call.memory().write32(call.argument(2), buffer->seed));
         }

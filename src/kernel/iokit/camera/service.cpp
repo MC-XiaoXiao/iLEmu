@@ -80,9 +80,9 @@ namespace {
         return 0U;
     }
 
-    bool is_profile_connection_locked(const KernelSharedState& state,
+    bool is_kind_connection_locked(const KernelSharedState& state,
         const ProcessContext& process, std::uint32_t connection_object,
-        KernelSharedState::IOKitUserClientProfile profile)
+        KernelSharedState::IOKitUserClientKind profile)
     {
         const auto connection = state.iokit_connections.find(connection_object);
         if (connection == state.iokit_connections.end() ||
@@ -92,7 +92,7 @@ namespace {
         const auto service =
             state.iokit_services.find(connection->second.service_port);
         return service != state.iokit_services.end() &&
-               service->second.user_client_profile == profile;
+               service->second.user_client_kind == profile;
     }
 
     std::optional<std::uint64_t> width_mask(std::uint64_t width)
@@ -221,7 +221,7 @@ std::uint32_t ensure_sensor_service_locked(
             { "IOService" }, { },
             "IOService:/IOPlatformExpertDevice/IOCameraSensor",
             platform_expert_object,
-            KernelSharedState::IOKitUserClientProfile::CameraSensor });
+            KernelSharedState::IOKitUserClientKind::CameraSensor });
     return object;
 }
 
@@ -242,7 +242,7 @@ std::uint32_t ensure_accelerator_service_locked(KernelSharedState& state,
             "IOService:/IOPlatformExpertDevice/" +
                 std::string { service_class },
             platform_expert_object,
-            KernelSharedState::IOKitUserClientProfile::CameraAccelerator });
+            KernelSharedState::IOKitUserClientKind::CameraAccelerator });
     return object;
 }
 
@@ -259,8 +259,8 @@ std::optional<std::uint32_t> handle_notification_port_request(
     }
     {
         std::lock_guard lock { state.mach_mutex };
-        if (!is_profile_connection_locked(state, process, connection_object,
-                KernelSharedState::IOKitUserClientProfile::CameraAccelerator)) {
+        if (!is_kind_connection_locked(state, process, connection_object,
+                KernelSharedState::IOKitUserClientKind::CameraAccelerator)) {
             return std::nullopt;
         }
     }
@@ -335,8 +335,8 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     std::uint32_t scalar_output_capacity)
 {
     std::unique_lock lock { state.mach_mutex };
-    if (is_profile_connection_locked(state, process, connection_object,
-            KernelSharedState::IOKitUserClientProfile::CameraSensor)) {
+    if (is_kind_connection_locked(state, process, connection_object,
+            KernelSharedState::IOKitUserClientKind::CameraSensor)) {
         if (selector ==
             static_cast<std::uint32_t>(SensorSelector::ReadVariable)) {
             if (scalar_input.size() != 2U || !inband_input.empty() ||
@@ -371,8 +371,8 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         return MethodResult { iokit_abi::unsupported, { } };
     }
 
-    if (!is_profile_connection_locked(state, process, connection_object,
-            KernelSharedState::IOKitUserClientProfile::CameraAccelerator)) {
+    if (!is_kind_connection_locked(state, process, connection_object,
+            KernelSharedState::IOKitUserClientKind::CameraAccelerator)) {
         return std::nullopt;
     }
     if (!scalar_input.empty() || scalar_output_capacity != 0U)

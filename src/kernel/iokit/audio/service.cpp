@@ -3,8 +3,8 @@
 #include "foundation/address_space.hpp"
 #include "mach/device_mig_ids.hpp"
 #include "kernel/iokit_abi.hpp"
-#include "kernel/kernel_iokit_audio_device_profile.hpp"
-#include "kernel/kernel_iokit_audio_profile.hpp"
+#include "kernel/kernel_iokit_audio_device_catalog.hpp"
+#include "kernel/kernel_iokit_audio_abi.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "mach/mig_wire_abi.hpp"
 #include "foundation/output.hpp"
@@ -190,7 +190,7 @@ namespace {
     }
 
     KernelSharedState::IOKitRegistryProperty stream_format_property(
-        const IOKitAudioAbiProfile& profile,
+        const IOKitAudioAbi& profile,
         const IOAudio2StreamFormatDescription& format, bool ranged = false)
     {
         std::map<std::string, KernelSharedState::IOKitRegistryProperty>
@@ -221,7 +221,7 @@ namespace {
     }
 
     KernelSharedState::IOKitRegistryProperty streams_property(
-        const IOKitAudioAbiProfile& profile,
+        const IOKitAudioAbi& profile,
         const IOAudio2DeviceDescription& device,
         IOAudio2StreamDirection direction)
     {
@@ -258,7 +258,7 @@ namespace {
     }
 
     KernelSharedState::IOKitRegistryProperty controls_property(
-        const IOKitAudioAbiProfile& profile,
+        const IOKitAudioAbi& profile,
         const IOAudio2DeviceDescription& device)
     {
         std::vector<KernelSharedState::IOKitRegistryProperty> controls;
@@ -338,7 +338,7 @@ namespace {
     bool is_audio_connection_locked(const KernelSharedState& state,
         const ProcessContext& process, std::uint32_t connection_object)
     {
-        const auto& profile = IOKitAudioAbiProfile::io_audio2();
+        const auto& profile = IOKitAudioAbi::io_audio2();
         const auto connection = state.iokit_connections.find(connection_object);
         if (connection == state.iokit_connections.end() ||
             connection->second.owner_pid != process.pid ||
@@ -348,8 +348,8 @@ namespace {
         const auto service =
             state.iokit_services.find(connection->second.service_port);
         return service != state.iokit_services.end() &&
-               service->second.user_client_profile ==
-                   KernelSharedState::IOKitUserClientProfile::Audio &&
+               service->second.user_client_kind ==
+                   KernelSharedState::IOKitUserClientKind::Audio &&
                service->second.class_name == profile.service_class;
     }
 
@@ -432,7 +432,7 @@ namespace {
         }
         if (send_size < 56U || receive_size < simple_reply_size)
             return mach_receive_invalid_data;
-        const auto& profile = IOKitAudioAbiProfile::io_audio2();
+        const auto& profile = IOKitAudioAbi::io_audio2();
 
         const auto descriptor_count =
             memory
@@ -537,7 +537,7 @@ namespace {
         }
         if (device == nullptr)
             return std::nullopt;
-        const auto& profile = IOKitAudioAbiProfile::io_audio2();
+        const auto& profile = IOKitAudioAbi::io_audio2();
         const auto stream_id = profile.stream_id_for_memory_type(memory_type);
         const auto* stream =
             stream_id ? find_stream(*device, *stream_id) : nullptr;
@@ -653,7 +653,7 @@ namespace {
                 return std::nullopt;
             const auto connection =
                 state.iokit_audio_connections.find(connection_object);
-            const auto& profile = IOKitAudioAbiProfile::io_audio2();
+            const auto& profile = IOKitAudioAbi::io_audio2();
             const auto stream_id =
                 profile.stream_id_for_memory_type(memory_type);
             const auto known_memory_type =
@@ -707,7 +707,7 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     if (device == nullptr)
         return std::nullopt;
 
-    const auto& profile = IOKitAudioAbiProfile::io_audio2();
+    const auto& profile = IOKitAudioAbi::io_audio2();
     auto& connection = state.iokit_audio_connections[connection_object];
     if (selector == profile.selectors.start ||
         selector == profile.selectors.stop) {
@@ -778,12 +778,12 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
 
 bool matches_service(std::span<const std::byte> matching)
 {
-    return contains(matching, IOKitAudioAbiProfile::io_audio2().service_class);
+    return contains(matching, IOKitAudioAbi::io_audio2().service_class);
 }
 
 std::vector<std::uint32_t> ensure_services_locked(KernelSharedState& state)
 {
-    const auto& profile = IOKitAudioAbiProfile::io_audio2();
+    const auto& profile = IOKitAudioAbi::io_audio2();
     std::vector<std::uint32_t> services;
     services.reserve(IOAudio2DeviceCatalog::devices().size());
     for (const auto& device : IOAudio2DeviceCatalog::devices()) {
@@ -838,7 +838,7 @@ std::vector<std::uint32_t> ensure_services_locked(KernelSharedState& state)
                         std::move(properties),
                         std::string { profile.registry_path } + "/" +
                             std::string { device.uid },
-                        0, KernelSharedState::IOKitUserClientProfile::Audio });
+                        0, KernelSharedState::IOKitUserClientKind::Audio });
         services.push_back(object);
     }
     return services;

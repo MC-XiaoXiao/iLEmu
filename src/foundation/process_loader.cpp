@@ -104,12 +104,12 @@ namespace {
 
 ProcessLoader::ProcessLoader(std::filesystem::path rootfs, AddressSpace& memory,
     ArmArchitectureVersion architecture, ExecutableCatalog* catalog,
-    DarwinInitialAppleVectorProfile initial_apple_vector_profile)
+    DarwinInitialAppleVectorAbi initial_apple_vector_abi)
     : rootfs_ { std::move(rootfs) }
     , memory_ { memory }
     , architecture_ { architecture }
     , catalog_ { catalog }
-    , initial_apple_vector_profile_ { initial_apple_vector_profile }
+    , initial_apple_vector_abi_ { initial_apple_vector_abi }
 {
 }
 
@@ -261,8 +261,8 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
     }
     std::reverse(environment_pointers.begin(), environment_pointers.end());
     const auto apple_vector_executable_path =
-        initial_apple_vector_profile_ ==
-                DarwinInitialAppleVectorProfile::LegacyExecutablePath
+        initial_apple_vector_abi_ ==
+                DarwinInitialAppleVectorAbi::LegacyExecutablePath
             ? mapped_executable
             : "executable_path=" + mapped_executable;
     const auto executable_path = push_string(apple_vector_executable_path);

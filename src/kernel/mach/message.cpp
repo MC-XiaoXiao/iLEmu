@@ -19,7 +19,7 @@
 #include "kernel/mach_thread_policy_abi.hpp"
 #include "media/media_library_service.hpp"
 #include "mach/mig_wire_abi.hpp"
-#include "kernel/protocol_vproc_profile.hpp"
+#include "kernel/protocol_vproc_contract.hpp"
 #include "mach/task_mig_ids.hpp"
 #include "mach/thread_act_mig_ids.hpp"
 #include "mach/vm_map_mig_ids.hpp"
@@ -180,9 +180,9 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
         dispatch_mach_notification_message(cpu, request)) {
         return;
     }
-    const auto* vproc_log_profile =
-        protocol_vproc::profile_for_log_message(*message_id);
-    if (vproc_log_profile != nullptr && registers[2] >= 48U) {
+    const auto* vproc_log_contract =
+        protocol_vproc::contract_for_log_message(*message_id);
+    if (vproc_log_contract != nullptr && registers[2] >= 48U) {
         const auto& arguments = xnu::mig::protocol_vproc::log_arguments;
         const auto priority =
             memory_.read32(message_address + arguments[1].request_offset)
@@ -200,7 +200,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                                 arguments[3].request_offset &&
             arguments[3].request_offset + padded_count == registers[2];
         if (!valid_log_shape)
-            vproc_log_profile = nullptr;
+            vproc_log_contract = nullptr;
         const auto available = valid_log_shape ? count : 0U;
         std::string message;
         if (available != 0) {
@@ -216,10 +216,10 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                 }
             }
         }
-        if (vproc_log_profile != nullptr) {
+        if (vproc_log_contract != nullptr) {
             output_.write(
                 "[launchd-log] pid=" + std::to_string(process_.pid) +
-                " profile=" + std::string { vproc_log_profile->name } +
+                " profile=" + std::string { vproc_log_contract->name } +
                 " priority=" + std::to_string(priority) +
                 " error=" + std::to_string(error) +
                 (message.empty() ? std::string { } : " message=" + message) +
@@ -969,9 +969,9 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                     if (const auto process =
                             shared_state_->processes.find(process_.pid);
                         process != shared_state_->processes.end() &&
-                        process->second.core_animation_remote_profile) {
+                        process->second.core_animation_remote_abi) {
                         const auto& profile =
-                            *process->second.core_animation_remote_profile;
+                            *process->second.core_animation_remote_abi;
                         const auto exact_transaction =
                             profile.is_transaction_message(*message_id);
                         const auto render_server =

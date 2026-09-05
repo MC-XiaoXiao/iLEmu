@@ -1,4 +1,4 @@
-#include "graphics/opengles_guest_profile.hpp"
+#include "graphics/opengles_guest_capabilities.hpp"
 
 #include "foundation/userland_hle.hpp"
 
@@ -15,7 +15,7 @@ namespace {
         "OpenGL ES-CM 1.1 IMGSGX535-31.4"
     };
 
-    constexpr OpenGlesGuestProfile legacy_mbx_lite {
+    constexpr OpenGlesGuestCapabilities legacy_mbx_lite {
         "mbx-lite-legacy",
         common_vendor,
         common_renderer,
@@ -33,7 +33,7 @@ namespace {
         2048,
     };
 
-    constexpr OpenGlesGuestProfile framebuffer_object_mbx_lite {
+    constexpr OpenGlesGuestCapabilities framebuffer_object_mbx_lite {
         "mbx-lite-framebuffer-object",
         common_vendor,
         common_renderer,
@@ -55,7 +55,7 @@ namespace {
     // implements the fixed-function ES 1.1 ABI today, so keep the ES 2.0 shader
     // capability private until that ABI is implemented instead of advertising a
     // path that would fail after context creation.
-    constexpr OpenGlesGuestProfile sgx535 {
+    constexpr OpenGlesGuestCapabilities sgx535 {
         "sgx535-fixed-function",
         common_vendor,
         sgx535_renderer,
@@ -73,7 +73,7 @@ namespace {
         2048,
     };
 
-    constexpr OpenGlesGuestProfile sgx535_framebuffer_objects {
+    constexpr OpenGlesGuestCapabilities sgx535_framebuffer_objects {
         "sgx535-framebuffer-object",
         common_vendor,
         sgx535_renderer,
@@ -85,41 +85,41 @@ namespace {
 
 } // namespace
 
-EaglContextProfileKind detect_eagl_context_profile(const UserlandHleCall& call)
+EaglContextAbi detect_eagl_context_abi(const UserlandHleCall& call)
 {
     return call.symbol_address("-[EAGLContext GetMacroContextPrivate]")
-               ? EaglContextProfileKind::FirmwareMacroDispatch
-               : EaglContextProfileKind::HostManagedPublicAbi;
+               ? EaglContextAbi::FirmwareMacroDispatch
+               : EaglContextAbi::HostManagedPublicAbi;
 }
 
-const OpenGlesGuestProfile& open_gles_guest_profile(
-    OpenGlesGuestProfileKind kind)
+const OpenGlesGuestCapabilities& open_gles_guest_capabilities(
+    OpenGlesGuestCapabilitySet kind)
 {
     switch (kind) {
-    case OpenGlesGuestProfileKind::MbxLiteLegacy:
+    case OpenGlesGuestCapabilitySet::MbxLiteLegacy:
         return legacy_mbx_lite;
-    case OpenGlesGuestProfileKind::MbxLiteFramebufferObjects:
+    case OpenGlesGuestCapabilitySet::MbxLiteFramebufferObjects:
         return framebuffer_object_mbx_lite;
-    case OpenGlesGuestProfileKind::Sgx535:
+    case OpenGlesGuestCapabilitySet::Sgx535:
         return sgx535;
-    case OpenGlesGuestProfileKind::Sgx535FramebufferObjects:
+    case OpenGlesGuestCapabilitySet::Sgx535FramebufferObjects:
         return sgx535_framebuffer_objects;
     }
     return legacy_mbx_lite;
 }
 
-OpenGlesGuestProfileKind open_gles_framebuffer_profile(
-    OpenGlesGuestProfileKind kind)
+OpenGlesGuestCapabilitySet open_gles_framebuffer_capabilities(
+    OpenGlesGuestCapabilitySet kind)
 {
     switch (kind) {
-    case OpenGlesGuestProfileKind::MbxLiteLegacy:
-    case OpenGlesGuestProfileKind::MbxLiteFramebufferObjects:
-        return OpenGlesGuestProfileKind::MbxLiteFramebufferObjects;
-    case OpenGlesGuestProfileKind::Sgx535:
-    case OpenGlesGuestProfileKind::Sgx535FramebufferObjects:
-        return OpenGlesGuestProfileKind::Sgx535FramebufferObjects;
+    case OpenGlesGuestCapabilitySet::MbxLiteLegacy:
+    case OpenGlesGuestCapabilitySet::MbxLiteFramebufferObjects:
+        return OpenGlesGuestCapabilitySet::MbxLiteFramebufferObjects;
+    case OpenGlesGuestCapabilitySet::Sgx535:
+    case OpenGlesGuestCapabilitySet::Sgx535FramebufferObjects:
+        return OpenGlesGuestCapabilitySet::Sgx535FramebufferObjects;
     }
-    return OpenGlesGuestProfileKind::MbxLiteFramebufferObjects;
+    return OpenGlesGuestCapabilitySet::MbxLiteFramebufferObjects;
 }
 
 } // namespace ilemu

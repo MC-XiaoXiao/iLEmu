@@ -20,7 +20,7 @@ namespace kernel_iokit::baseband {
     };
     inline constexpr std::string_view registry_name { "baseband" };
 
-    enum class ServiceProfile {
+    enum class ServiceKind {
         Baseband,
         SerialMultiplexer,
     };
@@ -41,12 +41,12 @@ namespace kernel_iokit::baseband {
         std::vector<std::uint64_t> scalar_output;
     };
 
-    [[nodiscard]] std::optional<ServiceProfile> matching_service(
+    [[nodiscard]] std::optional<ServiceKind> matching_service(
         std::span<const std::byte> matching);
 
     // The caller holds KernelSharedState::mach_mutex.
     [[nodiscard]] std::uint32_t ensure_service_locked(
-        KernelSharedState& state, ServiceProfile profile);
+        KernelSharedState& state, ServiceKind profile);
 
     [[nodiscard]] std::optional<MethodResult> dispatch_connect_method(
         KernelSharedState& state, const ProcessContext& process,

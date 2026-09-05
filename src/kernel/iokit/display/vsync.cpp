@@ -75,8 +75,8 @@ namespace {
         const auto service =
             state.iokit_services.find(connection->second.service_port);
         return service != state.iokit_services.end() &&
-               service->second.user_client_profile ==
-                   KernelSharedState::IOKitUserClientProfile::Display;
+               service->second.user_client_kind ==
+                   KernelSharedState::IOKitUserClientKind::Display;
     }
 
     bool queue_has_vsync(

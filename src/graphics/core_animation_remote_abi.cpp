@@ -1,4 +1,4 @@
-#include "graphics/core_animation_remote_profile.hpp"
+#include "graphics/core_animation_remote_abi.hpp"
 
 #include <algorithm>
 #include <array>
@@ -100,14 +100,14 @@ namespace {
 
 } // namespace
 
-bool CoreAnimationRemoteProfile::is_transaction_message(
+bool CoreAnimationRemoteAbi::is_transaction_message(
     std::uint32_t identifier) const
 {
     return identifier == inline_transaction_message ||
            identifier == out_of_line_transaction_message;
 }
 
-std::optional<CoreAnimationRemoteProfile> CoreAnimationRemoteProfile::detect(
+std::optional<CoreAnimationRemoteAbi> CoreAnimationRemoteAbi::detect(
     const MachOImage& image)
 {
     const MachSymbol* encoder = nullptr;
@@ -123,7 +123,7 @@ std::optional<CoreAnimationRemoteProfile> CoreAnimationRemoteProfile::detect(
         detect_inline_transaction_message(image, encoder->value);
     if (inline_message &&
         *inline_message != std::numeric_limits<std::uint32_t>::max()) {
-        return CoreAnimationRemoteProfile {
+        return CoreAnimationRemoteAbi {
             "core-animation-remote-transaction-v1", *inline_message,
             *inline_message + 1U, false
         };
@@ -140,13 +140,13 @@ std::optional<CoreAnimationRemoteProfile> CoreAnimationRemoteProfile::detect(
                 return image.find_symbol(symbol_name) != nullptr;
             });
     if (has_render_server_protocol) {
-        return CoreAnimationRemoteProfile {
+        return CoreAnimationRemoteAbi {
             "core-animation-remote-render-server-v1", 0U, 0U, true
         };
     }
 
     if (image.find_symbol(early_render_server_port_symbol) != nullptr) {
-        return CoreAnimationRemoteProfile {
+        return CoreAnimationRemoteAbi {
             "core-animation-remote-render-server-v1", 0U, 0U, true
         };
     }

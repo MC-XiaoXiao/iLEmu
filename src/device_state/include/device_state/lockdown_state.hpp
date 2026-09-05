@@ -14,12 +14,12 @@ enum class LockdownActivation {
     Unactivated,
 };
 
-struct LockdownFirmwareProfile {
+struct LockdownCapabilities {
     bool registration_state { true };
     bool brick_state { };
 };
 
-struct LockdownProfileResult {
+struct LockdownStateUpdate {
     std::filesystem::path path;
     bool changed { };
 };
@@ -29,15 +29,15 @@ struct LockdownProfileResult {
 
 // Select the Lockdown state contract from symbols imported by the firmware.
 // This models API capabilities rather than product or build-version names.
-[[nodiscard]] LockdownFirmwareProfile detect_lockdown_firmware_profile(
+[[nodiscard]] LockdownCapabilities detect_lockdown_capabilities(
     const std::filesystem::path& rootfs,
     ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K);
 
 // data_ark.plist belongs to the simulated device's writable /var state, not
 // the source firmware image. Seeding it models an already activated or factory
 // device without emulating a baseband activation transaction.
-[[nodiscard]] LockdownProfileResult apply_lockdown_profile(
+[[nodiscard]] LockdownStateUpdate apply_lockdown_state(
     const std::filesystem::path& rootfs, LockdownActivation activation,
-    const LockdownFirmwareProfile& profile);
+    const LockdownCapabilities& profile);
 
 } // namespace ilemu

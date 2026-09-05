@@ -1,4 +1,4 @@
-#include "filesystem/hfs_volume_profile.hpp"
+#include "filesystem/hfs_volume_layout.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -128,7 +128,7 @@ namespace {
 
 } // namespace
 
-VolumeProfile::VolumeProfile(
+VolumeLayout::VolumeLayout(
     std::filesystem::path rootfs, std::uint64_t storage_bytes)
 {
     volumes_.push_back(VolumeMetadata { });
@@ -168,7 +168,7 @@ VolumeProfile::VolumeProfile(
     }
 }
 
-const VolumeMetadata& VolumeProfile::for_guest_path(std::string_view path) const
+const VolumeMetadata& VolumeLayout::for_guest_path(std::string_view path) const
 {
     const auto normalized = normalize_guest_path(path);
     const VolumeMetadata* result = nullptr;
@@ -182,7 +182,7 @@ const VolumeMetadata& VolumeProfile::for_guest_path(std::string_view path) const
     return result ? *result : volumes_.front();
 }
 
-const VolumeMetadata& VolumeProfile::for_mounted_device(
+const VolumeMetadata& VolumeLayout::for_mounted_device(
     std::string_view device) const
 {
     const auto found = std::ranges::find_if(volumes_,
@@ -190,7 +190,7 @@ const VolumeMetadata& VolumeProfile::for_mounted_device(
     return found == volumes_.end() ? for_guest_path("/") : *found;
 }
 
-bool VolumeProfile::is_mount_root(std::string_view path) const
+bool VolumeLayout::is_mount_root(std::string_view path) const
 {
     const auto normalized =
         std::filesystem::path { normalize_guest_path(path) }.lexically_normal();

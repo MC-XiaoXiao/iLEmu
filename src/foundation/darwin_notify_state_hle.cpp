@@ -32,10 +32,10 @@ DarwinNotifyStateHle::DarwinNotifyStateHle(UserlandHleRegistry& registry)
 
 DarwinNotifyStateHle::~DarwinNotifyStateHle() { reset(); }
 
-void DarwinNotifyStateHle::set_profile(DarwinNotifyStateProfile profile)
+void DarwinNotifyStateHle::set_abi(DarwinNotifyStateAbi abi)
 {
     std::lock_guard lock { mutex_ };
-    profile_ = profile;
+    abi_ = abi;
 }
 
 void DarwinNotifyStateHle::set_native_server_ready_query(
@@ -108,7 +108,7 @@ void DarwinNotifyStateHle::register_mach_port(UserlandHleCall& call)
         std::lock_guard lock { mutex_ };
         has_provider = providers_.contains(*name);
         bootstrap_aware =
-            profile_ == DarwinNotifyStateProfile::BootstrapAwareServerTokens;
+            abi_ == DarwinNotifyStateAbi::BootstrapAwareServerTokens;
     }
     const auto server_ready = native_server_ready();
     if (bootstrap_aware && !server_ready) {
@@ -146,7 +146,7 @@ void DarwinNotifyStateHle::register_check(UserlandHleCall& call)
         std::lock_guard lock { mutex_ };
         has_provider = providers_.contains(*name);
         bootstrap_aware =
-            profile_ == DarwinNotifyStateProfile::BootstrapAwareServerTokens;
+            abi_ == DarwinNotifyStateAbi::BootstrapAwareServerTokens;
     }
     const auto server_ready = native_server_ready();
     if (bootstrap_aware && !server_ready) {

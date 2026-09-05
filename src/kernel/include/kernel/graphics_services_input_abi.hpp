@@ -18,7 +18,7 @@ class MachOImage;
 // profile is selected from the implementation of GraphicsServices' exported
 // accessors, so it follows the ABI actually loaded by a process rather than a
 // product version or build identifier.
-struct GraphicsServicesInputProfile {
+struct GraphicsServicesInputAbi {
     struct SystemEvents {
         std::array<std::uint32_t, 2> home { };
         std::array<std::uint32_t, 2> lock { };
@@ -55,7 +55,7 @@ struct GraphicsServicesInputProfile {
         const SystemButtonInput& input) const;
     [[nodiscard]] std::uint32_t ringer_switch_type(bool active) const;
 
-    [[nodiscard]] static const GraphicsServicesInputProfile& for_abi(
+    [[nodiscard]] static const GraphicsServicesInputAbi& for_abi(
         KernelSharedState::GraphicsInputAbi abi);
 
     [[nodiscard]] static std::optional<KernelSharedState::GraphicsInputAbi>

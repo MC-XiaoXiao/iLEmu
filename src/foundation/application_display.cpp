@@ -1,4 +1,4 @@
-#include "foundation/application_display_profile.hpp"
+#include "foundation/application_display.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -151,11 +151,11 @@ namespace {
 
 } // namespace
 
-ApplicationDisplayProfile detect_application_display_profile(
+ApplicationDisplay detect_application_display(
     const std::filesystem::path& rootfs, std::string_view executable_path,
     DisplayGeometry user_interface_geometry)
 {
-    ApplicationDisplayProfile profile;
+    ApplicationDisplay profile;
     if (!tablet_sized(user_interface_geometry) || rootfs.empty() ||
         executable_path.empty()) {
         return profile;
@@ -180,7 +180,7 @@ ApplicationDisplayProfile detect_application_display_profile(
     }
     PlistOwner root { parsed };
     if (plist_is_iphone_only(root.get())) {
-        profile.kind = ApplicationDisplayProfileKind::IPhoneCompatibility1x;
+        profile.kind = ApplicationDisplayMode::IPhoneCompatibility1x;
         profile.logical_geometry = default_display_geometry;
     }
 #else
@@ -191,9 +191,9 @@ ApplicationDisplayProfile detect_application_display_profile(
 }
 
 DisplayGeometry application_display_geometry(
-    const ApplicationDisplayProfile& profile, DisplayGeometry output)
+    const ApplicationDisplay& profile, DisplayGeometry output)
 {
-    if (profile.kind != ApplicationDisplayProfileKind::Native &&
+    if (profile.kind != ApplicationDisplayMode::Native &&
         profile.logical_geometry.valid()) {
         return profile.logical_geometry;
     }
@@ -201,11 +201,11 @@ DisplayGeometry application_display_geometry(
 }
 
 DisplayViewport application_display_viewport(
-    const ApplicationDisplayProfile& profile, DisplayGeometry output)
+    const ApplicationDisplay& profile, DisplayGeometry output)
 {
     if (!output.valid())
         return { };
-    if (profile.kind == ApplicationDisplayProfileKind::Native ||
+    if (profile.kind == ApplicationDisplayMode::Native ||
         !profile.logical_geometry.valid()) {
         return { 0, 0, output.width, output.height };
     }
@@ -221,14 +221,14 @@ DisplayViewport application_display_viewport(
 }
 
 std::vector<std::uint32_t> compose_application_display_pixels(
-    const ApplicationDisplayProfile& profile, DisplayGeometry source,
+    const ApplicationDisplay& profile, DisplayGeometry source,
     DisplayGeometry output, std::span<const std::uint32_t> pixels)
 {
     if (!source.valid() || !output.valid() ||
         pixels.size() != source.pixel_count()) {
         return { };
     }
-    if (profile.kind == ApplicationDisplayProfileKind::Native) {
+    if (profile.kind == ApplicationDisplayMode::Native) {
         if (source.width != output.width || source.height != output.height)
             return { };
         return { pixels.begin(), pixels.end() };

@@ -1,4 +1,4 @@
-#include "device_state/graphics_services_capability_profile.hpp"
+#include "device_state/graphics_services_capabilities.hpp"
 
 #include <cstdint>
 #include <cstdlib>
@@ -139,7 +139,7 @@ namespace {
     }
 
     void ensure_screen_dimensions(
-        plist_t dictionary, const DeviceProfile& profile)
+        plist_t dictionary, const DeviceModel& profile)
     {
         auto dimensions = plist_dict_get_item(dictionary, "screen-dimensions");
         if (dimensions == nullptr) {
@@ -167,7 +167,7 @@ namespace {
     }
 
     std::vector<std::byte> from_firmware_plist(
-        const std::filesystem::path& rootfs, const DeviceProfile& profile)
+        const std::filesystem::path& rootfs, const DeviceModel& profile)
     {
         const auto directory =
             rootfs / "System/Library/CoreServices/SpringBoard.app";
@@ -200,7 +200,7 @@ namespace {
     }
 #endif
 
-    std::vector<std::byte> fallback_payload(const DeviceProfile& profile)
+    std::vector<std::byte> fallback_payload(const DeviceModel& profile)
     {
         const auto& capabilities = profile.graphics_services_capabilities;
         const auto boolean = [](std::string_view key, bool value) {
@@ -247,7 +247,7 @@ namespace {
 } // namespace
 
 std::vector<std::byte> make_graphics_services_capability_memory(
-    const std::filesystem::path& rootfs, const DeviceProfile& profile)
+    const std::filesystem::path& rootfs, const DeviceModel& profile)
 {
 #if defined(ILEMU_HAS_LIBPLIST)
     if (const auto payload = from_firmware_plist(rootfs, profile);

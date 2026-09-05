@@ -3,7 +3,7 @@
 #include "foundation/address_space.hpp"
 #include "crypto/big_number.hpp"
 #include "foundation/userland_hle.hpp"
-#include "prime_field_profile.hpp"
+#include "prime_field_layout.hpp"
 #include <string>
 #include <vector>
 
@@ -15,7 +15,7 @@ namespace {
         const auto context = call.argument(0);
         const auto destination = call.argument(1);
         const auto reduction = call.symbol_address("_cczp_mod");
-        const auto profile = reduction ? PrimeFieldProfile::resolve(
+        const auto profile = reduction ? PrimeFieldLayout::resolve(
                                              call.memory(), context, *reduction)
                                        : std::nullopt;
         const auto units = call.memory().read32(context);

@@ -223,7 +223,7 @@ std::uint32_t ensure_service_locked(
                     { "IOService" }, { },
                     "IOService:/IOPlatformExpertDevice/AppleMBXDevice",
                     platform_expert_object,
-                    KernelSharedState::IOKitUserClientProfile::Mbx });
+                    KernelSharedState::IOKitUserClientKind::Mbx });
     return object;
 }
 
@@ -242,8 +242,8 @@ std::optional<MethodResult> dispatch_connect_method(AddressSpace& memory,
     const auto service =
         state.iokit_services.find(connection->second.service_port);
     if (service == state.iokit_services.end() ||
-        service->second.user_client_profile !=
-            KernelSharedState::IOKitUserClientProfile::Mbx)
+        service->second.user_client_kind !=
+            KernelSharedState::IOKitUserClientKind::Mbx)
         return std::nullopt;
 
     constexpr std::uint64_t integrated_device_identifier = 0U;

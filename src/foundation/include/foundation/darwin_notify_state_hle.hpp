@@ -15,10 +15,10 @@ class UserlandHleCall;
 class UserlandHleRegistry;
 
 // Some libnotify generations contact notifyd from image initializers, including
-// notifyd's own image initialization. Their bootstrap-aware profile supplies
+// notifyd's own image initialization. Their bootstrap-aware abi supplies
 // process-local check tokens while the server is absent, then returns to the
 // firmware service once notifyd has checked in.
-enum class DarwinNotifyStateProfile : std::uint8_t {
+enum class DarwinNotifyStateAbi : std::uint8_t {
     NativeServerTokens,
     BootstrapAwareServerTokens,
 };
@@ -34,7 +34,7 @@ public:
     explicit DarwinNotifyStateHle(UserlandHleRegistry& registry);
     ~DarwinNotifyStateHle();
 
-    void set_profile(DarwinNotifyStateProfile profile);
+    void set_abi(DarwinNotifyStateAbi abi);
     void set_native_server_ready_query(NativeServerReadyQuery query);
     void set_provider(std::string name, StateProvider provider);
     void set_notification_dispatcher(NotificationDispatcher dispatcher);
@@ -68,8 +68,8 @@ private:
     std::map<std::uint32_t, std::string> token_names_;
     std::set<std::uint32_t> virtual_tokens_;
     std::uint32_t next_virtual_token_ { 0x4000'0000U };
-    DarwinNotifyStateProfile profile_ {
-        DarwinNotifyStateProfile::NativeServerTokens
+    DarwinNotifyStateAbi abi_ {
+        DarwinNotifyStateAbi::NativeServerTokens
     };
     NativeServerReadyQuery native_server_ready_query_;
     NotificationDispatcher dispatcher_;

@@ -29,11 +29,11 @@ namespace {
 } // namespace
 
 bool emulate_arm_unpredictable_instruction(
-    ArmUnpredictableInstructionProfile profile, bool thumb,
+    ArmUnpredictableInstructionPolicy profile, bool thumb,
     std::uint32_t instruction,
     std::span<std::uint32_t, 64> extension_registers) noexcept
 {
-    if (profile != ArmUnpredictableInstructionProfile::CortexA8)
+    if (profile != ArmUnpredictableInstructionPolicy::CortexA8)
         return false;
 
     const auto decoded = asimd_instruction(thumb, instruction);

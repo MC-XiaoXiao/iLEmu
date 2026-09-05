@@ -14,8 +14,8 @@ namespace ilemu {
 
 // The simulator can expose a baseband transport for an explicit replay fixture
 // or run with the normal offline/no-modem policy. This is a capability
-// profile, not a firmware-version or application rule.
-enum class BasebandTransportProfile : std::uint8_t {
+// model, not a firmware-version or application rule.
+enum class BasebandTransport : std::uint8_t {
     Virtual,
     // No physical modem is attached. Registry and control-plane probes stay
     // visible so stock clients settle on the normal Offline state, while no
@@ -25,7 +25,7 @@ enum class BasebandTransportProfile : std::uint8_t {
 
 // Some legacy activation flows deliberately identify an offline handset as a
 // development board.  Keep that identity decision in the device capability
-// profile; it must not be inferred from a product name or applied to every
+// model; it must not be inferred from a product name or applied to every
 // activated retail device.
 enum class ActivationHardwareModelPolicy : std::uint8_t {
     Retail,
@@ -34,15 +34,15 @@ enum class ActivationHardwareModelPolicy : std::uint8_t {
 
 // Guest-visible graphics accelerator family. This describes the firmware
 // capability boundary; it does not select the host renderer implementation.
-enum class GraphicsAcceleratorProfileKind : std::uint8_t {
+enum class GraphicsAcceleratorKind : std::uint8_t {
     MbxLite,
     Sgx535,
 };
 
 // Host-driven system gestures are expressed in the firmware's normalized UI
-// coordinate space. Keeping this data in the device profile avoids teaching
+// coordinate space. Keeping this data in the device model avoids teaching
 // the control frontend about product names, builds, or SpringBoard pages.
-struct NormalizedDragGestureProfile {
+struct NormalizedDragGesture {
     float start_x_fraction { };
     float start_y_fraction { };
     float end_x_fraction { };
@@ -53,23 +53,23 @@ struct NormalizedDragGestureProfile {
     std::uint32_t wake_settle_delay_ms { };
 };
 
-struct SystemGestureProfile {
+struct SystemGestures {
     std::string_view name;
-    NormalizedDragGestureProfile unlock;
+    NormalizedDragGesture unlock;
     // Some compact lock scenes need the firmware Home transition even while
     // the panel is already powered; tablet scenes retain the power-only wake
     // behavior.
     bool home_wake_barrier { };
 };
 
-inline constexpr SystemGestureProfile classic_compact_system_gestures {
+inline constexpr SystemGestures classic_compact_system_gestures {
     "classic-compact-slider",
     { 0.15625F, 0.8958333333F, 0.8125F, 0.8958333333F, 1'400U, 7U, 200U,
         1'000U },
     true,
 };
 
-inline constexpr SystemGestureProfile classic_centered_tablet_system_gestures {
+inline constexpr SystemGestures classic_centered_tablet_system_gestures {
     "classic-centered-tablet-slider",
     { 0.3776041667F, 0.9375F, 0.8463541667F, 0.9375F, 1'400U, 7U, 200U,
         1'500U },
@@ -80,7 +80,7 @@ inline constexpr SystemGestureProfile classic_centered_tablet_system_gestures {
 // shared-memory object. The base dictionary is firmware-owned; these identity
 // values and the multitasking switch describe the emulated device boundary
 // used when that object has not been published yet.
-struct GraphicsServicesCapabilityProfile {
+struct GraphicsServicesCapabilities {
     std::string_view device_name;
     std::string_view marketing_name;
     bool supports_multitasking { };
@@ -111,10 +111,10 @@ inline constexpr std::array<std::byte, 52>
     };
 
 // The early ARMv7 firmware starts keybagd through the AppleKeyStore IOKit
-// service. This is a device capability boundary: legacy profiles without the
+// service. This is a device capability boundary: legacy models without the
 // hardware-backed key store keep the service absent, while the virtualized
-// ARMv7 profiles publish the matching guest-visible endpoint.
-struct KeyBagCapabilityProfile {
+// ARMv7 models publish the matching guest-visible endpoint.
+struct KeyBagCapabilities {
     bool apple_key_store_available { };
     // A virtual data volume has no physical effaceable-storage locker. The
     // firmware's no-effaceable-storage property selects its ordinary plist
@@ -122,14 +122,14 @@ struct KeyBagCapabilityProfile {
     bool effaceable_storage_available { true };
     // iOS 4-era keybagd uses AppleEffaceableStorage directly. A virtual
     // endpoint keeps that firmware path intact when the guest has no physical
-    // locker; its state is owned by the data-volume bootstrap profile.
+    // locker; its state is owned by the data-volume bootstrap model.
     bool virtual_effaceable_storage_available { };
     std::array<std::byte, 52> virtual_effaceable_storage_blob {
         default_virtual_effaceable_storage_blob
     };
 };
 
-struct DeviceProfile {
+struct DeviceModel {
     std::string_view product_type;
     std::string_view board_config;
     // CTL_HW/HW_MODEL identity. Keep this separate from board_config: the
@@ -137,7 +137,7 @@ struct DeviceProfile {
     // activated simulator may use a development-board model so stock
     // Lockdown can take its firmware-provided no-baseband path.
     std::string_view hardware_model;
-    // Model used by the explicit activated simulator profile. This is a
+    // Model used by the explicit activated simulator model. This is a
     // capability of the emulated device, not a firmware-version switch.
     std::string_view activation_hardware_model;
     // Retail configuration identifier exposed by the platform device tree.
@@ -162,9 +162,9 @@ struct DeviceProfile {
     // Native firmware layout and touch coordinate space. Older UIKit builds
     // may keep this fixed even when a different panel geometry is reported.
     DisplayGeometry user_interface;
-    SystemGestureProfile system_gestures { classic_compact_system_gestures };
-    GraphicsAcceleratorProfileKind graphics_accelerator {
-        GraphicsAcceleratorProfileKind::MbxLite
+    SystemGestures system_gestures { classic_compact_system_gestures };
+    GraphicsAcceleratorKind graphics_accelerator {
+        GraphicsAcceleratorKind::MbxLite
     };
     // Bundle selected by the firmware's graphics service. Empty means the
     // accelerator exposes only the legacy MBX service and has no private
@@ -174,31 +174,31 @@ struct DeviceProfile {
     // discovers its native CAWindowServerDisplay through this device class;
     // host presentation remains a separate backend concern.
     std::string_view framebuffer_service_class;
-    GraphicsServicesCapabilityProfile graphics_services_capabilities;
-    KeyBagCapabilityProfile keybag_capabilities;
+    GraphicsServicesCapabilities graphics_services_capabilities;
+    KeyBagCapabilities keybag_capabilities;
     // Default transport for a normal boot without --baseband-input. An
     // explicit replay input overrides this with Virtual.
-    BasebandTransportProfile baseband_transport {
-        BasebandTransportProfile::Virtual
+    BasebandTransport baseband_transport {
+        BasebandTransport::Virtual
     };
-    // Whether this device profile has a guest-visible fixed baseband control
+    // Whether this device model has a guest-visible fixed baseband control
     // endpoint. This is a platform capability used by the transport boundary;
     // it is not a firmware-version or process-name rule. An explicit replay
     // transport always makes the endpoint available at boot.
     bool baseband_device_available { true };
-    // Whether the explicit activated profile exposes activation_hardware_model
-    // through CTL_HW/HW_MODEL. Retail profiles keep their normal hardware
+    // Whether the explicit activated model exposes activation_hardware_model
+    // through CTL_HW/HW_MODEL. Retail models keep their normal hardware
     // identity even when activation is synthesized by the host.
     ActivationHardwareModelPolicy activation_hardware_model_policy {
         ActivationHardwareModelPolicy::Retail
     };
     // Guest-visible memory after platform-reserved carve-outs. Zero follows
-    // ram_bytes when the profile has no separate memory-size boundary.
+    // ram_bytes when the model has no separate memory-size boundary.
     std::uint64_t memory_size_bytes { };
 
-    static const DeviceProfile& default_profile();
-    [[nodiscard]] static std::span<const DeviceProfile> available_profiles();
-    [[nodiscard]] static const DeviceProfile* find(
+    static const DeviceModel& default_model();
+    [[nodiscard]] static std::span<const DeviceModel> available_models();
+    [[nodiscard]] static const DeviceModel* find(
         std::string_view product_type);
 };
 

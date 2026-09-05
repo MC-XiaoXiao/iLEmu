@@ -46,14 +46,14 @@
 #include <vector>
 
 #include "debug/gdb_rsp.hpp"
-#include "device_state/darwin_kernel_profile.hpp"
-#include "device_state/lockdown_profile.hpp"
+#include "device_state/darwin_kernel_identity.hpp"
+#include "device_state/lockdown_state.hpp"
 #include "device_state/network_preferences.hpp"
 #include "foundation/address_space.hpp"
 #include "foundation/application_path.hpp"
 #include "foundation/cpu.hpp"
 #include "foundation/deadline_queue.hpp"
-#include "foundation/device_profile.hpp"
+#include "foundation/device_model.hpp"
 #include "graphics/display.hpp"
 #include "foundation/executable_catalog.hpp"
 #include "foundation/firmware_prepare.hpp"
@@ -118,8 +118,8 @@ void EmulatorSession::run()
     const auto catalog_manifest = options.catalog.value_or(
         (host_cache / "executable-catalog.bin").string());
     auto device = options.device;
-    const auto darwin_kernel_profile =
-        make_darwin_kernel_identity_profile(rootfs);
+    const auto darwin_kernel_identity =
+        make_darwin_kernel_identity(rootfs);
     ExecutableCatalog executable_catalog;
     bool catalog_loaded = executable_catalog.load(catalog_manifest);
     std::string catalog_source = catalog_loaded ? "manifest" : "fallback";
@@ -182,10 +182,10 @@ void EmulatorSession::run()
                 " ui=" + std::to_string(device.user_interface.width) + "x" +
                 std::to_string(device.user_interface.height));
     output.line(
-        "[abi-profile] kernel=" + darwin_kernel_profile.name +
+        "[abi-profile] kernel=" + darwin_kernel_identity.name +
         " initial-apple-vector=" +
-        (darwin_kernel_profile.initial_apple_vector_profile ==
-                    DarwinInitialAppleVectorProfile::LegacyExecutablePath
+        (darwin_kernel_identity.initial_apple_vector_abi ==
+                    DarwinInitialAppleVectorAbi::LegacyExecutablePath
                 ? "legacy-path"
                 : "keyed-path"));
     const auto activation = options.activation;
@@ -193,24 +193,24 @@ void EmulatorSession::run()
         activation == LockdownActivation::Activated     ? "activated"
         : activation == LockdownActivation::Unactivated ? "unactivated"
                                                         : "preserve";
-    const auto lockdown_profile = detect_lockdown_firmware_profile(
+    const auto lockdown_capabilities = detect_lockdown_capabilities(
         rootfs, arm_architecture_for_model(device.cpu_model));
     const auto activation_result =
-        apply_lockdown_profile(rootfs, activation, lockdown_profile);
+        apply_lockdown_state(rootfs, activation, lockdown_capabilities);
     output.line(
         "[device-state] activation=" + activation_value +
         " path=" + activation_result.path.string() + " changed=" +
         std::to_string(activation_result.changed) + " registration-profile=" +
-        std::to_string(lockdown_profile.registration_state) +
-        " brick-profile=" + std::to_string(lockdown_profile.brick_state));
+        std::to_string(lockdown_capabilities.registration_state) +
+        " brick-profile=" + std::to_string(lockdown_capabilities.brick_state));
     const auto activation_override =
         activation == LockdownActivation::Preserve
             ? std::optional<bool> { }
             : std::optional<bool> { activation ==
                                     LockdownActivation::Activated };
     const auto activation_hardware_model_policy =
-        darwin_kernel_profile.abi_epoch != DarwinAbiEpoch::Unknown
-            ? darwin_kernel_profile.activation_hardware_model_profile
+        darwin_kernel_identity.abi_epoch != DarwinAbiEpoch::Unknown
+            ? darwin_kernel_identity.activation_hardware_model_policy
             : device.activation_hardware_model_policy;
     if (activation_override && activation_override &&
         activation_hardware_model_policy ==
@@ -480,13 +480,13 @@ void EmulatorSession::run()
     // contract. Without one, retain the common Offline/no-modem policy so a
     // missing radio cannot block the rest of the system.
     device.baseband_transport = baseband_input_path
-                                    ? BasebandTransportProfile::Virtual
+                                    ? BasebandTransport::Virtual
                                     : device.baseband_transport;
 
     auto initial_memory = std::make_unique<AddressSpace>();
     initial_memory->set_parallel_access(guest_processor_count > 1);
     ProcessLoader loader { rootfs, *initial_memory, guest_architecture,
-        catalog_index, darwin_kernel_profile.initial_apple_vector_profile };
+        catalog_index, darwin_kernel_identity.initial_apple_vector_abi };
     std::vector<std::string> initial_environment {
         "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root", "SHELL=/bin/sh"
     };
@@ -1209,7 +1209,7 @@ void EmulatorSession::run()
     assign_jit_process_profile(
         *initial, process, JitPrecompilePhase::Bootstrap);
     initial->kernel = std::make_unique<CompatibilityKernel>(*initial->memory,
-        output, rootfs, device, activation_override, lockdown_profile);
+        output, rootfs, device, activation_override, lockdown_capabilities);
     if (baseband_capture_stream) {
         auto* stream = &*baseband_capture_stream;
         initial->kernel->set_baseband_transmit_sink(
@@ -1967,7 +1967,7 @@ void EmulatorSession::run()
                 };
                 child->kernel = std::make_unique<CompatibilityKernel>(
                     *child->memory, output, rootfs, device, activation_override,
-                    lockdown_profile);
+                    lockdown_capabilities);
             }
             if (inheritance ==
                 CompatibilityKernel::ProcessInheritance::SpawnExec) {
@@ -2026,7 +2026,7 @@ void EmulatorSession::run()
                 refresh_catalog_after_file_mutations(true);
                 ProcessLoader validator { rootfs, *runtime_ptr->memory,
                     guest_architecture, catalog_index,
-                    darwin_kernel_profile.initial_apple_vector_profile };
+                    darwin_kernel_identity.initial_apple_vector_abi };
                 if (!validator.validate(path)) {
                     output.line(
                         "[process] exec rejected pid=" +
@@ -2082,7 +2082,7 @@ void EmulatorSession::run()
                     };
                     ProcessLoader loader { rootfs, *child_runtime->memory,
                         guest_architecture, catalog_index,
-                        darwin_kernel_profile.initial_apple_vector_profile };
+                        darwin_kernel_identity.initial_apple_vector_abi };
                     loaded =
                         loader.load(path, std::move(arguments), environment);
                 }
@@ -4048,7 +4048,7 @@ void EmulatorSession::run()
                     runtime.memory->clear();
                     ProcessLoader exec_loader { rootfs, *runtime.memory,
                         guest_architecture, catalog_index,
-                        darwin_kernel_profile.initial_apple_vector_profile };
+                        darwin_kernel_identity.initial_apple_vector_abi };
                     auto loaded = exec_loader.load(pending.path,
                         std::move(pending.arguments), pending.environment);
                     runtime.kernel->set_process_arguments(
@@ -5305,7 +5305,7 @@ void EmulatorSession::run()
         // Guest runtime has been retired, so the requested state persists for
         // the next launch without racing a live daemon.
         const auto shutdown_activation_result =
-            apply_lockdown_profile(rootfs, activation, lockdown_profile);
+            apply_lockdown_state(rootfs, activation, lockdown_capabilities);
         output.line(
             "[device-state] shutdown-reapply=" + activation_value +
             " path=" + shutdown_activation_result.path.string() +

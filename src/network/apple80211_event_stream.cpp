@@ -39,19 +39,19 @@ std::uint32_t EventStream::pending_byte_count() const
     }
     if (events_.empty())
         return 0;
-    return profile_ == EventStreamProfile::LegacyBitmask16
+    return format_ == EventStreamFormat::LegacyBitmask16
                ? static_cast<std::uint32_t>(legacy_bitmask_size)
                : event_header_size;
 }
 
-std::string_view EventStream::profile_name() const
+std::string_view EventStream::format_name() const
 {
-    switch (profile_) {
-    case EventStreamProfile::LegacyBitmask16:
+    switch (format_) {
+    case EventStreamFormat::LegacyBitmask16:
         return "legacy-bitmask16";
-    case EventStreamProfile::FramedRecords:
+    case EventStreamFormat::FramedRecords:
         return "framed-records";
-    case EventStreamProfile::Undetected:
+    case EventStreamFormat::Undetected:
         return "undetected";
     }
     return "undetected";
@@ -61,10 +61,10 @@ std::span<const std::byte> EventStream::prepare_read(std::size_t capacity)
 {
     if (capacity == 0 || !readable())
         return { };
-    if (profile_ == EventStreamProfile::Undetected) {
-        profile_ = capacity <= legacy_bitmask_size
-                       ? EventStreamProfile::LegacyBitmask16
-                       : EventStreamProfile::FramedRecords;
+    if (format_ == EventStreamFormat::Undetected) {
+        format_ = capacity <= legacy_bitmask_size
+                       ? EventStreamFormat::LegacyBitmask16
+                       : EventStreamFormat::FramedRecords;
     }
     if (record_offset_ >= record_.size())
         prepare_record();
@@ -96,7 +96,7 @@ void EventStream::prepare_record()
     if (events_.empty())
         return;
 
-    if (profile_ == EventStreamProfile::LegacyBitmask16) {
+    if (format_ == EventStreamFormat::LegacyBitmask16) {
         std::uint16_t mask { };
         for (const auto event : events_) {
             if (event <= std::numeric_limits<std::uint16_t>::digits) {

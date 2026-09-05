@@ -18,16 +18,16 @@
 #include <vector>
 
 #include "foundation/arm_cpu_model.hpp"
-#include "foundation/application_display_profile.hpp"
+#include "foundation/application_display.hpp"
 #include "kernel/baseband_device.hpp"
 #include "filesystem/bsd_file_lock.hpp"
-#include "graphics/core_animation_remote_profile.hpp"
-#include "device_state/darwin_kernel_profile.hpp"
+#include "graphics/core_animation_remote_abi.hpp"
+#include "device_state/darwin_kernel_identity.hpp"
 #include "network/darwin_network_abi.hpp"
 #include "kernel/darwin_psynch_runtime.hpp"
 #include "kernel/darwin_resource_abi.hpp"
 #include "network/darwin_route_socket.hpp"
-#include "foundation/device_profile.hpp"
+#include "foundation/device_model.hpp"
 #include "foundation/display_geometry.hpp"
 #include "foundation/file_page_cache.hpp"
 #include "filesystem/hfs_metadata.hpp"
@@ -365,7 +365,7 @@ make_socket_pair_endpoints(std::uint32_t pair)
 }
 
 struct KernelSharedState {
-    DarwinKernelIdentityProfile darwin_kernel_identity;
+    DarwinKernelIdentity darwin_kernel_identity;
     std::string device_product_type;
     std::string device_board_config;
     std::string device_hardware_model;
@@ -375,8 +375,8 @@ struct KernelSharedState {
     std::uint32_t device_cpu_type { arm_mach_cpu_type };
     std::uint32_t device_cpu_subtype { mach_cpu_subtype_for_architecture(
         ArmArchitectureVersion::Armv6K) };
-    GraphicsAcceleratorProfileKind graphics_accelerator {
-        GraphicsAcceleratorProfileKind::MbxLite
+    GraphicsAcceleratorKind graphics_accelerator {
+        GraphicsAcceleratorKind::MbxLite
     };
     std::string graphics_driver_bundle;
     std::string framebuffer_service_class;
@@ -556,9 +556,9 @@ struct KernelSharedState {
         std::vector<std::string> environment;
         GraphicsInputAbi graphics_input_abi { GraphicsInputAbi::Darwin9_0 };
         std::vector<std::byte> code_signature_entitlements;
-        std::optional<CoreAnimationRemoteProfile> core_animation_remote_profile;
+        std::optional<CoreAnimationRemoteAbi> core_animation_remote_abi;
         DisplayOrientation display_orientation { DisplayOrientation::Portrait };
-        ApplicationDisplayProfile display_profile;
+        ApplicationDisplay application_display;
         // A PID can be reused after its zombie record is reaped. Keep a
         // monotonic product-internal identity so transition observations never
         // join facts from two different processes that share a PID.
@@ -598,7 +598,7 @@ struct KernelSharedState {
         {
         }
     };
-    enum class IOKitUserClientProfile {
+    enum class IOKitUserClientKind {
         None,
         Generic,
         SerialMultiplexer,
@@ -621,8 +621,8 @@ struct KernelSharedState {
         std::map<std::string, IOKitRegistryProperty> properties;
         std::string registry_path;
         std::uint32_t parent_object { };
-        IOKitUserClientProfile user_client_profile {
-            IOKitUserClientProfile::None
+        IOKitUserClientKind user_client_kind {
+            IOKitUserClientKind::None
         };
 
         IOKitService() = default;
@@ -632,14 +632,14 @@ struct KernelSharedState {
                 registry_properties = { },
             std::string service_registry_path = { },
             std::uint32_t service_parent_object = 0,
-            IOKitUserClientProfile service_user_client_profile =
-                IOKitUserClientProfile::None)
+            IOKitUserClientKind service_user_client_kind =
+                IOKitUserClientKind::None)
             : class_name(std::move(service_class))
             , conforms_to(std::move(service_conformance))
             , properties(std::move(registry_properties))
             , registry_path(std::move(service_registry_path))
             , parent_object(service_parent_object)
-            , user_client_profile(service_user_client_profile)
+            , user_client_kind(service_user_client_kind)
         {
         }
     };

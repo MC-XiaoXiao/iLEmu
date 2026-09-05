@@ -8,10 +8,10 @@
 #include <utility>
 #include <vector>
 
-#include "foundation/application_display_profile.hpp"
+#include "foundation/application_display.hpp"
 #include "foundation/application_path.hpp"
 #include "foundation/cpu.hpp"
-#include "kernel/graphics_services_profile.hpp"
+#include "kernel/graphics_services_input_abi.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_iokit_display.hpp"
 #include "mach/mig_wire_abi.hpp"
@@ -142,7 +142,7 @@ namespace {
         std::uint64_t timestamp, const TouchInput& input,
         KernelSharedState::GraphicsInputAbi abi, std::uint64_t input_sequence)
     {
-        const auto& profile = GraphicsServicesInputProfile::for_abi(abi);
+        const auto& profile = GraphicsServicesInputAbi::for_abi(abi);
         const auto hand_offset =
             darwin::mig_wire::message_header_size + profile.event_record_size;
         const auto path_offset = hand_offset + profile.hand_info_size;
@@ -217,7 +217,7 @@ namespace {
         KernelSharedState::GraphicsInputAbi abi,
         std::span<const std::byte> event_info = { })
     {
-        const auto& profile = GraphicsServicesInputProfile::for_abi(abi);
+        const auto& profile = GraphicsServicesInputAbi::for_abi(abi);
         const auto simple_event_message_size =
             darwin::mig_wire::message_header_size + profile.event_record_size +
             event_info.size();
@@ -296,7 +296,7 @@ namespace {
     {
         const auto abi =
             graphics_input_abi_for_object_locked(state, destination);
-        const auto& profile = GraphicsServicesInputProfile::for_abi(abi);
+        const auto& profile = GraphicsServicesInputAbi::for_abi(abi);
         std::array<std::byte, sizeof(std::uint64_t)> idle_duration { };
         const auto event_info_size =
             event_type == profile.idle_duration_reset_event_type
@@ -319,7 +319,7 @@ namespace {
             service == state.bootstrap_service_objects.end() ? 0U
                                                              : service->second;
         const auto abi = system_graphics_input_abi_locked(state, destination);
-        const auto event_type = GraphicsServicesInputProfile::for_abi(abi)
+        const auto event_type = GraphicsServicesInputAbi::for_abi(abi)
                                     .idle_duration_reset_event_type;
         constexpr auto input_kind =
             KernelSharedState::MachMessage::GraphicsInputKind::OtherSystem;
@@ -458,9 +458,9 @@ namespace {
         if (!transform) {
             const auto process = state.processes.find(process_id);
             if (process != state.processes.end() &&
-                process->second.display_profile.kind !=
-                    ApplicationDisplayProfileKind::Native) {
-                const auto& profile = process->second.display_profile;
+                process->second.application_display.kind !=
+                    ApplicationDisplayMode::Native) {
+                const auto& profile = process->second.application_display;
                 const auto viewport = application_display_viewport(
                     profile, state.display_geometry);
                 if (viewport.width == 0U || viewport.height == 0U ||
@@ -900,8 +900,8 @@ namespace {
                 const auto service =
                     state.iokit_services.find(connection->second.service_port);
                 return service != state.iokit_services.end() &&
-                       service->second.user_client_profile ==
-                           KernelSharedState::IOKitUserClientProfile::Display;
+                       service->second.user_client_kind ==
+                           KernelSharedState::IOKitUserClientKind::Display;
             });
     }
 
@@ -2358,7 +2358,7 @@ EnqueueResult enqueue_system_button(KernelSharedState& state,
         std::string { system_event_service });
     const auto destination =
         service == state.bootstrap_service_objects.end() ? 0U : service->second;
-    const auto& profile = GraphicsServicesInputProfile::for_abi(
+    const auto& profile = GraphicsServicesInputAbi::for_abi(
         system_graphics_input_abi_locked(state, destination));
     const auto event_type = profile.system_button_type(input);
     if (service == state.bootstrap_service_objects.end()) {
@@ -2396,7 +2396,7 @@ EnqueueResult enqueue_ringer_switch_change(
         std::string { system_event_service });
     const auto destination =
         service == state.bootstrap_service_objects.end() ? 0U : service->second;
-    const auto& profile = GraphicsServicesInputProfile::for_abi(
+    const auto& profile = GraphicsServicesInputAbi::for_abi(
         system_graphics_input_abi_locked(state, destination));
     const auto event_type = profile.ringer_switch_type(active);
     if (service == state.bootstrap_service_objects.end()) {

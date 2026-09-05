@@ -18,7 +18,7 @@
 #include "mach/device_mig_ids.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_iokit_audio.hpp"
-#include "kernel/kernel_iokit_audio_profile.hpp"
+#include "kernel/kernel_iokit_audio_abi.hpp"
 #include "kernel/kernel_iokit_baseband.hpp"
 #include "kernel/kernel_iokit_camera.hpp"
 #include "kernel/kernel_iokit_display.hpp"
@@ -183,12 +183,12 @@ namespace {
 
     std::optional<ConnectMethodRequest> read_connect_method_request(
         AddressSpace& memory, std::uint32_t address, std::uint32_t send_size,
-        std::uint32_t receive_size, DarwinIOConnectMethodProfile profile)
+        std::uint32_t receive_size, DarwinIOConnectMethodAbi profile)
     {
         using namespace iokit_abi::connect_method;
         const auto mach_vm64_ool =
             profile ==
-            DarwinIOConnectMethodProfile::MachVm64OolStructureThenScalar;
+            DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar;
         const auto ool_request_size =
             mach_vm64_ool ? mach_vm64_ool_request_size
                           : natural32_ool_request_size;
@@ -265,7 +265,7 @@ namespace {
                         sizeof(std::uint32_t))
                 .value_or(0);
         if (profile !=
-            DarwinIOConnectMethodProfile::Natural32OolScalarThenStructure) {
+            DarwinIOConnectMethodAbi::Natural32OolScalarThenStructure) {
             request.inband_output_capacity = first_output_capacity;
             request.scalar_output_capacity = second_output_capacity;
         } else {
@@ -282,7 +282,7 @@ namespace {
     std::uint32_t write_connect_method_reply(AddressSpace& memory,
         std::uint32_t address, std::uint32_t local_port,
         std::uint32_t message_id, std::uint32_t receive_size,
-        const ConnectMethodResult& result, DarwinIOConnectMethodProfile profile)
+        const ConnectMethodResult& result, DarwinIOConnectMethodAbi profile)
     {
         using namespace iokit_abi::connect_method;
         const auto scalar_count =
@@ -297,10 +297,10 @@ namespace {
         std::uint32_t inband_bytes_offset { };
         const auto mach_vm64_ool =
             profile ==
-            DarwinIOConnectMethodProfile::MachVm64OolStructureThenScalar;
+            DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar;
         std::uint32_t ool_output_offset { };
         if (profile !=
-            DarwinIOConnectMethodProfile::Natural32OolScalarThenStructure) {
+            DarwinIOConnectMethodAbi::Natural32OolScalarThenStructure) {
             inband_count_offset = return_code_offset + sizeof(std::uint32_t);
             inband_bytes_offset = inband_count_offset + sizeof(std::uint32_t);
             scalar_count_offset =
@@ -623,60 +623,60 @@ namespace {
                (count != 0 && (count & (count - 1U)) == 0);
     }
 
-    std::string_view user_client_profile_name(
-        KernelSharedState::IOKitUserClientProfile profile)
+    std::string_view user_client_kind_name(
+        KernelSharedState::IOKitUserClientKind profile)
     {
         switch (profile) {
-        case KernelSharedState::IOKitUserClientProfile::Generic:
+        case KernelSharedState::IOKitUserClientKind::Generic:
             return "generic";
-        case KernelSharedState::IOKitUserClientProfile::SerialMultiplexer:
+        case KernelSharedState::IOKitUserClientKind::SerialMultiplexer:
             return "serial-multiplexer";
-        case KernelSharedState::IOKitUserClientProfile::Display:
+        case KernelSharedState::IOKitUserClientKind::Display:
             return "display";
-        case KernelSharedState::IOKitUserClientProfile::CoreSurface:
+        case KernelSharedState::IOKitUserClientKind::CoreSurface:
             return "core-surface";
-        case KernelSharedState::IOKitUserClientProfile::Mbx:
+        case KernelSharedState::IOKitUserClientKind::Mbx:
             return "mbx";
-        case KernelSharedState::IOKitUserClientProfile::GraphicsAccelerator:
+        case KernelSharedState::IOKitUserClientKind::GraphicsAccelerator:
             return "graphics-accelerator";
-        case KernelSharedState::IOKitUserClientProfile::CameraSensor:
+        case KernelSharedState::IOKitUserClientKind::CameraSensor:
             return "camera-sensor";
-        case KernelSharedState::IOKitUserClientProfile::CameraAccelerator:
+        case KernelSharedState::IOKitUserClientKind::CameraAccelerator:
             return "camera-accelerator";
-        case KernelSharedState::IOKitUserClientProfile::JpegAccelerator:
+        case KernelSharedState::IOKitUserClientKind::JpegAccelerator:
             return "jpeg-accelerator";
-        case KernelSharedState::IOKitUserClientProfile::Audio:
+        case KernelSharedState::IOKitUserClientKind::Audio:
             return "audio";
-        case KernelSharedState::IOKitUserClientProfile::MobileFileIntegrity:
+        case KernelSharedState::IOKitUserClientKind::MobileFileIntegrity:
             return "mobile-file-integrity";
-        case KernelSharedState::IOKitUserClientProfile::AppleKeyStore:
+        case KernelSharedState::IOKitUserClientKind::AppleKeyStore:
             return "apple-key-store";
-        case KernelSharedState::IOKitUserClientProfile::AppleEffaceableStorage:
+        case KernelSharedState::IOKitUserClientKind::AppleEffaceableStorage:
             return "apple-effaceable-storage";
-        case KernelSharedState::IOKitUserClientProfile::MultitouchHid:
+        case KernelSharedState::IOKitUserClientKind::MultitouchHid:
             return "multitouch-hid";
-        case KernelSharedState::IOKitUserClientProfile::None:
+        case KernelSharedState::IOKitUserClientKind::None:
             break;
         }
         return "none";
     }
 
-    std::uint32_t connection_type_for_profile(
-        KernelSharedState::IOKitUserClientProfile profile,
+    std::uint32_t connection_type_for_kind(
+        KernelSharedState::IOKitUserClientKind profile,
         std::uint32_t requested_type)
     {
-        if (profile == KernelSharedState::IOKitUserClientProfile::Display)
+        if (profile == KernelSharedState::IOKitUserClientKind::Display)
             return iokit_abi::mobile_framebuffer_service_type;
-        if (profile == KernelSharedState::IOKitUserClientProfile::CoreSurface)
+        if (profile == KernelSharedState::IOKitUserClientKind::CoreSurface)
             return iokit_abi::core_surface_root_service_type;
-        if (profile == KernelSharedState::IOKitUserClientProfile::Audio)
-            return kernel_iokit::audio::IOKitAudioAbiProfile::io_audio2()
+        if (profile == KernelSharedState::IOKitUserClientKind::Audio)
+            return kernel_iokit::audio::IOKitAudioAbi::io_audio2()
                 .service_type;
-        if (profile == KernelSharedState::IOKitUserClientProfile::Generic ||
+        if (profile == KernelSharedState::IOKitUserClientKind::Generic ||
             profile ==
-                KernelSharedState::IOKitUserClientProfile::SerialMultiplexer ||
-            profile == KernelSharedState::IOKitUserClientProfile::AppleKeyStore ||
-            profile == KernelSharedState::IOKitUserClientProfile::
+                KernelSharedState::IOKitUserClientKind::SerialMultiplexer ||
+            profile == KernelSharedState::IOKitUserClientKind::AppleKeyStore ||
+            profile == KernelSharedState::IOKitUserClientKind::
                 AppleEffaceableStorage)
             return iokit_abi::generic_user_client_type;
         return requested_type;
@@ -759,7 +759,7 @@ namespace {
                 ? std::string { apple_h1clcd_class }
                 : shared_state.framebuffer_service_class,
             { std::string { mobile_framebuffer_class } }, { }, { }, 0,
-            KernelSharedState::IOKitUserClientProfile::Display
+            KernelSharedState::IOKitUserClientKind::Display
         };
         // IOMobileFramebufferOpen reads this registry capability as a required
         // CFBoolean. False selects the normal untraced notification path and
@@ -791,7 +791,7 @@ namespace {
             KernelSharedState::IOKitService {
                 std::string { core_surface_root_class }, { "IOService" }, { },
                 "IOService:/IOCoreSurfaceRoot", 0,
-                KernelSharedState::IOKitUserClientProfile::CoreSurface });
+                KernelSharedState::IOKitUserClientKind::CoreSurface });
         return object;
     }
 
@@ -942,7 +942,7 @@ namespace {
             object, KernelSharedState::IOKitService {
                         std::string { io_network_stack_class }, { "IOService" },
                         { }, "IOService:/IONetworkStack", 0,
-                        KernelSharedState::IOKitUserClientProfile::Generic });
+                        KernelSharedState::IOKitUserClientKind::Generic });
         return object;
     }
 
@@ -1068,7 +1068,7 @@ namespace {
         }
         if (kernel_iokit::graphics::matches_service(matching) &&
             shared_state.graphics_accelerator ==
-                GraphicsAcceleratorProfileKind::Sgx535 &&
+                GraphicsAcceleratorKind::Sgx535 &&
             !shared_state.graphics_driver_bundle.empty()) {
             const auto platform_expert =
                 ensure_platform_expert_service_locked(shared_state);
@@ -1083,7 +1083,7 @@ namespace {
         }
         if (kernel_iokit::mbx::matches_service(matching) &&
             shared_state.graphics_accelerator ==
-                GraphicsAcceleratorProfileKind::MbxLite) {
+                GraphicsAcceleratorKind::MbxLite) {
             const auto platform_expert =
                 ensure_platform_expert_service_locked(shared_state);
             services.push_back(kernel_iokit::mbx::ensure_service_locked(
@@ -1229,25 +1229,25 @@ namespace {
         return write_reply(memory, address, reply);
     }
 
-    std::optional<KernelSharedState::IOKitUserClientProfile>
-    service_user_client_profile_locked(
+    std::optional<KernelSharedState::IOKitUserClientKind>
+    service_user_client_kind_locked(
         const KernelSharedState& shared_state, std::uint32_t service_object)
     {
         const auto service = shared_state.iokit_services.find(service_object);
         if (service == shared_state.iokit_services.end())
             return std::nullopt;
-        return service->second.user_client_profile;
+        return service->second.user_client_kind;
     }
 
-    std::optional<KernelSharedState::IOKitUserClientProfile>
-    connection_user_client_profile_locked(
+    std::optional<KernelSharedState::IOKitUserClientKind>
+    connection_user_client_kind_locked(
         const KernelSharedState& shared_state, std::uint32_t connection_object)
     {
         const auto connection =
             shared_state.iokit_connections.find(connection_object);
         if (connection == shared_state.iokit_connections.end())
             return std::nullopt;
-        return service_user_client_profile_locked(
+        return service_user_client_kind_locked(
             shared_state, connection->second.service_port);
     }
 
@@ -1307,19 +1307,19 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
     }
     if (message_id == static_cast<std::uint32_t>(
                           iokit_abi::Message::ConnectSetNotificationPort)) {
-        std::optional<KernelSharedState::IOKitUserClientProfile> profile;
+        std::optional<KernelSharedState::IOKitUserClientKind> profile;
         {
             std::lock_guard mach_lock { shared_state.mach_mutex };
-            profile = connection_user_client_profile_locked(
+            profile = connection_user_client_kind_locked(
                 shared_state, remote_object);
         }
         if (profile &&
-            *profile != KernelSharedState::IOKitUserClientProfile::Display) {
+            *profile != KernelSharedState::IOKitUserClientKind::Display) {
             output.write(
                 "[iokit] notification-port pid=" + std::to_string(process.pid) +
                 " connection-object=" + std::to_string(remote_object) +
                 " profile=" +
-                std::string { user_client_profile_name(*profile) } +
+                std::string { user_client_kind_name(*profile) } +
                 " result=unsupported\n");
             return write_status_reply(memory, message_address, local_port,
                 message_id, iokit_abi::unsupported);
@@ -1333,19 +1333,19 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
     }
     if (message_id ==
         static_cast<std::uint32_t>(iokit_abi::Message::ConnectMapMemory)) {
-        std::optional<KernelSharedState::IOKitUserClientProfile> profile;
+        std::optional<KernelSharedState::IOKitUserClientKind> profile;
         {
             std::lock_guard mach_lock { shared_state.mach_mutex };
-            profile = connection_user_client_profile_locked(
+            profile = connection_user_client_kind_locked(
                 shared_state, remote_object);
         }
         if (profile &&
-            *profile != KernelSharedState::IOKitUserClientProfile::Display) {
+            *profile != KernelSharedState::IOKitUserClientKind::Display) {
             output.write(
                 "[iokit] map-memory pid=" + std::to_string(process.pid) +
                 " connection-object=" + std::to_string(remote_object) +
                 " profile=" +
-                std::string { user_client_profile_name(*profile) } +
+                std::string { user_client_kind_name(*profile) } +
                 " result=unsupported\n");
             return write_status_reply(memory, message_address, local_port,
                 message_id, iokit_abi::unsupported);
@@ -1521,7 +1521,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
     if (message_id == static_cast<std::uint32_t>(
                           iokit_abi::Message::ServiceGetMatchingService) &&
         shared_state.darwin_kernel_identity.iokit_matching_rpc ==
-            DarwinIOKitMatchingRpcProfile::InlineSingleServiceV1) {
+            DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1) {
         // Darwin 11's private singular routine carries the same serialized
         // matching dictionary as the public plural call but returns the first
         // service port directly. Reuse the registry matcher so every modeled
@@ -2415,17 +2415,17 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         std::uint32_t connection_object = 0;
         std::uint32_t connection_name = 0;
         bool supported_service = false;
-        KernelSharedState::IOKitUserClientProfile profile {
-            KernelSharedState::IOKitUserClientProfile::None
+        KernelSharedState::IOKitUserClientKind profile {
+            KernelSharedState::IOKitUserClientKind::None
         };
         {
             std::lock_guard mach_lock { shared_state.mach_mutex };
             const auto service =
                 shared_state.iokit_services.find(remote_object);
             if (service != shared_state.iokit_services.end()) {
-                profile = service->second.user_client_profile;
+                profile = service->second.user_client_kind;
                 supported_service =
-                    profile != KernelSharedState::IOKitUserClientProfile::None;
+                    profile != KernelSharedState::IOKitUserClientKind::None;
             }
             if (supported_service) {
                 connection_object = shared_state.allocate_mach_object();
@@ -2435,7 +2435,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                 shared_state.iokit_connections.emplace(connection_object,
                     KernelSharedState::IOKitConnection { remote_object,
                         process.pid,
-                        connection_type_for_profile(
+                        connection_type_for_kind(
                             profile, requested_connect_type) });
                 connection_name = copyout_send_locked(
                     shared_state, process.pid, connection_object);
@@ -2463,7 +2463,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
             " service-object=" + std::to_string(remote_object) +
             " connection-name=" + std::to_string(connection_name) +
             " connection-object=" + std::to_string(connection_object) +
-            " profile=" + std::string { user_client_profile_name(profile) } +
+            " profile=" + std::string { user_client_kind_name(profile) } +
             " type=" + std::to_string(requested_connect_type) + " result=" +
             (supported_service ? "success" : "unsupported") + "\n");
         return write_reply(memory, message_address, reply);

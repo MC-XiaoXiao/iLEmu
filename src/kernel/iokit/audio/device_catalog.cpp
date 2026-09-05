@@ -1,4 +1,4 @@
-#include "kernel/kernel_iokit_audio_device_profile.hpp"
+#include "kernel/kernel_iokit_audio_device_catalog.hpp"
 
 #include <algorithm>
 #include <array>

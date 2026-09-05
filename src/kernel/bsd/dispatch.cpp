@@ -356,7 +356,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 309:
     case 312:
         if (shared_state_->darwin_kernel_identity.psynch_abi ==
-            DarwinPsynchAbiProfile::Arm32GenerationV1) {
+            DarwinPsynchAbi::Arm32GenerationV1) {
             dispatch_bsd_psynch(cpu, number);
             return;
         }
@@ -371,7 +371,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         return;
     case 438: // shared_region_map_and_slide_np
         if (shared_state_->darwin_kernel_identity.shared_region_abi !=
-            DarwinSharedRegionAbiProfile::FixedMappingsWithSlideInfoV1) {
+            DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1) {
             dispatch_bsd_nosys(cpu,
                 shared_state_->darwin_kernel_identity.capabilities.send_sigsys);
             return;

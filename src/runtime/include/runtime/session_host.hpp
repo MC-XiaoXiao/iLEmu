@@ -11,7 +11,7 @@ class AudioDecoder;
 class AudioSink;
 class ControlChannel;
 class DisplayPresenter;
-struct DeviceProfile;
+struct DeviceModel;
 
 struct SessionAudio {
     std::shared_ptr<AudioSink> sink;
@@ -27,9 +27,9 @@ public:
     virtual ~SessionHost() = default;
     virtual void initialize_graphics() = 0;
     [[nodiscard]] virtual std::unique_ptr<DisplayPresenter> create_display(
-        const DeviceProfile& device) = 0;
+        const DeviceModel& device) = 0;
     [[nodiscard]] virtual std::unique_ptr<ControlChannel> create_control(
-        const DeviceProfile& device) = 0;
+        const DeviceModel& device) = 0;
     [[nodiscard]] virtual SessionAudio create_audio() = 0;
     [[nodiscard]] virtual HostMemorySnapshot memory_snapshot() const = 0;
     [[nodiscard]] virtual HostMemoryBudgetSnapshot

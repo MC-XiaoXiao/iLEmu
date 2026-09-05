@@ -10,7 +10,7 @@
 #include "kernel/kernel_mach_ipc.hpp"
 #include "kernel/kernel_network.hpp"
 #include "kernel/mach_clock_abi.hpp"
-#include "kernel/mach_host_statistics_profile.hpp"
+#include "kernel/mach_host_statistics_abi.hpp"
 #include "mach/mach_port_mig_ids.hpp"
 #include "kernel/mach_scheduler_abi.hpp"
 #include "kernel/mach_thread_policy_abi.hpp"
@@ -127,8 +127,8 @@ bool CompatibilityKernel::dispatch_mach_host_message(
             // The host_basic_info ABI accepts the five-word legacy prefix and
             // returns the full structure when it fits.
             const auto configured_memory_size =
-                device_profile_.memory_size_bytes != 0
-                ? std::min(device_profile_.memory_size_bytes,
+                device_model_.memory_size_bytes != 0
+                ? std::min(device_model_.memory_size_bytes,
                     shared_state_->device_ram_bytes)
                 : shared_state_->device_ram_bytes;
             const auto memory_size = static_cast<std::uint32_t>(

@@ -3,7 +3,7 @@
 #include <stdexcept>
 
 #include "app/live_control.hpp"
-#include "foundation/device_profile.hpp"
+#include "foundation/device_model.hpp"
 #include "host/ffmpeg_audio_decoder.hpp"
 #include "host/native_gles.hpp"
 #include "host/resource_usage.hpp"
@@ -15,7 +15,7 @@ namespace ilemu {
 void DesktopHost::initialize_graphics() { register_native_gles_renderer(); }
 
 std::unique_ptr<DisplayPresenter> DesktopHost::create_display(
-    const DeviceProfile& device)
+    const DeviceModel& device)
 {
     if (!SdlDisplay::available()) {
         throw std::runtime_error {
@@ -26,7 +26,7 @@ std::unique_ptr<DisplayPresenter> DesktopHost::create_display(
 }
 
 std::unique_ptr<ControlChannel> DesktopHost::create_control(
-    const DeviceProfile& device)
+    const DeviceModel& device)
 {
     return std::make_unique<LiveControl>(
         0, device.user_interface, device.system_gestures);

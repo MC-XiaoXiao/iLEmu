@@ -2,12 +2,12 @@ add_subdirectory(memory)
 
 add_library(ilemu_foundation STATIC
     address_space.cpp
-    application_display_profile.cpp
+    application_display.cpp
     arm_cpu_model.cpp
     arm_unpredictable_instruction.cpp
     cpu.cpp
     darwin_notify_state_hle.cpp
-    device_profile.cpp
+    device_model.cpp
     dynarmic_ir_artifact.cpp
     dyld_shared_cache.cpp
     executable_catalog.cpp

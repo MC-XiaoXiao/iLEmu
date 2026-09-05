@@ -127,7 +127,7 @@ namespace {
 } // namespace
 
 LiveControl::LiveControl(int descriptor, DisplayGeometry geometry,
-    SystemGestureProfile system_gestures)
+    SystemGestures system_gestures)
     : descriptor_ { descriptor }
     , geometry_ { geometry.valid() ? geometry : default_display_geometry }
     , system_gestures_ { system_gestures }

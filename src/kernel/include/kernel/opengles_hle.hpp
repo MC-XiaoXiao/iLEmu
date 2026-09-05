@@ -18,7 +18,7 @@
 #include "graphics/gles_rasterizer.hpp"
 #include "graphics/gles_renderer.hpp"
 #include "graphics/gles_resources.hpp"
-#include "graphics/opengles_guest_profile.hpp"
+#include "graphics/opengles_guest_capabilities.hpp"
 #include "graphics/scanout_composition.hpp"
 
 namespace ilemu {
@@ -42,7 +42,7 @@ public:
     void reset();
     void inherit_state(const OpenGlesHle& parent);
     void set_display(std::shared_ptr<DisplayState> display);
-    void set_guest_profile(OpenGlesGuestProfileKind profile);
+    void set_guest_capabilities(OpenGlesGuestCapabilitySet profile);
     void set_shared_state(std::shared_ptr<KernelSharedState> shared_state);
     void set_scene_coordinator(std::shared_ptr<SceneCoordinator> scenes);
     [[nodiscard]] const GlesResourceStore& resources() const
@@ -100,8 +100,8 @@ private:
         };
         std::array<TextureUnitState, gles_abi::texture_unit_count>
             texture_units;
-        OpenGlesGuestProfileKind guest_profile_kind {
-            OpenGlesGuestProfileKind::MbxLiteLegacy
+        OpenGlesGuestCapabilitySet guest_capabilities {
+            OpenGlesGuestCapabilitySet::MbxLiteLegacy
         };
         std::uint32_t bound_array_buffer { };
         std::uint32_t bound_element_array_buffer { };
@@ -227,7 +227,7 @@ private:
     std::map<std::uint32_t, ContextState> contexts_;
     std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t>
         eagl_contexts_;
-    std::optional<EaglContextProfileKind> eagl_context_profile_;
+    std::optional<EaglContextAbi> eagl_context_abi_;
     std::map<std::uint32_t, SurfaceState> surfaces_;
     SurfaceState compatibility_display_surface_;
     std::uint32_t compatibility_display_process_id_ { };
@@ -249,8 +249,8 @@ private:
     std::uint64_t next_compatibility_surface_ { };
     std::shared_ptr<GlesRenderer> renderer_;
     std::unique_ptr<CommandEncoder> command_encoder_;
-    OpenGlesGuestProfileKind default_guest_profile_kind_ {
-        OpenGlesGuestProfileKind::MbxLiteLegacy
+    OpenGlesGuestCapabilitySet default_guest_capabilities_ {
+        OpenGlesGuestCapabilitySet::MbxLiteLegacy
     };
     std::shared_ptr<KernelSharedState> shared_state_;
     std::shared_ptr<SceneCoordinator> scene_coordinator_;

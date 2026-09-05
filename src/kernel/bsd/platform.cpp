@@ -18,7 +18,7 @@ namespace {
     constexpr std::size_t host_uuid_size = 16;
 
     std::array<std::byte, host_uuid_size> platform_uuid(
-        const DeviceProfile& profile)
+        const DeviceModel& profile)
     {
         // A platform UUID identifies the emulated device, not the host that is
         // currently running it. Derive it from stable hardware-profile fields
@@ -60,7 +60,7 @@ void CompatibilityKernel::dispatch_bsd_platform(
         return;
     }
 
-    const auto uuid = platform_uuid(device_profile_);
+    const auto uuid = platform_uuid(device_model_);
     if (!memory_.copy_in(registers[0], uuid)) {
         bsd_error(cpu, bsd_support::bad_address);
         return;

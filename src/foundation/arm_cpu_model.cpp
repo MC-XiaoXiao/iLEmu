@@ -75,10 +75,10 @@ namespace {
             return ArmArchitectureVersion::Armv6K;
         }
 
-        [[nodiscard]] ArmUnpredictableInstructionProfile
-        unpredictable_instruction_profile() const noexcept override
+        [[nodiscard]] ArmUnpredictableInstructionPolicy
+        unpredictable_instruction_policy() const noexcept override
         {
-            return ArmUnpredictableInstructionProfile::Strict;
+            return ArmUnpredictableInstructionPolicy::Strict;
         }
 
         [[nodiscard]] std::uint32_t ticks_per_second() const noexcept override
@@ -122,10 +122,10 @@ namespace {
             return ArmArchitectureVersion::Armv7;
         }
 
-        [[nodiscard]] ArmUnpredictableInstructionProfile
-        unpredictable_instruction_profile() const noexcept override
+        [[nodiscard]] ArmUnpredictableInstructionPolicy
+        unpredictable_instruction_policy() const noexcept override
         {
-            return ArmUnpredictableInstructionProfile::CortexA8;
+            return ArmUnpredictableInstructionPolicy::CortexA8;
         }
 
         [[nodiscard]] std::uint32_t ticks_per_second() const noexcept override

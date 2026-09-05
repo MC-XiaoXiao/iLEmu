@@ -68,7 +68,7 @@ struct IOAudio2DeviceDescription {
 };
 
 // A device catalog models hardware endpoints. Firmware-facing ABI details
-// remain in IOKitAudioAbiProfile so device differences never leak into MIG
+// remain in IOKitAudioAbi so device differences never leak into MIG
 // dispatch or host audio backends.
 class IOAudio2DeviceCatalog final {
 public:

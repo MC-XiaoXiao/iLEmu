@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "../support.hpp"
-#include "wire_profile.hpp"
+#include "wire_format.hpp"
 #include "wire_reply.hpp"
 
 namespace ilemu {
@@ -54,7 +54,7 @@ bool CompatibilityKernel::dispatch_mach_vm_region_message(
     }
 
     auto& registers = cpu.registers();
-    const auto profile = MachVmWireProfile::for_interface(
+    const auto profile = MachVmWireFormat::for_interface(
         is_mach_vm, shared_state_->darwin_kernel_identity.mach_vm_address);
     const auto width = profile.address_size();
     constexpr auto payload = darwin::mig_wire::simple_request_payload_base;

@@ -9,7 +9,7 @@ namespace ilemu::kernel_iokit::audio {
 // Describes the firmware-facing IOAudio user-client ABI. Selection follows the
 // provider protocol exposed in the IOKit registry, rather than an OS version,
 // product build, process, or application.
-struct IOKitAudioAbiProfile {
+struct IOKitAudioAbi {
     struct RegistryKeys {
         std::string_view device_name;
         std::string_view device_manufacturer;
@@ -90,7 +90,7 @@ struct IOKitAudioAbiProfile {
     [[nodiscard]] std::optional<std::uint32_t> stream_id_for_memory_type(
         std::uint32_t memory_type) const;
 
-    [[nodiscard]] static const IOKitAudioAbiProfile& io_audio2();
+    [[nodiscard]] static const IOKitAudioAbi& io_audio2();
 };
 
 } // namespace ilemu::kernel_iokit::audio

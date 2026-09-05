@@ -12,7 +12,7 @@ class MachOImage;
 // client context to the firmware window server. Selection follows the
 // encoder implementation exported by the loaded QuartzCore image; it does
 // not depend on an OS build, application, or page.
-struct CoreAnimationRemoteProfile {
+struct CoreAnimationRemoteAbi {
     std::string_view name;
     std::uint32_t inline_transaction_message { };
     std::uint32_t out_of_line_transaction_message { };
@@ -24,10 +24,10 @@ struct CoreAnimationRemoteProfile {
 
     [[nodiscard]] bool is_transaction_message(std::uint32_t identifier) const;
 
-    [[nodiscard]] static std::optional<CoreAnimationRemoteProfile> detect(
+    [[nodiscard]] static std::optional<CoreAnimationRemoteAbi> detect(
         const MachOImage& image);
 
-    bool operator==(const CoreAnimationRemoteProfile&) const = default;
+    bool operator==(const CoreAnimationRemoteAbi&) const = default;
 };
 
 } // namespace ilemu

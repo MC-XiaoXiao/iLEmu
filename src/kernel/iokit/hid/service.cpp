@@ -198,8 +198,8 @@ namespace {
         const auto service =
             state.iokit_services.find(connection->second.service_port);
         return service != state.iokit_services.end() &&
-               service->second.user_client_profile ==
-                   KernelSharedState::IOKitUserClientProfile::MultitouchHid;
+               service->second.user_client_kind ==
+                   KernelSharedState::IOKitUserClientKind::MultitouchHid;
     }
 
     bool request_targets_current_task_locked(const KernelSharedState& state,
@@ -479,7 +479,7 @@ std::uint32_t ensure_service_locked(KernelSharedState& state,
             { "IOService" }, std::move(properties),
             "IOService:/IOPlatformExpertDevice/AppleMultitouchSPI",
             parent_object,
-            KernelSharedState::IOKitUserClientProfile::MultitouchHid });
+            KernelSharedState::IOKitUserClientKind::MultitouchHid });
     return object;
 }
 

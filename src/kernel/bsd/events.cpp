@@ -1128,7 +1128,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     const auto layout =
                         shared_state_->darwin_kernel_identity
                                     .apple80211_ioctl ==
-                                DarwinApple80211IoctlProfile::
+                                DarwinApple80211IoctlAbi::
                                     CompactCurrentNetworkRecord
                             ? wifi_driver::compact_network_record_layout
                             : wifi_driver::aligned_network_record_layout;
@@ -2477,8 +2477,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     }
                 } else {
                     const auto configured_memory_size =
-                        device_profile_.memory_size_bytes != 0
-                        ? std::min(device_profile_.memory_size_bytes,
+                        device_model_.memory_size_bytes != 0
+                        ? std::min(device_model_.memory_size_bytes,
                             shared_state_->device_ram_bytes)
                         : shared_state_->device_ram_bytes;
                     switch (*mib1) {

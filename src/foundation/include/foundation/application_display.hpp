@@ -14,19 +14,19 @@ namespace ilemu {
 // logical phone-sized window when the device profile is a tablet. Keep this
 // classification independent of bundle names and firmware versions so the
 // same rule applies to every compatible legacy application.
-enum class ApplicationDisplayProfileKind : std::uint8_t {
+enum class ApplicationDisplayMode : std::uint8_t {
     Native,
     IPhoneCompatibility1x,
 };
 
-struct ApplicationDisplayProfile {
-    ApplicationDisplayProfileKind kind {
-        ApplicationDisplayProfileKind::Native
+struct ApplicationDisplay {
+    ApplicationDisplayMode kind {
+        ApplicationDisplayMode::Native
     };
     DisplayGeometry logical_geometry;
 };
 
-[[nodiscard]] ApplicationDisplayProfile detect_application_display_profile(
+[[nodiscard]] ApplicationDisplay detect_application_display(
     const std::filesystem::path& rootfs, std::string_view executable_path,
     DisplayGeometry user_interface_geometry);
 
@@ -34,19 +34,19 @@ struct ApplicationDisplayProfile {
 // retain the device output geometry; compatibility applications use their
 // logical phone surface and are composed into the output at presentation.
 [[nodiscard]] DisplayGeometry application_display_geometry(
-    const ApplicationDisplayProfile& profile, DisplayGeometry output);
+    const ApplicationDisplay& profile, DisplayGeometry output);
 
 // Returns the panel rectangle occupied by the profile's logical window. A
 // phone compatibility window is kept at 1x while it fits; unusual smaller
 // output profiles fall back to the shared aspect-preserving fit policy.
 [[nodiscard]] DisplayViewport application_display_viewport(
-    const ApplicationDisplayProfile& profile, DisplayGeometry output);
+    const ApplicationDisplay& profile, DisplayGeometry output);
 
 // Composes a CPU scanout frame using the same compatibility viewport. This is
 // used by legacy CoreSurface submissions that have no HostSurface command
 // encoder; accelerated GLES submissions use the equivalent host operation.
 [[nodiscard]] std::vector<std::uint32_t>
-compose_application_display_pixels(const ApplicationDisplayProfile& profile,
+compose_application_display_pixels(const ApplicationDisplay& profile,
     DisplayGeometry source, DisplayGeometry output,
     std::span<const std::uint32_t> pixels);
 

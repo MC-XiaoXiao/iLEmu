@@ -18,7 +18,7 @@
 #include <utility>
 #include <vector>
 
-#include "foundation/application_display_profile.hpp"
+#include "foundation/application_display.hpp"
 #include "graphics/display.hpp"
 #include "graphics/gles_renderer.hpp"
 #include "foundation/performance.hpp"

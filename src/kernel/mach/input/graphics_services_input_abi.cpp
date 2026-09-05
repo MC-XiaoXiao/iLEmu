@@ -1,4 +1,4 @@
-#include "kernel/graphics_services_profile.hpp"
+#include "kernel/graphics_services_input_abi.hpp"
 
 #include <bit>
 #include <cstdint>
@@ -9,7 +9,7 @@
 namespace ilemu {
 namespace {
 
-    constexpr GraphicsServicesInputProfile darwin9_0_profile{
+    constexpr GraphicsServicesInputAbi darwin9_0_abi{
     .name = "darwin9.0",
     .event_record_size = 48,
     .record_timestamp_offset = 24,
@@ -31,7 +31,7 @@ namespace {
     },
 };
 
-    constexpr GraphicsServicesInputProfile darwin9_3_profile{
+    constexpr GraphicsServicesInputAbi darwin9_3_abi{
     .name = "darwin9.3",
     .event_record_size = 48,
     .record_timestamp_offset = 24,
@@ -53,7 +53,7 @@ namespace {
     },
 };
 
-constexpr GraphicsServicesInputProfile darwin9_4_profile{
+constexpr GraphicsServicesInputAbi darwin9_4_abi{
     .name = "darwin9.4",
     .event_record_size = 52,
     .record_timestamp_offset = 28,
@@ -80,7 +80,7 @@ constexpr GraphicsServicesInputProfile darwin9_4_profile{
     // sends a 52-byte record with no trailing event-info payload.  Keep this
     // ABI separate from the older 101 profile so the wire record follows the
     // accessor implementation loaded by the guest.
-constexpr GraphicsServicesInputProfile darwin11_0_profile{
+constexpr GraphicsServicesInputAbi darwin11_0_abi{
     .name = "darwin11.0",
     .event_record_size = 52,
     .record_timestamp_offset = 28,
@@ -417,17 +417,17 @@ constexpr GraphicsServicesInputProfile darwin11_0_profile{
 
 } // namespace
 
-std::uint8_t GraphicsServicesInputProfile::hand_type(TouchPhase phase) const
+std::uint8_t GraphicsServicesInputAbi::hand_type(TouchPhase phase) const
 {
     return hand_phase_types[static_cast<std::size_t>(phase)];
 }
 
-std::uint8_t GraphicsServicesInputProfile::path_type(TouchPhase phase) const
+std::uint8_t GraphicsServicesInputAbi::path_type(TouchPhase phase) const
 {
     return path_phase_types[static_cast<std::size_t>(phase)];
 }
 
-std::uint32_t GraphicsServicesInputProfile::system_button_type(
+std::uint32_t GraphicsServicesInputAbi::system_button_type(
     const SystemButtonInput& input) const
 {
     const auto index = input.phase == SystemButtonPhase::Down ? 0U : 1U;
@@ -444,52 +444,52 @@ std::uint32_t GraphicsServicesInputProfile::system_button_type(
     return system_events.home[1];
 }
 
-std::uint32_t GraphicsServicesInputProfile::ringer_switch_type(
+std::uint32_t GraphicsServicesInputAbi::ringer_switch_type(
     bool active) const
 {
     return system_events.ringer_switch[active ? 1U : 0U];
 }
 
-const GraphicsServicesInputProfile& GraphicsServicesInputProfile::for_abi(
+const GraphicsServicesInputAbi& GraphicsServicesInputAbi::for_abi(
     KernelSharedState::GraphicsInputAbi abi)
 {
     switch (abi) {
     case KernelSharedState::GraphicsInputAbi::Darwin9_4:
-        return darwin9_4_profile;
+        return darwin9_4_abi;
     case KernelSharedState::GraphicsInputAbi::Darwin11_0:
-        return darwin11_0_profile;
+        return darwin11_0_abi;
     case KernelSharedState::GraphicsInputAbi::Darwin9_3:
-        return darwin9_3_profile;
+        return darwin9_3_abi;
     case KernelSharedState::GraphicsInputAbi::LegacyMouse:
     case KernelSharedState::GraphicsInputAbi::Darwin9_0:
-        return darwin9_0_profile;
+        return darwin9_0_abi;
     }
-    return darwin9_0_profile;
+    return darwin9_0_abi;
 }
 
 std::optional<KernelSharedState::GraphicsInputAbi>
-GraphicsServicesInputProfile::detect(const MachOImage& image)
+GraphicsServicesInputAbi::detect(const MachOImage& image)
 {
     const auto record_size = detected_event_record_size(image);
     const auto hand_size = structure_copy_size(image, "_GSEventGetHandInfo");
     const auto path_size =
         structure_copy_size(image, "_GSEventGetPathInfoAtIndex");
-    if (record_size == darwin9_0_profile.event_record_size &&
-        hand_size == darwin9_0_profile.hand_info_size &&
-        path_size == darwin9_0_profile.path_info_size) {
+    if (record_size == darwin9_0_abi.event_record_size &&
+        hand_size == darwin9_0_abi.hand_info_size &&
+        path_size == darwin9_0_abi.path_info_size) {
         return KernelSharedState::GraphicsInputAbi::Darwin9_0;
     }
-    if (record_size == darwin9_3_profile.event_record_size &&
-        hand_size == darwin9_3_profile.hand_info_size &&
-        path_size == darwin9_3_profile.path_info_size) {
+    if (record_size == darwin9_3_abi.event_record_size &&
+        hand_size == darwin9_3_abi.hand_info_size &&
+        path_size == darwin9_3_abi.path_info_size) {
         return KernelSharedState::GraphicsInputAbi::Darwin9_3;
     }
-    if (record_size == darwin9_4_profile.event_record_size &&
-        hand_size == darwin9_4_profile.hand_info_size &&
-        path_size == darwin9_4_profile.path_info_size) {
+    if (record_size == darwin9_4_abi.event_record_size &&
+        hand_size == darwin9_4_abi.hand_info_size &&
+        path_size == darwin9_4_abi.path_info_size) {
         if (const auto event_type = detected_idle_reset_event_type(image);
             event_type &&
-            *event_type == darwin11_0_profile.idle_duration_reset_event_type) {
+            *event_type == darwin11_0_abi.idle_duration_reset_event_type) {
             return KernelSharedState::GraphicsInputAbi::Darwin11_0;
         }
         return KernelSharedState::GraphicsInputAbi::Darwin9_4;

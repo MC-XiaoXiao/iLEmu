@@ -2,7 +2,7 @@
 
 #include <optional>
 
-#include "device_state/lockdown_profile.hpp"
+#include "device_state/lockdown_state.hpp"
 
 namespace ilemu {
 
@@ -12,6 +12,6 @@ class UserlandHleRegistry;
 // firmware's public liblockdown client boundary. Preserve mode leaves every
 // request with the stock daemon.
 void register_lockdown_hle(UserlandHleRegistry& registry,
-    std::optional<bool> activated, LockdownFirmwareProfile profile);
+    std::optional<bool> activated, LockdownCapabilities profile);
 
 } // namespace ilemu

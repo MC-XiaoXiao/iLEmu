@@ -48,7 +48,7 @@ std::uint32_t ensure_service_locked(KernelSharedState& state)
     state.iokit_services.emplace(object,
         KernelSharedState::IOKitService { std::string { service_class },
             { "IOService" }, { }, { }, 0,
-            KernelSharedState::IOKitUserClientProfile::MobileFileIntegrity });
+            KernelSharedState::IOKitUserClientKind::MobileFileIntegrity });
     return object;
 }
 
@@ -67,8 +67,8 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     const auto service =
         state.iokit_services.find(connection->second.service_port);
     if (service == state.iokit_services.end() ||
-        service->second.user_client_profile !=
-            KernelSharedState::IOKitUserClientProfile::MobileFileIntegrity) {
+        service->second.user_client_kind !=
+            KernelSharedState::IOKitUserClientKind::MobileFileIntegrity) {
         return std::nullopt;
     }
     if (selector != load_entitlements_selector)

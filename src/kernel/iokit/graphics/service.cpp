@@ -132,8 +132,8 @@ namespace {
             state.iokit_services.find(connection->second.service_port);
         return service != state.iokit_services.end() &&
                service->second.class_name == service_class &&
-               service->second.user_client_profile ==
-                   KernelSharedState::IOKitUserClientProfile::
+               service->second.user_client_kind ==
+                   KernelSharedState::IOKitUserClientKind::
                        GraphicsAccelerator;
     }
 
@@ -400,8 +400,8 @@ std::uint32_t ensure_service_locked(
             return entry.second.class_name == service_class;
         });
     if (existing != state.iokit_services.end()) {
-        existing->second.user_client_profile =
-            KernelSharedState::IOKitUserClientProfile::GraphicsAccelerator;
+        existing->second.user_client_kind =
+            KernelSharedState::IOKitUserClientKind::GraphicsAccelerator;
         existing->second.properties.insert_or_assign(
             "IOGLESBundleName", string_property(state.graphics_driver_bundle));
         return existing->first;
@@ -418,7 +418,7 @@ std::uint32_t ensure_service_locked(
             { "IOService" }, std::move(properties),
             "IOService:/IOPlatformExpertDevice/IOAcceleratorES",
             platform_expert_object,
-            KernelSharedState::IOKitUserClientProfile::GraphicsAccelerator });
+            KernelSharedState::IOKitUserClientKind::GraphicsAccelerator });
     return object;
 }
 

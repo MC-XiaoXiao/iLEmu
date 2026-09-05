@@ -6,7 +6,7 @@
 #include "network/darwin_network_abi.hpp"
 #include "kernel/darwin_resource_abi.hpp"
 #include "network/darwin_route_socket.hpp"
-#include "device_state/graphics_services_capability_profile.hpp"
+#include "device_state/graphics_services_capabilities.hpp"
 #include "kernel/kernel_network.hpp"
 #include "kernel/null_device.hpp"
 #include "kernel/offline_serial_device.hpp"

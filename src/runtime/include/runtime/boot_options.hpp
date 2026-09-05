@@ -6,8 +6,8 @@
 #include <optional>
 #include <string>
 
-#include "device_state/lockdown_profile.hpp"
-#include "foundation/device_profile.hpp"
+#include "device_state/lockdown_state.hpp"
+#include "foundation/device_model.hpp"
 #include "graphics/gles_renderer.hpp"
 #include "network/host_network.hpp"
 
@@ -30,7 +30,7 @@ struct BootOptions {
     std::filesystem::path rootfs;
     std::filesystem::path host_cache;
     std::optional<std::string> catalog;
-    DeviceProfile device { DeviceProfile::default_profile() };
+    DeviceModel device { DeviceModel::default_model() };
     std::optional<DisplayGeometry> display_geometry;
     std::string binary { "/sbin/launchd" };
     std::optional<std::string> guest_command;

@@ -1,11 +1,11 @@
-#include "prime_field_profile.hpp"
+#include "prime_field_layout.hpp"
 
 #include "foundation/address_space.hpp"
 #include <limits>
 
 namespace ilemu {
 
-std::optional<PrimeFieldProfile> PrimeFieldProfile::resolve(
+std::optional<PrimeFieldLayout> PrimeFieldLayout::resolve(
     const AddressSpace& memory, std::uint32_t context,
     std::uint32_t standard_reduction)
 {
@@ -13,7 +13,7 @@ std::optional<PrimeFieldProfile> PrimeFieldProfile::resolve(
         standard_reduction == 0U) {
         return std::nullopt;
     }
-    constexpr PrimeFieldProfile compact_arm32 { 8U };
+    constexpr PrimeFieldLayout compact_arm32 { 8U };
     const auto reduction = memory.read32(context + sizeof(std::uint32_t));
     if (reduction && (*reduction & ~1U) == (standard_reduction & ~1U))
         return compact_arm32;

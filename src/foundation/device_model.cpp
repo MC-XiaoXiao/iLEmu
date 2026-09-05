@@ -1,4 +1,4 @@
-#include "foundation/device_profile.hpp"
+#include "foundation/device_model.hpp"
 
 #include <array>
 
@@ -6,8 +6,8 @@ namespace ilemu {
 
 namespace {
 
-    constexpr std::array<DeviceProfile, 7> profiles {
-        DeviceProfile {
+    constexpr std::array<DeviceModel, 7> models {
+        DeviceModel {
             "iPhone1,1",
             "M68AP",
             "M68AP",
@@ -27,16 +27,16 @@ namespace {
             default_display_geometry,
             default_display_geometry,
             classic_compact_system_gestures,
-            GraphicsAcceleratorProfileKind::MbxLite,
+            GraphicsAcceleratorKind::MbxLite,
             "",
             "AppleH1CLCD",
             { "iPhone", "iPhone", false, true },
             { false },
-            BasebandTransportProfile::Offline,
+            BasebandTransport::Offline,
             true,
             ActivationHardwareModelPolicy::DevelopmentBoard,
         },
-        DeviceProfile {
+        DeviceModel {
             "iPhone1,2",
             "N82AP",
             "N82AP",
@@ -56,19 +56,19 @@ namespace {
             default_display_geometry,
             default_display_geometry,
             classic_compact_system_gestures,
-            GraphicsAcceleratorProfileKind::MbxLite,
+            GraphicsAcceleratorKind::MbxLite,
             "",
             "AppleH1CLCD",
             { "iPhone", "iPhone 3G", false, true },
             // iPhone OS 4 still routes its no-passcode bootstrap through the
             // AppleKeyStore contract.  The service is virtualized here; the
-            // profile describes the guest capability rather than physical
+            // model describes the guest capability rather than physical
             // silicon.
             { true, false, true },
-            BasebandTransportProfile::Offline,
+            BasebandTransport::Offline,
             true,
         },
-        DeviceProfile {
+        DeviceModel {
             "iPhone2,1",
             "N88AP",
             "N88AP",
@@ -90,15 +90,15 @@ namespace {
             default_display_geometry,
             default_display_geometry,
             classic_compact_system_gestures,
-            GraphicsAcceleratorProfileKind::Sgx535,
+            GraphicsAcceleratorKind::Sgx535,
             "IMGSGX535GLDriver",
             "AppleM2CLCD",
             { "iPhone", "iPhone 3GS", true, true },
             { true, false, true },
-            BasebandTransportProfile::Offline,
+            BasebandTransport::Offline,
             false,
         },
-        DeviceProfile {
+        DeviceModel {
             "iPhone3,1",
             "N90AP",
             "N90AP",
@@ -120,15 +120,15 @@ namespace {
             DisplayGeometry { 640U, 960U },
             DisplayGeometry { 320U, 480U },
             classic_compact_system_gestures,
-            GraphicsAcceleratorProfileKind::Sgx535,
+            GraphicsAcceleratorKind::Sgx535,
             "IMGSGX535GLDriver",
             "AppleM2CLCD",
             { "iPhone", "iPhone 4", true, true },
             { true, false, true },
-            BasebandTransportProfile::Offline,
+            BasebandTransport::Offline,
             true,
         },
-        DeviceProfile {
+        DeviceModel {
             "iPod1,1",
             "N45AP",
             "N45AP",
@@ -148,15 +148,15 @@ namespace {
             default_display_geometry,
             default_display_geometry,
             classic_compact_system_gestures,
-            GraphicsAcceleratorProfileKind::MbxLite,
+            GraphicsAcceleratorKind::MbxLite,
             "",
             "AppleH1CLCD",
             { "iPod", "iPod touch", false, false },
             { false },
-            BasebandTransportProfile::Offline,
+            BasebandTransport::Offline,
             false,
         },
-        DeviceProfile {
+        DeviceModel {
             "iPod2,1",
             "N72AP",
             "N72AP",
@@ -176,15 +176,15 @@ namespace {
             default_display_geometry,
             default_display_geometry,
             classic_compact_system_gestures,
-            GraphicsAcceleratorProfileKind::MbxLite,
+            GraphicsAcceleratorKind::MbxLite,
             "",
             "AppleH1CLCD",
             { "iPod", "iPod touch", false, false },
             { false },
-            BasebandTransportProfile::Offline,
+            BasebandTransport::Offline,
             false,
         },
-        DeviceProfile {
+        DeviceModel {
             "iPad1,1",
             "K48AP",
             "K48AP",
@@ -206,12 +206,12 @@ namespace {
             DisplayGeometry { 768U, 1024U },
             DisplayGeometry { 768U, 1024U },
             classic_centered_tablet_system_gestures,
-            GraphicsAcceleratorProfileKind::Sgx535,
+            GraphicsAcceleratorKind::Sgx535,
             "IMGSGX535GLDriver",
             "AppleM2CLCD",
             { "iPad", "iPad", true, false },
             { true, false, true },
-            BasebandTransportProfile::Offline,
+            BasebandTransport::Offline,
             false,
             ActivationHardwareModelPolicy::Retail,
             247ULL * 1024ULL * 1024ULL,
@@ -220,21 +220,21 @@ namespace {
 
 } // namespace
 
-const DeviceProfile& DeviceProfile::default_profile()
+const DeviceModel& DeviceModel::default_model()
 {
-    return profiles.front();
+    return models.front();
 }
 
-std::span<const DeviceProfile> DeviceProfile::available_profiles()
+std::span<const DeviceModel> DeviceModel::available_models()
 {
-    return profiles;
+    return models;
 }
 
-const DeviceProfile* DeviceProfile::find(std::string_view product_type)
+const DeviceModel* DeviceModel::find(std::string_view product_type)
 {
-    for (const auto& profile : profiles) {
-        if (profile.product_type == product_type) {
-            return &profile;
+    for (const auto& model : models) {
+        if (model.product_type == product_type) {
+            return &model;
         }
     }
     return nullptr;

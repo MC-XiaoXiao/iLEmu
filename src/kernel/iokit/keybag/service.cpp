@@ -99,7 +99,7 @@ std::uint32_t ensure_service_locked(KernelSharedState& state,
         KernelSharedState::IOKitService { std::string { service_class },
             { "IOService" }, { }, std::string { registry_path },
             parent_object,
-            KernelSharedState::IOKitUserClientProfile::AppleKeyStore });
+            KernelSharedState::IOKitUserClientKind::AppleKeyStore });
     return object;
 }
 
@@ -118,7 +118,7 @@ std::uint32_t ensure_effaceable_storage_service_locked(
             std::string { effaceable_storage_service_class },
             { "IOService" }, { },
             std::string { effaceable_storage_registry_path }, parent_object,
-            KernelSharedState::IOKitUserClientProfile::AppleEffaceableStorage
+            KernelSharedState::IOKitUserClientKind::AppleEffaceableStorage
         });
     return object;
 }
@@ -138,8 +138,8 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     const auto service =
         state.iokit_services.find(connection->second.service_port);
     if (service == state.iokit_services.end() ||
-        service->second.user_client_profile !=
-            KernelSharedState::IOKitUserClientProfile::AppleKeyStore) {
+        service->second.user_client_kind !=
+            KernelSharedState::IOKitUserClientKind::AppleKeyStore) {
         return std::nullopt;
     }
     if (selector == init_user_client_selector && scalar_input.empty() &&
@@ -214,8 +214,8 @@ std::optional<MethodResult> dispatch_effaceable_storage_connect_method(
     }
     const auto service = state.iokit_services.find(connection->second.service_port);
     if (service == state.iokit_services.end() ||
-        service->second.user_client_profile !=
-            KernelSharedState::IOKitUserClientProfile::AppleEffaceableStorage) {
+        service->second.user_client_kind !=
+            KernelSharedState::IOKitUserClientKind::AppleEffaceableStorage) {
         return std::nullopt;
     }
     if (selector == load_blastable_bytes_selector &&

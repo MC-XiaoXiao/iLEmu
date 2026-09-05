@@ -597,18 +597,18 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
     if (const auto event_stream = wifi_driver_event_streams_.find(fd);
         event_stream != wifi_driver_event_streams_.end() &&
         event_stream->second && event_stream->second->readable()) {
-        const auto previous_profile = event_stream->second->profile();
+        const auto previous_format = event_stream->second->format();
         const auto bytes = event_stream->second->prepare_read(size);
         if (!memory_.copy_in(address, bytes)) {
             bsd_error(cpu, darwin::error::bad_address);
         } else {
-            if (previous_profile == darwin::network::apple80211_driver::
-                                        EventStreamProfile::Undetected) {
+            if (previous_format == darwin::network::apple80211_driver::
+                                        EventStreamFormat::Undetected) {
                 output_.write(
                     "[wifi-driver] event-stream pid=" +
                     std::to_string(process_.pid) + " fd=" + std::to_string(fd) +
                     " profile=" +
-                    std::string { event_stream->second->profile_name() } +
+                    std::string { event_stream->second->format_name() } +
                     " read-capacity=" + std::to_string(size) + "\n");
             }
             event_stream->second->consume(bytes.size());

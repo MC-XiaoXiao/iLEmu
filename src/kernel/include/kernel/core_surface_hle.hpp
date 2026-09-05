@@ -9,7 +9,7 @@
 #include <optional>
 #include <vector>
 
-#include "graphics/surface_transport_profile.hpp"
+#include "graphics/surface_transport_abi.hpp"
 
 namespace ilemu {
 
@@ -115,9 +115,9 @@ private:
         surface_transport::Kind transport =
             surface_transport::Kind::CoreSurfaceClientBuffer);
     [[nodiscard]] std::uint32_t acquire_client_buffer(
-        UserlandHleCall& call, const surface_transport::Profile& profile);
+        UserlandHleCall& call, const surface_transport::ClientAbi& profile);
     void recycle_client_buffer(
-        std::uint32_t client, const surface_transport::Profile& profile);
+        std::uint32_t client, const surface_transport::ClientAbi& profile);
     [[nodiscard]] std::uint32_t acquire_imported_mapping(
         UserlandHleCall& call, std::uint32_t size);
     void recycle_imported_mapping(std::uint32_t base, std::uint32_t size);

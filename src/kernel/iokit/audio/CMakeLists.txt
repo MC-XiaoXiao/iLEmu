@@ -1,6 +1,6 @@
 add_library(ilemu_kernel_iokit_audio STATIC
-    device_profile.cpp
-    profile.cpp
+    device_catalog.cpp
+    abi.cpp
     service.cpp)
 add_library(iLEmu::kernel_iokit_audio ALIAS
     ilemu_kernel_iokit_audio)

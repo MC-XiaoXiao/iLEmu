@@ -1,13 +1,13 @@
 #include "kernel/kernel.hpp"
-#include "foundation/application_display_profile.hpp"
+#include "foundation/application_display.hpp"
 #include "foundation/application_path.hpp"
-#include "device_state/darwin_kernel_profile.hpp"
+#include "device_state/darwin_kernel_identity.hpp"
 #include "foundation/rootfs_path_resolver.hpp"
 
 #include "storage/app_support_hle.hpp"
 #include "bluetooth/bluetooth_manager_hle.hpp"
 #include "mach/bootstrap_mig_ids.hpp"
-#include "graphics/core_animation_remote_profile.hpp"
+#include "graphics/core_animation_remote_abi.hpp"
 #include "telephony/core_telephony_hle.hpp"
 #include "crypto/core_crypto_hle.hpp"
 #include "kernel/darwin_abi.hpp"
@@ -17,8 +17,8 @@
 #include "network/darwin_route_socket.hpp"
 #include "network/dns_configuration_hle.hpp"
 #include "kernel/graphics_services_input.hpp"
-#include "device_state/graphics_services_capability_profile.hpp"
-#include "kernel/graphics_services_profile.hpp"
+#include "device_state/graphics_services_capabilities.hpp"
+#include "kernel/graphics_services_input_abi.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_bsd_interval_timer.hpp"
 #include "kernel/kernel_clock.hpp"
@@ -156,30 +156,30 @@ namespace {
         std::chrono::steady_clock::time_point started_;
     };
 
-    OpenGlesGuestProfileKind open_gles_profile_for_device(
-        GraphicsAcceleratorProfileKind accelerator)
+    OpenGlesGuestCapabilitySet open_gles_capabilities_for_device(
+        GraphicsAcceleratorKind accelerator)
     {
         switch (accelerator) {
-        case GraphicsAcceleratorProfileKind::MbxLite:
-            return OpenGlesGuestProfileKind::MbxLiteLegacy;
-        case GraphicsAcceleratorProfileKind::Sgx535:
-            return OpenGlesGuestProfileKind::Sgx535;
+        case GraphicsAcceleratorKind::MbxLite:
+            return OpenGlesGuestCapabilitySet::MbxLiteLegacy;
+        case GraphicsAcceleratorKind::Sgx535:
+            return OpenGlesGuestCapabilitySet::Sgx535;
         }
-        return OpenGlesGuestProfileKind::MbxLiteLegacy;
+        return OpenGlesGuestCapabilitySet::MbxLiteLegacy;
     }
 
 } // namespace
 
 CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
-    std::filesystem::path rootfs, DeviceProfile device,
-    std::optional<bool> activated, LockdownFirmwareProfile lockdown_profile)
+    std::filesystem::path rootfs, DeviceModel device,
+    std::optional<bool> activated, LockdownCapabilities lockdown_capabilities)
     : memory_ { memory }
     , output_ { output }
     , rootfs_ { std::move(rootfs) }
-    , device_profile_ { device }
-    , hfs_volumes_ { rootfs_, device_profile_.storage_bytes }
+    , device_model_ { device }
+    , hfs_volumes_ { rootfs_, device_model_.storage_bytes }
     , hfs_metadata_ { rootfs_ }
-    , display_state_ { std::make_shared<DisplayState>(device_profile_.display) }
+    , display_state_ { std::make_shared<DisplayState>(device_model_.display) }
     , audio_service_ { std::make_shared<AudioService>(rootfs_) }
     , userland_hle_ { memory_, output_ }
     , system_configuration_hle_ { userland_hle_ }
@@ -203,8 +203,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         shared_state_->guest_file_generation_registry);
     shared_state_->shared_mapping_page_cache->set_generation_registry(
         shared_state_->guest_file_generation_registry);
-    opengles_hle_.set_guest_profile(
-        open_gles_profile_for_device(device_profile_.graphics_accelerator));
+    opengles_hle_.set_guest_capabilities(
+        open_gles_capabilities_for_device(device_model_.graphics_accelerator));
     display_state_->set_orientation_resolver(
         [state = shared_state_, scenes = scene_coordinator_](
             std::uint32_t owner_process_id) {
@@ -247,38 +247,38 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
             inject_wifi_driver_event(descriptor, event);
         });
     shared_state_->darwin_kernel_identity =
-        make_darwin_kernel_identity_profile(rootfs_);
+        make_darwin_kernel_identity(rootfs_);
     configure_darwin_notify_state();
-    shared_state_->device_product_type = device_profile_.product_type;
-    shared_state_->device_board_config = device_profile_.board_config;
-    shared_state_->device_hardware_model = device_profile_.hardware_model;
-    shared_state_->device_model_number = device_profile_.model_number;
-    shared_state_->device_ram_bytes = device_profile_.ram_bytes;
+    shared_state_->device_product_type = device_model_.product_type;
+    shared_state_->device_board_config = device_model_.board_config;
+    shared_state_->device_hardware_model = device_model_.hardware_model;
+    shared_state_->device_model_number = device_model_.model_number;
+    shared_state_->device_ram_bytes = device_model_.ram_bytes;
     shared_state_->graphics_services_capability_memory =
-        make_graphics_services_capability_memory(rootfs_, device_profile_);
+        make_graphics_services_capability_memory(rootfs_, device_model_);
     shared_state_->device_cpu_type = arm_mach_cpu_type;
-    shared_state_->graphics_accelerator = device_profile_.graphics_accelerator;
+    shared_state_->graphics_accelerator = device_model_.graphics_accelerator;
     shared_state_->graphics_driver_bundle =
-        std::string { device_profile_.graphics_driver_bundle };
+        std::string { device_model_.graphics_driver_bundle };
     shared_state_->framebuffer_service_class =
-        std::string { device_profile_.framebuffer_service_class };
+        std::string { device_model_.framebuffer_service_class };
     shared_state_->apple_key_store_available =
-        device_profile_.keybag_capabilities.apple_key_store_available;
+        device_model_.keybag_capabilities.apple_key_store_available;
     shared_state_->effaceable_storage_available =
-        device_profile_.keybag_capabilities.effaceable_storage_available;
+        device_model_.keybag_capabilities.effaceable_storage_available;
     shared_state_->virtual_effaceable_storage_available =
-        device_profile_.keybag_capabilities
+        device_model_.keybag_capabilities
             .virtual_effaceable_storage_available;
     shared_state_->effaceable_storage_blob =
-        device_profile_.keybag_capabilities.virtual_effaceable_storage_blob;
+        device_model_.keybag_capabilities.virtual_effaceable_storage_blob;
     shared_state_->device_cpu_subtype = mach_cpu_subtype_for_architecture(
-        arm_architecture_for_model(device_profile_.cpu_model));
+        arm_architecture_for_model(device_model_.cpu_model));
     const auto virtual_baseband =
-        device_profile_.baseband_transport == BasebandTransportProfile::Virtual;
+        device_model_.baseband_transport == BasebandTransport::Virtual;
     const auto offline_baseband =
-        device_profile_.baseband_transport == BasebandTransportProfile::Offline;
+        device_model_.baseband_transport == BasebandTransport::Offline;
     const auto baseband_device_available =
-        virtual_baseband || device_profile_.baseband_device_available;
+        virtual_baseband || device_model_.baseband_device_available;
     // Keep the registry/CoreTelephony surface present in Offline mode so stock
     // clients can settle on the normal Offline state. Offline still exposes a
     // fixed mux control endpoint for the daemon's setup ABI, but it only
@@ -300,9 +300,9 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         shared_state_->mounts.push_back({ "hfs", volume.mount_point,
             volume.mounted_device, volume.mount_flags });
     }
-    device_profile_.display = display_state_->geometry();
-    shared_state_->display_geometry = device_profile_.display;
-    shared_state_->user_interface_geometry = device_profile_.user_interface;
+    device_model_.display = display_state_->geometry();
+    shared_state_->display_geometry = device_model_.display;
+    shared_state_->user_interface_geometry = device_model_.user_interface;
     core_surface_hle_.set_shared_state(shared_state_);
     core_surface_hle_.set_scene_coordinator(scene_coordinator_);
     core_surface_hle_.set_surface_port_handlers(
@@ -352,11 +352,11 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
             apply_wifi_transition(before, after);
             apple80211_hle_.publish_state_change(before, after);
         },
-        device_profile_.baseband_transport !=
-            BasebandTransportProfile::Virtual);
+        device_model_.baseband_transport !=
+            BasebandTransport::Virtual);
     register_dns_configuration_hle(userland_hle_);
     register_app_support_hle(userland_hle_);
-    register_lockdown_hle(userland_hle_, activated, lockdown_profile);
+    register_lockdown_hle(userland_hle_, activated, lockdown_capabilities);
     register_bluetooth_manager_hle(userland_hle_);
     register_core_crypto_hle(userland_hle_);
     register_mbx_connect_hle(userland_hle_);
@@ -422,8 +422,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
 
 void CompatibilityKernel::configure_darwin_notify_state()
 {
-    darwin_notify_state_hle_.set_profile(
-        shared_state_->darwin_kernel_identity.notify_state_profile);
+    darwin_notify_state_hle_.set_abi(
+        shared_state_->darwin_kernel_identity.notify_state_abi);
     darwin_notify_state_hle_.set_native_server_ready_query(
         [weak_state = std::weak_ptr<KernelSharedState> { shared_state_ }] {
             const auto state = weak_state.lock();
@@ -972,7 +972,7 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
     // the cache image is parsed at its container offset and patched through
     // MAP_PRIVATE/COW pages instead.
     const auto architecture =
-        arm_architecture_for_model(device_profile_.cpu_model);
+        arm_architecture_for_model(device_model_.cpu_model);
     constexpr std::string_view uikit_image { "/UIKit.framework/UIKit" };
     constexpr std::string_view graphics_services_image {
         "/GraphicsServices.framework/GraphicsServices"
@@ -980,7 +980,7 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
     constexpr std::string_view quartz_core_image {
         "/QuartzCore.framework/QuartzCore"
     };
-    const auto apply_image_profile =
+    const auto apply_image_abi =
         [&](std::string_view logical_image_path,
             const std::filesystem::path& source_path,
             std::optional<std::uint64_t> image_header_offset,
@@ -1015,7 +1015,7 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
                           image_header_offset));
             if (path.ends_with(graphics_services_image)) {
                 const auto profile =
-                    GraphicsServicesInputProfile::detect(*image);
+                    GraphicsServicesInputAbi::detect(*image);
                 if (!profile)
                     return;
                 std::lock_guard mach_lock { shared_state_->mach_mutex };
@@ -1027,22 +1027,22 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
                     output_.write(
                         "[input] GraphicsServices touch ABI profile=" +
                         std::string {
-                            GraphicsServicesInputProfile::for_abi(*profile)
+                            GraphicsServicesInputAbi::for_abi(*profile)
                                 .name } +
                         " pid=" + std::to_string(process_.pid) + "\n");
                 }
                 return;
             }
 
-            const auto profile = CoreAnimationRemoteProfile::detect(*image);
+            const auto profile = CoreAnimationRemoteAbi::detect(*image);
             if (!profile)
                 return;
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             if (const auto process =
                     shared_state_->processes.find(process_.pid);
                 process != shared_state_->processes.end() &&
-                process->second.core_animation_remote_profile != profile) {
-                process->second.core_animation_remote_profile = *profile;
+                process->second.core_animation_remote_abi != profile) {
+                process->second.core_animation_remote_abi = *profile;
                 output_.write("[scene] CoreAnimation remote profile=" +
                               std::string { profile->name } +
                               " pid=" + std::to_string(process_.pid) + "\n");
@@ -1095,7 +1095,7 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
                 header->file_offset, mapping_address, mapping_size, file_offset,
                 source.content_identity, architecture, parsed_image,
                 source_file_index, image.index);
-            apply_image_profile(image.path,
+            apply_image_abi(image.path,
                 std::filesystem::path { source.path }, header->file_offset,
                 source.content_identity, std::move(parsed_image));
         }
@@ -1115,7 +1115,7 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
         checkpoint(3U);
         return installed;
     }
-    apply_image_profile(
+    apply_image_abi(
         image_path.generic_string(), image_path, std::nullopt, std::nullopt);
     checkpoint(3U);
     return installed;
@@ -1132,7 +1132,7 @@ void CompatibilityKernel::install_main_image_hle(
         relative = relative.relative_path();
     const auto host_path = rootfs_ / relative;
     const auto image = MachOImage::parse(
-        host_path, arm_architecture_for_model(device_profile_.cpu_model));
+        host_path, arm_architecture_for_model(device_model_.cpu_model));
     for (const auto& segment : image.segments()) {
         if (segment.file_size == 0)
             continue;
@@ -1185,10 +1185,10 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
         code_signature_entitlements.begin(), code_signature_entitlements.end());
     record.display_orientation =
         detect_application_display_orientation(rootfs_, guest_path);
-    record.display_profile = detect_application_display_profile(rootfs_,
+    record.application_display = detect_application_display(rootfs_,
         guest_path, shared_state_->user_interface_geometry);
-    if (record.display_profile.kind !=
-        ApplicationDisplayProfileKind::Native) {
+    if (record.application_display.kind !=
+        ApplicationDisplayMode::Native) {
         output_.write("[display] application profile=iphone-compatibility-1x "
                       "pid=" + std::to_string(process_.pid) + "\n");
     }

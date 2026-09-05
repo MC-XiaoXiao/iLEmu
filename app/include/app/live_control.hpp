@@ -6,7 +6,7 @@
 #include <vector>
 
 #include "debug/control_channel.hpp"
-#include "foundation/device_profile.hpp"
+#include "foundation/device_model.hpp"
 #include "foundation/display_geometry.hpp"
 #include "foundation/system_button_input.hpp"
 #include "foundation/touch_input.hpp"
@@ -19,7 +19,7 @@ class LiveControl final : public ControlChannel {
 public:
     explicit LiveControl(int descriptor,
         DisplayGeometry geometry = default_display_geometry,
-        SystemGestureProfile system_gestures = classic_compact_system_gestures);
+        SystemGestures system_gestures = classic_compact_system_gestures);
 
     [[nodiscard]] std::vector<LiveControlCommand> poll() override;
     // Blocks until the descriptor is readable/hung up or the timeout expires.
@@ -32,7 +32,7 @@ private:
 
     int descriptor_ { };
     DisplayGeometry geometry_;
-    SystemGestureProfile system_gestures_;
+    SystemGestures system_gestures_;
     std::string buffered_input_;
     bool closed_ { };
 };

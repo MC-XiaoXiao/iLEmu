@@ -2,7 +2,7 @@ find_package(OpenSSL REQUIRED COMPONENTS Crypto)
 
 add_library(ilemu_crypto STATIC
     core_crypto_hle.cpp
-    prime_field_profile.cpp
+    prime_field_layout.cpp
     host/big_number.cpp)
 add_library(iLEmu::crypto ALIAS ilemu_crypto)
 ilemu_configure_module(ilemu_crypto)

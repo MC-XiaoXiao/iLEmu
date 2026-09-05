@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "foundation/address_space.hpp"
-#include "foundation/darwin_process_start_profile.hpp"
+#include "foundation/darwin_process_start_abi.hpp"
 #include "foundation/macho.hpp"
 
 namespace ilemu {
@@ -29,8 +29,8 @@ public:
     ProcessLoader(std::filesystem::path rootfs, AddressSpace& memory,
         ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
         ExecutableCatalog* catalog = nullptr,
-        DarwinInitialAppleVectorProfile initial_apple_vector_profile =
-            DarwinInitialAppleVectorProfile::KeyedExecutablePath);
+        DarwinInitialAppleVectorAbi initial_apple_vector_abi =
+            DarwinInitialAppleVectorAbi::KeyedExecutablePath);
 
     LoadedProcess load(std::string guest_executable,
         std::vector<std::string> arguments = { },
@@ -54,8 +54,8 @@ private:
     AddressSpace& memory_;
     ArmArchitectureVersion architecture_;
     ExecutableCatalog* catalog_ { };
-    DarwinInitialAppleVectorProfile initial_apple_vector_profile_ {
-        DarwinInitialAppleVectorProfile::KeyedExecutablePath
+    DarwinInitialAppleVectorAbi initial_apple_vector_abi_ {
+        DarwinInitialAppleVectorAbi::KeyedExecutablePath
     };
 };
 

@@ -6,8 +6,8 @@
 
 #include "network/darwin_abi_route.hpp"
 #include "foundation/darwin_notify_state_hle.hpp"
-#include "foundation/darwin_process_start_profile.hpp"
-#include "foundation/device_profile.hpp"
+#include "foundation/darwin_process_start_abi.hpp"
+#include "foundation/device_model.hpp"
 
 namespace ilemu {
 
@@ -15,7 +15,7 @@ namespace ilemu {
 // syscalls in Darwin 10. Keep that wire contract separate from the broader
 // kernel epoch: later Darwin releases revise the registration arguments and
 // workqueue operations without changing the device model.
-enum class DarwinPthreadAbiProfile : std::uint8_t {
+enum class DarwinPthreadAbi : std::uint8_t {
     LegacyMachThreads,
     BsdThreadRegisterV1,
     // Darwin 10.4 ARM32 uses an embedded TSD base in pthread_t.
@@ -30,7 +30,7 @@ enum class DarwinPthreadAbiProfile : std::uint8_t {
 // record packed behind the ioctl changed independently of the public API.
 // Name the two audited wire layouts so BSD emulation never needs to inspect a
 // firmware build string or infer a layout from a caller-provided byte count.
-enum class DarwinApple80211IoctlProfile : std::uint8_t {
+enum class DarwinApple80211IoctlAbi : std::uint8_t {
     AlignedCurrentNetworkRecord,
     CompactCurrentNetworkRecord,
 };
@@ -40,7 +40,7 @@ enum class DarwinApple80211IoctlProfile : std::uint8_t {
 // widened the out-of-line address/size fields to Mach VM values.
 // Keep that wire detail independent of the user-client selector and broad
 // kernel epoch so unknown firmware cannot be guessed from request contents.
-enum class DarwinIOConnectMethodProfile : std::uint8_t {
+enum class DarwinIOConnectMethodAbi : std::uint8_t {
     Natural32OolScalarThenStructure,
     Natural32OolStructureThenScalar,
     MachVm64OolStructureThenScalar,
@@ -48,7 +48,7 @@ enum class DarwinIOConnectMethodProfile : std::uint8_t {
 
 // Address width changed within the Darwin 11 ARM32 family. It is independent
 // of the kernel epoch and of vm_map's always-natural-sized address fields.
-enum class DarwinMachVmAddressProfile : std::uint8_t {
+enum class DarwinMachVmAddressWidth : std::uint8_t {
     Natural32,
     Wide64,
 };
@@ -57,7 +57,7 @@ enum class DarwinMachVmAddressProfile : std::uint8_t {
 // an optional dyld slide-info bitmap. Keep that wire contract independent of
 // the broad kernel epoch: syscall numbers and argument meanings changed while
 // the surrounding VM model remained stable.
-enum class DarwinSharedRegionAbiProfile : std::uint8_t {
+enum class DarwinSharedRegionAbi : std::uint8_t {
     LegacyRelocatableMappings,
     FixedMappingsWithSlideInfoV1,
 };
@@ -65,7 +65,7 @@ enum class DarwinSharedRegionAbiProfile : std::uint8_t {
 // Some ARM32 libSystem releases use direct kernel-RPC traps for the hot Mach
 // port operations that older releases send through MIG. Keep the selection
 // explicit so a legacy guest never observes newer trap-table entries.
-enum class DarwinMachKernelRpcProfile : std::uint8_t {
+enum class DarwinMachKernelRpcAbi : std::uint8_t {
     LegacyMigOnly,
     DirectVmAndPortTrapsV1,
 };
@@ -74,7 +74,7 @@ enum class DarwinMachKernelRpcProfile : std::uint8_t {
 // kernels used for shared-region operations.  Keep that syscall-table and
 // argument-packing contract explicit so dispatch never guesses from a call's
 // register contents or from an individual firmware build.
-enum class DarwinPsynchAbiProfile : std::uint8_t {
+enum class DarwinPsynchAbi : std::uint8_t {
     Unsupported,
     Arm32GenerationV1,
 };
@@ -84,17 +84,10 @@ enum class DarwinPsynchAbiProfile : std::uint8_t {
 // compact c-string request are independent of the registry contents, so keep
 // the transport contract explicit and let all service classes share the same
 // registry matcher.
-enum class DarwinIOKitMatchingRpcProfile : std::uint8_t {
+enum class DarwinIOKitMatchingRpcAbi : std::uint8_t {
     PluralIteratorOnly,
     InlineSingleServiceV1,
 };
-
-// Offline activation was originally exposed through a firmware-supported
-// development-board identity.  Later firmware route databases use the retail
-// hardware identity even when the host supplies the activation state.  Keep
-// that distinction in the firmware contract profile instead of deriving it
-// from a product name or an application path.
-using DarwinActivationHardwareModelProfile = ActivationHardwareModelPolicy;
 
 struct DarwinGuestCapabilities {
     // XNU's nosys entry returns ENOSYS and raises SIGSYS on the audited
@@ -113,7 +106,7 @@ struct DarwinGuestCapabilities {
     bool expose_legacy_platform_serial { };
 };
 
-struct DarwinKernelIdentityProfile {
+struct DarwinKernelIdentity {
     std::string name { "darwin9.4" };
     std::string operating_system_type { "Darwin" };
     std::string operating_system_release { "9.4.0" };
@@ -131,38 +124,41 @@ struct DarwinKernelIdentityProfile {
     // rootfs use the explicitly compiled compatibility default instead.
     std::string abi_build_version;
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
-    DarwinPthreadAbiProfile pthread_abi {
-        DarwinPthreadAbiProfile::LegacyMachThreads
+    DarwinPthreadAbi pthread_abi {
+        DarwinPthreadAbi::LegacyMachThreads
     };
-    DarwinApple80211IoctlProfile apple80211_ioctl {
-        DarwinApple80211IoctlProfile::AlignedCurrentNetworkRecord
+    DarwinApple80211IoctlAbi apple80211_ioctl {
+        DarwinApple80211IoctlAbi::AlignedCurrentNetworkRecord
     };
-    DarwinIOConnectMethodProfile io_connect_method {
-        DarwinIOConnectMethodProfile::Natural32OolScalarThenStructure
+    DarwinIOConnectMethodAbi io_connect_method {
+        DarwinIOConnectMethodAbi::Natural32OolScalarThenStructure
     };
-    DarwinMachVmAddressProfile mach_vm_address {
-        DarwinMachVmAddressProfile::Natural32
+    DarwinMachVmAddressWidth mach_vm_address {
+        DarwinMachVmAddressWidth::Natural32
     };
-    DarwinNotifyStateProfile notify_state_profile {
-        DarwinNotifyStateProfile::NativeServerTokens
+    DarwinNotifyStateAbi notify_state_abi {
+        DarwinNotifyStateAbi::NativeServerTokens
     };
-    DarwinInitialAppleVectorProfile initial_apple_vector_profile {
-        DarwinInitialAppleVectorProfile::KeyedExecutablePath
+    DarwinInitialAppleVectorAbi initial_apple_vector_abi {
+        DarwinInitialAppleVectorAbi::KeyedExecutablePath
     };
-    DarwinSharedRegionAbiProfile shared_region_abi {
-        DarwinSharedRegionAbiProfile::LegacyRelocatableMappings
+    DarwinSharedRegionAbi shared_region_abi {
+        DarwinSharedRegionAbi::LegacyRelocatableMappings
     };
-    DarwinMachKernelRpcProfile mach_kernel_rpc {
-        DarwinMachKernelRpcProfile::LegacyMigOnly
+    DarwinMachKernelRpcAbi mach_kernel_rpc {
+        DarwinMachKernelRpcAbi::LegacyMigOnly
     };
-    DarwinPsynchAbiProfile psynch_abi {
-        DarwinPsynchAbiProfile::Unsupported
+    DarwinPsynchAbi psynch_abi {
+        DarwinPsynchAbi::Unsupported
     };
-    DarwinIOKitMatchingRpcProfile iokit_matching_rpc {
-        DarwinIOKitMatchingRpcProfile::PluralIteratorOnly
+    DarwinIOKitMatchingRpcAbi iokit_matching_rpc {
+        DarwinIOKitMatchingRpcAbi::PluralIteratorOnly
     };
-    DarwinActivationHardwareModelProfile activation_hardware_model_profile {
-        DarwinActivationHardwareModelProfile::Retail
+    // Firmware route databases can require a retail or development-board
+    // identity for offline activation. Keep this contract independent of
+    // product names and application paths.
+    ActivationHardwareModelPolicy activation_hardware_model_policy {
+        ActivationHardwareModelPolicy::Retail
     };
     DarwinGuestCapabilities capabilities;
 };
@@ -170,7 +166,7 @@ struct DarwinKernelIdentityProfile {
 // Reports the compatibility kernel's highest supported Darwin contract. The
 // detected ABI build is available to explicitly audited dispatch points;
 // unknown builds retain the conservative compatibility behavior.
-[[nodiscard]] DarwinKernelIdentityProfile make_darwin_kernel_identity_profile(
+[[nodiscard]] DarwinKernelIdentity make_darwin_kernel_identity(
     const std::filesystem::path& rootfs);
 
 } // namespace ilemu

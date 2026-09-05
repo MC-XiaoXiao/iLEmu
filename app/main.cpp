@@ -33,7 +33,7 @@
 
 #include "foundation/address_space.hpp"
 #include "foundation/cpu.hpp"
-#include "foundation/device_profile.hpp"
+#include "foundation/device_model.hpp"
 #include "foundation/executable_catalog.hpp"
 #include "foundation/firmware_prepare.hpp"
 #include "foundation/jit_artifact.hpp"
@@ -343,18 +343,18 @@ std::unique_ptr<Output> make_output(const std::vector<std::string>& args)
     return std::make_unique<Output>(std::cout);
 }
 
-const DeviceProfile& select_device_profile(const std::vector<std::string>& args)
+const DeviceModel& select_device_model(const std::vector<std::string>& args)
 {
     const auto requested =
         option(args, "--device")
             .value_or(
-                std::string { DeviceProfile::default_profile().product_type });
-    if (const auto* profile = DeviceProfile::find(requested)) {
+                std::string { DeviceModel::default_model().product_type });
+    if (const auto* profile = DeviceModel::find(requested)) {
         return *profile;
     }
     std::ostringstream message;
     message << "unknown device profile: " << requested << "; available:";
-    for (const auto& profile : DeviceProfile::available_profiles()) {
+    for (const auto& profile : DeviceModel::available_models()) {
         message << ' ' << profile.product_type;
     }
     throw std::runtime_error { message.str() };
@@ -362,7 +362,7 @@ const DeviceProfile& select_device_profile(const std::vector<std::string>& args)
 
 void profile(const std::vector<std::string>& args, Output& output)
 {
-    const auto& device = select_device_profile(args);
+    const auto& device = select_device_model(args);
     std::ostringstream text;
     text << "product: " << device.product_type << '\n'
          << "board: " << device.board_config << '\n'
@@ -400,7 +400,7 @@ void inspect(const std::vector<std::string>& args, Output& output)
     }
     const auto host_path = std::filesystem::path { *rootfs } / relative;
     const auto image = MachOImage::parse(host_path,
-        arm_architecture_for_model(select_device_profile(args).cpu_model));
+        arm_architecture_for_model(select_device_model(args).cpu_model));
 
     std::ostringstream text;
     text << "path: " << host_path.string() << '\n'
@@ -471,7 +471,7 @@ void catalog(const std::vector<std::string>& args, Output& output)
     if (!rootfs)
         throw std::runtime_error { "catalog requires --rootfs" };
     const auto architecture =
-        arm_architecture_for_model(select_device_profile(args).cpu_model);
+        arm_architecture_for_model(select_device_model(args).cpu_model);
     ExecutableCatalog executable_catalog;
     const auto manifest =
         option(args, "--manifest")
@@ -508,7 +508,7 @@ void firmware_prepare(const std::vector<std::string>& args, Output& output)
     const auto rootfs = option(args, "--rootfs");
     if (!rootfs)
         throw std::runtime_error { "firmware prepare requires --rootfs" };
-    const auto& device = select_device_profile(args);
+    const auto& device = select_device_model(args);
     const auto cpu_model = make_arm_cpu_model(device.cpu_model, device.cpu_hz);
     const auto host_cache =
         host_cache_directory(args, std::filesystem::path { *rootfs });
@@ -764,7 +764,7 @@ void disasm(const std::vector<std::string>& args, Output& output)
         relative = relative.relative_path();
     const auto image =
         MachOImage::parse(std::filesystem::path { *rootfs } / relative,
-            arm_architecture_for_model(select_device_profile(args).cpu_model));
+            arm_architecture_for_model(select_device_model(args).cpu_model));
     const MachSymbol* symbol = nullptr;
     std::uint32_t start_address = 0;
     if (symbol_name) {
@@ -973,7 +973,7 @@ void boot(const std::vector<std::string>& args, Output& output)
     options.rootfs = *rootfs;
     options.host_cache = host_cache_directory(args, options.rootfs);
     options.catalog = option(args, "--catalog");
-    options.device = select_device_profile(args);
+    options.device = select_device_model(args);
     options.gles_backend = parse_gles_backend(args);
     options.binary = option(args, "--binary").value_or("/sbin/launchd");
     options.guest_command = option(args, "--guest-command");

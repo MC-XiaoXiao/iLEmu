@@ -20,7 +20,7 @@ enum class ArmCpuModelKind : std::uint8_t {
 // ARM permits implementation-defined handling for instructions whose result
 // is architecturally UNKNOWN. Keep that policy attached to the emulated core,
 // independently of a device, firmware build, image, or guest address.
-enum class ArmUnpredictableInstructionProfile : std::uint8_t {
+enum class ArmUnpredictableInstructionPolicy : std::uint8_t {
     Strict,
     CortexA8,
 };
@@ -61,8 +61,8 @@ public:
 
     [[nodiscard]] virtual ArmArchitectureVersion
     architecture_version() const noexcept = 0;
-    [[nodiscard]] virtual ArmUnpredictableInstructionProfile
-    unpredictable_instruction_profile() const noexcept = 0;
+    [[nodiscard]] virtual ArmUnpredictableInstructionPolicy
+    unpredictable_instruction_policy() const noexcept = 0;
     [[nodiscard]] virtual std::uint32_t ticks_per_second() const noexcept = 0;
     [[nodiscard]] virtual std::uint64_t ticks_for_instruction(bool thumb,
         std::uint32_t address, std::uint32_t instruction) const noexcept = 0;
@@ -71,7 +71,7 @@ public:
 [[nodiscard]] std::unique_ptr<ArmCpuModel> make_arm_cpu_model(
     ArmCpuModelKind kind, std::uint32_t clock_hz);
 
-// Used by CPU-only helpers and tests that do not select a DeviceProfile.
+// Used by CPU-only helpers and tests that do not select a DeviceModel.
 [[nodiscard]] const ArmCpuModel& default_arm_cpu_model();
 
 } // namespace ilemu

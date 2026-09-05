@@ -1,6 +1,6 @@
 add_library(ilemu_graphics STATIC
     display.cpp
-    core_animation_remote_profile.cpp
+    core_animation_remote_abi.cpp
     gles_renderer.cpp
     gles_primitive_assembler.cpp
     gles_resources.cpp
@@ -10,7 +10,7 @@ add_library(ilemu_graphics STATIC
     frame_file_presenter.cpp
     layerkit_compatibility.cpp
     local_scene_background.cpp
-    opengles_guest_profile.cpp
+    opengles_guest_capabilities.cpp
     gles_program_state.cpp
     presentation_tracker.cpp
     scanout_composition.cpp

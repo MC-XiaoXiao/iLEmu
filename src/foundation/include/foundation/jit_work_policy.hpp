@@ -16,7 +16,7 @@ struct JitNativePredictionPolicy {
     std::size_t maximum_code_bytes { };
 };
 
-enum class JitNativeBackendProfile : std::uint8_t {
+enum class JitNativeBackend : std::uint8_t {
     X64RelativeCodeModel,
     Arm64AddressSpace,
 };
@@ -78,20 +78,20 @@ public:
     // application or firmware profiles. x64 keeps the complete mapping safely
     // inside the signed rel32 reach used by generated terminals; arm64 retains
     // Dynarmic's current address-space limit.
-    [[nodiscard]] static constexpr JitNativeBackendProfile
-    native_backend_profile() noexcept
+    [[nodiscard]] static constexpr JitNativeBackend
+    native_backend() noexcept
     {
 #if defined(__x86_64__) || defined(_M_X64)
-        return JitNativeBackendProfile::X64RelativeCodeModel;
+        return JitNativeBackend::X64RelativeCodeModel;
 #else
-        return JitNativeBackendProfile::Arm64AddressSpace;
+        return JitNativeBackend::Arm64AddressSpace;
 #endif
     }
     [[nodiscard]] static constexpr std::size_t
     maximum_native_slab_bytes() noexcept
     {
-        return native_backend_profile() ==
-                       JitNativeBackendProfile::X64RelativeCodeModel
+        return native_backend() ==
+                       JitNativeBackend::X64RelativeCodeModel
                    ? 1536ULL * 1024ULL * 1024ULL
                    : 128ULL * 1024ULL * 1024ULL;
     }

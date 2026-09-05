@@ -1,9 +1,9 @@
-#include "kernel/kernel_iokit_audio_profile.hpp"
+#include "kernel/kernel_iokit_audio_abi.hpp"
 
 namespace ilemu::kernel_iokit::audio {
 namespace {
 
-    constexpr IOKitAudioAbiProfile io_audio2_profile{
+    constexpr IOKitAudioAbi io_audio2_abi{
     .service_class = "IOAudio2Device",
     .registry_path = "IOService:/IOAudio2Device",
     .service_type = 0,
@@ -77,13 +77,13 @@ namespace {
 
 } // namespace
 
-std::uint32_t IOKitAudioAbiProfile::stream_memory_type(
+std::uint32_t IOKitAudioAbi::stream_memory_type(
     std::uint32_t stream_id) const
 {
     return memory.stream_base + stream_id;
 }
 
-std::optional<std::uint32_t> IOKitAudioAbiProfile::stream_id_for_memory_type(
+std::optional<std::uint32_t> IOKitAudioAbi::stream_id_for_memory_type(
     std::uint32_t memory_type) const
 {
     if (memory_type <= memory.stream_base)
@@ -91,9 +91,9 @@ std::optional<std::uint32_t> IOKitAudioAbiProfile::stream_id_for_memory_type(
     return memory_type - memory.stream_base;
 }
 
-const IOKitAudioAbiProfile& IOKitAudioAbiProfile::io_audio2()
+const IOKitAudioAbi& IOKitAudioAbi::io_audio2()
 {
-    return io_audio2_profile;
+    return io_audio2_abi;
 }
 
 } // namespace ilemu::kernel_iokit::audio

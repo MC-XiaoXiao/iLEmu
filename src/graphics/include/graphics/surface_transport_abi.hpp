@@ -16,7 +16,7 @@ enum class Kind : std::uint8_t {
     IOSurfaceClient,
 };
 
-struct Profile {
+struct ClientAbi {
     std::string_view name;
     std::string_view image_suffix;
     std::string_view symbol_prefix;
@@ -36,7 +36,7 @@ struct Profile {
     std::array<std::string_view, 7> create_property_symbols;
 };
 
-inline constexpr Profile core_surface_client_buffer {
+inline constexpr ClientAbi core_surface_client_buffer {
     .name = "core-surface-client-buffer",
     .image_suffix = "/CoreSurface.framework/CoreSurface",
     .symbol_prefix = "_CoreSurfaceClientBuffer",
@@ -62,7 +62,7 @@ inline constexpr Profile core_surface_client_buffer {
 // iPhoneOS builds with a separate IOSurface framework keep a 1,216-byte
 // private client object.  CoreSurface remains a native compatibility wrapper
 // and forwards into this symbol family.
-inline constexpr Profile io_surface_client {
+inline constexpr ClientAbi io_surface_client {
     .name = "io-surface-client",
     .image_suffix = "/IOSurface.framework/IOSurface",
     .symbol_prefix = "_IOSurfaceClient",
@@ -84,7 +84,7 @@ inline constexpr Profile io_surface_client {
         "_kIOSurfaceOffset" },
 };
 
-[[nodiscard]] constexpr const Profile& for_kind(Kind kind)
+[[nodiscard]] constexpr const ClientAbi& for_kind(Kind kind)
 {
     return kind == Kind::IOSurfaceClient ? io_surface_client
                                          : core_surface_client_buffer;

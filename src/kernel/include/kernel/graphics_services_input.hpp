@@ -192,7 +192,7 @@ void record_application_event_delivery_locked(KernelSharedState& state,
     std::uint32_t event_type, SceneCoordinator* scenes = nullptr);
 
 // Publishes one firmware-owned remote window-server transaction as a logical
-// client scene. The caller has already selected the transaction Profile and
+// client scene. The caller has already selected the transaction ABI and
 // holds KernelSharedState::mach_mutex; App identity, destination ownership,
 // launch intent, and event-port readiness remain independently validated.
 void record_application_remote_scene_commit_locked(KernelSharedState& state,

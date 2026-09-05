@@ -73,8 +73,8 @@ namespace {
         const auto service =
             state.iokit_services.find(connection->second.service_port);
         return service != state.iokit_services.end() &&
-               service->second.user_client_profile ==
-                   KernelSharedState::IOKitUserClientProfile::JpegAccelerator;
+               service->second.user_client_kind ==
+                   KernelSharedState::IOKitUserClientKind::JpegAccelerator;
     }
 
 } // namespace
@@ -100,7 +100,7 @@ std::uint32_t ensure_service_locked(
             "IOService:/IOPlatformExpertDevice/" +
                 std::string { service_class },
             platform_expert_object,
-            KernelSharedState::IOKitUserClientProfile::JpegAccelerator });
+            KernelSharedState::IOKitUserClientKind::JpegAccelerator });
     return object;
 }
 

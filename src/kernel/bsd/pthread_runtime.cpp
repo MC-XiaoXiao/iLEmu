@@ -1,7 +1,7 @@
 #include "kernel/darwin_pthread_runtime.hpp"
 
 #include "kernel/darwin_abi.hpp"
-#include "device_state/darwin_kernel_profile.hpp"
+#include "device_state/darwin_kernel_identity.hpp"
 #include "kernel/kernel.hpp"
 
 #include "../mach/support.hpp"
@@ -18,22 +18,22 @@ namespace {
     constexpr std::uint32_t pthread_dynamic_base = 0x1000'0000U;
     // Darwin 10.4 ARM32 passes the embedded TSD base at this pthread_t
     // member to thread_set_tsd_base. Darwin 10.3 keeps TPIDRURO equal to
-    // pthread_t itself, so select this offset through the ABI Profile.
+    // pthread_t itself, so select this offset through the ABI contract.
     constexpr std::uint32_t pthread_tsd_base_offset = 0x48U;
 
     [[nodiscard]] bool supports_bsdthread_register_v1(
-        DarwinPthreadAbiProfile profile) noexcept
+        DarwinPthreadAbi profile) noexcept
     {
-        return profile == DarwinPthreadAbiProfile::BsdThreadRegisterV1 ||
-               profile == DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase ||
-               profile == DarwinPthreadAbiProfile::
+        return profile == DarwinPthreadAbi::BsdThreadRegisterV1 ||
+               profile == DarwinPthreadAbi::BsdThreadRegisterV1TsdBase ||
+               profile == DarwinPthreadAbi::
                               BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues;
     }
 
-    [[nodiscard]] std::uint32_t workqueue_priority_count_for_profile(
-        DarwinPthreadAbiProfile profile) noexcept
+    [[nodiscard]] std::uint32_t workqueue_priority_count_for_abi(
+        DarwinPthreadAbi profile) noexcept
     {
-        if (profile == DarwinPthreadAbiProfile::
+        if (profile == DarwinPthreadAbi::
                            BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues) {
             return 4U;
         }
@@ -41,10 +41,10 @@ namespace {
     }
 
     [[nodiscard]] std::uint32_t thread_pointer_for_pthread(
-        DarwinPthreadAbiProfile profile, std::uint32_t pthread_address) noexcept
+        DarwinPthreadAbi profile, std::uint32_t pthread_address) noexcept
     {
-        if (profile == DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase ||
-            profile == DarwinPthreadAbiProfile::
+        if (profile == DarwinPthreadAbi::BsdThreadRegisterV1TsdBase ||
+            profile == DarwinPthreadAbi::
                            BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues) {
             return pthread_address + pthread_tsd_base_offset;
         }
@@ -226,7 +226,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
     const auto& registration = pthread_runtime_.registration();
     if (!registration || !pthread_runtime_.workqueue_open())
         return false;
-    const auto pthread_profile =
+    const auto pthread_abi =
         shared_state_->darwin_kernel_identity.pthread_abi;
 
     const auto idle_worker = pthread_runtime_.idle_worker();
@@ -271,7 +271,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
                 thread_pointer_update_handler_(process_.pid,
                     idle_worker->processor,
                     thread_pointer_for_pthread(
-                        pthread_profile, idle_worker->pthread_address)));
+                        pthread_abi, idle_worker->pthread_address)));
         const auto wake_result =
             updated ? thread_wake_handler_(process_.pid, idle_worker->processor)
                     : XnuThreadWakeResult { };
@@ -345,7 +345,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
             !thread_pointer_update_handler_(
                 process_.pid, worker.processor,
                 thread_pointer_for_pthread(
-                    pthread_profile, worker.pthread_address))) ||
+                    pthread_abi, worker.pthread_address))) ||
         !pthread_runtime_.add_worker(worker)) {
         if (thread_terminate_handler_)
             static_cast<void>(
@@ -606,7 +606,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
     }
     case 367: { // workq_open, Darwin 10 ARM32 v1
         if (!pthread_runtime_.open_workqueue(virtual_processor_count_,
-                workqueue_priority_count_for_profile(profile))) {
+                workqueue_priority_count_for_abi(profile))) {
             bsd_error(cpu, bsd_support::invalid_argument);
             return true;
         }
