@@ -1,6 +1,6 @@
 #include "battery.hpp"
 
-#include "ilemu/kernel_shared_state.hpp"
+#include "kernel/kernel_shared_state.hpp"
 
 #include <algorithm>
 #include <cstddef>

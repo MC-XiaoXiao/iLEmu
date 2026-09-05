@@ -1,4 +1,4 @@
-#include "ilemu/firmware_prepare.hpp"
+#include "foundation/firmware_prepare.hpp"
 
 #include <algorithm>
 #include <array>
@@ -20,9 +20,9 @@
 
 #include <dynarmic/interface/exclusive_monitor.h>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/cpu.hpp"
-#include "ilemu/jit_translation_profile.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/cpu.hpp"
+#include "foundation/jit_translation_profile.hpp"
 
 namespace ilemu {
 namespace {

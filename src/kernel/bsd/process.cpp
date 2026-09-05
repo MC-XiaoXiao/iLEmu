@@ -1,15 +1,15 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/application_path.hpp"
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/darwin_kqueue_abi.hpp"
-#include "ilemu/darwin_network_abi.hpp"
-#include "ilemu/darwin_resource_abi.hpp"
-#include "ilemu/darwin_route_socket.hpp"
-#include "ilemu/graphics_services_input.hpp"
-#include "ilemu/kernel_bsd_interval_timer.hpp"
-#include "ilemu/kernel_network.hpp"
-#include "ilemu/performance.hpp"
+#include "foundation/application_path.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/darwin_kqueue_abi.hpp"
+#include "network/darwin_network_abi.hpp"
+#include "kernel/darwin_resource_abi.hpp"
+#include "network/darwin_route_socket.hpp"
+#include "graphics/graphics_services_input.hpp"
+#include "kernel/kernel_bsd_interval_timer.hpp"
+#include "kernel/kernel_network.hpp"
+#include "foundation/performance.hpp"
 
 #include <algorithm>
 #include <array>

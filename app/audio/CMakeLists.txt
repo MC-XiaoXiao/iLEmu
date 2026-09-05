@@ -3,8 +3,6 @@ add_library(ilemu_app_audio STATIC
     sdl_audio_sink.cpp)
 add_library(iLEmu::app_audio ALIAS ilemu_app_audio)
 ilemu_configure_module(ilemu_app_audio)
-target_include_directories(ilemu_app_audio PUBLIC
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>)
 target_link_libraries(ilemu_app_audio PUBLIC iLEmu::media)
 if(TARGET PkgConfig::SDL2)
     target_link_libraries(ilemu_app_audio PUBLIC PkgConfig::SDL2)

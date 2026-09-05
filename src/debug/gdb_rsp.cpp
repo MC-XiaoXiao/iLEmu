@@ -1,6 +1,6 @@
-#include "ilemu/gdb_rsp.hpp"
+#include "debug/gdb_rsp.hpp"
 
-#include "ilemu/output.hpp"
+#include "foundation/output.hpp"
 
 #include <algorithm>
 #include <array>

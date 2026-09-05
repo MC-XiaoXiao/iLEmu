@@ -1,6 +1,6 @@
 #pragma once
 
-#include "ilemu/kernel_shared_state.hpp"
+#include "kernel/kernel_shared_state.hpp"
 
 #include <cstddef>
 #include <cstdint>

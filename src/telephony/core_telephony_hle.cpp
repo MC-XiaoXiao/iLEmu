@@ -1,4 +1,4 @@
-#include "ilemu/core_telephony_hle.hpp"
+#include "telephony/core_telephony_hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,12 +12,12 @@
 #include <string_view>
 #include <utility>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/application_path.hpp"
-#include "ilemu/cpu.hpp"
-#include "ilemu/output.hpp"
-#include "ilemu/userland_hle.hpp"
-#include "ilemu/wifi_state.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/application_path.hpp"
+#include "foundation/cpu.hpp"
+#include "foundation/output.hpp"
+#include "foundation/userland_hle.hpp"
+#include "network/wifi_state.hpp"
 
 namespace ilemu {
 namespace {

@@ -1,8 +1,8 @@
-#include "ilemu/darwin_pthread_runtime.hpp"
+#include "kernel/darwin_pthread_runtime.hpp"
 
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/darwin_kernel_profile.hpp"
-#include "ilemu/kernel.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "device_state/darwin_kernel_profile.hpp"
+#include "kernel/kernel.hpp"
 
 #include "../mach/support.hpp"
 #include "support.hpp"

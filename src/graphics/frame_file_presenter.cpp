@@ -1,4 +1,4 @@
-#include "ilemu/frame_file_presenter.hpp"
+#include "graphics/frame_file_presenter.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -11,8 +11,8 @@
 
 #include <png.h>
 
-#include "ilemu/application_display_profile.hpp"
-#include "ilemu/display.hpp"
+#include "foundation/application_display_profile.hpp"
+#include "foundation/display.hpp"
 
 namespace ilemu {
 namespace {

@@ -1,4 +1,4 @@
-#include "ilemu/jpeg_encoder.hpp"
+#include "media/jpeg_encoder.hpp"
 
 #include <csetjmp>
 #include <cstdio>

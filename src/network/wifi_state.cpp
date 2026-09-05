@@ -1,6 +1,6 @@
-#include "ilemu/wifi_state.hpp"
+#include "network/wifi_state.hpp"
 
-#include "ilemu/virtual_network.hpp"
+#include "network/virtual_network.hpp"
 
 #include <algorithm>
 #include <utility>

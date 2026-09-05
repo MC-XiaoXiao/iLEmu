@@ -4,7 +4,7 @@
 #include <memory>
 #include <string>
 
-#include "ilemu/gles_renderer.hpp"
+#include "graphics/gles_renderer.hpp"
 
 namespace ilemu {
 

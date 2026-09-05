@@ -1,4 +1,4 @@
-#include "ilemu/kernel_clock.hpp"
+#include "kernel/kernel_clock.hpp"
 
 #include <array>
 #include <cstddef>
@@ -7,13 +7,13 @@
 #include <span>
 #include <utility>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/clock_mig_ids.hpp"
-#include "ilemu/clock_reply_mig_ids.hpp"
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/kernel_shared_state.hpp"
-#include "ilemu/mach_clock_abi.hpp"
-#include "ilemu/mig_wire_abi.hpp"
+#include "foundation/address_space.hpp"
+#include "mach/clock_mig_ids.hpp"
+#include "mach/clock_reply_mig_ids.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/kernel_shared_state.hpp"
+#include "kernel/mach_clock_abi.hpp"
+#include "kernel/mig_wire_abi.hpp"
 
 namespace ilemu {
 namespace {

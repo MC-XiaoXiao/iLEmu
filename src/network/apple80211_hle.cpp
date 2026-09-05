@@ -1,4 +1,4 @@
-#include "ilemu/apple80211_hle.hpp"
+#include "network/apple80211_hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9,10 +9,10 @@
 #include <string_view>
 #include <utility>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/cpu.hpp"
-#include "ilemu/output.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/cpu.hpp"
+#include "foundation/output.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

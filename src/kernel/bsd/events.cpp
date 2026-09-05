@@ -1,15 +1,15 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/baseband_device.hpp"
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/darwin_kqueue_abi.hpp"
-#include "ilemu/darwin_network_abi.hpp"
-#include "ilemu/darwin_resource_abi.hpp"
-#include "ilemu/darwin_route_socket.hpp"
-#include "ilemu/darwin_sysctl.hpp"
-#include "ilemu/kernel_network.hpp"
-#include "ilemu/mach_scheduler_abi.hpp"
-#include "ilemu/offline_serial_device.hpp"
+#include "kernel/baseband_device.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/darwin_kqueue_abi.hpp"
+#include "network/darwin_network_abi.hpp"
+#include "kernel/darwin_resource_abi.hpp"
+#include "network/darwin_route_socket.hpp"
+#include "kernel/darwin_sysctl.hpp"
+#include "kernel/kernel_network.hpp"
+#include "kernel/mach_scheduler_abi.hpp"
+#include "kernel/offline_serial_device.hpp"
 
 #include <algorithm>
 #include <array>

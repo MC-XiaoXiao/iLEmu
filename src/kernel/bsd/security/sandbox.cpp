@@ -1,6 +1,6 @@
 #include "sandbox.hpp"
 
-#include "ilemu/address_space.hpp"
+#include "foundation/address_space.hpp"
 
 #include <array>
 #include <cstddef>

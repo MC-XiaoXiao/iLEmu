@@ -28,10 +28,10 @@
 #include <utility>
 #include <vector>
 
-#include "ilemu/display.hpp"
-#include "ilemu/gles_abi.hpp"
-#include "ilemu/gles_primitive_assembler.hpp"
-#include "ilemu/gles_resources.hpp"
+#include "foundation/display.hpp"
+#include "graphics/gles_abi.hpp"
+#include "graphics/gles_primitive_assembler.hpp"
+#include "graphics/gles_resources.hpp"
 
 namespace ilemu {
 namespace {

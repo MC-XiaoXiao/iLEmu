@@ -1,4 +1,4 @@
-#include "ilemu/surface_store.hpp"
+#include "graphics/surface_store.hpp"
 
 #include <algorithm>
 
@@ -11,10 +11,10 @@
 #include <utility>
 #include <vector>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/core_surface_abi.hpp"
-#include "ilemu/gles_renderer.hpp"
-#include "ilemu/host_graphics.hpp"
+#include "foundation/address_space.hpp"
+#include "graphics/core_surface_abi.hpp"
+#include "graphics/gles_renderer.hpp"
+#include "graphics/host_graphics.hpp"
 
 namespace ilemu {
 namespace {

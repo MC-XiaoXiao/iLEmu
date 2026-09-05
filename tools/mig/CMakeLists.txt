@@ -13,7 +13,7 @@ set(ILEMU_CONFIGD137_DIR
 set(ILEMU_LAUNCHD257_DIR
     "${ILEMU_SOURCES_DIR}/launchd-257/launchd/src")
 set(ILEMU_MIG_GENERATED_DIR
-    "${PROJECT_BINARY_DIR}/generated/ilemu")
+    "${PROJECT_BINARY_DIR}/generated/mach")
 set(ILEMU_MIG_GENERATED_HEADERS)
 
 function(ilemu_generate_mig_ids name definition)

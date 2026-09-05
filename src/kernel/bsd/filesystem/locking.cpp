@@ -1,7 +1,7 @@
-#include "ilemu/bsd_file_lock.hpp"
+#include "filesystem/bsd_file_lock.hpp"
 
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/kernel.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/kernel.hpp"
 
 #include <limits>
 #include <memory>

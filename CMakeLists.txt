@@ -187,7 +187,8 @@ set(DYNARMIC_USE_PRECOMPILED_HEADERS OFF CACHE BOOL "" FORCE)
 
 # Public headers are kept with their owning module. The list is intentionally
 # explicit so every target, including the out-of-tree workspace tests, sees
-# the same stable ilemu/<name>.hpp include spelling.
+# the same <module>/<name>.hpp include spelling. A major module owns one
+# include root; implementation subdirectories do not add public roots.
 set(ILEMU_PROJECT_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/foundation/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/device_state/include"
@@ -198,12 +199,11 @@ set(ILEMU_PROJECT_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/telephony/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/media/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/bluetooth/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/graphics/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/kernel/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/debug/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/app/audio/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/app/control/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/app/runtime/include")
+    "${CMAKE_CURRENT_SOURCE_DIR}/app/include")
 
 # Persistent portable-IR artifacts must not cross a different Dynarmic build.
 # Include the pinned revision and any deliberate local checkout changes in the

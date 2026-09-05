@@ -1,8 +1,8 @@
-#include "ilemu/core_crypto_hle.hpp"
+#include "crypto/core_crypto_hle.hpp"
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/big_number.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/address_space.hpp"
+#include "crypto/big_number.hpp"
+#include "foundation/userland_hle.hpp"
 #include "prime_field_profile.hpp"
 #include <string>
 #include <vector>

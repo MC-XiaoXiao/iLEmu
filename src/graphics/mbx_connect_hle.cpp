@@ -1,10 +1,10 @@
-#include "ilemu/mbx_connect_hle.hpp"
+#include "graphics/mbx_connect_hle.hpp"
 
 #include <array>
 #include <string>
 #include <string_view>
 
-#include "ilemu/userland_hle.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

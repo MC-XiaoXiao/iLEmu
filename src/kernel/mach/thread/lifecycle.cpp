@@ -1,6 +1,6 @@
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/kernel.hpp"
-#include "ilemu/thread_act_mig_ids.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/kernel.hpp"
+#include "mach/thread_act_mig_ids.hpp"
 
 #include <array>
 #include <cstdint>

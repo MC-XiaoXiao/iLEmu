@@ -1,5 +1,5 @@
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/kernel.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/kernel.hpp"
 
 #include <array>
 #include <cstdint>

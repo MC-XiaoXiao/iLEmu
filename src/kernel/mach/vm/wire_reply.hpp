@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/mig_wire_abi.hpp"
+#include "foundation/address_space.hpp"
+#include "kernel/mig_wire_abi.hpp"
 
 #include <array>
 #include <cstddef>

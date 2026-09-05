@@ -1,4 +1,4 @@
-#include "ilemu/kernel_iokit_jpeg.hpp"
+#include "kernel/kernel_iokit_jpeg.hpp"
 
 #include <algorithm>
 #include <array>
@@ -7,11 +7,11 @@
 #include <string_view>
 #include <utility>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/iokit_abi.hpp"
-#include "ilemu/jpeg_encoder.hpp"
-#include "ilemu/kernel_shared_state.hpp"
-#include "ilemu/surface_store.hpp"
+#include "foundation/address_space.hpp"
+#include "kernel/iokit_abi.hpp"
+#include "media/jpeg_encoder.hpp"
+#include "kernel/kernel_shared_state.hpp"
+#include "graphics/surface_store.hpp"
 
 namespace ilemu::kernel_iokit::jpeg {
 namespace {

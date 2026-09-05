@@ -1,8 +1,8 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/darwin_kernel_control_abi.hpp"
-#include "ilemu/kernel_control.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/darwin_kernel_control_abi.hpp"
+#include "kernel/kernel_control.hpp"
 
 #include <array>
 #include <cstddef>

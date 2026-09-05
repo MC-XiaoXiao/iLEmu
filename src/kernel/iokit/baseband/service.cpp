@@ -1,7 +1,7 @@
-#include "ilemu/kernel_iokit_baseband.hpp"
+#include "kernel/kernel_iokit_baseband.hpp"
 
-#include "ilemu/iokit_abi.hpp"
-#include "ilemu/kernel_shared_state.hpp"
+#include "kernel/iokit_abi.hpp"
+#include "kernel/kernel_shared_state.hpp"
 
 #include <algorithm>
 #include <limits>

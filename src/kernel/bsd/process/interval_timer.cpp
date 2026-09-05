@@ -1,11 +1,11 @@
-#include "ilemu/kernel_bsd_interval_timer.hpp"
+#include "kernel/kernel_bsd_interval_timer.hpp"
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/cpu.hpp"
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/kernel_shared_state.hpp"
-#include "ilemu/output.hpp"
-#include "ilemu/virtual_clock.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/cpu.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/kernel_shared_state.hpp"
+#include "foundation/output.hpp"
+#include "foundation/virtual_clock.hpp"
 
 #include "../support.hpp"
 

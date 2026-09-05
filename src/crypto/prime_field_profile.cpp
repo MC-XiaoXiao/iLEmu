@@ -1,6 +1,6 @@
 #include "prime_field_profile.hpp"
 
-#include "ilemu/address_space.hpp"
+#include "foundation/address_space.hpp"
 #include <limits>
 
 namespace ilemu {

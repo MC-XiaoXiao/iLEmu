@@ -1,10 +1,10 @@
-#include "ilemu/kernel_iokit_graphics.hpp"
+#include "kernel/kernel_iokit_graphics.hpp"
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/device_mig_ids.hpp"
-#include "ilemu/iokit_abi.hpp"
-#include "ilemu/kernel_shared_state.hpp"
-#include "ilemu/mig_wire_abi.hpp"
+#include "foundation/address_space.hpp"
+#include "mach/device_mig_ids.hpp"
+#include "kernel/iokit_abi.hpp"
+#include "kernel/kernel_shared_state.hpp"
+#include "kernel/mig_wire_abi.hpp"
 
 #include "../../mach/support.hpp"
 

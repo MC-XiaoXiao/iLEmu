@@ -1,4 +1,4 @@
-#include "sdl_audio_sink.hpp"
+#include "app/sdl_audio_sink.hpp"
 
 #include <algorithm>
 #include <cmath>

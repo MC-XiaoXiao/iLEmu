@@ -1,6 +1,6 @@
-#include "ilemu/host_file_watcher.hpp"
+#include "foundation/host_file_watcher.hpp"
 
-#include "ilemu/host_resource_controller.hpp"
+#include "foundation/host_resource_controller.hpp"
 
 #include <algorithm>
 #include <array>

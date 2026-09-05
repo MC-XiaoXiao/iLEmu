@@ -1,4 +1,4 @@
-#include "ilemu/guest_exclusive_address_resolver.hpp"
+#include "foundation/guest_exclusive_address_resolver.hpp"
 
 #include <limits>
 #include <mutex>

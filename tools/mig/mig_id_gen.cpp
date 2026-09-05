@@ -801,7 +801,7 @@ void write_header(const Arguments& arguments, std::string_view subsystem,
               "#include <cstdint>\n"
               "#include <span>\n"
               "#include <string_view>\n\n"
-              "#include \"ilemu/xnu_mig_adapter.hpp\"\n\n"
+              "#include \"mach/xnu_mig_adapter.hpp\"\n\n"
               "namespace ilemu::xnu792::mig::"
            << arguments.cpp_namespace
            << " {\n\n"

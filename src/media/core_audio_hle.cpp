@@ -1,4 +1,4 @@
-#include "ilemu/core_audio_hle.hpp"
+#include "media/core_audio_hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,11 +14,11 @@
 #include <string_view>
 #include <vector>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/audio.hpp"
-#include "ilemu/cpu.hpp"
-#include "ilemu/output.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/address_space.hpp"
+#include "media/audio.hpp"
+#include "foundation/cpu.hpp"
+#include "foundation/output.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

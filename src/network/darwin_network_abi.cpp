@@ -1,6 +1,6 @@
-#include "ilemu/darwin_network_abi.hpp"
+#include "network/darwin_network_abi.hpp"
 
-#include "ilemu/wifi_state.hpp"
+#include "network/wifi_state.hpp"
 
 #include <algorithm>
 #include <bit>

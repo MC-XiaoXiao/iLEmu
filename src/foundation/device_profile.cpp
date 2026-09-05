@@ -1,4 +1,4 @@
-#include "ilemu/device_profile.hpp"
+#include "foundation/device_profile.hpp"
 
 #include <array>
 

@@ -1,8 +1,8 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/darwin_psynch_runtime.hpp"
-#include "ilemu/mach_clock_abi.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/darwin_psynch_runtime.hpp"
+#include "kernel/mach_clock_abi.hpp"
 
 #include <cstddef>
 #include <cstdint>

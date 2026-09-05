@@ -1,4 +1,4 @@
-#include "ilemu/gles_primitive_assembler.hpp"
+#include "graphics/gles_primitive_assembler.hpp"
 
 #include <cmath>
 #include <cstddef>
@@ -9,7 +9,7 @@
 #include <stdexcept>
 #include <vector>
 
-#include "ilemu/gles_abi.hpp"
+#include "graphics/gles_abi.hpp"
 
 namespace ilemu {
 namespace {

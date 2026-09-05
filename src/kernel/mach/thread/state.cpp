@@ -1,10 +1,10 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/mach_arm_thread_abi.hpp"
-#include "ilemu/mach_thread_info_abi.hpp"
-#include "ilemu/mig_wire_abi.hpp"
-#include "ilemu/thread_act_mig_ids.hpp"
-#include "ilemu/xnu_scheduler.hpp"
+#include "kernel/mach_arm_thread_abi.hpp"
+#include "kernel/mach_thread_info_abi.hpp"
+#include "kernel/mig_wire_abi.hpp"
+#include "mach/thread_act_mig_ids.hpp"
+#include "mach/xnu_scheduler.hpp"
 
 #include <algorithm>
 #include <array>

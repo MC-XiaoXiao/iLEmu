@@ -1,10 +1,10 @@
-#include "ilemu/darwin_notify_state_hle.hpp"
+#include "foundation/darwin_notify_state_hle.hpp"
 
 #include <utility>
 #include <vector>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

@@ -1,4 +1,4 @@
-#include "ilemu/mbx2d_hle.hpp"
+#include "graphics/mbx2d_hle.hpp"
 
 #include <algorithm>
 #include <bit>
@@ -15,15 +15,15 @@
 #include <utility>
 #include <vector>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/display.hpp"
-#include "ilemu/gles_renderer.hpp"
-#include "ilemu/kernel_shared_state.hpp"
-#include "ilemu/mbx2d_abi.hpp"
-#include "ilemu/output.hpp"
-#include "ilemu/performance.hpp"
-#include "ilemu/presentation_tracker.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/display.hpp"
+#include "graphics/gles_renderer.hpp"
+#include "kernel/kernel_shared_state.hpp"
+#include "graphics/mbx2d_abi.hpp"
+#include "foundation/output.hpp"
+#include "foundation/performance.hpp"
+#include "graphics/presentation_tracker.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

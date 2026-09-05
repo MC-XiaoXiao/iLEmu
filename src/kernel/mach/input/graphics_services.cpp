@@ -1,4 +1,4 @@
-#include "ilemu/graphics_services_input.hpp"
+#include "graphics/graphics_services_input.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,16 +8,16 @@
 #include <utility>
 #include <vector>
 
-#include "ilemu/application_display_profile.hpp"
-#include "ilemu/application_path.hpp"
-#include "ilemu/cpu.hpp"
-#include "ilemu/graphics_services_profile.hpp"
-#include "ilemu/iokit_abi.hpp"
-#include "ilemu/kernel_iokit_display.hpp"
-#include "ilemu/mig_wire_abi.hpp"
-#include "ilemu/presentation_tracker.hpp"
-#include "ilemu/scene_coordinator.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/application_display_profile.hpp"
+#include "foundation/application_path.hpp"
+#include "foundation/cpu.hpp"
+#include "graphics/graphics_services_profile.hpp"
+#include "kernel/iokit_abi.hpp"
+#include "kernel/kernel_iokit_display.hpp"
+#include "kernel/mig_wire_abi.hpp"
+#include "graphics/presentation_tracker.hpp"
+#include "foundation/scene_coordinator.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu::graphics_services_input {
 namespace {

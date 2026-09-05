@@ -1,5 +1,5 @@
-#include "ilemu/network_preferences.hpp"
-#include "ilemu/rootfs_path_resolver.hpp"
+#include "device_state/network_preferences.hpp"
+#include "foundation/rootfs_path_resolver.hpp"
 
 #include <algorithm>
 #include <array>

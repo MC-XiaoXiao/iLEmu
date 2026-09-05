@@ -1,11 +1,11 @@
-#include "ilemu/lockdown_profile.hpp"
+#include "device_state/lockdown_profile.hpp"
 
 #include <cstdint>
 #include <fstream>
 #include <stdexcept>
 #include <string>
 
-#include "ilemu/macho.hpp"
+#include "foundation/macho.hpp"
 
 #if defined(ILEMU_HAS_LIBPLIST)
 #include <cstdlib>

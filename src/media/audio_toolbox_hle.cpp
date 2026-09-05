@@ -1,10 +1,10 @@
-#include "ilemu/audio_toolbox_hle.hpp"
+#include "media/audio_toolbox_hle.hpp"
 
 #include <string>
 #include <string_view>
 
-#include "ilemu/output.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/output.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

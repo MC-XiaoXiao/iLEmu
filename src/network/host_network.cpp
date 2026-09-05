@@ -1,8 +1,8 @@
-#include "ilemu/host_network.hpp"
+#include "network/host_network.hpp"
 
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/darwin_network_abi.hpp"
-#include "ilemu/virtual_network.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "network/darwin_network_abi.hpp"
+#include "network/virtual_network.hpp"
 
 #include <algorithm>
 #include <array>

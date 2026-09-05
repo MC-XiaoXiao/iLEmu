@@ -1,9 +1,9 @@
-#include "ilemu/bluetooth_manager_hle.hpp"
+#include "bluetooth/bluetooth_manager_hle.hpp"
 
 #include <string>
 #include <string_view>
 
-#include "ilemu/userland_hle.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

@@ -1,7 +1,7 @@
-#include "ilemu/opengles_hle.hpp"
+#include "graphics/opengles_hle.hpp"
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/userland_hle.hpp"
 
 #include <algorithm>
 #include <array>

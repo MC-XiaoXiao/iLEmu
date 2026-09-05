@@ -1,10 +1,10 @@
-#include "ilemu/graphics_services_profile.hpp"
+#include "graphics/graphics_services_profile.hpp"
 
 #include <bit>
 #include <cstdint>
 #include <string_view>
 
-#include "ilemu/macho.hpp"
+#include "foundation/macho.hpp"
 
 namespace ilemu {
 namespace {

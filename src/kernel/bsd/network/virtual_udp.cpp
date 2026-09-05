@@ -1,6 +1,6 @@
-#include "ilemu/virtual_udp.hpp"
+#include "network/virtual_udp.hpp"
 
-#include "ilemu/darwin_network_abi.hpp"
+#include "network/darwin_network_abi.hpp"
 
 #include <algorithm>
 #include <array>

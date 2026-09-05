@@ -1,9 +1,9 @@
-#include "ilemu/apple80211_event_stream.hpp"
+#include "network/apple80211_event_stream.hpp"
 
 #include <algorithm>
 #include <limits>
 
-#include "ilemu/darwin_network_abi.hpp"
+#include "network/darwin_network_abi.hpp"
 
 namespace ilemu::darwin::network::apple80211_driver {
 namespace {

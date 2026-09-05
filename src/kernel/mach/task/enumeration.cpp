@@ -1,7 +1,7 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/mig_wire_abi.hpp"
-#include "ilemu/task_mig_ids.hpp"
+#include "kernel/mig_wire_abi.hpp"
+#include "mach/task_mig_ids.hpp"
 
 #include <array>
 #include <cstddef>

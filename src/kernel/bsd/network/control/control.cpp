@@ -1,4 +1,4 @@
-#include "ilemu/kernel_control.hpp"
+#include "kernel/kernel_control.hpp"
 
 namespace ilemu::bsd::kernel_control {
 

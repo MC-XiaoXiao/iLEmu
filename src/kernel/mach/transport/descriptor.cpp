@@ -1,6 +1,6 @@
-#include "ilemu/mach_descriptor_transport.hpp"
+#include "kernel/mach_descriptor_transport.hpp"
 
-#include "ilemu/mig_wire_abi.hpp"
+#include "kernel/mig_wire_abi.hpp"
 
 #include <limits>
 

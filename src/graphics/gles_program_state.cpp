@@ -1,6 +1,6 @@
-#include "ilemu/gles_program_state.hpp"
+#include "graphics/gles_program_state.hpp"
 
-#include "ilemu/gles_abi.hpp"
+#include "graphics/gles_abi.hpp"
 
 #include <algorithm>
 #include <limits>

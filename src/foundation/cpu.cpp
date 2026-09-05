@@ -1,4 +1,4 @@
-#include "ilemu/cpu.hpp"
+#include "foundation/cpu.hpp"
 
 #include <algorithm>
 #include <array>
@@ -34,14 +34,14 @@
 #endif
 
 #include "dynarmic_ir_artifact.hpp"
-#include "ilemu/arm_unpredictable_instruction.hpp"
-#include "ilemu/jit_artifact.hpp"
-#include "ilemu/jit_code_cache_governor.hpp"
-#include "ilemu/jit_execution_budget.hpp"
-#include "ilemu/jit_native_preimport_tracker.hpp"
-#include "ilemu/jit_translation_profile.hpp"
-#include "ilemu/jit_work_policy.hpp"
-#include "ilemu/performance.hpp"
+#include "foundation/arm_unpredictable_instruction.hpp"
+#include "foundation/jit_artifact.hpp"
+#include "foundation/jit_code_cache_governor.hpp"
+#include "foundation/jit_execution_budget.hpp"
+#include "foundation/jit_native_preimport_tracker.hpp"
+#include "foundation/jit_translation_profile.hpp"
+#include "foundation/jit_work_policy.hpp"
+#include "foundation/performance.hpp"
 
 namespace ilemu {
 namespace {

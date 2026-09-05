@@ -1,4 +1,4 @@
-#include "ilemu/graphics_services_capability_profile.hpp"
+#include "device_state/graphics_services_capability_profile.hpp"
 
 #include <cstdint>
 #include <cstdlib>

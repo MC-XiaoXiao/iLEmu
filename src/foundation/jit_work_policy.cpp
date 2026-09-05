@@ -1,10 +1,10 @@
-#include "ilemu/jit_work_policy.hpp"
+#include "foundation/jit_work_policy.hpp"
 
 #include <algorithm>
 #include <limits>
 
-#include "ilemu/jit_code_cache_governor.hpp"
-#include "ilemu/jit_translation_profile.hpp"
+#include "foundation/jit_code_cache_governor.hpp"
+#include "foundation/jit_translation_profile.hpp"
 
 namespace ilemu {
 namespace {

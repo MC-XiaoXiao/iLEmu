@@ -1,6 +1,6 @@
-#include "ilemu/graphics_services_input.hpp"
-#include "ilemu/kernel.hpp"
-#include "ilemu/performance.hpp"
+#include "graphics/graphics_services_input.hpp"
+#include "kernel/kernel.hpp"
+#include "foundation/performance.hpp"
 
 #include <cstdint>
 #include <filesystem>

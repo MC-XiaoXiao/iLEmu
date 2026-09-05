@@ -1,8 +1,8 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/mach_port_mig_ids.hpp"
-#include "ilemu/mig_wire_abi.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "mach/mach_port_mig_ids.hpp"
+#include "kernel/mig_wire_abi.hpp"
 
 #include <array>
 #include <cstddef>

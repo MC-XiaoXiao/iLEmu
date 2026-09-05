@@ -1,6 +1,6 @@
-#include "ilemu/kernel_mach_task_identity.hpp"
+#include "kernel/kernel_mach_task_identity.hpp"
 
-#include "ilemu/kernel_shared_state.hpp"
+#include "kernel/kernel_shared_state.hpp"
 
 #include <array>
 #include <optional>

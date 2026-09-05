@@ -1,4 +1,4 @@
-#include "ilemu/mobile_framebuffer_hle.hpp"
+#include "graphics/mobile_framebuffer_hle.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -13,23 +13,23 @@
 #include <utility>
 #include <vector>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/application_display_profile.hpp"
-#include "ilemu/application_path.hpp"
-#include "ilemu/core_surface_abi.hpp"
-#include "ilemu/cpu.hpp"
-#include "ilemu/display.hpp"
-#include "ilemu/gles_renderer.hpp"
-#include "ilemu/iokit_abi.hpp"
-#include "ilemu/kernel_shared_state.hpp"
-#include "ilemu/mobile_framebuffer_abi.hpp"
-#include "ilemu/output.hpp"
-#include "ilemu/performance.hpp"
-#include "ilemu/presentation_tracker.hpp"
-#include "ilemu/scene_coordinator.hpp"
-#include "ilemu/surface_store.hpp"
-#include "ilemu/surface_transport_profile.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/application_display_profile.hpp"
+#include "foundation/application_path.hpp"
+#include "graphics/core_surface_abi.hpp"
+#include "foundation/cpu.hpp"
+#include "foundation/display.hpp"
+#include "graphics/gles_renderer.hpp"
+#include "kernel/iokit_abi.hpp"
+#include "kernel/kernel_shared_state.hpp"
+#include "graphics/mobile_framebuffer_abi.hpp"
+#include "foundation/output.hpp"
+#include "foundation/performance.hpp"
+#include "graphics/presentation_tracker.hpp"
+#include "foundation/scene_coordinator.hpp"
+#include "graphics/surface_store.hpp"
+#include "graphics/surface_transport_profile.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

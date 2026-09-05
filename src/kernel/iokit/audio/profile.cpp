@@ -1,4 +1,4 @@
-#include "ilemu/kernel_iokit_audio_profile.hpp"
+#include "kernel/kernel_iokit_audio_profile.hpp"
 
 namespace ilemu::kernel_iokit::audio {
 namespace {

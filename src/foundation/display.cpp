@@ -1,6 +1,6 @@
-#include "ilemu/display.hpp"
-#include "ilemu/host_graphics.hpp"
-#include "ilemu/performance.hpp"
+#include "foundation/display.hpp"
+#include "graphics/host_graphics.hpp"
+#include "foundation/performance.hpp"
 
 #include <algorithm>
 #include <utility>

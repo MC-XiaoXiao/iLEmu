@@ -1,4 +1,4 @@
-#include "ilemu/application_display_profile.hpp"
+#include "foundation/application_display_profile.hpp"
 
 #include <algorithm>
 #include <cctype>

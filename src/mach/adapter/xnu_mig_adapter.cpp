@@ -1,19 +1,19 @@
-#include "ilemu/xnu_mig_adapter.hpp"
+#include "mach/xnu_mig_adapter.hpp"
 
 #include <limits>
 
-#include "ilemu/bootstrap_mig_ids.hpp"
-#include "ilemu/clock_mig_ids.hpp"
-#include "ilemu/clock_reply_mig_ids.hpp"
-#include "ilemu/device_mig_ids.hpp"
-#include "ilemu/mach_host_mig_ids.hpp"
-#include "ilemu/mach_port_mig_ids.hpp"
-#include "ilemu/mig_wire_abi.hpp"
-#include "ilemu/semaphore_mig_ids.hpp"
-#include "ilemu/system_configuration_mig_ids.hpp"
-#include "ilemu/task_mig_ids.hpp"
-#include "ilemu/thread_act_mig_ids.hpp"
-#include "ilemu/vm_map_mig_ids.hpp"
+#include "mach/bootstrap_mig_ids.hpp"
+#include "mach/clock_mig_ids.hpp"
+#include "mach/clock_reply_mig_ids.hpp"
+#include "mach/device_mig_ids.hpp"
+#include "mach/mach_host_mig_ids.hpp"
+#include "mach/mach_port_mig_ids.hpp"
+#include "kernel/mig_wire_abi.hpp"
+#include "mach/semaphore_mig_ids.hpp"
+#include "mach/system_configuration_mig_ids.hpp"
+#include "mach/task_mig_ids.hpp"
+#include "mach/thread_act_mig_ids.hpp"
+#include "mach/vm_map_mig_ids.hpp"
 
 namespace ilemu::xnu792::mig {
 namespace {

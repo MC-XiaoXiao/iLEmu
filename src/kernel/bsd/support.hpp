@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ilemu/hfs_metadata.hpp"
-#include "ilemu/virtual_clock.hpp"
+#include "filesystem/hfs_metadata.hpp"
+#include "foundation/virtual_clock.hpp"
 
 #include <cstddef>
 #include <cstdint>

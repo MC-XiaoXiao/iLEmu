@@ -1,13 +1,13 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/darwin_kqueue_abi.hpp"
-#include "ilemu/darwin_network_abi.hpp"
-#include "ilemu/darwin_proc_info_abi.hpp"
-#include "ilemu/darwin_resource_abi.hpp"
-#include "ilemu/darwin_route_socket.hpp"
-#include "ilemu/kernel_bsd_interval_timer.hpp"
-#include "ilemu/kernel_network.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/darwin_kqueue_abi.hpp"
+#include "network/darwin_network_abi.hpp"
+#include "kernel/darwin_proc_info_abi.hpp"
+#include "kernel/darwin_resource_abi.hpp"
+#include "network/darwin_route_socket.hpp"
+#include "kernel/kernel_bsd_interval_timer.hpp"
+#include "kernel/kernel_network.hpp"
 
 #include <algorithm>
 #include <array>

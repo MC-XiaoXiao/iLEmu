@@ -1,6 +1,6 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/darwin_abi.hpp"
+#include "kernel/darwin_abi.hpp"
 
 #include "../mach/support.hpp"
 #include "support.hpp"

@@ -1,6 +1,6 @@
-#include "ilemu/baseband_device.hpp"
+#include "kernel/baseband_device.hpp"
 
-#include "ilemu/darwin_tty_abi.hpp"
+#include "kernel/darwin_tty_abi.hpp"
 
 #include <algorithm>
 #include <array>

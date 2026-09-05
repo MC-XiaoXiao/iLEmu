@@ -1,7 +1,7 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/content_identity.hpp"
-#include "ilemu/darwin_abi.hpp"
+#include "foundation/content_identity.hpp"
+#include "kernel/darwin_abi.hpp"
 
 #include <array>
 #include <cstddef>

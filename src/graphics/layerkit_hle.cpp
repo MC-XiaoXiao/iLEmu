@@ -1,11 +1,11 @@
-#include "ilemu/layerkit_hle.hpp"
+#include "graphics/layerkit_hle.hpp"
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/graphics_services_input.hpp"
-#include "ilemu/kernel_shared_state.hpp"
-#include "ilemu/output.hpp"
-#include "ilemu/scene_coordinator.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/address_space.hpp"
+#include "graphics/graphics_services_input.hpp"
+#include "kernel/kernel_shared_state.hpp"
+#include "foundation/output.hpp"
+#include "foundation/scene_coordinator.hpp"
+#include "foundation/userland_hle.hpp"
 
 #include <cstdint>
 #include <string>

@@ -1,7 +1,7 @@
 #pragma once
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/darwin_kernel_profile.hpp"
+#include "foundation/address_space.hpp"
+#include "device_state/darwin_kernel_profile.hpp"
 
 #include <cstdint>
 #include <optional>

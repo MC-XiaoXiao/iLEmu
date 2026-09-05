@@ -1,4 +1,4 @@
-#include "ilemu/opengles_hle.hpp"
+#include "graphics/opengles_hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -12,18 +12,18 @@
 #include <string_view>
 #include <utility>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/application_display_profile.hpp"
-#include "ilemu/application_path.hpp"
-#include "ilemu/cpu.hpp"
-#include "ilemu/display.hpp"
-#include "ilemu/gles_primitive_assembler.hpp"
-#include "ilemu/kernel_shared_state.hpp"
-#include "ilemu/output.hpp"
-#include "ilemu/scene_coordinator.hpp"
-#include "ilemu/surface_store.hpp"
-#include "ilemu/surface_transport_profile.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/application_display_profile.hpp"
+#include "foundation/application_path.hpp"
+#include "foundation/cpu.hpp"
+#include "foundation/display.hpp"
+#include "graphics/gles_primitive_assembler.hpp"
+#include "kernel/kernel_shared_state.hpp"
+#include "foundation/output.hpp"
+#include "foundation/scene_coordinator.hpp"
+#include "graphics/surface_store.hpp"
+#include "graphics/surface_transport_profile.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

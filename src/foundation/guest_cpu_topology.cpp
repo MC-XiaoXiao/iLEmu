@@ -1,4 +1,4 @@
-#include "ilemu/guest_cpu_topology.hpp"
+#include "foundation/guest_cpu_topology.hpp"
 
 namespace ilemu {
 static_assert(GuestCpuTopology::single_core(400'000'000U,

@@ -1,4 +1,4 @@
-#include "ilemu/sdl_display.hpp"
+#include "graphics/sdl_display.hpp"
 
 #include <algorithm>
 #include <array>
@@ -18,10 +18,10 @@
 #include <utility>
 #include <vector>
 
-#include "ilemu/application_display_profile.hpp"
-#include "ilemu/display.hpp"
-#include "ilemu/gles_renderer.hpp"
-#include "ilemu/performance.hpp"
+#include "foundation/application_display_profile.hpp"
+#include "foundation/display.hpp"
+#include "graphics/gles_renderer.hpp"
+#include "foundation/performance.hpp"
 #include "sdl_input.hpp"
 
 #if defined(ILEMU_HAS_SDL2)

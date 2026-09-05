@@ -1,13 +1,13 @@
-#include "ilemu/lockdown_hle.hpp"
+#include "storage/lockdown_hle.hpp"
 
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/cpu.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/cpu.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

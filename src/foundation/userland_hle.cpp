@@ -1,4 +1,4 @@
-#include "ilemu/userland_hle.hpp"
+#include "foundation/userland_hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,12 +14,12 @@
 #include <utility>
 #include <vector>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/cpu.hpp"
-#include "ilemu/dyld_shared_cache.hpp"
-#include "ilemu/macho.hpp"
-#include "ilemu/output.hpp"
-#include "ilemu/performance.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/cpu.hpp"
+#include "foundation/dyld_shared_cache.hpp"
+#include "foundation/macho.hpp"
+#include "foundation/output.hpp"
+#include "foundation/performance.hpp"
 
 namespace ilemu {
 namespace {

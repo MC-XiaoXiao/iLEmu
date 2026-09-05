@@ -1,4 +1,4 @@
-#include "ilemu/scanout_composition.hpp"
+#include "graphics/scanout_composition.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -7,7 +7,7 @@
 #include <limits>
 #include <optional>
 
-#include "ilemu/gles_abi.hpp"
+#include "graphics/gles_abi.hpp"
 
 namespace ilemu {
 namespace {

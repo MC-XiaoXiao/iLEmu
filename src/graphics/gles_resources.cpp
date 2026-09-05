@@ -1,4 +1,4 @@
-#include "ilemu/gles_resources.hpp"
+#include "graphics/gles_resources.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -8,10 +8,10 @@
 #include <utility>
 #include <vector>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/gles_abi.hpp"
-#include "ilemu/host_graphics.hpp"
-#include "ilemu/surface_store.hpp"
+#include "foundation/address_space.hpp"
+#include "graphics/gles_abi.hpp"
+#include "graphics/host_graphics.hpp"
+#include "graphics/surface_store.hpp"
 
 namespace ilemu {
 namespace {

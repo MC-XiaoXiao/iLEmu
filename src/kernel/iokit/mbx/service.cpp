@@ -1,8 +1,8 @@
-#include "ilemu/kernel_iokit_mbx.hpp"
+#include "kernel/kernel_iokit_mbx.hpp"
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/iokit_abi.hpp"
-#include "ilemu/kernel_shared_state.hpp"
+#include "foundation/address_space.hpp"
+#include "kernel/iokit_abi.hpp"
+#include "kernel/kernel_shared_state.hpp"
 
 #include "../../mach/support.hpp"
 

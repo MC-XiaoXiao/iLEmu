@@ -1,8 +1,8 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/mig_wire_abi.hpp"
-#include "ilemu/vm_map_mig_ids.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/mig_wire_abi.hpp"
+#include "mach/vm_map_mig_ids.hpp"
 
 #include <array>
 #include <cstdint>

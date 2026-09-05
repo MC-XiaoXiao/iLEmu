@@ -1,4 +1,4 @@
-#include "ilemu/dns_configuration_hle.hpp"
+#include "network/dns_configuration_hle.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -7,8 +7,8 @@
 #include <string_view>
 #include <vector>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

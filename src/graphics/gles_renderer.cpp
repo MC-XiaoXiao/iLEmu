@@ -1,4 +1,4 @@
-#include "ilemu/gles_renderer.hpp"
+#include "graphics/gles_renderer.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -14,8 +14,8 @@
 #include <string_view>
 #include <utility>
 
-#include "ilemu/display.hpp"
-#include "ilemu/gles_resources.hpp"
+#include "foundation/display.hpp"
+#include "graphics/gles_resources.hpp"
 
 #if defined(ILEMU_HAS_VULKAN)
 #include "host/vulkan_gles_renderer.hpp"

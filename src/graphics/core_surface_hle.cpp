@@ -1,4 +1,4 @@
-#include "ilemu/core_surface_hle.hpp"
+#include "graphics/core_surface_hle.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,19 +13,19 @@
 #include <utility>
 #include <vector>
 
-#include "ilemu/address_space.hpp"
-#include "ilemu/application_display_profile.hpp"
-#include "ilemu/application_path.hpp"
-#include "ilemu/core_surface_abi.hpp"
-#include "ilemu/cpu.hpp"
-#include "ilemu/display.hpp"
-#include "ilemu/iokit_abi.hpp"
-#include "ilemu/kernel_shared_state.hpp"
-#include "ilemu/output.hpp"
-#include "ilemu/presentation_tracker.hpp"
-#include "ilemu/scene_coordinator.hpp"
-#include "ilemu/surface_store.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/address_space.hpp"
+#include "foundation/application_display_profile.hpp"
+#include "foundation/application_path.hpp"
+#include "graphics/core_surface_abi.hpp"
+#include "foundation/cpu.hpp"
+#include "foundation/display.hpp"
+#include "kernel/iokit_abi.hpp"
+#include "kernel/kernel_shared_state.hpp"
+#include "foundation/output.hpp"
+#include "graphics/presentation_tracker.hpp"
+#include "foundation/scene_coordinator.hpp"
+#include "graphics/surface_store.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

@@ -1,6 +1,6 @@
-#include "ilemu/opengles_guest_profile.hpp"
+#include "graphics/opengles_guest_profile.hpp"
 
-#include "ilemu/userland_hle.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

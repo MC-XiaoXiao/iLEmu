@@ -1,9 +1,9 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/host_priv_mig_ids.hpp"
-#include "ilemu/mach_port_object.hpp"
-#include "ilemu/mig_wire_abi.hpp"
-#include "ilemu/processor_set_mig_ids.hpp"
+#include "mach/host_priv_mig_ids.hpp"
+#include "mach/mach_port_object.hpp"
+#include "kernel/mig_wire_abi.hpp"
+#include "mach/processor_set_mig_ids.hpp"
 
 #include <array>
 #include <cstddef>

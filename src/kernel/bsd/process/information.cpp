@@ -1,7 +1,7 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/darwin_proc_info_abi.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/darwin_proc_info_abi.hpp"
 
 #include <cstddef>
 #include <cstdint>

@@ -1,12 +1,12 @@
-#include "ilemu/mbx2d_hle.hpp"
+#include "graphics/mbx2d_hle.hpp"
 
 #include <cstdint>
 #include <limits>
 #include <span>
 #include <utility>
 
-#include "ilemu/gles_renderer.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "graphics/gles_renderer.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 

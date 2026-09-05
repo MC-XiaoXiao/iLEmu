@@ -1,4 +1,4 @@
-#include "ilemu/mbx2d_hle.hpp"
+#include "graphics/mbx2d_hle.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -6,9 +6,9 @@
 #include <limits>
 #include <vector>
 
-#include "ilemu/display.hpp"
-#include "ilemu/gles_renderer.hpp"
-#include "ilemu/userland_hle.hpp"
+#include "foundation/display.hpp"
+#include "graphics/gles_renderer.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 

@@ -1,5 +1,5 @@
-#include "ilemu/dyld_shared_cache.hpp"
-#include "ilemu/macho.hpp"
+#include "foundation/dyld_shared_cache.hpp"
+#include "foundation/macho.hpp"
 
 #include <algorithm>
 #include <array>

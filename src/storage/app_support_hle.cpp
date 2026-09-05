@@ -1,11 +1,11 @@
-#include "ilemu/app_support_hle.hpp"
+#include "storage/app_support_hle.hpp"
 
 #include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
 
-#include "ilemu/userland_hle.hpp"
+#include "foundation/userland_hle.hpp"
 
 namespace ilemu {
 namespace {

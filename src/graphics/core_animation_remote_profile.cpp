@@ -1,4 +1,4 @@
-#include "ilemu/core_animation_remote_profile.hpp"
+#include "graphics/core_animation_remote_profile.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,7 +8,7 @@
 #include <optional>
 #include <string_view>
 
-#include "ilemu/macho.hpp"
+#include "foundation/macho.hpp"
 
 namespace ilemu {
 namespace {

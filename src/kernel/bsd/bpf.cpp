@@ -1,8 +1,8 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/darwin_abi.hpp"
-#include "ilemu/darwin_bpf_abi.hpp"
-#include "ilemu/virtual_network.hpp"
+#include "kernel/darwin_abi.hpp"
+#include "kernel/darwin_bpf_abi.hpp"
+#include "network/virtual_network.hpp"
 
 #include <algorithm>
 #include <array>

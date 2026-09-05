@@ -1,4 +1,4 @@
-#include "ilemu/address_space.hpp"
+#include "foundation/address_space.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -11,7 +11,7 @@
 
 #include <sys/mman.h>
 
-#include "ilemu/performance.hpp"
+#include "foundation/performance.hpp"
 
 namespace ilemu {
 namespace {

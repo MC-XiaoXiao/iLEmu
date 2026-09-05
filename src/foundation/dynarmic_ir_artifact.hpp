@@ -1,6 +1,6 @@
 #pragma once
 
-#include <ilemu/dynarmic_ir_artifact.hpp>
+#include <foundation/dynarmic_ir_artifact.hpp>
 
 #include <optional>
 #include <vector>

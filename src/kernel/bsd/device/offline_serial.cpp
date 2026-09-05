@@ -1,4 +1,4 @@
-#include "ilemu/offline_serial_device.hpp"
+#include "kernel/offline_serial_device.hpp"
 
 #include <algorithm>
 #include <array>

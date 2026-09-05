@@ -1,4 +1,4 @@
-#include "ilemu/macho.hpp"
+#include "foundation/macho.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,7 +14,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#include "ilemu/file_page_cache.hpp"
+#include "foundation/file_page_cache.hpp"
 
 namespace ilemu {
 namespace {

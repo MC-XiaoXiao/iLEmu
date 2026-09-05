@@ -1,7 +1,7 @@
-#include "ilemu/kernel.hpp"
+#include "kernel/kernel.hpp"
 
-#include "ilemu/kernel_shared_state.hpp"
-#include "ilemu/mach_namespace.hpp"
+#include "kernel/kernel_shared_state.hpp"
+#include "mach/mach_namespace.hpp"
 
 #include <cstdint>
 #include <mutex>
