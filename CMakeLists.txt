@@ -203,6 +203,7 @@ set(ILEMU_PROJECT_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/src/graphics/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/kernel/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/debug/include"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/host/include"
     "${CMAKE_CURRENT_SOURCE_DIR}/app/include")
 
 # Persistent portable-IR artifacts must not cross a different Dynarmic build.

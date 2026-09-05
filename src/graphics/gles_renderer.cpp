@@ -17,10 +17,6 @@
 #include "foundation/display.hpp"
 #include "graphics/gles_resources.hpp"
 
-#if defined(ILEMU_HAS_VULKAN)
-#include "host/vulkan_gles_renderer.hpp"
-#endif
-
 namespace ilemu {
 namespace {
 
@@ -251,6 +247,7 @@ namespace {
 
     struct SharedRendererState {
         std::mutex mutex;
+        GlesAcceleratedFactory accelerated_factory { };
         GlesBackend backend { GlesBackend::Auto };
         std::filesystem::path pipeline_cache;
         VulkanPresenterConfiguration presenter;
@@ -271,10 +268,13 @@ namespace {
             return std::make_shared<SoftwareGlesRenderer>();
         }
 
-        std::string failure;
-#if defined(ILEMU_HAS_VULKAN)
-        if (auto accelerated = create_vulkan_gles_renderer(pipeline_cache,
-                presenter.create_surface ? &presenter : nullptr, &failure)) {
+        std::string failure { "Vulkan support was not built" };
+        const auto factory = shared_renderer_state().accelerated_factory;
+        auto accelerated = factory
+            ? factory(pipeline_cache,
+                  presenter.create_surface ? &presenter : nullptr, &failure)
+            : nullptr;
+        if (accelerated) {
             if (backend == GlesBackend::Vulkan) {
                 return std::shared_ptr<GlesRenderer> { std::move(accelerated) };
             }
@@ -284,11 +284,6 @@ namespace {
         }
         performance_counters().record_fallback(
             PerfFallbackReason::VulkanUnavailable);
-#else
-        failure = "Vulkan support was not built";
-        performance_counters().record_fallback(
-            PerfFallbackReason::VulkanUnavailable);
-#endif
 
         if (backend == GlesBackend::Vulkan) {
             throw std::runtime_error {
@@ -358,6 +353,19 @@ HostGraphicsDevice::PresentResult GlesRenderer::present(
 bool GlesRenderer::native_presentation_available() const { return false; }
 
 bool GlesRenderer::refresh_presentation_surface() { return false; }
+
+void configure_gles_accelerated_factory(GlesAcceleratedFactory factory)
+{
+    auto& state = shared_renderer_state();
+    std::lock_guard lock { state.mutex };
+    if (state.renderer != nullptr && *state.renderer &&
+        state.accelerated_factory != factory) {
+        throw std::logic_error {
+            "GLES factory cannot change after renderer initialization"
+        };
+    }
+    state.accelerated_factory = factory;
+}
 
 void configure_gles_backend(GlesBackend backend)
 {

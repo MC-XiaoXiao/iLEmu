@@ -31,7 +31,7 @@
 
 #include <dynarmic/interface/A32/disassembler.h>
 
-#include "app/ffmpeg_audio_decoder.hpp"
+#include "host/ffmpeg_audio_decoder.hpp"
 #include "foundation/address_space.hpp"
 #include "foundation/application_path.hpp"
 #include "kernel/baseband_replay.hpp"
@@ -70,13 +70,14 @@
 #include "foundation/performance.hpp"
 #include "foundation/process_loader.hpp"
 #include "app/realtime_pacer.hpp"
-#include "graphics/sdl_display.hpp"
+#include "host/sdl_display.hpp"
 #include "graphics/touch_replay.hpp"
 #include "foundation/userland_hle.hpp"
 #include "network/virtual_network.hpp"
 #include "network/wifi_state.hpp"
 #include "mach/xnu_scheduler.hpp"
-#include "app/sdl_audio_sink.hpp"
+#include "host/sdl_audio_sink.hpp"
+#include "host/native_gles.hpp"
 
 namespace {
 
@@ -2290,6 +2291,7 @@ void benchmark(const std::vector<std::string>& args, Output& output)
 
 void boot(const std::vector<std::string>& args, Output& output)
 {
+    register_native_gles_renderer();
     const auto rootfs = option(args, "--rootfs");
     if (!rootfs) {
         throw std::runtime_error { "boot requires --rootfs" };

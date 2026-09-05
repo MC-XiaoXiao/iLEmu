@@ -92,6 +92,15 @@ struct VulkanPresenterConfiguration {
     std::function<std::pair<std::uint32_t, std::uint32_t>()> drawable_size;
 };
 
+using GlesAcceleratedFactory = std::unique_ptr<GlesRenderer> (*)(
+    const std::filesystem::path&, const VulkanPresenterConfiguration*,
+    std::string*) noexcept;
+
+// A host adapter supplies the optional native backend. Registration must
+// precede renderer creation; a missing factory leaves software mode available
+// and preserves explicit native-backend failure reporting.
+void configure_gles_accelerated_factory(GlesAcceleratedFactory factory);
+
 // A renderer owns host-wide Vulkan device/queue state and is shared by all
 // guest processes. Per-process EGL/GLES resources remain in OpenGlesHle.
 // Configure the host policy before the first renderer is requested.

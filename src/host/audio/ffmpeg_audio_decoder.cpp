@@ -1,4 +1,4 @@
-#include "app/ffmpeg_audio_decoder.hpp"
+#include "host/ffmpeg_audio_decoder.hpp"
 
 #include <array>
 #include <cstddef>

@@ -14,6 +14,7 @@ add_subdirectory(crypto)
 add_subdirectory(graphics)
 add_subdirectory(kernel)
 add_subdirectory(debug)
+add_subdirectory(host)
 
 add_library(ilemu_core INTERFACE)
 add_library(iLEmu::core ALIAS ilemu_core)
