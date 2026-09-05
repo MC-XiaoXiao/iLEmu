@@ -3431,6 +3431,12 @@ public:
 
     void clear_cache()
     {
+        // A fork/exec child owns a fresh execution context and often reaches
+        // exec before translating any Guest block. Avoid advancing the slab
+        // generation for an empty context; callers that have emitted code
+        // still take the normal full invalidation path below.
+        if (code_cache_used() == 0U)
+            return;
         static_cast<void>(execution_context_->request_cache_clear());
         // CpuCluster cache clears are issued at a Guest-safe host boundary
         // (exec/debug image replacement) after prediction work is quiesced.
