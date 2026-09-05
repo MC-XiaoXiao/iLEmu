@@ -18,12 +18,12 @@ struct Profile {
 };
 
 inline constexpr Profile without_service_policy { "without-service-policy",
-    xnu792::mig::protocol_vproc::id(
-        xnu792::mig::protocol_vproc::Routine::swap_integer) +
+    xnu::mig::protocol_vproc::id(
+        xnu::mig::protocol_vproc::Routine::swap_integer) +
         1U };
 inline constexpr Profile with_service_policy { "with-service-policy",
-    xnu792::mig::protocol_vproc::id(
-        xnu792::mig::protocol_vproc::Routine::log) };
+    xnu::mig::protocol_vproc::id(
+        xnu::mig::protocol_vproc::Routine::log) };
 inline constexpr std::array profiles { without_service_policy,
     with_service_policy };
 

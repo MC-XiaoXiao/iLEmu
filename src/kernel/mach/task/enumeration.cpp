@@ -45,7 +45,7 @@ bool CompatibilityKernel::dispatch_mach_task_enumeration_message(
 {
     const auto message_id = request.identifier;
     if (message_id !=
-        mig_message_id(xnu792::mig::task::Routine::task_threads)) {
+        mig_message_id(xnu::mig::task::Routine::task_threads)) {
         return false;
     }
 
@@ -74,7 +74,7 @@ bool CompatibilityKernel::dispatch_mach_task_enumeration_message(
                 static_cast<void>(slot);
                 const auto name =
                     shared_state_->mach_namespaces.copyout(process_.pid, object,
-                        xnu792::ipc::type_mask(xnu792::ipc::Right::Send));
+                        xnu::ipc::type_mask(xnu::ipc::Right::Send));
                 if (!name) {
                     result = kernel_resource_shortage;
                     thread_names.clear();

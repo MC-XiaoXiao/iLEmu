@@ -63,7 +63,7 @@ bool CompatibilityKernel::dispatch_mach_port_kernel_rpc_trap(
     if (trap == 17U) { // _kernelrpc_mach_port_destroy_trap
         const auto name = registers[1];
         registers[0] =
-            name == xnu792::ipc::null_name || name == xnu792::ipc::dead_name
+            name == xnu::ipc::null_name || name == xnu::ipc::dead_name
                 ? darwin::mach::success
             : destroy_port_name_locked(*shared_state_, *target, name)
                 ? darwin::mach::success
@@ -74,10 +74,10 @@ bool CompatibilityKernel::dispatch_mach_port_kernel_rpc_trap(
     if (trap == 19U) { // _kernelrpc_mach_port_mod_refs_trap
         const auto right = registers[2];
         registers[0] =
-            right > static_cast<std::uint32_t>(xnu792::ipc::Right::DeadName)
+            right > static_cast<std::uint32_t>(xnu::ipc::Right::DeadName)
                 ? darwin::mach::invalid_value
                 : modify_port_references_locked(*shared_state_, *target,
-                      registers[1], static_cast<xnu792::ipc::Right>(right),
+                      registers[1], static_cast<xnu::ipc::Right>(right),
                       static_cast<std::int32_t>(registers[3]));
         return true;
     }
@@ -105,7 +105,7 @@ bool CompatibilityKernel::dispatch_mach_port_kernel_rpc_trap(
     // send, send-once, or dead-name user reference; it must not consume the
     // receive right when a composite name has no send reference.
     const auto name = registers[1];
-    if (name == xnu792::ipc::null_name || name == xnu792::ipc::dead_name) {
+    if (name == xnu::ipc::null_name || name == xnu::ipc::dead_name) {
         registers[0] = darwin::mach::success;
         return true;
     }
@@ -114,17 +114,17 @@ bool CompatibilityKernel::dispatch_mach_port_kernel_rpc_trap(
         registers[0] = darwin::mach::invalid_name;
         return true;
     }
-    const auto has = [&](xnu792::ipc::Right right) {
-        return (entry->type & xnu792::ipc::type_mask(right)) != 0;
+    const auto has = [&](xnu::ipc::Right right) {
+        return (entry->type & xnu::ipc::type_mask(right)) != 0;
     };
-    const auto right = has(xnu792::ipc::Right::Send)
-                           ? xnu792::ipc::Right::Send
-                       : has(xnu792::ipc::Right::SendOnce)
-                           ? xnu792::ipc::Right::SendOnce
-                       : has(xnu792::ipc::Right::DeadName)
-                           ? xnu792::ipc::Right::DeadName
-                           : xnu792::ipc::Right::Receive;
-    registers[0] = right == xnu792::ipc::Right::Receive
+    const auto right = has(xnu::ipc::Right::Send)
+                           ? xnu::ipc::Right::Send
+                       : has(xnu::ipc::Right::SendOnce)
+                           ? xnu::ipc::Right::SendOnce
+                       : has(xnu::ipc::Right::DeadName)
+                           ? xnu::ipc::Right::DeadName
+                           : xnu::ipc::Right::Receive;
+    registers[0] = right == xnu::ipc::Right::Receive
                        ? darwin::mach::invalid_right
                        : modify_port_references_locked(
                              *shared_state_, *target, name, right, -1);

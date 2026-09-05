@@ -1423,7 +1423,7 @@ std::uint16_t CompatibilityKernel::descriptor_poll_revents(
 std::optional<std::uint32_t> CompatibilityKernel::ready_mach_port_name(
     std::uint32_t name) const
 {
-    using xnu792::ipc::Right;
+    using xnu::ipc::Right;
 
     std::lock_guard mach_lock { shared_state_->mach_mutex };
     const auto entry =
@@ -1436,7 +1436,7 @@ std::optional<std::uint32_t> CompatibilityKernel::ready_mach_port_name(
         return queue != shared_state_->mach_queues.end() &&
                !queue->second.empty();
     };
-    if ((entry->type & xnu792::ipc::type_mask(Right::PortSet)) != 0U) {
+    if ((entry->type & xnu::ipc::type_mask(Right::PortSet)) != 0U) {
         const auto set = shared_state_->mach_port_sets.find(entry->object);
         if (set == shared_state_->mach_port_sets.end())
             return std::nullopt;
@@ -1451,7 +1451,7 @@ std::optional<std::uint32_t> CompatibilityKernel::ready_mach_port_name(
         }
         return std::nullopt;
     }
-    if ((entry->type & xnu792::ipc::type_mask(Right::Receive)) != 0U &&
+    if ((entry->type & xnu::ipc::type_mask(Right::Receive)) != 0U &&
         queue_has_message(entry->object)) {
         return name;
     }

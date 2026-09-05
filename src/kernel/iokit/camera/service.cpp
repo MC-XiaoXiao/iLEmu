@@ -17,7 +17,7 @@
 namespace ilemu::kernel_iokit::camera {
 namespace {
 
-    namespace device_mig = xnu792::mig::device;
+    namespace device_mig = xnu::mig::device;
 
     constexpr std::uint32_t mach_receive_invalid_data = 0x10004008U;
     constexpr std::uint32_t mach_reply_bits = 0x00000012U;

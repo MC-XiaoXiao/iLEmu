@@ -5,7 +5,7 @@
 
 namespace ilemu::darwin::kernel_control {
 
-// XNU 792 bsd/sys/sys_domain.h and bsd/sys/kern_control.h.
+// XNU bsd/sys/sys_domain.h and bsd/sys/kern_control.h.
 inline constexpr std::uint32_t protocol_family_system = 32;
 inline constexpr std::uint32_t protocol_event = 1;
 inline constexpr std::uint32_t protocol_control = 2;

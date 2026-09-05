@@ -15,7 +15,7 @@ struct VirtualAccessPoint;
 
 namespace ilemu::darwin::network {
 
-// XNU 792 / Darwin 8 networking constants. These are kept here rather than
+// XNU / Darwin 8 networking constants. These are kept here rather than
 // scattered through the syscall dispatcher so both builders and ABI tests use
 // the same firmware-facing definitions.
 inline constexpr std::uint32_t address_family_unspecified = 0;

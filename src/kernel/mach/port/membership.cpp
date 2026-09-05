@@ -26,7 +26,7 @@ namespace {
 bool CompatibilityKernel::dispatch_mach_port_membership_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
-    using Routine = xnu792::mig::mach_port::Routine;
+    using Routine = xnu::mig::mach_port::Routine;
     const auto routine = static_cast<Routine>(request.identifier);
     if (routine != Routine::mach_port_move_member &&
         routine != Routine::mach_port_insert_member &&
@@ -40,10 +40,10 @@ bool CompatibilityKernel::dispatch_mach_port_membership_message(
     }
     const auto& arguments =
         routine == Routine::mach_port_move_member
-            ? xnu792::mig::mach_port::mach_port_move_member_arguments
+            ? xnu::mig::mach_port::mach_port_move_member_arguments
         : routine == Routine::mach_port_insert_member
-            ? xnu792::mig::mach_port::mach_port_insert_member_arguments
-            : xnu792::mig::mach_port::mach_port_extract_member_arguments;
+            ? xnu::mig::mach_port::mach_port_insert_member_arguments
+            : xnu::mig::mach_port::mach_port_extract_member_arguments;
     const auto member =
         memory_.read32(request.address + arguments[1].request_offset)
             .value_or(0);

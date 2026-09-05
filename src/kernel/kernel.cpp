@@ -842,7 +842,7 @@ void CompatibilityKernel::install_commpage()
 {
     // The iPhoneOS 1.0 libSystem shipped in this firmware directly reads the
     // legacy ARM commpage at 0x40000000 (for example, time data at +0x40).
-    // Later ARM XNU moved the page to 0xffff4000, so xnu-4903's address must
+    // Later ARM XNU moved the page to 0xffff4000, so the relocated address must
     // not be projected backwards onto this 2007 user ABI.
     constexpr std::uint32_t commpage_address = 0x40000000U;
     if (!memory_.mapped(commpage_address)) {
@@ -3122,7 +3122,7 @@ bool CompatibilityKernel::write_guest_statfs(
 bool CompatibilityKernel::write_guest_statfs64(
     std::uint32_t address, const hfs::VolumeMetadata& volume)
 {
-    // Darwin 9's 32-bit statfs64 ABI.  See xnu-1228 bsd/sys/mount.h:
+    // Darwin 9's 32-bit statfs64 ABI.  See xnu bsd/sys/mount.h:
     // two 32-bit sizes, five 64-bit counters, fsid_t, owner/type/flags/subtype,
     // then fixed-size type and path strings.
     std::array<std::byte, 2168> bytes { };

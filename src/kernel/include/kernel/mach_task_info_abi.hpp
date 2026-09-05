@@ -5,7 +5,7 @@
 
 namespace ilemu::darwin::mach::task_info {
 
-// XNU 792.24.17 osfmk/mach/task_info.h. Fields are natural_t words at the
+// XNU osfmk/mach/task_info.h. Fields are natural_t words at the
 // 32-bit ARM compatibility boundary.
 inline constexpr std::uint32_t absolute_time_flavor = 1;
 inline constexpr std::size_t absolute_time_word_count = 8;

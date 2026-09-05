@@ -8,7 +8,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace ilemu::xnu792::ipc {
+namespace ilemu::xnu::ipc {
 
 using TaskId = std::uint32_t;
 using MachName = std::uint32_t;
@@ -19,7 +19,7 @@ inline constexpr MachName null_name = 0;
 inline constexpr MachName dead_name = 0xffff'ffffU;
 inline constexpr MachName first_dynamic_name = 0x0001'0000U;
 inline constexpr MachName name_index_stride = 0x100U;
-// XNU 792 stores ipc_entry user references in a 16-bit field. A live send
+// XNU stores ipc_entry user references in a 16-bit field. A live send
 // right reserves the all-ones value for dead-name conversion.
 inline constexpr std::uint32_t maximum_user_references = 0xffffU;
 inline constexpr std::uint32_t maximum_send_user_references =
@@ -50,7 +50,7 @@ struct NamedEntry {
     NameEntry entry;
 };
 
-// Models the ipc_space/ipc_entry boundary from XNU 792. A Mach name is only
+// Models the ipc_space/ipc_entry boundary from XNU. A Mach name is only
 // meaningful in one task; queues and receive ownership use the separate port
 // object identifier. Callers serialize access with
 // KernelSharedState::mach_mutex.
@@ -115,4 +115,4 @@ private:
     std::map<TaskId, Space> spaces_;
 };
 
-} // namespace ilemu::xnu792::ipc
+} // namespace ilemu::xnu::ipc

@@ -12,7 +12,7 @@
 
 namespace ilemu::darwin::route {
 
-// XNU 792 / Darwin 8 PF_ROUTE wire constants.  The target firmware is ARM32,
+// XNU / Darwin 8 PF_ROUTE wire constants.  The target firmware is ARM32,
 // where rt_msghdr is 92 bytes and routing sockaddrs are aligned to 32 bits.
 inline constexpr std::uint32_t protocol_family = 17;
 inline constexpr std::uint8_t message_version = 5;

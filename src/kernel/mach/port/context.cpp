@@ -14,7 +14,7 @@
 namespace ilemu {
 namespace {
 
-    // Added after the XNU 792 mach_port subsystem used to generate the legacy
+    // Context accessors extend the base mach_port subsystem used for the
     // adapter table. ARM32 publishes the context as one pointer-width word.
     constexpr std::uint32_t mach_port_get_context_identifier = 3228U;
     constexpr std::uint32_t mach_port_set_context_identifier = 3229U;
@@ -66,8 +66,8 @@ bool CompatibilityKernel::dispatch_mach_port_context_message(
             result = darwin::mach::invalid_task;
         } else if (!entry) {
             result = darwin::mach::invalid_name;
-        } else if ((entry->type & xnu792::ipc::type_mask(
-                                      xnu792::ipc::Right::Receive)) == 0U) {
+        } else if ((entry->type & xnu::ipc::type_mask(
+                                      xnu::ipc::Right::Receive)) == 0U) {
             result = darwin::mach::invalid_right;
         } else if (is_get) {
             const auto context =

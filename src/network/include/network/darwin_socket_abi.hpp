@@ -9,7 +9,7 @@ namespace ilemu::darwin::socket {
     inline constexpr std::uint32_t raw = 3; // SOCK_RAW
     inline constexpr std::uint32_t sequenced_packet = 5; // SOCK_SEQPACKET
 
-    // XNU 792 user32_msghdr/user32_iovec layout.  These are pointer-sized
+    // XNU user32_msghdr/user32_iovec layout.  These are pointer-sized
     // fields in the native ABI, so keeping the offsets explicit prevents a
     // 64-bit host structure from leaking into the ARM32 firmware boundary.
     namespace arm32_message {

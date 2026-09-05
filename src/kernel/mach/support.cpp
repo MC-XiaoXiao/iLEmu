@@ -44,11 +44,11 @@ namespace mach_support {
 
     static_assert(
         darwin::mach::thread_policy::policy_set_message ==
-        mig_message_id(xnu792::mig::thread_act::Routine::thread_policy_set));
+        mig_message_id(xnu::mig::thread_act::Routine::thread_policy_set));
 
     std::string mig_message_label(std::uint32_t identifier)
     {
-        const auto routine = xnu792::mig::lookup_routine(identifier);
+        const auto routine = xnu::mig::lookup_routine(identifier);
         if (!routine)
             return { };
         return " mig=" + std::string { routine->subsystem_name } + '.' +
@@ -153,7 +153,7 @@ namespace mach_support {
         const auto name =
             state.mach_namespaces
                 .copyout(process_id, object,
-                    xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
+                    xnu::ipc::type_mask(xnu::ipc::Right::Send))
                 .value_or(0U);
         if (name == 0U && created) {
             state.surface_transport_port_surfaces.erase(object);
@@ -202,39 +202,39 @@ namespace mach_support {
         }
     }
 
-    std::optional<xnu792::ipc::Right> right_for_disposition(
+    std::optional<xnu::ipc::Right> right_for_disposition(
         std::uint32_t disposition)
     {
         switch (disposition) {
         case 16:
-            return xnu792::ipc::Right::Receive; // MOVE_RECEIVE
+            return xnu::ipc::Right::Receive; // MOVE_RECEIVE
         case 17: // MOVE_SEND
         case 19: // COPY_SEND
         case 20:
-            return xnu792::ipc::Right::Send; // MAKE_SEND
+            return xnu::ipc::Right::Send; // MAKE_SEND
         case 18: // MOVE_SEND_ONCE
         case 21:
-            return xnu792::ipc::Right::SendOnce; // MAKE_SEND_ONCE
+            return xnu::ipc::Right::SendOnce; // MAKE_SEND_ONCE
         default:
             return std::nullopt;
         }
     }
 
-    std::optional<xnu792::ipc::Right> source_right_for_disposition(
+    std::optional<xnu::ipc::Right> source_right_for_disposition(
         std::uint32_t disposition)
     {
         switch (disposition) {
         case 16:
-            return xnu792::ipc::Right::Receive; // MOVE_RECEIVE
+            return xnu::ipc::Right::Receive; // MOVE_RECEIVE
         case 17:
-            return xnu792::ipc::Right::Send; // MOVE_SEND
+            return xnu::ipc::Right::Send; // MOVE_SEND
         case 18:
-            return xnu792::ipc::Right::SendOnce; // MOVE_SEND_ONCE
+            return xnu::ipc::Right::SendOnce; // MOVE_SEND_ONCE
         case 19:
-            return xnu792::ipc::Right::Send; // COPY_SEND
+            return xnu::ipc::Right::Send; // COPY_SEND
         case 20: // MAKE_SEND
         case 21:
-            return xnu792::ipc::Right::Receive; // MAKE_SEND_ONCE
+            return xnu::ipc::Right::Receive; // MAKE_SEND_ONCE
         default:
             return std::nullopt;
         }
@@ -250,7 +250,7 @@ namespace mach_support {
         // used as an owner and leaves teardown metadata attached to the wrong
         // PID.
         const auto task_object = resolve_name_with_right(
-            state, caller, task_name, xnu792::ipc::Right::Send);
+            state, caller, task_name, xnu::ipc::Right::Send);
         if (!task_object)
             return std::nullopt;
         const auto task = state.task_port_pids.find(*task_object);
@@ -268,7 +268,7 @@ namespace mach_support {
         std::uint32_t task_name)
     {
         const auto object = resolve_name_with_right(
-            state, caller, task_name, xnu792::ipc::Right::Send);
+            state, caller, task_name, xnu::ipc::Right::Send);
         if (!object)
             return std::nullopt;
         if (const auto task = state.task_port_pids.find(*object);
@@ -305,10 +305,10 @@ namespace mach_support {
 
     std::optional<std::uint32_t> resolve_name_with_right(
         const KernelSharedState& state, std::uint32_t task, std::uint32_t name,
-        xnu792::ipc::Right right)
+        xnu::ipc::Right right)
     {
         const auto entry = state.mach_namespaces.lookup(task, name);
-        if (!entry || (entry->type & xnu792::ipc::type_mask(right)) == 0) {
+        if (!entry || (entry->type & xnu::ipc::type_mask(right)) == 0) {
             return std::nullopt;
         }
         return entry->object;
@@ -321,12 +321,12 @@ namespace mach_support {
         if (!entry)
             return std::nullopt;
         if ((entry->type &
-                xnu792::ipc::type_mask(xnu792::ipc::Right::Receive)) != 0 &&
+                xnu::ipc::type_mask(xnu::ipc::Right::Receive)) != 0 &&
             state.mach_port_objects.contains(entry->object)) {
             return entry->object;
         }
         if ((entry->type &
-                xnu792::ipc::type_mask(xnu792::ipc::Right::PortSet)) != 0 &&
+                xnu::ipc::type_mask(xnu::ipc::Right::PortSet)) != 0 &&
             state.mach_port_sets.contains(entry->object)) {
             return entry->object;
         }
@@ -337,7 +337,7 @@ namespace mach_support {
         const KernelSharedState& state, std::uint32_t task, std::uint32_t name)
     {
         const auto object = resolve_name_with_right(
-            state, task, name, xnu792::ipc::Right::Receive);
+            state, task, name, xnu::ipc::Right::Receive);
         return object && state.mach_port_set_links_by_member.contains(*object);
     }
 
@@ -368,9 +368,9 @@ namespace mach_support {
             kernel_hold != state.mach_kernel_send_rights.end() &&
             kernel_hold->second != 0;
         if (request == state.mach_notifications.end() || !port_object ||
-            request->second.notify_object == xnu792::ipc::null_name ||
+            request->second.notify_object == xnu::ipc::null_name ||
             state.mach_namespaces.right_reference_count(
-                object, xnu792::ipc::Right::Send) != 0 ||
+                object, xnu::ipc::Right::Send) != 0 ||
             has_inflight || has_kernel_hold ||
             port_object->make_send_count < request->second.sync) {
             return false;
@@ -480,7 +480,7 @@ namespace mach_support {
         // instead of losing it when the notification endpoint disappears.
         message.port_transfers.push_back(
             KernelSharedState::MachMessage::PortTransfer { 28U, receive_object,
-                std::nullopt, receive_object, xnu792::ipc::Right::Receive,
+                std::nullopt, receive_object, xnu::ipc::Right::Receive,
                 16U });
         state.enqueue_mach_message_locked(notify_object, std::move(message));
         return true;
@@ -570,7 +570,7 @@ namespace mach_support {
             task != state.task_exception_actions.end()) {
             std::vector<std::uint32_t> held_ports;
             for (const auto& action : task->second) {
-                if (action.port_object != xnu792::ipc::null_name &&
+                if (action.port_object != xnu::ipc::null_name &&
                     action.port_object != object) {
                     held_ports.push_back(action.port_object);
                 }
@@ -583,7 +583,7 @@ namespace mach_support {
             static_cast<void>(task_object);
             for (auto& action : actions) {
                 if (action.port_object == object)
-                    action.port_object = xnu792::ipc::null_name;
+                    action.port_object = xnu::ipc::null_name;
             }
         }
         // Kernel-held special-port references cannot outlive their backing
@@ -628,7 +628,7 @@ namespace mach_support {
     {
         if (!state.mach_memory_entries.contains(object) ||
             state.mach_namespaces.right_reference_count(
-                object, xnu792::ipc::Right::Send) != 0) {
+                object, xnu::ipc::Right::Send) != 0) {
             return;
         }
         const auto inflight = state.mach_inflight_send_rights.find(object);
@@ -654,7 +654,7 @@ namespace mach_support {
     {
         if (!state.mach_fileports.contains(object) ||
             state.mach_namespaces.right_reference_count(
-                object, xnu792::ipc::Right::Send) != 0) {
+                object, xnu::ipc::Right::Send) != 0) {
             return;
         }
         const auto inflight = state.mach_inflight_send_rights.find(object);
@@ -752,7 +752,7 @@ namespace mach_support {
                 continue;
             for (const auto& [which, port] : special->second) {
                 static_cast<void>(which);
-                if (port != xnu792::ipc::null_name)
+                if (port != xnu::ipc::null_name)
                     released_kernel_ports.push_back(port);
             }
             state.task_special_ports.erase(special);
@@ -851,7 +851,7 @@ namespace mach_support {
             state.iokit_interest_notifications.contains(object);
         if (!transient_iokit_object ||
             state.mach_namespaces.right_reference_count(
-                object, xnu792::ipc::Right::Send) != 0) {
+                object, xnu::ipc::Right::Send) != 0) {
             return;
         }
         const auto inflight = state.mach_inflight_send_rights.find(object);
@@ -879,7 +879,7 @@ namespace mach_support {
         const auto request = state.mach_dead_name_notifications.find(key);
         if (request == state.mach_dead_name_notifications.end())
             return;
-        if (request->second.notify_object != xnu792::ipc::null_name) {
+        if (request->second.notify_object != xnu::ipc::null_name) {
             enqueue_port_deleted_notification_locked(
                 state, request->second.notify_object, name);
         }
@@ -887,16 +887,16 @@ namespace mach_support {
     }
 
     bool consume_moved_right_locked(KernelSharedState& state,
-        std::uint32_t task, std::uint32_t name, xnu792::ipc::Right right,
+        std::uint32_t task, std::uint32_t name, xnu::ipc::Right right,
         bool remains_in_flight)
     {
         const auto entry = state.mach_namespaces.lookup(task, name);
-        if (!entry || (entry->type & xnu792::ipc::type_mask(right)) == 0) {
+        if (!entry || (entry->type & xnu::ipc::type_mask(right)) == 0) {
             return false;
         }
-        if (right == xnu792::ipc::Right::Receive) {
+        if (right == xnu::ipc::Right::Receive) {
             if (!state.mach_namespaces.remove_type(
-                    task, name, xnu792::ipc::type_mask(right))) {
+                    task, name, xnu::ipc::type_mask(right))) {
                 return false;
             }
             static_cast<void>(state.remove_mach_port_set_member_from_all_locked(
@@ -905,8 +905,8 @@ namespace mach_support {
                 state.mach_port_objects.set_receive_owner(entry->object, 0));
             return true;
         }
-        if (right != xnu792::ipc::Right::Send &&
-            right != xnu792::ipc::Right::SendOnce) {
+        if (right != xnu::ipc::Right::Send &&
+            right != xnu::ipc::Right::SendOnce) {
             return false;
         }
         if (!state.mach_namespaces.modify_references(task, name, right, -1)) {
@@ -915,7 +915,7 @@ namespace mach_support {
         if (!state.mach_namespaces.contains(task, name)) {
             cancel_dead_name_notification_locked(state, task, name);
         }
-        if (right == xnu792::ipc::Right::Send && !remains_in_flight) {
+        if (right == xnu::ipc::Right::Send && !remains_in_flight) {
             static_cast<void>(
                 enqueue_no_senders_notification_locked(state, entry->object));
         }
@@ -935,7 +935,7 @@ namespace mach_support {
         const auto destroyed_request =
             state.mach_notifications.find(destroyed_key);
         if (destroyed_request != state.mach_notifications.end() &&
-            destroyed_request->second.notify_object != xnu792::ipc::null_name) {
+            destroyed_request->second.notify_object != xnu::ipc::null_name) {
             if (enqueue_port_destroyed_notification_locked(
                     state, destroyed_request->second.notify_object, object)) {
                 state.mach_notifications.erase(destroyed_request);
@@ -964,7 +964,7 @@ namespace mach_support {
             const auto name = request->first.second;
             // XNU adds one dead-name uref for every generated notification.
             static_cast<void>(state.mach_namespaces.modify_references(
-                task, name, xnu792::ipc::Right::DeadName, 1));
+                task, name, xnu::ipc::Right::DeadName, 1));
             enqueue_dead_name_notification_locked(
                 state, request->second.notify_object, name);
             request = state.mach_dead_name_notifications.erase(request);
@@ -991,7 +991,7 @@ namespace mach_support {
     void retain_kernel_send_right_locked(
         KernelSharedState& state, std::uint32_t object)
     {
-        if (object != xnu792::ipc::null_name)
+        if (object != xnu::ipc::null_name)
             ++state.mach_kernel_send_rights[object];
     }
 
@@ -1021,19 +1021,19 @@ namespace mach_support {
         KernelSharedState& state, const KernelSharedState::MachMessage& message)
     {
         const auto discard = [&](std::uint32_t object,
-                                 xnu792::ipc::Right right) {
+                                 xnu::ipc::Right right) {
             switch (right) {
-            case xnu792::ipc::Right::Send:
+            case xnu::ipc::Right::Send:
                 release_inflight_send_right_locked(state, object);
                 break;
-            case xnu792::ipc::Right::Receive:
+            case xnu::ipc::Right::Receive:
                 terminate_receive_object_locked(state, object);
                 break;
-            case xnu792::ipc::Right::SendOnce:
+            case xnu::ipc::Right::SendOnce:
                 enqueue_send_once_notification_locked(state, object);
                 break;
-            case xnu792::ipc::Right::PortSet:
-            case xnu792::ipc::Right::DeadName:
+            case xnu::ipc::Right::PortSet:
+            case xnu::ipc::Right::DeadName:
                 break;
             }
         };
@@ -1060,29 +1060,29 @@ namespace mach_support {
         if (!state.mach_namespaces.destroy_name(task, name))
             return false;
 
-        const auto has = [&](xnu792::ipc::Right right) {
-            return (entry->type & xnu792::ipc::type_mask(right)) != 0;
+        const auto has = [&](xnu::ipc::Right right) {
+            return (entry->type & xnu::ipc::type_mask(right)) != 0;
         };
-        if (has(xnu792::ipc::Right::Send)) {
+        if (has(xnu::ipc::Right::Send)) {
             static_cast<void>(
                 enqueue_no_senders_notification_locked(state, entry->object));
         }
-        if (has(xnu792::ipc::Right::SendOnce)) {
+        if (has(xnu::ipc::Right::SendOnce)) {
             enqueue_send_once_notification_locked(state, entry->object);
         }
-        if (has(xnu792::ipc::Right::Receive)) {
+        if (has(xnu::ipc::Right::Receive)) {
             terminate_receive_object_locked(state, entry->object);
-        } else if (has(xnu792::ipc::Right::PortSet)) {
+        } else if (has(xnu::ipc::Right::PortSet)) {
             remove_port_object_locked(state, entry->object);
         }
-        if (has(xnu792::ipc::Right::Send)) {
+        if (has(xnu::ipc::Right::Send)) {
             release_unreferenced_fileport_locked(state, entry->object);
         }
         return true;
     }
 
     std::uint32_t modify_port_references_locked(KernelSharedState& state,
-        std::uint32_t task, std::uint32_t name, xnu792::ipc::Right right,
+        std::uint32_t task, std::uint32_t name, xnu::ipc::Right right,
         std::int32_t delta)
     {
         constexpr std::uint32_t kern_success = 0;
@@ -1091,35 +1091,35 @@ namespace mach_support {
         constexpr std::uint32_t kern_invalid_value = 18;
         constexpr std::uint32_t kern_urefs_overflow = 19;
 
-        if (name == xnu792::ipc::null_name || name == xnu792::ipc::dead_name) {
-            return right == xnu792::ipc::Right::Send ||
-                           right == xnu792::ipc::Right::SendOnce
+        if (name == xnu::ipc::null_name || name == xnu::ipc::dead_name) {
+            return right == xnu::ipc::Right::Send ||
+                           right == xnu::ipc::Right::SendOnce
                        ? kern_success
                        : kern_invalid_name;
         }
         const auto entry = state.mach_namespaces.lookup(task, name);
         if (!entry)
             return kern_invalid_name;
-        const auto mask = xnu792::ipc::type_mask(right);
+        const auto mask = xnu::ipc::type_mask(right);
         if ((entry->type & mask) == 0)
             return kern_invalid_right;
         const auto references =
             state.mach_namespaces.user_references(task, name, right)
                 .value_or(0);
 
-        if (right == xnu792::ipc::Right::Receive ||
-            right == xnu792::ipc::Right::PortSet) {
+        if (right == xnu::ipc::Right::Receive ||
+            right == xnu::ipc::Right::PortSet) {
             if (delta == 0)
                 return kern_success;
             if (delta != -1)
                 return kern_invalid_value;
             const auto remaining_type = entry->type & ~mask;
-            if (right == xnu792::ipc::Right::Receive && remaining_type == 0) {
+            if (right == xnu::ipc::Right::Receive && remaining_type == 0) {
                 cancel_dead_name_notification_locked(state, task, name);
             }
             static_cast<void>(
                 state.mach_namespaces.remove_type(task, name, mask));
-            if (right == xnu792::ipc::Right::Receive) {
+            if (right == xnu::ipc::Right::Receive) {
                 terminate_receive_object_locked(state, entry->object);
             } else {
                 remove_port_object_locked(state, entry->object);
@@ -1127,7 +1127,7 @@ namespace mach_support {
             return kern_success;
         }
 
-        if (right == xnu792::ipc::Right::SendOnce) {
+        if (right == xnu::ipc::Right::SendOnce) {
             if (delta == 0)
                 return kern_success;
             if (delta != -1)
@@ -1148,9 +1148,9 @@ namespace mach_support {
         const auto updated = static_cast<std::int64_t>(references) + delta;
         if (updated < 0)
             return kern_invalid_value;
-        const auto maximum = right == xnu792::ipc::Right::Send
-                                 ? xnu792::ipc::maximum_send_user_references
-                                 : xnu792::ipc::maximum_user_references;
+        const auto maximum = right == xnu::ipc::Right::Send
+                                 ? xnu::ipc::maximum_send_user_references
+                                 : xnu::ipc::maximum_user_references;
         if (updated > maximum)
             return kern_urefs_overflow;
         if (!state.mach_namespaces.modify_references(
@@ -1160,7 +1160,7 @@ namespace mach_support {
         if (updated == 0 && !state.mach_namespaces.contains(task, name)) {
             cancel_dead_name_notification_locked(state, task, name);
         }
-        if (right == xnu792::ipc::Right::Send && updated == 0) {
+        if (right == xnu::ipc::Right::Send && updated == 0) {
             static_cast<void>(
                 enqueue_no_senders_notification_locked(state, entry->object));
             release_unreferenced_fileport_locked(state, entry->object);
@@ -1186,26 +1186,26 @@ namespace mach_support {
                                              target_task, *source_object)
                                        : std::nullopt;
         if (!right || !source_right || !source_object ||
-            target_name == xnu792::ipc::null_name ||
-            target_name == xnu792::ipc::dead_name) {
+            target_name == xnu::ipc::null_name ||
+            target_name == xnu::ipc::dead_name) {
             return darwin::mach::invalid_value;
         }
         if (existing &&
             (existing->object != *source_object ||
-                *right == xnu792::ipc::Right::SendOnce)) {
+                *right == xnu::ipc::Right::SendOnce)) {
             return darwin::mach::name_exists;
         }
         if (existing_name && *existing_name != target_name &&
-            *right != xnu792::ipc::Right::SendOnce) {
+            *right != xnu::ipc::Right::SendOnce) {
             return darwin::mach::right_exists;
         }
 
         const auto moved = disposition == 16U || disposition == 17U ||
                            disposition == 18U;
-        if (!moved && existing && *right == xnu792::ipc::Right::Send &&
+        if (!moved && existing && *right == xnu::ipc::Right::Send &&
             existing->user_references[static_cast<std::size_t>(
-                xnu792::ipc::Right::Send)] >=
-                xnu792::ipc::maximum_send_user_references) {
+                xnu::ipc::Right::Send)] >=
+                xnu::ipc::maximum_send_user_references) {
             return darwin::mach::user_references_overflow;
         }
 
@@ -1217,15 +1217,15 @@ namespace mach_support {
                 return darwin::mach::invalid_right;
         }
         const auto installed = state.mach_namespaces.install(target_task,
-            target_name, *source_object, xnu792::ipc::type_mask(*right));
+            target_name, *source_object, xnu::ipc::type_mask(*right));
         if (!installed) {
             if (moved && consumed) {
                 static_cast<void>(state.mach_namespaces.install(caller,
                     source_name, *source_object,
-                    xnu792::ipc::type_mask(*source_right)));
+                    xnu::ipc::type_mask(*source_right)));
             }
             if (moved && consumed &&
-                *source_right == xnu792::ipc::Right::Receive) {
+                *source_right == xnu::ipc::Right::Receive) {
                 static_cast<void>(state.mach_port_objects.set_receive_owner(
                     *source_object, caller));
             }
@@ -1237,7 +1237,7 @@ namespace mach_support {
                 state.mach_port_objects.increment_make_send_count(
                     *source_object));
         }
-        if (*right == xnu792::ipc::Right::Receive) {
+        if (*right == xnu::ipc::Right::Receive) {
             static_cast<void>(state.mach_port_objects.set_receive_owner(
                 *source_object, target_task));
         }
@@ -1253,29 +1253,29 @@ namespace mach_support {
         PortMembershipResult result;
         const auto member =
             state.mach_namespaces.lookup(target_task, member_name);
-        const auto set = set_name != xnu792::ipc::null_name
+        const auto set = set_name != xnu::ipc::null_name
                              ? state.mach_namespaces.lookup(
                                    target_task, set_name)
                              : std::nullopt;
         result.member_object = member ? member->object : 0U;
         result.set_object = set ? set->object : 0U;
-        const auto has = [](const xnu792::ipc::NameEntry& entry,
-                             xnu792::ipc::Right right) {
-            return (entry.type & xnu792::ipc::type_mask(right)) != 0U;
+        const auto has = [](const xnu::ipc::NameEntry& entry,
+                             xnu::ipc::Right right) {
+            return (entry.type & xnu::ipc::type_mask(right)) != 0U;
         };
         if (!member) {
-            result.result = member_name == xnu792::ipc::null_name
+            result.result = member_name == xnu::ipc::null_name
                                 ? darwin::mach::invalid_right
                                 : darwin::mach::invalid_name;
-        } else if (!has(*member, xnu792::ipc::Right::Receive)) {
+        } else if (!has(*member, xnu::ipc::Right::Receive)) {
             result.result = darwin::mach::invalid_right;
         } else if (operation != PortMembershipOperation::Move ||
-                   set_name != xnu792::ipc::null_name) {
+                   set_name != xnu::ipc::null_name) {
             if (!set) {
-                result.result = set_name == xnu792::ipc::null_name
+                result.result = set_name == xnu::ipc::null_name
                                     ? darwin::mach::invalid_right
                                     : darwin::mach::invalid_name;
-            } else if (!has(*set, xnu792::ipc::Right::PortSet)) {
+            } else if (!has(*set, xnu::ipc::Right::PortSet)) {
                 result.result = darwin::mach::invalid_right;
             }
         }

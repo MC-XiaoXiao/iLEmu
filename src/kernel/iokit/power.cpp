@@ -21,7 +21,7 @@
 namespace ilemu::kernel_iokit {
 namespace {
 
-    namespace device_mig = xnu792::mig::device;
+    namespace device_mig = xnu::mig::device;
 
     constexpr std::string_view power_root_class = "IOPMrootDomain";
     constexpr std::string_view io_service_class = "IOService";
@@ -43,7 +43,7 @@ namespace {
     {
         return state.mach_namespaces
             .copyout(
-                task, object, xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
+                task, object, xnu::ipc::type_mask(xnu::ipc::Right::Send))
             .value_or(0);
     }
 
@@ -215,9 +215,9 @@ namespace {
             device_mig::io_service_add_interest_notification_arguments.size()>
             element_counts { };
         element_counts[1] = *type_count;
-        const auto type_layout = xnu792::mig::compute_wire_layout(
+        const auto type_layout = xnu::mig::compute_wire_layout(
             device_mig::io_service_add_interest_notification_arguments,
-            xnu792::mig::WireLayoutSide::Request, element_counts);
+            xnu::mig::WireLayoutSide::Request, element_counts);
         if (!type_layout)
             return darwin::mach_message::receive_invalid_data;
         const auto reference_count =
@@ -225,9 +225,9 @@ namespace {
         if (!reference_count || *reference_count > maximum_reference_count)
             return darwin::mach_message::receive_invalid_data;
         element_counts[3] = *reference_count;
-        const auto layout = xnu792::mig::compute_wire_layout(
+        const auto layout = xnu::mig::compute_wire_layout(
             device_mig::io_service_add_interest_notification_arguments,
-            xnu792::mig::WireLayoutSide::Request, element_counts);
+            xnu::mig::WireLayoutSide::Request, element_counts);
         if (!layout)
             return darwin::mach_message::receive_invalid_data;
 

@@ -14,8 +14,8 @@ namespace ilemu {
 void CompatibilityKernel::dispatch_bsd_fileport(
     Cpu& cpu, std::uint32_t number)
 {
-    constexpr auto send_right = xnu792::ipc::type_mask(
-        xnu792::ipc::Right::Send);
+    constexpr auto send_right = xnu::ipc::type_mask(
+        xnu::ipc::Right::Send);
     auto& registers = cpu.registers();
 
     if (number == darwin::syscall::fileport_makeport) {

@@ -183,7 +183,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
     const auto* vproc_log_profile =
         protocol_vproc::profile_for_log_message(*message_id);
     if (vproc_log_profile != nullptr && registers[2] >= 48U) {
-        const auto& arguments = xnu792::mig::protocol_vproc::log_arguments;
+        const auto& arguments = xnu::mig::protocol_vproc::log_arguments;
         const auto priority =
             memory_.read32(message_address + arguments[1].request_offset)
                 .value_or(0);
@@ -242,7 +242,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
         }
     }
     if (*message_id ==
-            mig_message_id(xnu792::mig::bootstrap::Routine::get_self) &&
+            mig_message_id(xnu::mig::bootstrap::Routine::get_self) &&
         *remote_port == process_.bootstrap_port && registers[3] >= 40U) {
         // The root bootstrap provider can query its own job port before it has
         // created a server receive loop. Handle only this structural
@@ -259,8 +259,8 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
             if (object && port && port->receive_owner == process_.pid) {
                 job_name = shared_state_->mach_namespaces
                                .copyout(process_.pid, *object,
-                                   xnu792::ipc::type_mask(
-                                       xnu792::ipc::Right::Send))
+                                   xnu::ipc::type_mask(
+                                       xnu::ipc::Right::Send))
                                .value_or(0U);
                 if (job_name != 0U) {
                     static_cast<void>(shared_state_->mach_port_objects
@@ -310,11 +310,11 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
     }
 
     if (*message_id ==
-            mig_message_id(xnu792::mig::bootstrap::Routine::look_up) &&
+            mig_message_id(xnu::mig::bootstrap::Routine::look_up) &&
         *remote_port == process_.bootstrap_port && registers[3] >= 40U) {
         const auto service_name = memory_.read_c_string(
             message_address +
-                xnu792::mig::bootstrap::look_up_arguments[2].request_offset,
+                xnu::mig::bootstrap::look_up_arguments[2].request_offset,
             128U);
         if (service_name &&
             *service_name == media_library_service::bootstrap_name &&
@@ -353,8 +353,8 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                         service_name_in_task =
                             shared_state_->mach_namespaces
                                 .copyout(process_.pid, service_object,
-                                    xnu792::ipc::type_mask(
-                                        xnu792::ipc::Right::Send))
+                                    xnu::ipc::type_mask(
+                                        xnu::ipc::Right::Send))
                                 .value_or(0);
                     }
                 }
@@ -426,11 +426,11 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
     }
 
     if (*message_id ==
-            mig_message_id(xnu792::mig::bootstrap::Routine::look_up) &&
+            mig_message_id(xnu::mig::bootstrap::Routine::look_up) &&
         *remote_port == process_.bootstrap_port && registers[3] >= 36U) {
         const auto service_name = memory_.read_c_string(
             message_address +
-                xnu792::mig::bootstrap::look_up_arguments[2].request_offset,
+                xnu::mig::bootstrap::look_up_arguments[2].request_offset,
             128U);
         if (service_name && bootstrap_provider_is_resolving_self(*shared_state_,
                                 rootfs_, process_.pid, *service_name)) {
@@ -446,7 +446,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
     }
 
     if (*message_id ==
-            mig_message_id(xnu792::mig::bootstrap::Routine::look_up) &&
+            mig_message_id(xnu::mig::bootstrap::Routine::look_up) &&
         process_.pid == 1 && registers[3] >= 36) {
         // launchd probes its own bootstrap namespace before its server
         // receive loop exists. Match XNU/launchd's normal early negative
@@ -481,23 +481,23 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
             graphics_event_type = graphics_services_input::event_type(*bytes);
             const auto bootstrap_lookup =
                 *message_id ==
-                mig_message_id(xnu792::mig::bootstrap::Routine::look_up);
+                mig_message_id(xnu::mig::bootstrap::Routine::look_up);
             const auto bootstrap_registration =
                 *message_id ==
-                mig_message_id(xnu792::mig::bootstrap::Routine::mig_register);
+                mig_message_id(xnu::mig::bootstrap::Routine::mig_register);
             const auto bootstrap_check_in =
                 *message_id ==
-                mig_message_id(xnu792::mig::bootstrap::Routine::check_in);
+                mig_message_id(xnu::mig::bootstrap::Routine::check_in);
             std::optional<std::size_t> service_offset;
             if (bootstrap_lookup) {
                 service_offset =
-                    xnu792::mig::bootstrap::look_up_arguments[2].request_offset;
+                    xnu::mig::bootstrap::look_up_arguments[2].request_offset;
             } else if (bootstrap_registration) {
                 service_offset =
-                    xnu792::mig::bootstrap::mig_register_arguments[2]
+                    xnu::mig::bootstrap::mig_register_arguments[2]
                         .request_offset;
             } else if (bootstrap_check_in) {
-                service_offset = xnu792::mig::bootstrap::check_in_arguments[1]
+                service_offset = xnu::mig::bootstrap::check_in_arguments[1]
                                      .request_offset;
             }
             if (service_offset) {
@@ -607,8 +607,8 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                 destination_uses_received_type = destination_object.has_value();
             }
             if (!destination_object || !destination_right ||
-                (*destination_right != xnu792::ipc::Right::Send &&
-                    *destination_right != xnu792::ipc::Right::SendOnce)) {
+                (*destination_right != xnu::ipc::Right::Send &&
+                    *destination_right != xnu::ipc::Right::SendOnce)) {
                 destination_object.reset();
             }
             if (destination_object)
@@ -625,7 +625,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                 // user-space server.
                 mach_lock.unlock();
                 trace_unknown(cpu, "MIG routine", *message_id);
-                if (*local_port == xnu792::ipc::null_name) {
+                if (*local_port == xnu::ipc::null_name) {
                     if (wants_receive) {
                         begin_receive();
                     } else {
@@ -698,7 +698,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
             }
             if (routable) {
                 std::optional<std::uint32_t> reply_object;
-                std::optional<xnu792::ipc::Right> reply_right;
+                std::optional<xnu::ipc::Right> reply_right;
                 std::optional<std::uint32_t> destination_send_object;
                 std::uint32_t reply_disposition = 0;
                 std::vector<KernelSharedState::MachMessage::PortTransfer>
@@ -730,7 +730,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                         .read32(message_address +
                                 darwin::mig_wire::header_local_port_offset)
                         .value_or(0);
-                if (reply_name != xnu792::ipc::null_name) {
+                if (reply_name != xnu::ipc::null_name) {
                     reply_disposition = (*bits >> 8U) & 0xffU;
                     if (const auto transfer =
                             capture(reply_name, reply_disposition, 0)) {
@@ -753,7 +753,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                         if (descriptor.kind ==
                             mach_transport::DescriptorKind::Port) {
                             const auto name = descriptor.address_or_name;
-                            if (name == xnu792::ipc::null_name)
+                            if (name == xnu::ipc::null_name)
                                 continue;
                             if (const auto transfer =
                                     capture(name, descriptor.disposition(),
@@ -778,7 +778,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                                         descriptor.address_or_name +
                                         element * darwin::mig_wire::word_size)
                                     .value_or(0);
-                            if (name == xnu792::ipc::null_name)
+                            if (name == xnu::ipc::null_name)
                                 continue;
                             if (const auto transfer =
                                     capture(name, descriptor.disposition(),
@@ -843,16 +843,16 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                     if (routable) {
                         for (const auto& [key, count] : moved_references) {
                             const auto source =
-                                static_cast<xnu792::ipc::Right>(key.second);
+                                static_cast<xnu::ipc::Right>(key.second);
                             const auto entry =
                                 shared_state_->mach_namespaces.lookup(
                                     process_.pid, key.first);
-                            if (!entry || (entry->type & xnu792::ipc::type_mask(
+                            if (!entry || (entry->type & xnu::ipc::type_mask(
                                                              source)) == 0) {
                                 routable = false;
                                 break;
                             }
-                            if (source == xnu792::ipc::Right::Receive) {
+                            if (source == xnu::ipc::Right::Receive) {
                                 if (count != 1U)
                                     routable = false;
                             } else if (entry->user_references[static_cast<
@@ -895,7 +895,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                             routable = false;
                             break;
                         }
-                        if (transfer.right == xnu792::ipc::Right::Receive) {
+                        if (transfer.right == xnu::ipc::Right::Receive) {
                             transferred_receive = transfer.object;
                         }
                     }
@@ -912,7 +912,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                     routable = false;
                 } else if (routable && destination_move_disposition == 17U &&
                            destination_right &&
-                           *destination_right == xnu792::ipc::Right::Send) {
+                           *destination_right == xnu::ipc::Right::Send) {
                     // MOVE_SEND removes the sender's last ipc_entry reference,
                     // but the queued destination still owns that Send right
                     // until delivery or discard. Keep it out of
@@ -921,10 +921,10 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                 }
                 if (routable) {
                     const auto retain_inflight = [&](std::uint32_t object,
-                                                     xnu792::ipc::Right right,
+                                                     xnu::ipc::Right right,
                                                      std::uint32_t
                                                          disposition) {
-                        if (right == xnu792::ipc::Right::Send) {
+                        if (right == xnu::ipc::Right::Send) {
                             ++shared_state_->mach_inflight_send_rights[object];
                         }
                         if (disposition == 20U) { // MAKE_SEND
@@ -1018,7 +1018,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                         remote_object, std::move(queued));
                     remote_owner =
                         shared_state_->mach_port_objects.lookup(remote_object)
-                            .value_or(xnu792::ipc::PortObject { })
+                            .value_or(xnu::ipc::PortObject { })
                             .receive_owner;
                     remote_queue_depth =
                         shared_state_->mach_queues[remote_object].size();
@@ -1144,7 +1144,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
     // neither case is an unknown kernel call and neither may halt the guest.
     if (wants_send && registers[2] >= darwin::mig_wire::message_header_size &&
         registers[2] <= 64U * 1024U &&
-        (*remote_port == xnu792::ipc::null_name || !unsupported_known_right)) {
+        (*remote_port == xnu::ipc::null_name || !unsupported_known_right)) {
         registers[0] = darwin::mach_message::send_invalid_destination;
         return;
     }

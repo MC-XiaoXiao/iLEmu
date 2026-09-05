@@ -102,7 +102,7 @@ inline constexpr std::uint32_t mobile_framebuffer_default_surface_id = 0x100U;
 
 namespace display_vsync {
 
-    // OSMessageNotification.h from XNU 792: a kernel async completion is Mach
+    // OSMessageNotification.h from XNU: a kernel async completion is Mach
     // message 53 with notification type 150 and an eight-natural reference.
     inline constexpr std::uint32_t message_identifier = 53;
     inline constexpr std::uint32_t async_completion_type = 150;
@@ -119,7 +119,7 @@ namespace display_vsync {
 
 namespace service_open_extended {
 
-    // Firmware-private routine 2862. It is absent from XNU 792 device.defs, so
+    // Firmware-private routine 2862. It is absent from XNU device.defs, so
     // keep its observed request/reply contract separate from generated MIG
     // data.
     inline constexpr std::uint32_t request_descriptor_count = 2;

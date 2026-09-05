@@ -74,7 +74,7 @@ struct ProcessContext {
         mach_task_identity::initial_io_registry_options_name
     };
     std::int32_t thread_base_priority {
-        xnu792::scheduler::default_base_priority
+        xnu::scheduler::default_base_priority
     };
     std::int32_t nice_value { };
     // Darwin 9.3/10.0's iopolicysys(2) keeps the disk policy separately for
@@ -449,7 +449,7 @@ struct KernelSharedState {
             std::uint32_t sender_name { };
             std::optional<std::uint32_t> array_index;
             std::uint32_t object { };
-            xnu792::ipc::Right right { xnu792::ipc::Right::Send };
+            xnu::ipc::Right right { xnu::ipc::Right::Send };
             std::uint32_t disposition { };
         };
         struct OolPortArray {
@@ -482,7 +482,7 @@ struct KernelSharedState {
         std::vector<OolPayload> ool_payloads;
         std::vector<OolPortArray> ool_port_arrays;
         std::optional<std::uint32_t> reply_object;
-        std::optional<xnu792::ipc::Right> reply_right;
+        std::optional<xnu::ipc::Right> reply_right;
         // A MOVE_SEND used as the message's remote port has no sender ipc_entry
         // after copyin, but the queued message still keeps the destination port
         // alive until receive/discard. Record that hold explicitly.
@@ -1046,11 +1046,11 @@ struct KernelSharedState {
     std::uint32_t next_mach_object { first_synthetic_mach_object };
     std::uint32_t default_processor_set_name_object { };
     std::uint32_t default_processor_set_control_object { };
-    xnu792::ipc::MachNamespaceTable mach_namespaces;
+    xnu::ipc::MachNamespaceTable mach_namespaces;
     // Global ipc_port objects. Per-task names and rights live exclusively in
     // MachNamespaceTable and resolve to keys in this table.
-    xnu792::ipc::PortObjectTable mach_port_objects;
-    // XNU 1699 exposes an opaque context value on receive rights. The value
+    xnu::ipc::PortObjectTable mach_port_objects;
+    // XNU exposes an opaque context value on receive rights. The value
     // follows the ipc_port object when its receive right moves between tasks.
     std::map<std::uint32_t, std::uint64_t> mach_port_contexts;
     // Audit sessions expose stable kernel-owned receive objects. Processes
@@ -1077,13 +1077,13 @@ struct KernelSharedState {
         std::uint64_t wait_queue_sequence { };
     };
     std::map<std::uint32_t, std::vector<std::uint32_t>> mach_port_sets;
-    // XNU 792 links a port's wait queue to every containing port-set wait
+    // XNU links a port's wait queue to every containing port-set wait
     // queue. The links share FIFO order with direct receive waiters, so the
     // reverse topology and its insertion sequence are semantic state rather
     // than a derived lookup cache.
     std::map<std::uint32_t, std::vector<MachPortSetLink>>
         mach_port_set_links_by_member;
-    // XNU 1699 keeps a prepost queue for each port set. A member is linked
+    // XNU keeps a prepost queue for each port set. A member is linked
     // while its message queue is non-empty and is moved to the tail after a
     // receive, so a busy timer port cannot starve an input port in the same
     // set. Keep this ready-member order separate from the membership order

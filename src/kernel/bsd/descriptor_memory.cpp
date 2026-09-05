@@ -1064,9 +1064,8 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             return;
         }
         if (size == 0) {
-            // xnu-792.24.17, xnu-1228.15.4, and xnu-4903.241.1 all pass a
-            // zero-length request through mach_vm_protect, whose contract
-            // returns KERN_SUCCESS without touching the address space.
+            // XNU passes a zero-length request through mach_vm_protect,
+            // which returns KERN_SUCCESS without touching the address space.
             bsd_success(cpu, 0);
             return;
         }

@@ -53,12 +53,12 @@ bool CompatibilityKernel::dispatch_mach_port_message(
     const std::optional<std::uint32_t> local_port { request.local_port };
     const std::optional<std::uint32_t> message_id { request.identifier };
     if (*message_id ==
-            mig_message_id(xnu792::mig::mach_port::Routine::mach_port_type) &&
+            mig_message_id(xnu::mig::mach_port::Routine::mach_port_type) &&
         registers[3] >= 40) {
         const auto name =
             memory_
                 .read32(message_address +
-                        xnu792::mig::mach_port::mach_port_type_arguments[1]
+                        xnu::mig::mach_port::mach_port_type_arguments[1]
                             .request_offset)
                 .value_or(0);
         std::uint32_t result = 15; // KERN_INVALID_NAME
@@ -98,18 +98,18 @@ bool CompatibilityKernel::dispatch_mach_port_message(
         return true;
     }
     if (*message_id ==
-            mig_message_id(xnu792::mig::mach_port::Routine::mach_port_rename) &&
+            mig_message_id(xnu::mig::mach_port::Routine::mach_port_rename) &&
         registers[3] >= 36) {
         const auto old_name =
             memory_
                 .read32(message_address +
-                        xnu792::mig::mach_port::mach_port_rename_arguments[1]
+                        xnu::mig::mach_port::mach_port_rename_arguments[1]
                             .request_offset)
                 .value_or(0);
         const auto new_name =
             memory_
                 .read32(message_address +
-                        xnu792::mig::mach_port::mach_port_rename_arguments[2]
+                        xnu::mig::mach_port::mach_port_rename_arguments[2]
                             .request_offset)
                 .value_or(0);
         std::uint32_t result = 0;
@@ -119,8 +119,8 @@ bool CompatibilityKernel::dispatch_mach_port_message(
                 *shared_state_, process_.pid, *remote_port);
             if (!target) {
                 result = 4;
-            } else if (new_name == xnu792::ipc::null_name ||
-                       new_name == xnu792::ipc::dead_name) {
+            } else if (new_name == xnu::ipc::null_name ||
+                       new_name == xnu::ipc::dead_name) {
                 result = 18; // KERN_INVALID_VALUE
             } else if (!shared_state_->mach_namespaces.contains(
                            *target, old_name)) {
@@ -166,21 +166,21 @@ bool CompatibilityKernel::dispatch_mach_port_message(
     }
     if (*message_id ==
             mig_message_id(
-                xnu792::mig::mach_port::Routine::mach_port_allocate_name) &&
+                xnu::mig::mach_port::Routine::mach_port_allocate_name) &&
         registers[3] >= 36) {
         // mach_port_allocate_name(task, right, name)
         const auto right =
             memory_
                 .read32(
                     message_address +
-                    xnu792::mig::mach_port::mach_port_allocate_name_arguments[1]
+                    xnu::mig::mach_port::mach_port_allocate_name_arguments[1]
                         .request_offset)
                 .value_or(0);
         const auto name =
             memory_
                 .read32(
                     message_address +
-                    xnu792::mig::mach_port::mach_port_allocate_name_arguments[2]
+                    xnu::mig::mach_port::mach_port_allocate_name_arguments[2]
                         .request_offset)
                 .value_or(0);
         std::uint32_t result = 0;
@@ -191,8 +191,8 @@ bool CompatibilityKernel::dispatch_mach_port_message(
             const auto valid_right = right == 1U || right == 3U || right == 4U;
             if (!target) {
                 result = 4;
-            } else if (!valid_right || name == xnu792::ipc::null_name ||
-                       name == xnu792::ipc::dead_name) {
+            } else if (!valid_right || name == xnu::ipc::null_name ||
+                       name == xnu::ipc::dead_name) {
                 result = 18;
             } else if (shared_state_->mach_namespaces.contains(*target, name)) {
                 result = 16;
@@ -235,12 +235,12 @@ bool CompatibilityKernel::dispatch_mach_port_message(
     }
     if (*message_id ==
             mig_message_id(
-                xnu792::mig::mach_port::Routine::mach_port_allocate) &&
+                xnu::mig::mach_port::Routine::mach_port_allocate) &&
         registers[3] >= 40) {
         const auto right =
             memory_
                 .read32(message_address +
-                        xnu792::mig::mach_port::mach_port_allocate_arguments[1]
+                        xnu::mig::mach_port::mach_port_allocate_arguments[1]
                             .request_offset)
                 .value_or(0);
         std::uint32_t allocated_port = 0;
@@ -298,12 +298,12 @@ bool CompatibilityKernel::dispatch_mach_port_message(
     }
     if (*message_id ==
             mig_message_id(
-                xnu792::mig::mach_port::Routine::mach_port_destroy) &&
+                xnu::mig::mach_port::Routine::mach_port_destroy) &&
         registers[3] >= 36) {
         const auto name =
             memory_
                 .read32(message_address +
-                        xnu792::mig::mach_port::mach_port_destroy_arguments[1]
+                        xnu::mig::mach_port::mach_port_destroy_arguments[1]
                             .request_offset)
                 .value_or(0);
         std::uint32_t result = 0;
@@ -313,8 +313,8 @@ bool CompatibilityKernel::dispatch_mach_port_message(
                 *shared_state_, process_.pid, *remote_port);
             if (!target) {
                 result = 4; // KERN_INVALID_ARGUMENT
-            } else if (name != xnu792::ipc::null_name &&
-                       name != xnu792::ipc::dead_name) {
+            } else if (name != xnu::ipc::null_name &&
+                       name != xnu::ipc::dead_name) {
                 if (!destroy_port_name_locked(*shared_state_, *target, name)) {
                     result = 15; // KERN_INVALID_NAME
                 }
@@ -344,18 +344,18 @@ bool CompatibilityKernel::dispatch_mach_port_message(
     }
     if (*message_id ==
             mig_message_id(
-                xnu792::mig::mach_port::Routine::mach_port_get_refs) &&
+                xnu::mig::mach_port::Routine::mach_port_get_refs) &&
         registers[3] >= 40) {
         const auto name =
             memory_
                 .read32(message_address +
-                        xnu792::mig::mach_port::mach_port_get_refs_arguments[1]
+                        xnu::mig::mach_port::mach_port_get_refs_arguments[1]
                             .request_offset)
                 .value_or(0);
         const auto right =
             memory_
                 .read32(message_address +
-                        xnu792::mig::mach_port::mach_port_get_refs_arguments[2]
+                        xnu::mig::mach_port::mach_port_get_refs_arguments[2]
                             .request_offset)
                 .value_or(5);
         std::uint32_t result = 0;
@@ -371,7 +371,7 @@ bool CompatibilityKernel::dispatch_mach_port_message(
             } else if (const auto count =
                            shared_state_->mach_namespaces.user_references(
                                *target, name,
-                               static_cast<xnu792::ipc::Right>(right))) {
+                               static_cast<xnu::ipc::Right>(right))) {
                 references = *count;
             } else if (!shared_state_->mach_namespaces.contains(
                            *target, name)) {
@@ -405,23 +405,23 @@ bool CompatibilityKernel::dispatch_mach_port_message(
     }
     if (*message_id ==
             mig_message_id(
-                xnu792::mig::mach_port::Routine::mach_port_mod_refs) &&
+                xnu::mig::mach_port::Routine::mach_port_mod_refs) &&
         registers[3] >= 44) {
         const auto name =
             memory_
                 .read32(message_address +
-                        xnu792::mig::mach_port::mach_port_mod_refs_arguments[1]
+                        xnu::mig::mach_port::mach_port_mod_refs_arguments[1]
                             .request_offset)
                 .value_or(0);
         const auto right =
             memory_
                 .read32(message_address +
-                        xnu792::mig::mach_port::mach_port_mod_refs_arguments[2]
+                        xnu::mig::mach_port::mach_port_mod_refs_arguments[2]
                             .request_offset)
                 .value_or(5);
         const auto delta = static_cast<std::int32_t>(memory_
                 .read32(message_address +
-                        xnu792::mig::mach_port::mach_port_mod_refs_arguments[3]
+                        xnu::mig::mach_port::mach_port_mod_refs_arguments[3]
                             .request_offset)
                 .value_or(0));
         std::uint32_t result = 0;
@@ -435,7 +435,7 @@ bool CompatibilityKernel::dispatch_mach_port_message(
                 result = 18;
             } else {
                 result = modify_port_references_locked(*shared_state_, *target,
-                    name, static_cast<xnu792::ipc::Right>(right), delta);
+                    name, static_cast<xnu::ipc::Right>(right), delta);
             }
         }
         const std::array<std::uint32_t, 9> reply {
@@ -462,7 +462,7 @@ bool CompatibilityKernel::dispatch_mach_port_message(
     }
     if (*message_id ==
             mig_message_id(
-                xnu792::mig::mach_port::Routine::mach_port_set_mscount) &&
+                xnu::mig::mach_port::Routine::mach_port_set_mscount) &&
         registers[3] >= 36) {
         // mach_port_set_mscount. mach_port.defs deliberately skips one
         // wire ID before this routine, so its Darwin 8 ID is 3210.
@@ -470,14 +470,14 @@ bool CompatibilityKernel::dispatch_mach_port_message(
             memory_
                 .read32(
                     message_address +
-                    xnu792::mig::mach_port::mach_port_set_mscount_arguments[1]
+                    xnu::mig::mach_port::mach_port_set_mscount_arguments[1]
                         .request_offset)
                 .value_or(0);
         const auto mscount =
             memory_
                 .read32(
                     message_address +
-                    xnu792::mig::mach_port::mach_port_set_mscount_arguments[2]
+                    xnu::mig::mach_port::mach_port_set_mscount_arguments[2]
                         .request_offset)
                 .value_or(0);
         std::uint32_t result = 15; // KERN_INVALID_NAME
@@ -489,8 +489,8 @@ bool CompatibilityKernel::dispatch_mach_port_message(
                 target ? shared_state_->mach_namespaces.lookup(*target, name)
                        : std::nullopt;
             if (entry) {
-                if ((entry->type & xnu792::ipc::type_mask(
-                                       xnu792::ipc::Right::Receive)) != 0) {
+                if ((entry->type & xnu::ipc::type_mask(
+                                       xnu::ipc::Right::Receive)) != 0) {
                     static_cast<void>(
                         shared_state_->mach_port_objects.set_make_send_count(
                             entry->object, mscount));
@@ -524,12 +524,12 @@ bool CompatibilityKernel::dispatch_mach_port_message(
     }
     if (*message_id ==
             mig_message_id(
-                xnu792::mig::mach_port::Routine::mach_port_get_set_status) &&
+                xnu::mig::mach_port::Routine::mach_port_get_set_status) &&
         registers[3] >= 52) { // mach_port_get_set_status
         const auto set_name =
             memory_
                 .read32(
-                    message_address + xnu792::mig::mach_port::
+                    message_address + xnu::mig::mach_port::
                                           mach_port_get_set_status_arguments[1]
                                               .request_offset)
                 .value_or(0);
@@ -544,7 +544,7 @@ bool CompatibilityKernel::dispatch_mach_port_message(
                     : std::nullopt;
             if (target && set_entry &&
                 (set_entry->type &
-                    xnu792::ipc::type_mask(xnu792::ipc::Right::PortSet)) != 0) {
+                    xnu::ipc::type_mask(xnu::ipc::Right::PortSet)) != 0) {
                 if (const auto set =
                         shared_state_->mach_port_sets.find(set_entry->object);
                     set != shared_state_->mach_port_sets.end()) {

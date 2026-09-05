@@ -8,10 +8,10 @@
 namespace ilemu::mach_task_identity {
 namespace {
 
-    using xnu792::ipc::Right;
+    using xnu::ipc::Right;
 
-    constexpr auto send_right = xnu792::ipc::type_mask(Right::Send);
-    constexpr auto receive_right = xnu792::ipc::type_mask(Right::Receive);
+    constexpr auto send_right = xnu::ipc::type_mask(Right::Send);
+    constexpr auto receive_right = xnu::ipc::type_mask(Right::Receive);
 
     bool install_kernel_send_port(KernelSharedState& state,
         const ProcessContext& process, std::uint32_t name)
@@ -119,7 +119,7 @@ bool inherit_child(KernelSharedState& state, const ProcessContext& parent,
         if (registered != state.mach_registered_ports.end()) {
             child_registered = registered->second;
             for (const auto object : child_registered) {
-                if (object != xnu792::ipc::null_name)
+                if (object != xnu::ipc::null_name)
                     ++state.mach_kernel_send_rights[object];
             }
         }
@@ -131,7 +131,7 @@ bool inherit_child(KernelSharedState& state, const ProcessContext& parent,
         actions != state.task_exception_actions.end()) {
         state.task_exception_actions[child_task_object] = actions->second;
         for (const auto& action : actions->second) {
-            if (action.port_object != xnu792::ipc::null_name)
+            if (action.port_object != xnu::ipc::null_name)
                 ++state.mach_kernel_send_rights[action.port_object];
         }
     }
@@ -143,9 +143,9 @@ bool inherit_child(KernelSharedState& state, const ProcessContext& parent,
             state.mach_namespaces
                 .copyout_at_name(child.pid, *bootstrap_object, send_right,
                     parent.bootstrap_port)
-                .value_or(xnu792::ipc::null_name);
+                .value_or(xnu::ipc::null_name);
     } else {
-        child.bootstrap_port = xnu792::ipc::null_name;
+        child.bootstrap_port = xnu::ipc::null_name;
     }
 
     for (const auto special :

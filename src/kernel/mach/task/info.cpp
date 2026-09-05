@@ -63,12 +63,12 @@ bool CompatibilityKernel::dispatch_mach_task_info_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
     if (request.identifier !=
-        mig_message_id(xnu792::mig::task::Routine::task_info)) {
+        mig_message_id(xnu::mig::task::Routine::task_info)) {
         return false;
     }
 
     auto& registers = cpu.registers();
-    const auto& arguments = xnu792::mig::task::task_info_arguments;
+    const auto& arguments = xnu::mig::task::task_info_arguments;
     const auto flavor =
         memory_.read32(request.address + arguments[1].request_offset);
     const auto capacity =

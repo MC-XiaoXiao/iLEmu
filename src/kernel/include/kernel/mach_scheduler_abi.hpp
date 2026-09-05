@@ -4,7 +4,7 @@
 
 namespace ilemu::darwin::mach::scheduler {
 
-// XNU 792.24.17 osfmk/mach/thread_switch.h.
+// XNU osfmk/mach/thread_switch.h.
 constexpr std::uint32_t swtch_pri_trap = 59;
 constexpr std::uint32_t swtch_trap = 60;
 constexpr std::uint32_t thread_switch_trap = 61;

@@ -14,7 +14,7 @@
 namespace ilemu {
 namespace {
 
-    // XNU 792 publishes the pointer-sized vm_map interface at 3800 and also
+    // XNU publishes the pointer-sized vm_map interface at 3800 and also
     // exposes its mach_vm compatibility subsystem at 4800. On ARM32 the
     // mach_vm_allocate client uses the same 32-bit wire fields as vm_allocate.
     constexpr std::uint32_t mach_vm_allocate_identifier = 4800U;
@@ -29,7 +29,7 @@ bool CompatibilityKernel::dispatch_mach_vm_allocate_message(
     using namespace mach_support;
     using namespace mach_vm_support;
     const auto vm_allocate_identifier =
-        mig_message_id(xnu792::mig::vm_map::Routine::vm_allocate);
+        mig_message_id(xnu::mig::vm_map::Routine::vm_allocate);
     if (request.identifier != vm_allocate_identifier &&
         request.identifier != mach_vm_allocate_identifier) {
         return false;
@@ -41,7 +41,7 @@ bool CompatibilityKernel::dispatch_mach_vm_allocate_message(
         return true;
     }
 
-    const auto& arguments = xnu792::mig::vm_map::vm_allocate_arguments;
+    const auto& arguments = xnu::mig::vm_map::vm_allocate_arguments;
     const auto requested_address =
         memory_.read32(request.address + arguments[1].request_offset)
             .value_or(0);

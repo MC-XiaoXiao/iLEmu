@@ -26,7 +26,7 @@ namespace {
 bool CompatibilityKernel::dispatch_mach_port_query_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
-    using Routine = xnu792::mig::mach_port::Routine;
+    using Routine = xnu::mig::mach_port::Routine;
     if (request.identifier !=
         mach_support::mig_message_id(Routine::mach_port_names)) {
         return false;
@@ -37,7 +37,7 @@ bool CompatibilityKernel::dispatch_mach_port_query_message(
         return false;
     }
 
-    std::vector<xnu792::ipc::NamedEntry> entries;
+    std::vector<xnu::ipc::NamedEntry> entries;
     std::uint32_t result = darwin::mach::success;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };

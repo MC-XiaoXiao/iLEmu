@@ -59,8 +59,8 @@ namespace {
 bool CompatibilityKernel::dispatch_mach_processor_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
-    using host_routine = xnu792::mig::host_priv::Routine;
-    using processor_routine = xnu792::mig::processor_set::Routine;
+    using host_routine = xnu::mig::host_priv::Routine;
+    using processor_routine = xnu::mig::processor_set::Routine;
 
     auto& registers = cpu.registers();
     const auto message_address = request.address;
@@ -77,7 +77,7 @@ bool CompatibilityKernel::dispatch_mach_processor_message(
             name = shared_state_->mach_namespaces
                        .copyout(process_.pid,
                            shared_state_->default_processor_set_name_object,
-                           xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
+                           xnu::ipc::type_mask(xnu::ipc::Right::Send))
                        .value_or(0);
             if (name == 0) {
                 result = kernel_resource_shortage;
@@ -130,7 +130,7 @@ bool CompatibilityKernel::dispatch_mach_processor_message(
         registers[3] >= complex_port_reply_size) {
         const auto set_name = memory_.read32(
             message_address +
-            xnu792::mig::host_priv::host_processor_set_priv_arguments[1]
+            xnu::mig::host_priv::host_processor_set_priv_arguments[1]
                 .request_offset);
         std::uint32_t control_name = 0;
         {
@@ -145,7 +145,7 @@ bool CompatibilityKernel::dispatch_mach_processor_message(
                     shared_state_->mach_namespaces
                         .copyout(process_.pid,
                             shared_state_->default_processor_set_control_object,
-                            xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
+                            xnu::ipc::type_mask(xnu::ipc::Right::Send))
                         .value_or(0);
             }
         }
@@ -193,8 +193,8 @@ bool CompatibilityKernel::dispatch_mach_processor_message(
                         const auto task_name =
                             shared_state_->mach_namespaces.copyout(process_.pid,
                                 task_object,
-                                xnu792::ipc::type_mask(
-                                    xnu792::ipc::Right::Send));
+                                xnu::ipc::type_mask(
+                                    xnu::ipc::Right::Send));
                         if (!task_name) {
                             result = kernel_resource_shortage;
                             break;

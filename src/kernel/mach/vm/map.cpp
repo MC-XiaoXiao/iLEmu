@@ -61,7 +61,7 @@ namespace {
 bool CompatibilityKernel::dispatch_mach_vm_map_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
-    using xnu792::mig::vm_map::Routine;
+    using xnu::mig::vm_map::Routine;
     const auto is_mach_vm = request.identifier == mach_vm_map_identifier;
     const auto is_64 =
         request.identifier == mig_message_id(Routine::vm_map_64) || is_mach_vm;
@@ -76,8 +76,8 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
         return true;
     }
 
-    const auto& arguments = is_64 ? xnu792::mig::vm_map::vm_map_64_arguments
-                                  : xnu792::mig::vm_map::vm_map_arguments;
+    const auto& arguments = is_64 ? xnu::mig::vm_map::vm_map_64_arguments
+                                  : xnu::mig::vm_map::vm_map_arguments;
     auto address =
         memory_.read32(request.address + arguments[1].request_offset);
     const auto requested_size =
@@ -130,7 +130,7 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
                 request.remote_port) == process_.pid;
         if (*object_name != 0) {
             const auto object = resolve_name_with_right(*shared_state_,
-                process_.pid, *object_name, xnu792::ipc::Right::Send);
+                process_.pid, *object_name, xnu::ipc::Right::Send);
             const auto found =
                 object ? shared_state_->mach_memory_entries.find(*object)
                        : shared_state_->mach_memory_entries.end();

@@ -112,9 +112,8 @@ namespace {
     // Keep build recognition data-driven at the ABI-family boundary. Individual
     // firmware releases within an audited family share the same contract; the
     // dispatchers consume only the resulting epoch and capabilities. The final
-    // rule is an audited build-series prefix from the later XNU source set (for
-    // example 11A465 from xnu-4903), not a catch-all for arbitrary numeric
-    // builds.
+    // rule is an audited build-series prefix for the extended compatibility
+    // contract, not a catch-all for arbitrary numeric builds.
     constexpr std::array build_profile_rules {
         build_family_rule("1A", DarwinAbiEpoch::IphoneOs1,
             DarwinPthreadAbiProfile::LegacyMachThreads, { true, true, true }),

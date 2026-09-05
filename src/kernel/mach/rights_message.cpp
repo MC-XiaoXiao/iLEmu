@@ -50,7 +50,7 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
     const std::optional<std::uint32_t> message_id { request.identifier };
     if (*message_id ==
         mig_message_id(
-            xnu792::mig::mach_port::Routine::mach_port_extract_right)) {
+            xnu::mig::mach_port::Routine::mach_port_extract_right)) {
         constexpr std::uint32_t request_size = 40;
         constexpr std::uint32_t simple_reply_size = 36;
         constexpr std::uint32_t complex_reply_size = 40;
@@ -74,13 +74,13 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
         }
 
         const auto& arguments =
-            xnu792::mig::mach_port::mach_port_extract_right_arguments;
+            xnu::mig::mach_port::mach_port_extract_right_arguments;
         const auto name =
             memory_.read32(message_address + arguments[1].request_offset);
         const auto disposition =
             memory_.read32(message_address + arguments[2].request_offset);
         std::uint32_t result = darwin::mach::success;
-        std::uint32_t extracted_name = xnu792::ipc::null_name;
+        std::uint32_t extracted_name = xnu::ipc::null_name;
         std::uint32_t acquired_disposition = 0;
         {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
@@ -102,12 +102,12 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                 result = darwin::mach::invalid_task;
             } else if (!source_right || !extracted_right) {
                 result = darwin::mach::invalid_value;
-            } else if (*name == xnu792::ipc::null_name ||
-                       *name == xnu792::ipc::dead_name) {
+            } else if (*name == xnu::ipc::null_name ||
+                       *name == xnu::ipc::dead_name) {
                 result = darwin::mach::invalid_right;
             } else if (!entry) {
                 result = darwin::mach::invalid_name;
-            } else if ((entry->type & xnu792::ipc::type_mask(*source_right)) ==
+            } else if ((entry->type & xnu::ipc::type_mask(*source_right)) ==
                        0) {
                 result = darwin::mach::invalid_right;
             } else if (registers[3] < complex_reply_size) {
@@ -130,15 +130,15 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                     const auto copied_out =
                         shared_state_->mach_namespaces.copyout(process_.pid,
                             entry->object,
-                            xnu792::ipc::type_mask(*extracted_right));
+                            xnu::ipc::type_mask(*extracted_right));
                     if (!copied_out) {
                         result = darwin::mach::resource_shortage;
                         if (moved) {
                             static_cast<void>(
                                 shared_state_->mach_namespaces.install(*task,
                                     *name, entry->object,
-                                    xnu792::ipc::type_mask(*source_right)));
-                            if (*source_right == xnu792::ipc::Right::Receive) {
+                                    xnu::ipc::type_mask(*source_right)));
+                            if (*source_right == xnu::ipc::Right::Receive) {
                                 static_cast<void>(shared_state_
                                         ->mach_port_objects.set_receive_owner(
                                             entry->object, *task));
@@ -149,7 +149,7 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                         acquired_disposition =
                             darwin::mig_wire::received_port_disposition(
                                 *disposition);
-                        if (*extracted_right == xnu792::ipc::Right::Receive) {
+                        if (*extracted_right == xnu::ipc::Right::Receive) {
                             static_cast<void>(shared_state_->mach_port_objects
                                     .set_receive_owner(
                                         entry->object, process_.pid));
@@ -204,28 +204,28 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
     }
     if ((*message_id ==
                 mig_message_id(
-                    xnu792::mig::mach_port::Routine::mach_port_deallocate) ||
+                    xnu::mig::mach_port::Routine::mach_port_deallocate) ||
             *message_id ==
                 mig_message_id(
-                    xnu792::mig::mach_port::Routine::mach_port_insert_right) ||
+                    xnu::mig::mach_port::Routine::mach_port_insert_right) ||
             *message_id ==
                 mig_message_id(
-                    xnu792::mig::task::Routine::task_set_special_port) ||
+                    xnu::mig::task::Routine::task_set_special_port) ||
             *message_id ==
-                mig_message_id(xnu792::mig::task::Routine::semaphore_destroy) ||
+                mig_message_id(xnu::mig::task::Routine::semaphore_destroy) ||
             *message_id ==
                 mig_message_id(
-                    xnu792::mig::thread_act::Routine::thread_policy)) &&
+                    xnu::mig::thread_act::Routine::thread_policy)) &&
         registers[3] >= 36) {
         // mach_port_deallocate / mach_port_insert_right / semaphore_destroy /
         // thread_policy
         std::uint32_t kernel_result = 0;
         if (*message_id ==
             mig_message_id(
-                xnu792::mig::mach_port::Routine::mach_port_deallocate)) {
+                xnu::mig::mach_port::Routine::mach_port_deallocate)) {
             const auto name = memory_
                                   .read32(message_address +
-                                          xnu792::mig::mach_port::
+                                          xnu::mig::mach_port::
                                               mach_port_deallocate_arguments[1]
                                                   .request_offset)
                                   .value_or(0);
@@ -234,8 +234,8 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                 *shared_state_, process_.pid, *remote_port);
             if (!task) {
                 kernel_result = 4; // KERN_INVALID_ARGUMENT
-            } else if (name == xnu792::ipc::null_name ||
-                       name == xnu792::ipc::dead_name) {
+            } else if (name == xnu::ipc::null_name ||
+                       name == xnu::ipc::dead_name) {
                 kernel_result = 0;
             } else {
                 const auto entry =
@@ -243,18 +243,18 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                 if (!entry) {
                     kernel_result = 15; // KERN_INVALID_NAME
                 } else {
-                    const auto has = [&](xnu792::ipc::Right right) {
-                        return (entry->type & xnu792::ipc::type_mask(right)) !=
+                    const auto has = [&](xnu::ipc::Right right) {
+                        return (entry->type & xnu::ipc::type_mask(right)) !=
                                0;
                     };
-                    const auto right = has(xnu792::ipc::Right::Send)
-                                           ? xnu792::ipc::Right::Send
-                                       : has(xnu792::ipc::Right::SendOnce)
-                                           ? xnu792::ipc::Right::SendOnce
-                                       : has(xnu792::ipc::Right::DeadName)
-                                           ? xnu792::ipc::Right::DeadName
-                                           : xnu792::ipc::Right::Receive;
-                    if (right == xnu792::ipc::Right::Receive) {
+                    const auto right = has(xnu::ipc::Right::Send)
+                                           ? xnu::ipc::Right::Send
+                                       : has(xnu::ipc::Right::SendOnce)
+                                           ? xnu::ipc::Right::SendOnce
+                                       : has(xnu::ipc::Right::DeadName)
+                                           ? xnu::ipc::Right::DeadName
+                                           : xnu::ipc::Right::Receive;
+                    if (right == xnu::ipc::Right::Receive) {
                         kernel_result = 17;
                     } else {
                         kernel_result = modify_port_references_locked(
@@ -269,7 +269,7 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
             }
         } else if (*message_id ==
                    mig_message_id(
-                       xnu792::mig::task::Routine::semaphore_destroy)) {
+                       xnu::mig::task::Routine::semaphore_destroy)) {
             constexpr std::uint32_t semaphore_destroy_request_size =
                 darwin::mig_wire::complex_descriptor_base +
                 darwin::mig_wire::descriptor_size;
@@ -278,7 +278,7 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                 darwin::mig_wire::complex_descriptor_count_offset);
             const auto semaphore_name =
                 memory_.read32(message_address +
-                               xnu792::mig::task::semaphore_destroy_arguments[1]
+                               xnu::mig::task::semaphore_destroy_arguments[1]
                                    .request_offset);
             const auto descriptor_word =
                 memory_.read32(message_address +
@@ -307,7 +307,7 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                     *shared_state_, process_.pid, *remote_port);
                 const auto semaphore_object =
                     resolve_name_with_right(*shared_state_, process_.pid,
-                        *semaphore_name, xnu792::ipc::Right::Send);
+                        *semaphore_name, xnu::ipc::Right::Send);
                 const auto semaphore =
                     semaphore_object
                         ? shared_state_->mach_semaphores.find(*semaphore_object)
@@ -320,7 +320,7 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                 if (semaphore_object) {
                     static_cast<void>(
                         consume_moved_right_locked(*shared_state_, process_.pid,
-                            *semaphore_name, xnu792::ipc::Right::Send, false));
+                            *semaphore_name, xnu::ipc::Right::Send, false));
                 }
                 if (!target ||
                     semaphore == shared_state_->mach_semaphores.end() ||
@@ -340,13 +340,13 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                     terminate_receive_object_locked(*shared_state_, object);
                 }
             }
-        } else if (*message_id == mig_message_id(xnu792::mig::mach_port::
+        } else if (*message_id == mig_message_id(xnu::mig::mach_port::
                                           Routine::mach_port_insert_right)) {
             if (registers[2] < 52) {
                 kernel_result = 4;
             } else {
                 const auto& insert_arguments =
-                    xnu792::mig::mach_port::mach_port_insert_right_arguments;
+                    xnu::mig::mach_port::mach_port_insert_right_arguments;
                 const auto poly_name =
                     memory_
                         .read32(message_address +
@@ -380,7 +380,7 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
             }
         } else if (*message_id ==
                    mig_message_id(
-                       xnu792::mig::thread_act::Routine::thread_policy)) {
+                       xnu::mig::thread_act::Routine::thread_policy)) {
             using namespace darwin::mach::thread_policy;
             bool applied = false;
             if (registers[3] >= legacy_minimum_request_size) {
@@ -419,12 +419,12 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
             }
         } else if (*message_id ==
                    mig_message_id(
-                       xnu792::mig::task::Routine::task_set_special_port)) {
+                       xnu::mig::task::Routine::task_set_special_port)) {
             // task_set_special_port operates on the task named by the
             // destination port, which is commonly a newly forked child,
             // not on launchd's own task.
             const auto& special_arguments =
-                xnu792::mig::task::task_set_special_port_arguments;
+                xnu::mig::task::task_set_special_port_arguments;
             const auto which = memory_
                                    .read32(message_address +
                                            special_arguments[1].request_offset)
@@ -447,11 +447,11 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
             const auto transferred_right = right_for_disposition(disposition);
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             const auto task_object = resolve_name_with_right(*shared_state_,
-                process_.pid, *remote_port, xnu792::ipc::Right::Send);
+                process_.pid, *remote_port, xnu::ipc::Right::Send);
             const auto target = target_task_for_port(
                 *shared_state_, process_.pid, *remote_port);
             const auto port =
-                port_name == xnu792::ipc::null_name
+                port_name == xnu::ipc::null_name
                     ? std::optional<std::uint32_t> { 0 }
                 : transferred_right
                     ? resolve_name_with_right(*shared_state_, process_.pid,
@@ -459,10 +459,10 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                     : std::nullopt;
             if (!task_object || !target) {
                 kernel_result = 4; // KERN_INVALID_ARGUMENT
-            } else if (!port || (port_name != xnu792::ipc::null_name &&
+            } else if (!port || (port_name != xnu::ipc::null_name &&
                                     (!transferred_right ||
                                         *transferred_right !=
-                                            xnu792::ipc::Right::Send))) {
+                                            xnu::ipc::Right::Send))) {
                 kernel_result = 20; // KERN_INVALID_CAPABILITY
             } else {
                 const auto previous =
@@ -528,11 +528,11 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                 const auto still_local =
                     port && *port != 0
                         ? resolve_name_with_right(*shared_state_, process_.pid,
-                              port_name, xnu792::ipc::Right::Send)
+                              port_name, xnu::ipc::Right::Send)
                         : std::optional<std::uint32_t> { };
                 process_.bootstrap_port = still_local && *still_local == *port
                                               ? port_name
-                                              : xnu792::ipc::null_name;
+                                              : xnu::ipc::null_name;
             }
         }
         const std::array<std::uint32_t, 9> reply {
@@ -559,33 +559,33 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
     }
     if ((*message_id ==
                 mig_message_id(
-                    xnu792::mig::mach_host::Routine::host_get_io_master) ||
+                    xnu::mig::mach_host::Routine::host_get_io_master) ||
             *message_id ==
                 mig_message_id(
-                    xnu792::mig::mach_host::Routine::host_get_clock_service) ||
+                    xnu::mig::mach_host::Routine::host_get_clock_service) ||
             *message_id ==
                 mig_message_id(
-                    xnu792::mig::task::Routine::task_get_special_port) ||
+                    xnu::mig::task::Routine::task_get_special_port) ||
             *message_id ==
-                mig_message_id(xnu792::mig::task::Routine::semaphore_create)) &&
+                mig_message_id(xnu::mig::task::Routine::semaphore_create)) &&
         registers[3] >= 40) {
         // host_get_io_master, host_get_clock_service,
         // task_get_special_port, and semaphore_create return a port.
         const auto which =
             *message_id ==
                     mig_message_id(
-                        xnu792::mig::task::Routine::task_get_special_port)
+                        xnu::mig::task::Routine::task_get_special_port)
                 ? memory_.read32(
                       message_address +
-                      xnu792::mig::task::task_get_special_port_arguments[1]
+                      xnu::mig::task::task_get_special_port_arguments[1]
                           .request_offset)
                 : std::optional<std::uint32_t> { };
         const auto clock_id =
             *message_id ==
                     mig_message_id(
-                        xnu792::mig::mach_host::Routine::host_get_clock_service)
+                        xnu::mig::mach_host::Routine::host_get_clock_service)
                 ? memory_.read32(
-                      message_address + xnu792::mig::mach_host::
+                      message_address + xnu::mig::mach_host::
                                             host_get_clock_service_arguments[1]
                                                 .request_offset)
                 : std::optional<std::uint32_t> { };
@@ -594,9 +594,9 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
         bool update_process_bootstrap = false;
         if (*message_id ==
             mig_message_id(
-                xnu792::mig::mach_host::Routine::host_get_io_master)) {
+                xnu::mig::mach_host::Routine::host_get_io_master)) {
             port = process_.io_master_port;
-        } else if (*message_id == mig_message_id(xnu792::mig::mach_host::
+        } else if (*message_id == mig_message_id(xnu::mig::mach_host::
                                           Routine::host_get_clock_service)) {
             if (clock_id == darwin::mach::clock::system_clock_id) {
                 port = process_.clock_port;
@@ -605,16 +605,16 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
             }
         } else if (*message_id ==
                    mig_message_id(
-                       xnu792::mig::task::Routine::semaphore_create)) {
+                       xnu::mig::task::Routine::semaphore_create)) {
             const auto policy =
                 memory_
                     .read32(message_address +
-                            xnu792::mig::task::semaphore_create_arguments[2]
+                            xnu::mig::task::semaphore_create_arguments[2]
                                 .request_offset)
                     .value_or(8);
             const auto initial_value = static_cast<std::int32_t>(memory_
                     .read32(message_address +
-                            xnu792::mig::task::semaphore_create_arguments[3]
+                            xnu::mig::task::semaphore_create_arguments[3]
                                 .request_offset)
                     .value_or(0xffffffffU));
             if (policy <= 7 && initial_value >= 0) {
@@ -634,8 +634,8 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                         const auto name =
                             shared_state_->mach_namespaces.copyout(process_.pid,
                                 object,
-                                xnu792::ipc::type_mask(
-                                    xnu792::ipc::Right::Send));
+                                xnu::ipc::type_mask(
+                                    xnu::ipc::Right::Send));
                         if (name) {
                             port = *name;
                             port_already_copied_out = true;
@@ -659,7 +659,7 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             const auto resolved_task_object =
                 resolve_name_with_right(*shared_state_, process_.pid,
-                    *remote_port, xnu792::ipc::Right::Send);
+                    *remote_port, xnu::ipc::Right::Send);
             const auto task_object =
                 resolved_task_object && target_task_for_port(*shared_state_,
                                             process_.pid, *remote_port)
@@ -702,7 +702,7 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             port = shared_state_->mach_namespaces
                        .copyout(process_.pid, port,
-                           xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
+                           xnu::ipc::type_mask(xnu::ipc::Right::Send))
                        .value_or(0);
         }
         if (update_process_bootstrap && port != 0) {

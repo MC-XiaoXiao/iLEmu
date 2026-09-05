@@ -12,7 +12,7 @@ void CompatibilityKernel::dispatch_bsd_process_sockets(Cpu& cpu)
 {
     const auto target_pid = cpu.registers()[0];
     const auto level = cpu.registers()[1];
-    // xnu-1699 bsd/vm/vm_unix.c accepts service (1) or all (2).
+    // xnu bsd/vm/vm_unix.c accepts service (1) or all (2).
     // Per-socket defunct errors do not fail the process-level operation.
     if (level != 1U && level != 2U) {
         bsd_error(cpu, bsd_support::invalid_argument);

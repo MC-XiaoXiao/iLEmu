@@ -103,7 +103,7 @@ namespace {
         std::uint32_t name)
     {
         const auto object = resolve_name_with_right(
-            state, caller, name, xnu792::ipc::Right::Send);
+            state, caller, name, xnu::ipc::Right::Send);
         if (!object || !state.task_port_pids.contains(*object))
             return std::nullopt;
         return object;
@@ -138,9 +138,9 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
     const auto set_id =
-        mig_message_id(xnu792::mig::task::Routine::task_set_exception_ports);
+        mig_message_id(xnu::mig::task::Routine::task_set_exception_ports);
     const auto get_id =
-        mig_message_id(xnu792::mig::task::Routine::task_get_exception_ports);
+        mig_message_id(xnu::mig::task::Routine::task_get_exception_ports);
     if (request.identifier != set_id && request.identifier != get_id)
         return false;
 
@@ -152,7 +152,7 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
 
     if (request.identifier == set_id) {
         const auto& arguments =
-            xnu792::mig::task::task_set_exception_ports_arguments;
+            xnu::mig::task::task_set_exception_ports_arguments;
         const auto descriptor_count =
             memory_.read32(request.address +
                            darwin::mig_wire::complex_descriptor_count_offset);
@@ -186,8 +186,8 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
                 *shared_state_, process_.pid, request.remote_port);
             task_object = task.value_or(0);
             const auto port =
-                port_name && *port_name == xnu792::ipc::null_name
-                    ? std::optional<std::uint32_t> { xnu792::ipc::null_name }
+                port_name && *port_name == xnu::ipc::null_name
+                    ? std::optional<std::uint32_t> { xnu::ipc::null_name }
                 : port_name && source_right
                     ? resolve_name_with_right(*shared_state_, process_.pid,
                           *port_name, *source_right)
@@ -199,13 +199,13 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
                 descriptor_count && *descriptor_count == 1 && descriptor &&
                 descriptor_type == darwin::mig_wire::port_descriptor_type;
             const auto valid_behavior =
-                port_object == xnu792::ipc::null_name ||
+                port_object == xnu::ipc::null_name ||
                 (behavior && (*behavior & ~mach_exception_codes) >= 1U &&
                     (*behavior & ~mach_exception_codes) <= 3U);
             const auto valid_port_right =
-                port_object == xnu792::ipc::null_name ||
+                port_object == xnu::ipc::null_name ||
                 (received_right && source_right &&
-                    *received_right == xnu792::ipc::Right::Send);
+                    *received_right == xnu::ipc::Right::Send);
             if (!valid_wire || !exception_mask || !behavior || !flavor ||
                 !task || (*exception_mask & ~valid_exception_mask) != 0) {
                 result = kernel_invalid_argument;
@@ -214,9 +214,9 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
             } else if (!valid_behavior) {
                 result = kernel_invalid_argument;
             } else if (disposition == darwin::mig_wire::disposition_move_send &&
-                       *port_name != xnu792::ipc::null_name &&
+                       *port_name != xnu::ipc::null_name &&
                        !consume_moved_right_locked(*shared_state_, process_.pid,
-                           *port_name, xnu792::ipc::Right::Send, true)) {
+                           *port_name, xnu::ipc::Right::Send, true)) {
                 result = kernel_invalid_right;
             } else {
                 auto& actions = shared_state_->task_exception_actions[*task];
@@ -238,7 +238,7 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
                     action.flavor = *flavor;
                 }
                 if (disposition == darwin::mig_wire::disposition_make_send &&
-                    port_object != xnu792::ipc::null_name) {
+                    port_object != xnu::ipc::null_name) {
                     static_cast<void>(shared_state_->mach_port_objects
                             .increment_make_send_count(port_object));
                 }
@@ -258,7 +258,7 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
     }
 
     const auto& arguments =
-        xnu792::mig::task::task_get_exception_ports_arguments;
+        xnu::mig::task::task_get_exception_ports_arguments;
     const auto exception_mask =
         memory_.read32(request.address + arguments[1].request_offset);
     std::uint32_t task_object = 0;
@@ -291,13 +291,13 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
             }
             handler_names.reserve(groups.size());
             for (const auto& group : groups) {
-                if (group.action.port_object == xnu792::ipc::null_name) {
-                    handler_names.push_back(xnu792::ipc::null_name);
+                if (group.action.port_object == xnu::ipc::null_name) {
+                    handler_names.push_back(xnu::ipc::null_name);
                     continue;
                 }
                 const auto name = shared_state_->mach_namespaces.copyout(
                     process_.pid, group.action.port_object,
-                    xnu792::ipc::type_mask(xnu792::ipc::Right::Send));
+                    xnu::ipc::type_mask(xnu::ipc::Right::Send));
                 if (!name) {
                     result = kernel_resource_shortage;
                     handler_names.clear();
@@ -329,7 +329,7 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
             ++index) {
             reply.push_back(index < handler_names.size()
                                 ? handler_names[index]
-                                : xnu792::ipc::null_name);
+                                : xnu::ipc::null_name);
             reply.push_back(0);
             reply.push_back(darwin::mig_wire::port_descriptor_metadata(
                 darwin::mig_wire::disposition_move_send));

@@ -20,7 +20,7 @@ namespace {
 
     std::uint64_t decay_once(std::uint64_t usage)
     {
-        // sched_decay_shifts[1] in XNU 792 priority.c: 1/2 + 1/8 = 5/8.
+        // sched_decay_shifts[1] in XNU priority.c: 1/2 + 1/8 = 5/8.
         return (usage >> 1U) + (usage >> 3U);
     }
 
@@ -390,7 +390,7 @@ bool XnuScheduler::depress(XnuThreadId thread, std::uint64_t duration_ticks)
     if (was_queued)
         remove_from_queue(thread, record);
     record.info.depressed = true;
-    record.info.scheduled_priority = xnu792::scheduler::minimum_priority;
+    record.info.scheduled_priority = xnu::scheduler::minimum_priority;
     if (duration_ticks != 0) {
         record.depression_deadline =
             saturating_add(elapsed_ticks_, duration_ticks);
@@ -453,9 +453,9 @@ bool XnuScheduler::set_realtime(XnuThreadId thread, std::uint64_t period_ticks,
 {
     if (constraint_ticks < computation_ticks ||
         computation_ticks <
-            xnu792::scheduler::minimum_realtime_computation_ticks ||
+            xnu::scheduler::minimum_realtime_computation_ticks ||
         computation_ticks >
-            xnu792::scheduler::maximum_realtime_computation_ticks) {
+            xnu::scheduler::maximum_realtime_computation_ticks) {
         return false;
     }
     const auto iterator = threads_.find(thread);
@@ -595,7 +595,7 @@ XnuPreemption XnuScheduler::preemption_for(
     bool preempt = first_timeslice ? candidate_priority > current_priority
                                    : candidate_priority >= current_priority;
     if (!preempt &&
-        candidate_priority >= xnu792::scheduler::realtime_queue_priority &&
+        candidate_priority >= xnu::scheduler::realtime_queue_priority &&
         current->second.info.realtime && candidate->second.info.realtime &&
         candidate->second.info.realtime_deadline <
             current->second.info.realtime_deadline) {
@@ -605,7 +605,7 @@ XnuPreemption XnuScheduler::preemption_for(
         return observe(XnuPreemption::None);
     return observe(
         !candidate->second.info.timeshare &&
-                candidate_priority >= xnu792::scheduler::preempt_priority
+                candidate_priority >= xnu::scheduler::preempt_priority
             ? XnuPreemption::Urgent
             : XnuPreemption::Preempt);
 }
@@ -652,7 +652,7 @@ bool XnuScheduler::complete_slice(XnuThreadId thread,
     }
     if (record.info.remaining_quantum == 0 && !record.info.timeshare &&
         record.info.computation_metered >
-            xnu792::scheduler::maximum_unsafe_quanta * quantum_ticks_) {
+            xnu::scheduler::maximum_unsafe_quanta * quantum_ticks_) {
         apply_failsafe(thread, record);
     }
     if (time_accounting == XnuTimeAccounting::Advance) {
@@ -775,8 +775,8 @@ std::int32_t XnuScheduler::highest_runnable_priority() const
 
 std::int32_t XnuScheduler::clamp_priority(std::int32_t priority)
 {
-    return std::clamp(priority, xnu792::scheduler::minimum_priority,
-        xnu792::scheduler::maximum_priority);
+    return std::clamp(priority, xnu::scheduler::minimum_priority,
+        xnu::scheduler::maximum_priority);
 }
 
 std::uint32_t XnuScheduler::priority_usage_shift(
@@ -788,7 +788,7 @@ std::uint32_t XnuScheduler::priority_usage_shift(
                            ((scheduler_tick_ticks % 3U) * 5U) / 3U;
     std::uint32_t shift = 0;
     while (scaled_interval > static_cast<std::uint64_t>(
-                                 xnu792::scheduler::default_base_priority)) {
+                                 xnu::scheduler::default_base_priority)) {
         scaled_interval >>= 1U;
         ++shift;
     }
@@ -846,7 +846,7 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position)
             : processor_set_run_queue_;
     auto& queue = run_queue.queues[static_cast<std::size_t>(priority)];
     if (record.info.realtime &&
-        priority >= xnu792::scheduler::realtime_queue_priority) {
+        priority >= xnu::scheduler::realtime_queue_priority) {
         const auto realtime_key =
             RealtimeQueueKey { record.info.realtime_deadline, thread };
         run_queue.realtime_order.insert(realtime_key);
@@ -946,11 +946,11 @@ const XnuScheduler::RunQueue* XnuScheduler::selected_run_queue(
 XnuThreadId XnuScheduler::peek_highest(const RunQueue& run_queue) const
 {
     if (run_queue.count == 0 ||
-        run_queue.high_queue < xnu792::scheduler::minimum_priority) {
+        run_queue.high_queue < xnu::scheduler::minimum_priority) {
         throw std::logic_error { "cannot peek an empty XNU run queue" };
     }
     const auto priority = run_queue.high_queue;
-    if (priority >= xnu792::scheduler::realtime_queue_priority) {
+    if (priority >= xnu::scheduler::realtime_queue_priority) {
         if (run_queue.realtime_order.empty()) {
             throw std::logic_error {
                 "XNU realtime queue index is inconsistent"
@@ -1065,13 +1065,13 @@ void XnuScheduler::refresh_high_queue(RunQueue& run_queue)
 XnuThreadId XnuScheduler::pop_highest(RunQueue& run_queue)
 {
     if (run_queue.count == 0 ||
-        run_queue.high_queue < xnu792::scheduler::minimum_priority) {
+        run_queue.high_queue < xnu::scheduler::minimum_priority) {
         throw std::logic_error { "cannot pop an empty XNU run queue" };
     }
     const auto priority = run_queue.high_queue;
     auto& queue = run_queue.queues[static_cast<std::size_t>(priority)];
     const auto thread = peek_highest(run_queue);
-    if (priority >= xnu792::scheduler::realtime_queue_priority &&
+    if (priority >= xnu::scheduler::realtime_queue_priority &&
         !run_queue.realtime_order.empty()) {
         const auto realtime_iterator = run_queue.realtime_order.begin();
         auto& record = threads_.at(thread);
@@ -1174,7 +1174,7 @@ void XnuScheduler::age_priorities(std::uint64_t elapsed_ticks)
     }
     for (auto& [thread, record] : threads_) {
         record.priority_usage_shift = processor_set_shift;
-        if (elapsed_ticks >= xnu792::scheduler::scheduling_usage_decay_ticks) {
+        if (elapsed_ticks >= xnu::scheduler::scheduling_usage_decay_ticks) {
             record.info.scheduling_usage = 0;
             record.info.cpu_usage = 0;
         } else {
@@ -1198,13 +1198,13 @@ void XnuScheduler::recompute_priority(XnuThreadId thread, ThreadRecord& record)
         record.priority_usage_shift
             ? record.info.scheduling_usage >> *record.priority_usage_shift
             : 0,
-        static_cast<std::uint64_t>(xnu792::scheduler::maximum_priority)));
+        static_cast<std::uint64_t>(xnu::scheduler::maximum_priority)));
     const auto priority = record.info.realtime
-                              ? xnu792::scheduler::realtime_queue_priority
+                              ? xnu::scheduler::realtime_queue_priority
                           : record.info.timeshare
                               ? std::clamp(record.info.base_priority - penalty,
-                                    xnu792::scheduler::minimum_priority,
-                                    xnu792::scheduler::maximum_kernel_priority)
+                                    xnu::scheduler::minimum_priority,
+                                    xnu::scheduler::maximum_kernel_priority)
                               : record.info.base_priority;
     if (priority == record.info.scheduled_priority)
         return;
@@ -1230,7 +1230,7 @@ std::optional<std::uint32_t> XnuScheduler::processor_set_priority_shift() const
         return std::nullopt;
 
     auto load = processors > 1 ? shared_threads / processors : shared_threads;
-    load = std::min(load, xnu792::scheduler::run_queue_count - 1U);
+    load = std::min(load, xnu::scheduler::run_queue_count - 1U);
     std::uint32_t load_shift = 0;
     while (load > 1U) {
         load >>= 1U;
@@ -1251,12 +1251,12 @@ void XnuScheduler::apply_failsafe(XnuThreadId thread, ThreadRecord& record)
     record.failsafe_saved_realtime = record.info.realtime;
     if (record.info.realtime) {
         record.info.realtime = false;
-        record.info.base_priority = xnu792::scheduler::minimum_priority;
+        record.info.base_priority = xnu::scheduler::minimum_priority;
     }
     record.info.timeshare = true;
     record.info.failsafe = true;
     record.info.failsafe_release_tick = saturating_add(
-        scheduler_tick_, xnu792::scheduler::failsafe_release_scheduler_ticks);
+        scheduler_tick_, xnu::scheduler::failsafe_release_scheduler_ticks);
     if (record.info.state != XnuThreadState::Waiting &&
         !record.failsafe_saved_timeshare) {
         ++active_timeshare_count_;

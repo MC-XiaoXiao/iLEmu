@@ -48,7 +48,7 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
     const std::optional<std::uint32_t> remote_port { request.remote_port };
     const std::optional<std::uint32_t> local_port { request.local_port };
     const std::optional<std::uint32_t> message_id { request.identifier };
-    if (*message_id == mig_message_id(xnu792::mig::mach_port::Routine::
+    if (*message_id == mig_message_id(xnu::mig::mach_port::Routine::
                                mach_port_request_notification) &&
         registers[3] >= 40) {
         // mach_port_request_notification(task, name, id, sync, notify).
@@ -58,7 +58,7 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
         if (registers[2] < 60) {
             result = 4; // KERN_INVALID_ARGUMENT
         } else {
-            const auto& notification_arguments = xnu792::mig::mach_port::
+            const auto& notification_arguments = xnu::mig::mach_port::
                 mach_port_request_notification_arguments;
             const auto notify_name =
                 memory_
@@ -97,12 +97,12 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
                 target ? shared_state_->mach_namespaces.lookup(*target, name)
                        : std::nullopt;
             const auto receive_type =
-                xnu792::ipc::type_mask(xnu792::ipc::Right::Receive);
+                xnu::ipc::type_mask(xnu::ipc::Right::Receive);
             const auto dead_name_types =
                 receive_type |
-                xnu792::ipc::type_mask(xnu792::ipc::Right::Send) |
-                xnu792::ipc::type_mask(xnu792::ipc::Right::SendOnce) |
-                xnu792::ipc::type_mask(xnu792::ipc::Right::DeadName);
+                xnu::ipc::type_mask(xnu::ipc::Right::Send) |
+                xnu::ipc::type_mask(xnu::ipc::Right::SendOnce) |
+                xnu::ipc::type_mask(xnu::ipc::Right::DeadName);
             if (!target) {
                 result = 4;
             } else if (notification != mach_notify_port_destroyed &&
@@ -132,7 +132,7 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
                             ? resolve_name_with_right(*shared_state_,
                                   process_.pid, notify_name, *source_right)
                             : std::nullopt;
-                    if (!right || *right != xnu792::ipc::Right::SendOnce ||
+                    if (!right || *right != xnu::ipc::Right::SendOnce ||
                         !object) {
                         result = 20; // KERN_INVALID_CAPABILITY
                     } else {
@@ -141,7 +141,7 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
                 }
                 if (result == 0) {
                     const auto dead_type =
-                        xnu792::ipc::type_mask(xnu792::ipc::Right::DeadName);
+                        xnu::ipc::type_mask(xnu::ipc::Right::DeadName);
                     if (notification == mach_notify_dead_name) {
                         const auto key = std::pair { *target, name };
                         if (const auto previous = shared_state_
@@ -153,8 +153,8 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
                                     shared_state_->mach_namespaces
                                         .copyout(process_.pid,
                                             previous->second.notify_object,
-                                            xnu792::ipc::type_mask(
-                                                xnu792::ipc::Right::SendOnce))
+                                            xnu::ipc::type_mask(
+                                                xnu::ipc::Right::SendOnce))
                                         .value_or(0);
                             }
                             shared_state_->mach_dead_name_notifications.erase(
@@ -190,8 +190,8 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
                                     shared_state_->mach_namespaces
                                         .copyout(process_.pid,
                                             previous->second.notify_object,
-                                            xnu792::ipc::type_mask(
-                                                xnu792::ipc::Right::SendOnce))
+                                            xnu::ipc::type_mask(
+                                                xnu::ipc::Right::SendOnce))
                                         .value_or(0);
                             }
                             shared_state_->mach_notifications.erase(previous);
@@ -210,7 +210,7 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
                     if (result == 0 && disposition == 18U && notify_name != 0) {
                         static_cast<void>(consume_moved_right_locked(
                             *shared_state_, process_.pid, notify_name,
-                            xnu792::ipc::Right::SendOnce, true));
+                            xnu::ipc::Right::SendOnce, true));
                     }
                 }
             }

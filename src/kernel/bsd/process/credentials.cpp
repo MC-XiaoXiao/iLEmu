@@ -187,7 +187,7 @@ bool CompatibilityKernel::dispatch_bsd_process_credentials(
     }
 
     const auto requested_group = cpu.registers()[0];
-    // XNU 792 permits the real or saved group without privilege. The current
+    // XNU permits the real or saved group without privilege. The current
     // loader has no set-id image transition yet, so the saved group equals the
     // real group. Root may select any effective group.
     if (process_.effective_uid != 0 && requested_group != process_.gid) {

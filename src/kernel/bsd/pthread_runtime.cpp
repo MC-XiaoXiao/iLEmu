@@ -549,24 +549,24 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
                 mach_support::terminate_receive_object_locked(
                     *shared_state_, *thread_object);
             }
-            if (semaphore != xnu792::ipc::null_name) {
+            if (semaphore != xnu::ipc::null_name) {
                 semaphore_result = signal_semaphore_locked(
                     semaphore, false, true, &woken_thread);
             }
-            if (thread_port != xnu792::ipc::null_name &&
-                thread_port != xnu792::ipc::dead_name) {
+            if (thread_port != xnu::ipc::null_name &&
+                thread_port != xnu::ipc::dead_name) {
                 const auto entry = shared_state_->mach_namespaces.lookup(
                     process_.pid, thread_port);
                 if (entry) {
-                    const auto has = [&](xnu792::ipc::Right right) {
-                        return (entry->type & xnu792::ipc::type_mask(right)) !=
+                    const auto has = [&](xnu::ipc::Right right) {
+                        return (entry->type & xnu::ipc::type_mask(right)) !=
                                0;
                     };
-                    const auto right = has(xnu792::ipc::Right::Send)
-                                           ? xnu792::ipc::Right::Send
-                                       : has(xnu792::ipc::Right::SendOnce)
-                                           ? xnu792::ipc::Right::SendOnce
-                                           : xnu792::ipc::Right::DeadName;
+                    const auto right = has(xnu::ipc::Right::Send)
+                                           ? xnu::ipc::Right::Send
+                                       : has(xnu::ipc::Right::SendOnce)
+                                           ? xnu::ipc::Right::SendOnce
+                                           : xnu::ipc::Right::DeadName;
                     static_cast<void>(
                         mach_support::modify_port_references_locked(
                             *shared_state_, process_.pid, thread_port, right,

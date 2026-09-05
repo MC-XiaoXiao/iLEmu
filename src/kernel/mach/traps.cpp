@@ -119,7 +119,7 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
         registers[0] =
             shared_state_->mach_namespaces
                 .allocate(process_.pid, port,
-                    xnu792::ipc::type_mask(xnu792::ipc::Right::Receive))
+                    xnu::ipc::type_mask(xnu::ipc::Right::Receive))
                 .value_or(0);
         return;
     }
@@ -143,7 +143,7 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             const auto caller_task_object =
                 resolve_name_with_right(*shared_state_, process_.pid,
-                    target_task, xnu792::ipc::Right::Send);
+                    target_task, xnu::ipc::Right::Send);
             const auto caller_task =
                 caller_task_object
                     ? shared_state_->task_port_pids.find(*caller_task_object)
@@ -178,8 +178,8 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
                     result_port =
                         shared_state_->mach_namespaces
                             .copyout(process_.pid, task_name_port->first,
-                                xnu792::ipc::type_mask(
-                                    xnu792::ipc::Right::Send))
+                                xnu::ipc::type_mask(
+                                    xnu::ipc::Right::Send))
                             .value_or(0);
                     if (result_port != 0)
                         result = 0; // KERN_SUCCESS
@@ -202,7 +202,7 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             const auto caller_task_object =
                 resolve_name_with_right(*shared_state_, process_.pid,
-                    target_task, xnu792::ipc::Right::Send);
+                    target_task, xnu::ipc::Right::Send);
             const auto caller_task =
                 caller_task_object
                     ? shared_state_->task_port_pids.find(*caller_task_object)
@@ -224,8 +224,8 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
                 if (task_port != shared_state_->task_port_pids.end()) {
                     result_port = shared_state_->mach_namespaces
                                       .copyout(process_.pid, task_port->first,
-                                          xnu792::ipc::type_mask(
-                                              xnu792::ipc::Right::Send))
+                                          xnu::ipc::type_mask(
+                                              xnu::ipc::Right::Send))
                                       .value_or(0);
                     if (result_port != 0)
                         result = 0; // KERN_SUCCESS
@@ -246,7 +246,7 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
         {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             const auto task_object = resolve_name_with_right(*shared_state_,
-                process_.pid, task_name, xnu792::ipc::Right::Send);
+                process_.pid, task_name, xnu::ipc::Right::Send);
             if (const auto task =
                     task_object
                         ? shared_state_->task_port_pids.find(*task_object)
@@ -274,7 +274,7 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
         return;
     }
     case 90: { // mach_wait_until_trap
-        // XNU 792 passes the absolute deadline as a little-endian 64-bit
+        // XNU passes the absolute deadline as a little-endian 64-bit
         // argument in r0/r1. Suspend only this guest thread; the cooperative
         // scheduler wakes it when virtual monotonic time reaches the deadline.
         const auto deadline = static_cast<std::uint64_t>(registers[0]) |
@@ -332,10 +332,10 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
         }
 
         std::optional<XnuThreadId> handoff_thread;
-        if (thread_name != xnu792::ipc::null_name) {
+        if (thread_name != xnu::ipc::null_name) {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             const auto object = resolve_name_with_right(*shared_state_,
-                process_.pid, thread_name, xnu792::ipc::Right::Send);
+                process_.pid, thread_name, xnu::ipc::Right::Send);
             const auto owner = object
                                    ? find_thread_owner(*shared_state_, *object)
                                    : std::nullopt;
@@ -451,11 +451,11 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
             shared_state_->mach_port_objects.create(object, process_.pid));
         shared_state_->mach_queues.try_emplace(object);
         const auto name = shared_state_->mach_namespaces.allocate(process_.pid,
-            object, xnu792::ipc::type_mask(xnu792::ipc::Right::Receive));
+            object, xnu::ipc::type_mask(xnu::ipc::Right::Receive));
         if (!name) {
             shared_state_->mach_timers.erase(object);
             remove_port_object_locked(*shared_state_, object);
-            registers[0] = xnu792::ipc::null_name;
+            registers[0] = xnu::ipc::null_name;
             return;
         }
         registers[0] = *name;
@@ -468,7 +468,7 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto name = registers[0];
         const auto object = resolve_name_with_right(
-            *shared_state_, process_.pid, name, xnu792::ipc::Right::Receive);
+            *shared_state_, process_.pid, name, xnu::ipc::Right::Receive);
         const auto timer = object ? shared_state_->mach_timers.find(*object)
                                   : shared_state_->mach_timers.end();
         if (timer == shared_state_->mach_timers.end()) {
@@ -491,7 +491,7 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
                               (static_cast<std::uint64_t>(registers[2]) << 32U);
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto object = resolve_name_with_right(
-            *shared_state_, process_.pid, name, xnu792::ipc::Right::Receive);
+            *shared_state_, process_.pid, name, xnu::ipc::Right::Receive);
         const auto timer = object ? shared_state_->mach_timers.find(*object)
                                   : shared_state_->mach_timers.end();
         if (timer == shared_state_->mach_timers.end()) {
@@ -513,7 +513,7 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
         {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             const auto object = resolve_name_with_right(*shared_state_,
-                process_.pid, name, xnu792::ipc::Right::Receive);
+                process_.pid, name, xnu::ipc::Right::Receive);
             const auto timer = object ? shared_state_->mach_timers.find(*object)
                                       : shared_state_->mach_timers.end();
             if (timer == shared_state_->mach_timers.end()) {
@@ -545,8 +545,8 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
             return;
         }
         const auto quantum_milliseconds = static_cast<std::uint32_t>(
-            xnu792::scheduler::milliseconds_per_second /
-            xnu792::scheduler::default_preemption_rate);
+            xnu::scheduler::milliseconds_per_second /
+            xnu::scheduler::default_preemption_rate);
         scheduler_yields_[cpu.processor_id()] =
             SchedulerYieldRequest { true, quantum_milliseconds };
         registers[0] = 1;

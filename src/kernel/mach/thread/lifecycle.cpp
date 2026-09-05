@@ -17,13 +17,13 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
 {
     const auto terminates =
         request.identifier ==
-        mig_message_id(xnu792::mig::thread_act::Routine::thread_terminate);
+        mig_message_id(xnu::mig::thread_act::Routine::thread_terminate);
     const auto suspends =
         request.identifier ==
-        mig_message_id(xnu792::mig::thread_act::Routine::thread_suspend);
+        mig_message_id(xnu::mig::thread_act::Routine::thread_suspend);
     const auto resumes =
         request.identifier ==
-        mig_message_id(xnu792::mig::thread_act::Routine::thread_resume);
+        mig_message_id(xnu::mig::thread_act::Routine::thread_resume);
     if (!terminates && !suspends && !resumes) {
         return false;
     }
@@ -33,7 +33,7 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         target_object = resolve_name_with_right(*shared_state_, process_.pid,
-            request.remote_port, xnu792::ipc::Right::Send);
+            request.remote_port, xnu::ipc::Right::Send);
         if (target_object)
             target = find_thread_owner(*shared_state_, *target_object);
     }
@@ -123,7 +123,7 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
         return true;
     }
 
-    if (request.local_port == xnu792::ipc::null_name) {
+    if (request.local_port == xnu::ipc::null_name) {
         cpu.registers()[0] = darwin::mach::success;
         return true;
     }

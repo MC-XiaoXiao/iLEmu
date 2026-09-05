@@ -28,7 +28,7 @@ bool CompatibilityKernel::dispatch_mach_vm_deallocate_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
     const auto vm_deallocate_identifier =
-        mig_message_id(xnu792::mig::vm_map::Routine::vm_deallocate);
+        mig_message_id(xnu::mig::vm_map::Routine::vm_deallocate);
     const auto is_mach_vm = request.identifier == mach_vm_deallocate_identifier;
     if (request.identifier != vm_deallocate_identifier && !is_mach_vm)
         return false;
@@ -39,7 +39,7 @@ bool CompatibilityKernel::dispatch_mach_vm_deallocate_message(
         return true;
     }
 
-    const auto& arguments = xnu792::mig::vm_map::vm_deallocate_arguments;
+    const auto& arguments = xnu::mig::vm_map::vm_deallocate_arguments;
     const auto address =
         memory_.read32(request.address + arguments[1].request_offset);
     const auto size =

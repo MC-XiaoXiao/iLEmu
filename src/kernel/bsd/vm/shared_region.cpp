@@ -20,7 +20,7 @@ namespace ilemu {
 namespace {
 
     // The iPhoneOS 1 ARM dyld uses five 32-bit words here.  This differs from
-    // xnu-792's desktop 32-bit ABI, whose mach_vm_* members make the entry 32
+    // xnu's desktop 32-bit ABI, whose mach_vm_* members make the entry 32
     // bytes.  The layout below is confirmed by the firmware dyld's syscall 299
     // call site and matches the ARM split-segment addresses in the system
     // dylibs.

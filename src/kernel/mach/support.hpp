@@ -60,9 +60,9 @@ namespace mach_support {
     void write_little_word(
         std::span<std::byte> bytes, std::size_t offset, std::uint32_t value);
 
-    [[nodiscard]] std::optional<xnu792::ipc::Right> right_for_disposition(
+    [[nodiscard]] std::optional<xnu::ipc::Right> right_for_disposition(
         std::uint32_t disposition);
-    [[nodiscard]] std::optional<xnu792::ipc::Right>
+    [[nodiscard]] std::optional<xnu::ipc::Right>
     source_right_for_disposition(std::uint32_t disposition);
     [[nodiscard]] std::optional<std::uint32_t> target_task_for_port(
         const KernelSharedState& state, std::uint32_t caller,
@@ -74,7 +74,7 @@ namespace mach_support {
     find_thread_owner(const KernelSharedState& state, std::uint32_t object);
     [[nodiscard]] std::optional<std::uint32_t> resolve_name_with_right(
         const KernelSharedState& state, std::uint32_t task, std::uint32_t name,
-        xnu792::ipc::Right right);
+        xnu::ipc::Right right);
     // mach_msg receive accepts only a task-local receive right or port-set
     // right. A generic namespace resolve is intentionally insufficient because
     // send-only names resolve to the same global object but are not receive
@@ -131,7 +131,7 @@ namespace mach_support {
     void cancel_dead_name_notification_locked(
         KernelSharedState& state, std::uint32_t task, std::uint32_t name);
     [[nodiscard]] bool consume_moved_right_locked(KernelSharedState& state,
-        std::uint32_t task, std::uint32_t name, xnu792::ipc::Right right,
+        std::uint32_t task, std::uint32_t name, xnu::ipc::Right right,
         bool remains_in_flight);
     void terminate_receive_object_locked(
         KernelSharedState& state, std::uint32_t object);
@@ -145,7 +145,7 @@ namespace mach_support {
         KernelSharedState& state, std::uint32_t task, std::uint32_t name);
     [[nodiscard]] std::uint32_t modify_port_references_locked(
         KernelSharedState& state, std::uint32_t task, std::uint32_t name,
-        xnu792::ipc::Right right, std::int32_t delta);
+        xnu::ipc::Right right, std::int32_t delta);
     [[nodiscard]] std::uint32_t insert_port_right_locked(
         KernelSharedState& state, std::uint32_t caller,
         std::uint32_t target_task, std::uint32_t target_name,

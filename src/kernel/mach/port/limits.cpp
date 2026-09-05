@@ -18,16 +18,16 @@ bool CompatibilityKernel::dispatch_mach_port_limit_message(
 {
     if (request.identifier !=
         mach_support::mig_message_id(
-            xnu792::mig::mach_port::Routine::mach_port_set_attributes)) {
+            xnu::mig::mach_port::Routine::mach_port_set_attributes)) {
         return false;
     }
 
     auto& registers = cpu.registers();
     const auto& arguments =
-        xnu792::mig::mach_port::mach_port_set_attributes_arguments;
+        xnu::mig::mach_port::mach_port_set_attributes_arguments;
     constexpr std::uint32_t minimum_request_size = 48;
     std::uint32_t result = darwin::mach::success;
-    std::uint32_t name = xnu792::ipc::null_name;
+    std::uint32_t name = xnu::ipc::null_name;
     std::uint32_t flavor = 0;
     std::uint32_t count = 0;
     std::uint32_t queue_limit = 0;
@@ -35,7 +35,7 @@ bool CompatibilityKernel::dispatch_mach_port_limit_message(
         result = darwin::mach::invalid_argument;
     } else {
         name = memory_.read32(request.address + arguments[1].request_offset)
-                   .value_or(xnu792::ipc::null_name);
+                   .value_or(xnu::ipc::null_name);
         flavor = memory_.read32(request.address + arguments[2].request_offset)
                      .value_or(0);
         count =
@@ -43,7 +43,7 @@ bool CompatibilityKernel::dispatch_mach_port_limit_message(
                 .value_or(0);
         queue_limit =
             memory_.read32(request.address + arguments[3].request_offset)
-                .value_or(xnu792::ipc::maximum_queue_limit + 1U);
+                .value_or(xnu::ipc::maximum_queue_limit + 1U);
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto target = mach_support::target_task_for_port(
             *shared_state_, process_.pid, request.remote_port);
@@ -56,15 +56,15 @@ bool CompatibilityKernel::dispatch_mach_port_limit_message(
             result = darwin::mach::invalid_argument;
         } else if (count < 1U) {
             result = darwin::mach::failure;
-        } else if (queue_limit > xnu792::ipc::maximum_queue_limit) {
+        } else if (queue_limit > xnu::ipc::maximum_queue_limit) {
             result = darwin::mach::invalid_value;
-        } else if (name == xnu792::ipc::null_name ||
-                   name == xnu792::ipc::dead_name) {
+        } else if (name == xnu::ipc::null_name ||
+                   name == xnu::ipc::dead_name) {
             result = darwin::mach::invalid_right;
         } else if (!entry) {
             result = darwin::mach::invalid_name;
-        } else if ((entry->type & xnu792::ipc::type_mask(
-                                      xnu792::ipc::Right::Receive)) == 0) {
+        } else if ((entry->type & xnu::ipc::type_mask(
+                                      xnu::ipc::Right::Receive)) == 0) {
             result = darwin::mach::invalid_right;
         } else if (!shared_state_->mach_port_objects.set_queue_limit(
                        entry->object, queue_limit)) {

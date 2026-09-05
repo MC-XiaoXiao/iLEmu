@@ -11,7 +11,7 @@ namespace ilemu {
 void CompatibilityKernel::dispatch_mach_thread_self_trap(Cpu& cpu)
 {
     const auto slot = static_cast<std::uint32_t>(cpu.processor_id());
-    std::uint32_t name = xnu792::ipc::null_name;
+    std::uint32_t name = xnu::ipc::null_name;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto task =
@@ -21,12 +21,12 @@ void CompatibilityKernel::dispatch_mach_thread_self_trap(Cpu& cpu)
             if (thread != task->second.end()) {
                 name = shared_state_->mach_namespaces
                            .copyout(process_.pid, thread->second,
-                               xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
-                           .value_or(xnu792::ipc::null_name);
+                               xnu::ipc::type_mask(xnu::ipc::Right::Send))
+                           .value_or(xnu::ipc::null_name);
             }
         }
     }
-    if (name != xnu792::ipc::null_name)
+    if (name != xnu::ipc::null_name)
         thread_ports_[cpu.processor_id()] = name;
     cpu.registers()[0] = name;
 }

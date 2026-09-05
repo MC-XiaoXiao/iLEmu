@@ -61,7 +61,7 @@ CompatibilityKernel::create_guest_thread(
             port_name =
                 shared_state_->mach_namespaces
                     .copyout(process_.pid, port_object,
-                        xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
+                        xnu::ipc::type_mask(xnu::ipc::Right::Send))
                     .value_or(0);
             if (port_name != 0) {
                 shared_state_->task_thread_port_objects[process_

@@ -683,7 +683,7 @@ std::vector<std::byte> MetadataProvider::pack_volume_attributes(
     if (mask & volume_encodings_used)
         wide(volume.encodings_used);
     if (mask & volume_capabilities) {
-        // Mirrors xnu-792 hfs_attrlist.c for an HFSX, non-journal-active
+        // Mirrors xnu hfs_attrlist.c for an HFSX, non-journal-active
         // volume.  HFS+ advertises journal capability even when inactive.
         constexpr std::array<std::uint32_t, 8> capabilities { 0x00000f0fU,
             0x000003dfU, 0, 0, 0x00000fffU, 0x000003ffU, 0, 0 };

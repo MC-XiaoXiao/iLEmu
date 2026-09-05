@@ -74,8 +74,8 @@ namespace {
         std::uint32_t name)
     {
         const auto entry = state.mach_namespaces.lookup(process.pid, name);
-        if (!entry || (entry->type & xnu792::ipc::type_mask(
-                                         xnu792::ipc::Right::Receive)) == 0) {
+        if (!entry || (entry->type & xnu::ipc::type_mask(
+                                         xnu::ipc::Right::Receive)) == 0) {
             return std::nullopt;
         }
         return entry->object;
@@ -89,7 +89,7 @@ std::optional<std::uint32_t> handle_clock_mach_request(AddressSpace& memory,
     std::uint32_t receive_size, std::uint32_t remote_port,
     std::uint32_t local_port)
 {
-    using namespace xnu792::mig::clock;
+    using namespace xnu::mig::clock;
     if (message_id != id(Routine::clock_get_time) &&
         message_id != id(Routine::clock_get_attributes) &&
         message_id != id(Routine::clock_alarm)) {
@@ -300,7 +300,7 @@ void enqueue_clock_alarm_reply_locked(KernelSharedState& state,
     if (!state.mach_port_objects.contains(reply_object)) {
         return;
     }
-    using namespace xnu792::mig::clock_reply;
+    using namespace xnu::mig::clock_reply;
     constexpr const auto& arguments = clock_alarm_reply_arguments;
     constexpr auto message_size =
         arguments[3].request_offset + arguments[3].wire_size;

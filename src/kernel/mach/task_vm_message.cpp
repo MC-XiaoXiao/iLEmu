@@ -91,7 +91,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
         return true;
     };
     if (*message_id ==
-            mig_message_id(xnu792::mig::task::Routine::mach_ports_register) &&
+            mig_message_id(xnu::mig::task::Routine::mach_ports_register) &&
         registers[3] >= 36U) {
         std::uint32_t result = darwin::mach::invalid_argument;
         std::array<std::uint32_t, 3> registered_objects { };
@@ -106,7 +106,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                 const auto& descriptor = descriptors->front();
                 const auto descriptor_count = descriptor.count_or_size;
                 const auto request_count_offset =
-                    xnu792::mig::task::mach_ports_register_arguments[1]
+                    xnu::mig::task::mach_ports_register_arguments[1]
                         .request_count_offset;
                 const auto requested_count =
                     request_count_offset + sizeof(std::uint32_t) <=
@@ -154,18 +154,18 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                     const auto target = target_task_for_port(
                         *shared_state_, process_.pid, *remote_port);
                     valid = target.has_value();
-                    const auto source_right = xnu792::ipc::Right::Send;
+                    const auto source_right = xnu::ipc::Right::Send;
                     if (valid) {
                         for (std::uint32_t index = 0; index < descriptor_count;
                             ++index) {
                             const auto name = requested_names[index];
-                            if (name == xnu792::ipc::null_name)
+                            if (name == xnu::ipc::null_name)
                                 continue;
                             const auto entry =
                                 shared_state_->mach_namespaces.lookup(
                                     process_.pid, name);
                             if (!entry ||
-                                (entry->type & xnu792::ipc::type_mask(
+                                (entry->type & xnu::ipc::type_mask(
                                                    source_right)) == 0 ||
                                 !shared_state_->mach_port_objects.contains(
                                     entry->object)) {
@@ -202,7 +202,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                             shared_state_->mach_registered_ports.find(
                                 target_pid);
                         for (const auto object : registered_objects) {
-                            if (object != xnu792::ipc::null_name)
+                            if (object != xnu::ipc::null_name)
                                 retain_kernel_send_right_locked(
                                     *shared_state_, object);
                         }
@@ -213,7 +213,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                             for (std::uint32_t index = 0;
                                 index < descriptor_count; ++index) {
                                 const auto name = requested_names[index];
-                                if (name == xnu792::ipc::null_name)
+                                if (name == xnu::ipc::null_name)
                                     continue;
                                 if (!consume_moved_right_locked(*shared_state_,
                                         process_.pid, name, source_right,
@@ -235,7 +235,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                                 const auto restored =
                                     shared_state_->mach_namespaces.install(
                                         process_.pid, name, object,
-                                        xnu792::ipc::type_mask(source_right));
+                                        xnu::ipc::type_mask(source_right));
                                 if (!restored) {
                                     // The name/object was validated while
                                     // holding the same mutex; reaching this
@@ -246,7 +246,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                                 }
                             }
                             for (const auto object : registered_objects) {
-                                if (object != xnu792::ipc::null_name)
+                                if (object != xnu::ipc::null_name)
                                     release_kernel_send_right_locked(
                                         *shared_state_, object);
                             }
@@ -258,7 +258,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                             if (previous !=
                                 shared_state_->mach_registered_ports.end()) {
                                 for (const auto object : previous->second) {
-                                    if (object != xnu792::ipc::null_name)
+                                    if (object != xnu::ipc::null_name)
                                         release_kernel_send_right_locked(
                                             *shared_state_, object);
                                 }
@@ -275,10 +275,10 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
     }
     const auto creates_suspended_thread =
         *message_id ==
-        mig_message_id(xnu792::mig::task::Routine::thread_create);
+        mig_message_id(xnu::mig::task::Routine::thread_create);
     const auto creates_running_thread =
         *message_id ==
-        mig_message_id(xnu792::mig::task::Routine::thread_create_running);
+        mig_message_id(xnu::mig::task::Routine::thread_create_running);
     if ((creates_suspended_thread || creates_running_thread) &&
         registers[3] >= 40) {
         const auto write_create_error = [&](std::uint32_t result) {
@@ -305,7 +305,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
             return true;
         };
         const auto& create_arguments =
-            xnu792::mig::task::thread_create_running_arguments;
+            xnu::mig::task::thread_create_running_arguments;
         std::array<std::uint32_t, 16> state { };
         std::uint32_t state_count = 0;
         std::uint32_t guest_cpsr = 0x10U;
@@ -391,7 +391,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
         return true;
     }
     if (*message_id ==
-            mig_message_id(xnu792::mig::task::Routine::mach_ports_lookup) &&
+            mig_message_id(xnu::mig::task::Routine::mach_ports_lookup) &&
         registers[3] >= 52) {
         std::uint32_t result = darwin::mach::invalid_argument;
         std::array<std::uint32_t, 3> registered_objects { };
@@ -406,11 +406,11 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
             }
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             for (auto& name : port_names) {
-                if (name != xnu792::ipc::null_name &&
-                    name != xnu792::ipc::dead_name)
+                if (name != xnu::ipc::null_name &&
+                    name != xnu::ipc::dead_name)
                     static_cast<void>(shared_state_->mach_namespaces.deallocate(
                         process_.pid, name));
-                name = xnu792::ipc::null_name;
+                name = xnu::ipc::null_name;
             }
         };
         const auto fail_lookup_transport = [&] {
@@ -431,7 +431,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                 for (std::size_t index = 0; index < registered_objects.size();
                     ++index) {
                     const auto object = registered_objects[index];
-                    if (object == xnu792::ipc::null_name)
+                    if (object == xnu::ipc::null_name)
                         continue;
                     if (!shared_state_->mach_port_objects.contains(object)) {
                         // ipc_port_copy_send() returns IP_DEAD for an inactive
@@ -439,13 +439,13 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                         // MACH_PORT_DEAD rather than failing the whole
                         // three-slot copyout or resurrecting a Send name for a
                         // retired object.
-                        port_names[index] = xnu792::ipc::dead_name;
+                        port_names[index] = xnu::ipc::dead_name;
                         continue;
                     }
                     const auto copied_name =
                         shared_state_->mach_namespaces.copyout(process_.pid,
                             object,
-                            xnu792::ipc::type_mask(xnu792::ipc::Right::Send));
+                            xnu::ipc::type_mask(xnu::ipc::Right::Send));
                     if (!copied_name) {
                         result = darwin::mach::resource_shortage;
                         break;
@@ -454,13 +454,13 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                 }
                 if (result != darwin::mach::success) {
                     for (const auto name : port_names) {
-                        if (name != xnu792::ipc::null_name &&
-                            name != xnu792::ipc::dead_name)
+                        if (name != xnu::ipc::null_name &&
+                            name != xnu::ipc::dead_name)
                             static_cast<void>(
                                 shared_state_->mach_namespaces.deallocate(
                                     process_.pid, name));
                     }
-                    port_names.fill(xnu792::ipc::null_name);
+                    port_names.fill(xnu::ipc::null_name);
                 }
             }
         }
@@ -516,11 +516,11 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
     }
     if (*message_id ==
             mig_message_id(
-                xnu792::mig::mach_port::Routine::mach_port_get_attributes) &&
+                xnu::mig::mach_port::Routine::mach_port_get_attributes) &&
         registers[3] >= 44) {
         // mach_port_get_attributes.
         const auto& attribute_arguments =
-            xnu792::mig::mach_port::mach_port_get_attributes_arguments;
+            xnu::mig::mach_port::mach_port_get_attributes_arguments;
         const auto flavor =
             memory_
                 .read32(message_address + attribute_arguments[2].request_offset)
@@ -537,7 +537,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                                           attribute_arguments[1].request_offset)
                                   .value_or(0);
             std::uint32_t result = 15;
-            std::uint32_t queue_limit = xnu792::ipc::default_queue_limit;
+            std::uint32_t queue_limit = xnu::ipc::default_queue_limit;
             {
                 std::lock_guard mach_lock { shared_state_->mach_mutex };
                 const auto target = target_task_for_port(
@@ -547,12 +547,12 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                         ? shared_state_->mach_namespaces.lookup(*target, name)
                         : std::nullopt;
                 if (entry &&
-                    (entry->type & xnu792::ipc::type_mask(
-                                       xnu792::ipc::Right::Receive)) != 0) {
+                    (entry->type & xnu::ipc::type_mask(
+                                       xnu::ipc::Right::Receive)) != 0) {
                     result = 0;
                     queue_limit =
                         shared_state_->mach_port_objects.lookup(entry->object)
-                            .value_or(xnu792::ipc::PortObject { })
+                            .value_or(xnu::ipc::PortObject { })
                             .queue_limit;
                 } else if (entry) {
                     result = 17;
@@ -603,8 +603,8 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                         ? shared_state_->mach_namespaces.lookup(*target, name)
                         : std::nullopt;
                 if (target && entry &&
-                    (entry->type & xnu792::ipc::type_mask(
-                                       xnu792::ipc::Right::PortSet)) != 0) {
+                    (entry->type & xnu::ipc::type_mask(
+                                       xnu::ipc::Right::PortSet)) != 0) {
                     // A port-set name has a receive right for the set itself,
                     // not for an individual queue.  Darwin reports the
                     // aggregate pending depth here; GraphicsServices uses it to
@@ -624,8 +624,8 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                     }
                     result = 0;
                 } else if (target && entry &&
-                           (entry->type & xnu792::ipc::type_mask(
-                                              xnu792::ipc::Right::Receive)) !=
+                           (entry->type & xnu::ipc::type_mask(
+                                              xnu::ipc::Right::Receive)) !=
                                0) {
                     for (const auto& [set_name, members] :
                         shared_state_->mach_port_sets) {

@@ -1663,8 +1663,8 @@ void EmulatorSession::run()
         preferred_wifi_networks);
     BootGdbTarget debug_target { runtimes };
     XnuScheduler scheduler { guest_ticks_per_second /
-                                 xnu792::scheduler::default_preemption_rate,
-        guest_ticks_per_second / xnu792::scheduler::scheduler_ticks_per_second,
+                                 xnu::scheduler::default_preemption_rate,
+        guest_ticks_per_second / xnu::scheduler::scheduler_ticks_per_second,
         guest_processor_count };
     GuestExecutionPolicy guest_execution_policy { std::chrono::nanoseconds {
         static_cast<std::int64_t>(
@@ -4171,7 +4171,7 @@ void EmulatorSession::run()
                     if (request->depress) {
                         const auto duration_ticks = duration_to_guest_ticks(
                             request->duration_milliseconds,
-                            xnu792::scheduler::milliseconds_per_second,
+                            xnu::scheduler::milliseconds_per_second,
                             guest_ticks_per_second);
                         static_cast<void>(scheduler.depress(
                             scheduled->thread, duration_ticks));

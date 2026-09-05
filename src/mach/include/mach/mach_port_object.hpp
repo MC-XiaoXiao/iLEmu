@@ -5,7 +5,7 @@
 #include <map>
 #include <optional>
 
-namespace ilemu::xnu792::ipc {
+namespace ilemu::xnu::ipc {
 
 using PortObjectId = std::uint32_t;
 using TaskIdentity = std::uint32_t;
@@ -14,7 +14,7 @@ inline constexpr std::uint32_t small_queue_limit = 16;
 inline constexpr std::uint32_t framework_queue_limit = 64;
 inline constexpr std::uint32_t large_queue_limit = 1024;
 inline constexpr std::uint32_t default_queue_limit = basic_queue_limit;
-// Public xnu-792 defines 16 as MACH_PORT_QLIMIT_MAX, but the iPhone OS 1.0
+// Public xnu defines 16 as MACH_PORT_QLIMIT_MAX, but the iPhone OS 1.0
 // firmware's unmodified CoreFoundation/configd clients request 64 and 1024
 // during normal startup. This matches the later Apple BASIC/SMALL/LARGE split
 // and is an observable target-device kernel ABI difference.
@@ -126,4 +126,4 @@ private:
     std::map<PortObjectId, PortObject> objects_;
 };
 
-} // namespace ilemu::xnu792::ipc
+} // namespace ilemu::xnu::ipc

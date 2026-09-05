@@ -4,7 +4,7 @@
 
 namespace ilemu::darwin::mach::clock {
 
-// XNU 792.24.17 osfmk/mach/clock_types.h and kern/syscall_sw.c.
+// XNU osfmk/mach/clock_types.h and kern/syscall_sw.c.
 constexpr std::uint32_t sleep_trap = 62;
 constexpr std::uint32_t null_clock_name = 0;
 constexpr std::uint32_t system_clock_id = 0;

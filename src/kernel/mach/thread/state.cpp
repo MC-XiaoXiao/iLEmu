@@ -49,23 +49,23 @@ bool CompatibilityKernel::dispatch_mach_thread_state_message(
 {
     const auto gets_info =
         request.identifier ==
-        mig_message_id(xnu792::mig::thread_act::Routine::thread_info);
+        mig_message_id(xnu::mig::thread_act::Routine::thread_info);
     const auto gets_state =
         request.identifier ==
-        mig_message_id(xnu792::mig::thread_act::Routine::thread_get_state);
+        mig_message_id(xnu::mig::thread_act::Routine::thread_get_state);
     const auto sets_state =
         request.identifier ==
             mig_message_id(
-                xnu792::mig::thread_act::Routine::thread_set_state) ||
+                xnu::mig::thread_act::Routine::thread_set_state) ||
         request.identifier ==
-            mig_message_id(xnu792::mig::thread_act::Routine::act_set_state);
+            mig_message_id(xnu::mig::thread_act::Routine::act_set_state);
     if (!gets_info && !gets_state && !sets_state) {
         return false;
     }
 
     auto& registers = cpu.registers();
     if (gets_info) {
-        const auto& arguments = xnu792::mig::thread_act::thread_info_arguments;
+        const auto& arguments = xnu::mig::thread_act::thread_info_arguments;
         const auto flavor =
             memory_.read32(request.address + arguments[1].request_offset);
         const auto capacity =
@@ -74,7 +74,7 @@ bool CompatibilityKernel::dispatch_mach_thread_state_message(
         {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             const auto object = resolve_name_with_right(*shared_state_,
-                process_.pid, request.remote_port, xnu792::ipc::Right::Send);
+                process_.pid, request.remote_port, xnu::ipc::Right::Send);
             if (object) {
                 target_owner = find_thread_owner(*shared_state_, *object);
             }
@@ -145,14 +145,14 @@ bool CompatibilityKernel::dispatch_mach_thread_state_message(
             const auto priority = static_cast<std::uint32_t>(
                 target_owner->first == process_.pid
                     ? std::clamp(process_.thread_base_priority,
-                          xnu792::scheduler::minimum_priority,
-                          xnu792::scheduler::maximum_user_priority)
-                    : xnu792::scheduler::default_base_priority);
+                          xnu::scheduler::minimum_priority,
+                          xnu::scheduler::maximum_user_priority)
+                    : xnu::scheduler::default_base_priority);
             const std::array<std::uint32_t,
                 darwin::mach::thread_info::sched_timeshare_word_count>
                 timeshare_info {
                     static_cast<std::uint32_t>(
-                        xnu792::scheduler::maximum_user_priority),
+                        xnu::scheduler::maximum_user_priority),
                     priority,
                     priority,
                     0, // depressed
@@ -172,8 +172,8 @@ bool CompatibilityKernel::dispatch_mach_thread_state_message(
     }
 
     const auto& arguments =
-        gets_state ? xnu792::mig::thread_act::thread_get_state_arguments
-                   : xnu792::mig::thread_act::thread_set_state_arguments;
+        gets_state ? xnu::mig::thread_act::thread_get_state_arguments
+                   : xnu::mig::thread_act::thread_set_state_arguments;
     const auto flavor =
         memory_.read32(request.address + arguments[1].request_offset);
     const auto capacity =
@@ -183,7 +183,7 @@ bool CompatibilityKernel::dispatch_mach_thread_state_message(
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto object = resolve_name_with_right(*shared_state_,
-            process_.pid, request.remote_port, xnu792::ipc::Right::Send);
+            process_.pid, request.remote_port, xnu::ipc::Right::Send);
         if (object) {
             owner = find_thread_owner(*shared_state_, *object);
         }

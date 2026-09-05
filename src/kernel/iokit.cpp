@@ -85,7 +85,7 @@ namespace {
     constexpr std::uint32_t io_bsd_name_matching_type = 101;
     constexpr std::uint32_t io_of_path_matching_type = 102;
 
-    namespace device_mig = xnu792::mig::device;
+    namespace device_mig = xnu::mig::device;
 
     constexpr const auto& matching_services_matching =
         device_mig::io_service_get_matching_services_arguments[1];
@@ -1023,12 +1023,12 @@ namespace {
     std::uint32_t copyout_send_locked(KernelSharedState& shared_state,
         std::uint32_t task, std::uint32_t object)
     {
-        if (object == xnu792::ipc::null_name)
-            return xnu792::ipc::null_name;
+        if (object == xnu::ipc::null_name)
+            return xnu::ipc::null_name;
         return shared_state.mach_namespaces
             .copyout(
-                task, object, xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
-            .value_or(xnu792::ipc::null_name);
+                task, object, xnu::ipc::type_mask(xnu::ipc::Right::Send))
+            .value_or(xnu::ipc::null_name);
     }
 
     void populate_matching_services_locked(KernelSharedState& shared_state,
@@ -1266,7 +1266,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         remote_object =
             resolve_task_name_locked(shared_state, process.pid, remote_port);
     }
-    if (remote_object == xnu792::ipc::null_name) {
+    if (remote_object == xnu::ipc::null_name) {
         if (message_id == static_cast<std::uint32_t>(
                               iokit_abi::Message::ConnectSetNotificationPort) ||
             message_id ==
@@ -1360,8 +1360,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                         make_matching_arguments[3].request_count_offset)
                 .value_or(make_matching_arguments[3].wire_size + 1U);
         const auto request_layout =
-            xnu792::mig::compute_wire_layout(make_matching_arguments,
-                xnu792::mig::WireLayoutSide::Request, element_counts);
+            xnu::mig::compute_wire_layout(make_matching_arguments,
+                xnu::mig::WireLayoutSide::Request, element_counts);
         if (!request_layout || element_counts[3] == 0 ||
             element_counts[3] > make_matching_arguments[3].wire_size ||
             (*request_layout)[3].offset + element_counts[3] > send_size) {
@@ -1413,8 +1413,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         element_counts.fill(0);
         element_counts[4] = matching_count;
         const auto reply_layout =
-            xnu792::mig::compute_wire_layout(make_matching_arguments,
-                xnu792::mig::WireLayoutSide::Reply, element_counts);
+            xnu::mig::compute_wire_layout(make_matching_arguments,
+                xnu::mig::WireLayoutSide::Reply, element_counts);
         if (!reply_layout)
             return mach_rcv_invalid_data;
         const auto reply_size =
@@ -1447,8 +1447,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         static_cast<std::uint32_t>(iokit_abi::Message::RegistryGetRootEntry)) {
         if (receive_size < 40U)
             return mach_rcv_invalid_data;
-        std::uint32_t root_object = xnu792::ipc::null_name;
-        std::uint32_t root_name = xnu792::ipc::null_name;
+        std::uint32_t root_object = xnu::ipc::null_name;
+        std::uint32_t root_name = xnu::ipc::null_name;
         {
             std::lock_guard mach_lock { shared_state.mach_mutex };
             root_object = shared_state.iokit_registry_root_object;
@@ -1543,8 +1543,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         if (!matching)
             return mach_rcv_invalid_data;
 
-        std::uint32_t service_object = xnu792::ipc::null_name;
-        std::uint32_t service_name = xnu792::ipc::null_name;
+        std::uint32_t service_object = xnu::ipc::null_name;
+        std::uint32_t service_name = xnu::ipc::null_name;
         std::size_t matching_service_count = 0;
         {
             std::lock_guard mach_lock { shared_state.mach_mutex };
@@ -1597,27 +1597,27 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
             device_mig::io_service_add_notification_arguments.size()>
             element_counts { };
         element_counts[1] = type_count;
-        const auto type_layout = xnu792::mig::compute_wire_layout(
+        const auto type_layout = xnu::mig::compute_wire_layout(
             device_mig::io_service_add_notification_arguments,
-            xnu792::mig::WireLayoutSide::Request, element_counts);
+            xnu::mig::WireLayoutSide::Request, element_counts);
         if (!type_layout)
             return mach_rcv_invalid_data;
         const auto matching_count_offset = (*type_layout)[2].count_offset;
         const auto matching_count =
             memory.read32(message_address + matching_count_offset).value_or(0);
         element_counts[2] = matching_count;
-        const auto matching_layout = xnu792::mig::compute_wire_layout(
+        const auto matching_layout = xnu::mig::compute_wire_layout(
             device_mig::io_service_add_notification_arguments,
-            xnu792::mig::WireLayoutSide::Request, element_counts);
+            xnu::mig::WireLayoutSide::Request, element_counts);
         if (!matching_layout)
             return mach_rcv_invalid_data;
         const auto reference_count =
             memory.read32(message_address + (*matching_layout)[4].count_offset)
                 .value_or(0);
         element_counts[4] = reference_count;
-        const auto complete_layout = xnu792::mig::compute_wire_layout(
+        const auto complete_layout = xnu::mig::compute_wire_layout(
             device_mig::io_service_add_notification_arguments,
-            xnu792::mig::WireLayoutSide::Request, element_counts);
+            xnu::mig::WireLayoutSide::Request, element_counts);
         if (!complete_layout)
             return mach_rcv_invalid_data;
         const auto type_bytes = memory.read_bytes(
@@ -1639,7 +1639,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
             std::lock_guard mach_lock { shared_state.mach_mutex };
             const auto notification_object = resolve_task_name_locked(
                 shared_state, process.pid, notification_port);
-            if (notification_object == xnu792::ipc::null_name) {
+            if (notification_object == xnu::ipc::null_name) {
                 return mach_rcv_invalid_data;
             }
             iterator_object = shared_state.allocate_mach_object();
@@ -2058,16 +2058,16 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                             recursive_registry_property[1].request_count_offset)
                     .value_or(0);
             const auto plane_layout =
-                xnu792::mig::compute_wire_layout(recursive_registry_property,
-                    xnu792::mig::WireLayoutSide::Request, element_counts);
+                xnu::mig::compute_wire_layout(recursive_registry_property,
+                    xnu::mig::WireLayoutSide::Request, element_counts);
             if (!plane_layout)
                 return mach_rcv_invalid_data;
             element_counts[2] =
                 memory.read32(message_address + (*plane_layout)[2].count_offset)
                     .value_or(0);
             const auto layout =
-                xnu792::mig::compute_wire_layout(recursive_registry_property,
-                    xnu792::mig::WireLayoutSide::Request, element_counts);
+                xnu::mig::compute_wire_layout(recursive_registry_property,
+                    xnu::mig::WireLayoutSide::Request, element_counts);
             if (!layout || element_counts[1] == 0 ||
                 element_counts[1] > recursive_registry_property[1].wire_size ||
                 element_counts[2] == 0 ||
@@ -2351,7 +2351,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                 .read32(
                     message_address + service_open_owning_task.request_offset)
                 .value_or(0);
-        if (owning_task_name == xnu792::ipc::null_name) {
+        if (owning_task_name == xnu::ipc::null_name) {
             return mach_rcv_invalid_data;
         }
         const auto connect_type =

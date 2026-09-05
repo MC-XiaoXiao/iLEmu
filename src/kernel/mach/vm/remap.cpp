@@ -63,7 +63,7 @@ bool CompatibilityKernel::dispatch_mach_vm_remap_message(
     const auto is_mach_vm = request.identifier == mach_vm_remap_identifier;
     if (!is_mach_vm &&
         request.identifier != mach_support::mig_message_id(
-                                  xnu792::mig::vm_map::Routine::vm_remap)) {
+                                  xnu::mig::vm_map::Routine::vm_remap)) {
         return false;
     }
 

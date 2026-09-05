@@ -45,7 +45,7 @@ namespace {
 bool CompatibilityKernel::dispatch_mach_vm_region_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
-    using xnu792::mig::vm_map::Routine;
+    using xnu::mig::vm_map::Routine;
     const auto is_vm_region = request.identifier == vm_region_identifier;
     const auto is_mach_vm = request.identifier == mach_vm_region_identifier;
     if (request.identifier != mig_message_id(Routine::vm_region_64) &&

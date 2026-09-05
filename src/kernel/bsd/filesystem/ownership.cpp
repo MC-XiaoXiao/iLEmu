@@ -128,7 +128,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         const auto requested_group = registers[2];
         const auto requested_mode = registers[3];
         const auto extended_security = registers[4];
-        // Unlike fchmod_extended, XNU 792 and 1228 use NULL for no ACL
+        // Unlike fchmod_extended, the extended permission ABI uses NULL for no ACL
         // mutation and the sentinel pointer 1 to remove an ACL.
         constexpr std::uint32_t remove_acl = 1;
         if (extended_security != 0 && extended_security != remove_acl) {
@@ -209,7 +209,7 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         const auto requested_group = registers[2];
         const auto requested_mode = registers[3];
         const auto extended_security = registers[4];
-        // XNU 792 and 1228 use NULL to remove the ACL and -1 to leave it
+        // the extended permission ABI uses NULL to remove the ACL and -1 to leave it
         // unchanged. ACLs are not exposed by the current HFS metadata
         // projection, so both operations are representable as no-ops. Refuse a
         // real filesec payload instead of reporting a silently incomplete

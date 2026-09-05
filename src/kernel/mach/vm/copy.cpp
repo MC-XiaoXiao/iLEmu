@@ -18,7 +18,7 @@ namespace {
     // by vm_copy.
     constexpr std::uint32_t mach_vm_copy_identifier = 4807U;
     constexpr std::uint32_t vm_copy_request_size =
-        xnu792::mig::vm_map::vm_copy_arguments[3].request_offset +
+        xnu::mig::vm_map::vm_copy_arguments[3].request_offset +
         darwin::mig_wire::word_size;
 
 } // namespace
@@ -26,7 +26,7 @@ namespace {
 bool CompatibilityKernel::dispatch_mach_vm_copy_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
-    using xnu792::mig::vm_map::Routine;
+    using xnu::mig::vm_map::Routine;
     using namespace mach_support;
     using namespace mach_vm_support;
 
@@ -53,7 +53,7 @@ bool CompatibilityKernel::dispatch_mach_vm_copy_message(
         return fail_transport();
     }
 
-    const auto& arguments = xnu792::mig::vm_map::vm_copy_arguments;
+    const auto& arguments = xnu::mig::vm_map::vm_copy_arguments;
     const auto source =
         memory_.read32(request.address + arguments[1].request_offset);
     const auto size =

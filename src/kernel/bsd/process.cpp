@@ -60,7 +60,7 @@ void CompatibilityKernel::release_process_mach_rights()
     // this task therefore remain alive long enough to absorb cancellation and
     // send-once notifications generated while the ipc_space is dismantled.
     const auto receive_type =
-        xnu792::ipc::type_mask(xnu792::ipc::Right::Receive);
+        xnu::ipc::type_mask(xnu::ipc::Right::Receive);
     std::stable_sort(entries.begin(), entries.end(),
         [receive_type](const auto& left, const auto& right) {
             const auto left_receives = (left.entry.type & receive_type) != 0;
@@ -83,7 +83,7 @@ void CompatibilityKernel::release_process_mach_rights()
             shared_state_->mach_registered_ports.find(process_.pid);
         registered != shared_state_->mach_registered_ports.end()) {
         for (const auto object : registered->second) {
-            if (object != xnu792::ipc::null_name)
+            if (object != xnu::ipc::null_name)
                 mach_support::release_kernel_send_right_locked(
                     *shared_state_, object);
         }
@@ -530,10 +530,10 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         } else {
             process_.nice_value =
                 std::clamp(static_cast<std::int32_t>(registers[2]), -20, 20);
-            // XNU 792 resetpriority() calls task_importance(-p_nice), whose
+            // XNU resetpriority() calls task_importance(-p_nice), whose
             // task base is BASEPRI_DEFAULT + importance.
             process_.thread_base_priority =
-                xnu792::scheduler::default_base_priority - process_.nice_value;
+                xnu::scheduler::default_base_priority - process_.nice_value;
             if (task_priority_handler_) {
                 task_priority_handler_(process_.thread_base_priority);
                 if (scheduler_preemption_query_ &&

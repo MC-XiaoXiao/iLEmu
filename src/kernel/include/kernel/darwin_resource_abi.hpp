@@ -22,7 +22,7 @@ inline constexpr std::size_t rusage_arm32_word_count = 18;
 inline constexpr std::size_t rusage_arm32_size =
     rusage_arm32_word_count * sizeof(std::uint32_t);
 // Darwin's UNIX03 libc wrappers set this private bit before entering the
-// kernel. xnu-1228 strips it in getrlimit/dosetrlimit after retaining whether
+// kernel. xnu strips it in getrlimit/dosetrlimit after retaining whether
 // strict POSIX error behavior was requested.
 inline constexpr std::uint32_t posix_flag = 0x1000;
 

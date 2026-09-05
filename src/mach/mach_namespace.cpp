@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <limits>
 
-namespace ilemu::xnu792::ipc {
+namespace ilemu::xnu::ipc {
 namespace {
 
     constexpr std::size_t right_count = 5;
@@ -457,4 +457,4 @@ bool MachNamespaceTable::valid_name(MachName name)
     return name != null_name && name != dead_name;
 }
 
-} // namespace ilemu::xnu792::ipc
+} // namespace ilemu::xnu::ipc

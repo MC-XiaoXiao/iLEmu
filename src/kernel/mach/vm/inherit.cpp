@@ -15,7 +15,7 @@ namespace ilemu {
 namespace {
 
     constexpr std::uint32_t request_size =
-        xnu792::mig::vm_map::vm_inherit_arguments[3].request_offset +
+        xnu::mig::vm_map::vm_inherit_arguments[3].request_offset +
         darwin::mig_wire::word_size;
     constexpr std::uint32_t kern_invalid_argument = 4U;
 
@@ -28,7 +28,7 @@ bool CompatibilityKernel::dispatch_mach_vm_inherit_message(
     using namespace mach_vm_support;
 
     if (request.identifier !=
-        mig_message_id(xnu792::mig::vm_map::Routine::vm_inherit)) {
+        mig_message_id(xnu::mig::vm_map::Routine::vm_inherit)) {
         return false;
     }
 
@@ -40,7 +40,7 @@ bool CompatibilityKernel::dispatch_mach_vm_inherit_message(
     if (registers[2] < request_size || registers[3] < simple_reply_size)
         return fail_transport();
 
-    const auto& arguments = xnu792::mig::vm_map::vm_inherit_arguments;
+    const auto& arguments = xnu::mig::vm_map::vm_inherit_arguments;
     const auto address =
         memory_.read32(request.address + arguments[1].request_offset);
     const auto size =

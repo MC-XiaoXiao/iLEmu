@@ -6,7 +6,7 @@
 
 namespace ilemu::darwin::tty {
 
-// XNU 792 bsd/sys/ioccom.h and bsd/sys/ttycom.h. Darwin encodes a
+// XNU bsd/sys/ioccom.h and bsd/sys/ttycom.h. Darwin encodes a
 // parameter-less ioctl as IOC_VOID | group << 8 | command.
 inline constexpr std::uint32_t ioctl_void = 0x2000'0000U;
 inline constexpr std::uint32_t ioctl_output = 0x4000'0000U;
@@ -62,7 +62,7 @@ struct Arm32Attributes {
 
 constexpr Arm32Attributes default_attributes()
 {
-    // XNU 792 ttydefaults.h: TTYDEF_{I,O,C,L}FLAG, ttydefchars and B9600.
+    // XNU ttydefaults.h: TTYDEF_{I,O,C,L}FLAG, ttydefchars and B9600.
     return {
         .input_flags = 0x0000'2b02U,
         .output_flags = 0x0000'0003U,

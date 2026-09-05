@@ -802,7 +802,7 @@ void write_header(const Arguments& arguments, std::string_view subsystem,
               "#include <span>\n"
               "#include <string_view>\n\n"
               "#include \"mach/xnu_mig_adapter.hpp\"\n\n"
-              "namespace ilemu::xnu792::mig::"
+              "namespace ilemu::xnu::mig::"
            << arguments.cpp_namespace
            << " {\n\n"
               "inline constexpr std::string_view subsystem_name{\""
@@ -882,7 +882,7 @@ void write_header(const Arguments& arguments, std::string_view subsystem,
               "constexpr std::uint32_t id(Routine routine) {\n"
               "    return static_cast<std::uint32_t>(routine);\n"
               "}\n\n"
-              "}  // namespace ilemu::xnu792::mig::"
+              "}  // namespace ilemu::xnu::mig::"
            << arguments.cpp_namespace << "\n";
 }
 

@@ -160,7 +160,7 @@ bool CompatibilityKernel::name_kernel_control_socket(Cpu& cpu, bool peer)
     const auto endpoint = kernel_control_endpoints_.find(registers[0]);
     if (endpoint == kernel_control_endpoints_.end())
         return false;
-    // XNU 792 provides ctl_peeraddr but deliberately has no local sockaddr
+    // XNU provides ctl_peeraddr but deliberately has no local sockaddr
     // operation for kernel-control sockets.
     if (!peer) {
         bsd_error(cpu, darwin::error::operation_not_supported);

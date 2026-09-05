@@ -5,7 +5,7 @@
 
 namespace ilemu::darwin::mach::thread_policy {
 
-// XNU 792.24.17 osfmk/mach/thread_act.defs and thread_policy.h. The request
+// XNU osfmk/mach/thread_act.defs and thread_policy.h. The request
 // offsets are also verified against iPhone OS 1.0 libSystem.B.dylib's
 // _thread_policy_set MIG client stub.
 constexpr std::uint32_t subsystem_base = 3600;

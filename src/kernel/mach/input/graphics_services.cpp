@@ -2022,8 +2022,8 @@ ServiceResolution record_bootstrap_reply_locked(KernelSharedState& state,
     const auto check_in =
         request.kind ==
         KernelSharedState::PendingBootstrapServiceRequest::Kind::CheckIn;
-    const auto expected_right = check_in ? xnu792::ipc::Right::Receive
-                                         : xnu792::ipc::Right::Send;
+    const auto expected_right = check_in ? xnu::ipc::Right::Receive
+                                         : xnu::ipc::Right::Send;
     const auto service = std::find_if(transfers.begin(), transfers.end(),
         [expected_right](const auto& transfer) {
             return transfer.right == expected_right;

@@ -207,7 +207,7 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             if (const auto object = mach_support::resolve_name_with_right(
                     *shared_state_, process_.pid, registers[4],
-                    xnu792::ipc::Right::Send)) {
+                    xnu::ipc::Right::Send)) {
                 if (const auto owner =
                         mach_support::find_thread_owner(*shared_state_, *object)) {
                     target = DarwinPsynchThread { owner->first, owner->second };

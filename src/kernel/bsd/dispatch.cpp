@@ -91,8 +91,8 @@ namespace {
 
 void CompatibilityKernel::dispatch_bsd_nosys(Cpu& cpu, bool send_sigsys)
 {
-    // xnu-792.24.17 and xnu-1228.15.4 call psignal(SIGSYS) before returning
-    // ENOSYS. xnu-4903 keeps the same path behind the send_sigsys policy knob.
+    // XNU's nosys path can deliver SIGSYS before returning ENOSYS. The
+    // selected ABI policy determines whether signal delivery is enabled.
     // Set the ABI result first so a pending/default signal cannot leave stale
     // r0 or the carry bit visible to the guest.
     bsd_error(cpu, bsd_support::not_implemented);
@@ -116,9 +116,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 322: { // VersionSensitive nosys/iopolicysys collision.
         if (!darwin_abi_route_supported(legacy_iopolicysys_route,
                 shared_state_->darwin_kernel_identity.abi_epoch)) {
-            // xnu-792.24.17 and the firmware's pre-iopolicy xnu-933-era slot
-            // both define syscall 322 as nosys. It must return ENOSYS without
-            // entering trace_unknown(), because an expected nosys result is not
+            // The pre-disk-policy ABI reserves this syscall slot as nosys.
+            // Return ENOSYS without entering trace_unknown(): expected nosys is not
             // a fatal ABI violation.
             dispatch_bsd_nosys(cpu,
                 shared_state_->darwin_kernel_identity.capabilities.send_sigsys);
@@ -130,8 +129,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         constexpr std::uint32_t iopol_type_disk = 0;
         constexpr std::uint32_t iopol_scope_process = 0;
         constexpr std::uint32_t iopol_scope_thread = 1;
-        // xnu-1228.15.4's disk policy has DEFAULT/NORMAL/PASSIVE/THROTTLE
-        // (0..3). xnu-4903.241.1 adds UTILITY/STANDARD and additional iotypes;
+        // The four-policy disk ABI defines DEFAULT/NORMAL/PASSIVE/THROTTLE
+        // (0..3). Extended disk-policy ABIs add values and additional iotypes;
         // keep those newer values unimplemented instead of accidentally
         // applying the old policy state to a different ABI.
         constexpr std::uint32_t iopol_policy_max = 3;
@@ -213,7 +212,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::get_process_group:
     case kernel_bsd::interval_timer::set_syscall:
     case kernel_bsd::interval_timer::get_syscall:
-    case 244: // posix_spawn (xnu-1228 / iPhone OS user ABI)
+    case 244: // posix_spawn
     case 96:
     case 116:
     case darwin::syscall::get_resource_usage:

@@ -42,7 +42,7 @@ bool CompatibilityKernel::dispatch_mach_vm_purgable_message(
     const auto is_mach_vm =
         request.identifier == mach_vm_purgable_control_identifier;
     if (request.identifier !=
-            mig_message_id(xnu792::mig::vm_map::Routine::vm_purgable_control) &&
+            mig_message_id(xnu::mig::vm_map::Routine::vm_purgable_control) &&
         !is_mach_vm) {
         return false;
     }
@@ -55,7 +55,7 @@ bool CompatibilityKernel::dispatch_mach_vm_purgable_message(
     if (registers[2] < request_size || registers[3] < reply_size)
         return fail_transport();
 
-    const auto& arguments = xnu792::mig::vm_map::vm_purgable_control_arguments;
+    const auto& arguments = xnu::mig::vm_map::vm_purgable_control_arguments;
     const auto address =
         memory_.read32(request.address + arguments[1].request_offset);
     const auto control =

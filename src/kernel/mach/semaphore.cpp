@@ -104,7 +104,7 @@ std::uint32_t CompatibilityKernel::signal_semaphore_locked(std::uint32_t name,
     std::vector<WokenThread>* woken_threads)
 {
     const auto object = resolve_name_with_right(
-        *shared_state_, process_.pid, name, xnu792::ipc::Right::Send);
+        *shared_state_, process_.pid, name, xnu::ipc::Right::Send);
     return object ? signal_semaphore_object_locked(
                         *object, all, prepost, woken_thread, woken_threads)
                   : 4U; // KERN_INVALID_ARGUMENT
@@ -117,7 +117,7 @@ std::uint32_t CompatibilityKernel::signal_semaphore_thread_locked(
     constexpr std::uint32_t kern_invalid_argument = 4;
     constexpr std::uint32_t kern_not_waiting = 48;
     const auto semaphore_object = resolve_name_with_right(
-        *shared_state_, process_.pid, semaphore_name, xnu792::ipc::Right::Send);
+        *shared_state_, process_.pid, semaphore_name, xnu::ipc::Right::Send);
     if (!semaphore_object)
         return kern_invalid_argument;
     const auto semaphore =
@@ -126,9 +126,9 @@ std::uint32_t CompatibilityKernel::signal_semaphore_thread_locked(
         return kern_invalid_argument;
 
     std::optional<std::pair<std::uint32_t, std::uint32_t>> target;
-    if (thread_name != xnu792::ipc::null_name) {
+    if (thread_name != xnu::ipc::null_name) {
         const auto thread_object = resolve_name_with_right(*shared_state_,
-            process_.pid, thread_name, xnu792::ipc::Right::Send);
+            process_.pid, thread_name, xnu::ipc::Right::Send);
         if (!thread_object)
             return kern_invalid_argument;
         target = find_thread_owner(*shared_state_, *thread_object);
@@ -199,12 +199,12 @@ void CompatibilityKernel::wait_on_semaphore(Cpu& cpu, std::uint32_t wait_name,
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         wait_object = resolve_name_with_right(
-            *shared_state_, process_.pid, wait_name, xnu792::ipc::Right::Send);
+            *shared_state_, process_.pid, wait_name, xnu::ipc::Right::Send);
         signal_object =
             signal_name == 0
                 ? std::optional<std::uint32_t> { }
                 : resolve_name_with_right(*shared_state_, process_.pid,
-                      signal_name, xnu792::ipc::Right::Send);
+                      signal_name, xnu::ipc::Right::Send);
     }
     if (!wait_object || (signal_name != 0 && !signal_object)) {
         if (bsd_result) {

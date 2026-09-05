@@ -38,11 +38,10 @@ struct DarwinAbiRoute {
     DarwinAbiEpoch maximum_epoch { DarwinAbiEpoch::Unknown };
 };
 
-// Syscall 322 changes from nosys to iopolicysys in xnu-1228.15.4 and remains
-// iopolicysys in xnu-4903.241.1. The call number and wire shape are identical,
-// so this is a genuine VersionSensitive collision rather than a
-// shape-dispatched route. The dispatcher still accepts only the audited
-// three-word disk shape; later XNU iotypes and policies are rejected there.
+// The disk-policy ABI assigns iopolicysys to a slot reserved as nosys by
+// the legacy ABI. The call number cannot identify which contract is active,
+// so this route needs an explicit ABI capability. The dispatcher accepts only
+// the audited three-word disk shape; extended iotypes and policies are rejected.
 inline constexpr DarwinAbiRoute legacy_iopolicysys_route {
     DarwinAbiDomain::BsdSyscall, 322U, DarwinAbiCompatibility::VersionSensitive,
     DarwinAbiEpoch::IphoneOs2, DarwinAbiEpoch::Later

@@ -11,7 +11,7 @@
 
 namespace ilemu::darwin::bpf {
 
-// Darwin 8 / XNU 792 Berkeley Packet Filter ABI. The target firmware is
+// Darwin 8 / XNU Berkeley Packet Filter ABI. The target firmware is
 // ARM32, so pointers, timeval, ifreq and bpf_program use 32-bit layouts.
 inline constexpr std::string_view descriptor_kind { "bpf" };
 inline constexpr std::string_view device_prefix { "/dev/bpf" };

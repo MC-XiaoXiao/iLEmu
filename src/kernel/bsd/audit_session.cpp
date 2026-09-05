@@ -17,7 +17,7 @@ namespace ilemu {
 namespace {
 
     constexpr auto send_right =
-        xnu792::ipc::type_mask(xnu792::ipc::Right::Send);
+        xnu::ipc::type_mask(xnu::ipc::Right::Send);
 
     std::optional<std::uint32_t> copyout_audit_session_port_locked(
         KernelSharedState& state, std::uint32_t process_id,
@@ -81,7 +81,7 @@ void CompatibilityKernel::dispatch_bsd_audit_session(
     if (number == darwin::syscall::audit_session_join) {
         const auto object = mach_support::resolve_name_with_right(
             *shared_state_, process_.pid, registers[0],
-            xnu792::ipc::Right::Send);
+            xnu::ipc::Right::Send);
         auto session_id = std::optional<std::uint32_t> { };
         if (object) {
             for (const auto& [candidate, session_object] :
@@ -118,7 +118,7 @@ void CompatibilityKernel::dispatch_bsd_audit_session(
     }
     if (!memory_.write32(registers[1], *name)) {
         static_cast<void>(mach_support::modify_port_references_locked(
-            *shared_state_, process_.pid, *name, xnu792::ipc::Right::Send, -1));
+            *shared_state_, process_.pid, *name, xnu::ipc::Right::Send, -1));
         bsd_error(cpu, bsd_support::bad_address);
         return;
     }

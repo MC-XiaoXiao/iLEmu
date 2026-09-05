@@ -47,7 +47,7 @@ namespace {
 
     [[nodiscard]] bool task_owns_mach_right_locked(
         const KernelSharedState& state, std::uint32_t task,
-        std::uint32_t object, xnu792::ipc::Right right)
+        std::uint32_t object, xnu::ipc::Right right)
     {
         return state.mach_namespaces.owns_right(task, object, right);
     }
@@ -63,7 +63,7 @@ namespace {
         if (pending.receive_is_port_set) {
             return state.mach_port_sets.contains(object) &&
                    task_owns_mach_right_locked(
-                       state, task, object, xnu792::ipc::Right::PortSet);
+                       state, task, object, xnu::ipc::Right::PortSet);
         }
 
         // A direct receiver remains attached to the cached port object across a
@@ -71,7 +71,7 @@ namespace {
         // receive right is gone or the object is otherwise invalidated.
         return state.mach_port_objects.contains(object) &&
                task_owns_mach_right_locked(
-                   state, task, object, xnu792::ipc::Right::Receive);
+                   state, task, object, xnu::ipc::Right::Receive);
     }
 
 } // namespace
@@ -265,7 +265,7 @@ CompatibilityKernel::preferred_pending_mach_receiver_locked(
         }
     };
 
-    // XNU 792 represents a receive port as a compound FIFO wait queue. Direct
+    // XNU represents a receive port as a compound FIFO wait queue. Direct
     // waiters are queue elements, while each containing port set contributes a
     // persistent link whose own FIFO contains that set's waiters. Posting to
     // the port walks those elements recursively and wakes the first receiver.
@@ -460,12 +460,12 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     // once their port object is gone and invalidate the queued message.
     const auto copyout_received_right =
         [&](std::uint32_t object,
-            xnu792::ipc::Right right) -> std::optional<std::uint32_t> {
-        if (object == xnu792::ipc::null_name)
+            xnu::ipc::Right right) -> std::optional<std::uint32_t> {
+        if (object == xnu::ipc::null_name)
             return std::nullopt;
         if (!shared_state_->mach_port_objects.contains(object)) {
-            if (right != xnu792::ipc::Right::Send &&
-                right != xnu792::ipc::Right::SendOnce) {
+            if (right != xnu::ipc::Right::Send &&
+                right != xnu::ipc::Right::SendOnce) {
                 return std::nullopt;
             }
             // Directly retired legacy objects may not have gone through
@@ -475,10 +475,10 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
             static_cast<void>(
                 shared_state_->mach_namespaces.mark_object_dead(object));
             return shared_state_->mach_namespaces.copyout(process_.pid, object,
-                xnu792::ipc::type_mask(xnu792::ipc::Right::DeadName));
+                xnu::ipc::type_mask(xnu::ipc::Right::DeadName));
         }
         return shared_state_->mach_namespaces.copyout(
-            process_.pid, object, xnu792::ipc::type_mask(right));
+            process_.pid, object, xnu::ipc::type_mask(right));
     };
 
     const auto discard_queued_message = [&] {
@@ -505,8 +505,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     const auto send_bits = read_little_word(pending_message.bytes, 0);
     const auto sender_reply_name = read_little_word(pending_message.bytes, 12);
     std::optional<std::uint32_t> reply_object;
-    std::optional<xnu792::ipc::Right> reply_right;
-    if (sender_reply_name != xnu792::ipc::null_name) {
+    std::optional<xnu::ipc::Right> reply_right;
+    if (sender_reply_name != xnu::ipc::null_name) {
         reply_object = pending_message.reply_object
                            ? pending_message.reply_object
                            : resolve_message_object(*shared_state_,
@@ -518,14 +518,14 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
         // malformed/dead transfer from partially mutating the receiver's
         // namespace and then failing halfway through delivery.
         if (reply_right &&
-            ((!reply_object) || (*reply_right == xnu792::ipc::Right::Receive &&
+            ((!reply_object) || (*reply_right == xnu::ipc::Right::Receive &&
                                     !shared_state_->mach_port_objects.contains(
                                         *reply_object)))) {
             return fail_receive(0x10004008U); // MACH_RCV_INVALID_DATA
         }
     }
     for (const auto& transfer : pending_message.port_transfers) {
-        if (transfer.right == xnu792::ipc::Right::Receive &&
+        if (transfer.right == xnu::ipc::Right::Receive &&
             !shared_state_->mach_port_objects.contains(transfer.object)) {
             return fail_receive(0x10004008U); // MACH_RCV_INVALID_DATA
         }
@@ -533,7 +533,7 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
 
     const auto destination_name =
         shared_state_->mach_namespaces.copyout(process_.pid, queued_port,
-            xnu792::ipc::type_mask(xnu792::ipc::Right::Receive));
+            xnu::ipc::type_mask(xnu::ipc::Right::Receive));
     if (!destination_name) {
         cpu.registers()[0] = 0x10004008U;
         pending_mach_receives_.erase(pending);
@@ -546,7 +546,7 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     // swap that lets a MIG server reply using request.msgh_remote_port.
     write_little_word(received->bytes, 12, *destination_name);
 
-    if (sender_reply_name != xnu792::ipc::null_name) {
+    if (sender_reply_name != xnu::ipc::null_name) {
         if (reply_right) {
             if (!reply_object) {
                 cpu.registers()[0] = 0x10004008U;
@@ -565,7 +565,7 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
                 return true;
             }
             write_little_word(received->bytes, 8, *reply_name);
-            if (*reply_right == xnu792::ipc::Right::Send) {
+            if (*reply_right == xnu::ipc::Right::Send) {
                 release_inflight_send_right_locked(
                     *shared_state_, *reply_object);
             }
@@ -617,7 +617,7 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
                 0xffU;
             const auto sender_name =
                 read_little_word(pending_message.bytes, offset);
-            if (sender_name == xnu792::ipc::null_name) {
+            if (sender_name == xnu::ipc::null_name) {
                 // ipc_kmsg_copyout always exposes a port descriptor using its
                 // receive-side type, including descriptors that carry
                 // MACH_PORT_NULL. MIG validates the descriptor type before
@@ -667,10 +667,10 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
                 darwin::mig_wire::replace_descriptor_disposition(
                     descriptor_word,
                     darwin::mig_wire::received_port_disposition(disposition)));
-            if (*right == xnu792::ipc::Right::Send) {
+            if (*right == xnu::ipc::Right::Send) {
                 release_inflight_send_right_locked(*shared_state_, *object);
             }
-            if (*right == xnu792::ipc::Right::Receive) {
+            if (*right == xnu::ipc::Right::Receive) {
                 static_cast<void>(
                     shared_state_->remove_mach_port_set_member_from_all_locked(
                         *object));
@@ -682,8 +682,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
                     static_cast<void>(
                         shared_state_->mach_namespaces.remove_type(
                             pending_message.sender_pid, sender_name,
-                            xnu792::ipc::type_mask(
-                                xnu792::ipc::Right::Receive)));
+                            xnu::ipc::type_mask(
+                                xnu::ipc::Right::Receive)));
                 }
             }
         }
@@ -725,10 +725,10 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
             write_little_word(names,
                 *transfer.array_index * darwin::mig_wire::word_size,
                 *receiver_name);
-            if (transfer.right == xnu792::ipc::Right::Send) {
+            if (transfer.right == xnu::ipc::Right::Send) {
                 release_inflight_send_right_locked(
                     *shared_state_, transfer.object);
-            } else if (transfer.right == xnu792::ipc::Right::Receive) {
+            } else if (transfer.right == xnu::ipc::Right::Receive) {
                 static_cast<void>(
                     shared_state_->remove_mach_port_set_member_from_all_locked(
                         transfer.object));

@@ -15,11 +15,11 @@
 
 namespace ilemu {
 
-// Constants and ordering are taken from XNU 792.24.17 osfmk/kern/sched.h
+// Constants and ordering are taken from XNU osfmk/kern/sched.h
 // and sched_prim.c. These defaults serve CPU-only helpers and unit tests. A
 // full boot derives its tick rate from the selected device instruction-timing
 // model instead of assuming that the CPU clock equals the system bus clock.
-namespace xnu792::scheduler {
+namespace xnu::scheduler {
 
     constexpr std::size_t run_queue_count = 128;
     constexpr std::int32_t minimum_priority = 0;
@@ -50,7 +50,7 @@ namespace xnu792::scheduler {
     constexpr std::uint64_t maximum_realtime_computation_ticks =
         default_guest_ticks_per_second * 50'000 / microseconds_per_second;
 
-} // namespace xnu792::scheduler
+} // namespace xnu::scheduler
 
 struct XnuThreadId {
     std::uint32_t process { };
@@ -111,12 +111,12 @@ struct XnuScheduledSlice {
 
 struct XnuThreadSchedulingInfo {
     XnuThreadState state { XnuThreadState::Waiting };
-    std::int32_t base_priority { xnu792::scheduler::default_base_priority };
+    std::int32_t base_priority { xnu::scheduler::default_base_priority };
     std::int32_t scheduled_priority {
-        xnu792::scheduler::default_base_priority
+        xnu::scheduler::default_base_priority
     };
     std::uint64_t remaining_quantum {
-        xnu792::scheduler::standard_quantum_ticks
+        xnu::scheduler::standard_quantum_ticks
     };
     std::uint64_t scheduling_usage { };
     std::uint64_t cpu_usage { };
@@ -138,22 +138,22 @@ struct XnuThreadSchedulingInfo {
     bool depressed { };
 };
 
-// A deterministic implementation of XNU 792's traditional processor-set run
+// A deterministic implementation of XNU's traditional processor-set run
 // queue. It preserves FIFO order at each of the 128 priorities. A thread keeps
 // the head position while its first timeslice remains; equal-priority threads
 // rotate only when that quantum expires, matching csw_needed().
 class XnuScheduler {
 public:
     explicit XnuScheduler(
-        std::uint64_t quantum_ticks = xnu792::scheduler::standard_quantum_ticks,
+        std::uint64_t quantum_ticks = xnu::scheduler::standard_quantum_ticks,
         std::uint64_t scheduler_tick_ticks =
-            xnu792::scheduler::scheduler_tick_interval,
+            xnu::scheduler::scheduler_tick_interval,
         std::size_t processor_count = 1);
 
     void set_dispatch_diagnostics(bool enabled);
 
     bool register_thread(XnuThreadId thread,
-        std::int32_t base_priority = xnu792::scheduler::default_base_priority,
+        std::int32_t base_priority = xnu::scheduler::default_base_priority,
         bool runnable = true);
     bool remove_thread(XnuThreadId thread);
     std::size_t remove_process(std::uint32_t process);
@@ -250,12 +250,12 @@ private:
     using RealtimeQueueKey = std::pair<std::uint64_t, XnuThreadId>;
 
     struct RunQueue {
-        std::array<ReadyQueue, xnu792::scheduler::run_queue_count> queues;
+        std::array<ReadyQueue, xnu::scheduler::run_queue_count> queues;
         // Realtime queues are ordered by deadline. The list remains the
         // removal index for all priorities; this side index avoids a linear
         // deadline insertion/search on the scheduler hot path.
         std::set<RealtimeQueueKey> realtime_order;
-        std::array<std::uint32_t, xnu792::scheduler::run_queue_count / 32>
+        std::array<std::uint32_t, xnu::scheduler::run_queue_count / 32>
             bitmap { };
         std::int32_t high_queue { -1 };
         std::size_t count { };

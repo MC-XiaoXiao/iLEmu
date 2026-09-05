@@ -47,7 +47,7 @@ namespace {
 bool CompatibilityKernel::dispatch_mach_vm_memory_entry_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
-    using xnu792::mig::vm_map::Routine;
+    using xnu::mig::vm_map::Routine;
     const auto is_mach_vm =
         request.identifier == mach_vm_make_memory_entry_identifier;
     if (request.identifier !=
@@ -73,7 +73,7 @@ bool CompatibilityKernel::dispatch_mach_vm_memory_entry_message(
         return fail_transport();
 
     const auto& arguments =
-        xnu792::mig::vm_map::mach_make_memory_entry_64_arguments;
+        xnu::mig::vm_map::mach_make_memory_entry_64_arguments;
     const auto requested_size =
         memory_.read64(request.address + arguments[1].request_offset);
     const auto requested_offset =
@@ -102,7 +102,7 @@ bool CompatibilityKernel::dispatch_mach_vm_memory_entry_message(
                 request.remote_port) == process_.pid;
         if (*parent_name != 0) {
             const auto object = resolve_name_with_right(*shared_state_,
-                process_.pid, *parent_name, xnu792::ipc::Right::Send);
+                process_.pid, *parent_name, xnu::ipc::Right::Send);
             const auto entry =
                 object ? shared_state_->mach_memory_entries.find(*object)
                        : shared_state_->mach_memory_entries.end();
@@ -168,7 +168,7 @@ bool CompatibilityKernel::dispatch_mach_vm_memory_entry_message(
         shared_state_->mach_memory_entries.emplace(object_identifier, entry);
         object_name = shared_state_->mach_namespaces
                           .copyout(process_.pid, object_identifier,
-                              xnu792::ipc::type_mask(xnu792::ipc::Right::Send))
+                              xnu::ipc::type_mask(xnu::ipc::Right::Send))
                           .value_or(0);
         if (object_name == 0) {
             remove_port_object_locked(*shared_state_, object_identifier);

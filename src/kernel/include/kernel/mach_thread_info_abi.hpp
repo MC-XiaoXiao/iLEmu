@@ -5,7 +5,7 @@
 
 namespace ilemu::darwin::mach::thread_info {
 
-// XNU 792.24.17 osfmk/mach/thread_info.h. All fields are natural_t words on
+// XNU osfmk/mach/thread_info.h. All fields are natural_t words on
 // the 32-bit ARM ABI used by iPhone OS 1.x.
 constexpr std::uint32_t basic_flavor = 3;
 constexpr std::size_t basic_word_count = 10;

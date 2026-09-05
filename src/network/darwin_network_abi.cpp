@@ -283,7 +283,7 @@ std::vector<std::byte> make_route_interface_list(
             auto destination = interface.ipv4_broadcast;
             if (!destination &&
                 (interface.flags & interface_flag_loopback) != 0) {
-                // XNU 792's in_ifinit redirects a loopback in_ifaddr's
+                // XNU's in_ifinit redirects a loopback in_ifaddr's
                 // ifa_dstaddr to ifa_addr. sysctl_iflist exports that pointer
                 // as RTAX_BRD, which Darwin getifaddrs exposes through the
                 // ifa_broadaddr/ifa_dstaddr union.
