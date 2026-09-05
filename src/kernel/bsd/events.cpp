@@ -1740,8 +1740,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
-        const auto write_read_only_string = [&](std::string_view value) {
-            const auto required = static_cast<std::uint32_t>(value.size() + 1);
+        const auto write_read_only_bytes = [&](std::span<const std::byte> bytes) {
+            const auto required = static_cast<std::uint32_t>(bytes.size());
             if (registers[4] != 0) {
                 bsd_error(cpu, darwin::error::operation_not_permitted);
                 return;
@@ -1755,11 +1755,6 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     bsd_error(cpu, darwin::error::no_memory);
                     return;
                 }
-                std::vector<std::byte> bytes(required);
-                std::transform(value.begin(), value.end(), bytes.begin(),
-                    [](char character) {
-                        return static_cast<std::byte>(character);
-                    });
                 if (!memory_.copy_in(registers[2], bytes)) {
                     bsd_error(cpu, bsd_support::bad_address);
                     return;
@@ -1767,6 +1762,26 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             }
             bsd_success(cpu, 0);
         };
+        const auto write_read_only_string = [&](std::string_view value) {
+            std::vector<std::byte> bytes(value.size() + 1U);
+            std::transform(value.begin(), value.end(), bytes.begin(),
+                [](char character) { return static_cast<std::byte>(character); });
+            write_read_only_bytes(bytes);
+        };
+        if (*mib0 == darwin::sysctl::control_unspecified &&
+            (*mib1 == darwin::sysctl::operation_oid_to_name ||
+                *mib1 == darwin::sysctl::operation_oid_format)) {
+            const auto metadata = registers[1] == 4
+                                      ? darwin::sysctl::describe_object(*mib2, *mib3)
+                                      : std::nullopt;
+            if (!metadata)
+                bsd_error(cpu, darwin::error::no_entry);
+            else if (*mib1 == darwin::sysctl::operation_oid_to_name)
+                write_read_only_string(metadata->name);
+            else
+                write_read_only_bytes(darwin::sysctl::encode_object_format(*metadata));
+            return;
+        }
         if (*mib0 == darwin::sysctl::control_unspecified &&
             *mib1 == darwin::sysctl::operation_name_to_oid &&
             registers[1] == 2) {

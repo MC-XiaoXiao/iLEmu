@@ -15,7 +15,9 @@ inline constexpr std::uint32_t control_unspecified = 0;
 inline constexpr std::uint32_t control_kernel = 1;
 inline constexpr std::uint32_t control_vfs = 3;
 inline constexpr std::uint32_t control_hardware = 6;
+inline constexpr std::uint32_t operation_oid_to_name = 1;
 inline constexpr std::uint32_t operation_name_to_oid = 3;
+inline constexpr std::uint32_t operation_oid_format = 4;
 inline constexpr std::uint32_t vfs_generic = 0;
 inline constexpr std::uint32_t vfs_max_type_number = 1;
 inline constexpr std::uint32_t vfs_conf = 2;
@@ -50,6 +52,17 @@ struct ObjectIdentifier {
     std::array<std::uint32_t, 2> components { };
     std::size_t size { };
 };
+
+struct ObjectMetadata {
+    std::string_view name;
+    std::uint32_t kind;
+    std::string_view format;
+};
+
+[[nodiscard]] std::optional<ObjectMetadata> describe_object(
+    std::uint32_t control, std::uint32_t selector);
+[[nodiscard]] std::vector<std::byte> encode_object_format(
+    const ObjectMetadata& metadata);
 
 // Resolves the fixed nodes currently projected by the compatibility kernel.
 // Dynamic OID_AUTO nodes can be added here as their values are exposed.
