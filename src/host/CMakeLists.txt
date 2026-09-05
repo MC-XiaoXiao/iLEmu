@@ -14,10 +14,7 @@ add_library(ilemu_host_graphics STATIC
 add_library(iLEmu::host_graphics ALIAS ilemu_host_graphics)
 ilemu_configure_module(ilemu_host_graphics)
 target_link_libraries(ilemu_host_graphics PUBLIC iLEmu::graphics)
-if(ILEMU_ENABLE_VULKAN)
-    find_package(Vulkan QUIET)
-endif()
-if(Vulkan_FOUND AND Vulkan_GLSLC_EXECUTABLE)
+if(ILEMU_ENABLE_VULKAN AND Vulkan_FOUND AND Vulkan_GLSLC_EXECUTABLE)
     set(ILEMU_VMA_DIR
         "${PROJECT_SOURCE_DIR}/external/vulkan-memory-allocator")
     if(NOT EXISTS "${ILEMU_VMA_DIR}/include/vk_mem_alloc.h")

@@ -23,6 +23,9 @@ find_package(Threads REQUIRED)
 option(ILEMU_ENABLE_SDL2 "Build the optional SDL2 display backend" ON)
 option(ILEMU_ENABLE_VULKAN
     "Build the optional Vulkan GLES renderer" ON)
+if(ILEMU_ENABLE_VULKAN)
+    find_package(Vulkan QUIET)
+endif()
 option(ILEMU_ENABLE_DYNARMIC_TEST_EMIT_FAILURE
     "Compile Dynarmic portable-emit fault injection for tests" OFF)
 find_package(PkgConfig QUIET)
