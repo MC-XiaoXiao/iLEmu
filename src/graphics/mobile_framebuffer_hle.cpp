@@ -826,26 +826,6 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
 {
     if (display_ == nullptr)
         return;
-    // A remote client can already own the semantic foreground while
-    // SpringBoard is still submitting a transitional system layer. Preserve
-    // that presentable client scene until the normal handoff completes; this
-    // is state/capability based and does not depend on an application or
-    // firmware identity.
-    if (shared_state_ && scene_coordinator_) {
-        std::lock_guard lock { shared_state_->mach_mutex };
-        const auto process = shared_state_->processes.find(call.process_id());
-        const auto active_scene = shared_state_->active_application_scene;
-        const auto presentable = active_scene &&
-            scene_coordinator_->client_scene_presentable(
-                active_scene->process_id);
-        if (process != shared_state_->processes.end() && active_scene &&
-            active_scene->process_id != call.process_id() && presentable &&
-            !is_application_executable_path(process->second.executable_path) &&
-            !shared_state_->application_touch_suspended) {
-            call.set_return(iokit_abi::success);
-            return;
-        }
-    }
     if (submit_host_layers(call))
         return;
     scanout_contents_valid_ = false;
