@@ -57,6 +57,9 @@ private:
     void object_set_property(UserlandHleCall& call);
     void property_listener(UserlandHleCall& call);
     void create_native_io_proc(UserlandHleCall& call);
+    void record_native_io_proc(UserlandHleCall& call, std::uint32_t device,
+        std::uint32_t callback, std::uint32_t client_data,
+        std::uint32_t io_proc_id);
     void destroy_native_io_proc(UserlandHleCall& call);
     void start_native_io_at_time(UserlandHleCall& call);
     void add_io_proc(UserlandHleCall& call);

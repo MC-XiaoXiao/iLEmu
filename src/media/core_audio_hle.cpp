@@ -926,12 +926,10 @@ void CoreAudioHle::stream_set_property(UserlandHleCall& call)
 
 void CoreAudioHle::object_property(UserlandHleCall& call)
 {
-    // The adapter owns synthetic devices only.  Letting an unknown HAL object
-    // fall through to the firmware route implementation can dereference a
-    // route table before a host-backed device exists; report the normal
-    // unsupported-property status and keep the media service alive.
+    // The firmware owns the HAL system object and its plug-in object tree.
+    // In particular, device UID translation must reach that native registry.
     if (find_device(call.argument(0)) == nullptr) {
-        call.set_return(unsupported_property);
+        call.resume_original_persistently();
         return;
     }
     const auto address = call.argument(1);
@@ -963,7 +961,7 @@ void CoreAudioHle::object_property(UserlandHleCall& call)
 void CoreAudioHle::object_set_property(UserlandHleCall& call)
 {
     if (find_device(call.argument(0)) == nullptr) {
-        call.set_return(unsupported_property);
+        call.resume_original_persistently();
         return;
     }
     const auto property = call.memory().read32(call.argument(1)).value_or(0);
@@ -1008,13 +1006,37 @@ void CoreAudioHle::create_native_io_proc(UserlandHleCall& call)
         call.set_return(parameter_error);
         return;
     }
-    // Native CoreAudio uses an opaque IOProcID returned by the HAL. Keep the
-    // firmware's callback and client data intact, but schedule the callback in
-    // the emulator clock so the guest AudioToolbox renderer remains the source
-    // of PCM instead of duplicating its decoder here.
+    // HAL objects retain their native IOProc registration: route and stream
+    // usage queries depend on it. The host only schedules the saved callback.
+    if (find_device(device) == nullptr) {
+        call.resume_original_persistently(
+            [this, device, callback, client_data, output_id](
+                UserlandHleCall& completed) {
+                if (completed.argument(0) != 0)
+                    return;
+                const auto io_proc_id =
+                    completed.memory().read32(output_id).value_or(0);
+                if (io_proc_id != 0)
+                    record_native_io_proc(completed, device, callback,
+                        client_data, io_proc_id);
+            });
+        return;
+    }
     auto io_proc_id = next_native_io_proc_id_++;
     if (io_proc_id == 0)
         io_proc_id = next_native_io_proc_id_++;
+    if (!call.write32(output_id, io_proc_id)) {
+        call.set_return(parameter_error);
+        return;
+    }
+    record_native_io_proc(call, device, callback, client_data, io_proc_id);
+    call.set_return(0);
+}
+
+void CoreAudioHle::record_native_io_proc(UserlandHleCall& call,
+    std::uint32_t device, std::uint32_t callback, std::uint32_t client_data,
+    std::uint32_t io_proc_id)
+{
     IoProcRegistration registration;
     registration.native = true;
     registration.process_id = call.process_id();
@@ -1025,21 +1047,29 @@ void CoreAudioHle::create_native_io_proc(UserlandHleCall& call)
     registration.memory = &call.memory();
     registration.output = &call.output();
     native_io_procs_.emplace(io_proc_id, std::move(registration));
-    if (!call.write32(output_id, io_proc_id)) {
-        native_io_procs_.erase(io_proc_id);
-        call.set_return(parameter_error);
-        return;
-    }
     call.output().line("[coreaudio-device] native-io-proc create pid=" +
                        std::to_string(call.process_id()) +
                        " device=" + std::to_string(device) +
                        " id=" + std::to_string(io_proc_id));
-    call.set_return(0);
 }
 
 void CoreAudioHle::destroy_native_io_proc(UserlandHleCall& call)
 {
     const auto io_proc_id = call.argument(1);
+    if (find_device(call.argument(0)) == nullptr) {
+        call.resume_original_persistently(
+            [this, io_proc_id](UserlandHleCall& completed) {
+                if (completed.argument(0) != 0)
+                    return;
+                const auto found = native_io_procs_.find(io_proc_id);
+                if (found == native_io_procs_.end())
+                    return;
+                if (found->second.processor)
+                    retired_io_proc_threads_.push_back(*found->second.processor);
+                native_io_procs_.erase(found);
+            });
+        return;
+    }
     const auto found = native_io_procs_.find(io_proc_id);
     if (found == native_io_procs_.end() ||
         found->second.process_id != call.process_id() ||
@@ -1066,28 +1096,13 @@ void CoreAudioHle::add_io_proc(UserlandHleCall& call)
     const auto device_id = call.argument(0);
     if (find_device(device_id) == nullptr) {
         const auto callback = call.argument(1);
-        if (callback == 0) {
-            call.set_return(parameter_error);
-            return;
-        }
-        auto io_proc_id = next_native_io_proc_id_++;
-        if (io_proc_id == 0)
-            io_proc_id = next_native_io_proc_id_++;
-        IoProcRegistration registration;
-        registration.native = true;
-        registration.process_id = call.process_id();
-        registration.io_proc_id = io_proc_id;
-        registration.device = device_id;
-        registration.callback = callback;
-        registration.client_data = call.argument(2);
-        registration.memory = &call.memory();
-        registration.output = &call.output();
-        native_io_procs_.emplace(io_proc_id, std::move(registration));
-        call.output().line("[coreaudio-device] native-io-proc add pid=" +
-                           std::to_string(call.process_id()) +
-                           " device=" + std::to_string(device_id) +
-                           " id=" + std::to_string(io_proc_id));
-        call.set_return(0);
+        const auto client_data = call.argument(2);
+        call.resume_original_persistently(
+            [this, device_id, callback, client_data](UserlandHleCall& completed) {
+                if (completed.argument(0) == 0)
+                    record_native_io_proc(completed, device_id, callback,
+                        client_data, callback);
+            });
         return;
     }
     if (call.argument(1) == 0) {
@@ -1112,20 +1127,18 @@ void CoreAudioHle::remove_io_proc(UserlandHleCall& call)
 {
     const auto registration = io_procs_.find(call.process_id());
     if (find_device(call.argument(0)) == nullptr) {
-        const auto found = std::find_if(native_io_procs_.begin(),
-            native_io_procs_.end(), [&](const auto& entry) {
-                return entry.second.process_id == call.process_id() &&
-                       entry.second.device == call.argument(0) &&
-                       entry.second.callback == call.argument(1);
+        const auto callback = call.argument(1);
+        call.resume_original_persistently(
+            [this, callback](UserlandHleCall& completed) {
+                if (completed.argument(0) != 0)
+                    return;
+                const auto found = native_io_procs_.find(callback);
+                if (found == native_io_procs_.end())
+                    return;
+                if (found->second.processor)
+                    retired_io_proc_threads_.push_back(*found->second.processor);
+                native_io_procs_.erase(found);
             });
-        if (found == native_io_procs_.end()) {
-            call.set_return(parameter_error);
-            return;
-        }
-        if (found->second.processor)
-            retired_io_proc_threads_.push_back(*found->second.processor);
-        native_io_procs_.erase(found);
-        call.set_return(0);
         return;
     }
     if (registration == io_procs_.end() ||
