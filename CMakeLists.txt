@@ -233,7 +233,28 @@ function(ilemu_configure_module target)
     ilemu_configure_target(${target})
 endfunction()
 
-add_subdirectory(src)
+add_subdirectory(src/mach)
+add_subdirectory(src/foundation)
+add_subdirectory(src/device_state)
+add_subdirectory(src/filesystem)
+add_subdirectory(src/network)
+add_subdirectory(src/storage)
+add_subdirectory(src/telephony)
+add_subdirectory(src/media)
+add_subdirectory(src/bluetooth)
+add_subdirectory(src/crypto)
+add_subdirectory(src/graphics)
+add_subdirectory(src/kernel)
+add_subdirectory(src/debug)
+add_subdirectory(src/host)
+
+add_library(ilemu_core INTERFACE)
+add_library(iLEmu::core ALIAS ilemu_core)
+target_link_libraries(ilemu_core INTERFACE
+    iLEmu::kernel
+    iLEmu::debug)
+
+add_subdirectory(src/runtime)
 add_subdirectory(app)
 add_subdirectory(tools/guest)
 
