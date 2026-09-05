@@ -23,6 +23,9 @@ namespace {
     constexpr std::uint32_t stack_top = stack_base + stack_size;
     constexpr std::size_t maximum_interpreter_line = 256;
     constexpr std::size_t maximum_interpreter_depth = 4;
+    constexpr std::string_view launch_services_directory_name {
+        "LS_DATABASE_DIR="
+    };
     constexpr std::array<std::string_view, 2> adaptive_ogl_names {
         "CA_AUTO_ENABLE_OGL=",
         "LK_AUTO_ENABLE_OGL=",
@@ -192,6 +195,16 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
             "HOME=/var/root",
             "SHELL=/bin/sh",
         };
+    }
+    // LaunchServices accepts a persistent database-directory override. Its
+    // native fallback can retain a pointer to a temporary path buffer across
+    // database reloads. Supply the firmware's default through the process
+    // environment so both the service and its clients retain stable storage.
+    if (std::none_of(environment.begin(), environment.end(),
+            [](const std::string& variable) {
+                return variable.starts_with(launch_services_directory_name);
+            })) {
+        environment.emplace_back("LS_DATABASE_DIR=/var/mobile/Library/Caches");
     }
     // CoreAnimation and its LayerKit predecessor use aliases for the same
     // adaptive renderer switch. Preserve an explicit guest choice through
