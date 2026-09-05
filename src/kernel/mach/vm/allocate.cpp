@@ -42,23 +42,17 @@ bool CompatibilityKernel::dispatch_mach_vm_allocate_message(
     }
 
     const auto& arguments = xnu792::mig::vm_map::vm_allocate_arguments;
-    auto address = memory_.read32(request.address + arguments[1].request_offset)
-                       .value_or(0);
-    const auto requested_address = address;
+    const auto requested_address =
+        memory_.read32(request.address + arguments[1].request_offset)
+            .value_or(0);
     const auto size =
         memory_.read32(request.address + arguments[2].request_offset)
             .value_or(0);
     const auto flags =
         memory_.read32(request.address + arguments[3].request_offset)
             .value_or(0);
-    if ((flags & darwin::mach::vm_flags_anywhere) != 0) {
-        address = find_free_guest_region(memory_, default_dynamic_base, size)
-                      .value_or(0);
-    }
-    const auto mapped = address != 0 && size != 0 &&
-                        !guest_region_overlaps(memory_, address, size) &&
-                        memory_.map(address, size,
-                            MemoryPermission::Read | MemoryPermission::Write);
+    const auto allocation =
+        allocate_guest_vm_region(memory_, requested_address, size, flags);
 
     const std::array<std::uint32_t, reply_size / sizeof(std::uint32_t)> reply {
         darwin::mig_wire::message_bits(
@@ -70,8 +64,8 @@ bool CompatibilityKernel::dispatch_mach_vm_allocate_message(
         request.identifier + 100U,
         0,
         1,
-        mapped ? kern_success : 3U, // KERN_NO_SPACE
-        address,
+        allocation.result,
+        allocation.address,
     };
     if (!write_words(memory_, request.address, reply)) {
         registers[0] = mach_receive_invalid_data;
@@ -83,9 +77,9 @@ bool CompatibilityKernel::dispatch_mach_vm_allocate_message(
                 ? std::string { "mach_vm" }
                 : std::string { "vm_map" }) +
         " requested=" + std::to_string(requested_address) +
-        " address=" + std::to_string(address) +
+        " address=" + std::to_string(allocation.address) +
         " size=" + std::to_string(size) + " flags=" + std::to_string(flags) +
-        " result=" + std::to_string(mapped ? kern_success : 3U) + "\n");
+        " result=" + std::to_string(allocation.result) + "\n");
     registers[0] = kern_success;
     return true;
 }

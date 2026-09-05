@@ -72,13 +72,15 @@ namespace mach_support {
     }
 
     std::optional<std::uint32_t> find_free_guest_region(
-        const AddressSpace& memory, std::uint32_t start, std::uint32_t size)
+        const AddressSpace& memory, std::uint32_t start, std::uint32_t size,
+        std::uint32_t alignment_mask)
     {
         auto candidate = start & ~(AddressSpace::page_size - 1U);
         while (size != 0 &&
                size - 1U <=
                    std::numeric_limits<std::uint32_t>::max() - candidate) {
-            if (!guest_region_overlaps(memory, candidate, size))
+            if ((candidate & alignment_mask) == 0U &&
+                !guest_region_overlaps(memory, candidate, size))
                 return candidate;
             if (candidate > std::numeric_limits<std::uint32_t>::max() -
                                 AddressSpace::page_size) {
@@ -87,6 +89,26 @@ namespace mach_support {
             candidate += AddressSpace::page_size;
         }
         return std::nullopt;
+    }
+
+    VmAllocationResult allocate_guest_vm_region(AddressSpace& memory,
+        std::uint32_t requested_address, std::uint32_t size,
+        std::uint32_t flags, std::uint32_t alignment_mask)
+    {
+        auto address = requested_address;
+        if ((flags & darwin::mach::vm_flags_anywhere) != 0U) {
+            address = find_free_guest_region(
+                memory, default_dynamic_base, size, alignment_mask)
+                          .value_or(0U);
+        }
+        const auto mapped = address != 0U && size != 0U &&
+                            (address & alignment_mask) == 0U &&
+                            !guest_region_overlaps(memory, address, size) &&
+                            memory.map(address, size,
+                                MemoryPermission::Read |
+                                    MemoryPermission::Write);
+        return { mapped ? darwin::mach::success : darwin::mach::no_space,
+            address };
     }
 
     std::uint32_t create_surface_transport_send_right_locked(

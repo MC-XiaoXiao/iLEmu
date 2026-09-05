@@ -39,7 +39,21 @@ namespace mach_support {
     [[nodiscard]] bool guest_region_overlaps(
         const AddressSpace& memory, std::uint32_t address, std::uint32_t size);
     [[nodiscard]] std::optional<std::uint32_t> find_free_guest_region(
-        const AddressSpace& memory, std::uint32_t start, std::uint32_t size);
+        const AddressSpace& memory, std::uint32_t start, std::uint32_t size,
+        std::uint32_t alignment_mask = 0U);
+
+    struct VmAllocationResult {
+        std::uint32_t result { };
+        std::uint32_t address { };
+    };
+
+    // vm_allocate is exposed through both MIG and Darwin's direct kernel-RPC
+    // traps. Keep address selection and overlap handling identical at both
+    // entry points.
+    [[nodiscard]] VmAllocationResult allocate_guest_vm_region(
+        AddressSpace& memory, std::uint32_t requested_address,
+        std::uint32_t size, std::uint32_t flags,
+        std::uint32_t alignment_mask = 0U);
 
     [[nodiscard]] std::uint32_t read_little_word(
         std::span<const std::byte> bytes, std::size_t offset);

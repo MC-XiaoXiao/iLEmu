@@ -55,22 +55,6 @@ namespace {
         return result;
     }
 
-    [[nodiscard]] std::optional<std::uint32_t> find_remap_region(
-        const AddressSpace& memory, std::uint32_t start, std::uint32_t size,
-        std::uint32_t mask)
-    {
-        auto candidate = find_free_guest_region(memory, start, size);
-        while (candidate && (*candidate & mask) != 0U) {
-            if (*candidate > std::numeric_limits<std::uint32_t>::max() -
-                                 AddressSpace::page_size) {
-                return std::nullopt;
-            }
-            candidate = find_free_guest_region(
-                memory, *candidate + AddressSpace::page_size, size);
-        }
-        return candidate;
-    }
-
 } // namespace
 
 bool CompatibilityKernel::dispatch_mach_vm_remap_message(
@@ -182,7 +166,7 @@ bool CompatibilityKernel::dispatch_mach_vm_remap_message(
     if (result == kern_success &&
         (*flags & darwin::mach::vm_flags_anywhere) != 0U) {
         target_address =
-            find_remap_region(memory_, default_dynamic_base, *size, mask)
+            find_free_guest_region(memory_, default_dynamic_base, *size, mask)
                 .value_or(0U);
     }
     if (result == kern_success &&

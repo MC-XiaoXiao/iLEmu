@@ -79,6 +79,8 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
         memory_.read32(request.address + arguments[1].request_offset);
     const auto requested_size =
         memory_.read32(request.address + arguments[2].request_offset);
+    const auto alignment_mask =
+        memory_.read32(request.address + arguments[3].request_offset);
     const auto flags =
         memory_.read32(request.address + arguments[4].request_offset);
     const auto object_name =
@@ -97,8 +99,11 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
         memory_.read32(request.address + arguments[8].request_offset);
     const auto maximum_protection =
         memory_.read32(request.address + arguments[9].request_offset);
-    if (!address || !requested_size || !flags || !object_name ||
-        !object_offset || !copy || !protection || !maximum_protection) {
+    const auto inheritance =
+        memory_.read32(request.address + arguments[10].request_offset);
+    if (!address || !requested_size || !alignment_mask || !flags || !object_name ||
+        !object_offset || !copy || !protection || !maximum_protection ||
+        !inheritance) {
         registers[0] = mach_receive_invalid_data;
         return true;
     }
@@ -108,7 +113,8 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
     std::uint32_t result = kern_success;
     if (!size ||
         ((*protection | *maximum_protection) & ~vm_protection_mask) != 0 ||
-        (*protection & *maximum_protection) != *protection) {
+        (*protection & *maximum_protection) != *protection ||
+        *inheritance > static_cast<std::uint32_t>(VmInheritance::None)) {
         result = kern_invalid_argument;
     }
 
@@ -136,11 +142,13 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
 
     if (result == kern_success &&
         (*flags & darwin::mach::vm_flags_anywhere) != 0) {
-        *address = find_free_guest_region(memory_, default_dynamic_base, *size)
+        *address = find_free_guest_region(
+            memory_, default_dynamic_base, *size, *alignment_mask)
                        .value_or(0);
     }
     if (result == kern_success &&
         (*address == 0 || *address % AddressSpace::page_size != 0 ||
+            (*address & *alignment_mask) != 0U ||
             guest_region_overlaps(memory_, *address, *size))) {
         result = kern_no_space;
     }
@@ -178,6 +186,12 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
     }
     if (result == kern_success && !map_ok)
         result = kern_no_space;
+    if (result == kern_success &&
+        !memory_.inherit(*address, *size,
+            static_cast<VmInheritance>(*inheritance))) {
+        static_cast<void>(memory_.unmap(*address, *size));
+        result = kern_invalid_argument;
+    }
 
     const std::array<std::uint32_t, reply_size / sizeof(std::uint32_t)> reply {
         darwin::mig_wire::message_bits(
@@ -202,10 +216,12 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
         (is_mach_vm ? std::string { "mach_vm" } : std::string { "vm_map" }) +
         " requested=" + std::to_string(requested_address) + " address=" +
         std::to_string(*address) + " size=" + std::to_string(size.value_or(0)) +
+        " mask=" + std::to_string(*alignment_mask) +
         " flags=" + std::to_string(*flags) +
         " object=" + std::to_string(*object_name) + " offset=" +
         std::to_string(*object_offset) + " copy=" + std::to_string(*copy != 0) +
         " protection=" + std::to_string(*protection) +
+        " inheritance=" + std::to_string(*inheritance) +
         " result=" + std::to_string(result) + "\n");
     registers[0] = kern_success;
     return true;
