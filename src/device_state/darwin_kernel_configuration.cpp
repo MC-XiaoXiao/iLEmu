@@ -9,106 +9,166 @@
 namespace ilemu {
 namespace {
 
-    auto make_presets()
+    constexpr DarwinAbi disk_policy_abi {
+        .abi_epoch = DarwinAbiEpoch::IphoneOs2,
+        .activation_hardware_model_policy =
+            ActivationHardwareModelPolicy::DevelopmentBoard,
+        .capabilities = { .send_sigsys = true },
+    };
+
+    // Release identity and ABI values are independent. Entries sharing a
+    // Darwin release retain the wire differences required by their callers.
+    constexpr std::array configurations {
+        DarwinConfigurationEntry {
+            .name = "darwin9.0.0d1",
+            .darwin_release = "9.0.0d1",
+            .abi = {
+                .abi_epoch = DarwinAbiEpoch::IphoneOs1,
+                .activation_hardware_model_policy =
+                    ActivationHardwareModelPolicy::DevelopmentBoard,
+                .capabilities = {
+                    .send_sigsys = true,
+                    .arm_cache_trap_grants_execute = true,
+                    .expose_legacy_platform_serial = true,
+                },
+            },
+        },
+        DarwinConfigurationEntry {
+            .name = "darwin9.3.1",
+            .darwin_release = "9.3.1",
+            .abi = disk_policy_abi,
+        },
+        DarwinConfigurationEntry {
+            .name = "darwin9.4.1",
+            .darwin_release = "9.4.1",
+            .abi = disk_policy_abi,
+        },
+        DarwinConfigurationEntry {
+            .name = "darwin10.0.0d3",
+            .darwin_release = "10.0.0d3",
+            .abi = {
+                .abi_epoch = DarwinAbiEpoch::IphoneOs3,
+                .activation_hardware_model_policy =
+                    ActivationHardwareModelPolicy::DevelopmentBoard,
+                .capabilities = { .send_sigsys = true },
+            },
+        },
+        DarwinConfigurationEntry {
+            .name = "darwin10.3.1-bootstrap-notify",
+            .darwin_release = "10.3.1",
+            .abi = {
+                .abi_epoch = DarwinAbiEpoch::Darwin10,
+                .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
+                .apple80211_ioctl =
+                    DarwinApple80211IoctlAbi::CompactCurrentNetworkRecord,
+                .notify_state_abi =
+                    DarwinNotifyStateAbi::BootstrapAwareServerTokens,
+                .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .activation_hardware_model_policy =
+                    ActivationHardwareModelPolicy::DevelopmentBoard,
+                .capabilities = { .send_sigsys = true },
+            },
+        },
+        DarwinConfigurationEntry {
+            .name = "darwin10.3.1-native-notify",
+            .darwin_release = "10.3.1",
+            .abi = {
+                .abi_epoch = DarwinAbiEpoch::Darwin10,
+                .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
+                .apple80211_ioctl =
+                    DarwinApple80211IoctlAbi::CompactCurrentNetworkRecord,
+                .initial_apple_vector_abi =
+                    DarwinInitialAppleVectorAbi::LegacyExecutablePath,
+                .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .activation_hardware_model_policy =
+                    ActivationHardwareModelPolicy::DevelopmentBoard,
+                .capabilities = { .send_sigsys = true },
+            },
+        },
+        DarwinConfigurationEntry {
+            .name = "darwin10.4.0",
+            .darwin_release = "10.4.0",
+            .abi = {
+                .abi_epoch = DarwinAbiEpoch::Darwin10,
+                .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1TsdBase,
+                .apple80211_ioctl =
+                    DarwinApple80211IoctlAbi::CompactCurrentNetworkRecord,
+                .initial_apple_vector_abi =
+                    DarwinInitialAppleVectorAbi::LegacyExecutablePath,
+                .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .activation_hardware_model_policy =
+                    ActivationHardwareModelPolicy::DevelopmentBoard,
+                .capabilities = { .send_sigsys = true },
+            },
+        },
+        DarwinConfigurationEntry {
+            .name = "darwin11.0.0-inline-iokit",
+            .darwin_release = "11.0.0",
+            .abi = {
+                .abi_epoch = DarwinAbiEpoch::Darwin11,
+                .pthread_abi =
+                    DarwinPthreadAbi::BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,
+                .apple80211_ioctl =
+                    DarwinApple80211IoctlAbi::CompactCurrentNetworkRecord,
+                .io_connect_method =
+                    DarwinIOConnectMethodAbi::Natural32OolStructureThenScalar,
+                .initial_apple_vector_abi =
+                    DarwinInitialAppleVectorAbi::LegacyExecutablePath,
+                .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .iokit_matching_rpc =
+                    DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1,
+                .activation_hardware_model_policy =
+                    ActivationHardwareModelPolicy::DevelopmentBoard,
+                .capabilities = { .send_sigsys = true },
+            },
+        },
+        DarwinConfigurationEntry {
+            .name = "darwin11.0.0-wide-vm",
+            .darwin_release = "11.0.0",
+            .abi = {
+                .abi_epoch = DarwinAbiEpoch::Darwin11,
+                .pthread_abi =
+                    DarwinPthreadAbi::BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,
+                .apple80211_ioctl =
+                    DarwinApple80211IoctlAbi::CompactCurrentNetworkRecord,
+                .io_connect_method =
+                    DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar,
+                .mach_vm_address = DarwinMachVmAddressWidth::Wide64,
+                .initial_apple_vector_abi =
+                    DarwinInitialAppleVectorAbi::LegacyExecutablePath,
+                .shared_region_abi =
+                    DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1,
+                .mach_kernel_rpc =
+                    DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1,
+                .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .iokit_matching_rpc =
+                    DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1,
+                .capabilities = { .send_sigsys = true },
+            },
+        },
+        DarwinConfigurationEntry {
+            .name = "darwin14.0.0",
+            .darwin_release = "14.0.0",
+            .abi = {
+                .abi_epoch = DarwinAbiEpoch::Later,
+                .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV2,
+                .mach_vm_address = DarwinMachVmAddressWidth::Wide64,
+                .shared_region_abi =
+                    DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1,
+                .mach_kernel_rpc =
+                    DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1,
+                .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .capabilities = { .send_sigsys = true },
+            },
+        },
+    };
+
+    const DarwinConfigurationEntry* find_configuration(std::string_view name)
     {
-        DarwinAbiPreset executable { "mach-threads-executable", { }, { } };
-        executable.abi.abi_epoch = DarwinAbiEpoch::IphoneOs1;
-        executable.abi.capabilities = { true, true, true };
-        executable.abi.activation_hardware_model_policy =
-            ActivationHardwareModelPolicy::DevelopmentBoard;
-
-        auto disk_policy = executable;
-        disk_policy.name = "mach-threads-disk-policy";
-        disk_policy.abi.abi_epoch = DarwinAbiEpoch::IphoneOs2;
-        disk_policy.abi.capabilities = { true, false, false };
-
-        auto shared_cache = disk_policy;
-        shared_cache.name = "mach-threads-shared-cache";
-        shared_cache.abi.abi_epoch = DarwinAbiEpoch::IphoneOs3;
-
-        auto bootstrap_notify = shared_cache;
-        bootstrap_notify.name = "bsd-threads-bootstrap-notify";
-        bootstrap_notify.abi.abi_epoch = DarwinAbiEpoch::Darwin10;
-        bootstrap_notify.abi.pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1;
-        bootstrap_notify.abi.apple80211_ioctl =
-            DarwinApple80211IoctlAbi::CompactCurrentNetworkRecord;
-        bootstrap_notify.abi.notify_state_abi =
-            DarwinNotifyStateAbi::BootstrapAwareServerTokens;
-        bootstrap_notify.abi.psynch_abi = DarwinPsynchAbi::Arm32GenerationV1;
-        bootstrap_notify.identity.name = "darwin10.3-arm";
-        bootstrap_notify.identity.operating_system_release = "10.3.1";
-        bootstrap_notify.identity.version =
-            "Darwin Kernel Version 10.3.1: iLEmu compatibility kernel; "
-            "darwin10.3/RELEASE_ARM";
-
-        auto legacy_apple = bootstrap_notify;
-        legacy_apple.name = "bsd-threads-legacy-apple";
-        legacy_apple.abi.notify_state_abi = DarwinNotifyStateAbi::NativeServerTokens;
-        legacy_apple.abi.initial_apple_vector_abi =
-            DarwinInitialAppleVectorAbi::LegacyExecutablePath;
-        legacy_apple.identity.name = "darwin10.3-arm-v1";
-
-        auto embedded_tsd = legacy_apple;
-        embedded_tsd.name = "bsd-threads-embedded-tsd";
-        embedded_tsd.abi.pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1TsdBase;
-        embedded_tsd.identity.name = "darwin10.4-arm-v1-tsd";
-        embedded_tsd.identity.operating_system_release = "10.4.0";
-        embedded_tsd.identity.version =
-            "Darwin Kernel Version 10.4.0: iLEmu compatibility kernel; "
-            "darwin10.4/RELEASE_ARM";
-
-        auto inline_iokit = embedded_tsd;
-        inline_iokit.name = "bsd-threads-inline-iokit";
-        inline_iokit.abi.abi_epoch = DarwinAbiEpoch::Darwin11;
-        inline_iokit.abi.pthread_abi =
-            DarwinPthreadAbi::BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues;
-        inline_iokit.abi.io_connect_method =
-            DarwinIOConnectMethodAbi::Natural32OolStructureThenScalar;
-        inline_iokit.abi.iokit_matching_rpc =
-            DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1;
-        inline_iokit.identity.name = "darwin11.0-arm-v1-tsd";
-        inline_iokit.identity.operating_system_release = "11.0.0";
-        inline_iokit.identity.version =
-            "Darwin Kernel Version 11.0.0: iLEmu compatibility kernel; "
-            "darwin11.0/RELEASE_ARM";
-
-        auto wide_vm = inline_iokit;
-        wide_vm.name = "bsd-threads-wide-vm";
-        wide_vm.abi.io_connect_method =
-            DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar;
-        wide_vm.abi.shared_region_abi =
-            DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1;
-        wide_vm.abi.mach_kernel_rpc = DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1;
-        wide_vm.abi.activation_hardware_model_policy =
-            ActivationHardwareModelPolicy::Retail;
-        wide_vm.abi.mach_vm_address = DarwinMachVmAddressWidth::Wide64;
-        wide_vm.identity.name = "darwin11.0-arm-v1-tsd-slide";
-
-        auto register_v2 = disk_policy;
-        register_v2.name = "bsd-threads-register-v2";
-        register_v2.abi.abi_epoch = DarwinAbiEpoch::Later;
-        register_v2.abi.pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV2;
-        register_v2.abi.shared_region_abi =
-            DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1;
-        register_v2.abi.mach_kernel_rpc =
-            DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1;
-        register_v2.abi.psynch_abi = DarwinPsynchAbi::Arm32GenerationV1;
-        register_v2.abi.activation_hardware_model_policy =
-            ActivationHardwareModelPolicy::Retail;
-        register_v2.abi.mach_vm_address = DarwinMachVmAddressWidth::Wide64;
-
-        return std::array { executable, disk_policy, shared_cache,
-            bootstrap_notify, legacy_apple, embedded_tsd, inline_iokit,
-            wide_vm, register_v2 };
-    }
-
-    const auto presets = make_presets();
-
-    const DarwinAbiPreset* find_preset(std::string_view name)
-    {
-        const auto found = std::find_if(presets.begin(), presets.end(),
-            [name](const auto& preset) { return preset.name == name; });
-        return found == presets.end() ? nullptr : &*found;
+        const auto found = std::find_if(
+            configurations.begin(), configurations.end(),
+            [name](const auto& entry) { return entry.name == name; });
+        return found == configurations.end() ? nullptr : &*found;
     }
 
     bool valid_ios_build(std::string_view build)
@@ -129,36 +189,40 @@ namespace {
 
     // Both firmware metadata and frontend overrides use this mapping. Dispatch
     // depends on the selected contracts, never on firmware build strings.
-    const DarwinAbiPreset* preset_for_build(std::string_view build)
+    const DarwinConfigurationEntry* configuration_for_build(
+        std::string_view build)
     {
         struct Rule { std::string_view prefix; std::string_view abi_name; };
         constexpr std::array rules {
-            Rule { "1A", "mach-threads-executable" },
-            Rule { "3A", "mach-threads-executable" },
-            Rule { "4B", "mach-threads-executable" },
-            Rule { "5A", "mach-threads-disk-policy" },
-            Rule { "5G", "mach-threads-disk-policy" },
-            Rule { "7A", "mach-threads-shared-cache" },
-            Rule { "7B", "bsd-threads-bootstrap-notify" },
-            Rule { "8A", "bsd-threads-legacy-apple" },
-            Rule { "8C", "bsd-threads-embedded-tsd" },
-            Rule { "8F", "bsd-threads-inline-iokit" },
-            Rule { "9A", "bsd-threads-wide-vm" },
-            Rule { "11", "bsd-threads-register-v2" },
+            Rule { "1A", "darwin9.0.0d1" },
+            Rule { "3A", "darwin9.0.0d1" },
+            Rule { "4B", "darwin9.0.0d1" },
+            Rule { "5A", "darwin9.3.1" },
+            Rule { "5G", "darwin9.4.1" },
+            Rule { "7A", "darwin10.0.0d3" },
+            Rule { "7B", "darwin10.3.1-bootstrap-notify" },
+            Rule { "8A", "darwin10.3.1-native-notify" },
+            Rule { "8C", "darwin10.4.0" },
+            Rule { "8F", "darwin11.0.0-inline-iokit" },
+            Rule { "9A", "darwin11.0.0-wide-vm" },
+            Rule { "11", "darwin14.0.0" },
         };
         const auto branch = build.find_first_not_of("0123456789");
         const auto generation = build.substr(0, branch);
         const auto family = build.substr(0, branch + 1);
         for (const auto& rule : rules) {
             if (rule.prefix == family || rule.prefix == generation)
-                return find_preset(rule.abi_name);
+                return find_configuration(rule.abi_name);
         }
         return nullptr;
     }
 
 } // namespace
 
-std::span<const DarwinAbiPreset> darwin_abi_presets() { return presets; }
+std::span<const DarwinConfigurationEntry> darwin_configurations()
+{
+    return configurations;
+}
 
 std::string_view darwin_abi_source_name(DarwinAbiSource source)
 {
@@ -178,13 +242,13 @@ DarwinKernelConfiguration resolve_darwin_configuration(
     DarwinKernelConfiguration configuration;
     const auto build = ios_build ? std::string { *ios_build }
                                 : read_darwin_build_version(rootfs);
-    const DarwinAbiPreset* selected = nullptr;
+    const DarwinConfigurationEntry* selected = nullptr;
     if (ios_build) {
         if (!valid_ios_build(build)) {
             throw std::invalid_argument { "invalid iOS build code: " + build +
                                           "; expected a code such as 9A334" };
         }
-        selected = preset_for_build(build);
+        selected = configuration_for_build(build);
         if (selected == nullptr) {
             throw std::invalid_argument { "unsupported iOS build code: " +
                                           build };
@@ -192,21 +256,24 @@ DarwinKernelConfiguration resolve_darwin_configuration(
         configuration.abi_source = DarwinAbiSource::Explicit;
         configuration.abi_source_detail = build;
     } else if (!build.empty()) {
-        selected = valid_ios_build(build) ? preset_for_build(build) : nullptr;
+        selected = valid_ios_build(build) ? configuration_for_build(build)
+                                         : nullptr;
         configuration.abi_source = selected ? DarwinAbiSource::FirmwareMetadata
                                            : DarwinAbiSource::Unresolved;
         configuration.abi_source_detail = build;
     } else if (rootfs.empty() || !std::filesystem::exists(rootfs)) {
-        selected = find_preset("mach-threads-executable");
+        selected = find_configuration("darwin9.0.0d1");
         configuration.abi_source = DarwinAbiSource::CompiledDefault;
     }
     if (selected != nullptr) {
         configuration.abi = selected->abi;
-        configuration.identity = selected->identity;
+        configuration.identity = DarwinKernelIdentity { selected->darwin_release,
+            build.empty() ? "1A543a" : std::string_view { build } };
         configuration.abi_name = selected->name;
+    } else {
+        configuration.identity = DarwinKernelIdentity { "unknown",
+            build.empty() ? "unknown" : std::string_view { build } };
     }
-    if (!build.empty())
-        configuration.identity.build_version = build;
     return configuration;
 }
 

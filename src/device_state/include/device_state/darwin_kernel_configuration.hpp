@@ -11,10 +11,10 @@
 
 namespace ilemu {
 
-struct DarwinAbiPreset {
+struct DarwinConfigurationEntry {
     std::string_view name;
+    std::string_view darwin_release;
     DarwinAbi abi;
-    DarwinKernelIdentity identity;
 };
 
 enum class DarwinAbiSource {
@@ -32,7 +32,7 @@ struct DarwinKernelConfiguration {
     std::string abi_source_detail;
 };
 
-[[nodiscard]] std::span<const DarwinAbiPreset> darwin_abi_presets();
+[[nodiscard]] std::span<const DarwinConfigurationEntry> darwin_configurations();
 [[nodiscard]] std::string_view darwin_abi_source_name(DarwinAbiSource source);
 
 // Resolve once per session and pass the immutable configuration to its

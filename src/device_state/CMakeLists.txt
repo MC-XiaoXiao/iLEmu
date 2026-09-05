@@ -1,4 +1,5 @@
 add_library(ilemu_device_state STATIC
+    darwin_firmware_identity.cpp
     darwin_kernel_configuration.cpp
     darwin_kernel_identity.cpp
     graphics_services_capabilities.cpp

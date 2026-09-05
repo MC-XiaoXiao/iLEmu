@@ -28,9 +28,9 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
                     "Darwin/ABI configuration.");
         output.line("Use --ios-build CODE (e.g. 9A334) to override "
                     "firmware metadata.");
-        output.line("Known ABI contracts:");
-        for (const auto& preset : darwin_abi_presets())
-            output.line("  " + std::string { preset.name });
+        output.line("Known Darwin/ABI configurations:");
+        for (const auto& entry : darwin_configurations())
+            output.line("  " + std::string { entry.name });
         return;
     }
     const auto configuration = resolve_darwin_configuration(
