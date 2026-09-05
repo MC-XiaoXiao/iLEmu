@@ -1,4 +1,4 @@
-#include "graphics/layerkit_hle.hpp"
+#include "kernel/layerkit_hle.hpp"
 
 #include "foundation/address_space.hpp"
 #include "kernel/graphics_services_input.hpp"

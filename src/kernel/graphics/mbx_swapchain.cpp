@@ -1,4 +1,4 @@
-#include "graphics/mbx2d_hle.hpp"
+#include "kernel/mbx2d_hle.hpp"
 
 #include <algorithm>
 #include <cstddef>

@@ -1,4 +1,4 @@
-#include "graphics/opengles_hle.hpp"
+#include "kernel/opengles_hle.hpp"
 
 #include "foundation/address_space.hpp"
 #include "foundation/userland_hle.hpp"

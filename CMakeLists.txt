@@ -189,24 +189,6 @@ set(DYNARMIC_USE_PRECOMPILED_HEADERS OFF CACHE BOOL "" FORCE)
 # explicit so every target, including the out-of-tree workspace tests, sees
 # the same <module>/<name>.hpp include spelling. A major module owns one
 # include root; implementation subdirectories do not add public roots.
-set(ILEMU_PROJECT_INCLUDE_DIRS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/foundation/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/device_state/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/mach/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/filesystem/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/network/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/telephony/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/media/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/bluetooth/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/crypto/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/graphics/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/kernel/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/debug/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/host/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/runtime/include"
-    "${CMAKE_CURRENT_SOURCE_DIR}/app/include")
-
 # Persistent portable-IR artifacts must not cross a different Dynarmic build.
 # Include the pinned revision and any deliberate local checkout changes in the
 # artifact key so a custom development checkout cannot reuse stale artifacts.
@@ -228,13 +210,34 @@ endif()
 
 add_subdirectory("${ILEMU_DYNARMIC_DIR}" external/dynarmic EXCLUDE_FROM_ALL)
 
-function(ilemu_configure_module target)
-    target_include_directories(${target} PUBLIC
-        ${ILEMU_PROJECT_INCLUDE_DIRS})
+function(ilemu_configure_target target)
     target_compile_features(${target} PUBLIC cxx_std_20)
     target_compile_options(${target} PRIVATE
         $<$<CXX_COMPILER_ID:GNU,Clang>:-Wall;-Wextra;-Wpedantic;-Wconversion;-Wshadow>
     )
+endfunction()
+
+function(ilemu_configure_module target)
+    file(RELATIVE_PATH _ilemu_module_path "${PROJECT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}")
+    if(_ilemu_module_path MATCHES "^src/([^/]+)")
+        set(_ilemu_module "${CMAKE_MATCH_1}")
+        set(_ilemu_include_root
+            "${PROJECT_SOURCE_DIR}/src/${_ilemu_module}/include")
+    elseif(_ilemu_module_path MATCHES "^app($|/)")
+        set(_ilemu_module app)
+        set(_ilemu_include_root "${PROJECT_SOURCE_DIR}/app/include")
+    else()
+        message(FATAL_ERROR "No owning module for target ${target}")
+    endif()
+    target_include_directories(${target} PUBLIC
+        "$<BUILD_INTERFACE:${_ilemu_include_root}>")
+    # Kernel implementation subtargets share the kernel's declared header
+    # contract, without linking back to the parent implementation library.
+    if(_ilemu_module STREQUAL "kernel")
+        target_link_libraries(${target} PUBLIC iLEmu::kernel_api)
+    endif()
+    ilemu_configure_target(${target})
 endfunction()
 
 add_subdirectory(tools/mig)

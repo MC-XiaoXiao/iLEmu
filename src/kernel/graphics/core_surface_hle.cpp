@@ -1,4 +1,4 @@
-#include "graphics/core_surface_hle.hpp"
+#include "kernel/core_surface_hle.hpp"
 
 #include <algorithm>
 #include <array>

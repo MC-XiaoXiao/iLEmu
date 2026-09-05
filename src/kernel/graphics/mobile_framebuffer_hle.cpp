@@ -1,4 +1,4 @@
-#include "graphics/mobile_framebuffer_hle.hpp"
+#include "kernel/mobile_framebuffer_hle.hpp"
 
 #include <algorithm>
 #include <atomic>

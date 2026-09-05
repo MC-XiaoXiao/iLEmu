@@ -1,4 +1,4 @@
-#include "graphics/mbx_connect_hle.hpp"
+#include "kernel/mbx_connect_hle.hpp"
 
 #include <array>
 #include <string>

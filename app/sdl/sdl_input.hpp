@@ -6,7 +6,6 @@
 #include <vector>
 
 #include "foundation/display_geometry.hpp"
-#include "kernel/ringer_switch_state.hpp"
 #include "foundation/system_button_input.hpp"
 #include "foundation/touch_input.hpp"
 

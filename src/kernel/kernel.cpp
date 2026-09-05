@@ -35,7 +35,7 @@
 #include "kernel/mach_scheduler_abi.hpp"
 #include "kernel/mach_thread_policy_abi.hpp"
 #include "foundation/macho.hpp"
-#include "graphics/mbx_connect_hle.hpp"
+#include "kernel/mbx_connect_hle.hpp"
 #include "mach/mig_wire_abi.hpp"
 #include "kernel/offline_serial_device.hpp"
 #include "foundation/performance.hpp"

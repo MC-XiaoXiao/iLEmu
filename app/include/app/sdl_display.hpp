@@ -10,7 +10,6 @@
 #include "graphics/gles_renderer.hpp"
 #include "foundation/system_button_input.hpp"
 #include "foundation/touch_input.hpp"
-#include "kernel/ringer_switch_state.hpp"
 
 namespace ilemu {
 
