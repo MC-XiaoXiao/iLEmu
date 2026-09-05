@@ -9,7 +9,7 @@
 #include <span>
 #include <vector>
 
-#include "foundation/display.hpp"
+#include "graphics/display.hpp"
 #include "foundation/performance.hpp"
 
 namespace ilemu {

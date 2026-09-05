@@ -6,9 +6,9 @@
 #include <vector>
 
 #include "foundation/device_profile.hpp"
-#include "graphics/display_geometry.hpp"
-#include "graphics/system_button_input.hpp"
-#include "graphics/touch_input.hpp"
+#include "foundation/display_geometry.hpp"
+#include "foundation/system_button_input.hpp"
+#include "foundation/touch_input.hpp"
 
 namespace ilemu {
 

@@ -1,6 +1,7 @@
 #include "network/host_network.hpp"
 
-#include "kernel/darwin_abi.hpp"
+#include "foundation/darwin_errno.hpp"
+#include "network/darwin_socket_abi.hpp"
 #include "network/darwin_network_abi.hpp"
 #include "network/virtual_network.hpp"
 

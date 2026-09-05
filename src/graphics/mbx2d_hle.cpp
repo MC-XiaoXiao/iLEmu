@@ -16,7 +16,7 @@
 #include <vector>
 
 #include "foundation/address_space.hpp"
-#include "foundation/display.hpp"
+#include "graphics/display.hpp"
 #include "graphics/gles_renderer.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "graphics/mbx2d_abi.hpp"

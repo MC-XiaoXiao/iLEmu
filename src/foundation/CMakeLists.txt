@@ -10,7 +10,6 @@ add_library(ilemu_foundation STATIC
     device_profile.cpp
     dynarmic_ir_artifact.cpp
     dyld_shared_cache.cpp
-    display.cpp
     executable_catalog.cpp
     firmware_prepare.cpp
     guest_execution_coordinator.cpp

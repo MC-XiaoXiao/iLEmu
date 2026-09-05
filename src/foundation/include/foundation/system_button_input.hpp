@@ -21,4 +21,8 @@ struct SystemButtonInput {
     SystemButtonPhase phase { SystemButtonPhase::Down };
 };
 
+// A host key represents movement of the physical two-position switch, not an
+// independently cached target state. The device model is the sole state owner.
+struct RingerSwitchInput { };
+
 } // namespace ilemu

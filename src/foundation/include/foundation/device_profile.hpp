@@ -7,7 +7,7 @@
 #include <string_view>
 
 #include "foundation/arm_cpu_model.hpp"
-#include "graphics/display_geometry.hpp"
+#include "foundation/display_geometry.hpp"
 #include "foundation/guest_cpu_topology.hpp"
 
 namespace ilemu {

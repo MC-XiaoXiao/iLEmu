@@ -13,7 +13,7 @@
 #include "kernel/darwin_abi.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "kernel/mach_clock_abi.hpp"
-#include "kernel/mig_wire_abi.hpp"
+#include "mach/mig_wire_abi.hpp"
 
 namespace ilemu {
 namespace {

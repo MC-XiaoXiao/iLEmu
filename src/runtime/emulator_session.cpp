@@ -54,7 +54,7 @@
 #include "foundation/cpu.hpp"
 #include "foundation/deadline_queue.hpp"
 #include "foundation/device_profile.hpp"
-#include "foundation/display.hpp"
+#include "graphics/display.hpp"
 #include "foundation/executable_catalog.hpp"
 #include "foundation/firmware_prepare.hpp"
 #include "foundation/guest_execution_coordinator.hpp"

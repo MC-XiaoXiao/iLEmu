@@ -11,7 +11,7 @@
 #include <string_view>
 #include <vector>
 
-#include "foundation/display.hpp"
+#include "graphics/display.hpp"
 #include "graphics/gles_abi.hpp"
 #include "graphics/gles_math.hpp"
 #include "graphics/gles_program_state.hpp"

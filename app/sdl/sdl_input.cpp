@@ -4,7 +4,7 @@
 #include <limits>
 #include <optional>
 
-#include "foundation/display.hpp"
+#include "graphics/display.hpp"
 
 #if defined(ILEMU_HAS_SDL2)
 #include <SDL.h>

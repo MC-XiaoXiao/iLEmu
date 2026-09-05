@@ -1,5 +1,5 @@
-#include "mach/kernel_mach_ipc.hpp"
-#include "kernel/mig_wire_abi.hpp"
+#include "kernel/kernel_mach_ipc.hpp"
+#include "mach/mig_wire_abi.hpp"
 
 #include <array>
 #include <limits>

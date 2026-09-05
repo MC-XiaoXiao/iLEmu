@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "debug/control_channel.hpp"
-#include "graphics/touch_input.hpp"
+#include "foundation/touch_input.hpp"
 
 namespace ilemu {
 

@@ -1,4 +1,4 @@
-#include "graphics/graphics_services_profile.hpp"
+#include "kernel/graphics_services_profile.hpp"
 
 #include <bit>
 #include <cstdint>

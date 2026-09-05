@@ -5,7 +5,7 @@
 #include "mach/device_mig_ids.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_shared_state.hpp"
-#include "kernel/mig_wire_abi.hpp"
+#include "mach/mig_wire_abi.hpp"
 #include "foundation/output.hpp"
 #include "foundation/performance.hpp"
 #include "mach/xnu_mig_adapter.hpp"

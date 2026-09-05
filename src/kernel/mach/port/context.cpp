@@ -1,7 +1,7 @@
 #include "kernel/kernel.hpp"
 
 #include "kernel/darwin_abi.hpp"
-#include "kernel/mig_wire_abi.hpp"
+#include "mach/mig_wire_abi.hpp"
 
 #include "../support.hpp"
 

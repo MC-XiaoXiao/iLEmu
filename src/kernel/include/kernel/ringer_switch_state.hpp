@@ -46,8 +46,5 @@ private:
     std::atomic_bool active_ { true };
 };
 
-// A host key represents movement of the physical two-position switch, not an
-// independently cached target state. The device model is the sole state owner.
-struct RingerSwitchInput { };
 
 } // namespace ilemu

@@ -8,7 +8,7 @@
 #include <utility>
 #include <vector>
 
-#include "graphics/display_geometry.hpp"
+#include "foundation/display_geometry.hpp"
 
 namespace ilemu {
 

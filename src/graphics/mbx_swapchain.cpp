@@ -6,7 +6,7 @@
 #include <limits>
 #include <vector>
 
-#include "foundation/display.hpp"
+#include "graphics/display.hpp"
 #include "graphics/gles_renderer.hpp"
 #include "foundation/userland_hle.hpp"
 

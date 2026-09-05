@@ -6,11 +6,10 @@
 #include <optional>
 #include <vector>
 
-#include "graphics/display_geometry.hpp"
+#include "foundation/display_geometry.hpp"
 #include "graphics/gles_renderer.hpp"
-#include "graphics/system_button_input.hpp"
-#include "graphics/touch_input.hpp"
-#include "kernel/ringer_switch_state.hpp"
+#include "foundation/system_button_input.hpp"
+#include "foundation/touch_input.hpp"
 
 namespace ilemu {
 

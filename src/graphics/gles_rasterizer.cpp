@@ -8,7 +8,7 @@
 #include <span>
 #include <vector>
 
-#include "foundation/display.hpp"
+#include "graphics/display.hpp"
 #include "graphics/gles_abi.hpp"
 #include "graphics/gles_primitive_assembler.hpp"
 #include "graphics/gles_resources.hpp"

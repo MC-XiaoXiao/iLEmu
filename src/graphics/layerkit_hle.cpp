@@ -1,7 +1,7 @@
 #include "graphics/layerkit_hle.hpp"
 
 #include "foundation/address_space.hpp"
-#include "graphics/graphics_services_input.hpp"
+#include "kernel/graphics_services_input.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "foundation/output.hpp"
 #include "foundation/scene_coordinator.hpp"

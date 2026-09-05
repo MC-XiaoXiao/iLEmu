@@ -29,7 +29,7 @@
 #include "kernel/kernel_iokit_mbx.hpp"
 #include "kernel/kernel_iokit_mobile_file_integrity.hpp"
 #include "kernel/kernel_shared_state.hpp"
-#include "kernel/mig_wire_abi.hpp"
+#include "mach/mig_wire_abi.hpp"
 #include "foundation/output.hpp"
 #include "network/wifi_state.hpp"
 

@@ -6,7 +6,7 @@
 #include "network/darwin_network_abi.hpp"
 #include "kernel/darwin_resource_abi.hpp"
 #include "network/darwin_route_socket.hpp"
-#include "graphics/graphics_services_input.hpp"
+#include "kernel/graphics_services_input.hpp"
 #include "kernel/kernel_bsd_interval_timer.hpp"
 #include "kernel/kernel_network.hpp"
 #include "foundation/performance.hpp"

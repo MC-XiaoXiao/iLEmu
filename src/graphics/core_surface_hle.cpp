@@ -18,7 +18,7 @@
 #include "foundation/application_path.hpp"
 #include "graphics/core_surface_abi.hpp"
 #include "foundation/cpu.hpp"
-#include "foundation/display.hpp"
+#include "graphics/display.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "foundation/output.hpp"

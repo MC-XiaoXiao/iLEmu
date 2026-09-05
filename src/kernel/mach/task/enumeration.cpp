@@ -1,6 +1,6 @@
 #include "kernel/kernel.hpp"
 
-#include "kernel/mig_wire_abi.hpp"
+#include "mach/mig_wire_abi.hpp"
 #include "mach/task_mig_ids.hpp"
 
 #include <array>

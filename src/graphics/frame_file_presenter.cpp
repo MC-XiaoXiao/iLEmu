@@ -12,7 +12,7 @@
 #include <png.h>
 
 #include "foundation/application_display_profile.hpp"
-#include "foundation/display.hpp"
+#include "graphics/display.hpp"
 
 namespace ilemu {
 namespace {

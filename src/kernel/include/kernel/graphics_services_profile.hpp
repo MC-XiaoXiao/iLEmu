@@ -7,8 +7,8 @@
 #include <string_view>
 
 #include "kernel/kernel_shared_state.hpp"
-#include "graphics/system_button_input.hpp"
-#include "graphics/touch_input.hpp"
+#include "foundation/system_button_input.hpp"
+#include "foundation/touch_input.hpp"
 
 namespace ilemu {
 

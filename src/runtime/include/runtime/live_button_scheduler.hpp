@@ -5,7 +5,7 @@
 #include <optional>
 #include <vector>
 
-#include "graphics/system_button_input.hpp"
+#include "foundation/system_button_input.hpp"
 
 namespace ilemu {
 

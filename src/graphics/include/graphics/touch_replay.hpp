@@ -5,7 +5,7 @@
 #include <optional>
 #include <vector>
 
-#include "graphics/touch_input.hpp"
+#include "foundation/touch_input.hpp"
 
 namespace ilemu {
 

@@ -14,7 +14,7 @@
 #include <string_view>
 #include <utility>
 
-#include "foundation/display.hpp"
+#include "graphics/display.hpp"
 #include "graphics/gles_resources.hpp"
 
 namespace ilemu {

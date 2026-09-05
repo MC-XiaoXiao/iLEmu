@@ -4,49 +4,15 @@
 #include <cstdint>
 #include <string_view>
 
+#include "foundation/darwin_errno.hpp"
+#include "network/darwin_socket_abi.hpp"
+
 namespace ilemu::darwin {
 
 // Darwin 8 / iPhoneOS 1.0 ABI values used at the compatibility boundary.
 // Keep these names here instead of scattering host-incompatible literals
 // throughout syscall implementations.
-namespace error {
-    inline constexpr std::uint32_t operation_not_permitted = 1;
-    inline constexpr std::uint32_t no_entry = 2;
-    inline constexpr std::uint32_t no_such_process = 3;
-    inline constexpr std::uint32_t io = 5;
-    inline constexpr std::uint32_t no_such_device_or_address = 6;
-    inline constexpr std::uint32_t argument_list_too_long = 7;
-    inline constexpr std::uint32_t bad_file_descriptor = 9;
-    inline constexpr std::uint32_t no_child_process = 10;
-    inline constexpr std::uint32_t interrupted = 4;
-    inline constexpr std::uint32_t no_memory = 12;
-    inline constexpr std::uint32_t permission_denied = 13;
-    inline constexpr std::uint32_t bad_address = 14;
-    inline constexpr std::uint32_t device_busy = 16;
-    inline constexpr std::uint32_t file_exists = 17;
-    inline constexpr std::uint32_t no_space_on_device = 28;
-    inline constexpr std::uint32_t inappropriate_ioctl = 25;
-    inline constexpr std::uint32_t illegal_seek = 29;
-    inline constexpr std::uint32_t broken_pipe = 32;
-    inline constexpr std::uint32_t would_block = 35;
-    inline constexpr std::uint32_t operation_in_progress = 36;
-    inline constexpr std::uint32_t no_protocol_option = 42;
-    inline constexpr std::uint32_t address_in_use = 48;
-    inline constexpr std::uint32_t not_directory = 20;
-    inline constexpr std::uint32_t is_directory = 21;
-    inline constexpr std::uint32_t invalid_argument = 22;
-    inline constexpr std::uint32_t result_too_large = 34;
-    inline constexpr std::uint32_t value_too_large = 84;
-    inline constexpr std::uint32_t protocol_not_supported = 43;
-    inline constexpr std::uint32_t not_supported = 45;
-    inline constexpr std::uint32_t timed_out = 60;
-    inline constexpr std::uint32_t operation_not_supported = 102;
-    inline constexpr std::uint32_t address_not_available = 49;
-    inline constexpr std::uint32_t network_unreachable = 51;
-    inline constexpr std::uint32_t not_connected = 57;
-    inline constexpr std::uint32_t connection_refused = 61;
-    inline constexpr std::uint32_t no_attribute = 93;
-} // namespace error
+
 
 namespace aio {
     // Darwin 8 ARM32 struct aiocb. off_t is 64-bit but only 4-byte aligned for
@@ -153,52 +119,7 @@ namespace record_lock {
     inline constexpr std::uint32_t size = 24;
 } // namespace record_lock
 
-namespace socket {
-    inline constexpr std::uint32_t local = 1; // AF_UNIX / AF_LOCAL
-    inline constexpr std::uint32_t stream = 1; // SOCK_STREAM
-    inline constexpr std::uint32_t datagram = 2; // SOCK_DGRAM
-    inline constexpr std::uint32_t raw = 3; // SOCK_RAW
-    inline constexpr std::uint32_t sequenced_packet = 5; // SOCK_SEQPACKET
 
-    // XNU 792 user32_msghdr/user32_iovec layout.  These are pointer-sized
-    // fields in the native ABI, so keeping the offsets explicit prevents a
-    // 64-bit host structure from leaking into the ARM32 firmware boundary.
-    namespace arm32_message {
-        inline constexpr std::uint32_t name_offset = 0;
-        inline constexpr std::uint32_t name_length_offset = 4;
-        inline constexpr std::uint32_t iov_offset = 8;
-        inline constexpr std::uint32_t iov_count_offset = 12;
-        inline constexpr std::uint32_t control_offset = 16;
-        inline constexpr std::uint32_t control_length_offset = 20;
-        inline constexpr std::uint32_t flags_offset = 24;
-        inline constexpr std::uint32_t size = 28;
-    } // namespace arm32_message
-
-    namespace arm32_iovec {
-        inline constexpr std::uint32_t base_offset = 0;
-        inline constexpr std::uint32_t length_offset = 4;
-        inline constexpr std::uint32_t size = 8;
-    } // namespace arm32_iovec
-
-    inline constexpr std::uint32_t message_control_truncated = 0x20;
-    inline constexpr std::uint32_t message_dont_wait = 0x80;
-
-    inline constexpr std::uint32_t option_level = 0xffff; // SOL_SOCKET
-    inline constexpr std::uint32_t option_accept_connection = 0x0002;
-    inline constexpr std::uint32_t option_reuse_address = 0x0004;
-    inline constexpr std::uint32_t option_reuse_port = 0x0200;
-    inline constexpr std::uint32_t option_error = 0x1007;
-    inline constexpr std::uint32_t option_type = 0x1008;
-    inline constexpr std::uint32_t option_pending_bytes = 0x1020; // SO_NREAD
-    inline constexpr std::uint32_t option_no_sigpipe = 0x1022;
-    inline constexpr std::uint32_t option_defunct_ok = 0x1100;
-    inline constexpr std::uint32_t ioctl_pending_bytes = 0x4004667f; // FIONREAD
-    inline constexpr std::uint32_t ioctl_non_block = 0x8004667e; // FIONBIO
-
-    inline constexpr std::uint32_t shutdown_read = 0;
-    inline constexpr std::uint32_t shutdown_write = 1;
-    inline constexpr std::uint32_t shutdown_read_write = 2;
-} // namespace socket
 
 namespace mach {
     inline constexpr std::uint32_t success = 0;

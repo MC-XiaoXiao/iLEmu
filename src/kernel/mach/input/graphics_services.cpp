@@ -1,4 +1,4 @@
-#include "graphics/graphics_services_input.hpp"
+#include "kernel/graphics_services_input.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,10 +11,10 @@
 #include "foundation/application_display_profile.hpp"
 #include "foundation/application_path.hpp"
 #include "foundation/cpu.hpp"
-#include "graphics/graphics_services_profile.hpp"
+#include "kernel/graphics_services_profile.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_iokit_display.hpp"
-#include "kernel/mig_wire_abi.hpp"
+#include "mach/mig_wire_abi.hpp"
 #include "graphics/presentation_tracker.hpp"
 #include "foundation/scene_coordinator.hpp"
 #include "foundation/userland_hle.hpp"

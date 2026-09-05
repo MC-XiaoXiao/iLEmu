@@ -1,4 +1,4 @@
-#include "graphics/graphics_services_input.hpp"
+#include "kernel/graphics_services_input.hpp"
 #include "kernel/kernel.hpp"
 #include "foundation/performance.hpp"
 

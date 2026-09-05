@@ -19,7 +19,7 @@
 #include <vector>
 
 #include "foundation/application_display_profile.hpp"
-#include "foundation/display.hpp"
+#include "graphics/display.hpp"
 #include "graphics/gles_renderer.hpp"
 #include "foundation/performance.hpp"
 #include "sdl_input.hpp"

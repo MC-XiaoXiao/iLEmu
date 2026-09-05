@@ -2,7 +2,7 @@
 
 #include "kernel/mach_arm_thread_abi.hpp"
 #include "kernel/mach_thread_info_abi.hpp"
-#include "kernel/mig_wire_abi.hpp"
+#include "mach/mig_wire_abi.hpp"
 #include "mach/thread_act_mig_ids.hpp"
 #include "mach/xnu_scheduler.hpp"
 

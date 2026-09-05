@@ -1,6 +1,6 @@
 #include "kernel/mach_descriptor_transport.hpp"
 
-#include "kernel/mig_wire_abi.hpp"
+#include "mach/mig_wire_abi.hpp"
 
 #include <limits>
 

@@ -5,10 +5,10 @@
 #include <unordered_set>
 #include <vector>
 
-#include "graphics/display_geometry.hpp"
+#include "foundation/display_geometry.hpp"
 #include "kernel/ringer_switch_state.hpp"
-#include "graphics/system_button_input.hpp"
-#include "graphics/touch_input.hpp"
+#include "foundation/system_button_input.hpp"
+#include "foundation/touch_input.hpp"
 
 struct SDL_Window;
 union SDL_Event;

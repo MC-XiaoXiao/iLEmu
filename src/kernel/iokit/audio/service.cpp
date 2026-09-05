@@ -6,7 +6,7 @@
 #include "kernel/kernel_iokit_audio_device_profile.hpp"
 #include "kernel/kernel_iokit_audio_profile.hpp"
 #include "kernel/kernel_shared_state.hpp"
-#include "kernel/mig_wire_abi.hpp"
+#include "mach/mig_wire_abi.hpp"
 #include "foundation/output.hpp"
 
 #include "../../mach/support.hpp"

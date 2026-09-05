@@ -8,7 +8,7 @@
 #include "mach/device_mig_ids.hpp"
 #include "mach/mach_host_mig_ids.hpp"
 #include "mach/mach_port_mig_ids.hpp"
-#include "kernel/mig_wire_abi.hpp"
+#include "mach/mig_wire_abi.hpp"
 #include "mach/semaphore_mig_ids.hpp"
 #include "mach/system_configuration_mig_ids.hpp"
 #include "mach/task_mig_ids.hpp"
