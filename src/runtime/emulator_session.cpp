@@ -109,6 +109,18 @@ void EmulatorSession::run()
     auto& output = output_;
     if (options.rootfs.empty())
         throw std::invalid_argument { "boot requires a firmware rootfs" };
+    const auto darwin_configuration = resolve_darwin_configuration(
+        options.rootfs, options.ios_build);
+    if (darwin_configuration.abi_source == DarwinAbiSource::Unresolved) {
+        throw std::runtime_error {
+            "cannot select Darwin/ABI configuration: firmware iOS build is " +
+            (darwin_configuration.abi_source_detail.empty()
+                    ? std::string { "missing" }
+                    : "unsupported (" +
+                          darwin_configuration.abi_source_detail + ")") +
+            "; provide a supported iOS build code"
+        };
+    }
     host.initialize_graphics();
     const auto& rootfs = options.rootfs;
     const auto host_cache = options.host_cache.empty()
@@ -117,8 +129,6 @@ void EmulatorSession::run()
     const auto catalog_manifest = options.catalog.value_or(
         (host_cache / "executable-catalog.bin").string());
     auto device = options.device;
-    const auto darwin_configuration = resolve_darwin_configuration(
-        rootfs, options.abi.value_or("auto"));
     const auto& darwin_abi = darwin_configuration.abi;
     SessionCatalog session_catalog { rootfs,
         arm_architecture_for_model(device.cpu_model), catalog_manifest, output };

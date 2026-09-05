@@ -111,10 +111,25 @@ namespace {
         return found == presets.end() ? nullptr : &*found;
     }
 
-    // Transitional recognition for existing automatic callers. The actual
-    // contracts above have no firmware build key; explicit selection bypasses
-    // this adapter. Binary evidence can replace it independently of dispatch.
-    const DarwinAbiPreset* legacy_metadata_preset(std::string_view build)
+    bool valid_ios_build(std::string_view build)
+    {
+        constexpr std::string_view digits { "0123456789" };
+        const auto branch = build.find_first_not_of(digits);
+        if (branch == 0 || branch == std::string_view::npos ||
+            build[branch] < 'A' || build[branch] > 'Z')
+            return false;
+        const auto revision = build.substr(branch + 1);
+        if (revision.empty())
+            return false;
+        const auto suffix = revision.find_first_not_of(digits);
+        return suffix == std::string_view::npos ||
+               (suffix > 0 && suffix == revision.size() - 1 &&
+                   revision.back() >= 'a' && revision.back() <= 'z');
+    }
+
+    // Both firmware metadata and frontend overrides use this mapping. Dispatch
+    // depends on the selected contracts, never on firmware build strings.
+    const DarwinAbiPreset* preset_for_build(std::string_view build)
     {
         struct Rule { std::string_view prefix; std::string_view abi_name; };
         constexpr std::array rules {
@@ -131,8 +146,11 @@ namespace {
             Rule { "9A", "bsd-threads-wide-vm" },
             Rule { "11", "bsd-threads-register-v2" },
         };
+        const auto branch = build.find_first_not_of("0123456789");
+        const auto generation = build.substr(0, branch);
+        const auto family = build.substr(0, branch + 1);
         for (const auto& rule : rules) {
-            if (build.starts_with(rule.prefix))
+            if (rule.prefix == family || rule.prefix == generation)
                 return find_preset(rule.abi_name);
         }
         return nullptr;
@@ -154,22 +172,27 @@ std::string_view darwin_abi_source_name(DarwinAbiSource source)
 }
 
 DarwinKernelConfiguration resolve_darwin_configuration(
-    const std::filesystem::path& rootfs, std::string_view requested_abi)
+    const std::filesystem::path& rootfs,
+    std::optional<std::string_view> ios_build)
 {
     DarwinKernelConfiguration configuration;
-    const auto build = read_darwin_build_version(rootfs);
+    const auto build = ios_build ? std::string { *ios_build }
+                                : read_darwin_build_version(rootfs);
     const DarwinAbiPreset* selected = nullptr;
-    if (!requested_abi.empty() && requested_abi != "auto") {
-        selected = find_preset(requested_abi);
+    if (ios_build) {
+        if (!valid_ios_build(build)) {
+            throw std::invalid_argument { "invalid iOS build code: " + build +
+                                          "; expected a code such as 9A334" };
+        }
+        selected = preset_for_build(build);
         if (selected == nullptr) {
-            throw std::runtime_error { "unknown ABI contract: " +
-                                       std::string { requested_abi } +
-                                       "; use 'ilemu abi' to list contracts" };
+            throw std::invalid_argument { "unsupported iOS build code: " +
+                                          build };
         }
         configuration.abi_source = DarwinAbiSource::Explicit;
-        configuration.abi_source_detail = requested_abi;
+        configuration.abi_source_detail = build;
     } else if (!build.empty()) {
-        selected = legacy_metadata_preset(build);
+        selected = valid_ios_build(build) ? preset_for_build(build) : nullptr;
         configuration.abi_source = selected ? DarwinAbiSource::FirmwareMetadata
                                            : DarwinAbiSource::Unresolved;
         configuration.abi_source_detail = build;

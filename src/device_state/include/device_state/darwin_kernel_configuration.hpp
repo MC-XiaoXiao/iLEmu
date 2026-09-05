@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -35,8 +36,10 @@ struct DarwinKernelConfiguration {
 [[nodiscard]] std::string_view darwin_abi_source_name(DarwinAbiSource source);
 
 // Resolve once per session and pass the immutable configuration to its
-// processes. An explicit contract is independent of optional firmware identity.
+// processes. An explicit iOS build overrides firmware metadata for both
+// the reported kernel identity and ABI selection.
 [[nodiscard]] DarwinKernelConfiguration resolve_darwin_configuration(
-    const std::filesystem::path& rootfs, std::string_view requested_abi = { });
+    const std::filesystem::path& rootfs,
+    std::optional<std::string_view> ios_build = std::nullopt);
 
 } // namespace ilemu

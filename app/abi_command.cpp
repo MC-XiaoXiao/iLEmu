@@ -21,18 +21,20 @@ namespace {
 } // namespace
 
 void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
-    const std::optional<std::string>& requested_abi, Output& output)
+    const std::optional<std::string>& ios_build, Output& output)
 {
-    if (!rootfs && !requested_abi) {
-        output.line("Available ABI contracts (select with --abi NAME):");
+    if (!rootfs && !ios_build) {
+        output.line("Use --rootfs DIR to inspect the firmware's "
+                    "Darwin/ABI configuration.");
+        output.line("Use --ios-build CODE (e.g. 9A334) to override "
+                    "firmware metadata.");
+        output.line("Known ABI contracts:");
         for (const auto& preset : darwin_abi_presets())
             output.line("  " + std::string { preset.name });
-        output.line("Use --rootfs DIR to inspect automatic selection.");
         return;
     }
     const auto configuration = resolve_darwin_configuration(
-        rootfs.value_or(std::filesystem::path { }),
-        requested_abi.value_or("auto"));
+        rootfs.value_or(std::filesystem::path { }), ios_build);
     const auto& abi = configuration.abi;
     const auto& identity = configuration.identity;
     std::ostringstream text;

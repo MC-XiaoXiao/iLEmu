@@ -30,7 +30,7 @@ struct BootOptions {
     std::filesystem::path rootfs;
     std::filesystem::path host_cache;
     std::optional<std::string> catalog;
-    std::optional<std::string> abi;
+    std::optional<std::string> ios_build;
     DeviceModel device { DeviceModel::default_model() };
     std::optional<DisplayGeometry> display_geometry;
     std::string binary { "/sbin/launchd" };
