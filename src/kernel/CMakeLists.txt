@@ -14,6 +14,7 @@ target_link_libraries(ilemu_kernel PUBLIC
     iLEmu::telephony
     iLEmu::media
     iLEmu::bluetooth
+    iLEmu::crypto
     iLEmu::graphics
     iLEmu::xnu_adapter)
 

@@ -9,6 +9,7 @@
 #include "ilemu/bootstrap_mig_ids.hpp"
 #include "ilemu/core_animation_remote_profile.hpp"
 #include "ilemu/core_telephony_hle.hpp"
+#include "ilemu/core_crypto_hle.hpp"
 #include "ilemu/darwin_abi.hpp"
 #include "ilemu/darwin_kqueue_abi.hpp"
 #include "ilemu/darwin_network_abi.hpp"
@@ -357,6 +358,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     register_app_support_hle(userland_hle_);
     register_lockdown_hle(userland_hle_, activated, lockdown_profile);
     register_bluetooth_manager_hle(userland_hle_);
+    register_core_crypto_hle(userland_hle_);
     register_mbx_connect_hle(userland_hle_);
     graphics_services_input::register_springboard_alert_observers(userland_hle_,
         [this](std::uint32_t object,
