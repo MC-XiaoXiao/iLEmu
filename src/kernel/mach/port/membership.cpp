@@ -1,14 +1,13 @@
 #include "ilemu/kernel.hpp"
 
+#include "ilemu/darwin_abi.hpp"
 #include "ilemu/mach_port_mig_ids.hpp"
 #include "ilemu/mach_port_object.hpp"
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
-#include <optional>
 #include <string>
 
 #include "../support.hpp"
@@ -18,27 +17,9 @@ namespace {
 
     using namespace mach_support;
 
-    constexpr std::uint32_t kernel_success = 0;
-    constexpr std::uint32_t kernel_already_in_set = 11;
-    constexpr std::uint32_t kernel_not_in_set = 12;
-    constexpr std::uint32_t kernel_invalid_name = 15;
-    constexpr std::uint32_t kernel_invalid_task = 16;
-    constexpr std::uint32_t kernel_invalid_right = 17;
     constexpr std::uint32_t mach_message_success = 0;
     constexpr std::uint32_t mach_receive_invalid_data = 0x10004008U;
     constexpr std::uint32_t reply_size = 36;
-
-    bool is_receive_right(const xnu792::ipc::NameEntry& entry)
-    {
-        return (entry.type &
-                   xnu792::ipc::type_mask(xnu792::ipc::Right::Receive)) != 0;
-    }
-
-    bool is_port_set_right(const xnu792::ipc::NameEntry& entry)
-    {
-        return (entry.type &
-                   xnu792::ipc::type_mask(xnu792::ipc::Right::PortSet)) != 0;
-    }
 
 } // namespace
 
@@ -70,74 +51,24 @@ bool CompatibilityKernel::dispatch_mach_port_membership_message(
         memory_.read32(request.address + arguments[2].request_offset)
             .value_or(0);
 
-    std::uint32_t result = kernel_success;
+    PortMembershipResult membership;
     std::uint32_t target_pid = 0;
-    std::uint32_t member_object = 0;
-    std::uint32_t set_object = 0;
-    std::size_t resulting_member_count = 0;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto target = target_task_for_port(
             *shared_state_, process_.pid, request.remote_port);
-        const auto member_entry =
-            target ? shared_state_->mach_namespaces.lookup(*target, member)
-                   : std::nullopt;
-        const auto set_entry =
-            target && set_name != xnu792::ipc::null_name
-                ? shared_state_->mach_namespaces.lookup(*target, set_name)
-                : std::nullopt;
         target_pid = target.value_or(0);
-        member_object = member_entry ? member_entry->object : 0;
-        set_object = set_entry ? set_entry->object : 0;
         if (!target) {
-            result = kernel_invalid_task;
-        } else if (!member_entry) {
-            result = member == xnu792::ipc::null_name ? kernel_invalid_right
-                                                      : kernel_invalid_name;
-        } else if (!is_receive_right(*member_entry)) {
-            result = kernel_invalid_right;
-        } else if (routine != Routine::mach_port_move_member ||
-                   set_name != xnu792::ipc::null_name) {
-            if (!set_entry) {
-                result = set_name == xnu792::ipc::null_name
-                             ? kernel_invalid_right
-                             : kernel_invalid_name;
-            } else if (!is_port_set_right(*set_entry)) {
-                result = kernel_invalid_right;
-            }
-        }
-        if (result == kernel_success) {
-            if (routine == Routine::mach_port_move_member) {
-                const auto removed =
-                    shared_state_->remove_mach_port_set_member_from_all_locked(
-                        member_entry->object);
-                if (set_entry) {
-                    static_cast<void>(
-                        shared_state_->insert_mach_port_set_member_locked(
-                            set_entry->object, member_entry->object));
-                } else if (!removed) {
-                    result = kernel_not_in_set;
-                }
-            } else {
-                if (routine == Routine::mach_port_insert_member) {
-                    // Darwin 8's ipc_port has ip_pset_count and one mqueue link
-                    // per containing set. KERN_ALREADY_IN_SET applies only to
-                    // the requested set; the same receive right may belong to
-                    // another set as well.
-                    if (!shared_state_->insert_mach_port_set_member_locked(
-                            set_entry->object, member_entry->object)) {
-                        result = kernel_already_in_set;
-                    }
-                } else if (!shared_state_->extract_mach_port_set_member_locked(
-                               set_entry->object, member_entry->object)) {
-                    result = kernel_not_in_set;
-                }
-            }
-        }
-        if (set_object != 0) {
-            const auto members = shared_state_->mach_port_sets.find(set_object);
-            if (members != shared_state_->mach_port_sets.end())
-                resulting_member_count = members->second.size();
+            membership.result = darwin::mach::invalid_task;
+        } else {
+            const auto operation =
+                routine == Routine::mach_port_move_member
+                    ? PortMembershipOperation::Move
+                : routine == Routine::mach_port_insert_member
+                    ? PortMembershipOperation::Insert
+                    : PortMembershipOperation::Extract;
+            membership = modify_port_membership_locked(
+                *shared_state_, *target, member, set_name, operation);
         }
     }
 
@@ -150,7 +81,7 @@ bool CompatibilityKernel::dispatch_mach_port_membership_message(
         request.identifier + 100,
         0,
         1,
-        result,
+        membership.result,
     };
     for (std::size_t index = 0; index < reply.size(); ++index) {
         if (!memory_.write32(
@@ -165,11 +96,13 @@ bool CompatibilityKernel::dispatch_mach_port_membership_message(
                   " target=" + std::to_string(target_pid) +
                   " id=" + std::to_string(request.identifier) +
                   " member=" + std::to_string(member) +
-                  " member-object=" + std::to_string(member_object) +
+                  " member-object=" +
+                  std::to_string(membership.member_object) +
                   " set=" + std::to_string(set_name) +
-                  " set-object=" + std::to_string(set_object) +
-                  " set-members=" + std::to_string(resulting_member_count) +
-                  " result=" + std::to_string(result) + "\n");
+                  " set-object=" + std::to_string(membership.set_object) +
+                  " set-members=" +
+                  std::to_string(membership.set_member_count) +
+                  " result=" + std::to_string(membership.result) + "\n");
     return true;
 }
 

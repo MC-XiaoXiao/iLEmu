@@ -1647,8 +1647,14 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         // Process readiness is already edge-consumed by its observed
         // generations. Comparing only `data` can collapse distinct process
         // events (for example NOTE_EXEC data=1 followed by signal-1 exit).
+        // EVFILT_MACHPORT's readiness probe does not consume the message. XNU
+        // keeps its wait-queue-backed knote active while any member queue is
+        // nonempty, even with EV_CLEAR; the client drains messages separately
+        // through mach_msg. Re-evaluate it on every kevent call so a busy port
+        // set cannot strand messages behind the first reported member.
         if (clears_after_delivery &&
             registration->filter != darwin::kqueue::filter_process &&
+            registration->filter != darwin::kqueue::filter_mach_port &&
             registration->clear_delivered &&
             registration->clear_available == available) {
             ++registration;

@@ -169,6 +169,7 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
     if (dispatch_mach_host_message(cpu, request) ||
         dispatch_mach_processor_message(cpu, request) ||
         dispatch_mach_port_message(cpu, request) ||
+        dispatch_mach_port_context_message(cpu, request) ||
         dispatch_mach_task_enumeration_message(cpu, request) ||
         dispatch_mach_task_info_message(cpu, request) ||
         dispatch_mach_task_exception_message(cpu, request) ||
@@ -237,6 +238,57 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
             registers[0] = write_message_words(memory_, message_address, reply)
                                ? 0U
                                : 0x10004008U;
+            return;
+        }
+    }
+    if (*message_id ==
+            mig_message_id(xnu792::mig::bootstrap::Routine::get_self) &&
+        *remote_port == process_.bootstrap_port && registers[3] >= 40U) {
+        // The root bootstrap provider can query its own job port before it has
+        // created a server receive loop. Handle only this structural
+        // self-owned case; child requests continue to route to their provider.
+        std::uint32_t job_name = 0U;
+        {
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            const auto object = shared_state_->mach_namespaces.resolve(
+                process_.pid, *remote_port);
+            const auto port = object
+                                  ? shared_state_->mach_port_objects.lookup(
+                                        *object)
+                                  : std::nullopt;
+            if (object && port && port->receive_owner == process_.pid) {
+                job_name = shared_state_->mach_namespaces
+                               .copyout(process_.pid, *object,
+                                   xnu792::ipc::type_mask(
+                                       xnu792::ipc::Right::Send))
+                               .value_or(0U);
+                if (job_name != 0U) {
+                    static_cast<void>(shared_state_->mach_port_objects
+                            .increment_make_send_count(*object));
+                }
+            }
+        }
+        if (job_name != 0U) {
+            const std::array<std::uint32_t, 10> reply {
+                darwin::mig_wire::message_bits(
+                    darwin::mig_wire::disposition_move_send_once, 0U, true),
+                40U,
+                *local_port,
+                0U,
+                0U,
+                *message_id + 100U,
+                1U,
+                job_name,
+                0U,
+                darwin::mig_wire::port_descriptor_metadata(
+                    darwin::mig_wire::disposition_move_send),
+            };
+            registers[0] = write_message_words(memory_, message_address, reply)
+                               ? darwin::mach::success
+                               : darwin::mach_message::receive_invalid_data;
+            output_.write("[bootstrap] self job resolved pid=" +
+                          std::to_string(process_.pid) +
+                          " name=" + std::to_string(job_name) + "\n");
             return;
         }
     }
@@ -895,6 +947,12 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                     if (bootstrap_lookup && !bootstrap_service_name.empty() &&
                         reply_object) {
                         graphics_services_input::record_bootstrap_lookup_locked(
+                            *shared_state_, *reply_object,
+                            bootstrap_service_name, process_.pid);
+                    }
+                    if (bootstrap_check_in &&
+                        !bootstrap_service_name.empty() && reply_object) {
+                        graphics_services_input::record_bootstrap_check_in_locked(
                             *shared_state_, *reply_object,
                             bootstrap_service_name, process_.pid);
                     }

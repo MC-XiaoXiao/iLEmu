@@ -1,5 +1,7 @@
 add_library(ilemu_kernel_mach_port STATIC
+    context.cpp
     enumeration.cpp
+    kernel_rpc.cpp
     limits.cpp
     membership.cpp)
 add_library(iLEmu::kernel_mach_port ALIAS

@@ -93,9 +93,12 @@ void register_springboard_application_handoff_animation(
 [[nodiscard]] std::optional<std::uint32_t> event_type(
     std::span<const std::byte> message);
 
-// These two functions observe launchd's ordinary bootstrap MIG traffic. The
-// caller must hold KernelSharedState::mach_mutex.
+// These functions observe launchd's ordinary bootstrap MIG traffic. The caller
+// must hold KernelSharedState::mach_mutex.
 void record_bootstrap_lookup_locked(KernelSharedState& state,
+    std::uint32_t reply_object, std::string_view service_name,
+    std::uint32_t requester_process_id = 0);
+void record_bootstrap_check_in_locked(KernelSharedState& state,
     std::uint32_t reply_object, std::string_view service_name,
     std::uint32_t requester_process_id = 0);
 void record_bootstrap_registration_locked(

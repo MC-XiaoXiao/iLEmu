@@ -367,85 +367,15 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                     (descriptor_word >>
                         darwin::mig_wire::descriptor_disposition_shift) &
                     0xffU;
-                const auto right = right_for_disposition(disposition);
-                const auto source_right =
-                    source_right_for_disposition(disposition);
                 std::lock_guard mach_lock { shared_state_->mach_mutex };
                 const auto task = target_task_for_port(
                     *shared_state_, process_.pid, *remote_port);
-                const auto poly_object =
-                    source_right ? resolve_name_with_right(*shared_state_,
-                                       process_.pid, poly_name, *source_right)
-                                 : std::nullopt;
-                const auto existing =
-                    task ? shared_state_->mach_namespaces.lookup(
-                               *task, target_name)
-                         : std::nullopt;
-                const auto existing_name =
-                    task && poly_object
-                        ? shared_state_->mach_namespaces.name_for(
-                              *task, *poly_object)
-                        : std::nullopt;
                 if (!task) {
                     kernel_result = darwin::mach::invalid_task;
-                } else if (!right || !source_right || !poly_object ||
-                           target_name == xnu792::ipc::null_name ||
-                           target_name == xnu792::ipc::dead_name) {
-                    kernel_result = darwin::mach::invalid_value;
-                } else if (existing &&
-                           (existing->object != *poly_object ||
-                               *right == xnu792::ipc::Right::SendOnce)) {
-                    kernel_result = darwin::mach::name_exists;
-                } else if (existing_name && *existing_name != target_name &&
-                           *right != xnu792::ipc::Right::SendOnce) {
-                    kernel_result = darwin::mach::right_exists;
                 } else {
-                    const auto moved = disposition == 16U ||
-                                       disposition == 17U || disposition == 18U;
-                    if (!moved && existing &&
-                        *right == xnu792::ipc::Right::Send &&
-                        existing->user_references[static_cast<std::size_t>(
-                            xnu792::ipc::Right::Send)] >=
-                            xnu792::ipc::maximum_send_user_references) {
-                        kernel_result = darwin::mach::user_references_overflow;
-                    }
-                    bool consumed = kernel_result == 0;
-                    if (consumed && moved) {
-                        consumed = consume_moved_right_locked(*shared_state_,
-                            process_.pid, poly_name, *source_right, true);
-                        if (!consumed) {
-                            kernel_result = darwin::mach::invalid_right;
-                        }
-                    }
-                    const auto installed =
-                        kernel_result == 0 &&
-                        shared_state_->mach_namespaces.install(*task,
-                            target_name, *poly_object,
-                            xnu792::ipc::type_mask(*right));
-                    if (!installed) {
-                        if (moved && consumed) {
-                            static_cast<void>(
-                                shared_state_->mach_namespaces.install(
-                                    process_.pid, poly_name, *poly_object,
-                                    xnu792::ipc::type_mask(*source_right)));
-                        }
-                        if (kernel_result == 0) {
-                            kernel_result = darwin::mach::invalid_right;
-                        }
-                    } else if (disposition == 20U) { // MAKE_SEND
-                        static_cast<void>(shared_state_->mach_port_objects
-                                .increment_make_send_count(*poly_object));
-                    }
-                    if (installed && *right == xnu792::ipc::Right::Receive) {
-                        static_cast<void>(
-                            shared_state_->mach_port_objects.set_receive_owner(
-                                *poly_object, *task));
-                    } else if (!installed && moved && consumed &&
-                               *source_right == xnu792::ipc::Right::Receive) {
-                        static_cast<void>(
-                            shared_state_->mach_port_objects.set_receive_owner(
-                                *poly_object, process_.pid));
-                    }
+                    kernel_result = insert_port_right_locked(*shared_state_,
+                        process_.pid, *task, target_name, poly_name,
+                        disposition);
                 }
             }
         } else if (*message_id ==

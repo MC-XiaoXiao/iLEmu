@@ -146,6 +146,26 @@ namespace mach_support {
     [[nodiscard]] std::uint32_t modify_port_references_locked(
         KernelSharedState& state, std::uint32_t task, std::uint32_t name,
         xnu792::ipc::Right right, std::int32_t delta);
+    [[nodiscard]] std::uint32_t insert_port_right_locked(
+        KernelSharedState& state, std::uint32_t caller,
+        std::uint32_t target_task, std::uint32_t target_name,
+        std::uint32_t source_name, std::uint32_t disposition);
+
+    enum class PortMembershipOperation : std::uint8_t {
+        Move,
+        Insert,
+        Extract,
+    };
+    struct PortMembershipResult {
+        std::uint32_t result { };
+        std::uint32_t member_object { };
+        std::uint32_t set_object { };
+        std::size_t set_member_count { };
+    };
+    [[nodiscard]] PortMembershipResult modify_port_membership_locked(
+        KernelSharedState& state, std::uint32_t target_task,
+        std::uint32_t member_name, std::uint32_t set_name,
+        PortMembershipOperation operation);
 
 } // namespace mach_support
 } // namespace ilemu

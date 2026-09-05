@@ -3108,9 +3108,6 @@ void record_application_remote_scene_commit_locked(KernelSharedState& state,
 {
     const auto application = state.processes.find(sender_pid);
     const auto destination_port = state.mach_port_objects.lookup(destination);
-    if (application != state.processes.end() &&
-        is_application_executable_path(application->second.executable_path)) {
-    }
     if (application == state.processes.end() || application->second.exited ||
         !is_application_executable_path(application->second.executable_path) ||
         !destination_port ||

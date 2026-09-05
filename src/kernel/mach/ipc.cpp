@@ -332,6 +332,7 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     auto queued_port = *pending->second.receive_object;
     auto queue = shared_state_->mach_queues.end();
     bool has_visible_message = false;
+    std::optional<std::uint32_t> selected_port_set;
     const auto select_queue = [&](std::uint32_t candidate_port) {
         const auto candidate = shared_state_->mach_queues.find(candidate_port);
         if (candidate == shared_state_->mach_queues.end() ||
@@ -349,12 +350,15 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     };
 
     if (!select_queue(queued_port)) {
+        const auto port_set_object = queued_port;
         if (const auto port_set =
-                shared_state_->mach_port_sets.find(queued_port);
-            port_set != shared_state_->mach_port_sets.end()) {
+                shared_state_->mach_port_set_preposts.find(port_set_object);
+            port_set != shared_state_->mach_port_set_preposts.end()) {
             for (const auto member : port_set->second) {
-                if (select_queue(member))
+                if (select_queue(member)) {
+                    selected_port_set = port_set_object;
                     break;
+                }
             }
         }
     }
@@ -379,6 +383,23 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     }
 
     const auto& pending_message = queue->second.front();
+    if (selected_port_set) {
+        // XNU's prepost linkage is a FIFO. Keep the selected member at the
+        // tail while the message is being copied out so the next receive on
+        // this set starts at the following ready source.
+        const auto preposts =
+            shared_state_->mach_port_set_preposts.find(*selected_port_set);
+        if (preposts != shared_state_->mach_port_set_preposts.end() &&
+            preposts->second.size() > 1U) {
+            const auto member = std::find(preposts->second.begin(),
+                preposts->second.end(), queued_port);
+            if (member != preposts->second.end()) {
+                const auto selected_member = *member;
+                preposts->second.erase(member);
+                preposts->second.push_back(selected_member);
+            }
+        }
+    }
     const auto sequence_number =
         shared_state_->mach_port_objects.sequence_number(queued_port)
             .value_or(0);
@@ -387,6 +408,7 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     if (!received) {
         auto discarded = std::move(queue->second.front());
         queue->second.pop_front();
+        shared_state_->note_mach_message_dequeued_locked(queued_port);
         discard_mach_message_rights_locked(*shared_state_, discarded);
         cpu.registers()[0] = 0x10004008U; // MACH_RCV_INVALID_DATA
         pending_mach_receives_.erase(pending);
@@ -395,7 +417,35 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
         return true;
     }
     if (received->bytes.size() > pending->second.receive_size) {
-        cpu.registers()[0] = 0x10004004U; // MACH_RCV_TOO_LARGE
+        const auto report_only =
+            (pending->second.options &
+                darwin::mach_message::option_receive_large) != 0U;
+        if (report_only) {
+            // MACH_RCV_LARGE leaves the message queued and reports the
+            // message-proper size through the fake header's msgh_size field.
+            // libdispatch and the old GraphicsServices receiver use that
+            // value to grow their buffer before retrying the same message.
+            const auto capacity = pending->second.receive_size;
+            if (capacity >=
+                    darwin::mig_wire::header_remote_port_offset &&
+                !memory_.write32(pending->second.message_address +
+                                     darwin::mig_wire::header_size_offset,
+                    static_cast<std::uint32_t>(received->message_size))) {
+                cpu.registers()[0] =
+                    darwin::mach_message::receive_invalid_data;
+            } else {
+                cpu.registers()[0] = darwin::mach_message::receive_too_large;
+            }
+        } else {
+            // Without MACH_RCV_LARGE XNU consumes and destroys the oversized
+            // message, returning only the receive error. Leaving it queued
+            // would make a caller retry forever with the same capacity.
+            auto discarded = std::move(queue->second.front());
+            queue->second.pop_front();
+            shared_state_->note_mach_message_dequeued_locked(queued_port);
+            discard_mach_message_rights_locked(*shared_state_, discarded);
+            cpu.registers()[0] = darwin::mach_message::receive_too_large;
+        }
         pending_mach_receives_.erase(pending);
         process_.waiting_for_events = false;
         cpu.clear_halt();
@@ -434,6 +484,7 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     const auto discard_queued_message = [&] {
         auto discarded = std::move(queue->second.front());
         queue->second.pop_front();
+        shared_state_->note_mach_message_dequeued_locked(queued_port);
         discard_mach_message_rights_locked(*shared_state_, discarded);
     };
     const auto fail_receive = [&](std::uint32_t error) {
@@ -758,12 +809,14 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
             "[mach] ool-copy receiver=" + std::to_string(process_.pid) +
             " bytes=" + std::to_string(payload.bytes.size()) +
             " address=" + std::to_string(copied_address) + "\n");
+
     }
 
     if (!mach_ipc::apply_receive_pointer_fixups(pending_message,
             pending->second.message_address, received->bytes)) {
         auto discarded = std::move(queue->second.front());
         queue->second.pop_front();
+        shared_state_->note_mach_message_dequeued_locked(queued_port);
         discard_mach_message_rights_locked(*shared_state_, discarded);
         cpu.registers()[0] = 0x10004008U; // MACH_RCV_INVALID_DATA
         pending_mach_receives_.erase(pending);
@@ -802,6 +855,7 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
             PerfLatencyKind::MachMessageSendToReceive, elapsed);
     }
     queue->second.pop_front();
+    shared_state_->note_mach_message_dequeued_locked(queued_port);
     if (delivered_destination_send_object) {
         release_inflight_send_right_locked(
             *shared_state_, *delivered_destination_send_object);

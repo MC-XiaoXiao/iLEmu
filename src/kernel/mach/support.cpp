@@ -514,6 +514,9 @@ namespace mach_support {
             state.surface_transport_port_surfaces.erase(surface);
         }
         state.surface_transport_port_leases.erase(object);
+        state.mach_port_contexts.erase(object);
+        std::erase_if(state.audit_session_port_objects,
+            [object](const auto& session) { return session.second == object; });
         static_cast<void>(state.mach_port_objects.erase(object));
         // Keep an in-flight count until every queued message carrying this
         // object is delivered or discarded.
@@ -762,18 +765,17 @@ namespace mach_support {
         for (const auto& [task, name] : dead_name_requests)
             cancel_dead_name_notification_locked(state, task, name);
 
-        // Bootstrap lookup/retry records are task-local observer state, not
-        // Mach rights.  Drop both sides on exit so a recycled PID cannot
-        // inherit a stale launch service or wake a retry belonging to its
-        // predecessor.
-        for (auto pending = state.pending_bootstrap_service_lookups.begin();
-            pending != state.pending_bootstrap_service_lookups.end();) {
-            std::erase_if(pending->second, [pid](const auto& lookup) {
-                return lookup.requester_process_id == pid;
+        // Bootstrap request/retry records are task-local observer state, not
+        // Mach rights. Drop both sides on exit so a recycled PID cannot inherit
+        // a stale service request or wake a retry belonging to its predecessor.
+        for (auto pending = state.pending_bootstrap_service_requests.begin();
+            pending != state.pending_bootstrap_service_requests.end();) {
+            std::erase_if(pending->second, [pid](const auto& request) {
+                return request.requester_process_id == pid;
             });
             if (pending->second.empty()) {
                 pending =
-                    state.pending_bootstrap_service_lookups.erase(pending);
+                    state.pending_bootstrap_service_requests.erase(pending);
             } else {
                 ++pending;
             }
@@ -1148,6 +1150,147 @@ namespace mach_support {
             release_unreferenced_fileport_locked(state, entry->object);
         }
         return kern_success;
+    }
+
+    std::uint32_t insert_port_right_locked(KernelSharedState& state,
+        std::uint32_t caller, std::uint32_t target_task,
+        std::uint32_t target_name, std::uint32_t source_name,
+        std::uint32_t disposition)
+    {
+        const auto right = right_for_disposition(disposition);
+        const auto source_right = source_right_for_disposition(disposition);
+        const auto source_object =
+            source_right ? resolve_name_with_right(
+                               state, caller, source_name, *source_right)
+                         : std::nullopt;
+        const auto existing =
+            state.mach_namespaces.lookup(target_task, target_name);
+        const auto existing_name = source_object
+                                       ? state.mach_namespaces.name_for(
+                                             target_task, *source_object)
+                                       : std::nullopt;
+        if (!right || !source_right || !source_object ||
+            target_name == xnu792::ipc::null_name ||
+            target_name == xnu792::ipc::dead_name) {
+            return darwin::mach::invalid_value;
+        }
+        if (existing &&
+            (existing->object != *source_object ||
+                *right == xnu792::ipc::Right::SendOnce)) {
+            return darwin::mach::name_exists;
+        }
+        if (existing_name && *existing_name != target_name &&
+            *right != xnu792::ipc::Right::SendOnce) {
+            return darwin::mach::right_exists;
+        }
+
+        const auto moved = disposition == 16U || disposition == 17U ||
+                           disposition == 18U;
+        if (!moved && existing && *right == xnu792::ipc::Right::Send &&
+            existing->user_references[static_cast<std::size_t>(
+                xnu792::ipc::Right::Send)] >=
+                xnu792::ipc::maximum_send_user_references) {
+            return darwin::mach::user_references_overflow;
+        }
+
+        auto consumed = true;
+        if (moved) {
+            consumed = consume_moved_right_locked(
+                state, caller, source_name, *source_right, true);
+            if (!consumed)
+                return darwin::mach::invalid_right;
+        }
+        const auto installed = state.mach_namespaces.install(target_task,
+            target_name, *source_object, xnu792::ipc::type_mask(*right));
+        if (!installed) {
+            if (moved && consumed) {
+                static_cast<void>(state.mach_namespaces.install(caller,
+                    source_name, *source_object,
+                    xnu792::ipc::type_mask(*source_right)));
+            }
+            if (moved && consumed &&
+                *source_right == xnu792::ipc::Right::Receive) {
+                static_cast<void>(state.mach_port_objects.set_receive_owner(
+                    *source_object, caller));
+            }
+            return darwin::mach::invalid_right;
+        }
+
+        if (disposition == darwin::mig_wire::disposition_make_send) {
+            static_cast<void>(
+                state.mach_port_objects.increment_make_send_count(
+                    *source_object));
+        }
+        if (*right == xnu792::ipc::Right::Receive) {
+            static_cast<void>(state.mach_port_objects.set_receive_owner(
+                *source_object, target_task));
+        }
+        return darwin::mach::success;
+    }
+
+    PortMembershipResult modify_port_membership_locked(KernelSharedState& state,
+        std::uint32_t target_task, std::uint32_t member_name,
+        std::uint32_t set_name, PortMembershipOperation operation)
+    {
+        constexpr std::uint32_t already_in_set = 11U;
+        constexpr std::uint32_t not_in_set = 12U;
+        PortMembershipResult result;
+        const auto member =
+            state.mach_namespaces.lookup(target_task, member_name);
+        const auto set = set_name != xnu792::ipc::null_name
+                             ? state.mach_namespaces.lookup(
+                                   target_task, set_name)
+                             : std::nullopt;
+        result.member_object = member ? member->object : 0U;
+        result.set_object = set ? set->object : 0U;
+        const auto has = [](const xnu792::ipc::NameEntry& entry,
+                             xnu792::ipc::Right right) {
+            return (entry.type & xnu792::ipc::type_mask(right)) != 0U;
+        };
+        if (!member) {
+            result.result = member_name == xnu792::ipc::null_name
+                                ? darwin::mach::invalid_right
+                                : darwin::mach::invalid_name;
+        } else if (!has(*member, xnu792::ipc::Right::Receive)) {
+            result.result = darwin::mach::invalid_right;
+        } else if (operation != PortMembershipOperation::Move ||
+                   set_name != xnu792::ipc::null_name) {
+            if (!set) {
+                result.result = set_name == xnu792::ipc::null_name
+                                    ? darwin::mach::invalid_right
+                                    : darwin::mach::invalid_name;
+            } else if (!has(*set, xnu792::ipc::Right::PortSet)) {
+                result.result = darwin::mach::invalid_right;
+            }
+        }
+
+        if (result.result == darwin::mach::success) {
+            if (operation == PortMembershipOperation::Move) {
+                const auto removed =
+                    state.remove_mach_port_set_member_from_all_locked(
+                        member->object);
+                if (set) {
+                    static_cast<void>(state.insert_mach_port_set_member_locked(
+                        set->object, member->object));
+                } else if (!removed) {
+                    result.result = not_in_set;
+                }
+            } else if (operation == PortMembershipOperation::Insert) {
+                if (!state.insert_mach_port_set_member_locked(
+                        set->object, member->object)) {
+                    result.result = already_in_set;
+                }
+            } else if (!state.extract_mach_port_set_member_locked(
+                           set->object, member->object)) {
+                result.result = not_in_set;
+            }
+        }
+        if (result.set_object != 0U) {
+            const auto members = state.mach_port_sets.find(result.set_object);
+            if (members != state.mach_port_sets.end())
+                result.set_member_count = members->second.size();
+        }
+        return result;
     }
 
 } // namespace mach_support

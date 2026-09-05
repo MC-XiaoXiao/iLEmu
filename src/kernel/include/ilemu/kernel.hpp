@@ -455,6 +455,11 @@ private:
 
     void enqueue_system_button_impl(
         const SystemButtonInput& input, bool force_home_transition);
+    // Host-originated graphics events are published directly into the shared
+    // Mach queues. Unlike a guest mach_msg send, that path has no sender CPU
+    // from which to wake the receiver, so notify each owning runtime after
+    // publishing the queue entry.
+    void wake_graphics_input_receivers();
 
     struct MachMessageRequest {
         std::uint32_t address { };
@@ -531,12 +536,18 @@ private:
         Cpu& cpu, std::uint32_t fd, std::span<const std::byte> bytes);
     void dispatch_bsd_signal(Cpu& cpu, std::uint32_t number);
     void dispatch_mach(Cpu& cpu, std::uint32_t trap);
+    [[nodiscard]] bool dispatch_mach_port_kernel_rpc_trap(
+        Cpu& cpu, std::uint32_t trap);
+    [[nodiscard]] bool dispatch_mach_vm_kernel_rpc_trap(
+        Cpu& cpu, std::uint32_t trap);
     void dispatch_mach_message(Cpu& cpu);
     [[nodiscard]] bool dispatch_mach_host_message(
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_processor_message(
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_port_message(
+        Cpu& cpu, const MachMessageRequest& request);
+    [[nodiscard]] bool dispatch_mach_port_context_message(
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_port_limit_message(
         Cpu& cpu, const MachMessageRequest& request);
@@ -562,6 +573,8 @@ private:
     [[nodiscard]] bool dispatch_mach_vm_deallocate_message(
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_vm_protect_message(
+        Cpu& cpu, const MachMessageRequest& request);
+    [[nodiscard]] bool dispatch_mach_vm_inherit_message(
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_vm_copy_message(
         Cpu& cpu, const MachMessageRequest& request);

@@ -510,40 +510,6 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput& input)
     const auto result = graphics_services_input::enqueue_touch(*shared_state_,
         input, scene_coordinator_.get(), presentation_tracker_.get(),
         &home_recovery_requested, &input_sequence);
-    {
-        std::lock_guard mach_lock { shared_state_->mach_mutex };
-        const auto service = shared_state_->bootstrap_service_objects.find(
-            std::string { graphics_services_input::system_event_service });
-        if (service != shared_state_->bootstrap_service_objects.end()) {
-            const auto queue = shared_state_->mach_queues.find(service->second);
-            const auto port = shared_state_->mach_port_objects.lookup(service->second);
-            std::string sets;
-            for (const auto& [set_object, members] : shared_state_->mach_port_sets) {
-                if (std::find(members.begin(), members.end(), service->second) != members.end()) {
-                    if (!sets.empty())
-                        sets += ",";
-                    const auto pending = std::find_if(
-                        pending_mach_receives_.begin(),
-                        pending_mach_receives_.end(),
-                        [set_object](const auto& entry) {
-                            return entry.second.receive_is_port_set &&
-                                   entry.second.receive_object == set_object;
-                        });
-                    sets += std::to_string(set_object) +
-                            (pending == pending_mach_receives_.end() ? "(idle)"
-                                                                       : "(wait)");
-                }
-            }
-            output_.line("[input-debug] destination=" +
-                         std::to_string(service->second) + " queue=" +
-                         std::to_string(queue == shared_state_->mach_queues.end()
-                                            ? 0U
-                                            : queue->second.size()) +
-                         " owner=" +
-                         std::to_string(port ? port->receive_owner : 0U) +
-                         " sets=" + (sets.empty() ? std::string { "none" } : sets));
-        }
-    }
     wake_graphics_input_receivers();
     const auto enqueued_at = std::chrono::steady_clock::now();
     const auto phase = [phase = input.phase] {
@@ -699,11 +665,10 @@ void CompatibilityKernel::enqueue_system_button_impl(
 
 void CompatibilityKernel::wake_graphics_input_receivers()
 {
-    if (!mach_message_wake_handler_ && !graphics_input_wake_handler_)
+    if (!mach_message_wake_handler_)
         return;
 
     std::vector<std::pair<std::uint32_t, std::uint32_t>> receivers;
-    std::vector<std::uint32_t> input_processes;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         for (const auto& [object, queue] : shared_state_->mach_queues) {
@@ -720,7 +685,6 @@ void CompatibilityKernel::wake_graphics_input_receivers()
             if (!port || port->receive_owner == 0U)
                 continue;
             receivers.emplace_back(port->receive_owner, object);
-            input_processes.push_back(port->receive_owner);
             // A Mach receive may block on a port set rather than on the
             // member port itself.  Host-originated input has no sender CPU
             // whose send path can walk the set links, so notify every set
@@ -746,25 +710,7 @@ void CompatibilityKernel::wake_graphics_input_receivers()
         receivers.end());
     if (mach_message_wake_handler_) {
         for (const auto& [process_id, object] : receivers) {
-            const auto wake = mach_message_wake_handler_(process_id, object);
-            output_.line("[input-debug] host-wake pid=" +
-                         std::to_string(process_id) + " object=" +
-                         std::to_string(object) + " handled=" +
-                         std::to_string(wake.handled) + " preempt=" +
-                         std::to_string(wake.preemption_needed));
-        }
-    }
-    if (graphics_input_wake_handler_) {
-        std::sort(input_processes.begin(), input_processes.end());
-        input_processes.erase(
-            std::unique(input_processes.begin(), input_processes.end()),
-            input_processes.end());
-        for (const auto process_id : input_processes) {
-            const auto wake = graphics_input_wake_handler_(process_id);
-            output_.line("[input-debug] host-input-wake pid=" +
-                         std::to_string(process_id) + " handled=" +
-                         std::to_string(wake.handled) + " preempt=" +
-                         std::to_string(wake.preemption_needed));
+            static_cast<void>(mach_message_wake_handler_(process_id, object));
         }
     }
 }
@@ -972,7 +918,6 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     thread_ports_.clear();
     thread_ports_.emplace(processor_id, current_thread_port);
     last_delivered_graphics_inputs_.clear();
-    graphics_input_receiver_processors_.clear();
     disabled_thread_signals_.clear();
     pending_waits_.clear();
     pending_mach_receives_.clear();
@@ -1070,14 +1015,6 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
             if (path.ends_with(graphics_services_image)) {
                 const auto profile =
                     GraphicsServicesInputProfile::detect(*image);
-                output_.line("[input-debug] profile-detect path=" + path +
-                             " result=" +
-                             (profile
-                                     ? std::string {
-                                           GraphicsServicesInputProfile::for_abi(
-                                               *profile)
-                                               .name }
-                                     : std::string { "none" }));
                 if (!profile)
                     return;
                 std::lock_guard mach_lock { shared_state_->mach_mutex };
@@ -1150,11 +1087,7 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
             std::shared_ptr<const MachOImage> parsed_image;
             if (profile_relevant) {
                 parsed_image = cache->parse_image(image.index, architecture);
-                if (image.path.ends_with(graphics_services_image)) {
-                    output_.line("[input-debug] profile-image index=" +
-                                 std::to_string(image.index) + " parsed=" +
-                                 std::to_string(parsed_image != nullptr));
-                }
+
             }
             installed += userland_hle_.install_mapped_shared_cache_image(cpu,
                 process_.pid, image.path, std::filesystem::path { source.path },

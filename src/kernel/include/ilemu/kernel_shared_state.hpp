@@ -521,6 +521,7 @@ struct KernelSharedState {
         Darwin9_0,
         Darwin9_3,
         Darwin9_4,
+        Darwin11_0,
     };
     struct ProcessRecord {
         std::uint32_t parent_pid { };
@@ -787,7 +788,12 @@ struct KernelSharedState {
             MachMessage::GraphicsInputKind::None
         };
     };
-    struct PendingBootstrapServiceLookup {
+    struct PendingBootstrapServiceRequest {
+        enum class Kind {
+            Lookup,
+            CheckIn,
+        };
+        Kind kind { Kind::Lookup };
         std::string service_name;
         std::uint32_t requester_process_id { };
         std::uint64_t origin_touch_sequence { };
@@ -1033,6 +1039,12 @@ struct KernelSharedState {
     // Global ipc_port objects. Per-task names and rights live exclusively in
     // MachNamespaceTable and resolve to keys in this table.
     xnu792::ipc::PortObjectTable mach_port_objects;
+    // XNU 1699 exposes an opaque context value on receive rights. The value
+    // follows the ipc_port object when its receive right moves between tasks.
+    std::map<std::uint32_t, std::uint64_t> mach_port_contexts;
+    // Audit sessions expose stable kernel-owned receive objects. Processes
+    // hold ordinary Send names and can use those capabilities to join.
+    std::map<std::uint32_t, std::uint32_t> audit_session_port_objects;
     // XNU's mach_ports_register stash is inherited by forked tasks and exposed
     // as fresh Send rights by mach_ports_lookup. These are kernel-held object
     // references, not task-local names.
@@ -1060,6 +1072,13 @@ struct KernelSharedState {
     // than a derived lookup cache.
     std::map<std::uint32_t, std::vector<MachPortSetLink>>
         mach_port_set_links_by_member;
+    // XNU 1699 keeps a prepost queue for each port set. A member is linked
+    // while its message queue is non-empty and is moved to the tail after a
+    // receive, so a busy timer port cannot starve an input port in the same
+    // set. Keep this ready-member order separate from the membership order
+    // returned by mach_port_get_set_status.
+    std::map<std::uint32_t, std::vector<std::uint32_t>>
+        mach_port_set_preposts;
     std::uint64_t next_mach_wait_queue_sequence { 1 };
 
     [[nodiscard]] std::uint64_t allocate_mach_wait_queue_sequence_locked()
@@ -1089,6 +1108,10 @@ struct KernelSharedState {
         set->second.push_back(member_object);
         mach_port_set_links_by_member[member_object].push_back(MachPortSetLink {
             set_object, allocate_mach_wait_queue_sequence_locked() });
+        if (const auto queue = mach_queues.find(member_object);
+            queue != mach_queues.end() && !queue->second.empty()) {
+            mach_port_set_preposts[set_object].push_back(member_object);
+        }
         note_mach_queue_topology_change_locked();
         return true;
     }
@@ -1113,6 +1136,12 @@ struct KernelSharedState {
             if (links->second.empty())
                 mach_port_set_links_by_member.erase(links);
         }
+        if (const auto preposts = mach_port_set_preposts.find(set_object);
+            preposts != mach_port_set_preposts.end()) {
+            std::erase(preposts->second, member_object);
+            if (preposts->second.empty())
+                mach_port_set_preposts.erase(preposts);
+        }
         note_mach_queue_topology_change_locked();
         return true;
     }
@@ -1127,6 +1156,13 @@ struct KernelSharedState {
             if (const auto set = mach_port_sets.find(link.set_object);
                 set != mach_port_sets.end()) {
                 std::erase(set->second, member_object);
+            }
+            if (const auto preposts =
+                    mach_port_set_preposts.find(link.set_object);
+                preposts != mach_port_set_preposts.end()) {
+                std::erase(preposts->second, member_object);
+                if (preposts->second.empty())
+                    mach_port_set_preposts.erase(preposts);
             }
         }
         mach_port_set_links_by_member.erase(links);
@@ -1150,6 +1186,7 @@ struct KernelSharedState {
                     mach_port_set_links_by_member.erase(links);
             }
         }
+        mach_port_set_preposts.erase(set_object);
         mach_port_sets.erase(set);
         note_mach_queue_topology_change_locked();
         return true;
@@ -1200,8 +1237,43 @@ struct KernelSharedState {
     void enqueue_mach_message_locked(
         std::uint32_t destination, MachMessage message)
     {
-        mach_queues[destination].push_back(std::move(message));
+        auto& queue = mach_queues[destination];
+        const auto was_empty = queue.empty();
+        queue.push_back(std::move(message));
+        if (was_empty) {
+            if (const auto links =
+                    mach_port_set_links_by_member.find(destination);
+                links != mach_port_set_links_by_member.end()) {
+                for (const auto& link : links->second) {
+                    auto& preposts = mach_port_set_preposts[link.set_object];
+                    if (std::find(preposts.begin(), preposts.end(), destination) ==
+                        preposts.end()) {
+                        preposts.push_back(destination);
+                    }
+                }
+            }
+        }
         mach_queue_generation.fetch_add(1, std::memory_order_release);
+    }
+
+    // The caller holds mach_mutex. Remove a member from every prepost queue
+    // once its last message has been consumed or discarded.
+    void note_mach_message_dequeued_locked(std::uint32_t destination)
+    {
+        const auto links = mach_port_set_links_by_member.find(destination);
+        if (links == mach_port_set_links_by_member.end())
+            return;
+        for (const auto& link : links->second) {
+            const auto preposts = mach_port_set_preposts.find(link.set_object);
+            if (preposts == mach_port_set_preposts.end())
+                continue;
+            const auto queue = mach_queues.find(destination);
+            if (queue != mach_queues.end() && !queue->second.empty())
+                continue;
+            std::erase(preposts->second, destination);
+            if (preposts->second.empty())
+                mach_port_set_preposts.erase(preposts);
+        }
     }
 
     // Adding a populated port to a set can make an already queued message
@@ -1238,11 +1310,11 @@ struct KernelSharedState {
     // launchd remains the authority for the bootstrap namespace. These caches
     // only remember replies already observed on the emulated Mach IPC path so
     // host devices can address the same global ipc_port objects.
-    // A Mach reply port can carry more than one outstanding bootstrap lookup.
-    // Replies preserve queue order, so retain every request instead of letting
-    // a later lookup overwrite the metadata needed to classify an earlier one.
-    std::map<std::uint32_t, std::deque<PendingBootstrapServiceLookup>>
-        pending_bootstrap_service_lookups;
+    // A Mach reply port can carry more than one outstanding bootstrap request.
+    // Replies preserve queue order, so retain every lookup/check-in instead of
+    // letting a later request overwrite the service and expected right kind.
+    std::map<std::uint32_t, std::deque<PendingBootstrapServiceRequest>>
+        pending_bootstrap_service_requests;
     // An on-demand application's event service is still owned by launchd when
     // SpringBoard receives its lookup reply. Preserve that exact lookup intent
     // on the global port until the firmware event is consumed by the process

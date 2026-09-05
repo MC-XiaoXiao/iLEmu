@@ -201,6 +201,8 @@ namespace socket {
 
 namespace mach {
     inline constexpr std::uint32_t success = 0;
+    inline constexpr std::uint32_t invalid_address = 1;
+    inline constexpr std::uint32_t no_space = 3;
     inline constexpr std::uint32_t invalid_argument = 4;
     inline constexpr std::uint32_t failure = 5;
     inline constexpr std::uint32_t resource_shortage = 6;
@@ -229,6 +231,7 @@ namespace mach_message {
     inline constexpr std::uint32_t option_send = 0x0000'0001U;
     inline constexpr std::uint32_t option_receive = 0x0000'0002U;
     inline constexpr std::uint32_t option_send_timeout = 0x0000'0010U;
+    inline constexpr std::uint32_t option_receive_large = 0x0000'0004U;
     inline constexpr std::uint32_t option_receive_timeout = 0x0000'0100U;
     inline constexpr std::uint32_t type_copy_send = 19U;
     inline constexpr std::uint32_t type_make_send = 20U;
@@ -240,6 +243,7 @@ namespace mach_message {
     inline constexpr std::uint32_t send_timed_out = 0x1000'0004U;
     inline constexpr std::uint32_t receive_invalid_name = 0x1000'4002U;
     inline constexpr std::uint32_t receive_timed_out = 0x1000'4003U;
+    inline constexpr std::uint32_t receive_too_large = 0x1000'4004U;
     inline constexpr std::uint32_t receive_port_changed = 0x1000'4006U;
     inline constexpr std::uint32_t receive_invalid_data = 0x1000'4008U;
     inline constexpr std::uint32_t receive_in_set = 0x1000'400AU;

@@ -4129,54 +4129,17 @@ void boot(const std::vector<std::string>& args, Output& output)
                 return info ? std::optional { info->state } : std::nullopt;
             });
         runtime.kernel->set_mach_message_wake_handler(
-            [&runtime_index, &scheduler, &output](
+            [&runtime_index, &scheduler](
                 std::uint32_t pid, std::uint32_t object) {
                 auto* receiver = runtime_index.find(pid);
-                if (receiver == nullptr) {
-                    output.line("[input-debug] host-wake-request pid=" +
-                                std::to_string(pid) + " object=" +
-                                std::to_string(object) + " runtime=none");
+                if (receiver == nullptr)
                     return XnuThreadWakeResult { };
-                }
                 const auto processor =
                     receiver->kernel->pending_mach_receiver_processor(object);
-                if (!processor) {
-                    output.line("[input-debug] host-wake-request pid=" +
-                                std::to_string(pid) + " object=" +
-                                std::to_string(object) + " pending=none");
+                if (!processor)
                     return XnuThreadWakeResult { };
-                }
-                const auto wake = scheduler.wake_thread(XnuThreadId {
+                return scheduler.wake_thread(XnuThreadId {
                     pid, static_cast<std::uint32_t>(*processor) });
-                output.line("[input-debug] host-wake-request pid=" +
-                            std::to_string(pid) + " object=" +
-                            std::to_string(object) + " pending=" +
-                            std::to_string(*processor) + " handled=" +
-                            std::to_string(wake.handled) + " preempt=" +
-                            std::to_string(wake.preemption_needed));
-                return wake;
-            });
-        runtime.kernel->set_graphics_input_wake_handler(
-            [&runtime_index, &scheduler, &output](std::uint32_t pid) {
-                auto* receiver = runtime_index.find(pid);
-                if (receiver == nullptr) {
-                    output.line("[input-debug] host-input-wake pid=" +
-                                std::to_string(pid) + " runtime=none");
-                    return XnuThreadWakeResult { };
-                }
-                XnuThreadWakeResult result { };
-                for (const auto processor :
-                    receiver->kernel->wake_graphics_input_waiters()) {
-                    const auto wake = scheduler.wake_thread(XnuThreadId {
-                        pid, static_cast<std::uint32_t>(processor) });
-                    result.handled |= wake.handled;
-                    result.preemption_needed |= wake.preemption_needed;
-                }
-                output.line("[input-debug] host-input-wake pid=" +
-                            std::to_string(pid) + " handled=" +
-                            std::to_string(result.handled) + " preempt=" +
-                            std::to_string(result.preemption_needed));
-                return result;
             });
         const auto create_child_runtime =
             [&, runtime_ptr](Cpu* parent_cpu,
