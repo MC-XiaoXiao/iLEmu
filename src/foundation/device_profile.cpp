@@ -34,6 +34,7 @@ namespace {
             { false },
             BasebandTransportProfile::Offline,
             true,
+            ActivationHardwareModelPolicy::DevelopmentBoard,
         },
         DeviceProfile {
             "iPhone1,2",

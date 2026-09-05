@@ -23,6 +23,15 @@ enum class BasebandTransportProfile : std::uint8_t {
     Offline,
 };
 
+// Some legacy activation flows deliberately identify an offline handset as a
+// development board.  Keep that identity decision in the device capability
+// profile; it must not be inferred from a product name or applied to every
+// activated retail device.
+enum class ActivationHardwareModelPolicy : std::uint8_t {
+    Retail,
+    DevelopmentBoard,
+};
+
 // Guest-visible graphics accelerator family. This describes the firmware
 // capability boundary; it does not select the host renderer implementation.
 enum class GraphicsAcceleratorProfileKind : std::uint8_t {
@@ -177,6 +186,12 @@ struct DeviceProfile {
     // it is not a firmware-version or process-name rule. An explicit replay
     // transport always makes the endpoint available at boot.
     bool baseband_device_available { true };
+    // Whether the explicit activated profile exposes activation_hardware_model
+    // through CTL_HW/HW_MODEL. Retail profiles keep their normal hardware
+    // identity even when activation is synthesized by the host.
+    ActivationHardwareModelPolicy activation_hardware_model_policy {
+        ActivationHardwareModelPolicy::Retail
+    };
 
     static const DeviceProfile& default_profile();
     [[nodiscard]] static std::span<const DeviceProfile> available_profiles();

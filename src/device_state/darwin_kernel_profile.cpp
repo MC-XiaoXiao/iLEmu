@@ -64,18 +64,49 @@ namespace {
         std::string_view operating_system_release;
         std::uint32_t operating_system_revision { };
         std::string_view kernel_version;
+        DarwinSharedRegionAbiProfile shared_region_abi {
+            DarwinSharedRegionAbiProfile::LegacyRelocatableMappings
+        };
+        DarwinMachKernelRpcProfile mach_kernel_rpc {
+            DarwinMachKernelRpcProfile::LegacyMigOnly
+        };
+        DarwinPsynchAbiProfile psynch_abi {
+            DarwinPsynchAbiProfile::Unsupported
+        };
+        DarwinIOKitMatchingRpcProfile iokit_matching_rpc {
+            DarwinIOKitMatchingRpcProfile::PluralIteratorOnly
+        };
+        DarwinActivationHardwareModelProfile activation_hardware_model_profile {
+            DarwinActivationHardwareModelProfile::DevelopmentBoard
+        };
+        DarwinMachVmAddressProfile mach_vm_address {
+            DarwinMachVmAddressProfile::Natural32
+        };
     };
 
     constexpr BuildProfileRule build_family_rule(std::string_view matcher,
         DarwinAbiEpoch abi_epoch, DarwinPthreadAbiProfile pthread_abi,
-        DarwinGuestCapabilities capabilities)
+        DarwinGuestCapabilities capabilities,
+        DarwinSharedRegionAbiProfile shared_region_abi =
+            DarwinSharedRegionAbiProfile::LegacyRelocatableMappings,
+        DarwinMachKernelRpcProfile mach_kernel_rpc =
+            DarwinMachKernelRpcProfile::LegacyMigOnly,
+        DarwinPsynchAbiProfile psynch_abi = DarwinPsynchAbiProfile::Unsupported,
+        DarwinIOKitMatchingRpcProfile iokit_matching_rpc =
+            DarwinIOKitMatchingRpcProfile::PluralIteratorOnly,
+        DarwinActivationHardwareModelProfile activation_hardware_model_profile =
+            DarwinActivationHardwareModelProfile::DevelopmentBoard,
+        DarwinMachVmAddressProfile mach_vm_address =
+            DarwinMachVmAddressProfile::Natural32)
     {
         return { matcher, BuildMatchKind::FamilyPrefix, abi_epoch, pthread_abi,
             DarwinApple80211IoctlProfile::AlignedCurrentNetworkRecord,
-            DarwinIOConnectMethodProfile::ScalarThenStructureOutputCounts,
+            DarwinIOConnectMethodProfile::Natural32OolScalarThenStructure,
             DarwinNotifyStateProfile::NativeServerTokens,
             DarwinInitialAppleVectorProfile::KeyedExecutablePath, capabilities,
-            { }, { }, 0, { } };
+            { }, { }, 0, { }, shared_region_abi, mach_kernel_rpc, psynch_abi,
+            iokit_matching_rpc, activation_hardware_model_profile,
+            mach_vm_address };
     }
 
     // Keep build recognition data-driven at the ABI-family boundary. Individual
@@ -101,45 +132,90 @@ namespace {
             DarwinAbiEpoch::Darwin10,
             DarwinPthreadAbiProfile::BsdThreadRegisterV1,
             DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
-            DarwinIOConnectMethodProfile::ScalarThenStructureOutputCounts,
+            DarwinIOConnectMethodProfile::Natural32OolScalarThenStructure,
             DarwinNotifyStateProfile::BootstrapAwareServerTokens,
             DarwinInitialAppleVectorProfile::KeyedExecutablePath,
             { true, false, false }, "darwin10.3-arm", "10.3.1", 199506,
             "Darwin Kernel Version 10.3.1: iLEmu compatibility kernel; "
-            "darwin10.3/RELEASE_ARM" },
+            "darwin10.3/RELEASE_ARM",
+            DarwinSharedRegionAbiProfile::LegacyRelocatableMappings,
+            DarwinMachKernelRpcProfile::LegacyMigOnly,
+            DarwinPsynchAbiProfile::Arm32GenerationV1,
+            DarwinIOKitMatchingRpcProfile::PluralIteratorOnly,
+            DarwinActivationHardwareModelProfile::DevelopmentBoard },
         BuildProfileRule { "8A", BuildMatchKind::FamilyPrefix,
             DarwinAbiEpoch::Darwin10,
             DarwinPthreadAbiProfile::BsdThreadRegisterV1,
             DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
-            DarwinIOConnectMethodProfile::ScalarThenStructureOutputCounts,
+            DarwinIOConnectMethodProfile::Natural32OolScalarThenStructure,
             DarwinNotifyStateProfile::NativeServerTokens,
             DarwinInitialAppleVectorProfile::LegacyExecutablePath,
             { true, false, false }, "darwin10.3-arm-v1", "10.3.1", 199506,
             "Darwin Kernel Version 10.3.1: iLEmu compatibility kernel; "
-            "darwin10.3/RELEASE_ARM" },
+            "darwin10.3/RELEASE_ARM",
+            DarwinSharedRegionAbiProfile::LegacyRelocatableMappings,
+            DarwinMachKernelRpcProfile::LegacyMigOnly,
+            DarwinPsynchAbiProfile::Arm32GenerationV1,
+            DarwinIOKitMatchingRpcProfile::PluralIteratorOnly,
+            DarwinActivationHardwareModelProfile::DevelopmentBoard },
         BuildProfileRule { "8C", BuildMatchKind::FamilyPrefix,
             DarwinAbiEpoch::Darwin10,
             DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase,
             DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
-            DarwinIOConnectMethodProfile::ScalarThenStructureOutputCounts,
+            DarwinIOConnectMethodProfile::Natural32OolScalarThenStructure,
             DarwinNotifyStateProfile::NativeServerTokens,
             DarwinInitialAppleVectorProfile::LegacyExecutablePath,
             { true, false, false }, "darwin10.4-arm-v1-tsd", "10.4.0", 199506,
             "Darwin Kernel Version 10.4.0: iLEmu compatibility kernel; "
-            "darwin10.4/RELEASE_ARM" },
+            "darwin10.4/RELEASE_ARM",
+            DarwinSharedRegionAbiProfile::LegacyRelocatableMappings,
+            DarwinMachKernelRpcProfile::LegacyMigOnly,
+            DarwinPsynchAbiProfile::Arm32GenerationV1,
+            DarwinIOKitMatchingRpcProfile::PluralIteratorOnly,
+            DarwinActivationHardwareModelProfile::DevelopmentBoard },
         BuildProfileRule { "8F", BuildMatchKind::FamilyPrefix,
             DarwinAbiEpoch::Darwin11,
-            DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase,
+            DarwinPthreadAbiProfile::
+                BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,
             DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
-            DarwinIOConnectMethodProfile::StructureThenScalarOutputCounts,
+            DarwinIOConnectMethodProfile::Natural32OolStructureThenScalar,
             DarwinNotifyStateProfile::NativeServerTokens,
             DarwinInitialAppleVectorProfile::LegacyExecutablePath,
             { true, false, false }, "darwin11.0-arm-v1-tsd", "11.0.0", 199506,
             "Darwin Kernel Version 11.0.0: iLEmu compatibility kernel; "
-            "darwin11.0/RELEASE_ARM" },
+            "darwin11.0/RELEASE_ARM",
+            DarwinSharedRegionAbiProfile::LegacyRelocatableMappings,
+            DarwinMachKernelRpcProfile::LegacyMigOnly,
+            DarwinPsynchAbiProfile::Arm32GenerationV1,
+            DarwinIOKitMatchingRpcProfile::InlineSingleServiceV1,
+            DarwinActivationHardwareModelProfile::DevelopmentBoard },
+        BuildProfileRule { "9A", BuildMatchKind::FamilyPrefix,
+            DarwinAbiEpoch::Darwin11,
+            DarwinPthreadAbiProfile::
+                BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,
+            DarwinApple80211IoctlProfile::CompactCurrentNetworkRecord,
+            DarwinIOConnectMethodProfile::MachVm64OolStructureThenScalar,
+            DarwinNotifyStateProfile::NativeServerTokens,
+            DarwinInitialAppleVectorProfile::LegacyExecutablePath,
+            { true, false, false }, "darwin11.0-arm-v1-tsd-slide", "11.0.0",
+            199506,
+            "Darwin Kernel Version 11.0.0: iLEmu compatibility kernel; "
+            "darwin11.0/RELEASE_ARM",
+            DarwinSharedRegionAbiProfile::FixedMappingsWithSlideInfoV1,
+            DarwinMachKernelRpcProfile::DirectVmAndPortTrapsV1,
+            DarwinPsynchAbiProfile::Arm32GenerationV1,
+            DarwinIOKitMatchingRpcProfile::InlineSingleServiceV1,
+            DarwinActivationHardwareModelProfile::Retail,
+            DarwinMachVmAddressProfile::Wide64 },
         build_family_rule("11", DarwinAbiEpoch::Later,
             DarwinPthreadAbiProfile::BsdThreadRegisterV2,
-            { true, false, false }),
+            { true, false, false },
+            DarwinSharedRegionAbiProfile::FixedMappingsWithSlideInfoV1,
+            DarwinMachKernelRpcProfile::DirectVmAndPortTrapsV1,
+            DarwinPsynchAbiProfile::Arm32GenerationV1,
+            DarwinIOKitMatchingRpcProfile::PluralIteratorOnly,
+            DarwinActivationHardwareModelProfile::Retail,
+            DarwinMachVmAddressProfile::Wide64),
     };
 
     [[nodiscard]] bool matches_build(
@@ -161,7 +237,7 @@ namespace {
             DarwinApple80211IoctlProfile::AlignedCurrentNetworkRecord
         };
         DarwinIOConnectMethodProfile io_connect_method {
-            DarwinIOConnectMethodProfile::ScalarThenStructureOutputCounts
+            DarwinIOConnectMethodProfile::Natural32OolScalarThenStructure
         };
         DarwinNotifyStateProfile notify_state_profile {
             DarwinNotifyStateProfile::NativeServerTokens
@@ -174,6 +250,24 @@ namespace {
         std::string_view operating_system_release;
         std::uint32_t operating_system_revision { };
         std::string_view kernel_version;
+        DarwinSharedRegionAbiProfile shared_region_abi {
+            DarwinSharedRegionAbiProfile::LegacyRelocatableMappings
+        };
+        DarwinMachKernelRpcProfile mach_kernel_rpc {
+            DarwinMachKernelRpcProfile::LegacyMigOnly
+        };
+        DarwinPsynchAbiProfile psynch_abi {
+            DarwinPsynchAbiProfile::Unsupported
+        };
+        DarwinIOKitMatchingRpcProfile iokit_matching_rpc {
+            DarwinIOKitMatchingRpcProfile::PluralIteratorOnly
+        };
+        DarwinActivationHardwareModelProfile activation_hardware_model_profile {
+            DarwinActivationHardwareModelProfile::Retail
+        };
+        DarwinMachVmAddressProfile mach_vm_address {
+            DarwinMachVmAddressProfile::Natural32
+        };
     };
 
     [[nodiscard]] DarwinBuildContract contract_for_build(std::string_view build)
@@ -185,7 +279,11 @@ namespace {
                     rule.notify_state_profile,
                     rule.initial_apple_vector_profile, rule.capabilities,
                     rule.profile_name, rule.operating_system_release,
-                    rule.operating_system_revision, rule.kernel_version };
+                    rule.operating_system_revision, rule.kernel_version,
+                    rule.shared_region_abi, rule.mach_kernel_rpc,
+                    rule.psynch_abi, rule.iokit_matching_rpc,
+                    rule.activation_hardware_model_profile,
+                    rule.mach_vm_address };
         }
         // Unknown epochs intentionally expose no version-sensitive capability.
         // Additive and shape-dispatched routes remain available through their
@@ -252,9 +350,16 @@ DarwinKernelIdentityProfile make_darwin_kernel_identity_profile(
     profile.pthread_abi = contract.pthread_abi;
     profile.apple80211_ioctl = contract.apple80211_ioctl;
     profile.io_connect_method = contract.io_connect_method;
+    profile.mach_vm_address = contract.mach_vm_address;
     profile.notify_state_profile = contract.notify_state_profile;
     profile.initial_apple_vector_profile =
         contract.initial_apple_vector_profile;
+    profile.shared_region_abi = contract.shared_region_abi;
+    profile.mach_kernel_rpc = contract.mach_kernel_rpc;
+    profile.psynch_abi = contract.psynch_abi;
+    profile.iokit_matching_rpc = contract.iokit_matching_rpc;
+    profile.activation_hardware_model_profile =
+        contract.activation_hardware_model_profile;
     profile.capabilities = contract.capabilities;
     if (!contract.profile_name.empty())
         profile.name = contract.profile_name;

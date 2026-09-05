@@ -128,6 +128,9 @@ namespace {
         "IOPlatformSerialNumber"
     };
     constexpr std::string_view display_scale_property { "display-scale" };
+    constexpr std::string_view mobile_framebuffer_swap_notify_trace_property {
+        "swap_notify_trace"
+    };
     constexpr std::string_view compatible_property { "compatible" };
     constexpr std::string_view apple_arm_compatible { "AppleARM" };
 
@@ -183,8 +186,23 @@ namespace {
         std::uint32_t receive_size, DarwinIOConnectMethodProfile profile)
     {
         using namespace iokit_abi::connect_method;
-        if (send_size < minimum_request_size ||
-            receive_size < minimum_reply_size) {
+        const auto mach_vm64_ool =
+            profile ==
+            DarwinIOConnectMethodProfile::MachVm64OolStructureThenScalar;
+        const auto ool_request_size =
+            mach_vm64_ool ? mach_vm64_ool_request_size
+                          : natural32_ool_request_size;
+        const auto profiled_trailing_request_size =
+            mach_vm64_ool ? mach_vm64_trailing_request_size
+                          : trailing_request_size;
+        const auto profiled_minimum_request_size = scalar_input_offset +
+                                                   inband_count_size +
+                                                   profiled_trailing_request_size;
+        const auto profiled_minimum_reply_size =
+            mach_vm64_ool ? mach_vm64_minimum_reply_size
+                          : minimum_reply_size;
+        if (send_size < profiled_minimum_request_size ||
+            receive_size < profiled_minimum_reply_size) {
             return std::nullopt;
         }
 
@@ -207,7 +225,8 @@ namespace {
         }
         const auto trailing_offset = inband_count_offset + inband_count_size +
                                      align_mig_field(*inband_count);
-        const auto required_size = trailing_offset + trailing_request_size;
+        const auto required_size =
+            trailing_offset + profiled_trailing_request_size;
         if (send_size < required_size)
             return std::nullopt;
 
@@ -232,18 +251,21 @@ namespace {
                 return std::nullopt;
             request.inband_input = std::move(*bytes);
         }
-        // ool_input occupies the first two trailing words. The two CountInOut
-        // capacities immediately follow it in the firmware-generated request.
+        // The two CountInOut capacities follow the profiled OOL input fields.
+        // Legacy clients use natural_t address/size words; later clients carry
+        // mach_vm_address_t and mach_vm_size_t even for an ARM32 caller.
+        const auto output_capacities_offset = trailing_offset + ool_request_size;
         const auto first_output_capacity =
             memory
-                .read32(address + trailing_offset + 2U * sizeof(std::uint32_t))
+                .read32(address + output_capacities_offset)
                 .value_or(0);
         const auto second_output_capacity =
             memory
-                .read32(address + trailing_offset + 3U * sizeof(std::uint32_t))
+                .read32(address + output_capacities_offset +
+                        sizeof(std::uint32_t))
                 .value_or(0);
-        if (profile ==
-            DarwinIOConnectMethodProfile::StructureThenScalarOutputCounts) {
+        if (profile !=
+            DarwinIOConnectMethodProfile::Natural32OolScalarThenStructure) {
             request.inband_output_capacity = first_output_capacity;
             request.scalar_output_capacity = second_output_capacity;
         } else {
@@ -273,25 +295,32 @@ namespace {
         std::uint32_t scalar_bytes_offset { };
         std::uint32_t inband_count_offset { };
         std::uint32_t inband_bytes_offset { };
-        std::uint32_t ool_size_offset { };
-        if (profile ==
-            DarwinIOConnectMethodProfile::StructureThenScalarOutputCounts) {
+        const auto mach_vm64_ool =
+            profile ==
+            DarwinIOConnectMethodProfile::MachVm64OolStructureThenScalar;
+        std::uint32_t ool_output_offset { };
+        if (profile !=
+            DarwinIOConnectMethodProfile::Natural32OolScalarThenStructure) {
             inband_count_offset = return_code_offset + sizeof(std::uint32_t);
             inband_bytes_offset = inband_count_offset + sizeof(std::uint32_t);
             scalar_count_offset =
                 inband_bytes_offset + aligned_inband_output_size(inband_count);
             scalar_bytes_offset = scalar_count_offset + sizeof(std::uint32_t);
-            ool_size_offset = scalar_bytes_offset + scalar_count * scalar_size;
+            ool_output_offset =
+                scalar_bytes_offset + scalar_count * scalar_size;
         } else {
             scalar_count_offset = scalar_output_count_offset;
             scalar_bytes_offset = scalar_output_offset;
             inband_count_offset = inband_output_count_offset(scalar_count);
             inband_bytes_offset = inband_output_offset(scalar_count);
-            ool_size_offset =
+            ool_output_offset =
                 out_of_line_output_size_offset(scalar_count, inband_count);
         }
-        const auto encoded_reply_size =
-            static_cast<std::uint32_t>(ool_size_offset + sizeof(std::uint32_t));
+        const auto ool_reply_size = mach_vm64_ool
+                                        ? mach_vm64_ool_reply_size
+                                        : natural32_ool_reply_size;
+        const auto encoded_reply_size = static_cast<std::uint32_t>(
+            ool_output_offset + ool_reply_size);
         if (encoded_reply_size > receive_size)
             return mach_rcv_invalid_data;
         const std::vector<std::byte> cleared_reply(encoded_reply_size);
@@ -331,7 +360,9 @@ namespace {
                     result.inband_output.data(), inband_count })) {
             return mach_rcv_invalid_data;
         }
-        if (!write(ool_size_offset, 0)) {
+        if (!write(ool_output_offset, 0) ||
+            (mach_vm64_ool &&
+                !write(ool_output_offset + sizeof(std::uint32_t), 0))) {
             return mach_rcv_invalid_data;
         }
         return 0;
@@ -723,13 +754,23 @@ namespace {
         shared_state.mobile_framebuffer_service = port;
         static_cast<void>(shared_state.mach_port_objects.create(port));
         shared_state.mach_queues.try_emplace(port);
-        shared_state.iokit_services.emplace(
-            port, KernelSharedState::IOKitService {
-                      shared_state.framebuffer_service_class.empty()
-                          ? std::string { apple_h1clcd_class }
-                          : shared_state.framebuffer_service_class,
-                      { std::string { mobile_framebuffer_class } }, { }, { }, 0,
-                      KernelSharedState::IOKitUserClientProfile::Display });
+        KernelSharedState::IOKitService service {
+            shared_state.framebuffer_service_class.empty()
+                ? std::string { apple_h1clcd_class }
+                : shared_state.framebuffer_service_class,
+            { std::string { mobile_framebuffer_class } }, { }, { }, 0,
+            KernelSharedState::IOKitUserClientProfile::Display
+        };
+        // IOMobileFramebufferOpen reads this registry capability as a required
+        // CFBoolean. False selects the normal untraced notification path and
+        // has no host-side side effect; publishing the value also matches a
+        // physical driver which supports the property but leaves tracing off.
+        service.properties.emplace(
+            std::string { mobile_framebuffer_swap_notify_trace_property },
+            KernelSharedState::IOKitRegistryProperty {
+                KernelSharedState::IOKitRegistryProperty::Kind::Boolean,
+                { std::byte { 0 } } });
+        shared_state.iokit_services.emplace(port, std::move(service));
         return port;
     }
 
@@ -1475,6 +1516,60 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                      "\n");
         return write_port_reply(
             memory, message_address, local_port, message_id, iterator_name);
+    }
+
+    if (message_id == static_cast<std::uint32_t>(
+                          iokit_abi::Message::ServiceGetMatchingService) &&
+        shared_state.darwin_kernel_identity.iokit_matching_rpc ==
+            DarwinIOKitMatchingRpcProfile::InlineSingleServiceV1) {
+        // Darwin 11's private singular routine carries the same serialized
+        // matching dictionary as the public plural call but returns the first
+        // service port directly. Reuse the registry matcher so every modeled
+        // service class follows one implementation and an empty match remains
+        // a successful null object, as IOServiceGetMatchingService expects.
+        using namespace iokit_abi::service_get_matching_service_v1;
+        if (receive_size < minimum_port_reply_size ||
+            send_size < matching_offset) {
+            return mach_rcv_invalid_data;
+        }
+        const auto matching_count =
+            memory.read32(message_address + matching_count_offset).value_or(0);
+        if (matching_count == 0 || matching_count > maximum_matching_size ||
+            matching_offset + matching_count > send_size) {
+            return mach_rcv_invalid_data;
+        }
+        const auto matching = memory.read_bytes(
+            message_address + matching_offset, matching_count);
+        if (!matching)
+            return mach_rcv_invalid_data;
+
+        std::uint32_t service_object = xnu792::ipc::null_name;
+        std::uint32_t service_name = xnu792::ipc::null_name;
+        std::size_t matching_service_count = 0;
+        {
+            std::lock_guard mach_lock { shared_state.mach_mutex };
+            std::deque<std::uint32_t> services;
+            populate_matching_services_locked(
+                shared_state, *matching, services);
+            matching_service_count = services.size();
+            if (!services.empty()) {
+                service_object = services.front();
+                service_name = copyout_send_locked(
+                    shared_state, process.pid, service_object);
+            }
+        }
+        output.write(
+            "[iokit] matching-one pid=" + std::to_string(process.pid) +
+            " bytes=" + std::to_string(matching->size()) +
+            " service-name=" + std::to_string(service_name) +
+            " service-object=" + std::to_string(service_object) +
+            " matches=" + std::to_string(matching_service_count) +
+            (matching_service_count == 0
+                    ? " matching-hex=" + matching_hex(*matching)
+                    : "") +
+            "\n");
+        return write_port_reply(
+            memory, message_address, local_port, message_id, service_name);
     }
 
     if (message_id == static_cast<std::uint32_t>(
@@ -2563,6 +2658,12 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                 (request->scalar_input_count >= 2U
                         ? " scalar1=" + std::to_string(request->scalar_input[1])
                         : "") +
+                " inband-in=" +
+                std::to_string(request->inband_input.size()) +
+                " scalar-cap=" +
+                std::to_string(request->scalar_output_capacity) +
+                " inband-cap=" +
+                std::to_string(request->inband_output_capacity) +
                 " scalar-out=" + std::to_string(result.scalar_output.size()) +
                 " result=" + std::to_string(result.return_code) +
                 (method_call_count == 0

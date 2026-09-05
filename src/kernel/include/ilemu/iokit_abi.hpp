@@ -25,7 +25,22 @@ enum class Message : std::uint32_t {
     // Private iPhoneOS-era extension retained by the firmware IOKit client.
     // The request ID is loaded by _io_connect_method in the 1.0 IOKit image.
     ConnectMethod = 2865,
+    // Darwin 11 private inline counterpart to the generated plural iterator
+    // routine. The firmware wrapper returns the first matching service port.
+    ServiceGetMatchingService = 2872,
 };
+
+namespace service_get_matching_service_v1 {
+
+    // Firmware-observed ARM32 MIG request: header, NDR, element count, then a
+    // compact inline serialized matching dictionary. The successful reply is
+    // the standard single port descriptor used by other IOKit object calls.
+    inline constexpr std::uint32_t matching_count_offset = 36;
+    inline constexpr std::uint32_t matching_offset = 40;
+    inline constexpr std::uint32_t maximum_matching_size = 512;
+    inline constexpr std::uint32_t minimum_port_reply_size = 40;
+
+} // namespace service_get_matching_service_v1
 
 // IOMobileFramebuffer.framework exposes these selectors independently of the
 // physical framebuffer driver class (AppleH1CLCD, AppleM2CLCD, ...). Keep the
@@ -142,15 +157,26 @@ namespace connect_method {
     inline constexpr std::uint32_t maximum_inband_size = 4096;
     inline constexpr std::uint32_t scalar_size = sizeof(std::uint64_t);
     inline constexpr std::uint32_t inband_count_size = sizeof(std::uint32_t);
-    inline constexpr std::uint32_t trailing_request_size = 24;
+    // Legacy ARM clients encode each out-of-line address/size pair in two
+    // natural_t words. Later clients use two 64-bit Mach VM values on each side
+    // of the capacity words even though the client process is ARM32.
+    inline constexpr std::uint32_t natural32_ool_request_size =
+        2 * sizeof(std::uint32_t);
+    inline constexpr std::uint32_t mach_vm64_ool_request_size =
+        4 * sizeof(std::uint32_t);
+    inline constexpr std::uint32_t output_capacity_request_size =
+        2 * sizeof(std::uint32_t);
+    inline constexpr std::uint32_t trailing_request_size =
+        2 * natural32_ool_request_size + output_capacity_request_size;
+    inline constexpr std::uint32_t mach_vm64_trailing_request_size =
+        2 * mach_vm64_ool_request_size + output_capacity_request_size;
     inline constexpr std::uint32_t minimum_request_size =
         scalar_input_offset + inband_count_size + trailing_request_size;
 
     // MIG compresses the reply to the actual scalar and inband counts.
-    // Generated clients rebase their fixed-array view by scalar_count * 8 -
+    // Natural-32 clients rebase their fixed-array view by scalar_count * 8 -
     // 128, so inband output follows the last returned scalar rather than all 16
-    // slots. The final word reports the size of the optional out-of-line
-    // output.
+    // slots. Their final word reports the optional out-of-line output size.
     inline constexpr std::uint32_t return_code_offset = 32;
     inline constexpr std::uint32_t scalar_output_count_offset = 36;
     inline constexpr std::uint32_t scalar_output_offset = 40;
@@ -184,8 +210,21 @@ namespace connect_method {
     inline constexpr std::uint32_t minimum_reply_size = reply_size(0, 0);
     inline constexpr std::uint32_t maximum_reply_size =
         reply_size(maximum_scalar_count, maximum_inband_size);
-    // Literal receive capacity passed by the firmware _io_connect_method stub.
+    inline constexpr std::uint32_t natural32_ool_reply_size =
+        sizeof(std::uint32_t);
+    // Wide clients place the scalar array last and copy a two-word Mach VM
+    // result after it. Both words are present even when the
+    // optional out-of-line output is empty.
+    inline constexpr std::uint32_t mach_vm64_ool_reply_size =
+        2 * sizeof(std::uint32_t);
+    inline constexpr std::uint32_t mach_vm64_minimum_reply_size =
+        return_code_offset + sizeof(std::uint32_t) +
+        sizeof(std::uint32_t) + sizeof(std::uint32_t) +
+        mach_vm64_ool_reply_size;
+    // Literal receive capacities passed by the firmware client stubs.
     inline constexpr std::uint32_t firmware_receive_buffer_size = 0x10b8U;
+    inline constexpr std::uint32_t mach_vm64_firmware_receive_buffer_size =
+        0x10bcU;
 
 } // namespace connect_method
 
