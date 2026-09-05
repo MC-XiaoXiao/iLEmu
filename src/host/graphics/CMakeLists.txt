@@ -1,6 +1,4 @@
 add_library(ilemu_host_graphics STATIC
-    sdl_display.cpp
-    sdl_input.cpp
     native_gles.cpp)
 add_library(iLEmu::host_graphics ALIAS ilemu_host_graphics)
 ilemu_configure_module(ilemu_host_graphics)
@@ -53,8 +51,4 @@ if(Vulkan_FOUND AND Vulkan_GLSLC_EXECUTABLE)
     target_link_libraries(ilemu_host_graphics PRIVATE Vulkan::Vulkan)
     target_compile_definitions(ilemu_host_graphics PRIVATE
         ILEMU_HAS_VULKAN=1)
-endif()
-if(TARGET PkgConfig::SDL2)
-    target_link_libraries(ilemu_host_graphics PRIVATE PkgConfig::SDL2)
-    target_compile_definitions(ilemu_host_graphics PRIVATE ILEMU_HAS_SDL2=1)
 endif()

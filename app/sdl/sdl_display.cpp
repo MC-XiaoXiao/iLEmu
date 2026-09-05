@@ -1,4 +1,4 @@
-#include "host/sdl_display.hpp"
+#include "app/sdl_display.hpp"
 
 #include <algorithm>
 #include <array>

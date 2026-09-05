@@ -21,3 +21,5 @@ add_library(iLEmu::core ALIAS ilemu_core)
 target_link_libraries(ilemu_core INTERFACE
     iLEmu::kernel
     iLEmu::debug)
+
+add_subdirectory(runtime)

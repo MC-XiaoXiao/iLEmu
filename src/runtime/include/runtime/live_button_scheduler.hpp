@@ -10,7 +10,7 @@
 namespace ilemu {
 
 // Keeps a physical button Down event alive for a host-controlled duration and
-// emits the matching Up event without involving the SDL window or host GUI.
+// emits the matching Up event without involving the window toolkit.
 class LiveButtonScheduler {
 public:
     void schedule(SystemButtonInput down, std::chrono::milliseconds hold);

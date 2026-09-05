@@ -6,7 +6,7 @@
 #include <span>
 #include <vector>
 
-#include "app/live_control.hpp"
+#include "debug/control_channel.hpp"
 #include "graphics/touch_input.hpp"
 
 namespace ilemu {

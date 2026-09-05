@@ -718,4 +718,6 @@ private:
     std::vector<std::unique_ptr<LinkCell>> link_cells_;
 };
 
+[[nodiscard]] std::string disk_hit_fingerprint_text(const JitArtifactStoreStats& stats);
+
 } // namespace ilemu

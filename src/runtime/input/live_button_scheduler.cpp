@@ -1,27 +1,29 @@
-#include "app/live_touch_scheduler.hpp"
+#include "runtime/live_button_scheduler.hpp"
 
 #include <algorithm>
 
 namespace ilemu {
 
-void LiveTouchScheduler::schedule(std::span<const LiveTouchEvent> gesture)
+void LiveButtonScheduler::schedule(
+    SystemButtonInput down, std::chrono::milliseconds hold)
 {
-    if (gesture.empty())
+    if (down.phase != SystemButtonPhase::Down ||
+        hold <= std::chrono::milliseconds::zero()) {
         return;
+    }
 
     const auto now = std::chrono::steady_clock::now();
     const auto start = events_.empty()
                            ? now
                            : std::max(now, events_.back().deadline +
                                                std::chrono::milliseconds { 1 });
-    for (const auto& event : gesture) {
-        events_.push_back(Event { start + event.delay, event.input });
-    }
+    events_.push_back(Event { start + hold,
+        SystemButtonInput { down.button, SystemButtonPhase::Up } });
 }
 
-std::vector<TouchInput> LiveTouchScheduler::poll()
+std::vector<SystemButtonInput> LiveButtonScheduler::poll()
 {
-    std::vector<TouchInput> result;
+    std::vector<SystemButtonInput> result;
     const auto now = std::chrono::steady_clock::now();
     while (!events_.empty() && events_.front().deadline <= now) {
         result.push_back(events_.front().input);
@@ -31,7 +33,7 @@ std::vector<TouchInput> LiveTouchScheduler::poll()
 }
 
 std::optional<std::chrono::steady_clock::time_point>
-LiveTouchScheduler::next_deadline() const
+LiveButtonScheduler::next_deadline() const
 {
     return events_.empty()
                ? std::nullopt
