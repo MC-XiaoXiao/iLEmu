@@ -2,6 +2,22 @@ cmake_minimum_required(VERSION 3.24)
 
 project(iLEmu VERSION 0.1.0 LANGUAGES C CXX)
 
+option(ILEMU_ENABLE_IPO
+    "Optimize across translation units in Release and RelWithDebInfo builds" ON)
+if(ILEMU_ENABLE_IPO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT ILEMU_IPO_SUPPORTED
+        OUTPUT ILEMU_IPO_ERROR LANGUAGES C CXX)
+    if(ILEMU_IPO_SUPPORTED)
+        # Startup spends much of its time in the JIT's small IR and emission
+        # helpers. Let the compiler inline these across library boundaries.
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE ON)
+        set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELWITHDEBINFO ON)
+    else()
+        message(STATUS "IPO unavailable; using standard optimization: ${ILEMU_IPO_ERROR}")
+    endif()
+endif()
+
 include(CTest)
 find_package(Threads REQUIRED)
 option(ILEMU_ENABLE_SDL2 "Build the optional SDL2 display backend" ON)
