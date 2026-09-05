@@ -12,7 +12,10 @@ target_sources(ilemu_kernel PRIVATE
     dispatch.cpp
     platform.cpp
     pthread_runtime.cpp
+    psynch_runtime.cpp
+    psynch.cpp
     aio.cpp
+    audit_session.cpp
     fileport.cpp
     process.cpp
     posix_semaphore.cpp
@@ -28,6 +31,7 @@ target_link_libraries(ilemu_kernel PRIVATE
     iLEmu::kernel_bsd_baseband_device
     iLEmu::kernel_bsd_control
     iLEmu::kernel_bsd_debug
+    iLEmu::kernel_bsd_filesystem_control
     iLEmu::kernel_bsd_filesystem_persistence
     iLEmu::kernel_bsd_filesystem_timestamps
     iLEmu::kernel_bsd_filesystem_locking

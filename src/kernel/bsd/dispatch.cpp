@@ -313,6 +313,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::remove_extended_attribute_fd:
     case darwin::syscall::list_extended_attributes:
     case darwin::syscall::list_extended_attributes_fd:
+    case darwin::syscall::filesystem_control:
     case 188:
     case 190:
     case 189:
@@ -336,8 +337,43 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         return;
     case 294:
     case 295:
+        static_cast<void>(dispatch_bsd_shared_region(cpu, number));
+        return;
+    case 297:
+    case 298:
     case 299:
     case 300:
+    case 301:
+    case 302:
+    case 303:
+    case 304:
+    case 305:
+    case 306:
+    case 307:
+    case 308:
+    case 309:
+    case 312:
+        if (shared_state_->darwin_kernel_identity.psynch_abi ==
+            DarwinPsynchAbiProfile::Arm32GenerationV1) {
+            dispatch_bsd_psynch(cpu, number);
+            return;
+        }
+        // Pre-psynch ARM32 kernels use these two slots for the legacy shared
+        // region ABI. All other entries retain their audited nosys behavior.
+        if (number == 299U || number == 300U) {
+            static_cast<void>(dispatch_bsd_shared_region(cpu, number));
+        } else {
+            dispatch_bsd_nosys(cpu,
+                shared_state_->darwin_kernel_identity.capabilities.send_sigsys);
+        }
+        return;
+    case 438: // shared_region_map_and_slide_np
+        if (shared_state_->darwin_kernel_identity.shared_region_abi !=
+            DarwinSharedRegionAbiProfile::FixedMappingsWithSlideInfoV1) {
+            dispatch_bsd_nosys(cpu,
+                shared_state_->darwin_kernel_identity.capabilities.send_sigsys);
+            return;
+        }
         static_cast<void>(dispatch_bsd_shared_region(cpu, number));
         return;
     case darwin::syscall::aio_synchronize:
@@ -381,6 +417,12 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         return;
     case darwin::syscall::mac_syscall:
         static_cast<void>(dispatch_bsd_security(cpu, number));
+        return;
+    case darwin::syscall::get_audit_address:
+    case darwin::syscall::audit_session_self:
+    case darwin::syscall::audit_session_join:
+    case darwin::syscall::audit_session_port:
+        dispatch_bsd_audit_session(cpu, number);
         return;
     case darwin::syscall::fileport_makeport:
     case darwin::syscall::fileport_makefd:

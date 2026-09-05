@@ -1,3 +1,12 @@
+add_library(ilemu_kernel_bsd_filesystem_control STATIC
+    control.cpp)
+add_library(iLEmu::kernel_bsd_filesystem_control ALIAS
+    ilemu_kernel_bsd_filesystem_control)
+ilemu_configure_module(ilemu_kernel_bsd_filesystem_control)
+target_link_libraries(ilemu_kernel_bsd_filesystem_control PRIVATE
+    iLEmu::filesystem
+    iLEmu::foundation)
+
 add_library(ilemu_kernel_bsd_filesystem_ownership STATIC
     ownership.cpp)
 add_library(iLEmu::kernel_bsd_filesystem_ownership ALIAS

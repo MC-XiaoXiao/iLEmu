@@ -43,7 +43,9 @@ void CompatibilityKernel::release_process_mach_rights()
     // consume a stale message or semaphore wakeup.
     pending_mach_receives_.clear();
     pending_semaphore_waits_.clear();
+    pending_psynch_waits_.clear();
     pending_signal_suspends_.clear();
+    shared_state_->psynch_runtime->clear_process(process_.pid);
     process_.waiting_for_events = false;
     std::lock_guard mach_lock { shared_state_->mach_mutex };
     auto entries = shared_state_->mach_namespaces.entries(process_.pid);
@@ -794,7 +796,8 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         // and audit session ID (six 32-bit words).
         for (std::uint32_t offset = 0; offset < 24; offset += 4) {
             if (!memory_.write32(
-                    registers[0] + offset, offset == 20 ? process_.pid : 0)) {
+                    registers[0] + offset,
+                    offset == 20 ? process_.audit_session_id : 0)) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
             }

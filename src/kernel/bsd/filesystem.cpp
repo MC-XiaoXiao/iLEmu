@@ -96,6 +96,9 @@ namespace {
 void CompatibilityKernel::dispatch_bsd_filesystem(
     Cpu& cpu, std::uint32_t number)
 {
+    if (dispatch_bsd_filesystem_control(cpu, number)) {
+        return;
+    }
     if (dispatch_bsd_filesystem_persistence(cpu, number)) {
         return;
     }

@@ -23,6 +23,7 @@
 #include "ilemu/core_animation_remote_profile.hpp"
 #include "ilemu/darwin_kernel_profile.hpp"
 #include "ilemu/darwin_network_abi.hpp"
+#include "ilemu/darwin_psynch_runtime.hpp"
 #include "ilemu/darwin_resource_abi.hpp"
 #include "ilemu/darwin_route_socket.hpp"
 #include "ilemu/device_profile.hpp"
@@ -50,6 +51,7 @@ struct ProcessContext {
     std::uint32_t parent_pid { };
     std::uint32_t process_group { };
     std::uint32_t session_id { };
+    std::uint32_t audit_session_id { 1U };
     std::uint32_t uid { };
     std::uint32_t effective_uid { };
     std::uint32_t gid { };
@@ -237,6 +239,13 @@ struct PendingSemaphoreWait {
     std::size_t processor { };
     std::optional<std::uint64_t> deadline;
     bool bsd_result { };
+};
+
+struct PendingPsynchWait {
+    std::uint32_t address { };
+    DarwinPsynchWaitKind kind { DarwinPsynchWaitKind::Mutex };
+    std::size_t processor { };
+    std::optional<std::uint64_t> deadline;
 };
 
 struct PendingSignalSuspend {
@@ -1611,6 +1620,10 @@ struct KernelSharedState {
     std::map<std::uint32_t,
         std::map<std::string, std::optional<std::vector<std::byte>>>>
         hfs_named_attribute_overrides;
+    // LaunchServices installs this global XNU VFS table through
+    // FSIOC_SET_PACKAGE_EXTS. HFS search/path-package operations consult the
+    // extension names independently of the process that registered them.
+    std::vector<std::string> package_extensions;
     std::map<std::uint32_t, ProcessRecord> processes;
     // EVFILT_PROC is edge-triggered and may outlive the process-table zombie.
     // Retain compact per-PID generations so an exec/exit between kevent
@@ -1618,6 +1631,9 @@ struct KernelSharedState {
     std::map<std::uint32_t, ProcessKeventState> process_kevent_states;
     std::shared_ptr<bsd::AdvisoryFileLockRegistry> advisory_file_locks {
         std::make_shared<bsd::AdvisoryFileLockRegistry>()
+    };
+    std::shared_ptr<DarwinPsynchRuntime> psynch_runtime {
+        std::make_shared<DarwinPsynchRuntime>()
     };
 
     // The caller holds mach_mutex. Observe only the boundary executed by the

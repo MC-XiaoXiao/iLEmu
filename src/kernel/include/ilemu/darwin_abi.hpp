@@ -329,6 +329,7 @@ namespace syscall {
     inline constexpr std::uint32_t remove_extended_attribute_fd = 239;
     inline constexpr std::uint32_t list_extended_attributes = 240;
     inline constexpr std::uint32_t list_extended_attributes_fd = 241;
+    inline constexpr std::uint32_t filesystem_control = 242;
     inline constexpr std::uint32_t init_groups = 243;
     inline constexpr std::uint32_t change_mode_extended = 282;
     inline constexpr std::uint32_t change_mode_extended_fd = 283;
@@ -347,11 +348,15 @@ namespace syscall {
     // Keep this separate from syscall 334, whose sixth argument carries
     // tv_nsec.
     inline constexpr std::uint32_t semaphore_wait_signal_timespec = 370;
+    inline constexpr std::uint32_t get_audit_address = 357;
     inline constexpr std::uint32_t kqueue = 362;
     inline constexpr std::uint32_t kevent = 363;
     inline constexpr std::uint32_t mac_syscall = 381;
+    inline constexpr std::uint32_t audit_session_self = 428;
+    inline constexpr std::uint32_t audit_session_join = 429;
     inline constexpr std::uint32_t fileport_makeport = 430;
     inline constexpr std::uint32_t fileport_makefd = 431;
+    inline constexpr std::uint32_t audit_session_port = 432;
     inline constexpr std::uint32_t pid_suspend = 433;
     inline constexpr std::uint32_t pid_resume = 434;
     inline constexpr std::uint32_t pid_hibernate = 435;
@@ -363,6 +368,19 @@ namespace syscall {
     inline constexpr std::uint32_t posix_semaphore_post = 273;
     inline constexpr std::uint32_t posix_semaphore_get_value = 274;
 } // namespace syscall
+
+namespace filesystem_control {
+    // Darwin ARM32's package_ext_info is a pointer followed by two uint32_t
+    // fields. The ioctl request carries that 12-byte wire size in bits 16..28.
+    inline constexpr std::uint32_t set_package_extensions = 0x800c4102U;
+    inline constexpr std::uint32_t package_strings_offset = 0;
+    inline constexpr std::uint32_t package_entry_count_offset = 4;
+    inline constexpr std::uint32_t package_maximum_width_offset = 8;
+    inline constexpr std::uint32_t package_info_size = 12;
+    inline constexpr std::uint32_t maximum_package_entries = 1'024;
+    inline constexpr std::uint32_t maximum_package_width = 255;
+    inline constexpr std::uint32_t option_no_follow = 0x0000'0001U;
+} // namespace filesystem_control
 
 namespace poll {
     // Darwin's ARM32 pollfd is the native 8-byte {int fd, short events,

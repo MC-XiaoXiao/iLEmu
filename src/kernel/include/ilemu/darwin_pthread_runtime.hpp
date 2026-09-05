@@ -42,9 +42,9 @@ struct DarwinWorkqueueWorker {
 class DarwinPthreadRuntime {
 public:
     static constexpr std::uint32_t maximum_pthread_size = 64U * 1024U;
-    // Darwin 10's legacy ABI exposes high/default/low queues; the overcommit
-    // bit is carried separately in the priority argument.
-    static constexpr std::uint32_t workqueue_priority_count = 3U;
+    // Storage covers the largest audited v1 contract. The active count is
+    // configured from the firmware ABI Profile when workq_open is handled.
+    static constexpr std::uint32_t maximum_workqueue_priority_count = 4U;
     static constexpr std::uint32_t workqueue_overcommit = 0x0001'0000U;
     static constexpr std::size_t maximum_workqueue_workers = 64U;
     static constexpr std::size_t maximum_workqueue_items_per_priority = 64U;
@@ -55,17 +55,29 @@ public:
     {
         return registration_;
     }
-    [[nodiscard]] bool open_workqueue(std::uint32_t processor_count) noexcept
+    [[nodiscard]] bool open_workqueue(std::uint32_t processor_count,
+        std::uint32_t priority_count) noexcept
     {
-        if (!registration_)
+        if (!registration_ || priority_count == 0U ||
+            priority_count > maximum_workqueue_priority_count) {
             return false;
+        }
         workqueue_open_ = true;
-        target_concurrency_.fill(processor_count == 0 ? 1U : processor_count);
+        workqueue_priority_count_ = priority_count;
+        target_concurrency_.fill(0U);
+        for (std::uint32_t priority = 0; priority < priority_count; ++priority) {
+            target_concurrency_[priority] =
+                processor_count == 0U ? 1U : processor_count;
+        }
         return true;
     }
     [[nodiscard]] bool workqueue_open() const noexcept
     {
         return workqueue_open_;
+    }
+    [[nodiscard]] std::uint32_t workqueue_priority_count() const noexcept
+    {
+        return workqueue_priority_count_;
     }
 
     [[nodiscard]] bool enqueue_workitem(
@@ -105,10 +117,13 @@ private:
 
     std::optional<DarwinPthreadRegistration> registration_;
     bool workqueue_open_ { };
-    std::array<std::deque<DarwinWorkqueueItem>, workqueue_priority_count>
+    std::uint32_t workqueue_priority_count_ { };
+    std::array<std::deque<DarwinWorkqueueItem>,
+        maximum_workqueue_priority_count>
         workitems_;
     std::map<std::uint32_t, DarwinWorkqueueWorker> workers_;
-    std::array<std::uint32_t, workqueue_priority_count> target_concurrency_ { };
+    std::array<std::uint32_t, maximum_workqueue_priority_count>
+        target_concurrency_ { };
 };
 
 } // namespace ilemu

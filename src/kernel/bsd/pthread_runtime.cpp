@@ -25,14 +25,29 @@ namespace {
         DarwinPthreadAbiProfile profile) noexcept
     {
         return profile == DarwinPthreadAbiProfile::BsdThreadRegisterV1 ||
-               profile == DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase;
+               profile == DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase ||
+               profile == DarwinPthreadAbiProfile::
+                              BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues;
+    }
+
+    [[nodiscard]] std::uint32_t workqueue_priority_count_for_profile(
+        DarwinPthreadAbiProfile profile) noexcept
+    {
+        if (profile == DarwinPthreadAbiProfile::
+                           BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues) {
+            return 4U;
+        }
+        return supports_bsdthread_register_v1(profile) ? 3U : 0U;
     }
 
     [[nodiscard]] std::uint32_t thread_pointer_for_pthread(
         DarwinPthreadAbiProfile profile, std::uint32_t pthread_address) noexcept
     {
-        if (profile == DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase)
+        if (profile == DarwinPthreadAbiProfile::BsdThreadRegisterV1TsdBase ||
+            profile == DarwinPthreadAbiProfile::
+                           BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues) {
             return pthread_address + pthread_tsd_base_offset;
+        }
         return pthread_address;
     }
 
@@ -73,7 +88,7 @@ bool DarwinPthreadRuntime::register_process(
 bool DarwinPthreadRuntime::enqueue_workitem(
     DarwinWorkqueueItem item, bool front)
 {
-    if (!workqueue_open_ || item.priority >= workqueue_priority_count)
+    if (!workqueue_open_ || item.priority >= workqueue_priority_count_)
         return false;
     auto& queue = workitems_[item.priority];
     if (queue.size() >= maximum_workqueue_items_per_priority)
@@ -100,7 +115,7 @@ std::optional<DarwinWorkqueueItem> DarwinPthreadRuntime::take_workitem()
 bool DarwinPthreadRuntime::remove_workitem(
     std::uint32_t address, std::uint32_t priority)
 {
-    if (!workqueue_open_ || priority >= workqueue_priority_count)
+    if (!workqueue_open_ || priority >= workqueue_priority_count_)
         return false;
     auto& queue = workitems_[priority];
     const auto item = std::find_if(
@@ -117,7 +132,7 @@ bool DarwinPthreadRuntime::should_create_worker(
     std::uint32_t priority, bool overcommit,
     std::size_t active_worker_count) const noexcept
 {
-    if (!workqueue_open_ || priority >= workqueue_priority_count ||
+    if (!workqueue_open_ || priority >= workqueue_priority_count_ ||
         workers_.size() >= maximum_workqueue_workers)
         return false;
     if (overcommit)
@@ -183,10 +198,13 @@ void DarwinPthreadRuntime::remove_worker(std::uint32_t processor)
 bool DarwinPthreadRuntime::set_target_concurrency(
     std::uint32_t priority, std::uint32_t concurrency)
 {
-    if (!workqueue_open_ || priority > workqueue_priority_count)
+    if (!workqueue_open_ || priority > workqueue_priority_count_)
         return false;
-    if (priority == workqueue_priority_count) {
-        target_concurrency_.fill(concurrency);
+    if (priority == workqueue_priority_count_) {
+        for (std::uint32_t index = 0; index < workqueue_priority_count_;
+             ++index) {
+            target_concurrency_[index] = concurrency;
+        }
     } else {
         target_concurrency_[priority] = concurrency;
     }
@@ -196,13 +214,14 @@ bool DarwinPthreadRuntime::set_target_concurrency(
 void DarwinPthreadRuntime::reset_workqueue() noexcept
 {
     workqueue_open_ = false;
+    workqueue_priority_count_ = 0U;
     for (auto& queue : workitems_)
         queue.clear();
     workers_.clear();
     target_concurrency_.fill(0);
 }
 
-bool CompatibilityKernel::service_bsd_workqueue(Cpu& cpu)
+bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
 {
     const auto& registration = pthread_runtime_.registration();
     if (!registration || !pthread_runtime_.workqueue_open())
@@ -269,9 +288,10 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu& cpu)
             " slot=" + std::to_string(idle_worker->processor) +
             " item=" + std::to_string(next_item->address) +
             " priority=" + std::to_string(next_item->priority) + "\n");
-        if (wake_result.preemption_needed && scheduler_preemption_query_ &&
-            scheduler_preemption_query_(cpu.processor_id())) {
-            cpu.request_guest_preemption();
+        if (requesting_cpu && wake_result.preemption_needed &&
+            scheduler_preemption_query_ &&
+            scheduler_preemption_query_(requesting_cpu->processor_id())) {
+            requesting_cpu->request_guest_preemption();
         }
         return true;
     }
@@ -341,11 +361,39 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu& cpu)
         " item=" + std::to_string(next_item->address) +
         " pthread=" + std::to_string(worker.pthread_address) +
         " priority=" + std::to_string(next_item->priority) + "\n");
-    if (scheduler_preemption_query_ &&
-        scheduler_preemption_query_(cpu.processor_id())) {
-        cpu.request_guest_preemption();
+    if (requesting_cpu && scheduler_preemption_query_ &&
+        scheduler_preemption_query_(requesting_cpu->processor_id())) {
+        requesting_cpu->request_guest_preemption();
     }
     return true;
+}
+
+void CompatibilityKernel::notify_thread_blocked(std::size_t processor)
+{
+    if (processor > std::numeric_limits<std::uint32_t>::max())
+        return;
+
+    std::lock_guard lock { mutex_ };
+    const auto worker_processor = static_cast<std::uint32_t>(processor);
+    if (!pthread_runtime_.worker(worker_processor))
+        return;
+
+    // complete_slice can consume a pending wake instead of transitioning the
+    // thread to Waiting. Confirm the committed state so that race does not
+    // temporarily exceed the workqueue's requested concurrency.
+    const auto state =
+        thread_scheduling_state_query_
+            ? thread_scheduling_state_query_(process_.pid, worker_processor)
+            : std::optional<XnuThreadState> { };
+    if (!state || *state != XnuThreadState::Waiting)
+        return;
+
+    if (!service_bsd_workqueue(nullptr)) {
+        output_.write(
+            "[pthread] workqueue blocked-worker redrive failed pid=" +
+            std::to_string(process_.pid) +
+            " slot=" + std::to_string(worker_processor) + "\n");
+    }
 }
 
 bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
@@ -482,6 +530,9 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         pthread_runtime_.remove_worker(processor);
         thread_ports_.erase(processor);
         pending_mach_receives_.erase(processor);
+        pending_psynch_waits_.erase(processor);
+        shared_state_->psynch_runtime->cancel_wait(
+            DarwinPsynchThread { process_.pid, processor });
         std::optional<WokenThread> woken_thread;
         std::uint32_t semaphore_result = darwin::mach::success;
         {
@@ -554,7 +605,8 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         return true;
     }
     case 367: { // workq_open, Darwin 10 ARM32 v1
-        if (!pthread_runtime_.open_workqueue(virtual_processor_count_)) {
+        if (!pthread_runtime_.open_workqueue(virtual_processor_count_,
+                workqueue_priority_count_for_profile(profile))) {
             bsd_error(cpu, bsd_support::invalid_argument);
             return true;
         }
@@ -585,16 +637,16 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             const auto overcommit =
                 (raw_priority & DarwinPthreadRuntime::workqueue_overcommit) !=
                 0U;
-            if (priority >= DarwinPthreadRuntime::workqueue_priority_count ||
+            if (priority >= pthread_runtime_.workqueue_priority_count() ||
                 !pthread_runtime_.enqueue_workitem(DarwinWorkqueueItem {
                     item_address, priority, affinity, overcommit })) {
                 bsd_error(cpu,
-                    priority >= DarwinPthreadRuntime::workqueue_priority_count
+                    priority >= pthread_runtime_.workqueue_priority_count()
                         ? bsd_support::invalid_argument
                         : darwin::error::no_memory);
                 return true;
             }
-            if (!service_bsd_workqueue(cpu)) {
+            if (!service_bsd_workqueue(&cpu)) {
                 bsd_error(cpu, darwin::error::no_memory);
                 return true;
             }
@@ -602,7 +654,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             return true;
         }
         if (operation == queue_remove) {
-            if (priority >= DarwinPthreadRuntime::workqueue_priority_count) {
+            if (priority >= pthread_runtime_.workqueue_priority_count()) {
                 bsd_error(cpu, bsd_support::invalid_argument);
             } else if (!pthread_runtime_.remove_workitem(
                            item_address, priority)) {
@@ -617,7 +669,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return true;
             }
-            if (!service_bsd_workqueue(cpu)) {
+            if (!service_bsd_workqueue(&cpu)) {
                 bsd_error(cpu, darwin::error::no_memory);
                 return true;
             }

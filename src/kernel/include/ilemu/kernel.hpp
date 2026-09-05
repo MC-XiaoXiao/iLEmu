@@ -143,6 +143,11 @@ public:
 
     void attach(Cpu& cpu);
     void dispatch(Cpu& cpu, std::uint32_t svc_immediate);
+    // The host scheduler calls this only after committing a guest thread to
+    // Waiting. Darwin workqueues use that transition to remove a blocked
+    // worker from their active-concurrency count and start queued work on a
+    // replacement worker when needed.
+    void notify_thread_blocked(std::size_t processor);
 
     [[nodiscard]] ProcessContext& process() { return process_; }
     [[nodiscard]] const ProcessContext& process() const { return process_; }
@@ -484,7 +489,8 @@ private:
     void dispatch_arm_fast_trap(Cpu& cpu);
     void dispatch_bsd(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number);
-    [[nodiscard]] bool service_bsd_workqueue(Cpu& cpu);
+    void dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number);
+    [[nodiscard]] bool service_bsd_workqueue(Cpu* requesting_cpu);
     void dispatch_bsd_nosys(Cpu& cpu, bool send_sigsys);
     [[nodiscard]] std::optional<std::uint32_t> thread_object_for_processor(
         std::size_t processor) const;
@@ -492,6 +498,7 @@ private:
         const std::array<std::uint32_t, 16>& state, std::uint32_t cpsr,
         bool start_suspended, std::uint32_t& kernel_error);
     void dispatch_bsd_aio(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_audit_session(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_fileport(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_platform(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_process(Cpu& cpu, std::uint32_t number);
@@ -507,6 +514,8 @@ private:
     [[nodiscard]] bool dispatch_bsd_process_spawn(
         Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_filesystem(Cpu& cpu, std::uint32_t number);
+    [[nodiscard]] bool dispatch_bsd_filesystem_control(
+        Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool dispatch_bsd_filesystem_ownership(
         Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool dispatch_bsd_filesystem_locking(
@@ -891,6 +900,7 @@ private:
     std::map<std::size_t, PendingSelect> pending_selects_;
     std::map<std::size_t, PendingTimer> pending_timers_;
     std::map<std::size_t, PendingSemaphoreWait> pending_semaphore_waits_;
+    std::map<std::size_t, PendingPsynchWait> pending_psynch_waits_;
     std::map<std::size_t, PendingSignalSuspend> pending_signal_suspends_;
     struct PendingIoPollCache {
         std::uint64_t io_generation { };
@@ -917,6 +927,7 @@ private:
     std::uint32_t mapping_trace_count_ { };
     std::uint32_t socket_payload_trace_count_ { };
     std::uint32_t semaphore_wait_trace_count_ { };
+    std::uint32_t psynch_trace_count_ { };
     LayerKitHle layerkit_hle_;
     std::uint32_t baseband_io_trace_count_ { };
     std::optional<std::uint64_t> next_display_scanout_deadline_;
