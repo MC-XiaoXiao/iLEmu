@@ -129,6 +129,18 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         return MethodResult { iokit_abi::success, { } };
     }
 
+    if (selector == static_cast<std::uint32_t>(
+                        SerialMultiplexerSelector::SetLinkQualityMetric)) {
+        if (scalar_input.size() != 1U || !inband_input.empty() ||
+            scalar_output_capacity != 0U) {
+            return MethodResult { iokit_abi::bad_argument, { } };
+        }
+        // The native driver forwards this advisory metric to its physical
+        // serial link. The offline transport has no link-quality state to
+        // update, but the ABI operation itself still completes successfully.
+        return MethodResult { iokit_abi::success, { } };
+    }
+
     if (selector !=
         static_cast<std::uint32_t>(SerialMultiplexerSelector::GetTime))
         return MethodResult { iokit_abi::unsupported, { } };

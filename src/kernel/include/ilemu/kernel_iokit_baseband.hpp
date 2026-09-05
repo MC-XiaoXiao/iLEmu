@@ -28,6 +28,7 @@ namespace kernel_iokit::baseband {
     enum class SerialMultiplexerSelector : std::uint32_t {
         Configure = 0,
         GetTime = 2,
+        SetLinkQualityMetric = 5,
     };
 
     enum class BasebandSelector : std::uint32_t {

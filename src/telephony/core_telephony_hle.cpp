@@ -98,6 +98,10 @@ namespace {
     constexpr std::uint32_t dialing_call_state { 2U };
     constexpr std::uint32_t disconnected_call_state { 4U };
     constexpr std::size_t maximum_dialed_number_bytes { 256U };
+    // CoreTelephony uses 1:35 when a mobile-equipment dictionary is not ready.
+    // The firmware's MobileGestalt client already bounds retries of this
+    // result and applies its native no-IMEI fallback.
+    constexpr std::uint32_t equipment_info_not_ready_error { 35U };
 
     // SpringBoard's private registration enum predates the public CoreTelephony
     // status objects. On the offline path, value 3 selects the firmware's
@@ -840,6 +844,16 @@ void register_core_telephony_hle(UserlandHleRegistry& registry,
             std::string { symbol },
             [](UserlandHleCall& call) { return_empty_server_string(call); });
     }
+    registry.register_function(std::string { core_telephony_image },
+        "__CTServerConnectionCopyMobileEquipmentInfo",
+        [offline_transport](UserlandHleCall& call) {
+            if (!offline_transport) {
+                call.resume_original();
+                return;
+            }
+            return_server_failure(call, call.argument(0), call.argument(2),
+                equipment_info_not_ready_error);
+        });
     registry.register_function(std::string { core_telephony_image },
         "__CTServerConnectionGetSIMStatus",
         [offline_transport](UserlandHleCall& call) {
