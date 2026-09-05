@@ -1,7 +1,7 @@
 add_subdirectory(control)
 add_subdirectory(sdl)
 
-add_executable(ilemu main.cpp desktop_host.cpp)
+add_executable(ilemu main.cpp desktop_host.cpp abi_command.cpp)
 target_link_libraries(ilemu PRIVATE
     iLEmu::host
     iLEmu::app_control

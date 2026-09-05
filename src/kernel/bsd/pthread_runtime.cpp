@@ -1,7 +1,7 @@
 #include "kernel/darwin_pthread_runtime.hpp"
 
 #include "kernel/darwin_abi.hpp"
-#include "device_state/darwin_kernel_identity.hpp"
+#include "device_state/darwin_abi.hpp"
 #include "kernel/kernel.hpp"
 
 #include "../mach/support.hpp"
@@ -227,7 +227,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
     if (!registration || !pthread_runtime_.workqueue_open())
         return false;
     const auto pthread_abi =
-        shared_state_->darwin_kernel_identity.pthread_abi;
+        shared_state_->darwin_abi.pthread_abi;
 
     const auto idle_worker = pthread_runtime_.idle_worker();
     const auto next_item = pthread_runtime_.take_workitem();
@@ -398,7 +398,7 @@ void CompatibilityKernel::notify_thread_blocked(std::size_t processor)
 
 bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
 {
-    const auto profile = shared_state_->darwin_kernel_identity.pthread_abi;
+    const auto profile = shared_state_->darwin_abi.pthread_abi;
     if (!supports_bsdthread_register_v1(profile))
         return false;
 

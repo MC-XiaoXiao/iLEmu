@@ -820,7 +820,7 @@ namespace {
         // platform serial query without first handling kIOReturnNotFound. The
         // audited ABI contract records whether that legacy property is present;
         // unknown firmware remains conservative.
-        if (shared_state.darwin_kernel_identity.capabilities
+        if (shared_state.darwin_abi.capabilities
                 .expose_legacy_platform_serial) {
             const auto serial = std::string { "iLEmu-" } +
                                 shared_state.device_product_type + "-" +
@@ -1520,7 +1520,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
 
     if (message_id == static_cast<std::uint32_t>(
                           iokit_abi::Message::ServiceGetMatchingService) &&
-        shared_state.darwin_kernel_identity.iokit_matching_rpc ==
+        shared_state.darwin_abi.iokit_matching_rpc ==
             DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1) {
         // Darwin 11's private singular routine carries the same serialized
         // matching dictionary as the public plural call but returns the first
@@ -2473,7 +2473,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         static_cast<std::uint32_t>(iokit_abi::Message::ConnectMethod)) {
         const auto request = read_connect_method_request(memory,
             message_address, send_size, receive_size,
-            shared_state.darwin_kernel_identity.io_connect_method);
+            shared_state.darwin_abi.io_connect_method);
         if (!request)
             return mach_rcv_invalid_data;
         const auto display_result =
@@ -2676,7 +2676,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         }
         return write_connect_method_reply(memory, message_address, local_port,
             message_id, receive_size, result,
-            shared_state.darwin_kernel_identity.io_connect_method);
+            shared_state.darwin_abi.io_connect_method);
     }
 
     if (message_id ==

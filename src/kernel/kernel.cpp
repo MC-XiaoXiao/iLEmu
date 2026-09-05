@@ -172,7 +172,8 @@ namespace {
 
 CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     std::filesystem::path rootfs, DeviceModel device,
-    std::optional<bool> activated, LockdownCapabilities lockdown_capabilities)
+    std::optional<bool> activated, LockdownCapabilities lockdown_capabilities,
+    std::optional<DarwinKernelConfiguration> configuration)
     : memory_ { memory }
     , output_ { output }
     , rootfs_ { std::move(rootfs) }
@@ -246,8 +247,10 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         [this](std::uint32_t descriptor, std::uint32_t event) {
             inject_wifi_driver_event(descriptor, event);
         });
-    shared_state_->darwin_kernel_identity =
-        make_darwin_kernel_identity(rootfs_);
+    auto resolved = configuration ? std::move(*configuration)
+                                  : resolve_darwin_configuration(rootfs_);
+    shared_state_->darwin_kernel_identity = std::move(resolved.identity);
+    shared_state_->darwin_abi = resolved.abi;
     configure_darwin_notify_state();
     shared_state_->device_product_type = device_model_.product_type;
     shared_state_->device_board_config = device_model_.board_config;
@@ -423,7 +426,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
 void CompatibilityKernel::configure_darwin_notify_state()
 {
     darwin_notify_state_hle_.set_abi(
-        shared_state_->darwin_kernel_identity.notify_state_abi);
+        shared_state_->darwin_abi.notify_state_abi);
     darwin_notify_state_hle_.set_native_server_ready_query(
         [weak_state = std::weak_ptr<KernelSharedState> { shared_state_ }] {
             const auto state = weak_state.lock();
@@ -2764,10 +2767,10 @@ void CompatibilityKernel::dispatch_arm_fast_trap(Cpu& cpu)
             // ARM behavior by making an already-mapped invalidated range
             // executable; never create memory as a side effect of the trap.
             const auto& capabilities =
-                shared_state_->darwin_kernel_identity.capabilities;
+                shared_state_->darwin_abi.capabilities;
             if (capabilities.arm_cache_trap_grants_execute &&
                 darwin_abi_route_supported(arm_cache_trap_execute_route,
-                    shared_state_->darwin_kernel_identity.abi_epoch)) {
+                    shared_state_->darwin_abi.abi_epoch)) {
                 static_cast<void>(
                     memory_.map(address, length, MemoryPermission::Execute));
             }

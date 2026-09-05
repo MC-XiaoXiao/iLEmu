@@ -44,6 +44,7 @@
 #include "kernel/process_snapshot.hpp"
 #include "kernel/layerkit_hle.hpp"
 #include "device_state/lockdown_state.hpp"
+#include "device_state/darwin_kernel_configuration.hpp"
 #include "kernel/mach_arm_thread_abi.hpp"
 #include "kernel/mbx2d_hle.hpp"
 #include "kernel/mobile_framebuffer_hle.hpp"
@@ -142,7 +143,8 @@ public:
         std::filesystem::path rootfs = { },
         DeviceModel device = DeviceModel::default_model(),
         std::optional<bool> activated = std::nullopt,
-        LockdownCapabilities lockdown_capabilities = { });
+        LockdownCapabilities lockdown_capabilities = { },
+        std::optional<DarwinKernelConfiguration> configuration = std::nullopt);
 
     void attach(Cpu& cpu);
     void dispatch(Cpu& cpu, std::uint32_t svc_immediate);

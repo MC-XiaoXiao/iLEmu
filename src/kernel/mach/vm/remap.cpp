@@ -69,7 +69,7 @@ bool CompatibilityKernel::dispatch_mach_vm_remap_message(
 
     auto& registers = cpu.registers();
     const auto profile = MachVmWireFormat::for_interface(
-        is_mach_vm, shared_state_->darwin_kernel_identity.mach_vm_address);
+        is_mach_vm, shared_state_->darwin_abi.mach_vm_address);
     const auto width = profile.address_size();
     constexpr auto payload = darwin::mig_wire::complex_request_word(1, 0);
     const auto request_size = payload + 4U * width + 12U;

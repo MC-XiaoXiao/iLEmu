@@ -1126,7 +1126,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 if (registers[1] == wifi_driver::get_request &&
                     *command == wifi_driver::command_current_network) {
                     const auto layout =
-                        shared_state_->darwin_kernel_identity
+                        shared_state_->darwin_abi
                                     .apple80211_ioctl ==
                                 DarwinApple80211IoctlAbi::
                                     CompactCurrentNetworkRecord

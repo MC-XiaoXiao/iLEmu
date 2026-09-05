@@ -44,6 +44,7 @@
 #include "foundation/output.hpp"
 #include "foundation/performance.hpp"
 
+#include "app/abi_command.hpp"
 #include "app/desktop_host.hpp"
 #include "foundation/host_memory.hpp"
 #include "host/resource_usage.hpp"
@@ -60,6 +61,7 @@ std::string usage()
 {
     return "Usage:\n"
            "  ilemu profile [--device PROFILE] [--output FILE]\n"
+           "  ilemu abi [--rootfs DIR] [--abi NAME] [--output FILE]\n"
            "  ilemu inspect --rootfs DIR [--binary /sbin/launchd] "
            "[--device PROFILE] [--shared-cache GUEST_PATH] "
            "[--symbols SUBSTRING] [--output FILE]\n"
@@ -79,7 +81,7 @@ std::string usage()
            "  ilemu disasm --rootfs DIR --binary PATH "
            "(--symbol NAME | --address ADDR) [--device PROFILE] [--count N] "
            "[--shared-cache GUEST_PATH] [--thumb]\n"
-           "  ilemu boot --rootfs DIR [--device PROFILE] "
+           "  ilemu boot --rootfs DIR [--device PROFILE] [--abi NAME] "
            "[--binary /sbin/launchd] [--guest-command COMMAND] [--ticks N] "
            "[--cores N] [--jit-cache-mib 8..512] "
            "[--jit-cache-budget-mib 256..4096] "
@@ -1027,6 +1029,7 @@ void boot(const std::vector<std::string>& args, Output& output)
     options.rootfs = *rootfs;
     options.host_cache = host_cache_directory(args, options.rootfs);
     options.catalog = option(args, "--catalog");
+    options.abi = option(args, "--abi");
     options.device = select_device_model(args);
     options.gles_backend = parse_gles_backend(args);
     options.binary = option(args, "--binary").value_or("/sbin/launchd");
@@ -1160,6 +1163,9 @@ int main(int argc, char** argv)
         try {
             if (command == "profile") {
                 profile(args, *output);
+            } else if (command == "abi") {
+                inspect_abi(option(args, "--rootfs"), option(args, "--abi"),
+                    *output);
             } else if (command == "inspect") {
                 inspect(args, *output);
             } else if (command == "catalog") {

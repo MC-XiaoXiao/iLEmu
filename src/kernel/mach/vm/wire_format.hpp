@@ -1,7 +1,7 @@
 #pragma once
 
 #include "foundation/address_space.hpp"
-#include "device_state/darwin_kernel_identity.hpp"
+#include "device_state/darwin_abi.hpp"
 
 #include <cstdint>
 #include <optional>

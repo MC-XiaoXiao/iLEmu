@@ -115,12 +115,12 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     switch (number) {
     case 322: { // VersionSensitive nosys/iopolicysys collision.
         if (!darwin_abi_route_supported(legacy_iopolicysys_route,
-                shared_state_->darwin_kernel_identity.abi_epoch)) {
+                shared_state_->darwin_abi.abi_epoch)) {
             // The pre-disk-policy ABI reserves this syscall slot as nosys.
             // Return ENOSYS without entering trace_unknown(): expected nosys is not
             // a fatal ABI violation.
             dispatch_bsd_nosys(cpu,
-                shared_state_->darwin_kernel_identity.capabilities.send_sigsys);
+                shared_state_->darwin_abi.capabilities.send_sigsys);
             return;
         }
 
@@ -355,7 +355,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 308:
     case 309:
     case 312:
-        if (shared_state_->darwin_kernel_identity.psynch_abi ==
+        if (shared_state_->darwin_abi.psynch_abi ==
             DarwinPsynchAbi::Arm32GenerationV1) {
             dispatch_bsd_psynch(cpu, number);
             return;
@@ -366,14 +366,14 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
             static_cast<void>(dispatch_bsd_shared_region(cpu, number));
         } else {
             dispatch_bsd_nosys(cpu,
-                shared_state_->darwin_kernel_identity.capabilities.send_sigsys);
+                shared_state_->darwin_abi.capabilities.send_sigsys);
         }
         return;
     case 438: // shared_region_map_and_slide_np
-        if (shared_state_->darwin_kernel_identity.shared_region_abi !=
+        if (shared_state_->darwin_abi.shared_region_abi !=
             DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1) {
             dispatch_bsd_nosys(cpu,
-                shared_state_->darwin_kernel_identity.capabilities.send_sigsys);
+                shared_state_->darwin_abi.capabilities.send_sigsys);
             return;
         }
         static_cast<void>(dispatch_bsd_shared_region(cpu, number));
@@ -433,7 +433,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     default:
         trace_unknown(cpu, "BSD syscall", number);
         dispatch_bsd_nosys(cpu,
-            shared_state_->darwin_kernel_identity.capabilities.send_sigsys);
+            shared_state_->darwin_abi.capabilities.send_sigsys);
         return;
     }
 }

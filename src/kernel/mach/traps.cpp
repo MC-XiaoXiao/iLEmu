@@ -42,7 +42,7 @@ using namespace mach_support;
 
 void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
 {
-    if (shared_state_->darwin_kernel_identity.mach_kernel_rpc ==
+    if (shared_state_->darwin_abi.mach_kernel_rpc ==
             DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1) {
         if (dispatch_mach_vm_kernel_rpc_trap(cpu, trap) ||
             dispatch_mach_port_kernel_rpc_trap(cpu, trap)) {

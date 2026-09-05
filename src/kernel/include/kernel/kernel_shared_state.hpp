@@ -23,6 +23,7 @@
 #include "filesystem/bsd_file_lock.hpp"
 #include "graphics/core_animation_remote_abi.hpp"
 #include "device_state/darwin_kernel_identity.hpp"
+#include "device_state/darwin_abi.hpp"
 #include "network/darwin_network_abi.hpp"
 #include "kernel/darwin_psynch_runtime.hpp"
 #include "kernel/darwin_resource_abi.hpp"
@@ -366,6 +367,7 @@ make_socket_pair_endpoints(std::uint32_t pair)
 
 struct KernelSharedState {
     DarwinKernelIdentity darwin_kernel_identity;
+    DarwinAbi darwin_abi;
     std::string device_product_type;
     std::string device_board_config;
     std::string device_hardware_model;
