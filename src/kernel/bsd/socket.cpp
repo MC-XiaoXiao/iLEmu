@@ -207,7 +207,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                         ancillary_offset, std::move(transfers) });
             }
         }
-        output_.write("[network] sendmsg fd=" + std::to_string(fd) +
+        output_.write("[network] sendmsg pid=" +
+                      std::to_string(process_.pid) + " fd=" +
+                      std::to_string(fd) +
                       " bytes=" + std::to_string(total) +
                       " control=" + std::to_string(control_size) +
                       " rights=" + std::to_string(transfer_count) + "\n");
@@ -858,8 +860,23 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             }
             value = *bytes;
         }
+        const auto defunct_option =
+            registers[1] == darwin::socket::option_level &&
+            registers[2] == darwin::socket::option_defunct_ok;
+        if (defunct_option) {
+            if (value.size() != sizeof(std::uint32_t)) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
+            const auto enabled = std::any_of(value.begin(), value.end(),
+                [](std::byte byte) { return byte != std::byte { 0 }; });
+            if (!enabled && process_.effective_uid != 0U) {
+                bsd_error(cpu, darwin::error::operation_not_permitted);
+                return;
+            }
+        }
         if (const auto host = host_sockets_.find(fd);
-            host != host_sockets_.end()) {
+            host != host_sockets_.end() && !defunct_option) {
             const auto result =
                 host->second->set_option(registers[1], registers[2], value);
             if (result.status == HostSocketStatus::Error) {
@@ -868,7 +885,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             }
         }
         if (const auto udp = virtual_udp_sockets_.find(fd);
-            udp != virtual_udp_sockets_.end() &&
+            udp != virtual_udp_sockets_.end() && !defunct_option &&
             udp->second->set_option(registers[1], registers[2], value) !=
                 bsd::VirtualUdpStatus::Success) {
             bsd_error(cpu, bsd_support::invalid_argument);
@@ -1028,6 +1045,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             } else if (registers[2] ==
                        darwin::socket::option_accept_connection) {
                 default_value = listening_sockets_.contains(fd) ? 1U : 0U;
+            } else if (registers[2] == darwin::socket::option_defunct_ok) {
+                default_value = !(socket->second.starts_with("unix-") ||
+                                  socket->second == "socketpair");
             }
             value.resize(sizeof(default_value));
             for (std::size_t byte = 0; byte < sizeof(default_value); ++byte) {
@@ -1231,7 +1251,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 sent = udp->second->send(*bytes, *destination);
             }
             if (sent != bsd::VirtualUdpStatus::Success) {
-                bsd_error(cpu, sent == bsd::VirtualUdpStatus::NotConnected
+                bsd_error(cpu, sent == bsd::VirtualUdpStatus::BadFileDescriptor
+                                   ? bsd_support::bad_file_descriptor
+                               : sent == bsd::VirtualUdpStatus::NotConnected
                                    ? bsd_support::not_connected
                                : sent == bsd::VirtualUdpStatus::AlreadyConnected
                                    ? bsd_support::already_connected

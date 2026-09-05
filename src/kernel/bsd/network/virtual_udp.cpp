@@ -292,7 +292,7 @@ VirtualUdpStatus VirtualUdpNetwork::send(VirtualUdpSocket& socket,
             continue;
         }
         ++current;
-        if (target->family_ != socket.family_ ||
+        if (target->defunct() || target->family_ != socket.family_ ||
             target->bound_address_.empty() ||
             !same_port(target->bound_address_, normalized_destination)) {
             continue;
@@ -366,6 +366,8 @@ std::size_t VirtualUdpNetwork::pending_bytes(
 
 VirtualUdpStatus VirtualUdpSocket::bind(std::span<const std::byte> address)
 {
+    if (defunct())
+        return VirtualUdpStatus::BadFileDescriptor;
     const auto network = network_.lock();
     return network ? network->bind(*this, address)
                    : VirtualUdpStatus::AddressFamilyUnsupported;
@@ -373,6 +375,8 @@ VirtualUdpStatus VirtualUdpSocket::bind(std::span<const std::byte> address)
 
 VirtualUdpStatus VirtualUdpSocket::connect(std::span<const std::byte> address)
 {
+    if (defunct())
+        return VirtualUdpStatus::BadFileDescriptor;
     if (!valid_address(address, family_))
         return VirtualUdpStatus::InvalidArgument;
     const auto network = network_.lock();
@@ -390,6 +394,8 @@ VirtualUdpStatus VirtualUdpSocket::connect(std::span<const std::byte> address)
 
 VirtualUdpStatus VirtualUdpSocket::disconnect()
 {
+    if (defunct())
+        return VirtualUdpStatus::BadFileDescriptor;
     const auto network = network_.lock();
     if (!network)
         return VirtualUdpStatus::AddressFamilyUnsupported;
@@ -411,6 +417,8 @@ VirtualUdpStatus VirtualUdpSocket::set_option(
 VirtualUdpStatus VirtualUdpSocket::send(
     std::span<const std::byte> bytes, std::span<const std::byte> destination)
 {
+    if (defunct())
+        return VirtualUdpStatus::BadFileDescriptor;
     if (peer_address())
         return VirtualUdpStatus::AlreadyConnected;
     const auto network = network_.lock();
@@ -420,6 +428,8 @@ VirtualUdpStatus VirtualUdpSocket::send(
 
 VirtualUdpStatus VirtualUdpSocket::send(std::span<const std::byte> bytes)
 {
+    if (defunct())
+        return VirtualUdpStatus::BadFileDescriptor;
     const auto peer = peer_address();
     if (!peer)
         return VirtualUdpStatus::NotConnected;
@@ -454,6 +464,8 @@ std::optional<std::vector<std::byte>> VirtualUdpSocket::peer_address() const
 
 bool VirtualUdpSocket::readable() const
 {
+    if (defunct())
+        return true;
     const auto network = network_.lock();
     return network && network->readable(*this);
 }
@@ -462,6 +474,18 @@ std::size_t VirtualUdpSocket::pending_bytes() const
 {
     const auto network = network_.lock();
     return network ? network->pending_bytes(*this) : 0;
+}
+
+void VirtualUdpSocket::make_defunct()
+{
+    const auto network = network_.lock();
+    if (!network)
+        return;
+    std::lock_guard lock { network->mutex_ };
+    defunct_.store(true);
+    incoming_.clear();
+    connected_address_.clear();
+    multicast_groups_.clear();
 }
 
 } // namespace ilemu::bsd

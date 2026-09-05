@@ -4122,6 +4122,11 @@ void boot(const std::vector<std::string>& args, Output& output)
             [&scheduler](std::uint32_t pid, std::uint32_t slot) {
                 return scheduler.wake_thread(XnuThreadId { pid, slot });
             });
+        runtime.kernel->set_process_sockets_shutdown_handler(
+            [&runtime_index](std::uint32_t pid, std::uint32_t level) {
+                if (auto* target = runtime_index.find(pid))
+                    target->kernel->shutdown_process_sockets(level);
+            });
         runtime.kernel->set_thread_scheduling_state_query(
             [&scheduler](std::uint32_t pid,
                 std::uint32_t slot) -> std::optional<XnuThreadState> {

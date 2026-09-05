@@ -181,6 +181,10 @@ bool CompatibilityKernel::receive_socket_message(
 
     if (const auto udp = virtual_udp_sockets_.find(fd);
         udp != virtual_udp_sockets_.end()) {
+        if (udp->second->defunct()) {
+            bsd_error(cpu, bsd_support::bad_file_descriptor);
+            return true;
+        }
         const auto received = udp->second->receive(receive_capacity);
         if (!received)
             return false;
@@ -644,6 +648,10 @@ bool CompatibilityKernel::receive_socket_bytes(Cpu& cpu, std::uint32_t fd,
     }
     if (const auto udp = virtual_udp_sockets_.find(fd);
         udp != virtual_udp_sockets_.end()) {
+        if (udp->second->defunct()) {
+            bsd_error(cpu, bsd_support::bad_file_descriptor);
+            return true;
+        }
         const auto received = udp->second->receive(size);
         if (!received)
             return false;

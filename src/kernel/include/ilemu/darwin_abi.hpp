@@ -191,6 +191,7 @@ namespace socket {
     inline constexpr std::uint32_t option_type = 0x1008;
     inline constexpr std::uint32_t option_pending_bytes = 0x1020; // SO_NREAD
     inline constexpr std::uint32_t option_no_sigpipe = 0x1022;
+    inline constexpr std::uint32_t option_defunct_ok = 0x1100;
     inline constexpr std::uint32_t ioctl_pending_bytes = 0x4004667f; // FIONREAD
     inline constexpr std::uint32_t ioctl_non_block = 0x8004667e; // FIONBIO
 
@@ -360,6 +361,7 @@ namespace syscall {
     inline constexpr std::uint32_t pid_suspend = 433;
     inline constexpr std::uint32_t pid_resume = 434;
     inline constexpr std::uint32_t pid_hibernate = 435;
+    inline constexpr std::uint32_t pid_shutdown_sockets = 436;
     inline constexpr std::uint32_t posix_semaphore_open = 268;
     inline constexpr std::uint32_t posix_semaphore_close = 269;
     inline constexpr std::uint32_t posix_semaphore_unlink = 270;

@@ -99,6 +99,8 @@ public:
         std::function<bool(std::uint32_t, std::uint32_t, bool)>;
     using ProcessRunnableHandler =
         std::function<void(std::uint32_t, bool)>;
+    using ProcessSocketsShutdownHandler =
+        std::function<void(std::uint32_t, std::uint32_t)>;
     using ThreadWakeHandler =
         std::function<XnuThreadWakeResult(std::uint32_t, std::uint32_t)>;
     using ThreadSchedulingStateQuery = std::function<std::optional<XnuThreadState>(
@@ -190,6 +192,11 @@ public:
     {
         process_runnable_handler_ = std::move(handler);
     }
+    void set_process_sockets_shutdown_handler(ProcessSocketsShutdownHandler handler)
+    {
+        process_sockets_shutdown_handler_ = std::move(handler);
+    }
+    void shutdown_process_sockets(std::uint32_t level);
     void set_thread_wake_handler(ThreadWakeHandler handler)
     {
         thread_wake_handler_ = std::move(handler);
@@ -488,6 +495,7 @@ private:
 
     void dispatch_arm_fast_trap(Cpu& cpu);
     void dispatch_bsd(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_process_sockets(Cpu& cpu);
     [[nodiscard]] bool dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool service_bsd_workqueue(Cpu* requesting_cpu);
@@ -865,6 +873,7 @@ private:
     ThreadPointerUpdateHandler thread_pointer_update_handler_;
     ThreadRunnableHandler thread_runnable_handler_;
     ProcessRunnableHandler process_runnable_handler_;
+    ProcessSocketsShutdownHandler process_sockets_shutdown_handler_;
     ThreadWakeHandler thread_wake_handler_;
     ThreadSchedulingStateQuery thread_scheduling_state_query_;
     MachMessageWakeHandler mach_message_wake_handler_;

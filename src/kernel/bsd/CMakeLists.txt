@@ -24,6 +24,7 @@ target_sources(ilemu_kernel PRIVATE
     descriptor_memory.cpp
     bpf.cpp
     socket.cpp
+    network/process_sockets.cpp
     events.cpp
     device/offline_serial.cpp
     support.cpp)

@@ -19,6 +19,8 @@ namespace {
         switch (status) {
         case bsd::VirtualUdpStatus::NotConnected:
             return bsd_support::not_connected;
+        case bsd::VirtualUdpStatus::BadFileDescriptor:
+            return bsd_support::bad_file_descriptor;
         case bsd::VirtualUdpStatus::AlreadyConnected:
             return bsd_support::already_connected;
         case bsd::VirtualUdpStatus::AddressFamilyUnsupported:

@@ -240,6 +240,9 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::pid_hibernate:
         dispatch_bsd_process(cpu, number);
         return;
+    case darwin::syscall::pid_shutdown_sockets:
+        dispatch_bsd_process_sockets(cpu);
+        return;
     case darwin::syscall::posix_semaphore_open:
     case darwin::syscall::posix_semaphore_close:
     case darwin::syscall::posix_semaphore_unlink:
