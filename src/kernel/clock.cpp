@@ -90,6 +90,18 @@ std::optional<std::uint32_t> handle_clock_mach_request(AddressSpace& memory,
     std::uint32_t local_port)
 {
     using namespace xnu792::mig::clock;
+    if (message_id != id(Routine::clock_get_time) &&
+        message_id != id(Routine::clock_get_attributes) &&
+        message_id != id(Routine::clock_alarm)) {
+        return std::nullopt;
+    }
+    {
+        std::lock_guard lock { state.mach_mutex };
+        // MIG identifiers are local to a service. User-space protocols can
+        // reuse the clock subsystem's identifiers on their own receive ports.
+        if (!clock_id_locked(state, process, remote_port))
+            return std::nullopt;
+    }
     if (message_id == id(Routine::clock_get_time)) {
         constexpr const auto& output = clock_get_time_arguments[1];
         constexpr auto success_size = output.reply_offset + output.wire_size;
