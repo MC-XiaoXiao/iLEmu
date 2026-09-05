@@ -11,6 +11,7 @@
 #include "runtime/live_touch_scheduler.hpp"
 #include "runtime/realtime_pacer.hpp"
 #include "runtime/session_host.hpp"
+#include "session_catalog.hpp"
 #include "session_debugger.hpp"
 #include "session_diagnostics.hpp"
 
@@ -50,7 +51,6 @@
 #include "device_state/lockdown_state.hpp"
 #include "device_state/network_preferences.hpp"
 #include "foundation/address_space.hpp"
-#include "foundation/application_path.hpp"
 #include "foundation/cpu.hpp"
 #include "foundation/deadline_queue.hpp"
 #include "foundation/device_model.hpp"
@@ -58,7 +58,6 @@
 #include "foundation/executable_catalog.hpp"
 #include "foundation/firmware_prepare.hpp"
 #include "foundation/guest_execution_coordinator.hpp"
-#include "foundation/host_file_watcher.hpp"
 #include "foundation/host_resource_controller.hpp"
 #include "foundation/jit_artifact.hpp"
 #include "foundation/jit_code_cache_governor.hpp"
@@ -121,37 +120,8 @@ void EmulatorSession::run()
     const auto darwin_configuration = resolve_darwin_configuration(
         rootfs, options.abi.value_or("auto"));
     const auto& darwin_abi = darwin_configuration.abi;
-    ExecutableCatalog executable_catalog;
-    bool catalog_loaded = executable_catalog.load(catalog_manifest);
-    std::string catalog_source = catalog_loaded ? "manifest" : "fallback";
-    if (!catalog_loaded) {
-        try {
-            const auto summary = executable_catalog.register_tree(
-                rootfs, arm_architecture_for_model(device.cpu_model));
-            catalog_loaded = true;
-            catalog_source = "startup-scan";
-            const auto manifest_saved =
-                executable_catalog.save(catalog_manifest);
-            output.line(
-                "[catalog] startup-scan=complete regular-files=" +
-                std::to_string(summary.regular_files) +
-                " macho-images=" + std::to_string(summary.mach_o_images) +
-                " failed-files=" + std::to_string(summary.failed_files) +
-                " entries=" + std::to_string(executable_catalog.size()) +
-                " reliable-entry-points=" +
-                std::to_string(
-                    executable_catalog.reliable_entry_point_count()) +
-                " manifest-save=" + (manifest_saved ? "ok" : "failed"));
-        } catch (const std::exception& error) {
-            output.line("[catalog] startup-scan=failed error=" +
-                        std::string { error.what() });
-        }
-    }
-    output.line("[catalog] manifest=" + catalog_manifest +
-                " status=" + (catalog_loaded ? "loaded" : "fallback") +
-                " source=" + catalog_source +
-                " entries=" + std::to_string(executable_catalog.size()));
-    auto* catalog_index = catalog_loaded ? &executable_catalog : nullptr;
+    SessionCatalog session_catalog { rootfs,
+        arm_architecture_for_model(device.cpu_model), catalog_manifest, output };
     const auto gles_backend = options.gles_backend;
     configure_gles_pipeline_cache(host_cache / "vulkan-pipeline-cache.bin");
     configure_gles_backend(gles_backend);
@@ -491,7 +461,7 @@ void EmulatorSession::run()
     auto initial_memory = std::make_unique<AddressSpace>();
     initial_memory->set_parallel_access(guest_processor_count > 1);
     ProcessLoader loader { rootfs, *initial_memory, guest_architecture,
-        catalog_index, darwin_abi.initial_apple_vector_abi };
+        session_catalog.index(), darwin_abi.initial_apple_vector_abi };
     std::vector<std::string> initial_environment {
         "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root", "SHELL=/bin/sh"
     };
@@ -1354,315 +1324,8 @@ void EmulatorSession::run()
     }
     initial->allocated.assign(initial_guest_thread_slots, false);
     Runtime* initial_runtime = initial.get();
-    std::error_code catalog_root_error;
-    const auto catalog_root =
-        std::filesystem::absolute(rootfs, catalog_root_error)
-            .lexically_normal();
-    HostFileWatcher host_file_watcher {
-        catalog_root_error ? std::filesystem::path { rootfs } : catalog_root
-    };
-    output.line(
-        std::string { "[host-watch] enabled=" } +
-        (host_file_watcher.enabled() ? "true" : "false") +
-        " startup-watches=" + std::to_string(host_file_watcher.watch_count()));
-    bool host_watch_registration_reported =
-        !host_file_watcher.registration_pending();
-    bool catalog_refresh_pending = false;
-    std::vector<std::filesystem::path> catalog_refresh_paths;
-    std::map<std::filesystem::path, ExecutableCatalogKnownIdentity>
-        catalog_refresh_identities;
-    std::uint64_t catalog_refresh_events { };
-    std::uint64_t catalog_refresh_count { };
-    struct CatalogRefreshCompletion {
-        std::uint64_t base_revision { };
-        std::vector<std::filesystem::path> paths;
-        std::map<std::filesystem::path, ExecutableCatalogKnownIdentity>
-            known_identities;
-        std::shared_ptr<ExecutableCatalog> catalog;
-        ExecutableCatalogScanSummary summary;
-        std::filesystem::path staged_manifest;
-        bool manifest_staged { };
-        std::string error;
-    };
-    struct CatalogRefreshState {
-        std::mutex mutex;
-        std::optional<CatalogRefreshCompletion> completion;
-    };
-    const auto catalog_refresh_state = std::make_shared<CatalogRefreshState>();
-    std::shared_ptr<HostWorkToken> catalog_refresh_task;
-    auto next_catalog_refresh_submission =
-        HostResourceController::Clock::time_point { };
-    std::uint64_t catalog_refresh_sequence { };
-    std::uint64_t catalog_refresh_scheduled { };
-    std::uint64_t catalog_refresh_rejected { };
-    std::uint64_t catalog_refresh_stale { };
-    const auto refresh_catalog_after_file_mutations = [&](bool
-                                                              refresh_when_idle,
-                                                          bool allow_schedule =
-                                                              true) {
-        constexpr std::size_t maximum_mutations_per_poll = 128;
-        if (refresh_when_idle &&
-            initial_runtime->kernel->display_submitted_frames() != 0U) {
-            host_file_watcher.advance_registration(256);
-            if (!host_watch_registration_reported &&
-                !host_file_watcher.registration_pending()) {
-                output.line("[host-watch] registration=complete watches=" +
-                            std::to_string(host_file_watcher.watch_count()));
-                host_watch_registration_reported = true;
-            }
-        }
-        const auto queue_catalog_path =
-            [&](const std::filesystem::path& path,
-                std::optional<ExecutableCatalogKnownIdentity> known_identity =
-                    std::nullopt) {
-                if (std::find(catalog_refresh_paths.begin(),
-                        catalog_refresh_paths.end(),
-                        path) == catalog_refresh_paths.end()) {
-                    catalog_refresh_paths.push_back(path);
-                }
-                if (known_identity) {
-                    catalog_refresh_identities[path] =
-                        std::move(*known_identity);
-                }
-            };
-        std::optional<CatalogRefreshCompletion> catalog_completion;
-        {
-            const std::lock_guard lock { catalog_refresh_state->mutex };
-            if (catalog_refresh_state->completion) {
-                catalog_completion =
-                    std::move(catalog_refresh_state->completion);
-                catalog_refresh_state->completion.reset();
-            }
-        }
-        if (catalog_completion) {
-            catalog_refresh_task.reset();
-            const auto requeue_completion_paths = [&] {
-                for (const auto& path : catalog_completion->paths) {
-                    if (const auto known =
-                            catalog_completion->known_identities.find(path);
-                        known != catalog_completion->known_identities.end()) {
-                        queue_catalog_path(path, known->second);
-                    } else {
-                        queue_catalog_path(path);
-                    }
-                }
-                catalog_refresh_pending = !catalog_refresh_paths.empty();
-            };
-            if (!catalog_completion->error.empty()) {
-                requeue_completion_paths();
-                output.line("[catalog] mutation-refresh failed error=" +
-                            catalog_completion->error);
-            } else if (executable_catalog.revision() !=
-                       catalog_completion->base_revision) {
-                ++catalog_refresh_stale;
-                requeue_completion_paths();
-                std::error_code remove_error;
-                std::filesystem::remove(
-                    catalog_completion->staged_manifest, remove_error);
-            } else {
-                executable_catalog = std::move(*catalog_completion->catalog);
-                catalog_loaded = true;
-                catalog_index = &executable_catalog;
-                bool manifest_published = false;
-                if (catalog_completion->manifest_staged) {
-                    std::error_code rename_error;
-                    std::filesystem::rename(catalog_completion->staged_manifest,
-                        catalog_manifest, rename_error);
-                    manifest_published = !rename_error;
-                    if (rename_error) {
-                        std::error_code remove_error;
-                        std::filesystem::remove(
-                            catalog_completion->staged_manifest, remove_error);
-                    }
-                }
-                if (!manifest_published) {
-                    output.line(
-                        "[catalog] mutation-refresh manifest-save=failed");
-                }
-                output.line(
-                    "[catalog] mutation-refresh regular-files=" +
-                    std::to_string(catalog_completion->summary.regular_files) +
-                    " macho-images=" +
-                    std::to_string(catalog_completion->summary.mach_o_images) +
-                    " failed-files=" +
-                    std::to_string(catalog_completion->summary.failed_files) +
-                    " paths=" +
-                    std::to_string(catalog_completion->paths.size()) +
-                    " warming=no-enqueue async=true");
-                ++catalog_refresh_count;
-            }
-        }
-        if (!allow_schedule)
-            return;
-        host_file_watcher.poll();
-        const auto host_changes =
-            host_file_watcher.publish_stable(host_resources,
-                *initial_runtime->kernel->guest_file_generation_registry(), 64,
-                refresh_when_idle);
-        for (const auto& path : host_changes.changed_paths) {
-            if (const auto known = host_changes.stable_identities.find(path);
-                known != host_changes.stable_identities.end()) {
-                const auto& generation = known->second.generation;
-                queue_catalog_path(path,
-                    ExecutableCatalogKnownIdentity {
-                        ExecutableCatalogFileGeneration { generation.device,
-                            generation.inode, generation.file_size,
-                            generation.modified_seconds,
-                            generation.modified_nanoseconds,
-                            generation.changed_seconds,
-                            generation.changed_nanoseconds },
-                        known->second.content_identity });
-            } else {
-                queue_catalog_path(path);
-            }
-            catalog_refresh_pending = true;
-        }
-        bool structural_boundary = !host_changes.changed_paths.empty() ||
-                                   !host_changes.structural_events.empty() ||
-                                   !host_changes.dirty_subtrees.empty();
-        for (const auto& event : host_changes.structural_events) {
-            // Directory structure events are authoritative subtree boundaries.
-            // They must reach the catalog even when the directory did not
-            // previously contain a known executable.
-            queue_catalog_path(event.path);
-            catalog_refresh_pending = true;
-        }
-        for (const auto& subtree : host_changes.dirty_subtrees) {
-            queue_catalog_path(subtree);
-            catalog_refresh_pending = true;
-        }
-        const auto mutations =
-            initial_runtime->kernel->take_guest_file_mutations(
-                maximum_mutations_per_poll);
-        for (const auto& mutation : mutations) {
-            ++catalog_refresh_events;
-            if (mutation.dirty_subtree) {
-                // The registry deliberately coalesces an overflow into a
-                // structural marker.  Individual paths before this marker were
-                // evicted, so refresh the catalog root instead of pretending
-                // the remaining event list is complete.
-                if (!catalog_root_error) {
-                    queue_catalog_path(catalog_root);
-                    catalog_refresh_pending = true;
-                    structural_boundary = true;
-                }
-                continue;
-            }
-            const auto relative =
-                mutation.path.lexically_relative(catalog_root);
-            if (catalog_root_error || relative.empty() || relative == "." ||
-                relative.begin() == relative.end() ||
-                *relative.begin() == "..") {
-                continue;
-            }
-            const auto guest_path = "/" + relative.generic_string();
-            const auto application_path =
-                is_application_executable_path(guest_path);
-            const auto known_executable =
-                catalog_index != nullptr &&
-                catalog_index->find_path(mutation.path) != nullptr;
-            switch (mutation.mutation) {
-            case GuestFileMutationKind::SubtreeCreate:
-            case GuestFileMutationKind::SubtreeRemove:
-                // Namespace changes are already subtree-scoped.  Do not consult
-                // the old catalog index: this is how a newly installed bundle
-                // becomes visible to the next exec/mmap refresh.
-                queue_catalog_path(mutation.path);
-                catalog_refresh_pending = true;
-                structural_boundary = true;
-                break;
-            case GuestFileMutationKind::InstallReplace:
-            case GuestFileMutationKind::Rename:
-            case GuestFileMutationKind::Unlink:
-                if (known_executable || application_path ||
-                    catalog_index == nullptr) {
-                    queue_catalog_path(mutation.path);
-                    catalog_refresh_pending = true;
-                    structural_boundary = true;
-                }
-                break;
-            case GuestFileMutationKind::Truncate:
-            case GuestFileMutationKind::Write:
-            case GuestFileMutationKind::SharedWriteback:
-                if (known_executable || application_path) {
-                    queue_catalog_path(mutation.path);
-                    catalog_refresh_pending = true;
-                }
-                break;
-            case GuestFileMutationKind::Observation:
-                break;
-            }
-        }
-        if (!catalog_refresh_pending || catalog_refresh_paths.empty() ||
-            (!refresh_when_idle && !structural_boundary)) {
-            return;
-        }
-
-        if (catalog_refresh_task || HostResourceController::Clock::now() <
-                                        next_catalog_refresh_submission) {
-            return;
-        }
-        auto refresh_paths =
-            std::make_shared<std::vector<std::filesystem::path>>(
-                std::move(catalog_refresh_paths));
-        catalog_refresh_paths.clear();
-        auto refresh_identities = std::make_shared<
-            std::map<std::filesystem::path, ExecutableCatalogKnownIdentity>>(
-            std::move(catalog_refresh_identities));
-        catalog_refresh_identities.clear();
-        catalog_refresh_pending = false;
-        auto catalog_snapshot =
-            std::make_shared<ExecutableCatalog>(executable_catalog);
-        const auto base_revision = executable_catalog.revision();
-        const auto sequence = ++catalog_refresh_sequence;
-        const auto staged_manifest = std::filesystem::path {
-            catalog_manifest + ".refresh-" + std::to_string(sequence)
-        };
-        catalog_refresh_task = host_resources.submit(
-            HostWorkKind::Maintenance, std::nullopt,
-            [state = catalog_refresh_state,
-                catalog = std::move(catalog_snapshot), paths = refresh_paths,
-                root = rootfs, architecture = guest_architecture, base_revision,
-                staged_manifest,
-                known_identities = refresh_identities]() mutable {
-                CatalogRefreshCompletion completion;
-                completion.base_revision = base_revision;
-                completion.paths = std::move(*paths);
-                completion.known_identities = *known_identities;
-                completion.catalog = std::move(catalog);
-                completion.staged_manifest = staged_manifest;
-                try {
-                    completion.summary = completion.catalog->refresh_paths(root,
-                        completion.paths, architecture, *known_identities);
-                    completion.manifest_staged =
-                        completion.catalog->save(staged_manifest);
-                } catch (const std::exception& error) {
-                    completion.error = error.what();
-                } catch (...) {
-                    completion.error = "unknown background refresh failure";
-                }
-                const std::lock_guard lock { state->mutex };
-                state->completion = std::move(completion);
-            },
-            std::chrono::milliseconds { 50 });
-        if (catalog_refresh_task) {
-            ++catalog_refresh_scheduled;
-        } else {
-            ++catalog_refresh_rejected;
-            next_catalog_refresh_submission =
-                HostResourceController::Clock::now() +
-                std::chrono::milliseconds { 50 };
-            for (const auto& path : *refresh_paths) {
-                if (const auto known = refresh_identities->find(path);
-                    known != refresh_identities->end()) {
-                    queue_catalog_path(path, known->second);
-                } else {
-                    queue_catalog_path(path);
-                }
-            }
-            catalog_refresh_pending = !catalog_refresh_paths.empty();
-        }
-    };
+    CatalogMaintenance catalog_maintenance {
+        session_catalog, guest_architecture, host_resources };
     runtimes.push_back(std::move(initial));
     runtime_index.insert(*initial_runtime);
     initial_runtime->kernel->set_preferred_wifi_networks(
@@ -1719,16 +1382,17 @@ void EmulatorSession::run()
         auto* runtime_ptr = &runtime;
         runtime.kernel->set_host_network_policy(network_policy);
         runtime.kernel->set_mapped_executable_handler(
-            [runtime_ptr, &catalog_index, &catalog_mapped_executable_ranges,
+            [runtime_ptr, &session_catalog, &catalog_mapped_executable_ranges,
                 &catalog_mapped_entry_hints,
                 &catalog_mapped_entry_hints_by_phase](
                 const std::filesystem::path& path,
                 std::uint32_t mapping_address, std::uint32_t mapping_size,
                 std::uint64_t file_offset) {
-                if (catalog_index == nullptr)
+                if (session_catalog.index() == nullptr)
                     return;
-                auto entry_points = catalog_index->fixed_mapping_entry_points(
-                    path, mapping_address, mapping_size, file_offset);
+                auto entry_points =
+                    session_catalog.index()->fixed_mapping_entry_points(
+                        path, mapping_address, mapping_size, file_offset);
                 if (entry_points.empty())
                     return;
                 ++catalog_mapped_executable_ranges;
@@ -2029,9 +1693,9 @@ void EmulatorSession::run()
             [&, runtime_ptr](Cpu& source, std::string path,
                 std::vector<std::string> arguments,
                 std::vector<std::string> environment) {
-                refresh_catalog_after_file_mutations(true);
+                catalog_maintenance.poll(*initial_runtime->kernel, true);
                 ProcessLoader validator { rootfs, *runtime_ptr->memory,
-                    guest_architecture, catalog_index,
+                    guest_architecture, session_catalog.index(),
                     darwin_abi.initial_apple_vector_abi };
                 if (!validator.validate(path)) {
                     output.line(
@@ -2073,7 +1737,7 @@ void EmulatorSession::run()
             const auto image_epoch =
                 child_runtime->begin_image_transition(host_resources);
             try {
-                refresh_catalog_after_file_mutations(true);
+                catalog_maintenance.poll(*initial_runtime->kernel, true);
                 debug_target.notify_exec(child_pid);
                 if (!child_runtime->fresh_spawn_address_space) {
                     PerformanceLatencyScope latency {
@@ -2087,7 +1751,7 @@ void EmulatorSession::run()
                         PerfLatencyKind::SpawnImageLoad
                     };
                     ProcessLoader loader { rootfs, *child_runtime->memory,
-                        guest_architecture, catalog_index,
+                        guest_architecture, session_catalog.index(),
                         darwin_abi.initial_apple_vector_abi };
                     loaded =
                         loader.load(path, std::move(arguments), environment);
@@ -2894,7 +2558,8 @@ void EmulatorSession::run()
         synchronize_scheduler_time();
         observe_transition_stability();
         std::optional<XnuThreadId> input_preferred_thread;
-        refresh_catalog_after_file_mutations(scheduler.runnable_count() == 0);
+        catalog_maintenance.poll(
+            *initial_runtime->kernel, scheduler.runnable_count() == 0);
         if (display_presenter && !display_presenter->poll_events()) {
             hard_stop = true;
             break;
@@ -4049,11 +3714,11 @@ void EmulatorSession::run()
                 const auto image_epoch =
                     runtime.begin_image_transition(host_resources);
                 try {
-                    refresh_catalog_after_file_mutations(true);
+                    catalog_maintenance.poll(*initial_runtime->kernel, true);
                     debug_target.notify_exec(runtime.kernel->process().pid);
                     runtime.memory->clear();
                     ProcessLoader exec_loader { rootfs, *runtime.memory,
-                        guest_architecture, catalog_index,
+                        guest_architecture, session_catalog.index(),
                         darwin_abi.initial_apple_vector_abi };
                     auto loaded = exec_loader.load(pending.path,
                         std::move(pending.arguments), pending.environment);
@@ -4944,9 +4609,8 @@ void EmulatorSession::run()
     // instead of leaving it permanently ineligible behind a stale deadline.
     host_resources.set_next_deadline(std::nullopt);
     host_resources.wait_idle();
-    refresh_catalog_after_file_mutations(true, false);
-    static_cast<void>(host_file_watcher.publish_stable(host_resources,
-        *initial_runtime->kernel->guest_file_generation_registry(), 0, false));
+    catalog_maintenance.poll(*initial_runtime->kernel, true, false);
+    catalog_maintenance.publish_stable(*initial_runtime->kernel);
     host_resources.wait_idle();
     if (artifact_compaction_task && artifact_compaction_record &&
         artifact_compaction_record->state() ==
@@ -4991,16 +4655,7 @@ void EmulatorSession::run()
                 initial_runtime->memory->cached_file_page_count()) *
             AddressSpace::page_size;
     }
-    const auto host_watch_stats = host_file_watcher.stats();
-    output.line("[host-watch] async-scheduled=" +
-                std::to_string(host_watch_stats.scheduled) +
-                " rejected=" + std::to_string(host_watch_stats.rejected) +
-                " completed=" + std::to_string(host_watch_stats.completed) +
-                " sha-computations=" +
-                std::to_string(host_watch_stats.sha_computations) +
-                " sha-bytes=" + std::to_string(host_watch_stats.sha_bytes) +
-                " confirmed-changes=" +
-                std::to_string(host_watch_stats.confirmed_changes));
+    catalog_maintenance.report_watch_stats();
     output.line(
         "[host-maintenance] artifact-compaction-admitted=" +
         std::to_string(artifact_compaction_telemetry.admitted.load(
@@ -5262,19 +4917,8 @@ void EmulatorSession::run()
         " zero-budget=" + schedule_skip(PrecompileScheduleSkip::ZeroBudget) +
         " host-rejected=" +
         schedule_skip(PrecompileScheduleSkip::HostRejected));
-    if (catalog_refresh_events != 0 || catalog_refresh_count != 0 ||
-        catalog_refresh_scheduled != 0 || catalog_refresh_rejected != 0) {
-        output.line(
-            "[catalog] mutation-events=" +
-            std::to_string(catalog_refresh_events) +
-            " refreshes=" + std::to_string(catalog_refresh_count) +
-            " warming=no-enqueue"
-            " async-scheduled=" +
-            std::to_string(catalog_refresh_scheduled) +
-            " async-rejected=" + std::to_string(catalog_refresh_rejected) +
-            " async-stale=" + std::to_string(catalog_refresh_stale));
-    }
-    if (catalog_loaded) {
+    catalog_maintenance.report_refresh_stats();
+    if (session_catalog.available()) {
         output.line("[catalog] mapped-executable-ranges=" +
                     std::to_string(catalog_mapped_executable_ranges) +
                     " mapped-entry-hints=" +
@@ -5290,9 +4934,7 @@ void EmulatorSession::run()
                     ",remaining:" +
                     std::to_string(catalog_mapped_entry_hints_by_phase[4]));
     }
-    if (catalog_loaded && !executable_catalog.save(catalog_manifest)) {
-        output.line("[catalog] manifest-save=failed");
-    }
+    session_catalog.save();
     if (runtime_jit_memory) {
         observe_all_runtime_jit_memory();
         concurrent_live_current_at_stop =
@@ -5740,7 +5382,7 @@ void EmulatorSession::run()
             " profile-portable-ready-nodes-est-bytes=" +
             std::to_string(profile_stats.portable_ready_set_node_bytes) +
             " catalog-bytes-est=" +
-            std::to_string(executable_catalog.resident_bytes_estimate()) +
+            std::to_string(session_catalog.resident_bytes_estimate()) +
             " runtime-count=" +
             std::to_string(runtime_jit_memory->runtime_count) + " " +
             format_queue_memory(
