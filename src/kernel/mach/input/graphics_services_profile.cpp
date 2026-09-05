@@ -87,15 +87,16 @@ constexpr GraphicsServicesInputProfile darwin11_0_profile{
     .record_info_size_offset = 48,
     .hand_info_size = 36,
     .path_info_size = 24,
-    // UIKit 9A334 reads this byte at GSEventRecord+0x56 (hand+34); the
+    // This UIKit ABI reads the count at GSEventRecord+0x56 (hand+34); the
     // preceding hand byte is reserved in this ABI.  Keep the offset in the
     // profile because earlier GraphicsServices layouts place the count at
     // hand+33.
     .hand_path_count_offset = 34,
     .path_location_offset = 12,
-    // GSEvent's hand enum is Down/Dragged/Moved/Up; pathIdentity remains
-    // stable for the lifetime of one contact.
-    .hand_phase_types = {0, 1, 4, 5},
+    // UIKit establishes the hand's window at type 1, completes remaining
+    // contacts at type 6, and cancels all contacts at type 8. These are
+    // GSEvent hand states; pathIdentity stays stable through the gesture.
+    .hand_phase_types = {1, 2, 6, 8},
     .path_phase_types = {1, 1, 1, 1},
     .idle_duration_reset_event_type = 100,
     .idle_duration_reset_info_size = 0,
@@ -211,8 +212,9 @@ constexpr GraphicsServicesInputProfile darwin11_0_profile{
                 continue;
             }
 
-            // STMIA.W r0!, {registers}.
-            if ((*first & 0xfff0U) == 0xe880U) {
+            // STMIA.W r0, {registers}. Other base registers may refer to a
+            // later chunk of an LDM/STM copy; that is decoded separately.
+            if (*first == 0xe880U) {
                 const auto second =
                     read_thumb_halfword(image, symbol, offset + 2U);
                 if (second)

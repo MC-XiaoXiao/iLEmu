@@ -40,9 +40,13 @@ struct GraphicsServicesInputProfile {
     // PathInfo byte 1 is ABI-defined. Early UIKit keeps a stable identity
     // there, while later keyboard layouts consume per-event touch stages.
     std::array<std::uint8_t, 4> path_phase_types { };
-    // GSEventResetIdleDuration (101) keeps SpringBoard's idle duration in sync
-    // when input is consumed by an application port or system event port.
+    // The profile's native idle-reset event keeps SpringBoard's idle timer in
+    // sync when input is consumed by an application or system event port.
     std::uint32_t idle_duration_reset_event_type { };
+    // Number of bytes appended after the record for the native idle-reset
+    // event.  Darwin 11 sends no info payload, while older profiles carry the
+    // legacy eight-byte field.
+    std::size_t idle_duration_reset_info_size { };
     SystemEvents system_events { };
 
     [[nodiscard]] std::uint8_t hand_type(TouchPhase phase) const;
