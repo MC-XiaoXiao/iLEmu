@@ -33,6 +33,7 @@ add_library(ilemu_kernel_graphics STATIC
     graphics/mbx_swapchain.cpp
     graphics/mobile_framebuffer_hle.cpp
     graphics/opengles_hle.cpp
+    graphics/core_animation_software_hle.cpp
     graphics/opengles_programmable.cpp
     graphics/mbx_connect_hle.cpp)
 add_library(iLEmu::kernel_graphics ALIAS ilemu_kernel_graphics)

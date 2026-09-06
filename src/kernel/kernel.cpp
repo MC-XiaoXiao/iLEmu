@@ -10,6 +10,7 @@
 #include "graphics/core_animation_remote_abi.hpp"
 #include "telephony/core_telephony_hle.hpp"
 #include "crypto/core_crypto_hle.hpp"
+#include "kernel/core_animation_software_hle.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "network/darwin_network_abi.hpp"
@@ -362,6 +363,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     register_lockdown_hle(userland_hle_, activated, lockdown_capabilities);
     register_bluetooth_manager_hle(userland_hle_);
     register_core_crypto_hle(userland_hle_);
+    register_core_animation_software_hle(userland_hle_);
     register_mbx_connect_hle(userland_hle_);
     graphics_services_input::register_springboard_alert_observers(userland_hle_,
         [this](std::uint32_t object,
