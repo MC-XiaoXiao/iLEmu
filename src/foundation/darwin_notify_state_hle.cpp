@@ -16,6 +16,9 @@ namespace {
 DarwinNotifyStateHle::DarwinNotifyStateHle(UserlandHleRegistry& registry)
 {
     registry.register_function(std::string { libsystem_image },
+        "__notify_lib_init",
+        [this](UserlandHleCall& call) { initialize(call); });
+    registry.register_function(std::string { libsystem_image },
         "_notify_register_mach_port",
         [this](UserlandHleCall& call) { register_mach_port(call); });
     registry.register_function(std::string { libsystem_image },
@@ -43,6 +46,13 @@ void DarwinNotifyStateHle::set_native_server_ready_query(
 {
     std::lock_guard lock { mutex_ };
     native_server_ready_query_ = std::move(query);
+}
+
+void DarwinNotifyStateHle::set_native_server_provider_query(
+    NativeServerProviderQuery query)
+{
+    std::lock_guard lock { mutex_ };
+    native_server_provider_query_ = std::move(query);
 }
 
 void DarwinNotifyStateHle::set_provider(
@@ -91,6 +101,25 @@ void DarwinNotifyStateHle::reset()
     token_names_.clear();
     virtual_tokens_.clear();
     next_virtual_token_ = 0x4000'0000U;
+}
+
+void DarwinNotifyStateHle::initialize(UserlandHleCall& call)
+{
+    NativeServerProviderQuery provider_query;
+    {
+        std::lock_guard lock { mutex_ };
+        provider_query = native_server_provider_query_;
+    }
+    // A provider's image initializers cannot synchronously register with its
+    // own server before main has checked in. Leave libnotify's cached server
+    // port unset so later calls can initialize normally. Other clients retain
+    // native bootstrap lookup, including on-demand service activation.
+    if (!native_server_ready() && provider_query && provider_query()) {
+        constexpr std::uint32_t notify_status_failed = 1'000'000U;
+        call.set_return(notify_status_failed);
+        return;
+    }
+    call.resume_original_persistently();
 }
 
 void DarwinNotifyStateHle::register_mach_port(UserlandHleCall& call)

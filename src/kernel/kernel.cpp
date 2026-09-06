@@ -440,6 +440,18 @@ void CompatibilityKernel::configure_darwin_notify_state()
             return state->bootstrap_checked_in_services.contains(
                 "com.apple.system.notification_center");
         });
+    darwin_notify_state_hle_.set_native_server_provider_query([this] {
+        std::call_once(shared_state_->launchd_job_catalog_once, [this] {
+            shared_state_->launchd_job_catalog = LaunchdJobCatalog::load(rootfs_);
+        });
+        std::lock_guard lock { shared_state_->mach_mutex };
+        const auto process = shared_state_->processes.find(process_.pid);
+        return shared_state_->launchd_job_catalog &&
+               process != shared_state_->processes.end() &&
+               shared_state_->launchd_job_catalog->executable_provides_service(
+                   process->second.executable_path,
+                   "com.apple.system.notification_center");
+    });
     const auto provider = [state = ringer_switch_state_] {
         return static_cast<std::uint64_t>(state->active());
     };

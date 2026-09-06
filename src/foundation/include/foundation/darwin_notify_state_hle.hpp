@@ -30,12 +30,14 @@ public:
     using NotificationDispatcher = std::function<void(std::uint32_t process_id,
         std::uint32_t port_name, std::uint32_t token)>;
     using NativeServerReadyQuery = std::function<bool()>;
+    using NativeServerProviderQuery = std::function<bool()>;
 
     explicit DarwinNotifyStateHle(UserlandHleRegistry& registry);
     ~DarwinNotifyStateHle();
 
     void set_abi(DarwinNotifyStateAbi abi);
     void set_native_server_ready_query(NativeServerReadyQuery query);
+    void set_native_server_provider_query(NativeServerProviderQuery query);
     void set_provider(std::string name, StateProvider provider);
     void set_notification_dispatcher(NotificationDispatcher dispatcher);
     void inherit_state(const DarwinNotifyStateHle& parent);
@@ -43,6 +45,7 @@ public:
     void reset();
 
 private:
+    void initialize(UserlandHleCall& call);
     void register_mach_port(UserlandHleCall& call);
     void register_check(UserlandHleCall& call);
     void check(UserlandHleCall& call);
@@ -72,6 +75,7 @@ private:
         DarwinNotifyStateAbi::NativeServerTokens
     };
     NativeServerReadyQuery native_server_ready_query_;
+    NativeServerProviderQuery native_server_provider_query_;
     NotificationDispatcher dispatcher_;
     std::shared_ptr<SharedBus> bus_ { std::make_shared<SharedBus>() };
     std::set<RegistrationKey> owned_registrations_;
