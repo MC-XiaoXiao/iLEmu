@@ -10,6 +10,36 @@
 namespace ilemu {
 namespace {
 
+    void greatest_common_divisor(UserlandHleCall& call)
+    {
+        // ccn uses fixed-width, little-endian ARM32 units, including leading
+        // zero units. Read both operands before writing to allow output aliasing.
+        const auto units = call.argument(0);
+        constexpr std::uint32_t maximum_units = 512U;
+        if (units == 0U || units > maximum_units) {
+            call.resume_original_persistently();
+            return;
+        }
+        const auto size =
+            static_cast<std::size_t>(units) * sizeof(std::uint32_t);
+        const auto first = call.memory().read_bytes(call.argument(2), size);
+        const auto second = call.memory().read_bytes(call.argument(3), size);
+        const auto destination = call.argument(1);
+        if (!first || !second || !call.memory().accessible(
+                                    destination, size, MemoryPermission::Write)) {
+            call.resume_original_persistently();
+            return;
+        }
+        std::vector<std::byte> result(size);
+        if (!BigNumberArithmetic::greatest_common_divisor(
+                *first, *second, result) ||
+            !call.memory().copy_in(destination, result)) {
+            call.resume_original_persistently();
+            return;
+        }
+        call.set_return(0U);
+    }
+
     void power_modulo(UserlandHleCall& call)
     {
         const auto context = call.argument(0);
@@ -56,6 +86,7 @@ void register_core_crypto_hle(UserlandHleRegistry& registry)
         { "/Security.framework/Security", "/libcorecrypto.dylib" }) {
         registry.register_guest_function(image, "_cczp_mod");
         registry.register_function(image, "_cczp_power", power_modulo);
+        registry.register_function(image, "_ccn_gcd", greatest_common_divisor);
     }
 }
 

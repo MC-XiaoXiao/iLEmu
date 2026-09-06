@@ -6,6 +6,36 @@
 
 namespace ilemu {
 
+bool BigNumberArithmetic::greatest_common_divisor(
+    std::span<const std::byte> first, std::span<const std::byte> second,
+    std::span<std::byte> result)
+{
+    if (result.empty() || result.size() > std::numeric_limits<int>::max() ||
+        first.size() != result.size() || second.size() != result.size()) {
+        return false;
+    }
+    std::unique_ptr<BN_CTX, decltype(&BN_CTX_free)> context {
+        BN_CTX_secure_new(), BN_CTX_free
+    };
+    if (!context)
+        return false;
+    BN_CTX_start(context.get());
+    auto* a = BN_CTX_get(context.get());
+    auto* b = BN_CTX_get(context.get());
+    auto* r = BN_CTX_get(context.get());
+    if (!r ||
+        !BN_lebin2bn(reinterpret_cast<const unsigned char*>(first.data()),
+            static_cast<int>(first.size()), a) ||
+        !BN_lebin2bn(reinterpret_cast<const unsigned char*>(second.data()),
+            static_cast<int>(second.size()), b) ||
+        BN_gcd(r, a, b, context.get()) != 1) {
+        return false;
+    }
+    return BN_bn2lebinpad(r, reinterpret_cast<unsigned char*>(result.data()),
+               static_cast<int>(result.size())) ==
+           static_cast<int>(result.size());
+}
+
 bool BigNumberArithmetic::power_modulo(std::span<const std::byte> base,
     std::span<const std::byte> exponent, std::span<const std::byte> modulus,
     std::span<std::byte> result)
