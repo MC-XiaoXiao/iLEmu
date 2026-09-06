@@ -455,14 +455,8 @@ namespace {
         case PerfLatencyKind::SchedulerRunnableToDispatch:
         case PerfLatencyKind::SchedulerPreemptionRequestToReturn:
         case PerfLatencyKind::MachMessageSendToReceive:
-            return true;
-        case PerfLatencyKind::InputEnqueue:
-        case PerfLatencyKind::DisplayPresent:
-        case PerfLatencyKind::JitColdPath:
-        case PerfLatencyKind::JitDemandTranslation:
-        case PerfLatencyKind::JitBlockCompile:
-        case PerfLatencyKind::RuntimeDestructor:
-        case PerfLatencyKind::GlesTargetRelease:
+        // Demand-launched services share the interactive guest executor.
+        // Attribute their creation and image setup to the active frame window.
         case PerfLatencyKind::PosixSpawnTotal:
         case PerfLatencyKind::PosixSpawnDecode:
         case PerfLatencyKind::PosixSpawnFork:
@@ -477,6 +471,14 @@ namespace {
         case PerfLatencyKind::SpawnMemoryClear:
         case PerfLatencyKind::SpawnImageLoad:
         case PerfLatencyKind::SpawnResetRuntime:
+            return true;
+        case PerfLatencyKind::InputEnqueue:
+        case PerfLatencyKind::DisplayPresent:
+        case PerfLatencyKind::JitColdPath:
+        case PerfLatencyKind::JitDemandTranslation:
+        case PerfLatencyKind::JitBlockCompile:
+        case PerfLatencyKind::RuntimeDestructor:
+        case PerfLatencyKind::GlesTargetRelease:
         case PerfLatencyKind::Count:
             return false;
         }
@@ -3561,6 +3563,20 @@ std::string format_display_performance_summary(
         PerfLatencyKind::VsyncCallbackToSwapEnd,
         PerfLatencyKind::VsyncSwapEndToGuestSubmit,
         PerfLatencyKind::VsyncDueToGuestSubmit,
+        PerfLatencyKind::PosixSpawnTotal,
+        PerfLatencyKind::PosixSpawnDecode,
+        PerfLatencyKind::PosixSpawnFork,
+        PerfLatencyKind::PosixSpawnCreate,
+        PerfLatencyKind::ProcessFreshMemory,
+        PerfLatencyKind::ProcessCloneMemory,
+        PerfLatencyKind::ProcessCreateCpu,
+        PerfLatencyKind::ProcessCreateKernel,
+        PerfLatencyKind::ProcessInheritKernel,
+        PerfLatencyKind::ProcessInheritSpawnKernel,
+        PerfLatencyKind::ProcessConfigureRuntime,
+        PerfLatencyKind::SpawnMemoryClear,
+        PerfLatencyKind::SpawnImageLoad,
+        PerfLatencyKind::SpawnResetRuntime,
     };
     bool first = true;
     for (const auto kind : display_latencies) {
