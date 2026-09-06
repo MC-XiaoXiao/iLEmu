@@ -616,6 +616,19 @@ std::optional<std::vector<std::uint32_t>> SurfaceStore::read_guest_argb_region(
                                (offset + row_bytes)) {
             return std::nullopt;
         }
+        if constexpr (std::endian::native == std::endian::little) {
+            if (!packed_555) {
+                auto destination = std::span { pixels }.subspan(
+                    static_cast<std::size_t>(row) * rectangle.width,
+                    rectangle.width);
+                if (!memory.copy_out(
+                        backing.base + static_cast<std::uint32_t>(offset),
+                        std::as_writable_bytes(destination))) {
+                    return std::nullopt;
+                }
+                continue;
+            }
+        }
         const auto bytes =
             memory.read_bytes(backing.base + static_cast<std::uint32_t>(offset),
                 static_cast<std::size_t>(row_bytes));
@@ -634,24 +647,18 @@ std::optional<std::vector<std::uint32_t>> SurfaceStore::read_guest_argb_region(
             }
             continue;
         }
-        if constexpr (std::endian::native == std::endian::little) {
-            std::memcpy(
-                pixels.data() + static_cast<std::size_t>(row) * rectangle.width,
-                bytes->data(), static_cast<std::size_t>(row_bytes));
-        } else {
-            for (std::uint32_t x = 0; x < rectangle.width; ++x) {
-                const auto byte = static_cast<std::size_t>(x) * pixel_size;
-                const auto blue =
-                    std::to_integer<std::uint32_t>((*bytes)[byte]);
-                const auto green =
-                    std::to_integer<std::uint32_t>((*bytes)[byte + 1U]);
-                const auto red =
-                    std::to_integer<std::uint32_t>((*bytes)[byte + 2U]);
-                const auto alpha =
-                    std::to_integer<std::uint32_t>((*bytes)[byte + 3U]);
-                pixels[static_cast<std::size_t>(row) * rectangle.width + x] =
-                    (alpha << 24U) | (red << 16U) | (green << 8U) | blue;
-            }
+        for (std::uint32_t x = 0; x < rectangle.width; ++x) {
+            const auto byte = static_cast<std::size_t>(x) * pixel_size;
+            const auto blue =
+                std::to_integer<std::uint32_t>((*bytes)[byte]);
+            const auto green =
+                std::to_integer<std::uint32_t>((*bytes)[byte + 1U]);
+            const auto red =
+                std::to_integer<std::uint32_t>((*bytes)[byte + 2U]);
+            const auto alpha =
+                std::to_integer<std::uint32_t>((*bytes)[byte + 3U]);
+            pixels[static_cast<std::size_t>(row) * rectangle.width + x] =
+                (alpha << 24U) | (red << 16U) | (green << 8U) | blue;
         }
     }
     return pixels;
@@ -815,7 +822,7 @@ bool SurfaceStore::synchronize_from_guest(
 
     struct ChangedRun {
         HostRectangle rectangle;
-        std::vector<std::uint32_t> pixels;
+        std::span<const std::uint32_t> pixels;
     };
     std::vector<ChangedRun> changed_runs;
     const auto expected_pixels =
@@ -864,11 +871,9 @@ bool SurfaceStore::synchronize_from_guest(
                     region.rectangle.y + static_cast<std::int32_t>(row),
                     x - begin, 1
                 };
-                run.pixels.assign(
-                    region.pixels.begin() +
-                        static_cast<std::ptrdiff_t>(source_row + begin),
-                    region.pixels.begin() +
-                        static_cast<std::ptrdiff_t>(source_row + x));
+                // Regions remain alive and unchanged through both copies.
+                run.pixels = std::span { region.pixels }.subspan(
+                    source_row + begin, x - begin);
                 changed_runs.push_back(std::move(run));
             }
         }
