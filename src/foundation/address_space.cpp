@@ -610,6 +610,31 @@ bool AddressSpace::copy_in_batch(std::span<const CopyInOperation> operations)
         }
     }
 
+    // Small host-to-guest spans commonly stay on one page. Preserve the same
+    // copy-on-write, reservation and generation updates without allocating
+    // vectors and sorting a one-element page set for each scanline.
+    if (operations.size() == 1U) {
+        const auto& operation = operations.front();
+        const auto offset = operation.address & (page_size - 1U);
+        if (!operation.data.empty() &&
+            operation.data.size() <= page_size - offset) {
+            ensure_unique_page_map_locked();
+            auto* resident = find_page_locked(operation.address);
+            auto& page = resident != nullptr && resident->backing
+                             ? *resident
+                             : ensure_page_locked(operation.address);
+            auto& backing = writable_backing_locked(page);
+            std::copy(operation.data.begin(), operation.data.end(),
+                backing.bytes.begin() + offset);
+            mark_shared_backing_written_locked(page);
+            refresh_jit_page_locked(operation.address);
+            mark_written_locked(operation.address, operation.data.size());
+            if (collect_stats)
+                write_touched_pages.fetch_add(1U, std::memory_order_relaxed);
+            return true;
+        }
+    }
+
     std::vector<std::uint32_t> touched_pages;
     touched_pages.reserve(operations.size());
     std::vector<WrittenRange> written_ranges;
