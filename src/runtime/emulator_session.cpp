@@ -415,6 +415,8 @@ void EmulatorSession::run()
         "[gles] requested=" + std::string { gles_backend_name(gles_backend) } +
         " renderer=\"" + std::string { gles_renderer->name() } +
         "\" accelerated=" + std::to_string(gles_renderer->accelerated()) +
+        " hardware-accelerated=" +
+        std::to_string(gles_renderer->hardware_accelerated()) +
         " software-fallback=" +
         (gles_renderer->software_fallback_allowed() ? "allowed" : "disabled") +
         " direct-present=" +

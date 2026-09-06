@@ -457,7 +457,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     class VulkanGlesRenderer final : public GlesRenderer {
     public:
         VulkanGlesRenderer(std::filesystem::path pipeline_cache,
-            const VulkanPresenterConfiguration* presenter);
+            const VulkanPresenterConfiguration* presenter,
+            GlesDeviceSelection selection);
         ~VulkanGlesRenderer() override;
 
         VulkanGlesRenderer(const VulkanGlesRenderer&) = delete;
@@ -478,6 +479,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             return renderer_name_;
         }
         [[nodiscard]] bool accelerated() const override { return true; }
+        [[nodiscard]] bool hardware_accelerated() const override
+        {
+            return hardware_accelerated_;
+        }
         [[nodiscard]] bool software_fallback_allowed() const override
         {
             return false;
@@ -712,6 +717,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         std::vector<VkImageLayout> presentation_layouts_;
         std::vector<VkSemaphore> presentation_render_finished_;
         VkPhysicalDevice physical_device_ { };
+        bool hardware_accelerated_ { };
         VkFormat stencil_format_ { VK_FORMAT_UNDEFINED };
         VkDevice device_ { };
         VmaAllocator image_allocator_ { };
@@ -994,7 +1000,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     };
 
     VulkanGlesRenderer::VulkanGlesRenderer(std::filesystem::path pipeline_cache,
-        const VulkanPresenterConfiguration* presenter)
+        const VulkanPresenterConfiguration* presenter,
+        GlesDeviceSelection selection)
         : presenter_ { presenter != nullptr ? *presenter
                                             : VulkanPresenterConfiguration { } }
         , pipeline_cache_path_ { std::move(pipeline_cache) }
@@ -1048,11 +1055,28 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                                 instance_, &device_count, devices.data()),
                 "vkEnumeratePhysicalDevices");
 
-            int best_score = std::numeric_limits<int>::min();
+            const auto device_score = [](VkPhysicalDevice device) {
+                VkPhysicalDeviceProperties properties { };
+                vkGetPhysicalDeviceProperties(device, &properties);
+                switch (properties.deviceType) {
+                case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return 300;
+                case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 200;
+                case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: return 100;
+                case VK_PHYSICAL_DEVICE_TYPE_CPU: return 0;
+                default: return 50;
+                }
+            };
+            std::stable_sort(devices.begin(), devices.end(),
+                [&](VkPhysicalDevice left, VkPhysicalDevice right) {
+                    return device_score(left) > device_score(right);
+                });
             for (const auto candidate : devices) {
                 VkPhysicalDeviceProperties properties { };
                 vkGetPhysicalDeviceProperties(candidate, &properties);
-                if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) {
+                const auto cpu_device =
+                    properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU;
+                if (selection == GlesDeviceSelection::SoftwareOnly &&
+                    !cpu_device) {
                     continue;
                 }
                 std::uint32_t family_count { };
@@ -1076,30 +1100,24 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                             continue;
                         }
                     }
-                    int score { };
-                    if (properties.deviceType ==
-                        VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-                        score = 300;
-                    } else if (properties.deviceType ==
-                               VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
-                        score = 200;
-                    } else if (properties.deviceType ==
-                               VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU) {
-                        score = 100;
-                    }
-                    if (score <= best_score)
-                        continue;
-                    best_score = score;
                     physical_device_ = candidate;
+                    hardware_accelerated_ = !cpu_device;
                     queue_family_ = family;
                     renderer_name_ = "iLEmu GLES 1.1 Vulkan (" +
                                      std::string { properties.deviceName } +
                                      ")";
+                    break;
                 }
+                // A compatible higher-priority device is sufficient. Avoid
+                // initializing window-system support in unused ICDs.
+                if (physical_device_ != VK_NULL_HANDLE)
+                    break;
             }
             if (physical_device_ == VK_NULL_HANDLE) {
                 throw std::runtime_error {
-                    "Vulkan exposes no hardware graphics queue"
+                    selection == GlesDeviceSelection::SoftwareOnly
+                        ? "Vulkan exposes no CPU graphics queue; install a CPU Vulkan ICD"
+                        : "Vulkan exposes no compatible graphics/presentation queue"
                 };
             }
             VkFormatProperties color_properties { };
@@ -5150,11 +5168,12 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 std::unique_ptr<GlesRenderer> create_vulkan_gles_renderer(
     const std::filesystem::path& pipeline_cache,
     const VulkanPresenterConfiguration* presenter,
+    GlesDeviceSelection selection,
     std::string* failure) noexcept
 {
     try {
         auto renderer =
-            std::make_unique<VulkanGlesRenderer>(pipeline_cache, presenter);
+            std::make_unique<VulkanGlesRenderer>(pipeline_cache, presenter, selection);
         std::clog << "[gles-renderer] selected " << renderer->name() << "\n";
         return renderer;
     } catch (const std::exception& error) {

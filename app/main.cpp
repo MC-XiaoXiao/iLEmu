@@ -112,6 +112,7 @@ std::string usage()
            "[--jit-cache-mib 8..512] [--perf-summary] "
            "[--output FILE]\n"
            "\nBoot/ABI selection reads SystemVersion.plist by default.\n"
+           "  GLES auto/vulkan prefer hardware; software selects a CPU Vulkan ICD.\n"
            "  --ios-build CODE overrides it (e.g. 9A334).\n";
 }
 

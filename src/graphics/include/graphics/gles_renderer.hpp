@@ -25,6 +25,11 @@ enum class GlesBackend : std::uint8_t {
     Vulkan,
 };
 
+enum class GlesDeviceSelection : std::uint8_t {
+    PreferHardware,
+    SoftwareOnly,
+};
+
 using GlesRenderTargetKey = HostSurfaceKey;
 
 // Host-side renderer boundary for the guest GLES state model. Backends consume
@@ -75,6 +80,12 @@ public:
     virtual void release_owner(std::uint64_t owner) = 0;
     [[nodiscard]] virtual std::string_view name() const = 0;
     [[nodiscard]] virtual bool accelerated() const = 0;
+    // Native queue rendering also works with a CPU Vulkan ICD. Keep physical
+    // hardware reporting separate from the host rendering capability above.
+    [[nodiscard]] virtual bool hardware_accelerated() const
+    {
+        return accelerated();
+    }
     [[nodiscard]] virtual bool software_fallback_allowed() const = 0;
     [[nodiscard]] virtual PerfFallbackReason failure_reason() const = 0;
     // Approximate live host allocation footprint owned by this renderer. The
@@ -94,11 +105,11 @@ struct VulkanPresenterConfiguration {
 
 using GlesAcceleratedFactory = std::unique_ptr<GlesRenderer> (*)(
     const std::filesystem::path&, const VulkanPresenterConfiguration*,
-    std::string*) noexcept;
+    GlesDeviceSelection, std::string*) noexcept;
 
-// A host adapter supplies the optional native backend. Registration must
-// precede renderer creation; a missing factory leaves software mode available
-// and preserves explicit native-backend failure reporting.
+// A host adapter supplies the native backend before renderer creation. The
+// standalone core retains a reference rasterizer for tests without a host;
+// an installed host factory never falls back to that implementation.
 void configure_gles_accelerated_factory(GlesAcceleratedFactory factory);
 
 // A renderer owns host-wide Vulkan device/queue state and is shared by all

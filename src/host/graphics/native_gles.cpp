@@ -13,7 +13,14 @@ void register_native_gles_renderer()
 #if defined(ILEMU_HAS_VULKAN)
     configure_gles_accelerated_factory(create_vulkan_gles_renderer);
 #else
-    configure_gles_accelerated_factory(nullptr);
+    configure_gles_accelerated_factory(
+        [](const std::filesystem::path&, const VulkanPresenterConfiguration*,
+            GlesDeviceSelection, std::string* failure) noexcept
+            -> std::unique_ptr<GlesRenderer> {
+            if (failure != nullptr)
+                *failure = "Vulkan support was not built";
+            return { };
+        });
 #endif
 }
 
