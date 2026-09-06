@@ -10,7 +10,6 @@
 #include <bit>
 #include <limits>
 #include <string>
-#include <vector>
 
 namespace ilemu {
 namespace {
@@ -21,6 +20,27 @@ namespace {
         static constexpr std::uint32_t texture_words = 6U;
         static constexpr std::uint32_t maximum_span = 16384U;
     };
+
+    class SoftwareSpanScratch {
+    public:
+        std::span<std::uint32_t> row(std::size_t index, std::size_t count)
+        {
+            return { rows_[index].data(), count };
+        }
+
+    private:
+        std::array<std::array<std::uint32_t,
+                       Fixed16SoftwareSamplerArm32Profile::maximum_span>,
+            3> rows_;
+    };
+
+    SoftwareSpanScratch& span_scratch()
+    {
+        // These synchronous spans cannot reenter guest execution. Reuse only
+        // storage, on the executing host thread; every input is read afresh.
+        thread_local SoftwareSpanScratch scratch;
+        return scratch;
+    }
 
     bool blend_source_over(UserlandHleCall& call)
     {
@@ -41,7 +61,9 @@ namespace {
                 return false;
             }
         }
-        std::vector<std::uint32_t> destination(count), source(count);
+        auto& scratch = span_scratch();
+        auto destination = scratch.row(0, count);
+        auto source = scratch.row(1, count);
         auto& memory = call.memory();
         if (!memory.copy_out(call.argument(1),
                 std::as_writable_bytes(std::span { destination })) ||
@@ -98,7 +120,9 @@ namespace {
             clamp_y(coordinates[2] - (linear ? 0x8000U : 0U));
         const auto bottom =
             linear ? clamp_y(coordinates[2] + 0x8000U) : top;
-        std::vector<std::uint32_t> first_row(width), second_row;
+        auto& scratch = span_scratch();
+        auto first_row = scratch.row(0, width);
+        auto second_row = first_row;
         const auto read_row = [&](std::uint32_t coordinate, auto& row) {
             const auto address = static_cast<std::uint64_t>(image[0]) +
                                  (coordinate >> 16U) *
@@ -118,13 +142,12 @@ namespace {
         if (!read_row(top, first_row))
             return false;
         if ((bottom >> 16U) != (top >> 16U)) {
-            second_row.resize(width);
+            second_row = scratch.row(1, width);
             if (!read_row(bottom, second_row))
                 return false;
         }
-        std::vector<std::uint32_t> result(count);
-        FixedPointTextureSampler::sample(first_row,
-            second_row.empty() ? first_row : second_row, coordinates[0],
+        auto result = scratch.row(2, count);
+        FixedPointTextureSampler::sample(first_row, second_row, coordinates[0],
             coordinates[1], maximum_x, (top >> 8U) & 0xffU, linear, opaque,
             result);
         return memory.copy_in(
