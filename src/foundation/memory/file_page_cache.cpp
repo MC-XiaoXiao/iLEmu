@@ -847,7 +847,10 @@ SharedFileIdentityResult shared_file_identity(const std::filesystem::path& path,
 SharedFileIdentityResult shared_file_identity(const std::filesystem::path& path,
     std::optional<std::uint64_t> generation_revision)
 {
-    const auto descriptor = open_file_descriptor(path);
+    // Identity queries never write. A writable descriptor would emit a
+    // write-close notification even without a write, causing the file watcher
+    // to rehash and potentially invalidate an unchanged backing generation.
+    const auto descriptor = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (descriptor < 0)
         return { };
     struct stat file_stat { };
