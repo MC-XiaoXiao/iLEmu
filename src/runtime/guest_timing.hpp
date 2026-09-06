@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Provide runtime helpers for guest tick clocks and deadline
+// conversion.
+
 #pragma once
 
 #include "kernel/mach_thread_policy_abi.hpp"

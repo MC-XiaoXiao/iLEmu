@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Schedule optional translation work across guest runtimes using
+// shared activity signals.
+
 #include "foundation/jit_work_scheduler.hpp"
 
 #include <algorithm>

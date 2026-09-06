@@ -1,3 +1,12 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Resolve supported sysctl names and numeric object metadata.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/kern_sysctl.c
+
 #include "kernel/darwin_sysctl.hpp"
 
 #include <array>

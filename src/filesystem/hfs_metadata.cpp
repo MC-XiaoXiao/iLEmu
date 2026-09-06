@@ -1,3 +1,14 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Encode guest HFS attributes, ownership, timestamps and volume
+// metadata.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/sys/attr.h
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/hfs/hfs_attrlist.c
+
 #include "filesystem/hfs_metadata.hpp"
 
 #include <algorithm>

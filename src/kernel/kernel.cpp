@@ -1,3 +1,15 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Dispatch guest kernel calls and coordinate process, memory, device
+// and IPC services.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/sys/stat.h
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-1228.15.4/bsd/sys/mount.h
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/syscall_sw.c
+
 #include "kernel/kernel.hpp"
 #include "foundation/application_display.hpp"
 #include "foundation/application_path.hpp"

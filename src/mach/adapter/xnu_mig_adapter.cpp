@@ -1,3 +1,15 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Look up MIG routine metadata and compute variable request and reply
+// layouts.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/message.h
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/ndr.h
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/std_types.defs
+
 #include "mach/xnu_mig_adapter.hpp"
 
 #include <limits>

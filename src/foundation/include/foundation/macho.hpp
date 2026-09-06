@@ -1,3 +1,13 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Parse ARM Mach-O images, sections, symbols, relocations and
+// embedded entitlements.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-1699.22.73/EXTERNAL_HEADERS/mach-o/loader.h
+
 #pragma once
 
 #include <cstddef>

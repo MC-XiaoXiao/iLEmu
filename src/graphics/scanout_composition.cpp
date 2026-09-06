@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Preserve retained scanout content across partial compositor
+// updates.
+
 #include "graphics/scanout_composition.hpp"
 
 #include <algorithm>

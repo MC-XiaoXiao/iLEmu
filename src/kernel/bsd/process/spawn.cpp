@@ -1,3 +1,13 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Decode guest posix_spawn attributes and schedule child process
+// creation.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-1228.15.4/bsd/kern/kern_exec.c
+
 #include "kernel/graphics_services_input.hpp"
 #include "kernel/kernel.hpp"
 #include "foundation/performance.hpp"

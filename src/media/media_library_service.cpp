@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Provide the legacy guest media-library service boundary and empty-
+// catalog behavior.
+
 #include "media/media_library_service.hpp"
 
 namespace ilemu::media_library_service {

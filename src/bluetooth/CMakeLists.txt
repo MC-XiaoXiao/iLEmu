@@ -1,3 +1,7 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 add_library(ilemu_bluetooth STATIC
     bluetooth_manager_hle.cpp)
 add_library(iLEmu::bluetooth ALIAS ilemu_bluetooth)

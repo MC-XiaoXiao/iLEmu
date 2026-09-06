@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Dispatch virtual MBX user-client requests and command-buffer
+// operations.
+
 #include "kernel/kernel_iokit_mbx.hpp"
 
 #include "foundation/address_space.hpp"

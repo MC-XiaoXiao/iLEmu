@@ -1,3 +1,15 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Dispatch direct kernel RPC traps for guest virtual-memory
+// operations.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/vm_map.defs
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-1699.22.73/osfmk/mach/mach_vm.defs
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-1699.22.73/osfmk/kern/ipc_mig.c
+
 #include "kernel/kernel.hpp"
 
 #include "kernel/darwin_abi.hpp"

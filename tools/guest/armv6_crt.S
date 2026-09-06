@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Provide ARMv6 executable startup and lazy-binding glue for guest
+// integration probes.
+
 // Minimal ARMv6 Darwin dynamic-linker glue for guest integration probes.
 //
 // The iPhoneOS 1.0 dyld expects lazy stubs to push the lazy-pointer address

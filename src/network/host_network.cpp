@@ -1,3 +1,14 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Translate guest socket operations, addresses and errors to host
+// networking APIs.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/uipc_syscalls.c
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/uipc_socket.c
+
 #include "network/host_network.hpp"
 
 #include "foundation/darwin_errno.hpp"

@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Return process entitlement data through the guest AMFI user-client
+// ABI.
+
 #include "kernel/kernel_iokit_mobile_file_integrity.hpp"
 
 #include "kernel/iokit_abi.hpp"

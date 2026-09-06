@@ -1,3 +1,14 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Model open-description flock ownership and process-owned byte-range
+// locks.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/kern_descrip.c
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/kern_lockf.c
+
 #pragma once
 
 #include <cstdint>

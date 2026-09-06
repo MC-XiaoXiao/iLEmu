@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Shade Vulkan fragments using the emulated GLES texture, color and
+// alpha state.
+
 #version 450
 
 const int GL_ADD = 0x0104;

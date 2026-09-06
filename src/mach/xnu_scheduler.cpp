@@ -1,3 +1,15 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Model guest thread run queues, priorities, time slices, realtime
+// policy and preemption.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/sched.h
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/sched_prim.c
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/priority.c
+
 #include "mach/xnu_scheduler.hpp"
 #include "foundation/performance.hpp"
 

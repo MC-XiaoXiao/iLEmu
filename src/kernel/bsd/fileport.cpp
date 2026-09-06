@@ -1,3 +1,13 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Convert supported file descriptions to and from guest Mach
+// fileports.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-1699.22.73/bsd/kern/kern_descrip.c
+
 #include "kernel/kernel.hpp"
 
 #include "kernel/darwin_abi.hpp"

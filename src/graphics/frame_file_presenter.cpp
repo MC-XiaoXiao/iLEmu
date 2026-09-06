@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Write headless display frames atomically to image files.
+
 #include "graphics/frame_file_presenter.hpp"
 
 #include <cstdint>

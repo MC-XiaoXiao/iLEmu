@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Implement virtual IOKit graphics service and surface-sharing
+// operations.
+
 #pragma once
 
 #include <cstddef>

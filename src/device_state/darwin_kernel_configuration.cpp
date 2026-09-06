@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Resolve device and firmware evidence into a session's Darwin ABI
+// configuration.
+
 #include "device_state/darwin_kernel_configuration.hpp"
 
 #include "darwin_firmware_identity.hpp"

@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Adapt guest IOHIDEventSystem calls to emulator input services.
+
 #include "kernel/hid_event_system_hle.hpp"
 
 #include "foundation/cpu.hpp"

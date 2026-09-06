@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Serialize and validate portable Dynarmic IR translation artifacts.
+
 #include "dynarmic_ir_artifact.hpp"
 
 #include <algorithm>

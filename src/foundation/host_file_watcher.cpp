@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Monitor filesystem structure changes and report bounded executable-
+// catalog invalidations.
+
 #include "foundation/host_file_watcher.hpp"
 
 #include "foundation/host_resource_controller.hpp"

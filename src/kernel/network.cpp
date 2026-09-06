@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Coordinate kernel network readiness, event queues and packet
+// delivery.
+
 #include "kernel/kernel.hpp"
 
 #include "kernel/baseband_device.hpp"

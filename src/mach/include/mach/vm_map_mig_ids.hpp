@@ -1,3 +1,13 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Define the ARM32 vm_map MIG routine identifiers and request/reply
+// argument layouts.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/vm_map.defs
+
 // ARM32 MIG wire contract. Keep message identifiers and argument layouts ABI-stable.
 #pragma once
 

@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Adapt guest GLES contexts, drawing commands and resources to the
+// renderer boundary.
+
 #include "kernel/opengles_hle.hpp"
 
 #include "opengles_dispatch_hle.hpp"

@@ -1,3 +1,13 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Handle guest thread suspend, resume, terminate and scheduling-
+// policy messages.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/thread_act.defs
+
 #include "kernel/darwin_abi.hpp"
 #include "kernel/kernel.hpp"
 #include "mach/thread_act_mig_ids.hpp"

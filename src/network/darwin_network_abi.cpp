@@ -1,3 +1,16 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Encode guest interface records, network events and wireless ioctl
+// payloads.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/net/if.h
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/netinet/in_var.h
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/sys/kern_event.h
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/netinet/in.c
+
 #include "network/darwin_network_abi.hpp"
 
 #include "network/wifi_state.hpp"

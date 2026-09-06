@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Apply the selected ARM core policy to unpredictable instruction
+// results.
+
 #include "foundation/arm_unpredictable_instruction.hpp"
 
 #include <array>

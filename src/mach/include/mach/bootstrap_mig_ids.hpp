@@ -1,3 +1,13 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Define the ARM32 bootstrap MIG routine identifiers and
+// request/reply argument layouts.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/launchd/blob/launchd-257/launchd/src/protocol_jobmgr.defs
+
 // ARM32 MIG wire contract. Keep message identifiers and argument layouts ABI-stable.
 #pragma once
 

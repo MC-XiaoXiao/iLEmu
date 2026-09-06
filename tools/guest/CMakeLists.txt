@@ -1,3 +1,7 @@
+# This Source Code Form is subject to the terms of the Mozilla Public
+# License, v. 2.0. If a copy of the MPL was not distributed with this
+# file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
 # Build a real ARMv6/iPhoneOS executable that is loaded by the extracted dyld
 # and calls the firmware libSystem resolver APIs. Modern ld64.lld no longer
 # supports ARM32, so this optional target uses the cctools-port linker produced

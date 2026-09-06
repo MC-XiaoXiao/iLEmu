@@ -1,3 +1,9 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Handle guest platform identity and power-management syscalls.
+
 #include "kernel/kernel.hpp"
 
 #include "foundation/content_identity.hpp"

@@ -1,3 +1,13 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Select launchd vproc wire-message profiles for differing routine
+// tails.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/launchd/blob/launchd-257/launchd/src/protocol_job.defs
+
 #pragma once
 
 #include "mach/protocol_vproc_mig_ids.hpp"

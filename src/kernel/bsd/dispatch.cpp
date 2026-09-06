@@ -1,3 +1,15 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Route Darwin BSD syscall numbers through the selected compatibility
+// profile.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/syscalls.master
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-1228.15.4/bsd/kern/syscalls.master
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-1699.22.73/bsd/kern/syscalls.master
+
 #include "kernel/kernel.hpp"
 
 #include "kernel/darwin_abi.hpp"

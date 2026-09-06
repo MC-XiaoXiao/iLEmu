@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Encode touch paths and button events using firmware input
+// capability profiles.
+
 #include "kernel/graphics_services_input_abi.hpp"
 
 #include <bit>

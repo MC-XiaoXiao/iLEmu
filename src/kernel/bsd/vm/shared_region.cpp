@@ -1,3 +1,15 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Map guest dyld shared regions and apply firmware-provided
+// relocation metadata.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/vm/vm_unix.c
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/vm/vm_shared_memory_server.c
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-1699.22.73/bsd/vm/vm_unix.c
+
 #include "kernel/kernel.hpp"
 
 #include "../support.hpp"

@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Cache file-backed guest pages while tracking host-file generations
+// and writeback identity.
+
 #include "foundation/file_page_cache.hpp"
 
 #include <algorithm>

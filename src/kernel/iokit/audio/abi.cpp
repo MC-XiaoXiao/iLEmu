@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Resolve the firmware IOKit audio method and memory-map capability
+// profile.
+
 #include "kernel/kernel_iokit_audio_abi.hpp"
 
 namespace ilemu::kernel_iokit::audio {

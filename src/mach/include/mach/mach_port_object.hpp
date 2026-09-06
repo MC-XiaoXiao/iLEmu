@@ -1,3 +1,13 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Represent Mach port objects, queue limits and right lifetimes.
+//
+// Apple public ABI/behavior references (guest profiles may differ):
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/port.h
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-1228.15.4/osfmk/mach/port.h
+
 #pragma once
 
 #include <cstddef>

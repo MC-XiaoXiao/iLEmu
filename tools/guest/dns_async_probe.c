@@ -1,3 +1,10 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+//
+// Exercise the firmware asynchronous DNS resolver from a real ARM
+// guest executable.
+
 // ARMv6 iPhoneOS guest probe. This intentionally uses only the target
 // libSystem ABI: it is linked against the extracted firmware library and runs
 // under the firmware dyld, so reaching either marker proves guest execution.
