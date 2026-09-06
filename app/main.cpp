@@ -179,7 +179,7 @@ bool flag(const std::vector<std::string>& args, std::string_view name)
     const std::vector<std::string>& args)
 {
     const auto configured = option(args, "--jit-profile-mode");
-    JitProfileMode mode = JitProfileMode::Adaptive;
+    JitProfileMode mode = BootOptions { }.jit_profile_mode;
     if (configured) {
         if (*configured == "adaptive")
             mode = JitProfileMode::Adaptive;
