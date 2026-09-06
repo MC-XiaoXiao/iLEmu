@@ -212,6 +212,7 @@ private:
 
 struct GuestFileIoState {
     ~GuestFileIoState();
+    [[nodiscard]] bool synchronize();
 
     mutable std::mutex mutex;
     int file_descriptor { -1 };
@@ -284,6 +285,7 @@ struct GuestPageBacking {
     [[nodiscard]] bool file_backed() const;
     // Persists a MAP_SHARED page without affecting private file mappings.
     [[nodiscard]] bool flush_file();
+    [[nodiscard]] std::shared_ptr<GuestFileIoState> writeback_io_state() const;
 
 private:
     friend class FilePageCache;

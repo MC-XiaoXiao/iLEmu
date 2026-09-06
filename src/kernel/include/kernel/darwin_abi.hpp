@@ -213,6 +213,7 @@ namespace syscall {
     inline constexpr std::uint32_t get_socket_name = 32;
     inline constexpr std::uint32_t ioctl = 54;
     inline constexpr std::uint32_t get_resource_usage = 117;
+    inline constexpr std::uint32_t memory_synchronize = 65;
     inline constexpr std::uint32_t memory_protect = 74;
     inline constexpr std::uint32_t memory_advise = 75;
     inline constexpr std::uint32_t set_groups = 80;
@@ -376,5 +377,13 @@ namespace map_flag {
     inline constexpr std::uint32_t fixed = 0x0010;
     inline constexpr std::uint32_t anonymous = 0x1000;
 } // namespace map_flag
+
+namespace memory_sync_flag {
+    inline constexpr std::uint32_t asynchronous = 0x0001;
+    inline constexpr std::uint32_t invalidate = 0x0002;
+    inline constexpr std::uint32_t kill_pages = 0x0004;
+    inline constexpr std::uint32_t deactivate = 0x0008;
+    inline constexpr std::uint32_t synchronous = 0x0010;
+} // namespace memory_sync_flag
 
 } // namespace ilemu::darwin

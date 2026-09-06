@@ -782,6 +782,42 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         bsd_success(cpu, *read_fd, *write_fd);
         return;
     }
+    case darwin::syscall::memory_synchronize: {
+        const auto address = registers[0];
+        const auto size = registers[1];
+        const auto flags = registers[2];
+        constexpr auto sync_modes = darwin::memory_sync_flag::asynchronous |
+                                    darwin::memory_sync_flag::synchronous;
+        if (address % AddressSpace::page_size != 0 || size == 0 ||
+            (flags & sync_modes) == sync_modes) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return;
+        }
+        // Reclamation and invalidation need a pager policy. Report an ordinary
+        // unsupported operation until that policy exists, rather than claiming
+        // those effects or routing a recognized syscall through nosys/SIGSYS.
+        constexpr auto pager_flags = darwin::memory_sync_flag::invalidate |
+                                     darwin::memory_sync_flag::kill_pages |
+                                     darwin::memory_sync_flag::deactivate;
+        if ((flags & pager_flags) != 0) {
+            bsd_error(cpu, darwin::error::operation_not_supported);
+            return;
+        }
+        const auto result = memory_.synchronize_file_mappings(address, size,
+            (flags & darwin::memory_sync_flag::asynchronous) == 0);
+        switch (result) {
+        case AddressSpace::FileSyncResult::Success:
+            bsd_success(cpu, 0);
+            break;
+        case AddressSpace::FileSyncResult::Unmapped:
+            bsd_error(cpu, darwin::error::no_memory);
+            break;
+        case AddressSpace::FileSyncResult::IoError:
+            bsd_error(cpu, darwin::error::io);
+            break;
+        }
+        return;
+    }
     case 73: // munmap
         if (registers[1] == 0 || !memory_.unmap(registers[0], registers[1])) {
             bsd_error(cpu, bsd_support::invalid_argument);

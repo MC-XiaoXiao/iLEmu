@@ -6,6 +6,7 @@
 #include <limits>
 #include <mutex>
 #include <new>
+#include <set>
 #include <type_traits>
 #include <utility>
 
@@ -435,17 +436,42 @@ void AddressSpace::unmap_range_locked(
     bump_executable_content_generation_locked();
 }
 
-void AddressSpace::flush_shared_file_pages_locked(
-    std::uint32_t address, std::uint64_t end)
+AddressSpace::FileSyncResult AddressSpace::synchronize_file_mappings(
+    std::uint32_t address, std::uint32_t size, bool synchronous)
 {
+    if (size == 0 || range_overflows(address, size))
+        return FileSyncResult::Unmapped;
+    const auto first = page_base(address);
+    const auto end = page_range_end(address, size);
+    auto lock = write_lock();
+    if (!vm_map_.accessible(first, end, MemoryPermission::None))
+        return FileSyncResult::Unmapped;
+    return flush_shared_file_pages_locked(first, end, synchronous)
+               ? FileSyncResult::Success
+               : FileSyncResult::IoError;
+}
+
+bool AddressSpace::flush_shared_file_pages_locked(
+    std::uint32_t address, std::uint64_t end, bool synchronous)
+{
+    bool succeeded = true;
+    std::set<std::shared_ptr<GuestFileIoState>> files;
     auto page = pages_->lower_bound(address);
     while (page != pages_->end() && page->first < end) {
         if (page->second.file_writeback && page->second.backing &&
             page->second.backing->file_backed()) {
-            static_cast<void>(page->second.backing->flush_file());
+            if (!page->second.backing->flush_file())
+                succeeded = false;
+            if (synchronous)
+                files.insert(page->second.backing->writeback_io_state());
         }
         ++page;
     }
+    for (const auto& file : files) {
+        if (!file->synchronize())
+            succeeded = false;
+    }
+    return succeeded;
 }
 
 void AddressSpace::invalidate_mapping_leases_locked(

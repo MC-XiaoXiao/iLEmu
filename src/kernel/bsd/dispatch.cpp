@@ -56,6 +56,8 @@ namespace {
             return darwin::syscall::receive_from;
         case 404: // accept_nocancel
             return darwin::syscall::accept;
+        case 405: // msync_nocancel
+            return darwin::syscall::memory_synchronize;
         case 406: // fcntl_nocancel
             return darwin::syscall::fcntl;
         case 407: // select_nocancel
@@ -325,6 +327,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::write:
     case 41:
     case 42:
+    case darwin::syscall::memory_synchronize:
     case 73:
     case darwin::syscall::get_descriptor_table_size:
     case darwin::syscall::duplicate_to:

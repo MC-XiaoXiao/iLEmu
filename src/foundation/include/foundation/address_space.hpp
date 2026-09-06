@@ -114,6 +114,12 @@ public:
     bool map(std::uint32_t address, std::uint32_t size,
         MemoryPermission permissions);
     bool unmap(std::uint32_t address, std::uint32_t size);
+    enum class FileSyncResult { Success, Unmapped, IoError };
+    // Writes shared file pages through their retained backing descriptors.
+    // Synchronous requests additionally flush each backing file once. Private
+    // and anonymous pages have no persistent writeback obligation.
+    [[nodiscard]] FileSyncResult synchronize_file_mappings(
+        std::uint32_t address, std::uint32_t size, bool synchronous);
     void clear();
     struct ProtectResult {
         bool succeeded { };
@@ -359,8 +365,8 @@ private:
     [[nodiscard]] bool fault_file_pages(
         std::uint32_t address, std::size_t size);
     void unmap_file_mappings_locked(std::uint32_t address, std::uint64_t end);
-    void flush_shared_file_pages_locked(
-        std::uint32_t address, std::uint64_t end);
+    bool flush_shared_file_pages_locked(
+        std::uint32_t address, std::uint64_t end, bool synchronous = false);
     void unmap_range_locked(std::uint32_t address, std::uint64_t end,
         bool flush_shared_files = true);
     void invalidate_mapping_leases_locked(

@@ -1460,6 +1460,18 @@ GuestFileIoState::~GuestFileIoState()
     }
 }
 
+bool GuestFileIoState::synchronize()
+{
+    const std::scoped_lock file_lock { mutex };
+    if (file_descriptor < 0)
+        return false;
+    int result;
+    do {
+        result = ::fsync(file_descriptor);
+    } while (result < 0 && errno == EINTR);
+    return result == 0;
+}
+
 GuestPageBacking::GuestPageBacking()
     : reservation_identity_ { next_reservation_identity.fetch_add(
           1, std::memory_order_relaxed) }
@@ -1611,6 +1623,11 @@ void GuestPageBacking::publish_shared_write() noexcept
 bool GuestPageBacking::file_backed() const
 {
     return static_cast<bool>(file_writeback_);
+}
+
+std::shared_ptr<GuestFileIoState> GuestPageBacking::writeback_io_state() const
+{
+    return file_writeback_ ? file_writeback_->io_state : nullptr;
 }
 
 bool GuestPageBacking::flush_file()
