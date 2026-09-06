@@ -13,6 +13,7 @@ add_library(ilemu_graphics STATIC
     layerkit_compatibility.cpp
     local_scene_background.cpp
     opengles_guest_capabilities.cpp
+    eagl_dispatch_profile.cpp
     gles_program_state.cpp
     presentation_tracker.cpp
     scanout_composition.cpp
