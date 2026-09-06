@@ -91,26 +91,13 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
     }
 
     if (trap == 15U) {
-        // The firmware's map fast path supplies a pointer-sized address and
-        // size in r1/r2.  Its fixed-width ARM32 trampoline leaves the optional
-        // mask in r3 and keeps the anywhere/protection words in the preserved
-        // argument registers.  Reuse the same allocator as vm_allocate; this
-        // is the null-memory-object path for which XNU publishes this trap.
-        const auto address_pointer = registers[1];
-        const auto requested_address = memory_.read32(address_pointer);
-        const auto allocation = requested_address
-                                    ? allocate_guest_vm_region(memory_,
-                                          *requested_address, registers[2],
-                                          registers[4], registers[3])
-                                    : VmAllocationResult {
-                                          darwin::mach::invalid_address, 0U };
-        if (allocation.result == darwin::mach::success &&
-            !memory_.write32(address_pointer, allocation.address)) {
-            static_cast<void>(memory_.unmap(allocation.address, registers[2]));
-            registers[0] = darwin::mach::invalid_address;
-            return true;
-        }
-        registers[0] = allocation.result;
+        // _kernelrpc_vm_protect_trap takes the address by value. The fifth
+        // argument (new_protection) is moved from the stack into r4 by the
+        // native ARM32 trampoline; r3 is set_maximum.
+        registers[0] = protect_memory(cpu, registers[1], registers[2],
+                           memory_permissions(registers[4]))
+                           ? darwin::mach::success
+                           : darwin::mach::invalid_address;
         return true;
     }
 
