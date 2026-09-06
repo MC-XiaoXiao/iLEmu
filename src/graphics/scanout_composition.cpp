@@ -166,6 +166,7 @@ void ScanoutComposition::begin_draw(GlesRenderTargetKey key,
         return;
     frame.active = true;
     frame.scene_composited = false;
+    frame.primary_background_restored = false;
     frame.solid_background_deferred = false;
 }
 
@@ -216,7 +217,6 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
     const auto frame = frames_.find(key);
     if (frame == frames_.end())
         return true;
-    frame->second.scene_composited = true;
     const auto primary_scene = static_cast<std::uint64_t>(scene_level->height) *
                                    primary_scene_height_denominator >=
                                static_cast<std::uint64_t>(descriptor.height) *
@@ -229,8 +229,10 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
     // the transition's complete composition. Injecting an older scanout
     // background into it reintroduces pixels outside the scene's own geometry;
     // background reconstruction is for smaller moving scene slices only.
-    if (primary_scene && covers_scanout_from_origin)
+    if (primary_scene && covers_scanout_from_origin) {
+        frame->second.scene_composited = true;
         return true;
+    }
 
     const auto background = backgrounds_.find(process_id);
     if (background == backgrounds_.end() || !background->second.valid)
@@ -240,7 +242,15 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
             restored)) {
         return false;
     }
-    if (restored)
+    if (restored) {
+        frame->second.scene_composited = true;
+        frame->second.primary_background_restored |= primary_scene;
+        return true;
+    }
+    // A small render target may contain only an effect, such as a shadow.
+    // Retained scanout pixels are a fallback for a primary scene and its
+    // companion slices, not a background beneath every translucent effect.
+    if (!primary_scene && !frame->second.primary_background_restored)
         return true;
     // Each local scene is self-contained. Adjacent scene slices can overlap
     // while their separator moves, so the later slice must rebuild its whole
@@ -248,6 +258,8 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
     if (!copy_surface(background->second.surface, surface, *rectangle, encoder))
         return false;
     restored = true;
+    frame->second.scene_composited = true;
+    frame->second.primary_background_restored |= primary_scene;
     return true;
 }
 
