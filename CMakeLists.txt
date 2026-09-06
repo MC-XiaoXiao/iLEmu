@@ -54,28 +54,6 @@ set(ILEMU_DYNARMIC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/dynarmic" CACHE PAT
     "Path to the patched MC-XiaoXiao Dynarmic checkout")
 set(ILEMU_BOOST_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/ext-boost" CACHE PATH
     "Path to the matching ext-boost checkout")
-# The submodule revision is part of the product repository. Keep it separate
-# from the developer escape hatch so reusing an old build directory cannot
-# make a former -D... value look like the repository's current pin.
-set(ILEMU_DYNARMIC_PINNED_REVISION
-    "5bbecd7471ccb33dc91066ea658e8171883716dc" CACHE INTERNAL
-    "Product-pinned Dynarmic revision" FORCE)
-set(ILEMU_DYNARMIC_REVISION_OVERRIDE "" CACHE STRING
-    "Developer-selected Dynarmic revision; empty uses the product pin")
-# Remove the pre-override cache entry if this is a reused build directory.
-# It is intentionally not accepted as an implicit override.
-if(DEFINED ILEMU_DYNARMIC_PATCHED_REVISION)
-    unset(ILEMU_DYNARMIC_PATCHED_REVISION CACHE)
-endif()
-if(ILEMU_DYNARMIC_REVISION_OVERRIDE STREQUAL "")
-    set(_ilemu_dynarmic_expected_revision
-        "${ILEMU_DYNARMIC_PINNED_REVISION}")
-    set(_ilemu_dynarmic_revision_source pinned)
-else()
-    set(_ilemu_dynarmic_expected_revision
-        "${ILEMU_DYNARMIC_REVISION_OVERRIDE}")
-    set(_ilemu_dynarmic_revision_source override)
-endif()
 
 if(NOT EXISTS "${ILEMU_DYNARMIC_DIR}/CMakeLists.txt")
     message(FATAL_ERROR
@@ -100,34 +78,16 @@ if(ILEMU_DYNARMIC_REVISION_RESULT EQUAL 0 AND
     set(ILEMU_DYNARMIC_SELECTED_REVISION
         "${ILEMU_DYNARMIC_CHECKED_OUT_REVISION}" CACHE INTERNAL
         "Dynarmic revision observed during configure" FORCE)
-    set(ILEMU_DYNARMIC_EXPECTED_REVISION
-        "${_ilemu_dynarmic_expected_revision}" CACHE INTERNAL
-        "Dynarmic revision selected by pin or explicit override" FORCE)
-    if(NOT ILEMU_DYNARMIC_CHECKED_OUT_REVISION STREQUAL
-       "${_ilemu_dynarmic_expected_revision}")
-        message(WARNING
-            "Dynarmic revision ${ILEMU_DYNARMIC_CHECKED_OUT_REVISION} does "
-            "not match the ${_ilemu_dynarmic_revision_source} revision "
-            "${_ilemu_dynarmic_expected_revision}. Continuing with the "
-            "selected checkout.")
-    else()
-        message(STATUS
-            "Using Dynarmic ${ILEMU_DYNARMIC_CHECKED_OUT_REVISION} "
-            "(${_ilemu_dynarmic_revision_source}) with the parent-repository "
-            "iLEmu test patch")
-    endif()
+    message(STATUS
+        "Using Dynarmic ${ILEMU_DYNARMIC_CHECKED_OUT_REVISION} "
+        "with the parent-repository iLEmu test patch")
 else()
     set(ILEMU_DYNARMIC_SELECTED_REVISION "unknown" CACHE INTERNAL
         "Dynarmic revision observed during configure" FORCE)
-    set(ILEMU_DYNARMIC_EXPECTED_REVISION
-        "${_ilemu_dynarmic_expected_revision}" CACHE INTERNAL
-        "Dynarmic revision selected by pin or explicit override" FORCE)
 endif()
 
-# The product pin remains the clean upstream Dynarmic revision. The small
-# iLEmu test hook is carried as a reproducible parent-repository patch so the
-# submodule pointer and build source cannot silently diverge. Applying it is
-# idempotent for reused build directories.
+# The iLEmu test hook is carried as a reproducible parent-repository patch.
+# Applying it is idempotent for reused build directories.
 set(_ilemu_dynarmic_test_patch
     "${CMAKE_CURRENT_SOURCE_DIR}/tools/dynarmic_ilemu_test_emit_failure.patch")
 if(NOT EXISTS "${_ilemu_dynarmic_test_patch}")
@@ -159,8 +119,7 @@ else()
         OUTPUT_QUIET ERROR_VARIABLE _ilemu_dynarmic_test_patch_reverse_error)
     if(NOT _ilemu_dynarmic_test_patch_reverse_check EQUAL 0)
         message(FATAL_ERROR
-            "Dynarmic source is neither the pinned checkout nor its "
-            "expected iLEmu test-patched form: "
+            "Dynarmic source is incompatible with the iLEmu test patch: "
             "${_ilemu_dynarmic_test_patch_error}; "
             "${_ilemu_dynarmic_test_patch_reverse_error}")
     endif()
@@ -186,7 +145,7 @@ set(DYNARMIC_USE_PRECOMPILED_HEADERS OFF CACHE BOOL "" FORCE)
 # the same <module>/<name>.hpp include spelling. A major module owns one
 # include root; implementation subdirectories do not add public roots.
 # Persistent portable-IR artifacts must not cross a different Dynarmic build.
-# Include the pinned revision and any deliberate local checkout changes in the
+# Include the actual revision and any deliberate local checkout changes in the
 # artifact key so a custom development checkout cannot reuse stale artifacts.
 set(ILEMU_DYNARMIC_BUILD_FINGERPRINT 0x0ULL)
 if(ILEMU_DYNARMIC_REVISION_RESULT EQUAL 0 AND
