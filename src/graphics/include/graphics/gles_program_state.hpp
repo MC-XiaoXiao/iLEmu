@@ -1,5 +1,7 @@
 #pragma once
 
+#include "graphics/gles_program_interface_profile.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -36,6 +38,7 @@ public:
         std::map<std::string, std::uint32_t, std::less<>> attributes;
         std::map<std::string, std::int32_t, std::less<>> uniform_locations;
         std::map<std::int32_t, Uniform> uniforms;
+        GlesProgramInterfaceProfile interface_profile;
         bool linked { };
         bool delete_pending { };
     };

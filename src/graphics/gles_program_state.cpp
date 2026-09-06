@@ -112,6 +112,12 @@ bool GlesProgramState::link(std::uint32_t program_name)
     };
     program_value->linked = has_compiled(gles_abi::vertex_shader) &&
                             has_compiled(gles_abi::fragment_shader);
+    if (program_value->linked) {
+        program_value->interface_profile =
+            GlesProgramInterfaceProfile::from_sources(
+                shader_source(program_name, gles_abi::vertex_shader),
+                shader_source(program_name, gles_abi::fragment_shader));
+    }
     return program_value->linked;
 }
 

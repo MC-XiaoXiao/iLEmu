@@ -428,7 +428,7 @@ void OpenGlesHle::set_array_pointer(
     const auto enabled = array->enabled;
     *array = ContextState::ArrayPointer { static_cast<std::uint32_t>(size),
         type, static_cast<std::uint32_t>(stride), call.argument(3),
-        context->bound_array_buffer, false, enabled };
+        context->bound_array_buffer, array_name == gles_abi::color_array, enabled };
 }
 
 bool OpenGlesHle::read_array(UserlandHleCall& call,

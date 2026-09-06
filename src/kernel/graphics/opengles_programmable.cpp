@@ -119,7 +119,7 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
     if (position == nullptr || !position->enabled)
         return std::nullopt;
     result.position_array = *position;
-    if (const auto* color = array_for("vertex_color"))
+    if (const auto* color = array_for(program->interface_profile.color_attribute))
         result.color_array = *color;
     for (std::size_t unit = 0; unit < result.texture_arrays.size(); ++unit) {
         const auto suffix = std::to_string(unit);
@@ -161,31 +161,32 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
             std::string_view::npos;
     }
 
-    const auto output = fragment.find("gl_FragColor");
+    const auto output = fragment.find(program->interface_profile.fragment_output);
     const auto expression = output == std::string_view::npos
                                 ? std::string_view { }
                                 : fragment.substr(output);
     auto& unit0 = result.texture_environments[0];
     auto& unit1 = result.texture_environments[1];
+    const auto color = std::string { program->interface_profile.color_varying };
     if (expression.find("mix (s1, s0, function_arg)") !=
         std::string_view::npos) {
         unit0.mode = gles_abi::replace;
         set_interpolation(unit1, true,
             scalar_uniform(
                 programs_, context.current_program, "function_arg", 0.0F));
-    } else if (expression.find("mix (color, s0, function_arg)") !=
+    } else if (expression.find("mix (" + color + ", s0, function_arg)") !=
                std::string_view::npos) {
         set_interpolation(unit0, false,
             scalar_uniform(
                 programs_, context.current_program, "function_arg", 0.0F));
-    } else if (expression.find("color * s0 * (1.0 - s1.a)") !=
+    } else if (expression.find(color + " * s0 * (1.0 - s1.a)") !=
                std::string_view::npos) {
         set_previous_times_texture_alpha(unit1, true);
-    } else if (expression.find("color * s0 * s1.a") != std::string_view::npos) {
+    } else if (expression.find(color + " * s0 * s1.a") != std::string_view::npos) {
         set_previous_times_texture_alpha(unit1, false);
-    } else if (expression.find("color * s0.a") != std::string_view::npos) {
+    } else if (expression.find(color + " * s0.a") != std::string_view::npos) {
         set_previous_times_texture_alpha(unit0, false);
-    } else if (expression.find("gl_FragColor = s0") != std::string_view::npos) {
+    } else if (expression.find("= s0") != std::string_view::npos) {
         unit0.mode = gles_abi::replace;
     }
     return result;
