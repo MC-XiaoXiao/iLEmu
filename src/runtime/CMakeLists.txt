@@ -11,4 +11,4 @@ add_library(iLEmu::runtime ALIAS ilemu_runtime)
 ilemu_configure_module(ilemu_runtime)
 target_link_libraries(ilemu_runtime
     PUBLIC iLEmu::foundation iLEmu::device_state iLEmu::graphics iLEmu::network
-    PRIVATE iLEmu::kernel iLEmu::debug)
+    PRIVATE iLEmu::kernel iLEmu::debug iLEmu::crypto)

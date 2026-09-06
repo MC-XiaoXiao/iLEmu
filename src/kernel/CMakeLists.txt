@@ -276,7 +276,7 @@ add_library(iLEmu::kernel_iokit_keybag ALIAS
     ilemu_kernel_iokit_keybag)
 ilemu_configure_module(ilemu_kernel_iokit_keybag)
 target_link_libraries(ilemu_kernel_iokit_keybag PRIVATE
-    iLEmu::foundation)
+    iLEmu::foundation iLEmu::crypto)
 
 add_library(ilemu_kernel_iokit_mbx STATIC
     iokit/mbx/service.cpp)

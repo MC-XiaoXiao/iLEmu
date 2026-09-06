@@ -147,6 +147,10 @@ public:
         std::optional<DarwinKernelConfiguration> configuration = std::nullopt);
 
     void attach(Cpu& cpu);
+    void set_key_store(std::shared_ptr<KeyStore> key_store)
+    {
+        shared_state_->key_store = std::move(key_store);
+    }
     void dispatch(Cpu& cpu, std::uint32_t svc_immediate);
     // The host scheduler calls this only after committing a guest thread to
     // Waiting. Darwin workqueues use that transition to remove a blocked

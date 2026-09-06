@@ -2,6 +2,7 @@
 
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_shared_state.hpp"
+#include "crypto/key_store.hpp"
 
 #include <algorithm>
 #include <mutex>
@@ -190,6 +191,25 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         inband_output_capacity == 0U) {
         return MethodResult {
             iokit_abi::success, { device_lock_state_no_passcode }, { } };
+    }
+    // AppleKeyStore's symmetric system-bag ABI uses selectors 10/11 for
+    // authenticated wrapping/unwrapping. The no-passcode model already exposes
+    // unlocked class keys; retain firmware ownership of keychain records.
+    if ((selector == 10U || selector == 11U) && state.key_store) {
+        if (scalar_input.size() != 2U || scalar_output_capacity != 0U ||
+            scalar_input[1] < 1U || scalar_input[1] > 11U ||
+            (scalar_input[0] != 0U &&
+                scalar_input[0] != state.system_keybag_handle))
+            return MethodResult { iokit_abi::bad_argument, { }, { } };
+        const auto key_class = static_cast<std::uint32_t>(scalar_input[1]);
+        auto result = selector == 10U
+                          ? state.key_store->wrap(key_class, inband_input)
+                          : state.key_store->unwrap(key_class, inband_input);
+        if (!result)
+            return MethodResult { 0xe00002bcU, { }, { } };
+        if (result->size() > inband_output_capacity)
+            return MethodResult { iokit_abi::bad_argument, { }, { } };
+        return MethodResult { iokit_abi::success, { }, std::move(*result) };
     }
     // Keep the remaining endpoint honest while the firmware-era method
     // contract is being filled in: this exposes selector and argument shape

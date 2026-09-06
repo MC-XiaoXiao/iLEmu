@@ -46,6 +46,7 @@
 namespace ilemu {
 
 class HostSocket;
+class KeyStore;
 class SurfaceTransportLease;
 
 struct ProcessContext {
@@ -1574,6 +1575,7 @@ struct KernelSharedState {
     std::uint32_t keybag_device_tree_options_service { };
     std::uint64_t next_keybag_handle { 1 };
     std::uint64_t system_keybag_handle { };
+    std::shared_ptr<KeyStore> key_store;
     bsd::baseband_device::State baseband_device_state;
     std::uint32_t mobile_framebuffer_service { };
     std::uint32_t multitouch_hid_service { };

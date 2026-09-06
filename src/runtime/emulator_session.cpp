@@ -1,4 +1,5 @@
 #include "runtime/emulator_session.hpp"
+#include "crypto/key_store.hpp"
 #include "debug/control_channel.hpp"
 #include "foundation/host_memory.hpp"
 #include "graphics/display_presenter.hpp"
@@ -1196,6 +1197,16 @@ void EmulatorSession::run()
     initial->kernel = std::make_unique<CompatibilityKernel>(*initial->memory,
         output, rootfs, device, activation_override, lockdown_capabilities,
         darwin_configuration);
+    if (device.keybag_capabilities.apple_key_store_available) {
+        const auto canonical_rootfs = std::filesystem::canonical(rootfs);
+        const auto device_state = canonical_rootfs.parent_path() /
+                                  ".ilemu-device-state" /
+                                  canonical_rootfs.filename() / "key-store-v1.key";
+        auto key_store = KeyStore::open(device_state);
+        if (!key_store)
+            throw std::runtime_error("cannot open persistent device key store");
+        initial->kernel->set_key_store(std::move(key_store));
+    }
     if (baseband_capture_stream) {
         auto* stream = &*baseband_capture_stream;
         initial->kernel->set_baseband_transmit_sink(
