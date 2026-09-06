@@ -122,7 +122,7 @@ namespace {
             classic_compact_system_gestures,
             GraphicsAcceleratorKind::Sgx535,
             "IMGSGX535GLDriver",
-            "AppleM2CLCD",
+            "AppleCLCD",
             { "iPhone", "iPhone 4", true, true },
             { true, false, true },
             BasebandTransport::Offline,
