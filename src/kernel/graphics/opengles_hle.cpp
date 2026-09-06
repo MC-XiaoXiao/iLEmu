@@ -1,5 +1,7 @@
 #include "kernel/opengles_hle.hpp"
 
+#include "opengles_dispatch_hle.hpp"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -189,6 +191,7 @@ OpenGlesHle::OpenGlesHle(UserlandHleRegistry& registry,
     register_egl(registry);
     register_gles(registry);
     register_programmable_gles(registry);
+    dispatch_hle_ = std::make_unique<OpenGlesDispatchHle>(*this, registry);
 }
 
 OpenGlesHle::~OpenGlesHle() { release_renderer_resources(); }
@@ -200,6 +203,7 @@ void OpenGlesHle::reset()
     contexts_.clear();
     eagl_contexts_.clear();
     eagl_context_abi_.reset();
+    dispatch_hle_->reset();
     surfaces_.clear();
     compatibility_display_surface_ = { };
     compatibility_display_process_id_ = 0;
@@ -226,6 +230,7 @@ void OpenGlesHle::inherit_state(const OpenGlesHle& parent)
     contexts_ = parent.contexts_;
     eagl_contexts_ = parent.eagl_contexts_;
     eagl_context_abi_ = parent.eagl_context_abi_;
+    dispatch_hle_->inherit_state(*parent.dispatch_hle_);
     surfaces_ = parent.surfaces_;
     compatibility_display_surface_ = { };
     compatibility_display_process_id_ = 0;
@@ -298,7 +303,12 @@ OpenGlesHle::ThreadState& OpenGlesHle::thread(UserlandHleCall& call)
 
 OpenGlesHle::ContextState* OpenGlesHle::current_context(UserlandHleCall& call)
 {
-    const auto context = contexts_.find(thread(call).context);
+    const auto prefixed = call.prefix_argument(0U);
+    const auto handle = prefixed ? dispatch_hle_->context_for_handle(*prefixed)
+                                 : std::optional { thread(call).context };
+    if (!handle)
+        return nullptr;
+    const auto context = contexts_.find(*handle);
     return context == contexts_.end() ? nullptr : &context->second;
 }
 
@@ -312,6 +322,18 @@ OpenGlesHle::ContextState OpenGlesHle::default_context_state() const
         static_cast<std::int32_t>(geometry.height) };
     state.scissor_box = state.viewport;
     return state;
+}
+
+OpenGlesHle::ContextState* OpenGlesHle::eagl_context(UserlandHleCall& call)
+{
+    const auto found = eagl_contexts_.find({ call.process_id(), call.argument(0) });
+    const auto handle = found == eagl_contexts_.end()
+                            ? dispatch_hle_->context_for_object(call, call.argument(0))
+                            : std::optional { found->second };
+    if (!handle)
+        return current_context(call);
+    const auto context = contexts_.find(*handle);
+    return context == contexts_.end() ? nullptr : &context->second;
 }
 
 void OpenGlesHle::set_gl_error(UserlandHleCall& call, std::uint32_t error)
@@ -1379,8 +1401,11 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                 const auto key = std::pair { process_id, initialized_object };
                 if (eagl_contexts_.contains(key))
                     return;
-                const auto handle = next_context_++;
-                contexts_.emplace(handle, default_context_state());
+                const auto driver_context = dispatch_hle_->context_for_object(
+                    completed, initialized_object);
+                const auto handle = driver_context ? *driver_context : next_context_++;
+                if (!driver_context)
+                    contexts_.emplace(handle, default_context_state());
                 eagl_contexts_.emplace(key, handle);
             });
         });
@@ -1506,7 +1531,7 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
         "EAGLContext", "renderbufferStorage:fromDrawable:",
         "-[EAGLContext renderbufferStorage:fromDrawable:]",
         [this](UserlandHleCall& call) {
-            auto* context = current_context(call);
+            auto* context = eagl_context(call);
             if (context == nullptr ||
                 call.argument(2) != gles_abi::renderbuffer ||
                 context->bound_renderbuffer == 0U) {
@@ -1525,7 +1550,7 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
         "EAGLContext",
         "presentRenderbuffer:", "-[EAGLContext presentRenderbuffer:]",
         [this](UserlandHleCall& call) {
-            auto* context = current_context(call);
+            auto* context = eagl_context(call);
             if (context == nullptr ||
                 call.argument(2) != gles_abi::renderbuffer ||
                 context->bound_renderbuffer == 0U) {
@@ -1565,7 +1590,7 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
         "EAGLContext", "attachImage:toCoreSurface:invertedRender:",
         "-[EAGLContext attachImage:toCoreSurface:invertedRender:]",
         [this](UserlandHleCall& call) {
-            auto* context = current_context(call);
+            auto* context = eagl_context(call);
             const auto target = call.argument(2);
             const auto inverted_render =
                 static_cast<std::uint8_t>(call.argument(4)) != 0U;

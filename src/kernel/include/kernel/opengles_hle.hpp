@@ -26,6 +26,7 @@ namespace ilemu {
 class UserlandHleCall;
 class UserlandHleRegistry;
 class SceneCoordinator;
+class OpenGlesDispatchHle;
 class SurfaceStore;
 struct KernelSharedState;
 
@@ -51,6 +52,7 @@ public:
     }
 
 private:
+    friend class OpenGlesDispatchHle;
     struct ThreadState {
         std::uint32_t display { };
         std::uint32_t draw_surface { };
@@ -173,6 +175,7 @@ private:
 
     [[nodiscard]] ThreadState& thread(UserlandHleCall& call);
     [[nodiscard]] ContextState* current_context(UserlandHleCall& call);
+    [[nodiscard]] ContextState* eagl_context(UserlandHleCall& call);
     [[nodiscard]] ContextState default_context_state() const;
     void set_gl_error(UserlandHleCall& call, std::uint32_t error);
     void set_array_pointer(UserlandHleCall& call, std::uint32_t array);
@@ -228,6 +231,7 @@ private:
     std::map<std::pair<std::uint32_t, std::uint32_t>, std::uint32_t>
         eagl_contexts_;
     std::optional<EaglContextAbi> eagl_context_abi_;
+    std::unique_ptr<OpenGlesDispatchHle> dispatch_hle_;
     std::map<std::uint32_t, SurfaceState> surfaces_;
     SurfaceState compatibility_display_surface_;
     std::uint32_t compatibility_display_process_id_ { };
