@@ -85,7 +85,7 @@ vec4 sample_image(
             coordinate, clamp_rectangle.xy, clamp_rectangle.zw);
     }
     vec2 size = vec2(textureSize(image, 0));
-    vec2 texel = (floor(coordinate) + vec2(0.5)) / size;
+    vec2 texel = coordinate / size;
     return texture(image, texel);
 }
 

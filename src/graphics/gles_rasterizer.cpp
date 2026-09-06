@@ -12,6 +12,7 @@
 #include "graphics/gles_abi.hpp"
 #include "graphics/gles_primitive_assembler.hpp"
 #include "graphics/gles_resources.hpp"
+#include "graphics/gles_sampler_state.hpp"
 
 namespace ilemu {
 namespace {
@@ -272,7 +273,8 @@ namespace {
     }
 
     std::uint32_t sample_texture(const GlesRasterState& state,
-        const GlesRasterTextureUnit& unit, float s, float t)
+        const GlesRasterTextureUnit& unit, float s, float t,
+        const std::array<float, 4>& gradient)
     {
         if (!unit.enabled || state.resources == nullptr || unit.texture == 0) {
             return 0xffffffffU;
@@ -285,21 +287,76 @@ namespace {
             level->second.height == 0 || level->second.argb.empty()) {
             return 0xffffffffU;
         }
+        if (!std::isfinite(s) || !std::isfinite(t))
+            return 0xffffffffU;
+        const auto sampling = GlesSamplerState::from_parameters(
+            texture->parameters, unit.rectangle);
+        const auto& image = level->second;
         const auto coordinate = [](float value, std::uint32_t dimension,
-                                    bool rectangle) {
-            if (rectangle) {
-                return static_cast<std::uint32_t>(std::clamp(std::floor(value),
-                    0.0F, static_cast<float>(dimension - 1U)));
+                                    std::uint32_t wrap, bool rectangle) {
+            if (rectangle)
+                value /= static_cast<float>(dimension);
+            if (wrap == gles_abi::clamp_to_edge) {
+                value = std::clamp(value, 0.0F, 1.0F);
+            } else if (wrap == gles_abi::mirrored_repeat) {
+                value = std::fmod(value, 2.0F);
+                if (value < 0.0F)
+                    value += 2.0F;
+                if (value > 1.0F)
+                    value = 2.0F - value;
+            } else {
+                value -= std::floor(value);
             }
-            const auto wrapped = value - std::floor(value);
-            return std::min(
-                dimension - 1U, static_cast<std::uint32_t>(
-                                    wrapped * static_cast<float>(dimension)));
+            return value * static_cast<float>(dimension);
         };
-        const auto x = coordinate(s, level->second.width, unit.rectangle);
-        const auto y = coordinate(t, level->second.height, unit.rectangle);
-        return level->second
-            .argb[static_cast<std::size_t>(y) * level->second.width + x];
+        const auto address = [](std::int32_t value, std::uint32_t dimension,
+                                 std::uint32_t wrap) {
+            const auto size = static_cast<std::int32_t>(dimension);
+            if (wrap == gles_abi::clamp_to_edge)
+                return static_cast<std::uint32_t>(
+                    std::clamp(value, 0, size - 1));
+            const auto period =
+                wrap == gles_abi::mirrored_repeat ? size * 2 : size;
+            auto index = (value % period + period) % period;
+            if (index >= size)
+                index = period - 1 - index;
+            return static_cast<std::uint32_t>(index);
+        };
+        const auto texel = [&](std::int32_t x, std::int32_t y) {
+            return image.argb[static_cast<std::size_t>(
+                                  address(y, image.height, sampling.wrap_t)) *
+                                  image.width +
+                              address(x, image.width, sampling.wrap_s)];
+        };
+        const auto x =
+            coordinate(s, image.width, sampling.wrap_s, unit.rectangle);
+        const auto y =
+            coordinate(t, image.height, sampling.wrap_t, unit.rectangle);
+        const auto width =
+            unit.rectangle ? 1.0F : static_cast<float>(image.width);
+        const auto height =
+            unit.rectangle ? 1.0F : static_cast<float>(image.height);
+        const auto footprint =
+            std::max(std::hypot(gradient[0] * width, gradient[1] * height),
+                std::hypot(gradient[2] * width, gradient[3] * height));
+        const auto filter =
+            footprint > 1.0F ? sampling.min_filter : sampling.mag_filter;
+        if (!GlesSamplerState::linear_filter(filter))
+            return texel(static_cast<std::int32_t>(std::floor(x)),
+                static_cast<std::int32_t>(std::floor(y)));
+        const auto left = static_cast<std::int32_t>(std::floor(x - 0.5F));
+        const auto top = static_cast<std::int32_t>(std::floor(y - 0.5F));
+        const auto fx = x - 0.5F - static_cast<float>(left);
+        const auto fy = y - 0.5F - static_cast<float>(top);
+        const auto a = unpack_color(texel(left, top));
+        const auto b = unpack_color(texel(left + 1, top));
+        const auto c = unpack_color(texel(left, top + 1));
+        const auto d = unpack_color(texel(left + 1, top + 1));
+        Color result;
+        for (std::size_t i = 0; i < result.size(); ++i)
+            result[i] = std::lerp(
+                std::lerp(a[i], b[i], fx), std::lerp(c[i], d[i], fx), fy);
+        return pack_color(result);
     }
 
     void draw_triangle(DisplayFrame& frame,
@@ -321,6 +378,32 @@ namespace {
                 (state.cull_mode == gles_abi::front && front_facing) ||
                 (state.cull_mode == gles_abi::back && !front_facing))) {
             return;
+        }
+        const std::array<float, 3> dx { (triangle[2].y - triangle[1].y) / area,
+            (triangle[0].y - triangle[2].y) / area,
+            (triangle[1].y - triangle[0].y) / area };
+        const std::array<float, 3> dy { (triangle[1].x - triangle[2].x) / area,
+            (triangle[2].x - triangle[0].x) / area,
+            (triangle[0].x - triangle[1].x) / area };
+        std::array<float, 2> reciprocal_gradient { };
+        std::array<std::array<float, 4>, gles_abi::texture_unit_count>
+            numerator_gradient { };
+        for (std::size_t i = 0; i < triangle.size(); ++i) {
+            const auto qx = triangle[i].inverse_w * dx[i];
+            const auto qy = triangle[i].inverse_w * dy[i];
+            reciprocal_gradient[0] += qx;
+            reciprocal_gradient[1] += qy;
+            for (std::size_t unit = 0; unit < numerator_gradient.size();
+                ++unit) {
+                numerator_gradient[unit][0] +=
+                    triangle[i].texture[unit][0] * qx;
+                numerator_gradient[unit][1] +=
+                    triangle[i].texture[unit][1] * qx;
+                numerator_gradient[unit][2] +=
+                    triangle[i].texture[unit][0] * qy;
+                numerator_gradient[unit][3] +=
+                    triangle[i].texture[unit][1] * qy;
+            }
         }
         const auto minimum_x = std::max(
             0, static_cast<int>(std::floor(
@@ -425,8 +508,19 @@ namespace {
                             triangle[2].texture[unit_index][1] *
                                 triangle[2].inverse_w * w2) /
                         inverse_w;
-                    const auto sampled =
-                        sample_texture(state, unit, texture_s, texture_t);
+                    const auto& numerator = numerator_gradient[unit_index];
+                    const std::array<float, 4> gradient {
+                        (numerator[0] - texture_s * reciprocal_gradient[0]) /
+                            inverse_w,
+                        (numerator[1] - texture_t * reciprocal_gradient[0]) /
+                            inverse_w,
+                        (numerator[2] - texture_s * reciprocal_gradient[1]) /
+                            inverse_w,
+                        (numerator[3] - texture_t * reciprocal_gradient[1]) /
+                            inverse_w
+                    };
+                    const auto sampled = sample_texture(
+                        state, unit, texture_s, texture_t, gradient);
                     pixel = apply_texture_environment(
                         unit.environment, sampled, primary, pixel);
                 }

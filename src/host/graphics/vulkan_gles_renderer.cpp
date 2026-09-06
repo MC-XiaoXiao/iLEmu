@@ -32,6 +32,7 @@
 #include "graphics/gles_abi.hpp"
 #include "graphics/gles_primitive_assembler.hpp"
 #include "graphics/gles_resources.hpp"
+#include "graphics/gles_sampler_state.hpp"
 
 namespace ilemu {
 namespace {
@@ -223,7 +224,7 @@ vec4 sample_image(
             coordinate, clamp_rectangle.xy, clamp_rectangle.zw);
     }
     vec2 size = vec2(textureSize(image, 0));
-    vec2 texel = (floor(coordinate) + vec2(0.5)) / size;
+    vec2 texel = coordinate / size;
     return texture(image, texel);
 }
 
@@ -733,6 +734,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         VkPipelineCache pipeline_cache_ { };
         VkDescriptorPool descriptor_pool_ { };
         VkSampler host_clamp_sampler_ { };
+        std::map<GlesSamplerState, VkSampler> texture_samplers_;
+        [[nodiscard]] VkSampler texture_sampler(const GlesSamplerState& state);
         VkShaderModule vertex_shader_ { };
         VkShaderModule fragment_shader_ { };
         std::map<PipelineKey, VkPipeline> pipelines_;
@@ -1661,6 +1664,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 vkDestroyPipeline(device_, value, nullptr);
             }
             pipelines_.clear();
+            for (const auto& [state, sampler] : texture_samplers_) {
+                static_cast<void>(state);
+                vkDestroySampler(device_, sampler, nullptr);
+            }
+            texture_samplers_.clear();
             if (fragment_shader_ != VK_NULL_HANDLE) {
                 vkDestroyShaderModule(device_, fragment_shader_, nullptr);
             }
@@ -1880,6 +1888,40 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 "vkCreateSampler");
         }
         return result;
+    }
+
+    VkSampler VulkanGlesRenderer::texture_sampler(const GlesSamplerState& state)
+    {
+        if (const auto found = texture_samplers_.find(state);
+            found != texture_samplers_.end())
+            return found->second;
+        const auto wrap = [](std::uint32_t mode) {
+            if (mode == gles_abi::clamp_to_edge)
+                return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+            if (mode == gles_abi::mirrored_repeat)
+                return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+            return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        };
+        auto info = make_vulkan_structure<VkSamplerCreateInfo>(
+            VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO);
+        info.minFilter = GlesSamplerState::linear_filter(state.min_filter)
+                             ? VK_FILTER_LINEAR
+                             : VK_FILTER_NEAREST;
+        info.magFilter = GlesSamplerState::linear_filter(state.mag_filter)
+                             ? VK_FILTER_LINEAR
+                             : VK_FILTER_NEAREST;
+        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        info.addressModeU = wrap(state.wrap_s);
+        info.addressModeV = wrap(state.wrap_t);
+        info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+        info.maxAnisotropy = 1.0F;
+        // The resource upload path currently publishes level zero only.
+        info.maxLod = 0.0F;
+        VkSampler sampler { };
+        require_success(vkCreateSampler(device_, &info, nullptr, &sampler),
+            "vkCreateSampler(texture)");
+        texture_samplers_.emplace(state, sampler);
+        return sampler;
     }
 
     void VulkanGlesRenderer::ensure_buffer(
@@ -4937,7 +4979,17 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 const auto& image = selected_surface_targets[index]
                                         ? selected_surface_targets[index]->image
                                         : selected_textures[index]->image;
-                image_infos[index] = { image.sampler, image.view,
+                auto sampler = image.sampler;
+                const auto& unit = state.texture_units[index];
+                if (unit.enabled && state.resources) {
+                    if (const auto* texture =
+                            state.resources->texture(unit.texture)) {
+                        sampler =
+                            texture_sampler(GlesSamplerState::from_parameters(
+                                texture->parameters, unit.rectangle));
+                    }
+                }
+                image_infos[index] = { sampler, image.view,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             }
             std::array<VkWriteDescriptorSet, 3> writes { };
