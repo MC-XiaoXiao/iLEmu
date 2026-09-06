@@ -167,6 +167,12 @@ public:
     [[nodiscard]] std::optional<GuestFileGenerationSnapshot> current(
         const std::filesystem::path& path) const;
     [[nodiscard]] std::size_t tracked_path_count() const;
+    // Advances for every published mutation, including coalesced catalog
+    // events. Readiness consumers can avoid pathname probes while unchanged.
+    [[nodiscard]] std::uint64_t mutation_generation() const noexcept
+    {
+        return mutation_generation_.load(std::memory_order_acquire);
+    }
 
 private:
     friend class FilePageCache;
@@ -203,6 +209,7 @@ private:
     mutable std::mutex mutex_;
     std::uint64_t next_revision_ { 1 };
     std::uint64_t next_mutation_sequence_ { 1 };
+    std::atomic_uint64_t mutation_generation_ { 1 };
     std::map<std::string, Entry> entries_;
     std::list<std::string> entry_lru_;
     static constexpr std::size_t maximum_tracked_paths = 32U * 1024U;

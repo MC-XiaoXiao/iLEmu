@@ -1298,7 +1298,13 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
                    (event.filter == darwin::kqueue::filter_write &&
                        descriptor_writable(event.ident)) ||
                    (event.filter == darwin::kqueue::filter_mach_port &&
-                       ready_mach_kevent_name(event).has_value());
+                       ready_mach_kevent_name(event).has_value()) ||
+                   (event.enabled &&
+                       event.filter == darwin::kqueue::filter_vnode &&
+                       event.vnode_watch &&
+                       (event.vnode_watch->pending(
+                            *shared_state_->guest_file_generation_registry) &
+                           event.filter_flags) != 0U);
         });
 }
 
@@ -1606,6 +1612,13 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                 }
             }
             result_flags |= darwin::kqueue::event_clear;
+        } else if (registration->filter == darwin::kqueue::filter_vnode) {
+            if (registration->vnode_watch) {
+                filter_flags = registration->vnode_watch->pending(
+                                   *shared_state_->guest_file_generation_registry) &
+                               registration->filter_flags;
+            }
+            available = 0U;
         } else if (registration->filter == darwin::kqueue::filter_mach_port) {
             ready_mach_name = ready_mach_kevent_name(*registration);
             if (ready_mach_name)
@@ -1621,6 +1634,8 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             : registration->filter == darwin::kqueue::filter_write
                 ? descriptor_writable(registration->ident)
             : registration->filter == darwin::kqueue::filter_process
+                ? filter_flags != 0U
+            : registration->filter == darwin::kqueue::filter_vnode
                 ? filter_flags != 0U
             : registration->filter == darwin::kqueue::filter_mach_port
                 ? ready_mach_name.has_value()
@@ -1662,6 +1677,7 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         // set cannot strand messages behind the first reported member.
         if (clears_after_delivery &&
             registration->filter != darwin::kqueue::filter_process &&
+            registration->filter != darwin::kqueue::filter_vnode &&
             registration->filter != darwin::kqueue::filter_mach_port &&
             registration->clear_delivered &&
             registration->clear_available == available) {
@@ -1699,6 +1715,8 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             registration->clear_available = available;
             if (registration->filter == darwin::kqueue::filter_user)
                 registration->user_triggered = false;
+            if (registration->vnode_watch)
+                registration->vnode_watch->acknowledge(filter_flags);
         }
         if ((registration->flags & darwin::kqueue::event_dispatch) != 0U) {
             registration->enabled = false;
@@ -1738,7 +1756,8 @@ void CompatibilityKernel::detach_kevents_for_descriptor(std::uint32_t fd)
         std::erase_if(registrations, [fd](const auto& registration) {
             return registration.ident == fd &&
                    (registration.filter == darwin::kqueue::filter_read ||
-                       registration.filter == darwin::kqueue::filter_write);
+                       registration.filter == darwin::kqueue::filter_write ||
+                       registration.filter == darwin::kqueue::filter_vnode);
         });
     }
 }

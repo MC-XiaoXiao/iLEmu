@@ -34,6 +34,7 @@
 #include "filesystem/hfs_metadata.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_mach_task_identity.hpp"
+#include "kernel/vnode_watch.hpp"
 #include "device_state/launchd_job_catalog.hpp"
 #include "mach/mach_namespace.hpp"
 #include "mach/mach_port_object.hpp"
@@ -109,6 +110,7 @@ struct KeventRegistration {
     // readiness is always re-evaluated so consuming a message cannot leave a
     // stale ready result.
     mutable std::uint64_t empty_mach_queue_generation { };
+    std::optional<VnodeWatch> vnode_watch;
 };
 
 struct PendingWait {
@@ -1319,7 +1321,8 @@ struct KernelSharedState {
 
     [[nodiscard]] std::uint64_t io_event_generation_snapshot() const
     {
-        return io_event_generation.load(std::memory_order_acquire);
+        return io_event_generation.load(std::memory_order_acquire) +
+               guest_file_generation_registry->mutation_generation();
     }
     // launchd remains the authority for the bootstrap namespace. These caches
     // only remember replies already observed on the emulated Mach IPC path so

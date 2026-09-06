@@ -20,6 +20,7 @@ add_library(ilemu_kernel STATIC
     kernel.cpp
     clock.cpp
     iokit.cpp
+    vnode_watch.cpp
     network.cpp)
 add_library(iLEmu::kernel ALIAS ilemu_kernel)
 ilemu_configure_module(ilemu_kernel)

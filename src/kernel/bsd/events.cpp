@@ -2656,6 +2656,15 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 };
                 registration.enabled =
                     (*flags & darwin::kqueue::event_disable) == 0U;
+                if (signed_filter == darwin::kqueue::filter_vnode) {
+                    if (found != queue->second.end()) {
+                        registration.vnode_watch = found->vnode_watch;
+                    } else if (const auto file = file_descriptors_.find(*ident);
+                               file != file_descriptors_.end()) {
+                        registration.vnode_watch.emplace(file->second,
+                            *shared_state_->guest_file_generation_registry);
+                    }
+                }
                 if (signed_filter == darwin::kqueue::filter_user) {
                     registration.user_triggered =
                         (*flags & darwin::kqueue::event_trigger) != 0U ||

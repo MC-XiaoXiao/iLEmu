@@ -1249,6 +1249,7 @@ void GuestFileGenerationRegistry::enqueue_mutation_locked(
 {
     if (mutation == GuestFileMutationKind::Observation)
         return;
+    mutation_generation_.fetch_add(1U, std::memory_order_release);
     for (auto event = pending_mutations_.rbegin();
         event != pending_mutations_.rend(); ++event) {
         if (event->path.string() != normalized_path)
