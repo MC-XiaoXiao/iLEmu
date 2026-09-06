@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -40,6 +41,16 @@ public:
     using Continuation = std::function<void(UserlandHleCall&)>;
 
     [[nodiscard]] std::uint32_t argument(std::size_t index) const;
+    // Native dispatch-table ABIs may prepend context words to a public ABI.
+    // Aliases retain those words separately while reusing the same handler.
+    [[nodiscard]] std::optional<std::uint32_t> prefix_argument(
+        std::size_t index) const;
+    [[nodiscard]] std::vector<std::string> installed_functions(
+        std::string_view prefix) const;
+    [[nodiscard]] std::optional<std::vector<std::byte>> original_function_code(
+        std::string_view symbol, std::size_t size) const;
+    [[nodiscard]] std::optional<std::uint32_t> callable_alias(
+        std::string_view symbol, std::uint8_t prefix_arguments);
     [[nodiscard]] std::optional<std::string> string_argument(
         std::size_t index, std::size_t maximum_size = 4096) const;
     [[nodiscard]] std::optional<std::string> objc_string_argument(
@@ -92,7 +103,7 @@ private:
     friend class UserlandHleRegistry;
     UserlandHleCall(UserlandHleRegistry& registry, Cpu& cpu,
         AddressSpace& memory, Output& output, std::uint32_t process_id,
-        std::string_view symbol);
+        std::string_view symbol, std::uint8_t prefix_arguments = 0U);
 
     UserlandHleRegistry& registry_;
     Cpu& cpu_;
@@ -100,6 +111,8 @@ private:
     Output& output_;
     std::uint32_t process_id_ { };
     std::string_view symbol_;
+    std::array<std::uint32_t, 4> prefix_arguments_ { };
+    std::uint8_t prefix_argument_count_ { };
     bool resume_original_ { };
     bool resume_original_persistently_ { };
     std::optional<std::uint32_t> tail_call_address_;
@@ -233,6 +246,7 @@ private:
         std::string symbol;
         bool thumb { };
         std::vector<std::byte> original;
+        std::uint8_t prefix_arguments { };
     };
     struct CachedMappedSymbol {
         std::uint32_t symbol_index { };
@@ -407,6 +421,8 @@ private:
     ArmArchitectureVersion shared_hle_plan_architecture_ { };
     std::uint64_t shared_hle_plan_registration_generation_ { };
     std::map<std::uint32_t, InstalledCall> installed_calls_;
+    std::map<std::pair<std::string, std::uint8_t>, std::uint32_t>
+        callable_aliases_;
     std::map<std::string, std::uint32_t, std::less<>> installed_symbols_;
     std::map<std::string, bool, std::less<>> installed_symbol_thumb_;
     std::set<std::string, std::less<>> loaded_images_;

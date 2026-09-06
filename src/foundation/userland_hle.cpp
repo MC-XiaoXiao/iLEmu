@@ -661,18 +661,25 @@ UserlandHleRegistry::SharedHlePlan::patches_for_image(
 
 UserlandHleCall::UserlandHleCall(UserlandHleRegistry& registry, Cpu& cpu,
     AddressSpace& memory, Output& output, std::uint32_t process_id,
-    std::string_view symbol)
+    std::string_view symbol, std::uint8_t prefix_arguments)
     : registry_ { registry }
     , cpu_ { cpu }
     , memory_ { memory }
     , output_ { output }
     , process_id_ { process_id }
     , symbol_ { symbol }
+    , prefix_argument_count_ { prefix_arguments }
 {
+    std::copy_n(cpu_.registers().begin(), prefix_argument_count_,
+        prefix_arguments_.begin());
 }
 
 std::uint32_t UserlandHleCall::argument(std::size_t index) const
 {
+    if (index > std::numeric_limits<std::size_t>::max() -
+                    prefix_argument_count_)
+        return 0U;
+    index += prefix_argument_count_;
     const auto& registers = cpu_.registers();
     if (index < 4)
         return registers[index];
@@ -684,6 +691,82 @@ std::uint32_t UserlandHleCall::argument(std::size_t index) const
     return memory_
         .read32(registers[13] + static_cast<std::uint32_t>(stack_offset))
         .value_or(0);
+}
+
+std::optional<std::uint32_t> UserlandHleCall::prefix_argument(
+    std::size_t index) const
+{
+    return index < prefix_argument_count_
+               ? std::optional { prefix_arguments_[index] }
+               : std::nullopt;
+}
+
+std::vector<std::string> UserlandHleCall::installed_functions(
+    std::string_view prefix) const
+{
+    std::vector<std::string> result;
+    for (auto it = registry_.installed_symbols_.lower_bound(prefix);
+        it != registry_.installed_symbols_.end() &&
+        it->first.starts_with(prefix); ++it) {
+        if (registry_.installed_calls_.contains(it->second))
+            result.push_back(it->first);
+    }
+    return result;
+}
+
+std::optional<std::vector<std::byte>> UserlandHleCall::original_function_code(
+    std::string_view symbol, std::size_t size) const
+{
+    const auto address = symbol_address(symbol);
+    if (!address)
+        return std::nullopt;
+    auto bytes = memory_.read_bytes(*address, size);
+    if (!bytes)
+        return std::nullopt;
+    if (const auto installed = registry_.installed_calls_.find(*address);
+        installed != registry_.installed_calls_.end()) {
+        const auto& original = installed->second.original;
+        std::copy_n(original.begin(), std::min(original.size(), bytes->size()),
+            bytes->begin());
+    }
+    return bytes;
+}
+
+std::optional<std::uint32_t> UserlandHleCall::callable_alias(
+    std::string_view symbol, std::uint8_t prefix_arguments)
+{
+    if (prefix_arguments > prefix_arguments_.size())
+        return std::nullopt;
+    const auto key = std::pair { std::string { symbol }, prefix_arguments };
+    if (const auto alias = registry_.callable_aliases_.find(key);
+        alias != registry_.callable_aliases_.end())
+        return alias->second;
+    const auto source = symbol_address(symbol);
+    if (!source)
+        return std::nullopt;
+    const auto installed = registry_.installed_calls_.find(*source);
+    if (installed == registry_.installed_calls_.end())
+        return std::nullopt;
+    const auto address = registry_.persistent_trampoline_cursor_;
+    if (address >= 0x61000000U)
+        return std::nullopt;
+    const auto page = address & ~(AddressSpace::page_size - 1U);
+    if (!memory_.mapped(page, AddressSpace::page_size) &&
+        !memory_.map(page, AddressSpace::page_size,
+            MemoryPermission::Read | MemoryPermission::Write |
+                MemoryPermission::Execute))
+        return std::nullopt;
+    const auto opcode = arm_svc_opcode | userland_hle_svc_namespace |
+                        installed->second.id;
+    if (!memory_.write32(address, opcode))
+        return std::nullopt;
+    cpu_.invalidate_cache_range(address, sizeof(opcode));
+    registry_.installed_calls_.emplace(address,
+        UserlandHleRegistry::InstalledCall { installed->second.id,
+            std::string { symbol }, false, { }, prefix_arguments });
+    registry_.persistent_trampoline_cursor_ += sizeof(opcode);
+    registry_.callable_aliases_.emplace(key, address);
+    return address;
 }
 
 std::optional<std::string> UserlandHleCall::string_argument(
@@ -2309,7 +2392,9 @@ bool UserlandHleRegistry::dispatch(
                       " cpu=" + std::to_string(cpu.processor_id()) +
                       " symbol=" + std::string { symbol } + "\n");
     }
-    UserlandHleCall call { *this, cpu, memory_, output_, process_id, symbol };
+    UserlandHleCall call { *this, cpu, memory_, output_, process_id, symbol,
+        installed == installed_calls_.end() ? std::uint8_t { 0U }
+                                           : installed->second.prefix_arguments };
     const auto measure_hle = performance_counters().enabled();
     const auto hle_start = measure_hle
                                ? std::chrono::steady_clock::now()
@@ -2736,6 +2821,7 @@ void UserlandHleRegistry::record_loaded_image(std::string image_path)
 void UserlandHleRegistry::reset_mappings()
 {
     installed_calls_.clear();
+    callable_aliases_.clear();
     installed_symbols_.clear();
     installed_symbol_thumb_.clear();
     loaded_images_.clear();
@@ -2759,6 +2845,7 @@ void UserlandHleRegistry::reset_mappings()
 void UserlandHleRegistry::inherit_mappings(const UserlandHleRegistry& parent)
 {
     installed_calls_ = parent.installed_calls_;
+    callable_aliases_ = parent.callable_aliases_;
     installed_symbols_ = parent.installed_symbols_;
     installed_symbol_thumb_ = parent.installed_symbol_thumb_;
     loaded_images_ = parent.loaded_images_;
