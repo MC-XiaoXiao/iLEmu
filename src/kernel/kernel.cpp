@@ -519,11 +519,6 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput& input)
         input, scene_coordinator_.get(), presentation_tracker_.get(),
         &home_recovery_requested, &input_sequence);
     wake_graphics_input_receivers();
-    if (const auto consumer = shared_state_->hid_event_queue.consumer();
-        consumer && thread_wake_handler_) {
-        static_cast<void>(thread_wake_handler_(consumer->process,
-            static_cast<std::uint32_t>(consumer->processor)));
-    }
     const auto enqueued_at = std::chrono::steady_clock::now();
     const auto phase = [phase = input.phase] {
         switch (phase) {
