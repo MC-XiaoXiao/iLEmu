@@ -18,6 +18,7 @@ target_link_libraries(ilemu_kernel_api INTERFACE
 
 add_library(ilemu_kernel STATIC
     kernel.cpp
+    hid_event_system_hle.cpp
     clock.cpp
     iokit.cpp
     vnode_watch.cpp

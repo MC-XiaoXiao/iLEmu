@@ -140,6 +140,10 @@ public:
     // symbol-location path as ordinary HLE dependencies.
     void register_guest_data_symbol(
         std::string image_suffix, std::string symbol);
+    // Host service producers queue work for a specific guest run loop.
+    // Delivery uses the same receive boundary as defer_guest_function.
+    [[nodiscard]] bool queue_guest_function(std::string_view symbol,
+        std::size_t processor, Handler setup, Handler completion = { });
     // Resolve a stripped Objective-C 1.x instance method by metadata name when
     // the image is mapped. This avoids firmware-version-specific addresses.
     void register_objc_instance_method(std::string image_suffix,

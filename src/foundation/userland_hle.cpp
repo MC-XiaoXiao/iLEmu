@@ -2552,6 +2552,13 @@ std::optional<std::uint32_t> UserlandHleRegistry::install_continuation(Cpu& cpu,
     return address;
 }
 
+bool UserlandHleRegistry::queue_guest_function(std::string_view symbol,
+    std::size_t processor, Handler setup, Handler completion)
+{
+    return defer_guest_function(symbol, processor, true, std::move(setup),
+        std::move(completion));
+}
+
 bool UserlandHleRegistry::defer_guest_function(std::string_view symbol,
     std::size_t processor_id, bool wait_for_receive_boundary, Handler setup,
     Handler completion)
@@ -2601,18 +2608,23 @@ bool UserlandHleRegistry::deliver_deferred_guest_function(
     deferred_guest_calls_.erase(pending);
     const auto saved_registers = boundary_registers;
     const auto saved_cpsr = cpu.cpsr();
+    const auto saved_extension_registers = cpu.extension_registers();
+    const auto saved_fpscr = cpu.fpscr();
     const auto interrupted_thumb = (saved_cpsr & arm_thumb_state_bit) != 0;
     const auto svc_size = interrupted_thumb ? 2U : 4U;
     const auto svc_entry = saved_registers[15] - svc_size;
     const auto return_gate =
         install_continuation(cpu, svc_entry | (interrupted_thumb ? 1U : 0U),
-            [saved_registers, saved_cpsr,
+            [saved_registers, saved_cpsr, saved_extension_registers, saved_fpscr,
                 completion = std::move(deferred.completion)](
                 UserlandHleCall& completed) mutable {
                 if (completion)
                     completion(completed);
                 completed.cpu().registers() = saved_registers;
                 completed.cpu().set_cpsr(saved_cpsr);
+                completed.cpu().extension_registers() =
+                    saved_extension_registers;
+                completed.cpu().set_fpscr(saved_fpscr);
             });
     if (!return_gate) {
         deferred_guest_calls_.push_front(std::move(deferred));

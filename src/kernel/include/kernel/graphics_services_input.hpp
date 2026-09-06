@@ -176,6 +176,12 @@ void suspend_active_application(KernelSharedState& state,
     SceneCoordinator* scenes = nullptr,
     std::uint64_t system_input_sequence = 0);
 
+// Observes a firmware-generated system button at its native service receive
+// boundary. The caller holds mach_mutex and excludes host-tagged input.
+void record_system_event_delivery_locked(KernelSharedState& state,
+    std::uint32_t destination, std::uint32_t event_type,
+    SceneCoordinator* scenes = nullptr);
+
 // Observes SpringBoard composition after Home. The first desktop frame starts
 // the native exit animation; final ownership remains with the ordered App
 // background event (or the next deliberate gesture as a stale-state fallback).

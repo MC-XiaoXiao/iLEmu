@@ -24,10 +24,6 @@ namespace {
 
     constexpr std::uint32_t copy_send_bits = 19;
     constexpr std::uint32_t graphics_event_message_id = 123;
-    // The same private value is directional: SpringBoard sends it to bring a
-    // resident application forward, while an application sends it back after
-    // its Home transition has finished.
-    constexpr std::uint32_t application_transition_event_type = 2003;
     constexpr std::uint32_t hand_event_type = 3001;
 
     constexpr std::size_t record_location_offset = 8;
@@ -2169,6 +2165,12 @@ EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
     if (input_sequence_output)
         *input_sequence_output = input_sequence;
 
+    // Preserve host transition tracking, but let an open firmware HID system
+    // classify physical contacts before routing them to system gestures,
+    // accessibility services or an application window.
+    const auto native_input = state.hid_event_queue.enqueue(
+        { sanitized, state.clock.now() });
+
     const auto terminal = sanitized.phase == TouchPhase::Up ||
                           sanitized.phase == TouchPhase::Cancel;
     if (sanitized.phase == TouchPhase::Down)
@@ -2201,8 +2203,9 @@ EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
 
     if (route->application) {
         clear_springboard_enqueued_gesture_locked(state);
-        queue_locked(state, route->destination_object,
-            transform_touch(sanitized, route->transform), input_sequence);
+        if (!native_input)
+            queue_locked(state, route->destination_object,
+                transform_touch(sanitized, route->transform), input_sequence);
         // App-owned event ports do not pass the physical touch through
         // SpringBoard. Preserve the firmware's separate idle-duration event so
         // SpringBoard can run its native resetIdleDuration: path as it would
@@ -2319,19 +2322,23 @@ EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
     const auto service = state.bootstrap_service_objects.find(
         std::string { system_event_service });
     if (service == state.bootstrap_service_objects.end()) {
-        state.pending_graphics_inputs.push_back(
-            KernelSharedState::PendingGraphicsInput {
-                KernelSharedState::PendingGraphicsInput::Kind::Touch, sanitized,
-                0, input_sequence,
-                KernelSharedState::MachMessage::GraphicsInputKind::Touch });
+        if (!native_input) {
+            state.pending_graphics_inputs.push_back(
+                KernelSharedState::PendingGraphicsInput {
+                    KernelSharedState::PendingGraphicsInput::Kind::Touch,
+                    sanitized,
+                    0, input_sequence,
+                    KernelSharedState::MachMessage::GraphicsInputKind::Touch });
+        }
         queue_idle_duration_reset_locked(state, input_sequence);
         lock.unlock();
         if (resume_process_id) {
             activate_resolved_application(state, *resume_process_id, scenes);
         }
-        return EnqueueResult::Deferred;
+        return native_input ? EnqueueResult::Queued : EnqueueResult::Deferred;
     }
-    queue_locked(state, service->second, sanitized, input_sequence);
+    if (!native_input)
+        queue_locked(state, service->second, sanitized, input_sequence);
     // Hardware input reaches SpringBoard through this event port. The device
     // also emits its separate idle-duration event for the same input, which
     // lets SpringBoard run resetIdleDuration: even when the touch is consumed
@@ -2414,109 +2421,148 @@ EnqueueResult enqueue_ringer_switch_change(
     return EnqueueResult::Queued;
 }
 
+namespace {
+
+    void suspend_active_application_locked(KernelSharedState& state,
+        KernelSharedState::ApplicationSuspensionReason reason,
+        SceneCoordinator* scenes, std::uint64_t system_input_sequence)
+    {
+        if (system_input_sequence == 0U) {
+            system_input_sequence = allocate_graphics_input_sequence_locked(state);
+        }
+        if (reason == KernelSharedState::ApplicationSuspensionReason::Lock) {
+            state.springboard_lock_screen_active = true;
+            if (!state.springboard_unlock_touch_active)
+                state.springboard_unlock_touch_pending = true;
+        }
+        const auto prior_home_exit_process_id =
+            state.application_touch_suspended &&
+                    state.application_suspension_reason ==
+                        KernelSharedState::ApplicationSuspensionReason::Home
+                ? state.suspended_application_scene_process_id
+                : std::nullopt;
+
+        std::optional<std::uint32_t> target_process_id;
+        if (state.foreground_application_attempt_process_id) {
+            const auto process = state.processes.find(
+                *state.foreground_application_attempt_process_id);
+            if (process != state.processes.end() && !process->second.exited &&
+                launch_attempt_locked(
+                    state, *state.foreground_application_attempt_process_id)) {
+                target_process_id = process->first;
+            } else {
+                state.foreground_application_attempt_process_id.reset();
+            }
+        }
+
+        std::optional<std::uint32_t> routed_process_id;
+        if (const auto active_port = state.mach_port_objects.lookup(
+                state.active_application_event_object)) {
+            routed_process_id = active_port->receive_owner;
+        }
+        const auto active_process_id =
+            state.active_application_scene
+                ? std::optional<std::uint32_t> { state.active_application_scene
+                          ->process_id }
+                : routed_process_id;
+        if (!target_process_id &&
+            reason == KernelSharedState::ApplicationSuspensionReason::Lock &&
+            state.application_touch_suspended &&
+            state.application_suspension_reason ==
+                KernelSharedState::ApplicationSuspensionReason::Home &&
+            state.suspended_application_scene_process_id &&
+            ((state.active_application_scene &&
+                 state.active_application_scene->process_id ==
+                     *state.suspended_application_scene_process_id) ||
+                routed_process_id ==
+                    state.suspended_application_scene_process_id)) {
+            target_process_id = *state.suspended_application_scene_process_id;
+        }
+        if (!target_process_id && active_process_id &&
+            state.active_application_event_object != 0U &&
+            !state.application_touch_suspended &&
+            (!scenes || scenes->client_scene_active(*active_process_id))) {
+            target_process_id = active_process_id;
+        }
+        // Capture the exact selected token before Home updates the cancellation
+        // watermark and clears foreground authorization. This narrow interval is
+        // where SpringBoard has finished the opening animation but the App has not
+        // yet published its first UI frame.
+        const auto sampleable_home_exit_process_id =
+            reason == KernelSharedState::ApplicationSuspensionReason::Home
+                ? target_process_id ? target_process_id : prior_home_exit_process_id
+                : prior_home_exit_process_id;
+        apply_launch_barrier_locked(
+            state, reason, system_input_sequence, sampleable_home_exit_process_id);
+        if (reason == KernelSharedState::ApplicationSuspensionReason::Lock &&
+            target_process_id && state.application_launch_barrier &&
+            state.application_launch_barrier->input_sequence ==
+                system_input_sequence) {
+            state.application_launch_barrier->retained_process_id =
+                *target_process_id;
+        }
+
+        // With no exact current target, the sequence barrier is sufficient. A later
+        // SpringBoard spawn/lookup will create a PID-bound attempt and compare its
+        // causal touch sequence with this barrier.
+        if (!target_process_id)
+            return;
+
+        if (prior_home_exit_process_id == target_process_id) {
+            state.interrupted_home_exit_lock_sequence = system_input_sequence;
+        }
+        state.application_touch_suspended = true;
+        state.application_suspension_reason = reason;
+        state.suspended_application_scene_process_id = *target_process_id;
+        if (reason == KernelSharedState::ApplicationSuspensionReason::Home) {
+            release_application_fullscreen_suppression_locked(
+                state, *target_process_id);
+        }
+        if (scenes) {
+            if (reason == KernelSharedState::ApplicationSuspensionReason::Home) {
+                scenes->begin_client_scene_exit(*target_process_id);
+            } else {
+                scenes->suspend_client_scene(*target_process_id);
+            }
+        }
+    }
+
+} // namespace
+
 void suspend_active_application(KernelSharedState& state,
     KernelSharedState::ApplicationSuspensionReason reason,
     SceneCoordinator* scenes, std::uint64_t system_input_sequence)
 {
     std::lock_guard lock { state.mach_mutex };
-    if (system_input_sequence == 0U) {
-        system_input_sequence = allocate_graphics_input_sequence_locked(state);
-    }
-    if (reason == KernelSharedState::ApplicationSuspensionReason::Lock) {
-        state.springboard_lock_screen_active = true;
-        if (!state.springboard_unlock_touch_active)
-            state.springboard_unlock_touch_pending = true;
-    }
-    const auto prior_home_exit_process_id =
-        state.application_touch_suspended &&
-                state.application_suspension_reason ==
-                    KernelSharedState::ApplicationSuspensionReason::Home
-            ? state.suspended_application_scene_process_id
-            : std::nullopt;
+    suspend_active_application_locked(
+        state, reason, scenes, system_input_sequence);
+}
 
-    std::optional<std::uint32_t> target_process_id;
-    if (state.foreground_application_attempt_process_id) {
-        const auto process = state.processes.find(
-            *state.foreground_application_attempt_process_id);
-        if (process != state.processes.end() && !process->second.exited &&
-            launch_attempt_locked(
-                state, *state.foreground_application_attempt_process_id)) {
-            target_process_id = process->first;
-        } else {
-            state.foreground_application_attempt_process_id.reset();
-        }
-    }
-
-    std::optional<std::uint32_t> routed_process_id;
-    if (const auto active_port = state.mach_port_objects.lookup(
-            state.active_application_event_object)) {
-        routed_process_id = active_port->receive_owner;
-    }
-    const auto active_process_id =
-        state.active_application_scene
-            ? std::optional<std::uint32_t> { state.active_application_scene
-                      ->process_id }
-            : routed_process_id;
-    if (!target_process_id &&
-        reason == KernelSharedState::ApplicationSuspensionReason::Lock &&
-        state.application_touch_suspended &&
-        state.application_suspension_reason ==
-            KernelSharedState::ApplicationSuspensionReason::Home &&
-        state.suspended_application_scene_process_id &&
-        ((state.active_application_scene &&
-             state.active_application_scene->process_id ==
-                 *state.suspended_application_scene_process_id) ||
-            routed_process_id ==
-                state.suspended_application_scene_process_id)) {
-        target_process_id = *state.suspended_application_scene_process_id;
-    }
-    if (!target_process_id && active_process_id &&
-        state.active_application_event_object != 0U &&
-        !state.application_touch_suspended &&
-        (!scenes || scenes->client_scene_active(*active_process_id))) {
-        target_process_id = active_process_id;
-    }
-    // Capture the exact selected token before Home updates the cancellation
-    // watermark and clears foreground authorization. This narrow interval is
-    // where SpringBoard has finished the opening animation but the App has not
-    // yet published its first UI frame.
-    const auto sampleable_home_exit_process_id =
-        reason == KernelSharedState::ApplicationSuspensionReason::Home
-            ? target_process_id ? target_process_id : prior_home_exit_process_id
-            : prior_home_exit_process_id;
-    apply_launch_barrier_locked(
-        state, reason, system_input_sequence, sampleable_home_exit_process_id);
-    if (reason == KernelSharedState::ApplicationSuspensionReason::Lock &&
-        target_process_id && state.application_launch_barrier &&
-        state.application_launch_barrier->input_sequence ==
-            system_input_sequence) {
-        state.application_launch_barrier->retained_process_id =
-            *target_process_id;
-    }
-
-    // With no exact current target, the sequence barrier is sufficient. A later
-    // SpringBoard spawn/lookup will create a PID-bound attempt and compare its
-    // causal touch sequence with this barrier.
-    if (!target_process_id)
+void record_system_event_delivery_locked(KernelSharedState& state,
+    std::uint32_t destination, std::uint32_t event_type, SceneCoordinator* scenes)
+{
+    const auto service = state.bootstrap_service_objects.find(
+        std::string { system_event_service });
+    if (service == state.bootstrap_service_objects.end() ||
+        service->second != destination)
         return;
-
-    if (prior_home_exit_process_id == target_process_id) {
-        state.interrupted_home_exit_lock_sequence = system_input_sequence;
-    }
-    state.application_touch_suspended = true;
-    state.application_suspension_reason = reason;
-    state.suspended_application_scene_process_id = *target_process_id;
-    if (reason == KernelSharedState::ApplicationSuspensionReason::Home) {
-        release_application_fullscreen_suppression_locked(
-            state, *target_process_id);
-    }
-    if (scenes) {
-        if (reason == KernelSharedState::ApplicationSuspensionReason::Home) {
-            scenes->begin_client_scene_exit(*target_process_id);
-        } else {
-            scenes->suspend_client_scene(*target_process_id);
-        }
-    }
+    const auto& profile = GraphicsServicesInputAbi::for_abi(
+        graphics_input_abi_for_object_locked(state, destination));
+    const auto home = event_type == profile.system_events.home[0];
+    const auto lock = event_type == profile.system_events.lock[0];
+    if ((!home && !lock) ||
+        state.requested_display_power_state.value_or(1U) == 0U)
+        return;
+    if (home && (state.springboard_unlock_touch_pending ||
+                    state.springboard_unlock_touch_active))
+        return;
+    // Firmware event producers (accessibility and other system services) own
+    // the wire event. Apply the same scene barrier as physical input without
+    // injecting a second button event.
+    suspend_active_application_locked(state,
+        home ? KernelSharedState::ApplicationSuspensionReason::Home
+             : KernelSharedState::ApplicationSuspensionReason::Lock,
+        scenes, 0U);
 }
 
 void complete_home_transition_after_present(KernelSharedState& state,
@@ -2533,8 +2579,8 @@ void complete_home_transition_after_present(KernelSharedState& state,
     const auto process_id = *state.suspended_application_scene_process_id;
     // The first SpringBoard SwapEnd starts the animation; it is not an
     // ownership completion point. Keep any live, PID-bound attempt sampleable
-    // until the ordered 2003 background event. A later user gesture provides a
-    // deterministic stale-exit fallback if that private event never arrives.
+    // until the ordered native background event. A later user gesture provides
+    // a deterministic stale-exit fallback if that private event never arrives.
     const auto process = state.processes.find(process_id);
     if (launch_attempt_locked(state, process_id) &&
         process != state.processes.end() && !process->second.exited) {
@@ -3047,7 +3093,11 @@ void record_application_event_delivery_locked(KernelSharedState& state,
     std::uint32_t sender_pid, std::uint32_t destination,
     std::uint32_t event_type, SceneCoordinator* scenes)
 {
-    if (event_type == application_transition_event_type) {
+    const auto& application_events =
+        GraphicsServicesInputAbi::for_abi(
+            graphics_input_abi_for_object_locked(state, destination))
+            .application_events;
+    if (event_type == application_events.background_complete) {
         const auto sender = state.processes.find(sender_pid);
         const auto destination_port =
             state.mach_port_objects.lookup(destination);
@@ -3085,7 +3135,7 @@ void record_application_event_delivery_locked(KernelSharedState& state,
     }
     const auto process_id = destination_port->receive_owner;
     const auto resume_origin_touch_sequence =
-        event_type == application_transition_event_type
+        event_type == application_events.resume
             ? state.springboard_pending_launch_touch_sequence
             : 0U;
     if (const auto pending =
@@ -3108,7 +3158,7 @@ void record_application_event_delivery_locked(KernelSharedState& state,
     }
     state.application_event_objects_by_process[process_id] = destination;
     const auto unlock_promotion =
-        event_type == application_transition_event_type &&
+        event_type == application_events.resume &&
         promote_application_after_unlock_locked(state, process_id);
     state.mark_foreground_transition_locked(
         KernelSharedState::ForegroundTransitionMilestone::EventPortReady,

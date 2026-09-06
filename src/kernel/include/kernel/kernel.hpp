@@ -28,6 +28,7 @@
 #include "media/core_audio_hle.hpp"
 #include "media/core_media_hle.hpp"
 #include "kernel/core_surface_hle.hpp"
+#include "kernel/hid_event_system_hle.hpp"
 #include "foundation/cpu.hpp"
 #include "kernel/darwin_bpf_abi.hpp"
 #include "foundation/darwin_notify_state_hle.hpp"
@@ -798,6 +799,7 @@ private:
         std::make_shared<RingerSwitchState>()
     };
     UserlandHleRegistry userland_hle_;
+    HidEventSystemHle hid_event_system_hle_;
     SystemConfigurationHle system_configuration_hle_;
     DarwinNotifyStateHle darwin_notify_state_hle_;
     AudioToolboxHle audio_toolbox_hle_;

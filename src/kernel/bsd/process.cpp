@@ -132,6 +132,7 @@ void CompatibilityKernel::exit_process(
     if (process_.exited)
         return;
     note_timer_deadline_transition();
+    hid_event_system_hle_.reset(process_.pid);
     process_.exit_status = status;
     process_.termination_signal = signal;
     // Publish the dead identity before tearing down its ports. Mach/graphics

@@ -184,6 +184,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     , display_state_ { std::make_shared<DisplayState>(device_model_.display) }
     , audio_service_ { std::make_shared<AudioService>(rootfs_) }
     , userland_hle_ { memory_, output_ }
+    , hid_event_system_hle_ { userland_hle_ }
     , system_configuration_hle_ { userland_hle_ }
     , darwin_notify_state_hle_ { userland_hle_ }
     , audio_toolbox_hle_ { userland_hle_ }
@@ -307,6 +308,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     device_model_.display = display_state_->geometry();
     shared_state_->display_geometry = device_model_.display;
     shared_state_->user_interface_geometry = device_model_.user_interface;
+    hid_event_system_hle_.set_shared_state(shared_state_);
     core_surface_hle_.set_shared_state(shared_state_);
     core_surface_hle_.set_scene_coordinator(scene_coordinator_);
     core_surface_hle_.set_surface_port_handlers(
@@ -517,6 +519,11 @@ void CompatibilityKernel::enqueue_touch_input(const TouchInput& input)
         input, scene_coordinator_.get(), presentation_tracker_.get(),
         &home_recovery_requested, &input_sequence);
     wake_graphics_input_receivers();
+    if (const auto consumer = shared_state_->hid_event_queue.consumer();
+        consumer && thread_wake_handler_) {
+        static_cast<void>(thread_wake_handler_(consumer->process,
+            static_cast<std::uint32_t>(consumer->processor)));
+    }
     const auto enqueued_at = std::chrono::steady_clock::now();
     const auto phase = [phase = input.phase] {
         switch (phase) {
@@ -869,6 +876,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     note_timer_deadline_transition();
     release_close_on_exec_descriptors();
     install_commpage();
+    hid_event_system_hle_.reset(process_.pid);
     userland_hle_.reset_mappings();
     darwin_notify_state_hle_.reset();
     core_audio_hle_.reset();
@@ -2581,6 +2589,7 @@ void CompatibilityKernel::inherit_process_state(
     apple80211_hle_.set_wifi_state(wifi_state_);
     core_surface_hle_.set_display(display_state_);
     core_surface_hle_.set_presentation_tracker(presentation_tracker_);
+    hid_event_system_hle_.set_shared_state(shared_state_);
     core_surface_hle_.set_shared_state(shared_state_);
     core_surface_hle_.set_scene_coordinator(scene_coordinator_);
     opengles_hle_.set_shared_state(shared_state_);
@@ -2702,6 +2711,7 @@ void CompatibilityKernel::dispatch(Cpu& cpu, std::uint32_t svc_immediate)
     // syscalls cannot force every blocked descriptor tree to be rescanned.
     note_timer_deadline_transition();
     std::lock_guard lock { mutex_ };
+    hid_event_system_hle_.prepare_pending_event(cpu, process_.pid, svc_immediate);
     if (apple80211_hle_.deliver_pending_event(
             cpu, process_.pid, svc_immediate)) {
         output_.write(

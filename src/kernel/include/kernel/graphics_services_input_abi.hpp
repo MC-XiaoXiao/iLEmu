@@ -48,6 +48,11 @@ struct GraphicsServicesInputAbi {
     // legacy eight-byte field.
     std::size_t idle_duration_reset_info_size { };
     SystemEvents system_events { };
+    struct ApplicationEvents {
+        std::uint32_t resume { 2003U };
+        std::uint32_t background_complete { 2003U };
+    };
+    ApplicationEvents application_events { };
 
     [[nodiscard]] std::uint8_t hand_type(TouchPhase phase) const;
     [[nodiscard]] std::uint8_t path_type(TouchPhase phase) const;

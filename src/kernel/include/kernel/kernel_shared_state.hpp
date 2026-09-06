@@ -1,5 +1,7 @@
 #pragma once
 
+#include "kernel/hid_event_queue.hpp"
+
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -369,6 +371,7 @@ make_socket_pair_endpoints(std::uint32_t pair)
 }
 
 struct KernelSharedState {
+    HidEventQueue hid_event_queue;
     DarwinKernelIdentity darwin_kernel_identity;
     DarwinAbi darwin_abi;
     std::string device_product_type;

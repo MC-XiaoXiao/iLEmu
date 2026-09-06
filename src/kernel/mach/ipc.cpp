@@ -905,6 +905,11 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
             }
         }
         if (delivered_graphics_event_type) {
+            if (delivered_input_sequence == 0U) {
+                graphics_services_input::record_system_event_delivery_locked(
+                    *shared_state_, queued_port, *delivered_graphics_event_type,
+                    scene_coordinator_.get());
+            }
             // Bootstrap service ports remain owned by launchd while a cold app
             // is starting. Observe lifecycle delivery only after the receive
             // right has reached its real process, so the route is bound to the

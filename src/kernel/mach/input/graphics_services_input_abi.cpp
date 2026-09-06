@@ -107,6 +107,7 @@ constexpr GraphicsServicesInputAbi darwin11_0_abi{
         .volume_down = {1008, 1009},
         .ringer_switch = {1012, 1013},
     },
+    .application_events = { .resume = 2000U, .background_complete = 2008U },
 };
 
     std::uint32_t rotate_right(std::uint32_t value, std::uint32_t amount)
