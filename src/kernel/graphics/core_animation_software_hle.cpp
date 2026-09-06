@@ -2,6 +2,7 @@
 
 #include "foundation/address_space.hpp"
 #include "foundation/userland_hle.hpp"
+#include "graphics/fixed8_pixel_blender.hpp"
 #include "graphics/fixed_point_texture_sampler.hpp"
 
 #include <algorithm>
@@ -20,6 +21,38 @@ namespace {
         static constexpr std::uint32_t texture_words = 6U;
         static constexpr std::uint32_t maximum_span = 16384U;
     };
+
+    bool blend_source_over(UserlandHleCall& call)
+    {
+        const auto count = call.argument(3);
+        if (count == 0U)
+            return true;
+        if constexpr (std::endian::native != std::endian::little)
+            return false;
+        if (count > Fixed16SoftwareSamplerArm32Profile::maximum_span)
+            return false;
+        const auto output = static_cast<std::uint64_t>(call.argument(0));
+        const auto bytes = count * sizeof(std::uint32_t);
+        // Exact in-place blending is safe after reading both operands. Other
+        // overlapping spans retain the firmware's sequential store behavior.
+        for (const auto input : { call.argument(1), call.argument(2) }) {
+            if (input != output && input < output + bytes &&
+                output < static_cast<std::uint64_t>(input) + bytes) {
+                return false;
+            }
+        }
+        std::vector<std::uint32_t> destination(count), source(count);
+        auto& memory = call.memory();
+        if (!memory.copy_out(call.argument(1),
+                std::as_writable_bytes(std::span { destination })) ||
+            !memory.copy_out(call.argument(2),
+                std::as_writable_bytes(std::span { source }))) {
+            return false;
+        }
+        Fixed8PixelBlender::source_over(source, destination, destination);
+        return memory.copy_in(call.argument(0),
+            std::as_bytes(std::span { destination }));
+    }
 
     bool sample_scanline(UserlandHleCall& call, bool linear, bool opaque)
     {
@@ -102,6 +135,14 @@ namespace {
 
 void register_core_animation_software_hle(UserlandHleRegistry& registry)
 {
+    registry.register_function("/QuartzCore.framework/QuartzCore",
+        "__ZN2CA3OGL2SW5Blend4ModeINS2_5SoverELb1EE5blendEPjPKjS8_mj",
+        [](UserlandHleCall& call) {
+            if (!blend_source_over(call))
+                call.resume_original_persistently();
+            else
+                call.set_return(0U);
+        });
     for (const auto opaque : { false, true }) {
         for (const auto linear : { false, true }) {
             const auto symbol =

@@ -8,6 +8,7 @@ add_library(ilemu_graphics STATIC
     gles_math.cpp
     host_graphics.cpp
     frame_file_presenter.cpp
+    fixed8_pixel_blender.cpp
     fixed_point_texture_sampler.cpp
     layerkit_compatibility.cpp
     local_scene_background.cpp
