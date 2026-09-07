@@ -174,6 +174,7 @@ void ScanoutComposition::begin_draw(GlesRenderTargetKey key,
     frame.active = true;
     frame.scene_composited = false;
     frame.primary_background_restored = false;
+    frame.textured_background_drawn = false;
     frame.solid_background_deferred = false;
 }
 
@@ -259,6 +260,14 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
     // companion slices, not a background beneath every translucent effect.
     if (!primary_scene && !frame->second.primary_background_restored)
         return true;
+    // A freshly drawn textured base and its later layers are already on
+    // scanout. Replaying the retained base would erase those later layers.
+    // Preserve it unless a preceding primary slice required reconstruction.
+    if (frame->second.textured_background_drawn &&
+        !frame->second.primary_background_restored) {
+        frame->second.scene_composited |= primary_scene;
+        return true;
+    }
     // Each local scene is self-contained. Adjacent scene slices can overlap
     // while their separator moves, so the later slice must rebuild its whole
     // destination instead of inheriting pixels from the earlier slice.
@@ -313,6 +322,9 @@ bool ScanoutComposition::capture_background(std::uint32_t process_id,
     CommandEncoder& encoder, bool textured_candidate)
 {
     const auto frame = frames_.find(key);
+    // The draw reached scanout even when retaining its pixels is deferred.
+    if (surface && frame != frames_.end())
+        frame->second.textured_background_drawn = textured_candidate;
     if (!surface || (frame != frames_.end() && frame->second.scene_composited))
         return true;
 

@@ -67,6 +67,7 @@ private:
         bool active { };
         bool scene_composited { };
         bool primary_background_restored { };
+        bool textured_background_drawn { };
         bool previous_scene_composited { };
         bool solid_background_deferred { };
         bool previous_solid_background_deferred { };
