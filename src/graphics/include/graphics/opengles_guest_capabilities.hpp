@@ -27,6 +27,7 @@ enum class OpenGlesGuestCapabilitySet {
     MbxLiteFramebufferObjects,
     Sgx535,
     Sgx535FramebufferObjects,
+    Sgx543,
 };
 
 // Guest-visible capabilities of the firmware GPU driver. Host renderer names

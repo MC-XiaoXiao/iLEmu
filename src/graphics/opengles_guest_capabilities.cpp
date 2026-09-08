@@ -90,6 +90,16 @@ namespace {
         sgx535.maximum_viewport_dimension,
     };
 
+    // Share the implemented SGX fixed-function contract; hardware identity
+    // stays separate from the host Vulkan renderer and from ES 2 support.
+    constexpr OpenGlesGuestCapabilities sgx543 = [] {
+        auto capabilities = sgx535_framebuffer_objects;
+        capabilities.name = "sgx543-framebuffer-object";
+        capabilities.renderer = "PowerVR SGX 543";
+        capabilities.version = "OpenGL ES-CM 1.1";
+        return capabilities;
+    }();
+
 } // namespace
 
 EaglContextAbi detect_eagl_context_abi(const UserlandHleCall& call)
@@ -111,6 +121,8 @@ const OpenGlesGuestCapabilities& open_gles_guest_capabilities(
         return sgx535;
     case OpenGlesGuestCapabilitySet::Sgx535FramebufferObjects:
         return sgx535_framebuffer_objects;
+    case OpenGlesGuestCapabilitySet::Sgx543:
+        return sgx543;
     }
     return legacy_mbx_lite;
 }
@@ -125,6 +137,8 @@ OpenGlesGuestCapabilitySet open_gles_framebuffer_capabilities(
     case OpenGlesGuestCapabilitySet::Sgx535:
     case OpenGlesGuestCapabilitySet::Sgx535FramebufferObjects:
         return OpenGlesGuestCapabilitySet::Sgx535FramebufferObjects;
+    case OpenGlesGuestCapabilitySet::Sgx543:
+        return OpenGlesGuestCapabilitySet::Sgx543;
     }
     return OpenGlesGuestCapabilitySet::MbxLiteFramebufferObjects;
 }
