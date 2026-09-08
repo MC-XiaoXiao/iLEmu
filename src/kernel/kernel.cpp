@@ -177,6 +177,8 @@ namespace {
             return OpenGlesGuestCapabilitySet::MbxLiteLegacy;
         case GraphicsAcceleratorKind::Sgx535:
             return OpenGlesGuestCapabilitySet::Sgx535;
+        case GraphicsAcceleratorKind::Sgx543:
+            return OpenGlesGuestCapabilitySet::Sgx543;
         }
         return OpenGlesGuestCapabilitySet::MbxLiteLegacy;
     }
@@ -275,10 +277,13 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         make_graphics_services_capability_memory(rootfs_, device_model_);
     shared_state_->device_cpu_type = arm_mach_cpu_type;
     shared_state_->graphics_accelerator = device_model_.graphics_accelerator;
+    shared_state_->audio_hardware_profile =
+        device_model_.audio_hardware_profile;
     shared_state_->graphics_driver_bundle =
         std::string { device_model_.graphics_driver_bundle };
     shared_state_->framebuffer_service_class =
         std::string { device_model_.framebuffer_service_class };
+    shared_state_->external_framebuffer = device_model_.external_framebuffer;
     shared_state_->apple_key_store_available =
         device_model_.keybag_capabilities.apple_key_store_available;
     shared_state_->effaceable_storage_available =

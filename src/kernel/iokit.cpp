@@ -756,17 +756,22 @@ namespace {
     }
 
     std::uint32_t ensure_mobile_framebuffer_service_locked(
-        KernelSharedState& shared_state)
+        KernelSharedState& shared_state, bool external = false)
     {
-        if (shared_state.mobile_framebuffer_service != 0) {
-            return shared_state.mobile_framebuffer_service;
+        auto& service_port = external
+                                 ? shared_state.external_framebuffer_service
+                                 : shared_state.mobile_framebuffer_service;
+        if (service_port != 0) {
+            return service_port;
         }
         const auto port = shared_state.allocate_mach_object();
-        shared_state.mobile_framebuffer_service = port;
+        service_port = port;
         static_cast<void>(shared_state.mach_port_objects.create(port));
         shared_state.mach_queues.try_emplace(port);
         KernelSharedState::IOKitService service {
-            shared_state.framebuffer_service_class.empty()
+            external
+                ? std::string { shared_state.external_framebuffer.service_class }
+                : shared_state.framebuffer_service_class.empty()
                 ? std::string { apple_h1clcd_class }
                 : shared_state.framebuffer_service_class,
             { std::string { mobile_framebuffer_class } }, { }, { }, 0,
@@ -1078,8 +1083,8 @@ namespace {
                 ensure_platform_expert_service_locked(shared_state));
         }
         if (kernel_iokit::graphics::matches_service(matching) &&
-            shared_state.graphics_accelerator ==
-                GraphicsAcceleratorKind::Sgx535 &&
+            shared_state.graphics_accelerator !=
+                GraphicsAcceleratorKind::MbxLite &&
             !shared_state.graphics_driver_bundle.empty()) {
             const auto platform_expert =
                 ensure_platform_expert_service_locked(shared_state);
@@ -1176,6 +1181,14 @@ namespace {
             contains_text(matching, mobile_framebuffer_class)) {
             services.push_back(
                 ensure_mobile_framebuffer_service_locked(shared_state));
+        }
+        const auto external_class =
+            shared_state.external_framebuffer.service_class;
+        if (!external_class.empty() &&
+            (contains_text(matching, external_class) ||
+                contains_text(matching, mobile_framebuffer_class))) {
+            services.push_back(
+                ensure_mobile_framebuffer_service_locked(shared_state, true));
         }
         if (contains_text(matching, core_surface_root_class)) {
             services.push_back(

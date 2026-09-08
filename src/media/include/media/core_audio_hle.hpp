@@ -72,6 +72,11 @@ private:
     void add_io_proc(UserlandHleCall& call);
     void remove_io_proc(UserlandHleCall& call);
     void start_io(UserlandHleCall& call);
+    void start_native_io(UserlandHleCall& call);
+    enum class NativeFormatQuery { OutputStream, StreamFormat, FrameCount };
+    void query_native_io_format(UserlandHleCall& call,
+        std::uint32_t io_proc_id, NativeFormatQuery query, std::uint32_t stream = 0);
+    void configure_native_io(UserlandHleCall& call, std::uint32_t io_proc_id);
     void stop_io(UserlandHleCall& call);
     void complete_io_proc(UserlandHleCall& call, std::uint32_t process_id,
         bool native, std::uint32_t io_proc_id);
@@ -96,6 +101,10 @@ private:
         std::uint32_t output_sample_bytes { };
         std::uint32_t sample_rate { 44100 };
         std::uint32_t channel_count { 2 };
+        std::uint32_t buffer_frame_size { 1024 };
+        std::uint32_t bytes_per_sample { 2 };
+        bool floating_point { };
+        std::uint32_t format_query { };
         std::vector<std::byte> zero_output_samples;
         std::vector<std::byte> captured_output_samples;
         std::uint32_t stack { };

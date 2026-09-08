@@ -202,6 +202,43 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     std::lock_guard lock { state.mach_mutex };
     if (!is_display_connection_locked(state, process, connection_object))
         return std::nullopt;
+    const auto& connection = state.iokit_connections.at(connection_object);
+    const bool external = state.external_framebuffer_service != 0 &&
+                          connection.service_port ==
+                              state.external_framebuffer_service;
+
+    if (selector == static_cast<std::uint32_t>(
+                        iokit_abi::MobileFramebufferSelector::IsMainDisplay)) {
+        if (!scalar_input.empty() || !inband_input.empty() ||
+            scalar_output_capacity < 1U) {
+            return MethodResult { iokit_abi::bad_argument, { } };
+        }
+        return MethodResult { iokit_abi::success, { external ? 0U : 1U } };
+    }
+
+    // An external controller is present even with no monitor attached. Its
+    // connection state and power requests must never change the built-in LCD.
+    if (external && selector == static_cast<std::uint32_t>(
+                                   iokit_abi::MobileFramebufferSelector::
+                                       GetDigitalOutState)) {
+        if (!scalar_input.empty() || !inband_input.empty() ||
+            scalar_output_capacity < 1U) {
+            return MethodResult { iokit_abi::bad_argument, { } };
+        }
+        return MethodResult { iokit_abi::success, { 0U } };
+    }
+    if (external && selector == static_cast<std::uint32_t>(
+                                   iokit_abi::MobileFramebufferSelector::
+                                       SetTVOutSignalType)) {
+        if (scalar_input.size() != 1U || !inband_input.empty() ||
+            scalar_output_capacity != 0U) {
+            return MethodResult { iokit_abi::bad_argument, { } };
+        }
+        return MethodResult { scalar_input.front() == 0U
+                                  ? iokit_abi::success
+                                  : iokit_abi::unsupported,
+            { } };
+    }
 
     if (selector ==
         static_cast<std::uint32_t>(
@@ -211,7 +248,7 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
             return MethodResult { iokit_abi::bad_argument, { } };
         }
         return MethodResult { iokit_abi::success,
-            { iokit_abi::mobile_framebuffer_default_surface_id } };
+            { external ? 0U : iokit_abi::mobile_framebuffer_default_surface_id } };
     }
 
     if (selector ==
@@ -228,6 +265,8 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         if (scalar_input.size() != 2U || !inband_input.empty()) {
             return MethodResult { iokit_abi::bad_argument, { } };
         }
+        if (external)
+            return MethodResult { iokit_abi::success, { } };
         const auto registration =
             state.iokit_display_vsync.find(connection_object);
         if (registration == state.iokit_display_vsync.end())
@@ -290,6 +329,8 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
             scalar_output_capacity != 0U) {
             return MethodResult { iokit_abi::bad_argument, { } };
         }
+        if (external)
+            return MethodResult { iokit_abi::success, { } };
         auto requested_power_state =
             static_cast<std::uint32_t>(scalar_input.front());
         const auto wake_lock_power_off_pending = [&state] {

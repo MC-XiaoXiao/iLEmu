@@ -852,6 +852,35 @@ void register_core_telephony_hle(UserlandHleRegistry& registry,
             [](UserlandHleCall& call) { return_empty_server_string(call); });
     }
     registry.register_function(std::string { core_telephony_image },
+        "__CTServerConnectionGetEmergencyCallBackMode",
+        [offline_transport](UserlandHleCall& call) {
+            if (!offline_transport) {
+                call.resume_original();
+                return;
+            }
+            // The native status output is a Boolean byte, not a CF object.
+            if (call.argument(2) != 0)
+                static_cast<void>(call.memory().write8(call.argument(2), 0));
+            return_server_failure(call, call.argument(0), 0,
+                equipment_info_unavailable_error);
+        });
+    registry.register_function(std::string { core_telephony_image },
+        "__CTServerConnectionCopySystemCapabilities",
+        [offline_transport](UserlandHleCall& call) {
+            if (!offline_transport) {
+                call.resume_original();
+                return;
+            }
+            // The native API returns a retained dictionary and a byte-sized
+            // availability flag. An offline modem cannot supply either.
+            if (call.argument(3) != 0) {
+                static_cast<void>(
+                    call.memory().write8(call.argument(3), 0));
+            }
+            return_server_failure(call, call.argument(0), call.argument(2),
+                equipment_info_unavailable_error);
+        });
+    registry.register_function(std::string { core_telephony_image },
         "__CTServerConnectionCopyMobileEquipmentInfo",
         [offline_transport](UserlandHleCall& call) {
             if (!offline_transport) {

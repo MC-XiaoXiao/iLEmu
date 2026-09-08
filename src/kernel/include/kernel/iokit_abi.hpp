@@ -69,6 +69,9 @@ enum class MobileFramebufferSelector : std::uint32_t {
     // compositor already owns the final pixel transform, so accepting this
     // capability is intentionally state-neutral.
     SetWhiteOnBlackMode = 19,
+    SetTVOutSignalType = 16,
+    IsMainDisplay = 18,
+    GetDigitalOutState = 25,
 };
 
 constexpr bool is_mobile_framebuffer_vsync_selector(std::uint32_t selector)

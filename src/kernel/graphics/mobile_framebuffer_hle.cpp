@@ -61,14 +61,6 @@ namespace {
                          process->second.application_display };
     }
 
-    DisplayGeometry display_geometry_for_process(
-        const std::shared_ptr<KernelSharedState>& shared_state,
-        std::uint32_t process_id, DisplayGeometry output)
-    {
-        const auto profile =
-            application_display_for_process(shared_state, process_id);
-        return profile ? application_display_geometry(*profile, output) : output;
-    }
 } // namespace
 
 MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
@@ -89,30 +81,7 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
         registry.register_function(std::string { framebuffer_image },
             std::move(symbol), std::move(handler));
     };
-    // IOMobileFramebufferGetTypeID and IOMobileFramebufferOpen intentionally
-    // execute from the firmware: the former registers the real CFRuntime class,
-    // and the latter allocates that genuine object and opens only our display
-    // handle.
-    add("_IOMobileFramebufferGetDisplaySize", [this](UserlandHleCall& call) {
-        const auto output = call.argument(1);
-        const auto output_geometry =
-            display_ ? display_->geometry() : default_display_geometry;
-        const auto geometry = display_geometry_for_process(
-            shared_state_, call.process_id(), output_geometry);
-        const auto width =
-            std::bit_cast<std::uint32_t>(static_cast<float>(geometry.width));
-        const auto height =
-            std::bit_cast<std::uint32_t>(static_cast<float>(geometry.height));
-        call.set_return(output != 0 && call.memory().write32(output, width) &&
-                                call.memory().write32(output + 4U, height)
-                            ? iokit_abi::success
-                            : iokit_abi::bad_argument);
-    });
-    add("_IOMobileFramebufferGetID", [](UserlandHleCall& call) {
-        call.set_return(call.write32(call.argument(1), 0)
-                            ? iokit_abi::success
-                            : iokit_abi::bad_argument);
-    });
+    register_device_functions(registry);
     // NotifyFunc begins by calling this firmware routine before it examines or
     // dispatches the notification. Observe that boundary, then immediately run
     // the original routine. The VSync/IONotificationPort entry points, callback
@@ -213,6 +182,7 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
 
 void MobileFramebufferHle::reset()
 {
+    external_framebuffers_.clear();
     layers_.clear();
     layer_surface_leases_.clear();
     submitted_layers_.clear();
@@ -225,6 +195,7 @@ void MobileFramebufferHle::reset()
 
 void MobileFramebufferHle::inherit_state(const MobileFramebufferHle& parent)
 {
+    external_framebuffers_ = parent.external_framebuffers_;
     layers_ = parent.layers_;
     layer_surface_leases_ = parent.layer_surface_leases_;
     submitted_layers_ = parent.submitted_layers_;
@@ -288,6 +259,8 @@ void MobileFramebufferHle::set_semantic_presentation_handler(
 
 bool MobileFramebufferHle::display_write_allowed(UserlandHleCall& call) const
 {
+    if (is_external_framebuffer(call))
+        return false;
     if (!shared_state_)
         return true;
     std::lock_guard lock { shared_state_->mach_mutex };
@@ -834,6 +807,10 @@ void MobileFramebufferHle::set_layer(UserlandHleCall& call)
         call.set_return(iokit_abi::bad_argument);
         return;
     }
+    if (is_external_framebuffer(call)) {
+        call.set_return(iokit_abi::success);
+        return;
+    }
     if (surface == 0) {
         layers_.erase(layer);
         layer_surface_leases_.erase(layer);
@@ -1097,6 +1074,10 @@ std::optional<std::uint32_t> MobileFramebufferHle::record_presentation(
 
 void MobileFramebufferHle::set_background_color(UserlandHleCall& call)
 {
+    if (is_external_framebuffer(call)) {
+        call.set_return(iokit_abi::success);
+        return;
+    }
     const auto channel = [](std::uint32_t bits) {
         const auto value = std::clamp(std::bit_cast<float>(bits), 0.0F, 1.0F);
         return static_cast<std::uint32_t>(std::lround(value * 255.0F));

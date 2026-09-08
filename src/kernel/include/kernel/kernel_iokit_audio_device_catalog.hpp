@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include "foundation/device_model.hpp"
+
 #include <cstdint>
 #include <optional>
 #include <span>
@@ -79,7 +81,8 @@ struct IOAudio2DeviceDescription {
 // dispatch or host audio backends.
 class IOAudio2DeviceCatalog final {
 public:
-    [[nodiscard]] static std::span<const IOAudio2DeviceDescription> devices();
+    [[nodiscard]] static std::span<const IOAudio2DeviceDescription> devices(
+        AudioHardwareProfile profile = AudioHardwareProfile::CodecBaseband);
     [[nodiscard]] static const IOAudio2DeviceDescription* find(
         std::string_view uid);
 };

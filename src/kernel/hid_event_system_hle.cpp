@@ -186,14 +186,18 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
             const auto callback = call.argument(1);
             call.resume_original_persistently(
                 [this, consumer, callback](UserlandHleCall& completed) {
-                    if (!state_ || !callback || completed.argument(0) == 0U ||
+                    // Opening the event system establishes the hardware event
+                    // consumer even when its callback is installed later.
+                    // Native dispatch owns callback and client routing.
+                    if (!state_ || completed.argument(0) == 0U ||
                         !state_->user_interface_geometry.valid())
                         return;
                     for (const auto symbol :
                         { create_digitizer, "_IOHIDEventAppendEvent",
                             "__IOHIDEventSystemDispatchEvent", "_CFRelease" }) {
-                        if (!completed.symbol_address(symbol))
+                        if (!completed.symbol_address(symbol)) {
                             return;
+                        }
                     }
                     consumer_process_ = consumer.process;
                     consumer_processor_ = consumer.processor;

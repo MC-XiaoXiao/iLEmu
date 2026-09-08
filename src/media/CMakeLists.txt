@@ -7,6 +7,7 @@ add_library(ilemu_media STATIC
     audio_toolbox_hle.cpp
     celestial_volume_protocol.cpp
     core_audio_hle.cpp
+    core_audio_native_io.cpp
     core_media_hle.cpp
     jpeg_encoder.cpp
     media_library_service.cpp)

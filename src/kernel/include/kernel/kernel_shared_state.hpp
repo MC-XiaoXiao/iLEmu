@@ -398,7 +398,11 @@ struct KernelSharedState {
         GraphicsAcceleratorKind::MbxLite
     };
     std::string graphics_driver_bundle;
+    AudioHardwareProfile audio_hardware_profile {
+        AudioHardwareProfile::CodecBaseband
+    };
     std::string framebuffer_service_class;
+    ExternalFramebufferProfile external_framebuffer;
     bool apple_key_store_available { };
     bool effaceable_storage_available { true };
     bool virtual_effaceable_storage_available { };
@@ -1595,6 +1599,7 @@ struct KernelSharedState {
     std::shared_ptr<KeyStore> key_store;
     bsd::baseband_device::State baseband_device_state;
     std::uint32_t mobile_framebuffer_service { };
+    std::uint32_t external_framebuffer_service { };
     std::uint32_t multitouch_hid_service { };
     // IOAudio2 publishes independent Codec/Baseband-style endpoints. Key by
     // firmware-facing UID so a released service can be recreated independently.

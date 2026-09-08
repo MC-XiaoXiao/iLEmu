@@ -44,6 +44,19 @@ enum class ActivationHardwareModelPolicy : std::uint8_t {
 enum class GraphicsAcceleratorKind : std::uint8_t {
     MbxLite,
     Sgx535,
+    Sgx543,
+};
+
+enum class AudioHardwareProfile : std::uint8_t {
+    CodecBaseband,
+    CodecBasebandVoiceRouting,
+};
+
+// An optional external controller remains discoverable without an attached
+// monitor. Its native framebuffer object is separate from the built-in panel.
+struct ExternalFramebufferProfile {
+    std::string_view service_class;
+    DisplayGeometry geometry { 0U, 0U };
 };
 
 // Host-driven system gestures are expressed in the firmware's normalized UI
@@ -202,6 +215,10 @@ struct DeviceModel {
     // Guest-visible memory after platform-reserved carve-outs. Zero follows
     // ram_bytes when the model has no separate memory-size boundary.
     std::uint64_t memory_size_bytes { };
+    AudioHardwareProfile audio_hardware_profile {
+        AudioHardwareProfile::CodecBaseband
+    };
+    ExternalFramebufferProfile external_framebuffer;
 
     static const DeviceModel& default_model();
     [[nodiscard]] static std::span<const DeviceModel> available_models();

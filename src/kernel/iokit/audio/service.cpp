@@ -792,8 +792,10 @@ std::vector<std::uint32_t> ensure_services_locked(KernelSharedState& state)
 {
     const auto& profile = IOKitAudioAbi::io_audio2();
     std::vector<std::uint32_t> services;
-    services.reserve(IOAudio2DeviceCatalog::devices().size());
-    for (const auto& device : IOAudio2DeviceCatalog::devices()) {
+    const auto devices =
+        IOAudio2DeviceCatalog::devices(state.audio_hardware_profile);
+    services.reserve(devices.size());
+    for (const auto& device : devices) {
         const auto cached =
             state.ioaudio2_services.find(std::string { device.uid });
         if (cached != state.ioaudio2_services.end() &&
@@ -827,9 +829,11 @@ std::vector<std::uint32_t> ensure_services_locked(KernelSharedState& state)
             profile.registry.output_safety_offset, number_property(0));
         properties.emplace(profile.registry.input_latency, number_property(0));
         properties.emplace(profile.registry.output_latency, number_property(0));
-        properties.emplace(profile.registry.sample_rate,
-            number64_property(
-                fixed_sample_rate(device.streams.front().format.sample_rate)));
+        if (!device.streams.empty()) {
+            properties.emplace(profile.registry.sample_rate,
+                number64_property(fixed_sample_rate(
+                    device.streams.front().format.sample_rate)));
+        }
         properties.emplace(
             profile.registry.is_running, boolean_property(false));
         properties.emplace(profile.registry.input_streams,

@@ -210,6 +210,19 @@ namespace {
         },
     };
 
+    // Voice is a routing-control endpoint, not a host PCM stream. The native
+    // HAL and routing engine own its property synchronizer and DSP graph.
+    constexpr auto application_voice_source = four_cc('a', 'p', '2', 'v');
+    constexpr std::array voice_sources {
+        IOAudio2SelectorItemDescription {
+            application_voice_source, "Application Processor" },
+    };
+    constexpr std::array voice_controls {
+        IOAudio2ControlDescription { 1U, selector_control_base_class,
+            data_source_control_class, four_cc('g', 'l', 'o', 'b'), 0U,
+            application_voice_source, false, std::nullopt, voice_sources },
+    };
+
     constexpr std::array device_catalog {
         IOAudio2DeviceDescription {
             .name = "Built-in Audio",
@@ -229,13 +242,26 @@ namespace {
             .streams = baseband_streams,
             .controls = { },
         },
+        IOAudio2DeviceDescription {
+            .name = "Voice",
+            .manufacturer = "Apple Computer, Inc.",
+            .uid = "Voice",
+            .transport_type = built_in_transport_type,
+            .io_buffer_frame_size = 1024,
+            .streams = { },
+            .controls = voice_controls,
+        },
     };
 
 } // namespace
 
-std::span<const IOAudio2DeviceDescription> IOAudio2DeviceCatalog::devices()
+std::span<const IOAudio2DeviceDescription> IOAudio2DeviceCatalog::devices(
+    AudioHardwareProfile profile)
 {
-    return device_catalog;
+    const auto devices = std::span { device_catalog };
+    return profile == AudioHardwareProfile::CodecBasebandVoiceRouting
+               ? devices
+               : devices.first(2U);
 }
 
 const IOAudio2DeviceDescription* IOAudio2DeviceCatalog::find(

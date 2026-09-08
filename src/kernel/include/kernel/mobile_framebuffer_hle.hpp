@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <vector>
 
 #include "graphics/host_graphics.hpp"
@@ -53,6 +54,8 @@ public:
     [[nodiscard]] bool has_active_layers() const;
 
 private:
+    void register_device_functions(UserlandHleRegistry& registry);
+    [[nodiscard]] bool is_external_framebuffer(UserlandHleCall& call) const;
     void set_background_color(UserlandHleCall& call);
     void set_layer(UserlandHleCall& call);
     void submit_layers(UserlandHleCall& call);
@@ -107,6 +110,7 @@ private:
     std::vector<std::shared_ptr<HostSurface>> composition_surfaces_;
     std::size_t composition_surface_index_ { };
     std::map<std::uint32_t, LayerState> layers_;
+    std::set<std::uint32_t> external_framebuffers_;
     // A hardware layer retains its IOSurface independently of the process
     // that created the backing. The lease is presentation state, not a host
     // renderer concern, and is released when that layer is replaced/removed.

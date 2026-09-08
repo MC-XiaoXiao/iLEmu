@@ -13,7 +13,7 @@ namespace ilemu {
 
 namespace {
 
-    constexpr std::array<DeviceModel, 7> models {
+    constexpr std::array<DeviceModel, 8> models {
         DeviceModel {
             "iPhone1,1",
             "M68AP",
@@ -134,6 +134,40 @@ namespace {
             { true, false, true },
             BasebandTransport::Offline,
             true,
+        },
+        DeviceModel {
+            "iPhone4,1",
+            "N94AP",
+            "N94AP",
+            "N94DEV",
+            "MD235",
+            "Apple A5 (S5L8940)",
+            "Cortex-A9",
+            "ARMv7 + Thumb-2",
+            ArmCpuModelKind::CortexA9,
+            800'000'000,
+            100'000'000,
+            512ULL * 1024ULL * 1024ULL,
+            16ULL * 1024ULL * 1024ULL * 1024ULL,
+            GuestCpuTopology::symmetric_cores(2U, 800'000'000U,
+                GuestCpuPerformanceClass::Performance,
+                guest_cpu_isa::armv7 | guest_cpu_isa::thumb |
+                    guest_cpu_isa::thumb2,
+                8U),
+            DisplayGeometry { 640U, 960U },
+            DisplayGeometry { 320U, 480U },
+            classic_compact_system_gestures,
+            GraphicsAcceleratorKind::Sgx543,
+            "IMGSGX543GLDriver",
+            "AppleM2CLCD",
+            { "iPhone", "iPhone 4S", true, true },
+            { true, false, true },
+            BasebandTransport::Offline,
+            true,
+            ActivationHardwareModelPolicy::Retail,
+            0,
+            AudioHardwareProfile::CodecBasebandVoiceRouting,
+            { "AppleM2TVOut", { 720U, 480U } },
         },
         DeviceModel {
             "iPod1,1",
