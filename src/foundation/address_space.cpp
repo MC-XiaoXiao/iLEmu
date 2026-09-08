@@ -62,6 +62,20 @@ namespace {
                AddressSpace::page_size;
     }
 
+    [[nodiscard]] std::uint64_t reservation_granule_mask(
+        std::uint32_t address, std::size_t size, std::uint32_t page)
+    {
+        const auto begin = std::max<std::uint64_t>(address, page) - page;
+        const auto end =
+            std::min<std::uint64_t>(static_cast<std::uint64_t>(address) + size,
+                static_cast<std::uint64_t>(page) + AddressSpace::page_size) -
+            page;
+        const auto first = begin / guest_exclusive_granule_size;
+        const auto last = (end - 1U) / guest_exclusive_granule_size;
+        return (~std::uint64_t { 0 } << first) &
+               (~std::uint64_t { 0 } >> (63U - last));
+    }
+
     [[nodiscard]] std::uint8_t* jit_page_pointer(
         const GuestPageBacking& backing, std::uint32_t guest_page) noexcept
     {
@@ -82,7 +96,8 @@ namespace {
     [[nodiscard]] std::uint64_t backing_reservation_key(
         const GuestPageBacking& backing, std::uint32_t address) noexcept
     {
-        const auto identity = backing.reservation_identity();
+        const auto identity = backing.reservation_identity(
+            address & (AddressSpace::page_size - 1U));
         if (identity == 0 || identity > maximum_backing_reservation_identity) {
             return static_cast<std::uint64_t>(address & exclusive_granule_mask);
         }
@@ -254,40 +269,38 @@ void AddressSpace::track_exclusive_access(
     auto lock = write_lock();
     if (!jit_write_page_table_enabled_)
         return;
-    std::vector<const GuestPageBacking*> shared_backings;
     for (std::uint64_t base = first; base < end; base += page_size) {
         const auto page_address = static_cast<std::uint32_t>(base);
+        const auto mask = reservation_granule_mask(address, size, page_address);
         const auto inserted =
-            exclusive_write_tracked_pages_.insert(page_address).second;
-        if (inserted) {
-            const auto* page = find_page_locked(page_address);
-            if (page != nullptr && page->shared_writable && page->backing &&
-                std::find(shared_backings.begin(), shared_backings.end(),
-                    page->backing.get()) == shared_backings.end()) {
-                shared_backings.push_back(page->backing.get());
-            }
+            exclusive_write_tracked_pages_.try_emplace(page_address, 0U).second;
+        exclusive_write_tracked_pages_.at(page_address) |= mask;
+        const auto* page = find_page_locked(page_address);
+        if (inserted)
             refresh_jit_page_locked(page_address);
+        if (page == nullptr || !page->shared_writable || !page->backing)
+            continue;
+
+        // Keep every local alias guarded, including already guarded aliases
+        // when another granule on the physical page acquires a reservation.
+        const auto* backing = page->backing.get();
+        for (auto& [alias_address, alias_mask] :
+            exclusive_write_tracked_pages_) {
+            const auto* alias = find_page_locked(alias_address);
+            if (alias != nullptr && alias->shared_writable &&
+                alias->backing.get() == backing)
+                alias_mask |= mask;
         }
-    }
-    // On a serialized processor, untracked shared pages can use their common
-    // physical backing directly. Revoke every virtual alias in this address
-    // space before LDREX so an ordinary store through another alias cannot
-    // bypass reservation invalidation. Other address spaces cannot execute
-    // until the real Guest thread-switch boundary clears the reservation.
-    if (!shared_backings.empty()) {
-        std::vector<std::uint32_t> direct_write_aliases;
-        for (const auto page_address : direct_jit_write_pages_) {
-            const auto* page = find_page_locked(page_address);
-            if (page == nullptr || !page->shared_writable || !page->backing ||
-                std::find(shared_backings.begin(), shared_backings.end(),
-                    page->backing.get()) == shared_backings.end()) {
-                continue;
-            }
-            direct_write_aliases.push_back(page_address);
+        std::vector<std::uint32_t> aliases;
+        for (const auto alias_address : direct_jit_write_pages_) {
+            const auto* alias = find_page_locked(alias_address);
+            if (alias != nullptr && alias->shared_writable &&
+                alias->backing.get() == backing)
+                aliases.push_back(alias_address);
         }
-        for (const auto page_address : direct_write_aliases) {
-            if (exclusive_write_tracked_pages_.insert(page_address).second)
-                refresh_jit_page_locked(page_address);
+        for (const auto alias_address : aliases) {
+            exclusive_write_tracked_pages_[alias_address] |= mask;
+            refresh_jit_page_locked(alias_address);
         }
     }
     exclusive_write_tracking_active_.store(
@@ -301,7 +314,7 @@ void AddressSpace::clear_exclusive_access_tracking()
     auto lock = write_lock();
     for (auto page = exclusive_write_tracked_pages_.begin();
         page != exclusive_write_tracked_pages_.end();) {
-        const auto address = *page;
+        const auto address = page->first;
         page = exclusive_write_tracked_pages_.erase(page);
         refresh_jit_page_locked(address);
     }
@@ -312,42 +325,36 @@ void AddressSpace::release_exclusive_write_tracking_locked(
     std::uint32_t address, std::size_t size)
 {
     if (size == 0 || range_overflows(address, size) ||
-        !exclusive_write_tracking_active_.load(std::memory_order_relaxed)) {
+        !exclusive_write_tracking_active_.load(std::memory_order_relaxed))
         return;
-    }
     const auto first = page_base(address);
     const auto end = page_range_end(address, size);
-    if (!jit_write_page_table_enabled_)
-        return;
     for (auto marker = exclusive_write_tracked_pages_.begin();
         marker != exclusive_write_tracked_pages_.end();) {
-        const auto page_address = *marker;
-        bool release = page_address >= first && page_address < end;
-        const auto* marker_page =
-            release ? nullptr : find_page_locked(page_address);
-        if (!release && marker_page != nullptr &&
-            marker_page->shared_writable && marker_page->backing) {
-            for (std::uint64_t base = first; base < end; base += page_size) {
-                const auto* written_page =
-                    find_page_locked(static_cast<std::uint32_t>(base));
-                if (written_page != nullptr && written_page->shared_writable &&
-                    written_page->backing == marker_page->backing) {
-                    release = true;
-                    break;
-                }
+        const auto page_address = marker->first;
+        const auto* marker_page = find_page_locked(page_address);
+        for (std::uint64_t base = first; base < end; base += page_size) {
+            const auto written_address = static_cast<std::uint32_t>(base);
+            const auto* written_page = find_page_locked(written_address);
+            if (page_address == written_address ||
+                (marker_page != nullptr && marker_page->shared_writable &&
+                    marker_page->backing && written_page != nullptr &&
+                    written_page->shared_writable &&
+                    written_page->backing == marker_page->backing)) {
+                marker->second &=
+                    ~reservation_granule_mask(address, size, written_address);
             }
         }
-        if (!release) {
+        if (marker->second != 0U) {
             ++marker;
             continue;
         }
         marker = exclusive_write_tracked_pages_.erase(marker);
         refresh_jit_page_locked(page_address);
     }
-    if (exclusive_write_tracked_pages_.empty()) {
+    if (exclusive_write_tracked_pages_.empty())
         exclusive_write_tracking_active_.store(
             false, std::memory_order_release);
-    }
 }
 
 void AddressSpace::synchronize_shared_write_tracking()
@@ -594,8 +601,8 @@ void AddressSpace::mark_translation_profile_stable(
         return;
     }
     translation_profile_map_.map_or(first, end, MemoryPermission::Execute);
-    auto generation = translation_profile_mapping_generation_.load(
-        std::memory_order_relaxed);
+    auto generation =
+        translation_profile_mapping_generation_.load(std::memory_order_relaxed);
     if (++generation == 0U)
         generation = 1U;
     translation_profile_mapping_generation_.store(
@@ -659,7 +666,8 @@ bool AddressSpace::copy_in_batch(std::span<const CopyInOperation> operations)
             auto& backing = writable_backing_locked(page);
             std::copy(operation.data.begin(), operation.data.end(),
                 backing.bytes.begin() + offset);
-            mark_shared_backing_written_locked(page);
+            mark_shared_backing_written_locked(
+                page, offset, operation.data.size());
             refresh_jit_page_locked(operation.address);
             mark_written_locked(operation.address, operation.data.size());
             if (collect_stats)
@@ -689,6 +697,7 @@ bool AddressSpace::copy_in_batch(std::span<const CopyInOperation> operations)
             std::copy_n(
                 operation.data.begin() + static_cast<std::ptrdiff_t>(copied),
                 chunk, backing.bytes.begin() + offset);
+            mark_shared_backing_written_locked(page, offset, chunk);
             touched_pages.push_back(page_base(current));
             copied += chunk;
         }
@@ -703,7 +712,6 @@ bool AddressSpace::copy_in_batch(std::span<const CopyInOperation> operations)
         auto* page = find_page_locked(page_address);
         if (page == nullptr)
             continue;
-        mark_shared_backing_written_locked(*page);
         refresh_jit_page_locked(page_address);
     }
     mark_written_batch_locked(written_ranges);
@@ -1453,11 +1461,12 @@ bool AddressSpace::reservation_invalidation_required_locked(
            exclusive_write_tracking_active_.load(std::memory_order_relaxed);
 }
 
-void AddressSpace::mark_shared_backing_written_locked(Page& page)
+void AddressSpace::mark_shared_backing_written_locked(
+    Page& page, std::uint32_t offset, std::size_t size)
 {
     if (page.backing) {
         if (reservation_invalidation_required_locked(page))
-            page.backing->invalidate_reservation_identity();
+            page.backing->invalidate_reservation_identity(offset, size);
         page.backing->mark_shared_write();
     }
     if (exclusive_write_observer_)
@@ -1612,7 +1621,7 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
             backing.bytes[offset + index] = static_cast<std::byte>(
                 (value >> (index * 8U)) & static_cast<T>(0xffU));
         }
-        mark_shared_backing_written_locked(page);
+        mark_shared_backing_written_locked(page, offset, sizeof(T));
         if (tracks_write_locked(address, sizeof(T))) {
             page.write_generation = ++write_generation_;
         }
@@ -1634,7 +1643,8 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
             refresh_jit_page_locked(current);
         backing.bytes[current & (page_size - 1U)] =
             static_cast<std::byte>((value >> (i * 8U)) & static_cast<T>(0xffU));
-        mark_shared_backing_written_locked(page);
+        mark_shared_backing_written_locked(
+            page, current & (page_size - 1U), 1U);
     }
     mark_written_locked(address, sizeof(T));
     release_exclusive_write_tracking_locked(address, sizeof(T));
@@ -1678,7 +1688,7 @@ bool AddressSpace::compare_exchange_integer(
             backing.bytes[offset + index] = static_cast<std::byte>(
                 (value >> (index * 8U)) & static_cast<T>(0xffU));
         }
-        mark_shared_backing_written_locked(page);
+        mark_shared_backing_written_locked(page, offset, sizeof(T));
         if (tracks_write_locked(address, sizeof(T))) {
             page.write_generation = ++write_generation_;
         }
@@ -1712,7 +1722,8 @@ bool AddressSpace::compare_exchange_integer(
             refresh_jit_page_locked(current);
         backing.bytes[current & (page_size - 1U)] =
             static_cast<std::byte>((value >> (i * 8U)) & static_cast<T>(0xffU));
-        mark_shared_backing_written_locked(page);
+        mark_shared_backing_written_locked(
+            page, current & (page_size - 1U), 1U);
     }
     mark_written_locked(address, sizeof(T));
     release_exclusive_write_tracking_locked(address, sizeof(T));
@@ -1750,7 +1761,7 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
             backing.bytes[offset + index] = static_cast<std::byte>(
                 (value >> (index * 8U)) & static_cast<T>(0xffU));
         }
-        mark_shared_backing_written_locked(page);
+        mark_shared_backing_written_locked(page, offset, sizeof(T));
         if (tracks_write_locked(address, sizeof(T))) {
             page.write_generation = ++write_generation_;
         }
@@ -1780,7 +1791,8 @@ std::optional<T> AddressSpace::exchange_integer(std::uint32_t address, T value)
             refresh_jit_page_locked(current);
         backing.bytes[current & (page_size - 1U)] = static_cast<std::byte>(
             (value >> (index * 8U)) & static_cast<T>(0xffU));
-        mark_shared_backing_written_locked(page);
+        mark_shared_backing_written_locked(
+            page, current & (page_size - 1U), 1U);
     }
     mark_written_locked(address, sizeof(T));
     release_exclusive_write_tracking_locked(address, sizeof(T));

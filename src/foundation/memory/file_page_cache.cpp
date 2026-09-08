@@ -1496,11 +1496,46 @@ GuestPageBacking::GuestPageBacking(const GuestPageBacking& other)
         std::memory_order_release);
 }
 
-void GuestPageBacking::invalidate_reservation_identity() noexcept
+GuestPageBacking::~GuestPageBacking()
 {
-    reservation_identity_.store(
-        next_reservation_identity.fetch_add(1, std::memory_order_relaxed),
-        std::memory_order_release);
+    delete reservation_granules_.load(std::memory_order_relaxed);
+}
+
+std::uint64_t GuestPageBacking::reservation_identity(
+    std::uint32_t offset) const noexcept
+{
+    auto* granules = reservation_granules_.load(std::memory_order_acquire);
+    if (granules == nullptr) {
+        auto candidate = std::make_unique<ReservationGranules>();
+        const auto identity =
+            reservation_identity_.load(std::memory_order_relaxed);
+        for (auto& granule : *candidate)
+            granule.store(identity, std::memory_order_relaxed);
+        granules = nullptr;
+        if (reservation_granules_.compare_exchange_strong(granules,
+                candidate.get(), std::memory_order_release,
+                std::memory_order_acquire))
+            granules = candidate.release();
+    }
+    return (*granules)[offset / guest_exclusive_granule_size].load(
+        std::memory_order_acquire);
+}
+
+void GuestPageBacking::invalidate_reservation_identity(
+    std::uint32_t offset, std::size_t size) noexcept
+{
+    auto* granules = reservation_granules_.load(std::memory_order_acquire);
+    if (granules == nullptr || size == 0)
+        return;
+    const auto end =
+        std::min<std::size_t>(guest_memory_page_size, offset + size);
+    const auto identity =
+        next_reservation_identity.fetch_add(1, std::memory_order_relaxed);
+    for (auto index = offset / guest_exclusive_granule_size;
+        index <
+        (end + guest_exclusive_granule_size - 1) / guest_exclusive_granule_size;
+        ++index)
+        (*granules)[index].store(identity, std::memory_order_release);
 }
 
 void GuestPageBacking::materialize() const
