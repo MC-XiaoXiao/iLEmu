@@ -185,12 +185,14 @@ void MobileFramebufferHle::reset()
     external_framebuffers_.clear();
     layers_.clear();
     layer_surface_leases_.clear();
-    submitted_layers_.clear();
+    // The HLE is shared by all guest processes. An exec of a helper process
+    // must not erase the panel's last submitted frame while SpringBoard is
+    // being relaunched; preserve scanout until the new owner presents.
     next_swap_id_ = 1;
     background_argb_ = 0xff000000U;
     submitted_background_argb_ = background_argb_;
     composition_surface_index_ = 0;
-    scanout_contents_valid_ = false;
+    // Keep submitted_layers_ and scanout_contents_valid_ across process exec.
 }
 
 void MobileFramebufferHle::inherit_state(const MobileFramebufferHle& parent)
