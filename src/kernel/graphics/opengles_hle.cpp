@@ -2222,6 +2222,12 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         case gles_abi::matrix_mode_query:
             values[0] = context->matrix_mode;
             break;
+        case gles_abi::framebuffer_binding:
+            values[0] = context->bound_framebuffer;
+            break;
+        case gles_abi::renderbuffer_binding:
+            values[0] = context->bound_renderbuffer;
+            break;
         case gles_abi::texture_binding_2d:
             values[0] = context->texture_units[context->active_texture_unit]
                             .bound_texture_2d;
