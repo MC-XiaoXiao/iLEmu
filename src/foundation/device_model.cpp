@@ -13,7 +13,7 @@ namespace ilemu {
 
 namespace {
 
-    constexpr std::array<DeviceModel, 8> models {
+    constexpr std::array<DeviceModel, 9> models {
         DeviceModel {
             "iPhone1,1",
             "M68AP",
@@ -256,6 +256,38 @@ namespace {
             false,
             ActivationHardwareModelPolicy::Retail,
             247ULL * 1024ULL * 1024ULL,
+        },
+        DeviceModel {
+            "iPad2,1",
+            "K93AP",
+            "K93AP",
+            "K93DEV",
+            "MC770",
+            "Apple A5 (S5L8940)",
+            "Cortex-A9",
+            "ARMv7 + Thumb-2",
+            ArmCpuModelKind::CortexA9,
+            1'000'000'000,
+            100'000'000,
+            512ULL * 1024ULL * 1024ULL,
+            32ULL * 1024ULL * 1024ULL * 1024ULL,
+            GuestCpuTopology::symmetric_cores(2U, 1'000'000'000U,
+                GuestCpuPerformanceClass::Performance,
+                guest_cpu_isa::armv7 | guest_cpu_isa::thumb | guest_cpu_isa::thumb2,
+                9U),
+            DisplayGeometry { 768U, 1024U },
+            DisplayGeometry { 768U, 1024U },
+            classic_centered_tablet_system_gestures,
+            GraphicsAcceleratorKind::Sgx543,
+            "IMGSGX543GLDriver",
+            "AppleM2CLCD",
+            { "iPad", "iPad 2", true, false },
+            { true, false, true },
+            BasebandTransport::Offline,
+            false,
+            ActivationHardwareModelPolicy::Retail,
+            0,
+            AudioHardwareProfile::CodecBaseband,
         },
     };
 
