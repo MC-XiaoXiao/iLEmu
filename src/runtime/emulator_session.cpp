@@ -10,6 +10,7 @@
 #include "debug/control_channel.hpp"
 #include "foundation/host_memory.hpp"
 #include "graphics/display_presenter.hpp"
+#include "graphics/boot_logo.hpp"
 #include "guest_timing.hpp"
 #include "jit_diagnostics.hpp"
 #include "jit_policy.hpp"
@@ -1352,6 +1353,33 @@ void EmulatorSession::run()
                 }
             });
     }
+    std::vector<std::uint32_t> boot_pixels;
+    const std::filesystem::path boot_logo_paths[] {
+        options.boot_logo.value_or(std::filesystem::path { }),
+        host_cache / "boot-logos" / device.product_type /
+            (darwin_configuration.identity.build_version + ".png"),
+    };
+    for (const auto& path : boot_logo_paths) {
+        if (path.empty())
+            continue;
+        try {
+            if (!std::filesystem::exists(path))
+                continue;
+            boot_pixels = BootLogo::load(path, device.display);
+            output.marker("[boot] logo-loaded " + path.string());
+            break;
+        } catch (const std::exception& error) {
+            output.marker("[boot] logo-unavailable " + path.string() + ": " +
+                          error.what());
+        }
+    }
+    if (boot_pixels.empty()) {
+        boot_pixels = BootLogo::placeholder(device.display);
+        output.marker("[boot] logo-source=built-in-placeholder");
+    }
+    initial->kernel->initialize_boot_display(std::move(boot_pixels));
+    if (display_presenter)
+        display_presenter->flush_presentation();
     initial->allocated.assign(initial_guest_thread_slots, false);
     Runtime* initial_runtime = initial.get();
     CatalogMaintenance catalog_maintenance {

@@ -100,7 +100,7 @@ std::string usage()
            "[--jit-artifact-memory-mib 1..4096] "
            "[--display-size WIDTHxHEIGHT] "
            "[--activation activated|unactivated|preserve] "
-           "[--frame-output FILE] [--touch-replay FILE] [--control-stdin] "
+           "[--boot-logo PNG] [--frame-output FILE] [--touch-replay FILE] [--control-stdin] "
            "[--baseband-input FILE] [--baseband-output FILE] "
            "[--disable-scheduler-preemption] "
            "[--perf-summary] [--jit-observer-only] [--perf-frame-content] "
@@ -1102,6 +1102,7 @@ void boot(const std::vector<std::string>& args, Output& output)
         parse_prepare_count(args, "--jit-startup-profile-budget-us", 4'000U,
             std::numeric_limits<std::size_t>::max());
     options.frame_output = option(args, "--frame-output");
+    options.boot_logo = option(args, "--boot-logo");
     options.touch_replay = option(args, "--touch-replay");
     if (const auto value = option(args, "--gdb")) {
         const auto parsed = std::stoul(*value);

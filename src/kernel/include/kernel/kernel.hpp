@@ -286,6 +286,14 @@ public:
     {
         display_state_->set_presenter(std::move(presenter));
     }
+    void initialize_boot_display(std::vector<std::uint32_t> pixels)
+    {
+        // Only the initial session, before any guest frame, seeds the panel.
+        if (display_state_->presented_frames() != 0)
+            return;
+        display_state_->replace_pixels(std::move(pixels));
+        display_state_->present();
+    }
     void set_audio_sink(std::shared_ptr<AudioSink> sink)
     {
         audio_service_->set_sink(std::move(sink));

@@ -3,6 +3,7 @@
 # file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 add_library(ilemu_graphics STATIC
+    boot_logo.cpp
     display.cpp
     core_animation_remote_abi.cpp
     gles_renderer.cpp
@@ -24,6 +25,13 @@ add_library(ilemu_graphics STATIC
     surface_store.cpp)
 target_sources(ilemu_graphics PRIVATE touch_replay.cpp)
 find_package(PNG REQUIRED)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/assets/boot-placeholder.png")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/assets/boot-placeholder.png"
+    BOOT_PLACEHOLDER_BYTES HEX)
+string(REGEX REPLACE "(..)" "0x\\1," BOOT_PLACEHOLDER_BYTES "${BOOT_PLACEHOLDER_BYTES}")
+configure_file(assets/boot_placeholder.hpp.in boot_placeholder.hpp @ONLY)
+target_include_directories(ilemu_graphics PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 add_library(iLEmu::graphics ALIAS ilemu_graphics)
 ilemu_configure_module(ilemu_graphics)
 target_link_libraries(ilemu_graphics
