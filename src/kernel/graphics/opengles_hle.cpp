@@ -695,6 +695,7 @@ std::uint32_t OpenGlesHle::ensure_renderbuffer_storage(ContextState& context,
     renderbuffer->second.width = width;
     renderbuffer->second.height = height;
     renderbuffer->second.internal_format = internal_format;
+    renderbuffer->second.display_oriented = false;
     for (auto& [framebuffer_name, framebuffer] : context.framebuffers) {
         static_cast<void>(framebuffer_name);
         if (framebuffer.color_renderbuffer == name)
@@ -729,10 +730,16 @@ OpenGlesHle::resolve_render_target(UserlandHleCall& call, ContextState& context)
                 renderer_owner_, texture_render_target_namespace | texture);
         if (!host_surface)
             return std::nullopt;
+        const auto renderbuffer = context.renderbuffers.find(
+            framebuffer->second.color_renderbuffer);
+        // Texture rows start at the GL lower edge. A drawable's rows are
+        // already in panel order, so it uses the display coordinate origin.
+        const bool display_oriented = renderbuffer != context.renderbuffers.end() &&
+                                      renderbuffer->second.display_oriented;
         return RenderTargetBinding { RenderTargetKind::Framebuffer,
             host_surface->key(), std::nullopt, nullptr, texture,
-            std::move(host_surface), level->render_target_inverted_vertical,
-            true };
+            std::move(host_surface),
+            level->render_target_inverted_vertical && !display_oriented, true };
     }
     if (auto* pixmap = current_pixmap_surface(call)) {
         if (!refresh_pixmap_surface(call, thread(call).draw_surface))
@@ -1551,6 +1558,9 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
             const auto error = ensure_renderbuffer_storage(*context,
                 context->bound_renderbuffer, geometry.width, geometry.height,
                 gles_abi::bgra_apple);
+            if (error == gles_abi::no_error)
+                context->renderbuffers.at(context->bound_renderbuffer)
+                    .display_oriented = true;
             call.set_return(error == gles_abi::no_error ? 1U : 0U);
         });
     registry.register_objc_instance_method(std::string { opengles_image },
@@ -3051,23 +3061,6 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         const auto renderbuffer = context->renderbuffers.find(name);
         if (renderbuffer == context->renderbuffers.end()) {
             set_gl_error(call, gles_abi::invalid_operation);
-            return;
-        }
-        auto width = renderbuffer->second.width;
-        auto height = renderbuffer->second.height;
-        if (width == 0U || height == 0U) {
-            const auto geometry =
-                display_ ? display_->geometry() : default_display_geometry;
-            width = geometry.width;
-            height = geometry.height;
-        }
-        const auto format = renderbuffer->second.internal_format != 0U
-                                ? renderbuffer->second.internal_format
-                                : gles_abi::bgra_apple;
-        const auto error =
-            ensure_renderbuffer_storage(*context, name, width, height, format);
-        if (error != gles_abi::no_error) {
-            set_gl_error(call, error);
             return;
         }
         framebuffer->second.color_renderbuffer = name;
