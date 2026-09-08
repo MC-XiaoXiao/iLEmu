@@ -400,7 +400,8 @@ private:
         const Page& page) const noexcept;
     void release_exclusive_write_tracking_locked(
         std::uint32_t address, std::size_t size);
-    void mark_shared_backing_written_locked(Page& page);
+    void mark_shared_backing_written_locked(
+        Page& page, std::uint32_t offset, std::size_t size);
     [[nodiscard]] bool tracks_write_locked(
         std::uint32_t address, std::size_t size) const;
     void mark_written_locked(std::uint32_t address, std::size_t size);
@@ -448,10 +449,11 @@ private:
     std::unordered_set<std::uint32_t> direct_jit_write_pages_;
     bool jit_page_table_enabled_ { };
     bool jit_write_page_table_enabled_ { true };
-    // Tracking lasts until a checked write invalidates the page's reservation,
-    // or until the serialized processor's next Guest thread switch. Unmapping
-    // also drops markers for the discarded mapping.
-    std::unordered_set<std::uint32_t> exclusive_write_tracked_pages_;
+    // Each page carries a mask of live physical reservation granules. Keep
+    // writes guarded until every marked granule is invalidated or the serial
+    // processor switches Guest threads. Unmapping drops its markers too.
+    std::unordered_map<std::uint32_t, std::uint64_t>
+        exclusive_write_tracked_pages_;
     std::atomic<bool> exclusive_write_tracking_active_ { };
     std::atomic<std::uint64_t> observed_shared_write_tracking_epoch_ { };
     std::vector<TrackedWriteRange> tracked_write_ranges_;

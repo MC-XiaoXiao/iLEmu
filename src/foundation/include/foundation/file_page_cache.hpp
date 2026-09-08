@@ -29,6 +29,7 @@
 namespace ilemu {
 
 inline constexpr std::uint32_t guest_memory_page_size = 4096;
+inline constexpr std::uint32_t guest_exclusive_granule_size = 64;
 inline constexpr std::size_t guest_file_prefetch_pages = 32;
 using GuestPageBytes = std::array<std::byte, guest_memory_page_size>;
 
@@ -269,17 +270,16 @@ struct GuestPageBacking {
     mutable GuestPageBytes bytes { };
 
     GuestPageBacking();
+    ~GuestPageBacking();
     GuestPageBacking(const GuestPageBacking& other);
     GuestPageBacking& operator=(const GuestPageBacking&) = delete;
 
-    // Stable for the lifetime of this physical backing. Copy-on-write creates
-    // a new backing and therefore receives a new identity; shared aliases keep
-    // the same identity through their shared_ptr.
-    [[nodiscard]] std::uint64_t reservation_identity() const noexcept
-    {
-        return reservation_identity_.load(std::memory_order_acquire);
-    }
-    void invalidate_reservation_identity() noexcept;
+    // Shared aliases use the same physical granule identity. Only writes to
+    // that granule revoke it; copy-on-write starts a fresh set of identities.
+    [[nodiscard]] std::uint64_t reservation_identity(
+        std::uint32_t offset = 0) const noexcept;
+    void invalidate_reservation_identity(std::uint32_t offset = 0,
+        std::size_t size = guest_memory_page_size) noexcept;
 
     // File-backed mappings are materialized on first guest access. Anonymous
     // and IPC-backed pages have no source and remain ordinary byte arrays.
@@ -310,6 +310,11 @@ private:
     std::uint64_t file_offset_ { };
     std::uint32_t file_byte_count_ { };
     std::atomic<std::uint64_t> reservation_identity_ { };
+    using ReservationGranules = std::array<std::atomic<std::uint64_t>,
+        guest_memory_page_size / guest_exclusive_granule_size>;
+    // Most pages never participate in exclusives. Publish this lazily and
+    // retain it until the physical backing dies so readers need no page lock.
+    mutable std::atomic<ReservationGranules*> reservation_granules_ { };
     // Set before this page is published and never changed afterwards. This
     // avoids taking the page lock for anonymous and already-private pages.
     bool has_file_source_ { };

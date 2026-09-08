@@ -87,6 +87,7 @@ private:
             std::uint32_t height { };
             std::uint32_t internal_format { };
             std::uint32_t color_texture { };
+            bool display_oriented { };
         };
         struct ArrayPointer {
             std::uint32_t size { };
