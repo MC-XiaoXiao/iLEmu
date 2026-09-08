@@ -31,4 +31,12 @@ inline constexpr std::array<std::string_view, 3> application_path_prefixes {
     return false;
 }
 
+// The setup assistant is a system-owned display client during foreground
+// handoff, before SpringBoard has published its replacement scene.
+[[nodiscard]] constexpr bool is_setup_assistant_executable_path(
+    std::string_view path)
+{
+    return path == "/Applications/Setup.app/Setup";
+}
+
 } // namespace ilemu

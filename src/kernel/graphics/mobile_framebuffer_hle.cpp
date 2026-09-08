@@ -271,6 +271,8 @@ bool MobileFramebufferHle::display_write_allowed(UserlandHleCall& call) const
         !is_application_executable_path(process->second.executable_path)) {
         return true;
     }
+    if (is_setup_assistant_executable_path(process->second.executable_path))
+        return true;
     return active_application_owns_display_locked(*shared_state_,
         call.process_id(),
         scene_coordinator_
