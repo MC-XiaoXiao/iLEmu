@@ -491,9 +491,7 @@ namespace {
     [[nodiscard]] ArmCpuModelKind jit_artifact_cpu_model(
         const ArmCpuModel& cpu_model) noexcept
     {
-        return cpu_model.architecture_version() == ArmArchitectureVersion::Armv7
-                   ? ArmCpuModelKind::CortexA8
-                   : ArmCpuModelKind::Arm1176JzfS;
+        return cpu_model.kind();
     }
 
     [[nodiscard]] JitHostIsa jit_artifact_host_isa() noexcept

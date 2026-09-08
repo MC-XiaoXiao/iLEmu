@@ -22,6 +22,7 @@ enum class ArmArchitectureVersion : std::uint8_t {
 enum class ArmCpuModelKind : std::uint8_t {
     Arm1176JzfS,
     CortexA8,
+    CortexA9,
 };
 
 // ARM permits implementation-defined handling for instructions whose result
@@ -39,6 +40,7 @@ enum class ArmUnpredictableInstructionPolicy : std::uint8_t {
     case ArmCpuModelKind::Arm1176JzfS:
         return ArmArchitectureVersion::Armv6K;
     case ArmCpuModelKind::CortexA8:
+    case ArmCpuModelKind::CortexA9:
         return ArmArchitectureVersion::Armv7;
     }
     return ArmArchitectureVersion::Armv6K;
@@ -65,6 +67,13 @@ enum class ArmUnpredictableInstructionPolicy : std::uint8_t {
 class ArmCpuModel {
 public:
     virtual ~ArmCpuModel() = default;
+
+    [[nodiscard]] virtual ArmCpuModelKind kind() const noexcept
+    {
+        return architecture_version() == ArmArchitectureVersion::Armv7
+                   ? ArmCpuModelKind::CortexA8
+                   : ArmCpuModelKind::Arm1176JzfS;
+    }
 
     [[nodiscard]] virtual ArmArchitectureVersion
     architecture_version() const noexcept = 0;

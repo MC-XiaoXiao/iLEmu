@@ -56,6 +56,11 @@ struct GuestCpuTopology {
 
     [[nodiscard]] constexpr bool valid() const noexcept;
 
+    [[nodiscard]] static constexpr GuestCpuTopology symmetric_cores(
+        std::uint32_t core_count, std::uint32_t frequency_hz,
+        GuestCpuPerformanceClass performance_class,
+        std::uint64_t isa_feature_mask, std::uint64_t cache_topology_id);
+
     [[nodiscard]] static constexpr GuestCpuTopology single_core(
         std::uint32_t frequency_hz, GuestCpuPerformanceClass performance_class,
         std::uint64_t isa_feature_mask, std::uint64_t cache_topology_id);
@@ -103,25 +108,34 @@ constexpr bool GuestCpuTopology::valid() const noexcept
     return next_logical_cpu == logical_cpu_count;
 }
 
-constexpr GuestCpuTopology GuestCpuTopology::single_core(
-    std::uint32_t frequency_hz, GuestCpuPerformanceClass performance_class,
+constexpr GuestCpuTopology GuestCpuTopology::symmetric_cores(
+    std::uint32_t core_count, std::uint32_t frequency_hz,
+    GuestCpuPerformanceClass performance_class,
     std::uint64_t isa_feature_mask, std::uint64_t cache_topology_id)
 {
     GuestCpuTopology topology;
-    topology.physical_core_count = 1U;
-    topology.logical_cpu_count = 1U;
+    topology.physical_core_count = core_count;
+    topology.logical_cpu_count = core_count;
     topology.isa_feature_mask = isa_feature_mask;
     topology.cluster_count = 1U;
     topology.cache_topology_id = cache_topology_id;
     topology.clusters[0] = GuestCpuCluster {
         .first_logical_cpu = 0U,
-        .logical_cpu_count = 1U,
-        .affinity_mask = 1U,
+        .logical_cpu_count = core_count,
+        .affinity_mask = detail::guest_cpu_contiguous_mask(0U, core_count),
         .frequency_hz = frequency_hz,
         .performance_class = performance_class,
         .cache_topology_id = cache_topology_id,
     };
     return topology;
+}
+
+constexpr GuestCpuTopology GuestCpuTopology::single_core(
+    std::uint32_t frequency_hz, GuestCpuPerformanceClass performance_class,
+    std::uint64_t isa_feature_mask, std::uint64_t cache_topology_id)
+{
+    return symmetric_cores(1U, frequency_hz, performance_class,
+        isa_feature_mask, cache_topology_id);
 }
 
 } // namespace ilemu

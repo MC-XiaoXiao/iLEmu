@@ -144,7 +144,7 @@ namespace {
                key.guest_pc == descriptor_pc && key.thumb == descriptor_thumb &&
                key.host_isa != JitHostIsa::Unknown &&
                key.architecture <= ArmArchitectureVersion::Armv7 &&
-               key.cpu_model <= ArmCpuModelKind::CortexA8;
+               key.cpu_model <= ArmCpuModelKind::CortexA9;
     }
 
     class ArtifactFileLock {
@@ -1111,7 +1111,7 @@ namespace {
                     *architecture > static_cast<std::uint8_t>(
                                         ArmArchitectureVersion::Armv7) ||
                     *cpu_model >
-                        static_cast<std::uint8_t>(ArmCpuModelKind::CortexA8) ||
+                        static_cast<std::uint8_t>(ArmCpuModelKind::CortexA9) ||
                     *host_isa > static_cast<std::uint8_t>(JitHostIsa::Arm64)) {
                     return std::nullopt;
                 }
