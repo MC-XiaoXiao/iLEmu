@@ -804,8 +804,13 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
         // page while retaining the exact immutable cache generation.
         const auto descriptor_file = std::find_if(files.begin(), files.end(),
             [&](const DyldCacheFileView& file) {
-                return std::filesystem::path { file.path } ==
-                       descriptor->second;
+                // Parsed generations may retain an absolute catalog path
+                // while the guest descriptor was opened through a relative
+                // rootfs or a symlink. Match the file, not its spelling.
+                std::error_code equivalent_error;
+                return std::filesystem::equivalent(
+                    std::filesystem::path { file.path }, descriptor->second,
+                    equivalent_error);
             });
         if (descriptor_file != files.end()) {
             const auto cache_file = *descriptor_file;
