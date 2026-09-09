@@ -5,6 +5,7 @@
 // Adapt guest IOHIDEventSystem calls to emulator input services.
 
 #include "kernel/hid_event_system_hle.hpp"
+#include "hid_switch_query.hpp"
 
 #include "foundation/cpu.hpp"
 #include "foundation/userland_hle.hpp"
@@ -179,6 +180,7 @@ namespace {
 HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
     : registry_ { registry }
 {
+    register_hid_switch_queries(registry_);
     registry_.register_function(
         "/IOKit", "_IOHIDEventSystemOpen", [this](UserlandHleCall& call) {
             const HidEventQueue::Consumer consumer { call.process_id(),

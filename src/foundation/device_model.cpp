@@ -288,6 +288,7 @@ namespace {
             ActivationHardwareModelPolicy::Retail,
             0,
             AudioHardwareProfile::CodecBaseband,
+            { "AppleM2TVOut", { 720U, 480U } },
         },
     };
 
