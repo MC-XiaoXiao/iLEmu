@@ -59,6 +59,17 @@ struct ExternalFramebufferProfile {
     DisplayGeometry geometry { 0U, 0U };
 };
 
+// A physical ambient-light controller is discovered by early ThermalMonitor
+// builds through the IOKit registry. Keep the service and calibration values in
+// the device profile so the registry backend remains independent of a product
+// name or firmware build.
+struct AmbientLightSensorProfile {
+    std::string_view service_class;
+    std::uint32_t channel0_gain { };
+    std::uint32_t channel1_gain { };
+    std::uint32_t integration_cycles { };
+};
+
 // Host-driven system gestures are expressed in the firmware's normalized UI
 // coordinate space. Keeping this data in the device model avoids teaching
 // the control frontend about product names, builds, or SpringBoard pages.
@@ -219,6 +230,12 @@ struct DeviceModel {
         AudioHardwareProfile::CodecBaseband
     };
     ExternalFramebufferProfile external_framebuffer;
+    AmbientLightSensorProfile ambient_light_sensor;
+    // Some early tablet digitizer stacks crash when fed synthesized native
+    // HID events; those devices keep the GraphicsServices path as their
+    // canonical input boundary. This is a hardware capability, not an app or
+    // firmware-version switch.
+    bool native_hid_touch_events { true };
 
     static const DeviceModel& default_model();
     [[nodiscard]] static std::span<const DeviceModel> available_models();

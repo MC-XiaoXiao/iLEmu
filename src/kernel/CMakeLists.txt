@@ -305,6 +305,7 @@ target_link_libraries(ilemu_kernel_iokit_mobile_file_integrity PRIVATE
 
 add_library(ilemu_kernel_iokit_power STATIC
     iokit/battery.cpp
+    iokit/environment.cpp
     iokit/power.cpp)
 add_library(iLEmu::kernel_iokit_power ALIAS
     ilemu_kernel_iokit_power)

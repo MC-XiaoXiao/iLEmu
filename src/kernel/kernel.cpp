@@ -284,6 +284,9 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     shared_state_->framebuffer_service_class =
         std::string { device_model_.framebuffer_service_class };
     shared_state_->external_framebuffer = device_model_.external_framebuffer;
+    shared_state_->ambient_light_sensor = device_model_.ambient_light_sensor;
+    shared_state_->native_hid_touch_events =
+        device_model_.native_hid_touch_events;
     shared_state_->apple_key_store_available =
         device_model_.keybag_capabilities.apple_key_store_available;
     shared_state_->effaceable_storage_available =

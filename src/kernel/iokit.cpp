@@ -45,6 +45,7 @@
 #include "network/wifi_state.hpp"
 
 #include "iokit/battery.hpp"
+#include "iokit/environment.hpp"
 #include "iokit/power.hpp"
 #include "mach/support.hpp"
 
@@ -1218,6 +1219,11 @@ namespace {
         if (kernel_iokit::battery::matches_service(matching)) {
             services.push_back(
                 kernel_iokit::battery::ensure_service_locked(shared_state));
+        }
+        if (kernel_iokit::environment::matches_service(matching,
+                shared_state)) {
+            services.push_back(
+                kernel_iokit::environment::ensure_service_locked(shared_state));
         }
     }
 

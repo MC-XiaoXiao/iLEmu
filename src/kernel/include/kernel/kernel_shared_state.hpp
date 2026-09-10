@@ -403,6 +403,8 @@ struct KernelSharedState {
     };
     std::string framebuffer_service_class;
     ExternalFramebufferProfile external_framebuffer;
+    AmbientLightSensorProfile ambient_light_sensor;
+    bool native_hid_touch_events { true };
     bool apple_key_store_available { };
     bool effaceable_storage_available { true };
     bool virtual_effaceable_storage_available { };
