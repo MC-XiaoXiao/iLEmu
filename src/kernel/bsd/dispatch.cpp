@@ -204,6 +204,19 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         }
     }
         return;
+    case 365: // stack_snapshot, Darwin 11 ARM32 legacy diagnostic ABI
+        if (shared_state_->darwin_abi.stack_snapshot_abi ==
+            DarwinStackSnapshotAbi::Unsupported) {
+            dispatch_bsd_nosys(cpu,
+                shared_state_->darwin_abi.capabilities.send_sigsys);
+            return;
+        }
+        // XNU gates stack snapshots on the caller's superuser credential.
+        // The emulator has no debugger/KDP stackshot backend, so preserve the
+        // public failure contract without touching the guest buffer. UIKit
+        // and Preferences treat this diagnostic failure as optional.
+        bsd_error(cpu, darwin::error::permission_denied);
+        return;
     case 0:
     case 1:
     case 2:

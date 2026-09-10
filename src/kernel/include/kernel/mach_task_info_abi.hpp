@@ -29,7 +29,13 @@ inline constexpr std::uint32_t basic_32_flavor = 4;
 inline constexpr std::size_t basic_32_word_count = 8;
 
 inline constexpr std::uint32_t basic_64_flavor = 5;
-inline constexpr std::size_t basic_64_word_count = 10;
+// The ARM32 task_info wire ABI used by Darwin 9/11 exposes the compact
+// eight-word basic_64 record.  The native 64-bit layout has ten words, but
+// that variant is not requested by the firmware profiles supported here.
+inline constexpr std::size_t basic_64_word_count = 8;
+
+inline constexpr std::uint32_t dyld_info_flavor = 17;
+inline constexpr std::size_t dyld_info_word_count = 3;
 
 inline constexpr std::uint32_t timeshare_policy = 1;
 

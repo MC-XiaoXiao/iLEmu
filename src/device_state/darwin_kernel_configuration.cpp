@@ -122,6 +122,8 @@ namespace {
                 .initial_apple_vector_abi =
                     DarwinInitialAppleVectorAbi::LegacyExecutablePath,
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .stack_snapshot_abi =
+                    DarwinStackSnapshotAbi::LegacyFourArguments,
                 .iokit_matching_rpc =
                     DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1,
                 .activation_hardware_model_policy =
@@ -148,6 +150,8 @@ namespace {
                 .mach_kernel_rpc =
                     DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1,
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .stack_snapshot_abi =
+                    DarwinStackSnapshotAbi::LegacyFourArguments,
                 .iokit_matching_rpc =
                     DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1,
                 .capabilities = { .send_sigsys = true },

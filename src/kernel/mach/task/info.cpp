@@ -61,6 +61,8 @@ namespace {
             return darwin::mach::task_info::basic_32_word_count;
         case darwin::mach::task_info::basic_64_flavor:
             return darwin::mach::task_info::basic_64_word_count;
+        case darwin::mach::task_info::dyld_info_flavor:
+            return darwin::mach::task_info::dyld_info_word_count;
         default:
             return 0;
         }
@@ -155,7 +157,8 @@ bool CompatibilityKernel::dispatch_mach_task_info_message(
             info[3] = static_cast<std::uint32_t>(resident_size);
             info[4] = static_cast<std::uint32_t>(resident_size >> 32U);
         }
-        info[9] = darwin::mach::task_info::timeshare_policy;
+        if (info.size() > 9)
+            info[9] = darwin::mach::task_info::timeshare_policy;
     }
     reply.insert(reply.end(), info.begin(), info.end());
     registers[0] = write_words(memory_, request.address, reply)

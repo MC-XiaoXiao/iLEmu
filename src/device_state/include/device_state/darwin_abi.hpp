@@ -84,6 +84,16 @@ enum class DarwinPsynchAbi : std::uint8_t {
     Arm32GenerationV1,
 };
 
+// Darwin 11 exposes the legacy stack_snapshot diagnostic syscall. Later
+// kernels widened its argument list before retiring the old implementation;
+// keep that shape explicit so a diagnostic call cannot be mistaken for a
+// generic nosys entry on an audited profile.
+enum class DarwinStackSnapshotAbi : std::uint8_t {
+    Unsupported,
+    LegacyFourArguments,
+    LegacyFiveArguments,
+};
+
 // Darwin 11's IOKit client added a private inline matching RPC which returns
 // the first service directly instead of an iterator.  Its routine number and
 // compact c-string request are independent of the registry contents, so keep
@@ -139,6 +149,9 @@ struct DarwinAbi {
     };
     DarwinPsynchAbi psynch_abi {
         DarwinPsynchAbi::Unsupported
+    };
+    DarwinStackSnapshotAbi stack_snapshot_abi {
+        DarwinStackSnapshotAbi::Unsupported
     };
     DarwinIOKitMatchingRpcAbi iokit_matching_rpc {
         DarwinIOKitMatchingRpcAbi::PluralIteratorOnly
