@@ -39,6 +39,7 @@ inline constexpr std::uint32_t kernel_operating_system_type = 1;
 inline constexpr std::uint32_t kernel_operating_system_release = 2;
 inline constexpr std::uint32_t kernel_operating_system_revision = 3;
 inline constexpr std::uint32_t kernel_version = 4;
+inline constexpr std::uint32_t kernel_clock_rate = 12;
 inline constexpr std::uint32_t kernel_security_level = 9;
 inline constexpr std::uint32_t kernel_process = 14;
 inline constexpr std::uint32_t kernel_maximum_files_per_process = 29;
@@ -58,6 +59,20 @@ inline constexpr std::uint32_t process_flag_exec = 0x00004000;
 
 inline constexpr std::uint32_t hardware_machine = 1;
 inline constexpr std::uint32_t hardware_model = 2;
+inline constexpr std::uint32_t hardware_cpu_count = 3;
+inline constexpr std::uint32_t hardware_byte_order = 4;
+inline constexpr std::uint32_t hardware_physical_memory = 5;
+inline constexpr std::uint32_t hardware_user_memory = 6;
+inline constexpr std::uint32_t hardware_page_size = 7;
+inline constexpr std::uint32_t hardware_cache_line = 16;
+inline constexpr std::uint32_t hardware_l1_i_cache_size = 17;
+inline constexpr std::uint32_t hardware_l1_d_cache_size = 18;
+inline constexpr std::uint32_t hardware_l2_settings = 19;
+inline constexpr std::uint32_t hardware_l2_cache_size = 20;
+inline constexpr std::uint32_t hardware_l3_settings = 21;
+inline constexpr std::uint32_t hardware_l3_cache_size = 22;
+inline constexpr std::uint32_t hardware_memory_size = 24;
+inline constexpr std::uint32_t hardware_available_cpu = 25;
 
 struct ObjectIdentifier {
     std::array<std::uint32_t, 2> components { };

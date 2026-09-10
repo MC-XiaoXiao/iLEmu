@@ -148,6 +148,11 @@ namespace apple80211_driver {
     inline constexpr std::uint32_t command_scan = 10;
     inline constexpr std::uint32_t command_scan_result = 11;
     inline constexpr std::uint32_t command_interface_probe = 12;
+    // Legacy AirPortFamily clients issue this zero-length capability probe
+    // while constructing the Settings network pane.  It has no payload; a
+    // successful no-op is the driver contract when the virtual interface is
+    // present.
+    inline constexpr std::uint32_t command_capability_probe = 15;
     inline constexpr std::uint32_t command_current_ssid = 1;
     inline constexpr std::uint32_t command_channel = 4;
     inline constexpr std::uint32_t command_rate = 8;

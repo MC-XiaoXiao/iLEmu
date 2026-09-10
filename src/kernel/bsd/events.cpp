@@ -849,6 +849,15 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     return;
                 }
                 if (registers[1] == wifi_driver::get_request &&
+                    *command == wifi_driver::command_capability_probe &&
+                    *data_length == 0U) {
+                    output_.write("[wifi-driver] capability-probe pid=" +
+                                  std::to_string(process_.pid) + " fd=" +
+                                  std::to_string(fd) + "\\n");
+                    bsd_success(cpu, 0);
+                    return;
+                }
+                if (registers[1] == wifi_driver::get_request &&
                     *command == wifi_driver::command_power) {
                     if (*data_address == 0 ||
                         *data_length < wifi_driver::power_state_size ||
@@ -2255,6 +2264,24 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             case darwin::sysctl::kernel_build_version:
                 write_read_only_string(identity.build_version);
                 return;
+            case darwin::sysctl::kernel_clock_rate: {
+                // Darwin 11 exposes struct clockinfo for KERN_CLOCKRATE:
+                // hz, tick, tickadj, stathz and profhz. These are stable
+                // kernel timing values, independent of host scheduling.
+                constexpr std::array<std::uint32_t, 5> clock_info {
+                    100U, 10'000U, 0U, 100U, 100U };
+                std::array<std::byte, clock_info.size() * sizeof(std::uint32_t)>
+                    bytes { };
+                for (std::size_t index = 0; index < clock_info.size();
+                    ++index) {
+                    const auto value = clock_info[index];
+                    for (std::size_t byte = 0; byte < sizeof(value); ++byte)
+                        bytes[index * sizeof(value) + byte] =
+                            static_cast<std::byte>(value >> (byte * 8U));
+                }
+                write_read_only_bytes(bytes);
+                return;
+            }
             default:
                 break;
             }
@@ -2449,14 +2476,26 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             bsd_success(cpu, 0);
             return;
         }
-        if ((*mib0 == 1 &&
+        if ((*mib0 == darwin::sysctl::control_kernel &&
                 (*mib1 == 6 || *mib1 == 7 || *mib1 == 8 ||
                     *mib1 == darwin::sysctl::kernel_maximum_files_per_process ||
                     *mib1 == 35 || *mib1 == 40 || *mib1 == 54 ||
                     *mib1 == 66)) ||
-            (*mib0 == 6 &&
-                (*mib1 == 3 || *mib1 == 4 || *mib1 == 5 || *mib1 == 6 ||
-                    *mib1 == 7 || *mib1 == 11 || *mib1 == 13 || *mib1 == 25))) {
+            (*mib0 == darwin::sysctl::control_hardware &&
+                (*mib1 == darwin::sysctl::hardware_cpu_count ||
+                    *mib1 == darwin::sysctl::hardware_byte_order ||
+                    *mib1 == darwin::sysctl::hardware_physical_memory ||
+                    *mib1 == darwin::sysctl::hardware_user_memory ||
+                    *mib1 == darwin::sysctl::hardware_page_size ||
+                    *mib1 == 11 || *mib1 == 13 ||
+                    *mib1 == darwin::sysctl::hardware_cache_line ||
+                    *mib1 == darwin::sysctl::hardware_l1_i_cache_size ||
+                    *mib1 == darwin::sysctl::hardware_l1_d_cache_size ||
+                    *mib1 == darwin::sysctl::hardware_l2_settings ||
+                    *mib1 == darwin::sysctl::hardware_l2_cache_size ||
+                    *mib1 == darwin::sysctl::hardware_l3_settings ||
+                    *mib1 == darwin::sysctl::hardware_l3_cache_size ||
+                    *mib1 == darwin::sysctl::hardware_available_cpu))) {
             // Common read-only capacity/boot values plus HW_NCPU.
             if (registers[4] != 0) {
                 bsd_error(cpu, 1); // EPERM: read-only MIB
@@ -2508,16 +2547,16 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                             shared_state_->device_ram_bytes)
                         : shared_state_->device_ram_bytes;
                     switch (*mib1) {
-                    case 4:
+                    case darwin::sysctl::hardware_byte_order:
                         value = 1234;
                         break; // HW_BYTEORDER
-                    case 5:
+                    case darwin::sysctl::hardware_physical_memory:
                         value =
                             static_cast<std::uint32_t>(std::min<std::uint64_t>(
                                 configured_memory_size,
                                 std::numeric_limits<std::uint32_t>::max()));
                         break; // HW_PHYSMEM
-                    case 6:
+                    case darwin::sysctl::hardware_user_memory:
                         value =
                             static_cast<std::uint32_t>(std::min<std::uint64_t>(
                                 shared_state_->device_ram_bytes > 0x01000000U
@@ -2526,7 +2565,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                                     : shared_state_->device_ram_bytes,
                                 std::numeric_limits<std::uint32_t>::max()));
                         break; // HW_USERMEM
-                    case 7:
+                    case darwin::sysctl::hardware_page_size:
                         value = 4096;
                         break; // HW_PAGESIZE
                     case 11:
@@ -2535,6 +2574,23 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     case 13:
                         value = 0;
                         break; // HW_VECTORUNIT
+                    case darwin::sysctl::hardware_cache_line:
+                        value = 64;
+                        break; // HW_CACHELINE
+                    case darwin::sysctl::hardware_l1_i_cache_size:
+                    case darwin::sysctl::hardware_l1_d_cache_size:
+                        value = 32U * 1024U;
+                        break; // HW_L1{I,D}CACHESIZE
+                    case darwin::sysctl::hardware_l2_settings:
+                        value = 0;
+                        break; // HW_L2SETTINGS
+                    case darwin::sysctl::hardware_l2_cache_size:
+                        value = 1024U * 1024U;
+                        break; // HW_L2CACHESIZE
+                    case darwin::sysctl::hardware_l3_settings:
+                    case darwin::sysctl::hardware_l3_cache_size:
+                        value = 0;
+                        break; // HW_L3{SETTINGS,CACHESIZE}
                     default:
                         value = 1;
                         break; // CPU counts
