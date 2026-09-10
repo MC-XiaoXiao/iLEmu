@@ -290,6 +290,7 @@ namespace {
             AudioHardwareProfile::CodecBaseband,
             { "AppleM2TVOut", { 720U, 480U } },
             { "AppleEmbeddedI2CLightSensor", 1U, 1U, 1U },
+            false,
         },
     };
 

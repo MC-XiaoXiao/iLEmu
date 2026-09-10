@@ -2175,8 +2175,9 @@ EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
     // Preserve host transition tracking, but let an open firmware HID system
     // classify physical contacts before routing them to system gestures,
     // accessibility services or an application window.
-    const auto native_input = state.hid_event_queue.enqueue(
-        { sanitized, state.clock.now() });
+    const auto native_input = state.native_hid_touch_events
+        ? state.hid_event_queue.enqueue({ sanitized, state.clock.now() })
+        : false;
 
     const auto terminal = sanitized.phase == TouchPhase::Up ||
                           sanitized.phase == TouchPhase::Cancel;
