@@ -54,18 +54,24 @@ public:
     [[nodiscard]] bool has_active_layers() const;
 
 private:
+    enum class SubmissionResult : std::uint8_t {
+        Failed,
+        Submitted,
+        Deferred,
+    };
+
     void register_device_functions(UserlandHleRegistry& registry);
     [[nodiscard]] bool is_external_framebuffer(UserlandHleCall& call) const;
     void set_background_color(UserlandHleCall& call);
     void set_layer(UserlandHleCall& call);
-    void submit_layers(UserlandHleCall& call);
+    [[nodiscard]] SubmissionResult submit_layers(UserlandHleCall& call);
     [[nodiscard]] std::optional<std::uint32_t> record_presentation(
         UserlandHleCall& call);
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
     [[nodiscard]] bool application_surface_allowed(
         std::uint32_t producer_process_id,
         std::uint64_t publication_sequence) const;
-    [[nodiscard]] bool submit_host_layers(UserlandHleCall& call);
+    [[nodiscard]] SubmissionResult submit_host_layers(UserlandHleCall& call);
     void ensure_scanout_surface();
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_composition_surface();
 
@@ -91,6 +97,10 @@ private:
     struct SubmittedLayer {
         LayerState state;
         HostSurfaceKey surface_key;
+        std::uint64_t generation { };
+    };
+    struct DeferredForegroundFrame {
+        std::uint32_t scene_process_id { };
         std::uint64_t generation { };
     };
 
@@ -121,6 +131,7 @@ private:
     std::uint32_t background_argb_ { 0xff000000U };
     std::uint32_t submitted_background_argb_ { 0xff000000U };
     bool scanout_contents_valid_ { };
+    std::optional<DeferredForegroundFrame> deferred_foreground_frame_;
 };
 
 } // namespace ilemu

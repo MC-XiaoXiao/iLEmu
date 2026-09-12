@@ -142,16 +142,24 @@ MobileFramebufferHle::MobileFramebufferHle(UserlandHleRegistry& registry,
             performance_counters().record_vsync_swap_end(call.process_id(),
                 call.argument(0),
                 static_cast<std::uint32_t>(call.cpu().processor_id()));
-            submit_layers(call);
-            const auto semantic_process_id = record_presentation(call);
-            if (display_) {
-                display_->present(call.process_id());
-                performance_counters().record_vsync_guest_submit(
-                    call.process_id(), call.argument(0));
-                if (frame_presented_handler_)
-                    frame_presented_handler_(call.process_id());
-                if (semantic_process_id && semantic_presentation_handler_)
-                    semantic_presentation_handler_(*semantic_process_id);
+            const auto submission = submit_layers(call);
+            if (submission == SubmissionResult::Deferred) {
+                // Keep the firmware's display cadence alive with the last
+                // accepted surface, but leave ownership and transition
+                // callbacks untouched until the candidate is actually ready.
+                if (display_)
+                    display_->present();
+            } else {
+                const auto semantic_process_id = record_presentation(call);
+                if (display_) {
+                    display_->present(call.process_id());
+                    performance_counters().record_vsync_guest_submit(
+                        call.process_id(), call.argument(0));
+                    if (frame_presented_handler_)
+                        frame_presented_handler_(call.process_id());
+                    if (semantic_process_id && semantic_presentation_handler_)
+                        semantic_presentation_handler_(*semantic_process_id);
+                }
             }
         }
         call.set_return(iokit_abi::success);
@@ -192,6 +200,7 @@ void MobileFramebufferHle::reset()
     background_argb_ = 0xff000000U;
     submitted_background_argb_ = background_argb_;
     composition_surface_index_ = 0;
+    deferred_foreground_frame_.reset();
     // Keep submitted_layers_ and scanout_contents_valid_ across process exec.
 }
 
@@ -211,6 +220,7 @@ void MobileFramebufferHle::inherit_state(const MobileFramebufferHle& parent)
     composition_surfaces_.clear();
     composition_surface_index_ = 0;
     scanout_contents_valid_ = parent.scanout_contents_valid_;
+    deferred_foreground_frame_.reset();
 }
 
 void MobileFramebufferHle::set_display(std::shared_ptr<DisplayState> display)
@@ -225,6 +235,7 @@ void MobileFramebufferHle::set_display(std::shared_ptr<DisplayState> display)
             composition_surface_index_ = 0;
             submitted_layers_.clear();
             scanout_contents_valid_ = false;
+            deferred_foreground_frame_.reset();
         }
     }
 }
@@ -405,14 +416,15 @@ std::shared_ptr<HostSurface> MobileFramebufferHle::acquire_composition_surface()
     return surface;
 }
 
-bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
+MobileFramebufferHle::SubmissionResult
+MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
 {
     constexpr bool debug_submission = false;
     if (!display_ || !host_graphics_->accelerated() || !command_encoder_)
-        return false;
+        return SubmissionResult::Failed;
     ensure_scanout_surface();
     if (!scanout_surface_)
-        return false;
+        return SubmissionResult::Failed;
     const auto exact_rectangle =
         [](const Rectangle& rectangle) -> std::optional<HostRectangle> {
         const auto exact = [](float value) {
@@ -467,8 +479,6 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
         }
         const auto source =
             surface_store_->host_surface(effective_state.surface_id);
-        if (source)
-            source->mark_scanout_presentation();
         if (debug_submission) {
             std::string message =
                 "[mfb-debug] layer pid=" + std::to_string(call.process_id()) +
@@ -515,7 +525,7 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
         if (source && source->gpu_generation() <= source->cpu_generation() &&
             !surface_store_->synchronize_from_guest(
                 call.memory(), effective_state.surface_id)) {
-            return false;
+            return SubmissionResult::Failed;
         }
         const auto source_rectangle = exact_rectangle(effective_state.source);
         const auto destination_rectangle =
@@ -540,7 +550,7 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
                 display_->height() - std::min(display_->height(),
                                          destination_rectangle->height) ||
             destination_rectangle->height > display_->height()) {
-            return false;
+            return SubmissionResult::Failed;
         }
         prepared_layers.push_back(
             { layer, effective_state, source, *source_rectangle,
@@ -577,6 +587,99 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
     };
     const auto full_display =
         HostRectangle { 0, 0, display_->width(), display_->height() };
+
+    const auto active_scene = scene_coordinator_
+                                  ? scene_coordinator_->active_client_scene()
+                                  : std::nullopt;
+    const auto active_scene_process_id =
+        active_scene && active_scene->state == ClientSceneState::Active
+            ? active_scene->client_process_id
+            : 0U;
+    const auto foreground_handoff_pending = [&] {
+        if (!shared_state_ || active_scene_process_id == 0U)
+            return false;
+        std::lock_guard lock { shared_state_->mach_mutex };
+        const auto& transition =
+            shared_state_->foreground_transition_snapshot;
+        if (!transition ||
+            transition->terminal_state !=
+                KernelSharedState::ForegroundTransitionTerminalState::Pending ||
+            !transition->destination ||
+            transition->destination->process_id != active_scene_process_id ||
+            transition->destination_first_frame) {
+            return false;
+        }
+        const auto process =
+            shared_state_->processes.find(active_scene_process_id);
+        return process != shared_state_->processes.end() &&
+               process->second.incarnation ==
+                   transition->destination->incarnation;
+    }();
+    const auto covers_display = [&](const PreparedLayer& layer) {
+        const auto descriptor = layer.source->descriptor();
+        return layer.destination_rectangle == full_display &&
+               layer.source_rectangle.x == 0 &&
+               layer.source_rectangle.y == 0 &&
+               layer.source_rectangle.width == descriptor.width &&
+               layer.source_rectangle.height == descriptor.height &&
+               descriptor.width == display_->width() &&
+               descriptor.height == display_->height();
+    };
+    const auto foreground_candidate =
+        std::find_if(prepared_layers.begin(), prepared_layers.end(),
+            [&](const PreparedLayer& layer) {
+                return covers_display(layer);
+            });
+    const auto is_new_foreground_surface = [&] {
+        if (!foreground_handoff_pending || active_scene_process_id == 0U ||
+            !scanout_contents_valid_ ||
+            foreground_candidate == prepared_layers.end()) {
+            return false;
+        }
+        const auto submitted = submitted_layers_.find(
+            foreground_candidate->order);
+        return submitted == submitted_layers_.end() ||
+               submitted->second.surface_key != foreground_candidate->source->key();
+    };
+
+    if (deferred_foreground_frame_ &&
+        (!foreground_handoff_pending ||
+            deferred_foreground_frame_->scene_process_id !=
+                active_scene_process_id ||
+            !scanout_contents_valid_)) {
+        deferred_foreground_frame_.reset();
+    }
+    bool release_deferred_foreground_frame = false;
+    bool defer_foreground_publication = false;
+    if (deferred_foreground_frame_) {
+        const auto ready_generation = std::find_if(prepared_layers.begin(),
+            prepared_layers.end(), [&](const PreparedLayer& layer) {
+                return covers_display(layer) && layer.generation >
+                                                   deferred_foreground_frame_
+                                                       ->generation;
+            });
+        if (ready_generation != prepared_layers.end()) {
+            deferred_foreground_frame_.reset();
+            release_deferred_foreground_frame = true;
+        } else {
+            // Keep the last accepted scanout visible while the destination's
+            // first real GPU update is still pending. Continue through the
+            // compositor below so guest rendering and the native command
+            // stream are not stalled by the publication guard.
+            defer_foreground_publication = true;
+        }
+    }
+    if (!release_deferred_foreground_frame && !deferred_foreground_frame_ &&
+        is_new_foreground_surface()) {
+        deferred_foreground_frame_ = DeferredForegroundFrame {
+            active_scene_process_id, foreground_candidate->generation };
+        defer_foreground_publication = true;
+    }
+    if (!defer_foreground_publication) {
+        for (const auto& layer : prepared_layers)
+            layer.source->mark_scanout_presentation();
+    }
+
     std::vector<HostRectangle> damage;
     const auto add_damage = [&](HostRectangle rectangle) {
         const auto clipped = intersection(rectangle, full_display);
@@ -728,7 +831,7 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
     if (!damage.empty()) {
         composition_surface = acquire_composition_surface();
         if (!composition_surface)
-            return false;
+            return SubmissionResult::Failed;
         const auto full_display_rectangle =
             HostRectangle { 0, 0, display_->width(), display_->height() };
         if (scanout_contents_valid_ &&
@@ -737,13 +840,13 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
                 HostCompositeMode::Copy, 0xffU, HostFilter::Nearest,
                 HostRotation::Identity)) {
             scanout_contents_valid_ = false;
-            return false;
+            return SubmissionResult::Failed;
         }
         for (const auto rectangle : damage) {
             if (!command_encoder_->fill(
                     composition_surface, rectangle, background_argb_)) {
                 scanout_contents_valid_ = false;
-                return false;
+                return SubmissionResult::Failed;
             }
         }
         for (const auto& layer : prepared_layers) {
@@ -757,50 +860,47 @@ bool MobileFramebufferHle::submit_host_layers(UserlandHleCall& call)
                         HostCompositeMode::PremultipliedSourceOver, 0xffU,
                         HostFilter::Nearest, HostRotation::Identity, *clip)) {
                     scanout_contents_valid_ = false;
-                    return false;
+                    return SubmissionResult::Failed;
                 }
             }
         }
         if (!command_encoder_->submit(PerfSubmitReason::Compositor)) {
             scanout_contents_valid_ = false;
-            return false;
+            return SubmissionResult::Failed;
         }
-        scanout_surface_ = composition_surface;
+        if (!defer_foreground_publication)
+            scanout_surface_ = composition_surface;
     }
 
-    submitted_layers_.clear();
-    for (const auto& layer : prepared_layers) {
-        submitted_layers_.emplace(
-            layer.order, SubmittedLayer { layer.state, layer.source->key(),
-                             layer.generation });
+    if (!defer_foreground_publication) {
+        submitted_layers_.clear();
+        for (const auto& layer : prepared_layers) {
+            submitted_layers_.emplace(
+                layer.order, SubmittedLayer { layer.state, layer.source->key(),
+                                 layer.generation });
+        }
+        submitted_background_argb_ = background_argb_;
+        scanout_contents_valid_ = true;
+        auto graphics = host_graphics_;
+        auto scanout = scanout_surface_;
+        display_->replace_surface(
+            scanout,
+            [graphics, scanout] {
+                if (!graphics->map_cpu(
+                        *scanout, true, PerfCpuMapReason::DeferredDisplayRead))
+                    return std::vector<std::uint32_t> { };
+                auto mapping = scanout->map_cpu(
+                    false, PerfCpuMapReason::DeferredDisplayRead);
+                return mapping.frame().pixels;
+            },
+            call.process_id(),
+            [scanout] {
+                return std::max(
+                    scanout->cpu_generation(), scanout->gpu_generation());
+            });
     }
-    submitted_background_argb_ = background_argb_;
-    scanout_contents_valid_ = true;
-    auto graphics = host_graphics_;
-    auto scanout = scanout_surface_;
-    display_->replace_surface(
-        scanout,
-        [graphics, scanout] {
-            if (!graphics->map_cpu(
-                    *scanout, true, PerfCpuMapReason::DeferredDisplayRead))
-                return std::vector<std::uint32_t> { };
-            auto mapping =
-                scanout->map_cpu(false, PerfCpuMapReason::DeferredDisplayRead);
-            return mapping.frame().pixels;
-        },
-        call.process_id(),
-        [scanout] {
-            return std::max(
-                scanout->cpu_generation(), scanout->gpu_generation());
-        });
-    if (debug_submission) {
-        call.output().write(
-            "[mfb-debug] published pid=" + std::to_string(call.process_id()) +
-            " scanout=" + std::to_string(scanout->key().surface) +
-            " cpu=" + std::to_string(scanout->cpu_generation()) +
-            " gpu=" + std::to_string(scanout->gpu_generation()) + "\n");
-    }
-    return true;
+    return defer_foreground_publication ? SubmissionResult::Deferred
+                                        : SubmissionResult::Submitted;
 }
 
 void MobileFramebufferHle::set_layer(UserlandHleCall& call)
@@ -885,12 +985,14 @@ void MobileFramebufferHle::set_layer(UserlandHleCall& call)
     call.set_return(iokit_abi::success);
 }
 
-void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
+MobileFramebufferHle::SubmissionResult
+MobileFramebufferHle::submit_layers(UserlandHleCall& call)
 {
     if (display_ == nullptr)
-        return;
-    if (submit_host_layers(call))
-        return;
+        return SubmissionResult::Failed;
+    const auto host_submission = submit_host_layers(call);
+    if (host_submission != SubmissionResult::Failed)
+        return host_submission;
     scanout_contents_valid_ = false;
     submitted_layers_.clear();
     const auto geometry = display_->geometry();
@@ -1024,6 +1126,7 @@ void MobileFramebufferHle::submit_layers(UserlandHleCall& call)
         }
     }
     display_->replace_pixels(std::move(composed), call.process_id());
+    return SubmissionResult::Submitted;
 }
 
 std::optional<std::uint32_t> MobileFramebufferHle::record_presentation(
