@@ -77,6 +77,8 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
                 { "mig-only", "direct-vm-port-traps-v1" }) << '\n'
          << "psynch: " << choice(abi.psynch_abi,
                 { "unsupported", "arm32-generation-v1" }) << '\n'
+         << "semaphore-wait: " << choice(abi.semaphore_wait_abi,
+                { "inline-seconds32", "inline-seconds64" }) << '\n'
          << "iokit-matching: " << choice(abi.iokit_matching_rpc,
                 { "plural-iterator", "inline-single-service-v1" }) << '\n'
          << "activation-hardware-model: " << choice(

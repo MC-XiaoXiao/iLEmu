@@ -103,6 +103,7 @@ namespace {
                 .initial_apple_vector_abi =
                     DarwinInitialAppleVectorAbi::LegacyExecutablePath,
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
                 .activation_hardware_model_policy =
                     ActivationHardwareModelPolicy::DevelopmentBoard,
                 .capabilities = { .send_sigsys = true },
@@ -122,6 +123,7 @@ namespace {
                 .initial_apple_vector_abi =
                     DarwinInitialAppleVectorAbi::LegacyExecutablePath,
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
                 .stack_snapshot_abi =
                     DarwinStackSnapshotAbi::LegacyFourArguments,
                 .iokit_matching_rpc =
@@ -150,6 +152,7 @@ namespace {
                 .mach_kernel_rpc =
                     DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1,
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
                 .stack_snapshot_abi =
                     DarwinStackSnapshotAbi::LegacyFourArguments,
                 .iokit_matching_rpc =
@@ -169,6 +172,7 @@ namespace {
                 .mach_kernel_rpc =
                     DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1,
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
                 .capabilities = { .send_sigsys = true },
             },
         },

@@ -756,13 +756,23 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::semaphore_wait_signal: { // __semwait_signal
         std::optional<std::uint64_t> timeout_interval;
         if (registers[2] != 0) {
-            if (registers[5] >= 1'000'000'000U) {
+            const bool wide_seconds = shared_state_->darwin_abi.semaphore_wait_abi ==
+                DarwinSemaphoreWaitAbi::InlineSeconds64;
+            auto seconds = static_cast<std::uint64_t>(registers[4]);
+            auto nanoseconds = registers[wide_seconds ? 6U : 5U];
+            if (wide_seconds) {
+                seconds |= static_cast<std::uint64_t>(registers[5]) << 32U;
+                // XNU clamps waits outside mach_timespec's seconds range.
+                if (seconds > std::numeric_limits<std::uint32_t>::max()) {
+                    seconds = std::numeric_limits<std::uint32_t>::max();
+                    nanoseconds = 0;
+                }
+            }
+            if (nanoseconds >= 1'000'000'000U) {
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return;
             }
-            const auto requested =
-                static_cast<std::uint64_t>(registers[4]) * 1'000'000'000ULL +
-                registers[5];
+            const auto requested = seconds * 1'000'000'000ULL + nanoseconds;
             if (registers[3] != 0) {
                 timeout_interval = requested;
             } else {

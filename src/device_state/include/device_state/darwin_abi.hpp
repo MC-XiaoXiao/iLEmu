@@ -84,6 +84,13 @@ enum class DarwinPsynchAbi : std::uint8_t {
     Arm32GenerationV1,
 };
 
+// __semwait_signal widened tv_sec independently of ARM pointer width.
+// The timespec-pointer syscall has its own number and is not affected.
+enum class DarwinSemaphoreWaitAbi : std::uint8_t {
+    InlineSeconds32,
+    InlineSeconds64,
+};
+
 // Darwin 11 exposes the legacy stack_snapshot diagnostic syscall. Later
 // kernels widened its argument list before retiring the old implementation;
 // keep that shape explicit so a diagnostic call cannot be mistaken for a
@@ -149,6 +156,9 @@ struct DarwinAbi {
     };
     DarwinPsynchAbi psynch_abi {
         DarwinPsynchAbi::Unsupported
+    };
+    DarwinSemaphoreWaitAbi semaphore_wait_abi {
+        DarwinSemaphoreWaitAbi::InlineSeconds32
     };
     DarwinStackSnapshotAbi stack_snapshot_abi {
         DarwinStackSnapshotAbi::Unsupported
