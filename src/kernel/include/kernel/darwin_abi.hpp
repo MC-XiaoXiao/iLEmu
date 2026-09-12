@@ -108,6 +108,10 @@ namespace fcntl_command {
     // Older dyld uses it when validating the dyld shared cache before mapping
     // its logical library images.
     inline constexpr std::uint32_t add_file_signatures = 61;
+    // F_GETPROTECTIONCLASS reports the data-protection class associated with a
+    // file descriptor. The emulated data volume has no protection metadata,
+    // so the descriptor layer reports the unprotected class.
+    inline constexpr std::uint32_t get_protection_class = 63;
 } // namespace fcntl_command
 
 namespace ptrace_request {

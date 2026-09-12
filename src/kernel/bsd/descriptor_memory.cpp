@@ -1017,6 +1017,13 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             }
             bsd_success(cpu, 0);
             return;
+        case darwin::fcntl_command::get_protection_class:
+            // The host-backed volume is not encrypted and does not expose
+            // Darwin data-protection metadata. Returning the unprotected
+            // class keeps read-only callers, such as NSData's mapped-file
+            // path, on the normal mmap flow.
+            bsd_success(cpu, 0);
+            return;
         case darwin::fcntl_command::set_read_ahead:
         case darwin::fcntl_command::set_no_cache:
             // Host page-cache policy is deliberately not projected into guest
