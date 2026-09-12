@@ -164,23 +164,24 @@ std::optional<AudioBuffer> FfmpegAudioDecoder::decode(
     }
     AudioBuffer result { static_cast<std::uint32_t>(codec_context->sample_rate),
         2, { } };
+    auto& samples = std::get<std::vector<std::int16_t>>(result.samples);
     const auto append_frame = [&]() -> bool {
         const auto capacity =
             swr_get_out_samples(resampler.get(), frame->nb_samples);
         if (capacity < 0 ||
             static_cast<std::uint64_t>(capacity) * result.channel_count >
                 std::numeric_limits<std::size_t>::max() -
-                    result.samples.size()) {
+                    samples.size()) {
             impl_->error = capacity < 0 ? ffmpeg_error(capacity)
                                         : "decoded audio is too large";
             return false;
         }
-        const auto original_size = result.samples.size();
-        result.samples.resize(
+        const auto original_size = samples.size();
+        samples.resize(
             original_size +
             static_cast<std::size_t>(capacity) * result.channel_count);
         auto* output = reinterpret_cast<std::uint8_t*>(
-            result.samples.data() + static_cast<std::ptrdiff_t>(original_size));
+            samples.data() + static_cast<std::ptrdiff_t>(original_size));
         const auto converted = swr_convert(resampler.get(), &output, capacity,
             const_cast<const std::uint8_t**>(frame->extended_data),
             frame->nb_samples);
@@ -188,7 +189,7 @@ std::optional<AudioBuffer> FfmpegAudioDecoder::decode(
             impl_->error = ffmpeg_error(converted);
             return false;
         }
-        result.samples.resize(
+        samples.resize(
             original_size +
             static_cast<std::size_t>(converted) * result.channel_count);
         return true;
@@ -230,7 +231,7 @@ std::optional<AudioBuffer> FfmpegAudioDecoder::decode(
             impl_->error = ffmpeg_error(status);
         return std::nullopt;
     }
-    if (result.samples.empty()) {
+    if (samples.empty()) {
         impl_->error = "FFmpeg decoded no audio samples";
         return std::nullopt;
     }

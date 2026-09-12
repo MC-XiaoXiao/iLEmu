@@ -158,18 +158,18 @@ namespace {
             sample_bytes.size() % *bytes_per_packet != 0) {
             return std::nullopt;
         }
-        AudioBuffer result { *sample_rate,
-            static_cast<std::uint16_t>(*channel_count), { } };
-        result.samples.reserve(sample_bytes.size() / sizeof(std::int16_t));
+        std::vector<std::int16_t> samples;
+        samples.reserve(sample_bytes.size() / sizeof(std::int16_t));
         for (std::size_t index = 0; index < sample_bytes.size();
             index += sizeof(std::int16_t)) {
             const auto value = static_cast<std::uint16_t>(
                 std::to_integer<std::uint16_t>(sample_bytes[index]) |
                 (std::to_integer<std::uint16_t>(sample_bytes[index + 1U])
                     << 8U));
-            result.samples.push_back(std::bit_cast<std::int16_t>(value));
+            samples.push_back(std::bit_cast<std::int16_t>(value));
         }
-        return result;
+        return AudioBuffer { *sample_rate,
+            static_cast<std::uint16_t>(*channel_count), std::move(samples) };
     }
 
 } // namespace
@@ -242,7 +242,7 @@ AudioPlayResult AudioService::queue_pcm(AudioBuffer buffer, float device_volume)
 {
     AudioPlayResult result;
     if (buffer.sample_rate == 0 || buffer.channel_count == 0 ||
-        buffer.samples.empty()) {
+        buffer.empty()) {
         result.status = AudioPlayStatus::UnsupportedResource;
         result.detail = "invalid PCM buffer";
         return result;
@@ -255,8 +255,13 @@ AudioPlayResult AudioService::queue_pcm(AudioBuffer buffer, float device_volume)
     // Enqueuing every silent hardware period only creates latency when guest
     // virtual time advances faster than host playback time, potentially hiding
     // the next audible buffer behind stale silence.
-    if (std::ranges::none_of(
-            buffer.samples, [](std::int16_t sample) { return sample != 0; })) {
+    const auto silent = std::visit(
+        [](const auto& samples) {
+            return std::ranges::none_of(
+                samples, [](const auto sample) { return sample != 0; });
+        },
+        buffer.samples);
+    if (silent) {
         result.status = AudioPlayStatus::Queued;
         return result;
     }

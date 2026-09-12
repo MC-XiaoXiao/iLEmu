@@ -14,6 +14,7 @@
 #include <limits>
 #include <list>
 #include <mutex>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -38,6 +39,7 @@ struct SdlAudioSink::Impl {
     SDL_AudioStream* streaming_converter { };
     std::uint32_t streaming_sample_rate { };
     std::uint16_t streaming_channel_count { };
+    SDL_AudioFormat streaming_sample_format { };
     bool owns_audio_subsystem { };
     bool device_started { };
     std::list<QueuedChunk> queued_chunks;
@@ -215,10 +217,26 @@ bool SdlAudioSink::play(const AudioBuffer& buffer)
 #if defined(ILEMU_HAS_SDL2)
     std::unique_lock control_lock { impl_->control_mutex };
     if (buffer.sample_rate == 0 || buffer.channel_count == 0 ||
-        buffer.samples.empty()) {
+        buffer.empty()) {
         impl_->error = "invalid empty audio buffer";
         return false;
     }
+    struct SourceView {
+        SDL_AudioFormat format;
+        const void* data;
+        std::size_t byte_count;
+    };
+    const auto source = std::visit(
+        [](const auto& samples) {
+            using Sample = typename std::decay_t<decltype(samples)>::value_type;
+            constexpr auto format =
+                std::is_same_v<Sample, std::int16_t> ? AUDIO_S16SYS :
+                std::is_same_v<Sample, std::int32_t> ? AUDIO_S32SYS :
+                                                       AUDIO_F32SYS;
+            return SourceView { format, samples.data(),
+                samples.size() * sizeof(Sample) };
+        },
+        buffer.samples);
     if (impl_->device == 0) {
         if ((SDL_WasInit(SDL_INIT_AUDIO) & SDL_INIT_AUDIO) == 0U) {
             if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) {
@@ -252,21 +270,23 @@ bool SdlAudioSink::play(const AudioBuffer& buffer)
     if (buffer.streaming) {
         if (impl_->streaming_converter != nullptr &&
             (impl_->streaming_sample_rate != buffer.sample_rate ||
-                impl_->streaming_channel_count != buffer.channel_count)) {
+                impl_->streaming_channel_count != buffer.channel_count ||
+                impl_->streaming_sample_format != source.format)) {
             SDL_FreeAudioStream(impl_->streaming_converter);
             impl_->streaming_converter = nullptr;
         }
         if (impl_->streaming_converter == nullptr) {
-            impl_->streaming_converter = SDL_NewAudioStream(AUDIO_S16SYS,
+            impl_->streaming_converter = SDL_NewAudioStream(source.format,
                 static_cast<Uint8>(buffer.channel_count),
                 static_cast<int>(buffer.sample_rate), impl_->format.format,
                 impl_->format.channels, impl_->format.freq);
             impl_->streaming_sample_rate = buffer.sample_rate;
             impl_->streaming_channel_count = buffer.channel_count;
+            impl_->streaming_sample_format = source.format;
         }
         stream = impl_->streaming_converter;
     } else {
-        owned_stream = SDL_NewAudioStream(AUDIO_S16SYS,
+        owned_stream = SDL_NewAudioStream(source.format,
             static_cast<Uint8>(buffer.channel_count),
             static_cast<int>(buffer.sample_rate), impl_->format.format,
             impl_->format.channels, impl_->format.freq);
@@ -276,11 +296,10 @@ bool SdlAudioSink::play(const AudioBuffer& buffer)
         impl_->error = SDL_GetError();
         return false;
     }
-    const auto source_bytes = buffer.samples.size() * sizeof(std::int16_t);
-    if (source_bytes >
+    if (source.byte_count >
             static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
-        SDL_AudioStreamPut(stream, buffer.samples.data(),
-            static_cast<int>(source_bytes)) != 0 ||
+        SDL_AudioStreamPut(stream, source.data,
+            static_cast<int>(source.byte_count)) != 0 ||
         (!buffer.streaming && SDL_AudioStreamFlush(stream) != 0)) {
         impl_->error = SDL_GetError();
         if (owned_stream != nullptr)

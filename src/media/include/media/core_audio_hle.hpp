@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include "media/pcm_sample_format.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -102,8 +104,7 @@ private:
         std::uint32_t sample_rate { 44100 };
         std::uint32_t channel_count { 2 };
         std::uint32_t buffer_frame_size { 1024 };
-        std::uint32_t bytes_per_sample { 2 };
-        bool floating_point { };
+        PcmSampleFormat sample_format;
         std::uint32_t format_query { };
         std::vector<std::byte> zero_output_samples;
         std::vector<std::byte> captured_output_samples;

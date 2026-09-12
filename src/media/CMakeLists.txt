@@ -4,6 +4,7 @@
 
 add_library(ilemu_media STATIC
     audio.cpp
+    pcm_sample_format.cpp
     audio_toolbox_hle.cpp
     celestial_volume_protocol.cpp
     core_audio_hle.cpp

@@ -16,18 +16,28 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <variant>
 #include <vector>
 
 namespace ilemu {
 
+using AudioSamples = std::variant<std::vector<std::int16_t>,
+    std::vector<std::int32_t>, std::vector<float>>;
+
 struct AudioBuffer {
     std::uint32_t sample_rate { };
     std::uint16_t channel_count { };
-    std::vector<std::int16_t> samples;
+    AudioSamples samples { std::vector<std::int16_t> { } };
     // Hardware callbacks are adjacent pieces of one PCM timeline. Backends may
     // retain converter history between these buffers; decoded files remain
     // self-contained and flush their converter at the end.
     bool streaming { };
+
+    [[nodiscard]] bool empty() const
+    {
+        return std::visit(
+            [](const auto& values) { return values.empty(); }, samples);
+    }
 };
 
 enum class AudioStopMode {

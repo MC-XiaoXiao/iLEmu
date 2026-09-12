@@ -121,16 +121,12 @@ void CoreAudioHle::query_native_io_format(
                 const auto frame_bytes = memory.read32(data + 24U).value_or(0);
                 const auto channels = memory.read32(data + 28U).value_or(0);
                 const auto bits = memory.read32(data + 32U).value_or(0);
-                // AudioBuffer currently consumes packed interleaved PCM.
-                // Refuse unrepresentable layouts before scheduling a writer.
-                const bool floating = (flags & 1U) != 0;
-                const bool supported_sample =
-                    floating ? bits == 32U : bits == 16U && (flags & 4U) != 0;
+                const auto sample_format = PcmSampleFormat::from_lpcm(flags, bits);
                 if (memory.read32(size).value_or(0) < stream_format_size ||
                     !std::isfinite(rate) || rate < 4000.0 || rate > 192000.0 ||
-                    tag != 0x6c70636dU || (flags & (2U | 16U)) != 0 ||
+                    tag != 0x6c70636dU || !sample_format ||
                     ((flags & 32U) != 0 && channels != 1U) ||
-                    (flags & 8U) == 0 || !supported_sample || channels == 0 ||
+                    channels == 0 ||
                     channels > 32U || packet_frames != 1U ||
                     frame_bytes != channels * (bits / 8U) ||
                     packet_bytes != frame_bytes) {
@@ -140,8 +136,7 @@ void CoreAudioHle::query_native_io_format(
                 format.sample_rate =
                     static_cast<std::uint32_t>(std::llround(rate));
                 format.channel_count = channels;
-                format.bytes_per_sample = bits / 8U;
-                format.floating_point = floating;
+                format.sample_format = *sample_format;
                 query_native_io_format(completed, io_proc_id, NativeFormatQuery::FrameCount);
             })) {
         call.cpu().registers() = saved;
@@ -154,7 +149,7 @@ void CoreAudioHle::configure_native_io(
 {
     auto& state = native_io_procs_.at(io_proc_id);
     const auto sample_bytes =
-        state.buffer_frame_size * state.channel_count * state.bytes_per_sample;
+        state.buffer_frame_size * state.channel_count * state.sample_format.bytes_per_sample();
     if (state.callback_return == 0)
         state.callback_return =
             registry_.prepare_thread_callback_return(call.cpu()).value_or(0);

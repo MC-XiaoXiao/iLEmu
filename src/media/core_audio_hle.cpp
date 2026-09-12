@@ -560,7 +560,7 @@ void CoreAudioHle::complete_io_proc(UserlandHleCall& call,
 
     const auto produced =
         call.memory().read32(registration->output_buffers + 8U).value_or(0);
-    const auto sample_bytes = native ? registration->bytes_per_sample : 2U;
+    const auto sample_bytes = registration->sample_format.bytes_per_sample();
     const auto byte_count =
         std::min(produced, registration->output_sample_bytes) &
         ~(sample_bytes - 1U);
@@ -590,38 +590,7 @@ void CoreAudioHle::complete_io_proc(UserlandHleCall& call,
                            : static_cast<std::uint16_t>(
                                  device_channel_count(device->identifier));
                 buffer.streaming = true;
-                buffer.samples.reserve(bytes.size() / sample_bytes);
-                for (std::size_t offset = 0; offset < bytes.size();
-                    offset += sample_bytes) {
-                    const auto encoded = static_cast<std::uint16_t>(
-                        std::to_integer<std::uint16_t>(bytes[offset]) |
-                        static_cast<std::uint16_t>(
-                            std::to_integer<std::uint16_t>(bytes[offset + 1U])
-                            << 8U));
-                    auto sample = std::bit_cast<std::int16_t>(encoded);
-                    if (native && registration->floating_point) {
-                        const auto bits =
-                            static_cast<std::uint32_t>(encoded) |
-                            (std::to_integer<std::uint32_t>(bytes[offset + 2U])
-                                << 16U) |
-                            (std::to_integer<std::uint32_t>(bytes[offset + 3U])
-                                << 24U);
-                        const auto value = std::bit_cast<float>(bits);
-                        sample = std::isfinite(value)
-                                     ? static_cast<std::int16_t>(std::clamp(
-                                           std::lrint(
-                                               std::clamp(value, -1.0F, 1.0F) *
-                                               32768.0F),
-                                           -32768L, 32767L))
-                                     : 0;
-                    }
-                    buffer.samples.push_back(sample);
-                    peak = std::max(
-                        peak, sample == std::numeric_limits<std::int16_t>::min()
-                                  ? 32768U
-                                  : static_cast<std::uint32_t>(
-                                        std::abs(static_cast<int>(sample))));
-                }
+                buffer.samples = registration->sample_format.decode(bytes, peak);
                 if (service_source_active || !service_) {
                     result.status = AudioPlayStatus::Queued;
                 } else {
