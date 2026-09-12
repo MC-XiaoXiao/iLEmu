@@ -276,6 +276,7 @@ namespace syscall {
     inline constexpr std::uint32_t aio_read = 318;
     inline constexpr std::uint32_t aio_write = 319;
     inline constexpr std::uint32_t aio_list = 320;
+    inline constexpr std::uint32_t pthread_kill = 328;
     inline constexpr std::uint32_t disable_thread_signal = 331;
     inline constexpr std::uint32_t semaphore_wait_signal = 334;
     // iPhone OS 3.0's libSystem uses the pre-inline-timespec semwait ABI at

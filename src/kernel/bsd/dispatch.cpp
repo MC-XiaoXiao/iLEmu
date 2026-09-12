@@ -279,6 +279,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         dispatch_bsd_posix_semaphore(cpu, number);
         return;
     case 111: // sigsuspend
+    case darwin::syscall::pthread_kill:
     case darwin::syscall::kill:
         dispatch_bsd_signal(cpu, number);
         return;

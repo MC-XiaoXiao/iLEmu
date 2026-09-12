@@ -11,6 +11,7 @@
 #include "kernel/kernel.hpp"
 
 #include "kernel/darwin_abi.hpp"
+#include "../../mach/support.hpp"
 #include <algorithm>
 #include <cstdint>
 #include <vector>
@@ -130,6 +131,41 @@ void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
         output_.write("[signal] suspend pid=" + std::to_string(process_.pid) +
                       " cpu=" + std::to_string(cpu.processor_id()) + "\n");
         cpu.halt(Dynarmic::HaltReason::UserDefined5);
+        return;
+    }
+    if (number == darwin::syscall::pthread_kill) {
+        const auto thread_name = cpu.registers()[0];
+        const auto signal = cpu.registers()[1];
+        if (signal >= darwin::signal::count) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+        std::optional<std::pair<std::uint32_t, std::uint32_t>> target;
+        {
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            const auto object = mach_support::resolve_name_with_right(
+                *shared_state_, process_.pid, thread_name,
+                xnu::ipc::Right::Send);
+            if (object)
+                target = mach_support::find_thread_owner(*shared_state_, *object);
+        }
+        // pthread_t is represented by the target thread's send right. POSIX
+        // limits pthread_kill to threads in the caller's process; signal zero
+        // performs only this liveness check.
+        if (!target || target->first != process_.pid) {
+            bsd_error(cpu, darwin::error::no_such_process);
+            return;
+        }
+        if (signal != 0) {
+            const auto error = deliver_signal(signal);
+            if (error != 0) {
+                bsd_error(cpu, error);
+                return;
+            }
+        }
+        bsd_success(cpu, 0);
+        if (process_.exited)
+            cpu.halt(Dynarmic::HaltReason::UserDefined1);
         return;
     }
     if (number != darwin::syscall::kill) {
