@@ -1832,6 +1832,20 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
         std::uint32_t address { };
         bool thumb { };
     };
+    // A framework may also be loaded temporarily beside its shared-cache
+    // image. Keep a live callable binding instead of replacing it with an
+    // alias that dyld can unload as soon as a bundle query finishes.
+    const auto publish_symbol = [&](const std::string& name,
+                                    std::uint32_t address, bool thumb) {
+        const auto existing = installed_symbols_.find(name);
+        if (existing != installed_symbols_.end() &&
+            existing->second != address &&
+            memory_.accessible(existing->second, 1U, MemoryPermission::Execute)) {
+            return;
+        }
+        installed_symbols_.insert_or_assign(name, address);
+        installed_symbol_thumb_.insert_or_assign(name, thumb);
+    };
     const auto mapping_offset = file_offset;
     const auto mapping_file_end = file_offset + mapping_size;
     std::size_t patched = 0;
@@ -1972,11 +1986,10 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
                 mapping_address + static_cast<std::uint32_t>(mapping_delta);
             if (hle_relevant || cached_symbol.guest_function ||
                 cached_symbol.guest_data_symbol) {
-                installed_symbols_.insert_or_assign(
-                    symbol.name, runtime_address);
-                if (hle_relevant || cached_symbol.guest_function) {
-                    installed_symbol_thumb_.insert_or_assign(
-                        symbol.name, symbol.thumb_definition());
+                if (cached_symbol.guest_data_symbol) {
+                    installed_symbols_.insert_or_assign(symbol.name, runtime_address);
+                } else {
+                    publish_symbol(symbol.name, runtime_address, symbol.thumb_definition());
                 }
             }
 
@@ -2207,9 +2220,9 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
         }
         for (auto& pending : pending_patches) {
             if (pending.installed_symbol) {
-                installed_symbols_.insert_or_assign(
-                    pending.installed_symbol->first,
-                    pending.installed_symbol->second);
+                publish_symbol(pending.installed_symbol->first,
+                    pending.installed_symbol->second,
+                    pending.installed_call && pending.installed_call->thumb);
             }
             if (!pending.installed_call)
                 continue;
@@ -2220,8 +2233,7 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
         cpu.invalidate_cache_ranges(coalesced_invalidations);
     }
     for (const auto& symbol : pending_plan_symbols) {
-        installed_symbols_.insert_or_assign(symbol.symbol, symbol.address);
-        installed_symbol_thumb_.insert_or_assign(symbol.symbol, symbol.thumb);
+        publish_symbol(symbol.symbol, symbol.address, symbol.thumb);
     }
     if (patched != 0) {
         output_.write(
