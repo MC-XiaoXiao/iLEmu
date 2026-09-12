@@ -112,7 +112,8 @@ public:
     observe_service_source_create_reply(
         std::uint32_t reply_object, std::uint32_t source);
     [[nodiscard]] bool observe_service_source_property(
-        std::uint32_t source, std::string_view property, float value);
+        std::optional<std::uint32_t> source, std::string_view property,
+        float value);
     void observe_service_output_stop_mode(AudioStopMode mode);
     [[nodiscard]] bool service_source_playing();
 

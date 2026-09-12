@@ -354,30 +354,38 @@ AudioService::observe_service_source_create_reply(
 }
 
 bool AudioService::observe_service_source_property(
-    std::uint32_t source, std::string_view property, float value)
+    std::optional<std::uint32_t> source, std::string_view property, float value)
 {
-    if (source == 0 || !std::isfinite(value))
+    if ((source && *source == 0) || !std::isfinite(value))
         return false;
     std::shared_ptr<AudioSink> sink;
     std::optional<std::filesystem::path> path;
     std::optional<float> gain;
+    std::optional<std::uint32_t> source_id;
     bool stop = false;
     AudioStopMode stop_mode = AudioStopMode::Immediate;
     AudioStopMode replacement_mode = AudioStopMode::Immediate;
     {
         std::lock_guard lock { mutex_ };
         retire_finished_service_source_locked();
-        auto& state = service_sources_[source];
+        const auto resolved_source = source ? source : latest_service_source_id_;
+        if (!resolved_source)
+            return false;
+        const auto current = service_sources_.find(*resolved_source);
+        if (current == service_sources_.end())
+            return false;
+        source_id = *resolved_source;
+        auto& state = current->second;
         if (property == "uservolume") {
             state.user_volume = std::clamp(value, 0.0F, 1.0F);
-            if (playing_service_source_id_ == source) {
+            if (playing_service_source_id_ == *source_id) {
                 sink = sink_;
                 gain = *state.user_volume;
             }
         } else if (property == "rate") {
             state.rate = value;
             if (value <= 0.0F) {
-                if (playing_service_source_id_ == source) {
+                if (playing_service_source_id_ == *source_id) {
                     stop_mode = state.stop_mode;
                     playing_service_source_id_.reset();
                     playing_service_source_.reset();
@@ -385,7 +393,7 @@ bool AudioService::observe_service_source_property(
                     stop = true;
                 }
             } else if (!state.path.empty() &&
-                       playing_service_source_id_ != source) {
+                       playing_service_source_id_ != *source_id) {
                 if (playing_service_source_id_) {
                     const auto active =
                         service_sources_.find(*playing_service_source_id_);
@@ -394,7 +402,7 @@ bool AudioService::observe_service_source_property(
                 } else {
                     replacement_mode = state.stop_mode;
                 }
-                playing_service_source_id_ = source;
+                playing_service_source_id_ = *source_id;
                 playing_service_source_ = state.path;
                 path = state.path;
                 gain =
@@ -414,7 +422,7 @@ bool AudioService::observe_service_source_property(
             play_audio_file_with_gain(*path, true, *gain, replacement_mode);
         if (result.status != AudioPlayStatus::Queued) {
             std::lock_guard lock { mutex_ };
-            if (playing_service_source_id_ == source) {
+            if (playing_service_source_id_ == source_id) {
                 playing_service_source_id_.reset();
                 playing_service_source_.reset();
             }

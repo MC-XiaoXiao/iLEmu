@@ -416,6 +416,50 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
         }
     }
 
+    // The host source fallback replaces the hardware render worker only after
+    // the guest media service has selected, opened, and prepared its source.
+    // Complete the current-source rate operation at that boundary: routing it
+    // into the native renderer would synchronously wait for the replaced
+    // worker and trigger the service's RPC-timeout recovery. All source and
+    // item lifecycle messages continue through the firmware service.
+    if (wants_send && local_port && *local_port != xnu::ipc::null_name &&
+        registers[2] >= darwin::mig_wire::message_header_size &&
+        registers[2] <= 64U * 1024U &&
+        registers[3] >= darwin::mig_wire::simple_reply_payload_base) {
+        if (const auto bytes = memory_.read_bytes(message_address, registers[2]);
+            bytes) {
+            const auto property = celestial_volume_protocol::
+                decode_source_float_property_request(*message_id, *bytes);
+            if (property && !property->source && property->property == "rate" &&
+                audio_service_->observe_service_source_property(
+                    property->source, property->property, property->value)) {
+                constexpr auto reply_size =
+                    darwin::mig_wire::simple_reply_payload_base;
+                const std::array<std::uint32_t,
+                    reply_size / sizeof(std::uint32_t)>
+                    reply {
+                        darwin::mig_wire::message_bits(
+                            darwin::mig_wire::disposition_move_send_once),
+                        reply_size,
+                        *local_port,
+                        0U,
+                        0U,
+                        *message_id + 100U,
+                        0U,
+                        1U,
+                        0U,
+                    };
+                registers[0] =
+                    write_message_words(memory_, message_address, reply)
+                        ? darwin::mach::success
+                        : darwin::mach_message::receive_invalid_data;
+                output_.line("[audio] source-property source=current key=rate value=" +
+                             std::to_string(property->value) + " completed=host");
+                return;
+            }
+        }
+    }
+
     if (*message_id ==
             mig_message_id(xnu::mig::bootstrap::Routine::look_up) &&
         process_.pid == 1 && registers[3] >= 36) {
@@ -1043,7 +1087,9 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                             property->source, property->property,
                             property->value)) {
                         output_.line("[audio] source-property source=" +
-                                     std::to_string(property->source) +
+                                     (property->source
+                                             ? std::to_string(*property->source)
+                                             : std::string { "current" }) +
                                      " key=" + property->property + " value=" +
                                      std::to_string(property->value));
                     }
