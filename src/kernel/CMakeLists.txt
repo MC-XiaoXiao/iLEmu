@@ -222,6 +222,7 @@ target_link_libraries(ilemu_kernel PRIVATE
 add_library(ilemu_kernel_iokit_audio STATIC
     iokit/audio/device_catalog.cpp
     iokit/audio/abi.cpp
+    iokit/audio/property_notifications.cpp
     iokit/audio/service.cpp)
 add_library(iLEmu::kernel_iokit_audio ALIAS
     ilemu_kernel_iokit_audio)

@@ -6,6 +6,7 @@
 // operations.
 
 #include "kernel/kernel_iokit_audio.hpp"
+#include "property_notifications.hpp"
 
 #include "foundation/address_space.hpp"
 #include "mach/device_mig_ids.hpp"
@@ -20,7 +21,6 @@
 
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -165,21 +165,24 @@ namespace {
         return value;
     }
 
-    double read_double(std::span<const std::byte> bytes, std::size_t offset)
+    double read_fixed_sample_rate(
+        std::span<const std::byte> bytes, std::size_t offset)
     {
         std::uint64_t bits = 0;
         for (std::size_t index = 0; index < sizeof(bits); ++index) {
             bits |= std::to_integer<std::uint64_t>(bytes[offset + index])
                     << (index * 8U);
         }
-        return std::bit_cast<double>(bits);
+        // IOAudio2 carries sample rates as unsigned 32.32 fixed point,
+        // including the physical stream format and nominal-rate setter.
+        return static_cast<double>(bits) / 4294967296.0;
     }
 
     bool valid_stream_format(std::span<const std::byte> format)
     {
         if (format.size() != stream_format_size)
             return false;
-        const auto sample_rate = read_double(format, 0);
+        const auto sample_rate = read_fixed_sample_rate(format, 0);
         const auto format_id = read_u32(format, 8);
         const auto format_flags = read_u32(format, 12);
         const auto bytes_per_packet = read_u32(format, 16);
@@ -716,6 +719,9 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
 
     const auto& profile = IOKitAudioAbi::io_audio2();
     auto& connection = state.iokit_audio_connections[connection_object];
+    const auto service_object = state.iokit_connections.at(connection_object).service_port;
+    auto& properties = state.iokit_services.at(service_object).properties;
+    const IOAudio2PropertyNotifications notifications { state, service_object };
     if (selector == profile.selectors.start ||
         selector == profile.selectors.stop) {
         if (!scalar_input.empty() || !inband_input.empty()) {
@@ -737,25 +743,46 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         if (control == nullptr || !valid_control_value(*control, value))
             return MethodResult { iokit_abi::bad_argument, { } };
         connection.control_values[identifier] = value;
+        for (auto& entry : properties
+                               .at(std::string { profile.registry.controls })
+                               .array_value) {
+            auto& fields = entry.dictionary_value;
+            if (read_u32(fields
+                             .at(std::string { profile.registry.control_id })
+                             .value,
+                    0) == identifier) {
+                fields[std::string { profile.registry.control_value }] =
+                    number_property(value);
+                break;
+            }
+        }
+        notifications.control_value_changed(identifier, value);
         return MethodResult { iokit_abi::success, { } };
     }
 
     if (selector == profile.selectors.set_nominal_sample_rate) {
-        if (!scalar_input.empty() || inband_input.size() != sizeof(double)) {
+        if (!scalar_input.empty() || inband_input.size() != sizeof(std::uint64_t)) {
             return MethodResult { iokit_abi::bad_argument, { } };
         }
-        const auto sample_rate = read_double(inband_input, 0);
+        const auto sample_rate = read_fixed_sample_rate(inband_input, 0);
         if (!std::isfinite(sample_rate) || sample_rate < 4'000.0 ||
             sample_rate > 192'000.0) {
             return MethodResult { iokit_abi::bad_argument, { } };
         }
         connection.nominal_sample_rate.assign(
             inband_input.begin(), inband_input.end());
+        properties[std::string { profile.registry.sample_rate }] = {
+            KernelSharedState::IOKitRegistryProperty::Kind::Number,
+            connection.nominal_sample_rate };
+        notifications.publish(0, 0x6e737274U); // nominal sample rate
         return MethodResult { iokit_abi::success, { } };
     }
 
     if (selector == profile.selectors.set_stream_current_format) {
-        if (scalar_input.size() != 2 || !valid_stream_format(inband_input) ||
+        // The stream identifier is the required scalar. Accept the extended
+        // request's trailing scalar as well as the original one-scalar form.
+        if ((scalar_input.size() != 1 && scalar_input.size() != 2) ||
+            !valid_stream_format(inband_input) ||
             scalar_input.front() > std::numeric_limits<std::uint32_t>::max()) {
             return MethodResult { iokit_abi::bad_argument, { } };
         }
@@ -764,6 +791,32 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
             return MethodResult { iokit_abi::bad_argument, { } };
         connection.streams[stream_id].current_format.assign(
             inband_input.begin(), inband_input.end());
+        const auto* stream = find_stream(*device, stream_id);
+        const auto key = stream->direction == IOAudio2StreamDirection::Input
+                             ? profile.registry.input_streams
+                             : profile.registry.output_streams;
+        for (auto& entry : properties.at(std::string { key }).array_value) {
+            auto& fields = entry.dictionary_value;
+            if (read_u32(fields.at(std::string { profile.registry.stream_id }).value, 0) != stream_id)
+                continue;
+            auto& format = fields
+                               .at(std::string {
+                                   profile.registry.current_format })
+                               .dictionary_value;
+            format[std::string { profile.registry.sample_rate }] = {
+                KernelSharedState::IOKitRegistryProperty::Kind::Number,
+                { inband_input.begin(), inband_input.begin() + 8 } };
+            const std::array keys { profile.registry.format_id,
+                profile.registry.format_flags, profile.registry.bytes_per_packet,
+                profile.registry.frames_per_packet, profile.registry.bytes_per_frame,
+                profile.registry.channels_per_frame, profile.registry.bits_per_channel };
+            for (std::size_t index = 0; index < keys.size(); ++index)
+                format[std::string { keys[index] }] =
+                    number_property(read_u32(inband_input, 8 + index * 4));
+            break;
+        }
+        notifications.publish(stream_id, 0x70667420U); // physical format
+
         return MethodResult { iokit_abi::success, { } };
     }
 
