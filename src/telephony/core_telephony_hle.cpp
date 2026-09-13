@@ -858,11 +858,14 @@ void register_core_telephony_hle(UserlandHleRegistry& registry,
                 call.resume_original();
                 return;
             }
+            // An offline transport cannot enter emergency callback mode.
+            // This is a known inactive state, not an equipment lookup failure:
+            // clients use it when refreshing their idle timers, and a server
+            // error would trigger connection recovery on every input event.
             // The native status output is a Boolean byte, not a CF object.
             if (call.argument(2) != 0)
                 static_cast<void>(call.memory().write8(call.argument(2), 0));
-            return_server_failure(call, call.argument(0), 0,
-                equipment_info_unavailable_error);
+            return_server_success(call, call.argument(0));
         });
     registry.register_function(std::string { core_telephony_image },
         "__CTServerConnectionCopySystemCapabilities",
