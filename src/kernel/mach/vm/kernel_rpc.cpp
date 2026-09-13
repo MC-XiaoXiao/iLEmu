@@ -42,10 +42,11 @@ namespace {
 bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
     Cpu& cpu, std::uint32_t trap)
 {
-    // iPhoneOS 5's ARM32 libsystem exports both mach_vm_* and pointer-sized
-    // vm_* direct traps. Keep the fast-path ABI in one profile-gated handler;
+    // ARM32 libsystem exports both 64-bit mach_vm_* and pointer-sized
+    // vm_* direct traps. Keep their fast paths in one handler;
     // the MIG entry points remain the fallback when the target is not valid.
-    if (trap != 11U && trap != 13U && trap != 14U && trap != 15U)
+    if (trap != 10U && trap != 11U && trap != 12U && trap != 13U &&
+        trap != 14U && trap != 15U)
         return false;
 
     auto& registers = cpu.registers();
@@ -59,21 +60,34 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
         }
     }
 
-    if (trap == 11U) {
+    if (trap == 10U || trap == 11U) {
         const auto address_pointer = registers[1];
-        const auto requested_address = memory_.read32(address_pointer);
+        const bool wide = trap == 10U;
+        const auto requested_address = wide
+            ? memory_.read64(address_pointer)
+            : std::optional<std::uint64_t> { memory_.read32(address_pointer) };
+        const auto size = static_cast<std::uint64_t>(registers[2]) |
+            (wide ? static_cast<std::uint64_t>(registers[3]) << 32U : 0U);
+        const auto flags = registers[wide ? 4 : 3];
         if (!requested_address ||
-            !memory_.accessible(address_pointer, sizeof(std::uint32_t),
+            !memory_.accessible(address_pointer, wide ? 8U : 4U,
                 MemoryPermission::Write)) {
             registers[0] = darwin::mach::invalid_address;
             return true;
         }
 
-        const auto allocation = allocate_guest_vm_region(
-            memory_, *requested_address, registers[2], registers[3]);
+        if (*requested_address > UINT32_MAX || size > UINT32_MAX) {
+            registers[0] = darwin::mach::invalid_argument;
+            return true;
+        }
+        const auto allocation = allocate_guest_vm_region(memory_,
+            static_cast<std::uint32_t>(*requested_address),
+            static_cast<std::uint32_t>(size), flags);
         if (allocation.result == darwin::mach::success &&
-            !memory_.write32(address_pointer, allocation.address)) {
-            static_cast<void>(memory_.unmap(allocation.address, registers[2]));
+            !(wide ? memory_.write64(address_pointer, allocation.address)
+                   : memory_.write32(address_pointer, allocation.address))) {
+            static_cast<void>(memory_.unmap(
+                allocation.address, static_cast<std::uint32_t>(size)));
             registers[0] = darwin::mach::invalid_address;
             return true;
         }
@@ -113,9 +127,22 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
         return true;
     }
 
-    // XNU treats already-unmapped pages as a successful deallocation. Reuse
-    // the same AddressSpace operation as the MIG vm_deallocate path.
-    static_cast<void>(memory_.unmap(registers[1], registers[2]));
+    // XNU's direct deallocation traps are 12 and 13 across the supported
+    // ARM32 variants. Treat already-unmapped pages as successful and reuse the
+    // same AddressSpace operation as the MIG vm_deallocate path.
+    const bool wide = trap == 12U;
+    const auto address = static_cast<std::uint64_t>(registers[1]) |
+        (wide ? static_cast<std::uint64_t>(registers[2]) << 32U : 0U);
+    const auto size = wide
+        ? static_cast<std::uint64_t>(registers[3]) |
+              (static_cast<std::uint64_t>(registers[4]) << 32U)
+        : registers[2];
+    if (address > UINT32_MAX || size > UINT32_MAX) {
+        registers[0] = darwin::mach::invalid_argument;
+        return true;
+    }
+    static_cast<void>(memory_.unmap(static_cast<std::uint32_t>(address),
+        static_cast<std::uint32_t>(size)));
     registers[0] = darwin::mach::success;
     return true;
 }
