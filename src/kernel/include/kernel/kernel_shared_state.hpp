@@ -108,12 +108,12 @@ struct ProcessContext {
 };
 
 struct KeventRegistration {
-    std::uint32_t ident { };
+    std::uint64_t ident { };
     std::int16_t filter { };
     std::uint16_t flags { };
     std::uint32_t filter_flags { };
-    std::int32_t data { };
-    std::uint32_t user_data { };
+    std::int64_t data { };
+    std::uint64_t user_data { };
     std::uint64_t process_exec_generation { };
     std::uint64_t process_exit_generation { };
     bool user_triggered { };
@@ -126,6 +126,7 @@ struct KeventRegistration {
     // stale ready result.
     mutable std::uint64_t empty_mach_queue_generation { };
     std::optional<VnodeWatch> vnode_watch;
+    std::array<std::uint64_t, 2> extension { };
 };
 
 struct PendingWait {
@@ -168,6 +169,7 @@ struct PendingKevent {
     std::uint32_t event_count { };
     std::size_t processor { };
     std::optional<std::uint64_t> deadline;
+    bool extended { };
 };
 
 struct PendingRecvmsg {

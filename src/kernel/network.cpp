@@ -6,6 +6,7 @@
 // delivery.
 
 #include "kernel/kernel.hpp"
+#include "kernel/kevent_wire.hpp"
 
 #include "kernel/baseband_device.hpp"
 #include "kernel/darwin_abi.hpp"
@@ -1301,9 +1302,9 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
         queue->second.begin(), queue->second.end(), [&](const auto& event) {
             return (event.ident != fd &&
                        event.filter == darwin::kqueue::filter_read &&
-                       descriptor_readable(event.ident)) ||
+                       descriptor_readable(static_cast<std::uint32_t>(event.ident))) ||
                    (event.filter == darwin::kqueue::filter_write &&
-                       descriptor_writable(event.ident)) ||
+                       descriptor_writable(static_cast<std::uint32_t>(event.ident))) ||
                    (event.filter == darwin::kqueue::filter_mach_port &&
                        ready_mach_kevent_name(event).has_value()) ||
                    (event.enabled &&
@@ -1382,7 +1383,7 @@ bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd,
                 registration.filter != darwin::kqueue::filter_write)) {
             continue;
         }
-        if (descriptor_requires_host_poll(registration.ident, visited))
+        if (descriptor_requires_host_poll(static_cast<std::uint32_t>(registration.ident), visited))
             return true;
     }
     return false;
@@ -1479,7 +1480,7 @@ std::optional<std::uint32_t> CompatibilityKernel::ready_mach_kevent_name(
     if (registration.empty_mach_queue_generation == generation_before)
         return std::nullopt;
 
-    if (const auto ready = ready_mach_port_name(registration.ident)) {
+    if (const auto ready = ready_mach_port_name(static_cast<std::uint32_t>(registration.ident))) {
         registration.empty_mach_queue_generation = 0;
         return ready;
     }
@@ -1574,8 +1575,9 @@ CompatibilityKernel::baseband_open_description(std::uint32_t fd) const
 
 std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
     std::uint32_t queue_fd, std::uint32_t event_address,
-    std::uint32_t event_count)
+    std::uint32_t event_count, bool extended)
 {
+    const KeventWireFormat wire { extended };
     const auto queue = kqueues_.find(queue_fd);
     if (queue == kqueues_.end())
         return std::nullopt;
@@ -1596,7 +1598,7 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         if (registration->filter == darwin::kqueue::filter_process) {
             std::lock_guard lock { shared_state_->mach_mutex };
             const auto process =
-                shared_state_->process_kevent_states.find(registration->ident);
+                shared_state_->process_kevent_states.find(static_cast<std::uint32_t>(registration->ident));
             if (process != shared_state_->process_kevent_states.end()) {
                 process_exec_generation_at_evaluation =
                     process->second.exec_generation;
@@ -1637,9 +1639,9 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         const auto ready =
             !registration->enabled ? false
             : registration->filter == darwin::kqueue::filter_read
-                ? descriptor_readable(registration->ident)
+                ? descriptor_readable(static_cast<std::uint32_t>(registration->ident))
             : registration->filter == darwin::kqueue::filter_write
-                ? descriptor_writable(registration->ident)
+                ? descriptor_writable(static_cast<std::uint32_t>(registration->ident))
             : registration->filter == darwin::kqueue::filter_process
                 ? filter_flags != 0U
             : registration->filter == darwin::kqueue::filter_vnode
@@ -1657,7 +1659,7 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             continue;
         }
         if (const auto endpoint =
-                socket_pair_endpoints_.find(registration->ident);
+                socket_pair_endpoints_.find(static_cast<std::uint32_t>(registration->ident));
             endpoint != socket_pair_endpoints_.end()) {
             std::lock_guard socket_lock { shared_state_->socket_mutex };
             available = static_cast<std::uint32_t>(shared_state_
@@ -1665,10 +1667,10 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                                          [endpoint->second.side]
                     .size());
         } else if (registration->filter == darwin::kqueue::filter_read &&
-                   listening_sockets_.contains(registration->ident)) {
+                   listening_sockets_.contains(static_cast<std::uint32_t>(registration->ident))) {
             std::lock_guard socket_lock { shared_state_->socket_mutex };
             if (const auto listener =
-                    unix_listener_states_.find(registration->ident);
+                    unix_listener_states_.find(static_cast<std::uint32_t>(registration->ident));
                 listener != unix_listener_states_.end()) {
                 available = static_cast<std::uint32_t>(
                     listener->second->pending_endpoints.size());
@@ -1697,25 +1699,13 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         }
         if (clears_after_delivery)
             result_flags |= darwin::kqueue::event_clear;
-        const auto event =
-            event_address + written * darwin::kqueue::arm32_event::size;
-        if (!memory_.write32(
-                event + darwin::kqueue::arm32_event::identifier_offset,
-                registration->ident) ||
-            !memory_.write16(event + darwin::kqueue::arm32_event::filter_offset,
-                static_cast<std::uint16_t>(registration->filter)) ||
-            !memory_.write16(event + darwin::kqueue::arm32_event::flags_offset,
-                result_flags) ||
-            !memory_.write32(
-                event + darwin::kqueue::arm32_event::filter_flags_offset,
-                filter_flags) ||
-            !memory_.write32(
-                event + darwin::kqueue::arm32_event::data_offset, available) ||
-            !memory_.write32(
-                event + darwin::kqueue::arm32_event::user_data_offset,
-                registration->user_data)) {
+        const auto event = event_address + written * wire.size();
+        const auto data = registration->filter == darwin::kqueue::filter_user
+            ? registration->data : static_cast<std::int64_t>(available);
+        if (!wire.write(memory_, event, KeventValue { registration->ident,
+                registration->filter, result_flags, filter_flags, data,
+                registration->user_data, registration->extension }))
             return std::nullopt;
-        }
         ++written;
         if (clears_after_delivery) {
             registration->clear_delivered = true;

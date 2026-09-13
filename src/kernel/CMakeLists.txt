@@ -201,6 +201,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/socket.cpp
     bsd/network/process_sockets.cpp
     bsd/events.cpp
+    bsd/kqueue.cpp
     bsd/device/offline_serial.cpp
     bsd/support.cpp)
 target_link_libraries(ilemu_kernel PRIVATE

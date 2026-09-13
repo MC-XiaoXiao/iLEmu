@@ -444,9 +444,12 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::poll:
     case 93:
     case 202:
+        dispatch_bsd_events(cpu, number);
+        return;
     case 362:
     case 363:
-        dispatch_bsd_events(cpu, number);
+    case 369:
+        dispatch_bsd_kqueue(cpu, number);
         return;
     case darwin::syscall::mac_syscall:
         static_cast<void>(dispatch_bsd_security(cpu, number));

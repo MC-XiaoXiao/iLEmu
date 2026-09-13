@@ -567,6 +567,7 @@ private:
     [[nodiscard]] bool dispatch_bsd_debug(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool dispatch_bsd_security(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_socket(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_events(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool ioctl_bpf_device(Cpu& cpu, std::uint32_t fd);
     [[nodiscard]] bool create_kernel_control_socket(Cpu& cpu);
@@ -767,7 +768,7 @@ private:
     baseband_open_description(std::uint32_t fd) const;
     [[nodiscard]] std::optional<std::uint32_t> collect_ready_kevents(
         std::uint32_t queue_fd, std::uint32_t event_address,
-        std::uint32_t event_count);
+        std::uint32_t event_count, bool extended = false);
     void detach_kevents_for_descriptor(std::uint32_t fd);
     using WokenThread = std::pair<std::uint32_t, std::uint32_t>;
     [[nodiscard]] std::uint32_t signal_semaphore_object_locked(
