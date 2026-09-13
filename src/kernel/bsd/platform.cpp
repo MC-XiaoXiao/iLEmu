@@ -31,8 +31,9 @@ namespace {
         // so moving a data volume or changing the host graphics backend cannot
         // alter the guest-visible identity.
         std::string identity { "iLEmu-platform-uuid-v1" };
-        for (const auto field : { profile.product_type, profile.board_config,
-                 profile.model_number, profile.soc }) {
+        for (const auto field :
+            { profile.identity.product_type, profile.identity.board_config,
+                profile.identity.model_number, profile.processor.soc }) {
             identity.push_back('\0');
             identity.append(field);
         }

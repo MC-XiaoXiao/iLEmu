@@ -29,14 +29,15 @@ std::unique_ptr<DisplayPresenter> DesktopHost::create_display(
             "--display sdl requested, but SDL2 support is not built"
         };
     }
-    return std::make_unique<SdlDisplay>(device.display, device.user_interface);
+    return std::make_unique<SdlDisplay>(
+        device.screen.panel, device.screen.user_interface);
 }
 
 std::unique_ptr<ControlChannel> DesktopHost::create_control(
     const DeviceModel& device)
 {
     return std::make_unique<LiveControl>(
-        0, device.user_interface, device.system_gestures);
+        0, device.screen.user_interface, device.input.system_gestures);
 }
 
 SessionAudio DesktopHost::create_audio()

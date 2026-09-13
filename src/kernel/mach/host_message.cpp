@@ -137,10 +137,10 @@ bool CompatibilityKernel::dispatch_mach_host_message(
             // The host_basic_info ABI accepts the five-word legacy prefix and
             // returns the full structure when it fits.
             const auto configured_memory_size =
-                device_model_.memory_size_bytes != 0
-                ? std::min(device_model_.memory_size_bytes,
-                    shared_state_->device_ram_bytes)
-                : shared_state_->device_ram_bytes;
+                device_model_.memory.usable_ram_bytes != 0
+                    ? std::min(device_model_.memory.usable_ram_bytes,
+                          shared_state_->device_ram_bytes)
+                    : shared_state_->device_ram_bytes;
             const auto memory_size = static_cast<std::uint32_t>(
                 std::min<std::uint64_t>(configured_memory_size,
                     std::numeric_limits<std::uint32_t>::max()));

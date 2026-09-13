@@ -140,7 +140,8 @@ void EmulatorSession::run()
     auto device = options.device;
     const auto& darwin_abi = darwin_configuration.abi;
     SessionCatalog session_catalog { rootfs,
-        arm_architecture_for_model(device.cpu_model), catalog_manifest, output };
+        arm_architecture_for_model(device.processor.model), catalog_manifest,
+        output };
     const auto gles_backend = options.gles_backend;
     configure_gles_pipeline_cache(host_cache / "vulkan-pipeline-cache.bin");
     configure_gles_backend(gles_backend);
@@ -156,21 +157,22 @@ void EmulatorSession::run()
         initial_arguments = { binary };
     }
     if (const auto display_size = options.display_geometry) {
-        const auto profile_display = device.display;
-        device.display = *display_size;
+        const auto profile_display = device.screen.panel;
+        device.screen.panel = *display_size;
         // Preserve the explicit Retina split when a native framebuffer size is
         // overridden. Legacy profiles have one geometry, so their diagnostic
         // display-size option keeps the historical window/input behavior.
-        if (device.user_interface.width == profile_display.width &&
-            device.user_interface.height == profile_display.height) {
-            device.user_interface = device.display;
+        if (device.screen.user_interface.width == profile_display.width &&
+            device.screen.user_interface.height == profile_display.height) {
+            device.screen.user_interface = device.screen.panel;
         }
     }
-    output.line("[device] product=" + std::string { device.product_type } +
-                " display=" + std::to_string(device.display.width) + "x" +
-                std::to_string(device.display.height) +
-                " ui=" + std::to_string(device.user_interface.width) + "x" +
-                std::to_string(device.user_interface.height));
+    output.line(
+        "[device] product=" + std::string { device.identity.product_type } +
+        " display=" + std::to_string(device.screen.panel.width) + "x" +
+        std::to_string(device.screen.panel.height) +
+        " ui=" + std::to_string(device.screen.user_interface.width) + "x" +
+        std::to_string(device.screen.user_interface.height));
     output.line(
         "[abi-profile] kernel=" + darwin_configuration.identity.name +
         " initial-apple-vector=" +
@@ -188,7 +190,7 @@ void EmulatorSession::run()
         : activation == LockdownActivation::Unactivated ? "unactivated"
                                                         : "preserve";
     const auto lockdown_capabilities = detect_lockdown_capabilities(
-        rootfs, arm_architecture_for_model(device.cpu_model));
+        rootfs, arm_architecture_for_model(device.processor.model));
     const auto activation_result =
         apply_lockdown_state(rootfs, activation, lockdown_capabilities);
     output.line(
@@ -205,7 +207,7 @@ void EmulatorSession::run()
     const auto activation_hardware_model_policy =
         darwin_abi.abi_epoch != DarwinAbiEpoch::Unknown
             ? darwin_abi.activation_hardware_model_policy
-            : device.activation_hardware_model_policy;
+            : device.identity.activation_hardware_model_policy;
     if (activation_override && activation_override &&
         activation_hardware_model_policy ==
             ActivationHardwareModelPolicy::DevelopmentBoard) {
@@ -213,7 +215,8 @@ void EmulatorSession::run()
         // hatch for a device without a baseband/activation record. Selecting it
         // only for the explicit activated simulator profile leaves preserve
         // mode as the authentic retail contract.
-        device.hardware_model = device.activation_hardware_model;
+        device.identity.hardware_model_override =
+            device.identity.activation_hardware_model;
     }
     const auto ticks_option = options.ticks;
     const auto bounded_execution = ticks_option.has_value();
@@ -273,13 +276,14 @@ void EmulatorSession::run()
                     "host-cooperation=enabled");
     }
     const auto default_processor_count =
-        static_cast<std::size_t>(device.guest_cpu_topology.logical_cpu_count);
-    if (!device.guest_cpu_topology.valid()) {
+        static_cast<std::size_t>(device.processor.topology.logical_cpu_count);
+    if (!device.processor.topology.valid()) {
         throw std::runtime_error {
             "device profile has invalid guest CPU topology"
         };
     }
-    const auto cpu_model = make_arm_cpu_model(device.cpu_model, device.cpu_hz);
+    const auto cpu_model = make_arm_cpu_model(
+        device.processor.model, device.processor.frequency_hz());
     const auto guest_architecture = cpu_model->architecture_version();
     const auto guest_ticks_per_second = cpu_model->ticks_per_second();
     GuestTickClock guest_tick_clock { guest_ticks_per_second };
@@ -304,9 +308,9 @@ void EmulatorSession::run()
         output.line(
             "[cpu] mode=faithful guest-cores=" +
             std::to_string(guest_processor_count) + " physical-cores=" +
-            std::to_string(device.guest_cpu_topology.physical_core_count) +
+            std::to_string(device.processor.topology.physical_core_count) +
             " topology-cache-id=" +
-            std::to_string(device.guest_cpu_topology.cache_topology_id));
+            std::to_string(device.processor.topology.cache_topology_id));
     }
     const auto configured_jit_code_cache_size =
         (options.jit_cache_bytes
@@ -475,9 +479,8 @@ void EmulatorSession::run()
     // A replay input is the only fixture that supplies a device-side transport
     // contract. Without one, retain the common Offline/no-modem policy so a
     // missing radio cannot block the rest of the system.
-    device.baseband_transport = baseband_input_path
-                                    ? BasebandTransport::Virtual
-                                    : device.baseband_transport;
+    device.baseband.transport = baseband_input_path ? BasebandTransport::Virtual
+                                                    : device.baseband.transport;
 
     auto initial_memory = std::make_unique<AddressSpace>();
     initial_memory->set_parallel_access(guest_processor_count > 1);
@@ -1207,7 +1210,7 @@ void EmulatorSession::run()
     initial->kernel = std::make_unique<CompatibilityKernel>(*initial->memory,
         output, rootfs, device, activation_override, lockdown_capabilities,
         darwin_configuration);
-    if (device.keybag_capabilities.apple_key_store_available) {
+    if (device.keybag.apple_key_store_available) {
         const auto canonical_rootfs = std::filesystem::canonical(rootfs);
         const auto device_state = canonical_rootfs.parent_path() /
                                   ".ilemu-device-state" /
@@ -1237,7 +1240,7 @@ void EmulatorSession::run()
     }
     output.line(std::string { "[baseband] profile=" } +
                 (baseband_input_path ? "virtual" : "offline") + " service=" +
-                ((baseband_input_path || device.baseband_device_available)
+                ((baseband_input_path || device.baseband.device_available)
                         ? "visible"
                         : "unavailable") +
                 " mux=" + (baseband_input_path ? "enabled" : "disabled") +
@@ -1356,7 +1359,7 @@ void EmulatorSession::run()
     std::vector<std::uint32_t> boot_pixels;
     const std::filesystem::path boot_logo_paths[] {
         options.boot_logo.value_or(std::filesystem::path { }),
-        host_cache / "boot-logos" / device.product_type /
+        host_cache / "boot-logos" / device.identity.product_type /
             (darwin_configuration.identity.build_version + ".png"),
     };
     for (const auto& path : boot_logo_paths) {
@@ -1365,7 +1368,7 @@ void EmulatorSession::run()
         try {
             if (!std::filesystem::exists(path))
                 continue;
-            boot_pixels = BootLogo::load(path, device.display);
+            boot_pixels = BootLogo::load(path, device.screen.panel);
             output.marker("[boot] logo-loaded " + path.string());
             break;
         } catch (const std::exception& error) {
@@ -1374,7 +1377,7 @@ void EmulatorSession::run()
         }
     }
     if (boot_pixels.empty()) {
-        boot_pixels = BootLogo::placeholder(device.display);
+        boot_pixels = BootLogo::placeholder(device.screen.panel);
         output.marker("[boot] logo-source=built-in-placeholder");
     }
     initial->kernel->initialize_boot_display(std::move(boot_pixels));

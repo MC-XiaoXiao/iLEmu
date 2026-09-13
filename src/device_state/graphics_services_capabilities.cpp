@@ -160,12 +160,13 @@ namespace {
             if (plist_dict_get_item(dimensions, key) == nullptr)
                 plist_dict_set_item(dimensions, key, plist_new_uint(value));
         };
-        ensure_uint("width", profile.display.width);
-        ensure_uint("height", profile.display.height);
-        ensure_uint("main-screen-width", profile.display.width);
-        ensure_uint("main-screen-height", profile.display.height);
-        ensure_uint("main-screen-scale",
-            display_scale_factor(profile.display, profile.user_interface));
+        ensure_uint("width", profile.screen.panel.width);
+        ensure_uint("height", profile.screen.panel.height);
+        ensure_uint("main-screen-width", profile.screen.panel.width);
+        ensure_uint("main-screen-height", profile.screen.panel.height);
+        ensure_uint(
+            "main-screen-scale", display_scale_factor(profile.screen.panel,
+                                     profile.screen.user_interface));
         if (plist_dict_get_item(dimensions, "main-screen-orientation") ==
             nullptr) {
             plist_dict_set_item(
@@ -180,17 +181,17 @@ namespace {
             rootfs / "System/Library/CoreServices/SpringBoard.app";
         std::set<std::string> visiting;
         auto capabilities = load_capabilities(
-            directory, profile.board_config, visiting);
+            directory, profile.identity.board_config, visiting);
         ensure_string(capabilities, "device-name",
-            profile.graphics_services_capabilities.device_name);
+            profile.screen.graphics_services.device_name);
         ensure_string(capabilities, "device-name-localized",
-            profile.graphics_services_capabilities.device_name);
+            profile.screen.graphics_services.device_name);
         ensure_string(capabilities, "marketing-name",
-            profile.graphics_services_capabilities.marketing_name);
+            profile.screen.graphics_services.marketing_name);
         ensure_bool(capabilities, "multitasking",
-            profile.graphics_services_capabilities.supports_multitasking);
+            profile.screen.graphics_services.supports_multitasking);
         ensure_bool(capabilities, "cellular-data",
-            profile.graphics_services_capabilities.supports_cellular_data);
+            profile.screen.graphics_services.supports_cellular_data);
         ensure_screen_dimensions(capabilities, profile);
 
         char* serialized = nullptr;
@@ -209,7 +210,7 @@ namespace {
 
     std::vector<std::byte> fallback_payload(const DeviceModel& profile)
     {
-        const auto& capabilities = profile.graphics_services_capabilities;
+        const auto& capabilities = profile.screen.graphics_services;
         const auto boolean = [](std::string_view key, bool value) {
             return "\t\t<key>" + std::string { key } + "</key>" +
                    (value ? "<true/>\n" : "<false/>\n");
@@ -235,16 +236,16 @@ namespace {
         xml += boolean("volume-buttons", true);
         xml += "\t\t<key>screen-dimensions</key><dict>"
                "<key>width</key><integer>" +
-               std::to_string(profile.display.width) +
+               std::to_string(profile.screen.panel.width) +
                "</integer><key>height</key><integer>" +
-               std::to_string(profile.display.height) +
+               std::to_string(profile.screen.panel.height) +
                "</integer><key>main-screen-width</key><integer>" +
-               std::to_string(profile.display.width) +
+               std::to_string(profile.screen.panel.width) +
                "</integer><key>main-screen-height</key><integer>" +
-               std::to_string(profile.display.height) +
+               std::to_string(profile.screen.panel.height) +
                "</integer><key>main-screen-scale</key><integer>" +
                std::to_string(display_scale_factor(
-                   profile.display, profile.user_interface)) +
+                   profile.screen.panel, profile.screen.user_interface)) +
                "</integer>"
                "<key>main-screen-orientation</key><real>0</real></dict>\n";
         xml += "</dict></plist>\n";

@@ -2542,10 +2542,10 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     }
                 } else {
                     const auto configured_memory_size =
-                        device_model_.memory_size_bytes != 0
-                        ? std::min(device_model_.memory_size_bytes,
-                            shared_state_->device_ram_bytes)
-                        : shared_state_->device_ram_bytes;
+                        device_model_.memory.usable_ram_bytes != 0
+                            ? std::min(device_model_.memory.usable_ram_bytes,
+                                  shared_state_->device_ram_bytes)
+                            : shared_state_->device_ram_bytes;
                     switch (*mib1) {
                     case darwin::sysctl::hardware_byte_order:
                         value = 1234;

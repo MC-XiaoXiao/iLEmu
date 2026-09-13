@@ -12,7 +12,7 @@
 #include "network/darwin_abi_route.hpp"
 #include "foundation/darwin_notify_state_hle.hpp"
 #include "foundation/darwin_process_start_abi.hpp"
-#include "foundation/device_model.hpp"
+#include "foundation/device_identity.hpp"
 
 namespace ilemu {
 

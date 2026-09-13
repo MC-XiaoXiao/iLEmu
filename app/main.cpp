@@ -371,15 +371,15 @@ const DeviceModel& select_device_model(const std::vector<std::string>& args)
 {
     const auto requested =
         option(args, "--device")
-            .value_or(
-                std::string { DeviceModel::default_model().product_type });
+            .value_or(std::string {
+                DeviceModel::default_model().identity.product_type });
     if (const auto* profile = DeviceModel::find(requested)) {
         return *profile;
     }
     std::ostringstream message;
     message << "unknown device profile: " << requested << "; available:";
     for (const auto& profile : DeviceModel::available_models()) {
-        message << ' ' << profile.product_type;
+        message << ' ' << profile.identity.product_type;
     }
     throw std::runtime_error { message.str() };
 }
@@ -388,25 +388,25 @@ void profile(const std::vector<std::string>& args, Output& output)
 {
     const auto& device = select_device_model(args);
     std::ostringstream text;
-    text << "product: " << device.product_type << '\n'
-         << "board: " << device.board_config << '\n'
-         << "model_number: " << device.model_number << '\n'
-         << "soc: " << device.soc << '\n'
-         << "cpu: " << device.cpu_core << " (" << device.instruction_set
-         << ")\n"
-         << "cpu_hz: " << device.cpu_hz << '\n'
-         << "ram_bytes: " << device.ram_bytes << '\n'
+    text << "product: " << device.identity.product_type << '\n'
+         << "board: " << device.identity.board_config << '\n'
+         << "model_number: " << device.identity.model_number << '\n'
+         << "soc: " << device.processor.soc << '\n'
+         << "cpu: " << device.processor.core_name() << " ("
+         << device.processor.instruction_set_name() << ")\n"
+         << "cpu_hz: " << device.processor.frequency_hz() << '\n'
+         << "ram_bytes: " << device.memory.ram_bytes << '\n'
          << "guest_physical_core_count: "
-         << device.guest_cpu_topology.physical_core_count << '\n'
+         << device.processor.topology.physical_core_count << '\n'
          << "guest_logical_cpu_count: "
-         << device.guest_cpu_topology.logical_cpu_count << '\n'
-         << "guest_cpu_clusters: " << device.guest_cpu_topology.cluster_count
+         << device.processor.topology.logical_cpu_count << '\n'
+         << "guest_cpu_clusters: " << device.processor.topology.cluster_count
          << '\n'
-         << "display: " << device.display.width << 'x' << device.display.height
-         << '\n'
-         << "ui: " << device.user_interface.width << 'x'
-         << device.user_interface.height << '\n'
-         << "framebuffer_service: " << device.framebuffer_service_class;
+         << "display: " << device.screen.panel.width << 'x'
+         << device.screen.panel.height << '\n'
+         << "ui: " << device.screen.user_interface.width << 'x'
+         << device.screen.user_interface.height << '\n'
+         << "framebuffer_service: " << device.screen.framebuffer_service_class;
     output.line(text.str());
 }
 
@@ -417,7 +417,7 @@ std::shared_ptr<const MachOImage> inspection_image(
     if (!rootfs)
         throw std::runtime_error { "image inspection requires --rootfs" };
     const auto architecture =
-        arm_architecture_for_model(select_device_model(args).cpu_model);
+        arm_architecture_for_model(select_device_model(args).processor.model);
     if (const auto cache_path = option(args, "--shared-cache")) {
         const auto host_cache =
             std::filesystem::path { *rootfs } /
@@ -551,7 +551,7 @@ void catalog(const std::vector<std::string>& args, Output& output)
     if (!rootfs)
         throw std::runtime_error { "catalog requires --rootfs" };
     const auto architecture =
-        arm_architecture_for_model(select_device_model(args).cpu_model);
+        arm_architecture_for_model(select_device_model(args).processor.model);
     ExecutableCatalog executable_catalog;
     const auto manifest =
         option(args, "--manifest")
@@ -589,7 +589,8 @@ void firmware_prepare(const std::vector<std::string>& args, Output& output)
     if (!rootfs)
         throw std::runtime_error { "firmware prepare requires --rootfs" };
     const auto& device = select_device_model(args);
-    const auto cpu_model = make_arm_cpu_model(device.cpu_model, device.cpu_hz);
+    const auto cpu_model = make_arm_cpu_model(
+        device.processor.model, device.processor.frequency_hz());
     const auto host_cache =
         host_cache_directory(args, std::filesystem::path { *rootfs });
     const auto manifest =

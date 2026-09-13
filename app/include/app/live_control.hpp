@@ -12,7 +12,7 @@
 #include <vector>
 
 #include "debug/control_channel.hpp"
-#include "foundation/device_model.hpp"
+#include "foundation/device_input_profile.hpp"
 #include "foundation/display_geometry.hpp"
 #include "foundation/system_button_input.hpp"
 #include "foundation/touch_input.hpp"

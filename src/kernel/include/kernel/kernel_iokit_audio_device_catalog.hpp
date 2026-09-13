@@ -7,7 +7,7 @@
 
 #pragma once
 
-#include "foundation/device_model.hpp"
+#include "foundation/device_peripheral_profiles.hpp"
 
 #include <cstdint>
 #include <optional>

@@ -619,7 +619,7 @@ const DyldSharedCache* CompatibilityKernel::dyld_shared_cache_for(
     dyld_shared_cache_path_ = path;
     DyldSharedCacheOptions options;
     options.architecture =
-        arm_architecture_for_model(device_model_.cpu_model) ==
+        arm_architecture_for_model(device_model_.processor.model) ==
                 ArmArchitectureVersion::Armv7
             ? "armv7"
             : "armv6k";
@@ -634,7 +634,7 @@ const DyldSharedCache* CompatibilityKernel::dyld_shared_cache_for(
                 std::to_string(dyld_shared_cache_->images().size()) + "\n");
         }
         userland_hle_.prepare_shared_cache_plan(*dyld_shared_cache_,
-            arm_architecture_for_model(device_model_.cpu_model));
+            arm_architecture_for_model(device_model_.processor.model));
     }
     return dyld_shared_cache_ ? dyld_shared_cache_.get() : nullptr;
 }
