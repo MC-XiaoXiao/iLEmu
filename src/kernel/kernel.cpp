@@ -2238,13 +2238,37 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const
             queue == kqueues_.end() ? 0U : queue->second.size();
         std::string reason = "kevent(fd=" + std::to_string(pending->second.queue_fd) +
             ",registrations=" + std::to_string(registrations);
+        const std::lock_guard mach_lock { shared_state_->mach_mutex };
         if (queue != kqueues_.end()) {
             for (const auto& event : queue->second) {
                 reason += ";ident=" + std::to_string(event.ident) +
                     ",filter=" + std::to_string(event.filter) +
                     ",flags=" + std::to_string(event.flags) +
+                    ",fflags=" + std::to_string(event.filter_flags) +
                     ",enabled=" + std::to_string(event.enabled);
+                if (event.filter != darwin::kqueue::filter_mach_port)
+                    continue;
+                const auto object = shared_state_->mach_namespaces.resolve(
+                    process_.pid, static_cast<std::uint32_t>(event.ident));
+                if (!object)
+                    continue;
+                reason += ",object=" + std::to_string(*object);
+                if (const auto members = shared_state_->mach_port_sets.find(*object);
+                    members != shared_state_->mach_port_sets.end()) {
+                    reason += ",members=";
+                    for (const auto member : members->second)
+                        reason += std::to_string(member) + "/";
+                }
             }
+        }
+        for (const auto& named : shared_state_->mach_namespaces.entries(process_.pid)) {
+            const auto messages = shared_state_->mach_queues.find(named.entry.object);
+            if (messages == shared_state_->mach_queues.end() || messages->second.empty())
+                continue;
+            reason += ";queued-name=" + std::to_string(named.name) +
+                ",object=" + std::to_string(named.entry.object) +
+                ",rights=" + std::to_string(named.entry.type) +
+                ",depth=" + std::to_string(messages->second.size());
         }
         return reason + ")";
     }

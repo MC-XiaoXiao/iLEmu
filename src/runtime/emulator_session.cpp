@@ -3202,6 +3202,9 @@ void EmulatorSession::run()
                     continue;
                 }
                 if (!runtime->execution_reclaim_after) {
+                    if (runtime->kernel->process().termination_signal != 0)
+                        diagnostics.threads(std::to_string(
+                            runtime->kernel->process().pid));
                     runtime->execution_reclaim_after =
                         reclaim_now + execution_reclaim_grace;
                 }
