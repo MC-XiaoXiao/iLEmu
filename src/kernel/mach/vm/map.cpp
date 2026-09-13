@@ -22,6 +22,7 @@
 
 #include "../support.hpp"
 #include "wire_reply.hpp"
+#include "wire_format.hpp"
 
 namespace ilemu {
 namespace {
@@ -79,42 +80,57 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
         return false;
 
     auto& registers = cpu.registers();
+    const auto wire = MachVmWireFormat::for_interface(
+        is_mach_vm, shared_state_->darwin_abi.mach_vm_address);
+    const auto width_delta = wire.address_size() - 4U;
+    const auto address_reply_size = reply_size + width_delta;
     const auto required_request_size =
-        is_64 ? vm_map_64_request_size : vm_map_request_size;
-    if (registers[2] < required_request_size || registers[3] < reply_size) {
+        (is_64 ? vm_map_64_request_size : vm_map_request_size) + 3U * width_delta;
+    if (registers[2] < required_request_size || registers[3] < address_reply_size) {
         registers[0] = mach_receive_invalid_data;
         return true;
     }
 
     const auto& arguments = is_64 ? xnu::mig::vm_map::vm_map_64_arguments
                                   : xnu::mig::vm_map::vm_map_arguments;
-    auto address =
-        memory_.read32(request.address + arguments[1].request_offset);
-    const auto requested_size =
-        memory_.read32(request.address + arguments[2].request_offset);
-    const auto alignment_mask =
-        memory_.read32(request.address + arguments[3].request_offset);
-    const auto flags =
-        memory_.read32(request.address + arguments[4].request_offset);
+    // The object port remains a descriptor. Only the three address-sized
+    // inline fields before flags expand in the wide mach_vm interface.
+    const auto request_offset = [&](std::size_t index) {
+        const auto expanded_fields = index == 5U ? 0U
+            : index <= 1U ? 0U : index <= 3U ? index - 1U : 3U;
+        return request.address + arguments[index].request_offset +
+            static_cast<std::uint32_t>(expanded_fields) * width_delta;
+    };
+    const auto wide_address = wire.read_address(memory_, request_offset(1));
+    const auto wide_size = wire.read_address(memory_, request_offset(2));
+    const auto wide_mask = wire.read_address(memory_, request_offset(3));
+    if (!wide_address || !wide_size || !wide_mask) {
+        registers[0] = mach_receive_invalid_data;
+        return true;
+    }
+    std::optional<std::uint32_t> address { static_cast<std::uint32_t>(*wide_address) };
+    const auto requested_size = static_cast<std::uint32_t>(*wide_size);
+    const auto alignment_mask = static_cast<std::uint32_t>(*wide_mask);
+    const auto flags = memory_.read32(request_offset(4));
     const auto object_name =
-        memory_.read32(request.address + arguments[5].request_offset);
+        memory_.read32(request_offset(5));
     std::optional<std::uint64_t> object_offset;
     if (is_64) {
         object_offset =
-            memory_.read64(request.address + arguments[6].request_offset);
+            memory_.read64(request_offset(6));
     } else if (const auto value = memory_.read32(
-                   request.address + arguments[6].request_offset)) {
+                   request_offset(6))) {
         object_offset = *value;
     }
     const auto copy =
-        memory_.read32(request.address + arguments[7].request_offset);
+        memory_.read32(request_offset(7));
     const auto protection =
-        memory_.read32(request.address + arguments[8].request_offset);
+        memory_.read32(request_offset(8));
     const auto maximum_protection =
-        memory_.read32(request.address + arguments[9].request_offset);
+        memory_.read32(request_offset(9));
     const auto inheritance =
-        memory_.read32(request.address + arguments[10].request_offset);
-    if (!address || !requested_size || !alignment_mask || !flags || !object_name ||
+        memory_.read32(request_offset(10));
+    if (!flags || !object_name ||
         !object_offset || !copy || !protection || !maximum_protection ||
         !inheritance) {
         registers[0] = mach_receive_invalid_data;
@@ -122,9 +138,10 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
     }
 
     const auto requested_address = *address;
-    const auto size = round_page_size(*requested_size);
+    const auto size = round_page_size(requested_size);
     std::uint32_t result = kern_success;
-    if (!size ||
+    if (*wide_address > UINT32_MAX || *wide_size > UINT32_MAX ||
+        *wide_mask > UINT32_MAX || !size ||
         ((*flags & ~vm_flags_user_map) != 0) ||
         ((*protection | *maximum_protection) & ~vm_protection_mask) != 0 ||
         *inheritance > static_cast<std::uint32_t>(VmInheritance::None)) {
@@ -156,12 +173,12 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
     if (result == kern_success &&
         (*flags & darwin::mach::vm_flags_anywhere) != 0) {
         *address = find_free_guest_region(
-            memory_, default_dynamic_base, *size, *alignment_mask)
+            memory_, default_dynamic_base, *size, alignment_mask)
                        .value_or(0);
     }
     if (result == kern_success &&
         (*address == 0 || *address % AddressSpace::page_size != 0 ||
-            (*address & *alignment_mask) != 0U ||
+            (*address & alignment_mask) != 0U ||
             guest_region_overlaps(memory_, *address, *size))) {
         result = kern_no_space;
     }
@@ -206,10 +223,10 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
         result = kern_invalid_argument;
     }
 
-    const std::array<std::uint32_t, reply_size / sizeof(std::uint32_t)> reply {
+    std::vector<std::uint32_t> reply {
         darwin::mig_wire::message_bits(
             darwin::mig_wire::disposition_move_send_once),
-        reply_size,
+        address_reply_size,
         request.local_port,
         0U,
         0U,
@@ -217,8 +234,8 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
         0U,
         1U,
         result,
-        *address,
     };
+    wire.append_address(reply, *address);
     if (!write_words(memory_, request.address, reply)) {
         registers[0] = mach_receive_invalid_data;
         return true;
@@ -229,7 +246,7 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
         (is_mach_vm ? std::string { "mach_vm" } : std::string { "vm_map" }) +
         " requested=" + std::to_string(requested_address) + " address=" +
         std::to_string(*address) + " size=" + std::to_string(size.value_or(0)) +
-        " mask=" + std::to_string(*alignment_mask) +
+        " mask=" + std::to_string(alignment_mask) +
         " flags=" + std::to_string(*flags) +
         " object=" + std::to_string(*object_name) + " offset=" +
         std::to_string(*object_offset) + " copy=" + std::to_string(*copy != 0) +
