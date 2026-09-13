@@ -9,6 +9,7 @@
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_proc_info_abi.hpp"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
@@ -29,6 +30,53 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
     const auto flavor = registers[2];
     const auto output_address = registers[5];
     const auto output_size = registers[6];
+
+    if (call == darwin::proc_info::call_pid_info &&
+        flavor == darwin::proc_info::flavor_pid_short_bsd_info) {
+        constexpr auto size = darwin::proc_info::short_bsd_info_size;
+        if (output_size < size) {
+            bsd_error(cpu, darwin::error::no_memory);
+            return true;
+        }
+        std::vector<std::byte> output(size, std::byte { 0 });
+        const auto word = [&](std::size_t offset, std::uint32_t value) {
+            for (std::size_t byte = 0; byte < 4; ++byte)
+                output[offset + byte] = static_cast<std::byte>(value >> (8U * byte));
+        };
+        {
+            std::lock_guard lock { shared_state_->mach_mutex };
+            const auto target = shared_state_->processes.find(
+                static_cast<std::uint32_t>(target_pid));
+            if (target_pid <= 0 || target == shared_state_->processes.end()) {
+                bsd_error(cpu, darwin::error::no_such_process);
+                return true;
+            }
+            const auto& record = target->second;
+            word(0, static_cast<std::uint32_t>(target_pid));
+            word(4, record.parent_pid);
+            word(8, record.process_group);
+            // BSD p_stat records job-control stops, independently of the
+            // task suspension used by the host scheduler.
+            word(12, record.exited ? 5U : record.signal_stopped ? 4U : 2U);
+            const auto count = std::min<std::size_t>(record.command.size(), 15U);
+            for (std::size_t index = 0; index < count; ++index)
+                output[16U + index] = static_cast<std::byte>(record.command[index]);
+            word(32, record.exited ? 4U : 0U);
+            word(36, record.effective_uid);
+            word(40, record.effective_gid);
+            word(44, record.uid);
+            word(48, record.gid);
+            // The current credential model has no separate saved-ID state.
+            word(52, record.effective_uid);
+            word(56, record.effective_gid);
+        }
+        if (output_address == 0 || !memory_.copy_in(output_address, output)) {
+            bsd_error(cpu, darwin::error::bad_address);
+            return true;
+        }
+        bsd_success(cpu, size);
+        return true;
+    }
 
     if (call != darwin::proc_info::call_pid_info ||
         flavor != darwin::proc_info::flavor_pid_path_info) {
