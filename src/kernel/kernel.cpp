@@ -2676,6 +2676,13 @@ void CompatibilityKernel::inherit_process_state(
         signal_mask_ = parent.signal_mask_;
     }
     kqueues_ = parent.kqueues_;
+    // Guarded opens are close-on-fork; inherited ordinary descriptors keep
+    // their existing shared open descriptions.
+    descriptor_guards_.clear();
+    for (const auto& [fd, guard] : parent.descriptor_guards_) {
+        static_cast<void>(guard);
+        static_cast<void>(release_file_descriptor(fd));
+    }
     random_state_ = parent.random_state_ ^ child_pid;
     thread_ports_.clear();
     thread_ports_.emplace(0, process_.thread_port);

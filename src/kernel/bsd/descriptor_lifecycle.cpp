@@ -31,6 +31,7 @@ bool CompatibilityKernel::release_file_descriptor(std::uint32_t descriptor)
     virtual_block_descriptors_.erase(descriptor);
     bpf_descriptors_.erase(descriptor);
     descriptor_flags_.erase(descriptor);
+    descriptor_guards_.erase(descriptor);
     host_sockets_.erase(descriptor);
     wifi_driver_event_streams_.erase(descriptor);
     virtual_udp_sockets_.erase(descriptor);

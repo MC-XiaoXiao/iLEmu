@@ -176,6 +176,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                             bsd_error(cpu, bsd_support::bad_address);
                             return;
                         }
+                        if (reject_guarded_descriptor(cpu, *passed_fd, DarwinFileGuard::socket_ipc))
+                            return;
                         const auto transfer = export_descriptor(*passed_fd);
                         if (!transfer) {
                             bsd_error(cpu, bsd_support::bad_file_descriptor);

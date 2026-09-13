@@ -31,6 +31,8 @@ void CompatibilityKernel::dispatch_bsd_fileport(
     if (number == darwin::syscall::fileport_makeport) {
         const auto descriptor = registers[0];
         const auto output_address = registers[1];
+        if (reject_guarded_descriptor(cpu, descriptor, DarwinFileGuard::fileport))
+            return;
         const auto transfer = export_descriptor(descriptor);
         if (!transfer) {
             bsd_error(cpu, bsd_support::bad_file_descriptor);

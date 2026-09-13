@@ -508,6 +508,8 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
     }
     case 6: { // close
         const auto fd = registers[0];
+        if (reject_guarded_descriptor(cpu, fd, DarwinFileGuard::close))
+            return;
         if (!release_file_descriptor(fd)) {
             bsd_error(cpu, bsd_support::bad_file_descriptor);
         } else {

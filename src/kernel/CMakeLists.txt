@@ -191,6 +191,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/psynch.cpp
     bsd/aio.cpp
     bsd/audit_session.cpp
+    bsd/guarded_file.cpp
     bsd/fileport.cpp
     bsd/process.cpp
     bsd/posix_semaphore.cpp

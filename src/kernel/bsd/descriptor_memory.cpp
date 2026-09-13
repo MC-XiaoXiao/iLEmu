@@ -652,6 +652,8 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
     }
     case 41: { // dup
         const auto source = registers[0];
+        if (reject_guarded_descriptor(cpu, source, DarwinFileGuard::duplicate))
+            return;
         const bool valid = source <= 2 || file_descriptors_.contains(source) ||
                            virtual_descriptors_.contains(source) ||
                            duplicated_descriptors_.contains(source);
@@ -870,6 +872,9 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
     case darwin::syscall::duplicate_to: {
         const auto source = registers[0];
         const auto destination = registers[1];
+        if (reject_guarded_descriptor(cpu, source, DarwinFileGuard::duplicate) ||
+            (source != destination && reject_guarded_descriptor(cpu, destination, DarwinFileGuard::close)))
+            return;
         const bool valid = source <= 2 || file_descriptors_.contains(source) ||
                            virtual_descriptors_.contains(source) ||
                            duplicated_descriptors_.contains(source);
@@ -998,6 +1003,9 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             bsd_success(cpu, descriptor_flags_[fd]);
             return;
         case darwin::fcntl_command::set_descriptor_flags:
+            if ((registers[2] & 1U) == 0U &&
+                reject_guarded_descriptor(cpu, fd, DarwinFileGuard::duplicate))
+                return;
             descriptor_flags_[fd] = registers[2] & 1U; // FD_CLOEXEC
             bsd_success(cpu, 0);
             return;

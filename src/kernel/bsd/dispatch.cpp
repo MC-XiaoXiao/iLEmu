@@ -127,6 +127,10 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         return;
 
     switch (number) {
+    case 441: // guarded_open_np
+    case 442: // guarded_close_np
+        dispatch_bsd_guarded_file(cpu, number);
+        return;
     case 322: { // VersionSensitive nosys/iopolicysys collision.
         if (!darwin_abi_route_supported(legacy_iopolicysys_route,
                 shared_state_->darwin_abi.abi_epoch)) {

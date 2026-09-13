@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "kernel/darwin_file_guard.hpp"
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -568,6 +569,8 @@ private:
     [[nodiscard]] bool dispatch_bsd_security(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_socket(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_guarded_file(Cpu& cpu, std::uint32_t number);
+    bool reject_guarded_descriptor(Cpu& cpu, std::uint32_t fd, std::uint32_t flags);
     void dispatch_bsd_events(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool ioctl_bpf_device(Cpu& cpu, std::uint32_t fd);
     [[nodiscard]] bool create_kernel_control_socket(Cpu& cpu);
@@ -849,6 +852,7 @@ private:
         directory_entries_cache_;
     std::map<std::uint32_t, std::uint32_t> file_status_flags_;
     std::map<std::uint32_t, std::uint32_t> descriptor_flags_;
+    std::map<std::uint32_t, DarwinFileGuard> descriptor_guards_;
     std::map<std::uint32_t, AioCompletion> aio_completions_;
     std::unordered_map<std::uint32_t, std::string> virtual_descriptors_;
     std::map<std::uint32_t, std::uint32_t> posix_semaphore_descriptors_;
