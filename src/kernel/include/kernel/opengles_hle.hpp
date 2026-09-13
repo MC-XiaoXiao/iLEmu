@@ -119,7 +119,8 @@ private:
         std::uint32_t bound_renderbuffer { };
         std::map<std::uint32_t, FramebufferState> framebuffers;
         std::map<std::uint32_t, RenderbufferState> renderbuffers;
-        std::uint32_t unpack_alignment { gles_abi::default_pixel_alignment };
+        GlesPixelUnpack unpack;
+        bool unpack_client_storage { };
         std::uint32_t pack_alignment { gles_abi::default_pixel_alignment };
         std::array<std::int32_t, 4> viewport { };
         std::array<std::int32_t, 4> scissor_box { };

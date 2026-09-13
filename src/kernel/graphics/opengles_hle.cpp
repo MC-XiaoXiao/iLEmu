@@ -2209,6 +2209,27 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         std::array<std::uint32_t, 4> values { };
         std::size_t count = 1;
         switch (call.argument(0)) {
+        case gles_abi::pack_alignment:
+            values[0] = context->pack_alignment;
+            break;
+        case gles_abi::unpack_alignment:
+            values[0] = context->unpack.alignment;
+            break;
+        case gles_abi::unpack_row_length:
+            values[0] = context->unpack.row_length;
+            break;
+        case gles_abi::unpack_skip_rows:
+            values[0] = context->unpack.skip_rows;
+            break;
+        case gles_abi::unpack_skip_pixels:
+            values[0] = context->unpack.skip_pixels;
+            break;
+        case gles_abi::unpack_row_bytes_apple:
+            values[0] = context->unpack.row_bytes;
+            break;
+        case gles_abi::unpack_client_storage_apple:
+            values[0] = context->unpack_client_storage ? 1U : 0U;
+            break;
         case gles_abi::viewport_query:
             count = context->viewport.size();
             for (std::size_t index = 0; index < count; ++index) {
@@ -3259,19 +3280,49 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             set_gl_error(call, gles_abi::invalid_operation);
             return;
         }
-        const auto alignment = call.argument(1);
-        if (alignment != 1 && alignment != 2 && alignment != 4 &&
-            alignment != 8) {
+        const auto parameter = call.argument(0);
+        const auto value = call.argument(1);
+        std::uint32_t* destination = nullptr;
+        switch (parameter) {
+        case gles_abi::unpack_alignment:
+            destination = &context->unpack.alignment;
+            break;
+        case gles_abi::pack_alignment:
+            destination = &context->pack_alignment;
+            break;
+        case gles_abi::unpack_row_length:
+            destination = &context->unpack.row_length;
+            break;
+        case gles_abi::unpack_skip_rows:
+            destination = &context->unpack.skip_rows;
+            break;
+        case gles_abi::unpack_skip_pixels:
+            destination = &context->unpack.skip_pixels;
+            break;
+        case gles_abi::unpack_row_bytes_apple:
+            destination = &context->unpack.row_bytes;
+            break;
+        case gles_abi::unpack_client_storage_apple:
+            // Decoding client formats into host ARGB requires conversion, so
+            // retain the extension's copy/decode fallback rather than an alias
+            // to guest memory. The hint does not alter pixel layout.
+            context->unpack_client_storage = value != 0U;
+            return;
+        default:
+            set_gl_error(call, gles_abi::invalid_enum);
+            return;
+        }
+        const auto alignment = parameter == gles_abi::unpack_alignment ||
+                               parameter == gles_abi::pack_alignment;
+        if ((alignment && value != 1U && value != 2U && value != 4U &&
+                value != 8U) ||
+            (!alignment &&
+                value > static_cast<std::uint32_t>(
+                            std::numeric_limits<std::int32_t>::max()))) {
             set_gl_error(call, gles_abi::invalid_value);
             return;
         }
-        if (call.argument(0) == gles_abi::unpack_alignment) {
-            context->unpack_alignment = alignment;
-        } else if (call.argument(0) == gles_abi::pack_alignment) {
-            context->pack_alignment = alignment;
-        } else {
-            set_gl_error(call, gles_abi::invalid_enum);
-        }
+        *destination = value;
     });
     add("_glTexImage2D", [this](UserlandHleCall& call) {
         auto* context = current_context(call);
@@ -3311,7 +3362,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             static_cast<std::uint32_t>(level), call.argument(2),
             static_cast<std::uint32_t>(width),
             static_cast<std::uint32_t>(height), call.argument(6),
-            call.argument(7), call.argument(8), context->unpack_alignment);
+            call.argument(7), call.argument(8), context->unpack);
         if (error != gles_abi::no_error) {
             set_gl_error(call, error);
         } else if (previous_render_target) {
@@ -3403,7 +3454,7 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             static_cast<std::uint32_t>(level), static_cast<std::uint32_t>(x),
             static_cast<std::uint32_t>(y), static_cast<std::uint32_t>(width),
             static_cast<std::uint32_t>(height), call.argument(6),
-            call.argument(7), call.argument(8), context->unpack_alignment);
+            call.argument(7), call.argument(8), context->unpack);
         if (error != gles_abi::no_error)
             set_gl_error(call, error);
     });

@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include "graphics/gles_pixel_unpack.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -62,7 +64,7 @@ public:
     [[nodiscard]] std::uint32_t upload_texture_2d(AddressSpace& memory,
         std::uint32_t name, std::uint32_t level, std::uint32_t internal_format,
         std::uint32_t width, std::uint32_t height, std::uint32_t format,
-        std::uint32_t type, std::uint32_t pixels, std::uint32_t alignment);
+        std::uint32_t type, std::uint32_t pixels, const GlesPixelUnpack& unpack);
     [[nodiscard]] std::uint32_t allocate_texture_2d(std::uint32_t name,
         std::uint32_t level, std::uint32_t internal_format, std::uint32_t width,
         std::uint32_t height);
@@ -74,7 +76,7 @@ public:
         std::uint32_t name, std::uint32_t level, std::uint32_t x,
         std::uint32_t y, std::uint32_t width, std::uint32_t height,
         std::uint32_t format, std::uint32_t type, std::uint32_t pixels,
-        std::uint32_t alignment);
+        const GlesPixelUnpack& unpack);
     [[nodiscard]] std::uint32_t set_texture_parameter(
         std::uint32_t name, std::uint32_t parameter, std::uint32_t value);
     [[nodiscard]] std::uint32_t import_surface_texture(AddressSpace& memory,

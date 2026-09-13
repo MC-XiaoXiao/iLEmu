@@ -68,6 +68,11 @@ inline constexpr std::uint32_t buffer_usage = 0x8765U;
 
 inline constexpr std::uint32_t pack_alignment = 0x0d05U;
 inline constexpr std::uint32_t unpack_alignment = 0x0cf5U;
+inline constexpr std::uint32_t unpack_row_length = 0x0cf2U;
+inline constexpr std::uint32_t unpack_skip_rows = 0x0cf3U;
+inline constexpr std::uint32_t unpack_skip_pixels = 0x0cf4U;
+inline constexpr std::uint32_t unpack_row_bytes_apple = 0x8a16U;
+inline constexpr std::uint32_t unpack_client_storage_apple = 0x85b2U;
 
 inline constexpr std::uint32_t alpha = 0x1906U;
 inline constexpr std::uint32_t rgb = 0x1907U;

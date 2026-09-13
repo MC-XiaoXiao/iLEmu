@@ -125,26 +125,42 @@ namespace {
 
     std::optional<std::vector<std::uint32_t>> decode_image(AddressSpace& memory,
         std::uint32_t width, std::uint32_t height, std::uint32_t format,
-        std::uint32_t type, std::uint32_t pixels, std::uint32_t alignment)
+        std::uint32_t type, std::uint32_t pixels, const GlesPixelUnpack& unpack)
     {
         const auto layout = pixel_layout(format, type);
-        if (!layout || !valid_alignment(alignment))
+        if (!layout || !valid_alignment(unpack.alignment))
             return std::nullopt;
-        const auto row_bytes =
-            static_cast<std::uint64_t>(width) * layout->bytes_per_pixel;
-        const auto stride = (row_bytes + alignment - 1U) &
-                            ~static_cast<std::uint64_t>(alignment - 1U);
-        const auto total = height == 0 ? 0 : stride * (height - 1U) + row_bytes;
-        if (total > gles_abi::maximum_resource_bytes ||
-            total > std::numeric_limits<std::uint32_t>::max()) {
-            return std::nullopt;
-        }
         std::vector<std::uint32_t> result(
             static_cast<std::size_t>(width) * height, 0);
-        if (pixels == 0 || total == 0)
+        if (pixels == 0 || width == 0 || height == 0)
             return result;
-        const auto source =
-            memory.read_bytes(pixels, static_cast<std::size_t>(total));
+        const auto row_bytes =
+            static_cast<std::uint64_t>(width) * layout->bytes_per_pixel;
+        const auto row_length =
+            unpack.row_length != 0U ? unpack.row_length : width;
+        const auto source_row_bytes =
+            static_cast<std::uint64_t>(row_length) * layout->bytes_per_pixel;
+        const auto stride =
+            unpack.row_bytes != 0U
+                ? static_cast<std::uint64_t>(unpack.row_bytes)
+                : (source_row_bytes + unpack.alignment - 1U) &
+                      ~static_cast<std::uint64_t>(unpack.alignment - 1U);
+        if (stride > gles_abi::maximum_resource_bytes)
+            return std::nullopt;
+        const auto start = static_cast<std::uint64_t>(pixels) +
+                           stride * unpack.skip_rows +
+                           static_cast<std::uint64_t>(unpack.skip_pixels) *
+                               layout->bytes_per_pixel;
+        const auto total = stride * (height - 1U) + row_bytes;
+        if (total > gles_abi::maximum_resource_bytes ||
+            start > std::numeric_limits<std::uint32_t>::max() ||
+            start + total > static_cast<std::uint64_t>(
+                                std::numeric_limits<std::uint32_t>::max()) +
+                                1U) {
+            return std::nullopt;
+        }
+        const auto source = memory.read_bytes(
+            static_cast<std::uint32_t>(start), static_cast<std::size_t>(total));
         if (!source)
             return std::nullopt;
         for (std::uint32_t y = 0; y < height; ++y) {
@@ -686,7 +702,7 @@ bool GlesResourceStore::has_buffer(std::uint32_t name) const
 std::uint32_t GlesResourceStore::upload_texture_2d(AddressSpace& memory,
     std::uint32_t name, std::uint32_t level, std::uint32_t internal_format,
     std::uint32_t width, std::uint32_t height, std::uint32_t format,
-    std::uint32_t type, std::uint32_t pixels, std::uint32_t alignment)
+    std::uint32_t type, std::uint32_t pixels, const GlesPixelUnpack& unpack)
 {
     if (name == 0 || !textures_.contains(name)) {
         return gles_abi::invalid_operation;
@@ -700,7 +716,7 @@ std::uint32_t GlesResourceStore::upload_texture_2d(AddressSpace& memory,
     if (!pixel_layout(format, type))
         return gles_abi::invalid_enum;
     auto decoded =
-        decode_image(memory, width, height, format, type, pixels, alignment);
+        decode_image(memory, width, height, format, type, pixels, unpack);
     if (!decoded)
         return gles_abi::invalid_value;
     textures_.at(name).levels.insert_or_assign(level,
@@ -756,7 +772,7 @@ std::uint32_t GlesResourceStore::upload_compressed_texture_2d(
 std::uint32_t GlesResourceStore::update_texture_2d(AddressSpace& memory,
     std::uint32_t name, std::uint32_t level, std::uint32_t x, std::uint32_t y,
     std::uint32_t width, std::uint32_t height, std::uint32_t format,
-    std::uint32_t type, std::uint32_t pixels, std::uint32_t alignment)
+    std::uint32_t type, std::uint32_t pixels, const GlesPixelUnpack& unpack)
 {
     auto texture = textures_.find(name);
     if (name == 0 || texture == textures_.end()) {
@@ -774,7 +790,7 @@ std::uint32_t GlesResourceStore::update_texture_2d(AddressSpace& memory,
     if (!pixel_layout(format, type))
         return gles_abi::invalid_enum;
     const auto decoded =
-        decode_image(memory, width, height, format, type, pixels, alignment);
+        decode_image(memory, width, height, format, type, pixels, unpack);
     if (!decoded)
         return gles_abi::invalid_value;
     for (std::uint32_t row = 0; row < height; ++row) {
