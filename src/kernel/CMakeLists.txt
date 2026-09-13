@@ -400,6 +400,7 @@ target_link_libraries(ilemu_kernel_mach_input PUBLIC
 target_sources(ilemu_kernel PRIVATE
     mach/support.cpp
     mach/ipc.cpp
+    mach/kevent_receive.cpp
     mach/semaphore.cpp
     mach/message.cpp
     mach/host_message.cpp

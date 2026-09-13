@@ -331,16 +331,30 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     const auto pending = pending_mach_receives_.find(cpu.processor_id());
     if (pending == pending_mach_receives_.end())
         return false;
+    const auto outcome = receive_mach_message_locked(
+        pending->second, true, waking_blocked_receiver);
+    if (!outcome)
+        return false;
+    cpu.registers()[0] = outcome->status;
+    pending_mach_receives_.erase(pending);
+    process_.waiting_for_events =
+        outcome->status == darwin::mach_message::receive_port_changed &&
+        !pending_mach_receives_.empty();
+    cpu.clear_halt();
+    return true;
+}
 
+std::optional<CompatibilityKernel::MachReceiveResult>
+CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
+    bool queued_receiver, bool waking_blocked_receiver)
+{
+    MachReceiveResult outcome;
     if (!pending_mach_receive_is_usable_locked(
-            *shared_state_, process_.pid, pending->second)) {
-        cpu.registers()[0] = darwin::mach_message::receive_port_changed;
-        pending_mach_receives_.erase(pending);
-        process_.waiting_for_events = !pending_mach_receives_.empty();
-        cpu.clear_halt();
-        return true;
+            *shared_state_, process_.pid, receive)) {
+        outcome.status = darwin::mach_message::receive_port_changed;
+        return outcome;
     }
-    auto queued_port = *pending->second.receive_object;
+    auto queued_port = *receive.receive_object;
     auto queue = shared_state_->mach_queues.end();
     bool has_visible_message = false;
     std::optional<std::uint32_t> selected_port_set;
@@ -353,7 +367,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
         has_visible_message = true;
         const auto receiver =
             preferred_pending_mach_receiver_locked(candidate_port);
-        if (!receiver || *receiver != cpu.processor_id())
+        if (queued_receiver ? (!receiver || *receiver != receive.processor)
+                            : receiver.has_value())
             return false;
         queued_port = candidate_port;
         queue = candidate;
@@ -374,23 +389,20 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
         }
     }
     if (queue == shared_state_->mach_queues.end() || queue->second.empty()) {
-        if (pending->second.deadline &&
-            shared_state_->clock.now() >= *pending->second.deadline) {
-            cpu.registers()[0] = darwin::mach_message::receive_timed_out;
-            pending_mach_receives_.erase(pending);
-            process_.waiting_for_events = false;
-            cpu.clear_halt();
-            return true;
+        if (receive.deadline &&
+            shared_state_->clock.now() >= *receive.deadline) {
+            outcome.status = darwin::mach_message::receive_timed_out;
+            return outcome;
         }
         // If another FIFO waiter owns an already-queued message, do not cache
         // the current generation as empty. Once that waiter consumes the front
         // item, this receiver may become eligible for the next item without an
         // enqueue.
         if (!has_visible_message) {
-            pending->second.observed_queue_generation =
+            receive.observed_queue_generation =
                 shared_state_->mach_queue_generation_snapshot();
         }
-        return false;
+        return std::nullopt;
     }
 
     const auto& pending_message = queue->second.front();
@@ -414,38 +426,39 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     const auto sequence_number =
         shared_state_->mach_port_objects.sequence_number(queued_port)
             .value_or(0);
+    const auto context = shared_state_->mach_port_contexts.find(queued_port);
     auto received = mach_ipc::prepare_received_message(
-        pending_message, queued_port, pending->second.options, sequence_number);
+        pending_message, queued_port, receive.options, sequence_number,
+        context != shared_state_->mach_port_contexts.end() ? context->second : 0U,
+        shared_state_->darwin_abi.mach_port_context);
     if (!received) {
         auto discarded = std::move(queue->second.front());
         queue->second.pop_front();
         shared_state_->note_mach_message_dequeued_locked(queued_port);
         discard_mach_message_rights_locked(*shared_state_, discarded);
-        cpu.registers()[0] = 0x10004008U; // MACH_RCV_INVALID_DATA
-        pending_mach_receives_.erase(pending);
-        process_.waiting_for_events = false;
-        cpu.clear_halt();
-        return true;
+        outcome.status = 0x10004008U; // MACH_RCV_INVALID_DATA
+        return outcome;
     }
-    if (received->bytes.size() > pending->second.receive_size) {
+    outcome.message_size = static_cast<std::uint32_t>(received->message_size);
+    if (received->bytes.size() > receive.receive_size) {
         const auto report_only =
-            (pending->second.options &
+            (receive.options &
                 darwin::mach_message::option_receive_large) != 0U;
         if (report_only) {
             // MACH_RCV_LARGE leaves the message queued and reports the
             // message-proper size through the fake header's msgh_size field.
             // libdispatch and the old GraphicsServices receiver use that
             // value to grow their buffer before retrying the same message.
-            const auto capacity = pending->second.receive_size;
+            const auto capacity = receive.receive_size;
             if (capacity >=
                     darwin::mig_wire::header_remote_port_offset &&
-                !memory_.write32(pending->second.message_address +
+                !memory_.write32(receive.message_address +
                                      darwin::mig_wire::header_size_offset,
                     static_cast<std::uint32_t>(received->message_size))) {
-                cpu.registers()[0] =
+                outcome.status =
                     darwin::mach_message::receive_invalid_data;
             } else {
-                cpu.registers()[0] = darwin::mach_message::receive_too_large;
+                outcome.status = darwin::mach_message::receive_too_large;
             }
         } else {
             // Without MACH_RCV_LARGE XNU consumes and destroys the oversized
@@ -455,12 +468,9 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
             queue->second.pop_front();
             shared_state_->note_mach_message_dequeued_locked(queued_port);
             discard_mach_message_rights_locked(*shared_state_, discarded);
-            cpu.registers()[0] = darwin::mach_message::receive_too_large;
+            outcome.status = darwin::mach_message::receive_too_large;
         }
-        pending_mach_receives_.erase(pending);
-        process_.waiting_for_events = false;
-        cpu.clear_halt();
-        return true;
+        return outcome;
     }
 
     // A queued message keeps the semantic right in its sidecar, but the
@@ -500,11 +510,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     };
     const auto fail_receive = [&](std::uint32_t error) {
         discard_queued_message();
-        cpu.registers()[0] = error;
-        pending_mach_receives_.erase(pending);
-        process_.waiting_for_events = false;
-        cpu.clear_halt();
-        return true;
+        outcome.status = error;
+        return outcome;
     };
 
     if (!shared_state_->mach_port_objects.contains(queued_port)) {
@@ -546,11 +553,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
         shared_state_->mach_namespaces.copyout(process_.pid, queued_port,
             xnu::ipc::type_mask(xnu::ipc::Right::Receive));
     if (!destination_name) {
-        cpu.registers()[0] = 0x10004008U;
-        pending_mach_receives_.erase(pending);
-        process_.waiting_for_events = false;
-        cpu.clear_halt();
-        return true;
+        outcome.status = 0x10004008U;
+        return outcome;
     }
     // Mach copyout exposes the sender's reply capability in msgh_remote_port;
     // the receive name is returned in msgh_local_port.  This is the wire-level
@@ -560,20 +564,14 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     if (sender_reply_name != xnu::ipc::null_name) {
         if (reply_right) {
             if (!reply_object) {
-                cpu.registers()[0] = 0x10004008U;
-                pending_mach_receives_.erase(pending);
-                process_.waiting_for_events = false;
-                cpu.clear_halt();
-                return true;
+                outcome.status = 0x10004008U;
+                return outcome;
             }
             const auto reply_name =
                 copyout_received_right(*reply_object, *reply_right);
             if (!reply_name) {
-                cpu.registers()[0] = 0x10004008U;
-                pending_mach_receives_.erase(pending);
-                process_.waiting_for_events = false;
-                cpu.clear_halt();
-                return true;
+                outcome.status = 0x10004008U;
+                return outcome;
             }
             write_little_word(received->bytes, 8, *reply_name);
             if (*reply_right == xnu::ipc::Right::Send) {
@@ -659,19 +657,13 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
                     : resolve_message_object(*shared_state_,
                           pending_message.sender_pid, sender_name);
             if (!object) {
-                cpu.registers()[0] = 0x10004008U;
-                pending_mach_receives_.erase(pending);
-                process_.waiting_for_events = false;
-                cpu.clear_halt();
-                return true;
+                outcome.status = 0x10004008U;
+                return outcome;
             }
             const auto receiver_name = copyout_received_right(*object, *right);
             if (!receiver_name) {
-                cpu.registers()[0] = 0x10004008U;
-                pending_mach_receives_.erase(pending);
-                process_.waiting_for_events = false;
-                cpu.clear_halt();
-                return true;
+                outcome.status = 0x10004008U;
+                return outcome;
             }
             write_little_word(received->bytes, offset, *receiver_name);
             write_little_word(received->bytes, offset + 8U,
@@ -704,11 +696,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
         if (array.descriptor_offset + darwin::mig_wire::descriptor_size >
                 received->bytes.size() ||
             array.count > maximum_message_io / darwin::mig_wire::word_size) {
-            cpu.registers()[0] = 0x10004008U;
-            pending_mach_receives_.erase(pending);
-            process_.waiting_for_events = false;
-            cpu.clear_halt();
-            return true;
+            outcome.status = 0x10004008U;
+            return outcome;
         }
         const auto byte_size = array.count * darwin::mig_wire::word_size;
         std::vector<std::byte> names(byte_size);
@@ -718,20 +707,14 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
                 continue;
             }
             if (*transfer.array_index >= array.count) {
-                cpu.registers()[0] = 0x10004008U;
-                pending_mach_receives_.erase(pending);
-                process_.waiting_for_events = false;
-                cpu.clear_halt();
-                return true;
+                outcome.status = 0x10004008U;
+                return outcome;
             }
             const auto receiver_name =
                 copyout_received_right(transfer.object, transfer.right);
             if (!receiver_name) {
-                cpu.registers()[0] = 0x10004008U;
-                pending_mach_receives_.erase(pending);
-                process_.waiting_for_events = false;
-                cpu.clear_halt();
-                return true;
+                outcome.status = 0x10004008U;
+                return outcome;
             }
             write_little_word(names,
                 *transfer.array_index * darwin::mig_wire::word_size,
@@ -769,11 +752,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
                 !memory_.map(*free_region, mapped_size,
                     MemoryPermission::Read | MemoryPermission::Write) ||
                 !memory_.copy_in(*free_region, names)) {
-                cpu.registers()[0] = 0x10004008U;
-                pending_mach_receives_.erase(pending);
-                process_.waiting_for_events = false;
-                cpu.clear_halt();
-                return true;
+                outcome.status = 0x10004008U;
+                return outcome;
             }
             copied_address = *free_region;
         }
@@ -787,11 +767,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
 
     for (const auto& payload : pending_message.ool_payloads) {
         if (payload.descriptor_offset + 4U > received->bytes.size()) {
-            cpu.registers()[0] = 0x10004008U; // MACH_RCV_INVALID_DATA
-            pending_mach_receives_.erase(pending);
-            process_.waiting_for_events = false;
-            cpu.clear_halt();
-            return true;
+            outcome.status = 0x10004008U; // MACH_RCV_INVALID_DATA
+            return outcome;
         }
         std::uint32_t copied_address = 0;
         if (!payload.bytes.empty()) {
@@ -804,11 +781,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
                 !memory_.map(*free_region, mapped_size,
                     MemoryPermission::Read | MemoryPermission::Write) ||
                 !memory_.copy_in(*free_region, payload.bytes)) {
-                cpu.registers()[0] = 0x10004008U;
-                pending_mach_receives_.erase(pending);
-                process_.waiting_for_events = false;
-                cpu.clear_halt();
-                return true;
+                outcome.status = 0x10004008U;
+                return outcome;
             }
             copied_address = *free_region;
         }
@@ -824,16 +798,13 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
     }
 
     if (!mach_ipc::apply_receive_pointer_fixups(pending_message,
-            pending->second.message_address, received->bytes)) {
+            receive.message_address, received->bytes)) {
         auto discarded = std::move(queue->second.front());
         queue->second.pop_front();
         shared_state_->note_mach_message_dequeued_locked(queued_port);
         discard_mach_message_rights_locked(*shared_state_, discarded);
-        cpu.registers()[0] = 0x10004008U; // MACH_RCV_INVALID_DATA
-        pending_mach_receives_.erase(pending);
-        process_.waiting_for_events = false;
-        cpu.clear_halt();
-        return true;
+        outcome.status = 0x10004008U; // MACH_RCV_INVALID_DATA
+        return outcome;
     }
 
     const auto delivered_sender_pid = pending_message.sender_pid;
@@ -881,15 +852,15 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
         " bytes=" + std::to_string(received->message_size) +
         " trailer=" + std::to_string(received->trailer_size) + "\n");
     const auto copied =
-        memory_.copy_in(pending->second.message_address, received->bytes);
+        memory_.copy_in(receive.message_address, received->bytes);
     if (copied) {
         if (delivered_vsync_connection) {
             shared_state_->observe_display_vsync_receive_locked(process_.pid,
                 *delivered_vsync_connection, delivered_vsync_generation,
                 delivered_vsync_sequence,
-                static_cast<std::uint32_t>(cpu.processor_id()));
+                static_cast<std::uint32_t>(receive.processor));
             performance_counters().record_vsync_receiver(process_.pid,
-                static_cast<std::uint32_t>(cpu.processor_id()),
+                static_cast<std::uint32_t>(receive.processor),
                 delivered_vsync_sequence);
         }
         if (delivered_input_sequence != 0U &&
@@ -898,9 +869,9 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
             const auto entered_at = std::chrono::steady_clock::now();
             performance_counters().record_diagnostic_input_guest(
                 delivered_input_sequence, process_.pid,
-                static_cast<std::uint32_t>(cpu.processor_id()), entered_at);
+                static_cast<std::uint32_t>(receive.processor), entered_at);
             if (waking_blocked_receiver) {
-                last_delivered_graphics_inputs_[cpu.processor_id()] =
+                last_delivered_graphics_inputs_[receive.processor] =
                     delivered_input_sequence;
             } else {
                 // The receive found a message while this thread was already
@@ -909,10 +880,10 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
                 // creates a false input stall.
                 performance_counters().record_diagnostic_input_runnable(
                     delivered_input_sequence, process_.pid,
-                    static_cast<std::uint32_t>(cpu.processor_id()), entered_at);
+                    static_cast<std::uint32_t>(receive.processor), entered_at);
                 performance_counters().record_diagnostic_input_execute(
                     process_.pid,
-                    static_cast<std::uint32_t>(cpu.processor_id()), entered_at);
+                    static_cast<std::uint32_t>(receive.processor), entered_at);
             }
         }
         if (delivered_graphics_event_type) {
@@ -956,11 +927,8 @@ bool CompatibilityKernel::deliver_pending_mach_locked(
             }
         }
     }
-    cpu.registers()[0] = copied ? 0U : 0x10004008U; // MACH_RCV_INVALID_DATA
-    pending_mach_receives_.erase(pending);
-    process_.waiting_for_events = false;
-    cpu.clear_halt();
-    return true;
+    outcome.status = copied ? 0U : 0x10004008U; // MACH_RCV_INVALID_DATA
+    return outcome;
 }
 
 } // namespace ilemu

@@ -266,7 +266,7 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
         }
         if (registers[4] != 0) {
             const auto ready =
-                collect_ready_kevents(fd, registers[3], registers[4], extended);
+                collect_ready_kevents(cpu.processor_id(), fd, registers[3], registers[4], extended);
             if (!ready) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;

@@ -1574,8 +1574,8 @@ CompatibilityKernel::baseband_open_description(std::uint32_t fd) const
 }
 
 std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
-    std::uint32_t queue_fd, std::uint32_t event_address,
-    std::uint32_t event_count, bool extended)
+    std::size_t processor, std::uint32_t queue_fd, std::uint32_t event_address,
+    std::uint32_t event_count, bool extended, bool waking_blocked_receiver)
 {
     const KeventWireFormat wire { extended };
     const auto queue = kqueues_.find(queue_fd);
@@ -1700,11 +1700,24 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         if (clears_after_delivery)
             result_flags |= darwin::kqueue::event_clear;
         const auto event = event_address + written * wire.size();
-        const auto data = registration->filter == darwin::kqueue::filter_user
+        auto extension = registration->extension;
+        auto data = registration->filter == darwin::kqueue::filter_user
             ? registration->data : static_cast<std::int64_t>(available);
+        if (extended && registration->filter == darwin::kqueue::filter_mach_port &&
+            (registration->filter_flags & darwin::mach_message::option_receive) != 0U) {
+            const auto received = receive_kevent_mach_message(
+                *registration, processor, waking_blocked_receiver);
+            if (!received) {
+                ++registration;
+                continue;
+            }
+            data = 0;
+            filter_flags = received->status;
+            extension[1] = received->message_size;
+        }
         if (!wire.write(memory_, event, KeventValue { registration->ident,
                 registration->filter, result_flags, filter_flags, data,
-                registration->user_data, registration->extension }))
+                registration->user_data, extension }))
             return std::nullopt;
         ++written;
         if (clears_after_delivery) {

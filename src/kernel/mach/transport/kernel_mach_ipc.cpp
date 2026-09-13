@@ -35,7 +35,8 @@ namespace {
         }
     }
 
-    std::size_t requested_trailer_size(std::uint32_t options)
+    std::size_t requested_trailer_size(
+        std::uint32_t options, DarwinMachVmAddressWidth context_width)
     {
         using namespace darwin::mig_wire;
         const auto elements =
@@ -46,6 +47,10 @@ namespace {
             return trailer_sequence_size;
         if (elements == trailer_sender)
             return trailer_sender_size;
+        if (elements == 4U) { // MACH_RCV_TRAILER_CTX
+            return trailer_audit_size +
+                (context_width == DarwinMachVmAddressWidth::Wide64 ? 8U : 4U);
+        }
         return trailer_audit_size;
     }
 
@@ -87,7 +92,8 @@ bool apply_receive_pointer_fixups(const KernelSharedState::MachMessage& message,
 std::optional<ReceivedMessage> prepare_received_message(
     const KernelSharedState::MachMessage& message,
     std::uint32_t destination_name, std::uint32_t receive_options,
-    std::uint32_t sequence_number)
+    std::uint32_t sequence_number, std::uint64_t context,
+    DarwinMachVmAddressWidth context_width)
 {
     if (message.bytes.size() < darwin::mig_wire::message_header_size) {
         return std::nullopt;
@@ -95,7 +101,7 @@ std::optional<ReceivedMessage> prepare_received_message(
 
     ReceivedMessage result;
     result.message_size = message.bytes.size();
-    result.trailer_size = requested_trailer_size(receive_options);
+    result.trailer_size = requested_trailer_size(receive_options, context_width);
     result.bytes = message.bytes;
     const auto aligned_size = (result.message_size + 3U) & ~std::size_t { 3U };
     result.bytes.resize(aligned_size + result.trailer_size, std::byte { 0 });
@@ -145,6 +151,13 @@ std::optional<ReceivedMessage> prepare_received_message(
             write_word(result.bytes, aligned_size + 20U + index * 4U,
                 audit_token[index]);
         }
+    }
+    if (result.trailer_size >= 56U) {
+        write_word(result.bytes, aligned_size + 52U,
+            static_cast<std::uint32_t>(context));
+        if (result.trailer_size >= 60U)
+            write_word(result.bytes, aligned_size + 56U,
+                static_cast<std::uint32_t>(context >> 32U));
     }
     return result;
 }

@@ -41,6 +41,7 @@ struct ReceivedMessage {
 [[nodiscard]] std::optional<ReceivedMessage> prepare_received_message(
     const KernelSharedState::MachMessage& message,
     std::uint32_t destination_name, std::uint32_t receive_options,
-    std::uint32_t sequence_number = 0);
+    std::uint32_t sequence_number = 0, std::uint64_t context = 0,
+    DarwinMachVmAddressWidth context_width = DarwinMachVmAddressWidth::Natural32);
 
 } // namespace ilemu::mach_ipc

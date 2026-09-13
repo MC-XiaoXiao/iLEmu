@@ -2121,9 +2121,9 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
     const auto pending_kevent = pending_kevents_.find(cpu.processor_id());
     if (pending_kevent == pending_kevents_.end())
         return false;
-    const auto ready = collect_ready_kevents(pending_kevent->second.queue_fd,
+    const auto ready = collect_ready_kevents(cpu.processor_id(), pending_kevent->second.queue_fd,
         pending_kevent->second.event_address,
-        pending_kevent->second.event_count, pending_kevent->second.extended);
+        pending_kevent->second.event_count, pending_kevent->second.extended, true);
     if (!ready) {
         bsd_error(cpu, kqueues_.contains(pending_kevent->second.queue_fd)
                            ? efault

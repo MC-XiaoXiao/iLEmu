@@ -688,6 +688,16 @@ private:
     [[nodiscard]] std::optional<std::size_t>
     preferred_pending_mach_receiver_locked(std::uint32_t queued_port);
     bool deliver_pending_mach_locked(Cpu& cpu, bool waking_blocked_receiver);
+    struct MachReceiveResult {
+        std::uint32_t status { };
+        std::uint32_t message_size { };
+    };
+    [[nodiscard]] std::optional<MachReceiveResult> receive_mach_message_locked(
+        PendingMachReceive& receive, bool queued_receiver,
+        bool waking_blocked_receiver);
+    [[nodiscard]] std::optional<MachReceiveResult> receive_kevent_mach_message(
+        const KeventRegistration& registration, std::size_t processor,
+        bool waking_blocked_receiver);
     bool deliver_pending_io_locked(Cpu& cpu);
     [[nodiscard]] bool pending_io_poll_required_locked(
         std::size_t processor) const;
@@ -770,8 +780,9 @@ private:
     [[nodiscard]] std::shared_ptr<bsd::baseband_device::OpenDescription>
     baseband_open_description(std::uint32_t fd) const;
     [[nodiscard]] std::optional<std::uint32_t> collect_ready_kevents(
-        std::uint32_t queue_fd, std::uint32_t event_address,
-        std::uint32_t event_count, bool extended = false);
+        std::size_t processor, std::uint32_t queue_fd, std::uint32_t event_address,
+        std::uint32_t event_count, bool extended = false,
+        bool waking_blocked_receiver = false);
     void detach_kevents_for_descriptor(std::uint32_t fd);
     using WokenThread = std::pair<std::uint32_t, std::uint32_t>;
     [[nodiscard]] std::uint32_t signal_semaphore_object_locked(
