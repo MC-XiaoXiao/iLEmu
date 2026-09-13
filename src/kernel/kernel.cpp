@@ -2236,8 +2236,17 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const
         const auto queue = kqueues_.find(pending->second.queue_fd);
         const auto registrations =
             queue == kqueues_.end() ? 0U : queue->second.size();
-        return "kevent(fd=" + std::to_string(pending->second.queue_fd) +
-               ",registrations=" + std::to_string(registrations) + ")";
+        std::string reason = "kevent(fd=" + std::to_string(pending->second.queue_fd) +
+            ",registrations=" + std::to_string(registrations);
+        if (queue != kqueues_.end()) {
+            for (const auto& event : queue->second) {
+                reason += ";ident=" + std::to_string(event.ident) +
+                    ",filter=" + std::to_string(event.filter) +
+                    ",flags=" + std::to_string(event.flags) +
+                    ",enabled=" + std::to_string(event.enabled);
+            }
+        }
+        return reason + ")";
     }
     if (const auto pending = pending_mach_receives_.find(processor);
         pending != pending_mach_receives_.end()) {
