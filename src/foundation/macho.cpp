@@ -51,6 +51,7 @@ namespace {
     constexpr std::uint32_t lc_code_signature = 0x1d;
     constexpr std::uint32_t lc_uuid = 0x1b;
     constexpr std::uint32_t lc_function_starts = 0x26;
+    constexpr std::uint32_t lc_main = 0x80000028U;
     constexpr std::uint32_t arm_thread_state = 1;
     constexpr std::uint32_t section_type_mask = 0xff;
     constexpr std::uint32_t s_symbol_stubs = 0x8;
@@ -75,6 +76,13 @@ namespace {
     std::int32_t read_i32(std::span<const std::byte> bytes, std::size_t offset)
     {
         return static_cast<std::int32_t>(read_u32(bytes, offset));
+    }
+
+    std::uint64_t read_u64(std::span<const std::byte> bytes, std::size_t offset)
+    {
+        return static_cast<std::uint64_t>(read_u32(bytes, offset)) |
+               (static_cast<std::uint64_t>(read_u32(bytes, offset + 4U))
+                   << 32U);
     }
 
     std::optional<std::uint32_t> read_be_u32(
@@ -153,6 +161,28 @@ namespace {
             if (required_size > segment.file_size - delta)
                 return std::nullopt;
             return static_cast<std::size_t>(segment.file_offset) + delta;
+        }
+        return std::nullopt;
+    }
+
+    std::optional<std::uint32_t> vm_address_for_file_offset(
+        std::span<const MachSegment> segments, std::uint64_t file_offset)
+    {
+        for (const auto& segment : segments) {
+            const auto segment_file_offset =
+                static_cast<std::uint64_t>(segment.file_offset);
+            const auto segment_file_size =
+                static_cast<std::uint64_t>(segment.file_size);
+            if (file_offset < segment_file_offset ||
+                file_offset - segment_file_offset >= segment_file_size) {
+                continue;
+            }
+            const auto address =
+                static_cast<std::uint64_t>(segment.vm_address) +
+                file_offset - segment_file_offset;
+            if (address > std::numeric_limits<std::uint32_t>::max())
+                return std::nullopt;
+            return static_cast<std::uint32_t>(address);
         }
         return std::nullopt;
     }
@@ -586,6 +616,7 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
     std::optional<std::pair<std::uint32_t, std::uint32_t>> indirect_symbols;
     std::optional<std::pair<std::uint32_t, std::uint32_t>> code_signature;
     std::optional<std::pair<std::uint32_t, std::uint32_t>> function_starts;
+    std::optional<std::uint64_t> main_entry_offset;
     std::set<std::uint32_t> known_generic {
         0x2,
         0x3,
@@ -755,6 +786,11 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
                 }
                 cursor += static_cast<std::size_t>(state_bytes);
             }
+        } else if (command == lc_main) {
+            if (command_size < 24U) {
+                throw std::runtime_error { "truncated LC_MAIN" };
+            }
+            main_entry_offset = read_u64(bytes, offset + 8U);
         } else if (is_dylib_command(command)) {
             if (command_size < 24) {
                 throw std::runtime_error { "truncated dylib load command" };
@@ -809,6 +845,16 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
         throw std::runtime_error {
             "Mach-O load command sizes do not match sizeofcmds"
         };
+    }
+    if (main_entry_offset) {
+        const auto entry_point = vm_address_for_file_offset(
+            image.segments_, *main_entry_offset);
+        if (!entry_point) {
+            throw std::runtime_error {
+                "LC_MAIN entryoff is outside a file-backed segment"
+            };
+        }
+        image.entry_point_ = *entry_point;
     }
     if (function_starts) {
         decode_function_starts(bytes, function_starts->first,
