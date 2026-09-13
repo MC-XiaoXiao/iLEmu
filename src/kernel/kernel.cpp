@@ -879,43 +879,6 @@ bool CompatibilityKernel::owns_display_scanout() const
     return backing && backing->provenance.producer_process_id == process_.pid;
 }
 
-void CompatibilityKernel::install_commpage()
-{
-    // The iPhoneOS 1.0 libSystem shipped in this firmware directly reads the
-    // legacy ARM commpage at 0x40000000 (for example, time data at +0x40).
-    // Later ARM XNU moved the page to 0xffff4000, so the relocated address must
-    // not be projected backwards onto this 2007 user ABI.
-    constexpr std::uint32_t commpage_address = 0x40000000U;
-    if (!memory_.mapped(commpage_address)) {
-        static_cast<void>(memory_.map(
-            commpage_address, AddressSpace::page_size, MemoryPermission::Read));
-    }
-    std::array<std::byte, AddressSpace::page_size> commpage { };
-    constexpr std::string_view signature { "commpage 32-bit" };
-    for (std::size_t index = 0; index < signature.size(); ++index) {
-        commpage[index] = static_cast<std::byte>(signature[index]);
-    }
-    commpage[0x1e] = std::byte { 1 }; // commpage format version
-    commpage[0x22] = static_cast<std::byte>(virtual_processor_count_);
-    memory_.copy_in(commpage_address, commpage);
-
-    if (shared_state_->darwin_abi.arm_exception_vector ==
-        DarwinArmExceptionVectorAbi::ReadOnlyProbe) {
-        // 9B-era ARM32 dyld reads the first instruction of the high IRQ
-        // vector while choosing its atomic operation variant. The compatibility
-        // kernel exposes the user-readable probe without making privileged
-        // exception code executable in the guest.
-        constexpr std::uint32_t high_vector_page = 0xffff1000U;
-        constexpr std::uint32_t irq_vector_offset = 0x20U;
-        if (!memory_.mapped(high_vector_page)) {
-            static_cast<void>(memory_.map(high_vector_page,
-                AddressSpace::page_size, MemoryPermission::Read));
-        }
-        constexpr std::uint32_t irq_vector_instruction = 0xe24ee004U;
-        static_cast<void>(memory_.copy_in(high_vector_page + irq_vector_offset,
-            std::as_bytes(std::span { &irq_vector_instruction, 1U })));
-    }
-}
 
 void CompatibilityKernel::prepare_exec(std::size_t processor_id)
 {

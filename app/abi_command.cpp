@@ -56,7 +56,7 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
          << "kernel-version: " << identity.version << '\n'
          << "epoch: " << choice(abi.abi_epoch,
                 { "unknown", "iphone-os-1", "iphone-os-2", "iphone-os-3",
-                    "darwin-10", "darwin-11", "later" }) << '\n'
+                    "darwin-10", "darwin-11", "darwin-13", "later" }) << '\n'
          << "pthread: " << choice(abi.pthread_abi,
                 { "mach-threads", "bsd-register-v1", "bsd-register-v1-tsd",
                     "bsd-register-v1-tsd-four-priority", "bsd-register-v2" })
@@ -75,8 +75,8 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
                 { "relocatable", "fixed-with-slide-info-v1" }) << '\n'
          << "mach-kernel-rpc: " << choice(abi.mach_kernel_rpc,
                 { "mig-only", "direct-vm-port-traps-v1" }) << '\n'
-         << "arm-exception-vector: " << choice(abi.arm_exception_vector,
-                { "unmapped", "read-only-probe" }) << '\n'
+         << "arm-commpage: " << choice(abi.arm_commpage,
+                { "legacy-address", "high-address" }) << '\n'
          << "psynch: " << choice(abi.psynch_abi,
                 { "unsupported", "arm32-generation-v1" }) << '\n'
          << "semaphore-wait: " << choice(abi.semaphore_wait_abi,

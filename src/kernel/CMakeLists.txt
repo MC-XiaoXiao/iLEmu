@@ -22,6 +22,7 @@ target_link_libraries(ilemu_kernel_api INTERFACE
 
 add_library(ilemu_kernel STATIC
     kernel.cpp
+    commpage.cpp
     hid_event_system_hle.cpp
     hid_switch_query.cpp
     clock.cpp

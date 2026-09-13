@@ -58,12 +58,11 @@ enum class DarwinMachVmAddressWidth : std::uint8_t {
     Wide64,
 };
 
-// Some ARM32 Darwin dyld releases probe the high exception-vector page when
-// selecting their atomic operation variant. Keep that user/kernel boundary
-// explicit instead of making every profile expose an unrelated legacy page.
-enum class DarwinArmExceptionVectorAbi : std::uint8_t {
-    Unmapped,
-    ReadOnlyProbe,
+// ARM32 userland reads CPU capabilities and topology from a read-only
+// commpage. Its virtual address is a separately selected kernel ABI.
+enum class DarwinArmCommpageAbi : std::uint8_t {
+    LegacyAddress,
+    HighAddress,
 };
 
 // Later ARM32 firmware added a fixed mach_vm shared-region mapping array plus
@@ -150,8 +149,8 @@ struct DarwinAbi {
     DarwinMachVmAddressWidth mach_vm_address {
         DarwinMachVmAddressWidth::Natural32
     };
-    DarwinArmExceptionVectorAbi arm_exception_vector {
-        DarwinArmExceptionVectorAbi::Unmapped
+    DarwinArmCommpageAbi arm_commpage {
+        DarwinArmCommpageAbi::LegacyAddress
     };
     DarwinNotifyStateAbi notify_state_abi {
         DarwinNotifyStateAbi::NativeServerTokens

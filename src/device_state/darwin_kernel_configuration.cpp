@@ -46,7 +46,17 @@ namespace {
 
     constexpr DarwinAbi darwin11_wide_vm_high_vectors_abi = [] {
         auto abi = darwin11_wide_vm_abi;
-        abi.arm_exception_vector = DarwinArmExceptionVectorAbi::ReadOnlyProbe;
+        abi.arm_commpage = DarwinArmCommpageAbi::HighAddress;
+        return abi;
+    }();
+
+    // Darwin 13 keeps the audited wide-VM wire contracts and the high-address
+    // commpage. Keep the profile separate so later Darwin revisions can
+    // evolve their contracts without making this compatibility boundary
+    // depend on a firmware build string.
+    constexpr DarwinAbi darwin13_wide_vm_high_commpage_abi = [] {
+        auto abi = darwin11_wide_vm_high_vectors_abi;
+        abi.abi_epoch = DarwinAbiEpoch::Darwin13;
         return abi;
     }();
 
@@ -171,6 +181,11 @@ namespace {
             .abi = darwin11_wide_vm_high_vectors_abi,
         },
         DarwinConfigurationEntry {
+            .name = "darwin13.0.0-wide-vm-high-commpage",
+            .darwin_release = "13.0.0",
+            .abi = darwin13_wide_vm_high_commpage_abi,
+        },
+        DarwinConfigurationEntry {
             .name = "darwin14.0.0",
             .darwin_release = "14.0.0",
             .abi = {
@@ -231,8 +246,9 @@ namespace {
             Rule { "8F", "darwin11.0.0-inline-iokit" },
             Rule { "9A", "darwin11.0.0-wide-vm" },
             // The 9B dyld keeps the Darwin 11 wire contracts but probes the
-            // high exception-vector page while selecting atomic routines.
+            // high commpage while selecting atomic routines.
             Rule { "9B", "darwin11.0.0-wide-vm-high-vectors" },
+            Rule { "10", "darwin13.0.0-wide-vm-high-commpage" },
             Rule { "11", "darwin14.0.0" },
         };
         const auto branch = build.find_first_not_of("0123456789");
