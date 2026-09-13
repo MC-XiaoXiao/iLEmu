@@ -373,6 +373,88 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::get_process_group:
         bsd_success(cpu, process_.process_group);
         return;
+    case darwin::syscall::get_priority: {
+        const auto which = registers[0];
+        const auto who = registers[1];
+        if (who > 0x7fff'ffffU) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return;
+        }
+
+        const auto target_is_live = [&](std::uint32_t pid) {
+            if (pid == 0 || pid == process_.pid)
+                return true;
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            const auto target = shared_state_->processes.find(pid);
+            return target != shared_state_->processes.end() &&
+                   !target->second.exited;
+        };
+        const auto target_priority = [&](std::uint32_t pid) {
+            if (pid == 0 || pid == process_.pid)
+                return process_.nice_value;
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            const auto target = shared_state_->processes.find(pid);
+            return target == shared_state_->processes.end()
+                       ? std::int32_t { }
+                       : target->second.nice_value;
+        };
+
+        std::optional<std::int32_t> priority;
+        switch (which) {
+        case darwin::resource::priority_process:
+            if (target_is_live(who))
+                priority = target_priority(who);
+            break;
+        case darwin::resource::priority_process_group:
+        case darwin::resource::priority_user: {
+            const auto selector =
+                who == 0 ? (which == darwin::resource::priority_process_group
+                                  ? process_.process_group
+                                  : process_.uid)
+                         : who;
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            for (const auto& [pid, record] : shared_state_->processes) {
+                const auto matches =
+                    which == darwin::resource::priority_process_group
+                        ? record.process_group == selector
+                        : record.uid == selector;
+                if (record.exited || !matches)
+                    continue;
+                const auto value = pid == process_.pid
+                                       ? process_.nice_value
+                                       : record.nice_value;
+                if (!priority || value < *priority)
+                    priority = value;
+            }
+            break;
+        }
+        case darwin::resource::priority_darwin_thread:
+            if (who != 0) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
+            // This compatibility kernel has no separate Darwin background
+            // thread policy; zero is the native default state.
+            priority = 0;
+            break;
+        case darwin::resource::priority_darwin_process:
+            if (target_is_live(who)) {
+                // The firmware uses this query to inspect the process
+                // background policy. The default policy is foreground.
+                priority = 0;
+            }
+            break;
+        default:
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return;
+        }
+        if (!priority) {
+            bsd_error(cpu, darwin::error::no_such_process);
+            return;
+        }
+        bsd_success(cpu, static_cast<std::uint32_t>(*priority));
+        return;
+    }
     case 46: { // sigaction
         const auto signal = registers[0];
         if (signal == 0 || signal >= signal_actions_.size() || signal == 9 ||
@@ -406,7 +488,8 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
         bsd_success(cpu, 0);
         return;
     }
-    case 48: { // sigprocmask
+    case 48: // sigprocmask
+    case darwin::syscall::pthread_sigmask: { // __pthread_sigmask
         constexpr std::uint32_t unblockable =
             (1U << (9U - 1U)) | (1U << (17U - 1U));
         if (registers[2] != 0 && !memory_.write32(registers[2], signal_mask_)) {
@@ -542,11 +625,21 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::invalid_argument);
         } else {
             process_.nice_value =
-                std::clamp(static_cast<std::int32_t>(registers[2]), -20, 20);
+                std::clamp(static_cast<std::int32_t>(registers[2]),
+                    darwin::resource::priority_minimum,
+                    darwin::resource::priority_maximum);
             // XNU resetpriority() calls task_importance(-p_nice), whose
             // task base is BASEPRI_DEFAULT + importance.
             process_.thread_base_priority =
                 xnu::scheduler::default_base_priority - process_.nice_value;
+            {
+                std::lock_guard mach_lock { shared_state_->mach_mutex };
+                if (const auto record =
+                        shared_state_->processes.find(process_.pid);
+                    record != shared_state_->processes.end()) {
+                    record->second.nice_value = process_.nice_value;
+                }
+            }
             if (task_priority_handler_) {
                 task_priority_handler_(process_.thread_base_priority);
                 if (scheduler_preemption_query_ &&

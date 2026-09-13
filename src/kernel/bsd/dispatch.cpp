@@ -223,6 +223,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 66:
     case 7:
     case 20:
+    case darwin::syscall::get_priority:
     case darwin::syscall::set_user_id:
     case 24:
     case 25:
@@ -231,6 +232,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 47:
     case 46:
     case 48:
+    case darwin::syscall::pthread_sigmask:
     case 49:
     case 50:
     case 55:

@@ -17,6 +17,13 @@
 
 namespace ilemu::darwin::resource {
 
+inline constexpr std::uint32_t priority_process = 0;
+inline constexpr std::uint32_t priority_process_group = 1;
+inline constexpr std::uint32_t priority_user = 2;
+inline constexpr std::uint32_t priority_darwin_thread = 3;
+inline constexpr std::uint32_t priority_darwin_process = 4;
+inline constexpr std::int32_t priority_minimum = -20;
+inline constexpr std::int32_t priority_maximum = 20;
 inline constexpr std::uint32_t cpu = 0;
 inline constexpr std::uint32_t file_size = 1;
 inline constexpr std::uint32_t data = 2;
