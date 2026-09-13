@@ -20,6 +20,7 @@ enum class CallResult {
     Success,
     BadAddress,
     InvalidArgument,
+    NoMemory,
 };
 
 [[nodiscard]] CallResult dispatch(

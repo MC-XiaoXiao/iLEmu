@@ -67,7 +67,7 @@ CallResult dispatch(
             return CallResult::InvalidArgument;
         // Named-profile initialization uses the same non-enforcing guest
         // provider as checks below. No host sandbox policy is installed, and
-        // compiled-profile or extension operations remain unsupported.
+        // compiled-profile operations remain unsupported.
         return CallResult::Success;
     }
 

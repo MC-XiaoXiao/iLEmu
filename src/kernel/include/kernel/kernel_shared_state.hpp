@@ -64,6 +64,7 @@ namespace ilemu {
 class HostSocket;
 class KeyStore;
 class SurfaceTransportLease;
+namespace bsd::sandbox { class Extensions; }
 
 struct ProcessContext {
     std::uint32_t pid { 1 };
@@ -1974,6 +1975,7 @@ struct KernelSharedState {
     }
 
     std::mutex mach_mutex;
+    std::shared_ptr<bsd::sandbox::Extensions> sandbox_extensions;
     mutable std::mutex socket_mutex;
     mutable std::mutex filesystem_mutex;
 };

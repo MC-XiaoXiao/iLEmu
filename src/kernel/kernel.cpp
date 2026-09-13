@@ -11,6 +11,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/kern/syscall_sw.c
 
 #include "kernel/kernel.hpp"
+#include "bsd/security/extensions.hpp"
 #include "foundation/application_display.hpp"
 #include "foundation/application_path.hpp"
 #include "device_state/darwin_kernel_identity.hpp"
@@ -2751,6 +2752,8 @@ void CompatibilityKernel::inherit_process_state(
     if (child_record.command.empty())
         child_record.command = "unknown";
     shared_state_->processes[child_pid] = std::move(child_record);
+    if (shared_state_->sandbox_extensions)
+        shared_state_->sandbox_extensions->fork_process(parent.process_.pid, child_pid);
 }
 
 void CompatibilityKernel::dispatch(Cpu& cpu, std::uint32_t svc_immediate)

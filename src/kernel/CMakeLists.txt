@@ -167,6 +167,7 @@ target_link_libraries(ilemu_kernel_bsd_process PRIVATE
     iLEmu::foundation)
 
 add_library(ilemu_kernel_bsd_security STATIC
+    bsd/security/extensions.cpp
     bsd/security/mac.cpp
     bsd/security/sandbox.cpp)
 add_library(iLEmu::kernel_bsd_security ALIAS

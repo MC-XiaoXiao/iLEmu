@@ -11,6 +11,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/kern_resource.c
 
 #include "kernel/kernel.hpp"
+#include "security/extensions.hpp"
 
 #include "foundation/application_path.hpp"
 #include "kernel/darwin_abi.hpp"
@@ -159,6 +160,8 @@ void CompatibilityKernel::exit_process(
             record->second.exit_status = status;
             record->second.termination_signal = signal;
         }
+        if (shared_state_->sandbox_extensions)
+            shared_state_->sandbox_extensions->exit_process(process_.pid);
         auto& events = shared_state_->process_kevent_states[process_.pid];
         ++events.exit_generation;
         if (events.exit_generation == 0U)
