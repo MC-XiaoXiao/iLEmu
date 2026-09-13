@@ -28,11 +28,14 @@ struct DarwinPthreadRegistration {
     std::uint32_t dispatch_queue_offset { };
 };
 
+enum class DarwinWorkqueueDelivery { WorkItem, DispatchThread };
+
 struct DarwinWorkqueueItem {
     std::uint32_t address { };
     std::uint32_t priority { };
     std::uint32_t affinity { };
     bool overcommit { };
+    DarwinWorkqueueDelivery delivery { DarwinWorkqueueDelivery::WorkItem };
 };
 
 struct DarwinWorkqueueWorker {
@@ -92,6 +95,8 @@ public:
 
     [[nodiscard]] bool enqueue_workitem(
         DarwinWorkqueueItem item, bool front = false);
+    [[nodiscard]] bool request_dispatch_threads(
+        std::uint32_t count, std::uint32_t priority, bool overcommit);
     [[nodiscard]] std::optional<DarwinWorkqueueItem> take_workitem();
     [[nodiscard]] bool remove_workitem(
         std::uint32_t address, std::uint32_t priority);

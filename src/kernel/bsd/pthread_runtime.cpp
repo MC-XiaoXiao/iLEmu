@@ -78,6 +78,16 @@ namespace {
         state[2] = worker.stack_bottom;
         state[3] = item.address;
         state[4] = reuse ? 1U : 0U;
+        if (item.delivery == DarwinWorkqueueDelivery::DispatchThread) {
+            // The requested-thread SPI passes no workitem. Userland owns the
+            // work queues and receives priority/reuse/overcommit in flags.
+            constexpr std::uint32_t dispatch_spi = 0x00040000U;
+            constexpr std::uint32_t reused_thread = 0x00020000U;
+            state[3] = 0;
+            state[4] = dispatch_spi | item.priority |
+                (reuse ? reused_thread : 0U) |
+                (item.overcommit ? DarwinPthreadRuntime::workqueue_overcommit : 0U);
+        }
         state[5] = 0;
         state[13] = worker.pthread_address & ~std::uint32_t { 0x0fU };
         state[15] = registration.workqueue_thread_start & ~std::uint32_t { 1U };
@@ -107,6 +117,20 @@ bool DarwinPthreadRuntime::enqueue_workitem(
         queue.push_front(item);
     else
         queue.push_back(item);
+    return true;
+}
+
+bool DarwinPthreadRuntime::request_dispatch_threads(
+    std::uint32_t count, std::uint32_t priority, bool overcommit)
+{
+    if (!workqueue_open_ || priority >= workqueue_priority_count_ || count == 0U)
+        return false;
+    auto& queue = workitems_[priority];
+    if (count > maximum_workqueue_items_per_priority - queue.size())
+        return false;
+    for (std::uint32_t index = 0; index < count; ++index)
+        queue.push_back(DarwinWorkqueueItem { 0U, priority, 0U, overcommit,
+            DarwinWorkqueueDelivery::DispatchThread });
     return true;
 }
 
@@ -630,6 +654,17 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         constexpr std::uint32_t queue_remove = 2U;
         constexpr std::uint32_t thread_return = 4U;
         constexpr std::uint32_t thread_set_concurrency = 8U;
+        constexpr std::uint32_t query_dispatch_spi = 16U;
+        constexpr std::uint32_t request_dispatch_threads = 32U;
+        // Feature discovery precedes workq_open. XNU only requires that the
+        // process has registered its pthread entry points at this stage.
+        if (registers[0] == query_dispatch_spi) {
+            if (pthread_runtime_.registration())
+                bsd_success(cpu, 0);
+            else
+                bsd_error(cpu, bsd_support::invalid_argument);
+            return true;
+        }
         if (!pthread_runtime_.workqueue_open()) {
             bsd_error(cpu, bsd_support::invalid_argument);
             return true;
@@ -643,6 +678,28 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         const auto raw_priority = registers[3];
         const auto priority =
             raw_priority & ~DarwinPthreadRuntime::workqueue_overcommit;
+        if (operation == request_dispatch_threads) {
+            const auto count = affinity;
+            const auto overcommit =
+                (raw_priority & DarwinPthreadRuntime::workqueue_overcommit) != 0U;
+            if (count == 0U || count > INT32_MAX ||
+                priority >= pthread_runtime_.workqueue_priority_count()) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return true;
+            }
+            if (!pthread_runtime_.request_dispatch_threads(count, priority, overcommit)) {
+                bsd_error(cpu, darwin::error::no_memory);
+                return true;
+            }
+            for (std::uint32_t index = 0; index < count; ++index) {
+                if (!service_bsd_workqueue(&cpu)) {
+                    bsd_error(cpu, darwin::error::no_memory);
+                    return true;
+                }
+            }
+            bsd_success(cpu, 0);
+            return true;
+        }
         if (operation == queue_add) {
             const auto overcommit =
                 (raw_priority & DarwinPthreadRuntime::workqueue_overcommit) !=
