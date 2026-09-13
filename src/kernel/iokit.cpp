@@ -52,6 +52,21 @@
 namespace ilemu {
 namespace {
 
+    constexpr std::uint32_t single_service_message_id(DarwinIOKitMatchingRpcAbi abi)
+    {
+        switch (abi) {
+        case DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1:
+            return static_cast<std::uint32_t>(
+                iokit_abi::Message::ServiceGetMatchingService);
+        case DarwinIOKitMatchingRpcAbi::InlineSingleServiceAfterVariableOutput:
+            return static_cast<std::uint32_t>(
+                iokit_abi::Message::ServiceGetMatchingServiceAfterVariableOutput);
+        case DarwinIOKitMatchingRpcAbi::PluralIteratorOnly:
+            return 0U;
+        }
+        return 0U;
+    }
+
     constexpr std::uint32_t mach_rcv_invalid_data = 0x10004008U;
     constexpr std::uint32_t mach_reply_bits = 0x00000012U;
     constexpr std::uint32_t mach_ndr_native = 0x00000000U;
@@ -1548,10 +1563,8 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
             memory, message_address, local_port, message_id, iterator_name);
     }
 
-    if (message_id == static_cast<std::uint32_t>(
-                          iokit_abi::Message::ServiceGetMatchingService) &&
-        shared_state.darwin_abi.iokit_matching_rpc ==
-            DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1) {
+    if (message_id != 0U && message_id == single_service_message_id(
+            shared_state.darwin_abi.iokit_matching_rpc)) {
         // Darwin 11's private singular routine carries the same serialized
         // matching dictionary as the public plural call but returns the first
         // service port directly. Reuse the registry matcher so every modeled

@@ -39,6 +39,7 @@ enum class Message : std::uint32_t {
     // Darwin 11 private inline counterpart to the generated plural iterator
     // routine. The firmware wrapper returns the first matching service port.
     ServiceGetMatchingService = 2872,
+    ServiceGetMatchingServiceAfterVariableOutput = 2873,
 };
 
 namespace service_get_matching_service_v1 {

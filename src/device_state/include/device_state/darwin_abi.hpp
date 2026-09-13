@@ -116,6 +116,8 @@ enum class DarwinStackSnapshotAbi : std::uint8_t {
 enum class DarwinIOKitMatchingRpcAbi : std::uint8_t {
     PluralIteratorOnly,
     InlineSingleServiceV1,
+    // A variable-output connect method was inserted before the singular RPC.
+    InlineSingleServiceAfterVariableOutput,
 };
 
 struct DarwinGuestCapabilities {

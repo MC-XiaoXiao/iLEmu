@@ -57,6 +57,8 @@ namespace {
     constexpr DarwinAbi darwin13_wide_vm_high_commpage_abi = [] {
         auto abi = darwin11_wide_vm_high_vectors_abi;
         abi.abi_epoch = DarwinAbiEpoch::Darwin13;
+        abi.iokit_matching_rpc =
+            DarwinIOKitMatchingRpcAbi::InlineSingleServiceAfterVariableOutput;
         return abi;
     }();
 
