@@ -75,6 +75,8 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
                 { "relocatable", "fixed-with-slide-info-v1" }) << '\n'
          << "mach-kernel-rpc: " << choice(abi.mach_kernel_rpc,
                 { "mig-only", "direct-vm-port-traps-v1" }) << '\n'
+         << "arm-exception-vector: " << choice(abi.arm_exception_vector,
+                { "unmapped", "read-only-probe" }) << '\n'
          << "psynch: " << choice(abi.psynch_abi,
                 { "unsupported", "arm32-generation-v1" }) << '\n'
          << "semaphore-wait: " << choice(abi.semaphore_wait_abi,

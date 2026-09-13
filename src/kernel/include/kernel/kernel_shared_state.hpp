@@ -565,6 +565,7 @@ struct KernelSharedState {
         std::uint32_t effective_uid { };
         std::uint32_t gid { };
         std::uint32_t effective_gid { };
+        std::int32_t nice_value { };
         std::uint32_t exit_status { };
         std::uint32_t termination_signal { };
         bool exited { };

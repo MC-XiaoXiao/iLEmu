@@ -23,6 +23,33 @@ namespace {
         .capabilities = { .send_sigsys = true },
     };
 
+    constexpr DarwinAbi darwin11_wide_vm_abi {
+        .abi_epoch = DarwinAbiEpoch::Darwin11,
+        .pthread_abi =
+            DarwinPthreadAbi::BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,
+        .apple80211_ioctl =
+            DarwinApple80211IoctlAbi::CompactCurrentNetworkRecord,
+        .io_connect_method =
+            DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar,
+        .mach_vm_address = DarwinMachVmAddressWidth::Wide64,
+        .initial_apple_vector_abi =
+            DarwinInitialAppleVectorAbi::LegacyExecutablePath,
+        .shared_region_abi =
+            DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1,
+        .mach_kernel_rpc = DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1,
+        .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+        .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
+        .stack_snapshot_abi = DarwinStackSnapshotAbi::LegacyFourArguments,
+        .iokit_matching_rpc = DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1,
+        .capabilities = { .send_sigsys = true },
+    };
+
+    constexpr DarwinAbi darwin11_wide_vm_high_vectors_abi = [] {
+        auto abi = darwin11_wide_vm_abi;
+        abi.arm_exception_vector = DarwinArmExceptionVectorAbi::ReadOnlyProbe;
+        return abi;
+    }();
+
     // Release identity and ABI values are independent. Entries sharing a
     // Darwin release retain the wire differences required by their callers.
     constexpr std::array configurations {
@@ -136,29 +163,12 @@ namespace {
         DarwinConfigurationEntry {
             .name = "darwin11.0.0-wide-vm",
             .darwin_release = "11.0.0",
-            .abi = {
-                .abi_epoch = DarwinAbiEpoch::Darwin11,
-                .pthread_abi =
-                    DarwinPthreadAbi::BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,
-                .apple80211_ioctl =
-                    DarwinApple80211IoctlAbi::CompactCurrentNetworkRecord,
-                .io_connect_method =
-                    DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar,
-                .mach_vm_address = DarwinMachVmAddressWidth::Wide64,
-                .initial_apple_vector_abi =
-                    DarwinInitialAppleVectorAbi::LegacyExecutablePath,
-                .shared_region_abi =
-                    DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1,
-                .mach_kernel_rpc =
-                    DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1,
-                .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
-                .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
-                .stack_snapshot_abi =
-                    DarwinStackSnapshotAbi::LegacyFourArguments,
-                .iokit_matching_rpc =
-                    DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1,
-                .capabilities = { .send_sigsys = true },
-            },
+            .abi = darwin11_wide_vm_abi,
+        },
+        DarwinConfigurationEntry {
+            .name = "darwin11.0.0-wide-vm-high-vectors",
+            .darwin_release = "11.0.0",
+            .abi = darwin11_wide_vm_high_vectors_abi,
         },
         DarwinConfigurationEntry {
             .name = "darwin14.0.0",
@@ -220,6 +230,9 @@ namespace {
             Rule { "8C", "darwin10.4.0" },
             Rule { "8F", "darwin11.0.0-inline-iokit" },
             Rule { "9A", "darwin11.0.0-wide-vm" },
+            // The 9B dyld keeps the Darwin 11 wire contracts but probes the
+            // high exception-vector page while selecting atomic routines.
+            Rule { "9B", "darwin11.0.0-wide-vm-high-vectors" },
             Rule { "11", "darwin14.0.0" },
         };
         const auto branch = build.find_first_not_of("0123456789");

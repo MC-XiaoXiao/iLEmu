@@ -437,7 +437,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     shared_state_->processes[process_.pid] =
         KernelSharedState::ProcessRecord { process_.parent_pid,
             process_.process_group, process_.uid, process_.effective_uid,
-            process_.gid, process_.effective_gid, process_.exit_status,
+            process_.gid, process_.effective_gid, process_.nice_value,
+            process_.exit_status,
             process_.termination_signal, process_.exited, false, false,
             "launchd", "/sbin/launchd", { "/sbin/launchd" },
             { "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root",
@@ -896,6 +897,23 @@ void CompatibilityKernel::install_commpage()
     commpage[0x1e] = std::byte { 1 }; // commpage format version
     commpage[0x22] = static_cast<std::byte>(virtual_processor_count_);
     memory_.copy_in(commpage_address, commpage);
+
+    if (shared_state_->darwin_abi.arm_exception_vector ==
+        DarwinArmExceptionVectorAbi::ReadOnlyProbe) {
+        // 9B-era ARM32 dyld reads the first instruction of the high IRQ
+        // vector while choosing its atomic operation variant. The compatibility
+        // kernel exposes the user-readable probe without making privileged
+        // exception code executable in the guest.
+        constexpr std::uint32_t high_vector_page = 0xffff1000U;
+        constexpr std::uint32_t irq_vector_offset = 0x20U;
+        if (!memory_.mapped(high_vector_page)) {
+            static_cast<void>(memory_.map(high_vector_page,
+                AddressSpace::page_size, MemoryPermission::Read));
+        }
+        constexpr std::uint32_t irq_vector_instruction = 0xe24ee004U;
+        static_cast<void>(memory_.copy_in(high_vector_page + irq_vector_offset,
+            std::as_bytes(std::span { &irq_vector_instruction, 1U })));
+    }
 }
 
 void CompatibilityKernel::prepare_exec(std::size_t processor_id)
@@ -1209,6 +1227,7 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
     record.effective_uid = process_.effective_uid;
     record.gid = process_.gid;
     record.effective_gid = process_.effective_gid;
+    record.nice_value = process_.nice_value;
     if (new_process_incarnation) {
         record.incarnation = shared_state_->next_process_incarnation++;
         if (record.incarnation == 0U)
@@ -2716,6 +2735,7 @@ void CompatibilityKernel::inherit_process_state(
     child_record.effective_uid = process_.effective_uid;
     child_record.gid = process_.gid;
     child_record.effective_gid = process_.effective_gid;
+    child_record.nice_value = process_.nice_value;
     child_record.exit_status = 0;
     child_record.termination_signal = 0;
     child_record.exited = false;
