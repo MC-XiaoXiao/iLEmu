@@ -87,24 +87,20 @@ struct NormalizedDragGesture {
 struct SystemGestures {
     std::string_view name;
     NormalizedDragGesture unlock;
-    // Some compact lock scenes need the firmware Home transition even while
-    // the panel is already powered; tablet scenes retain the power-only wake
-    // behavior.
-    bool home_wake_barrier { };
 };
 
 inline constexpr SystemGestures classic_compact_system_gestures {
     "classic-compact-slider",
-    { 0.15625F, 0.8958333333F, 0.8125F, 0.8958333333F, 1'400U, 7U, 200U,
-        1'000U },
-    true,
+    // Start inside the native arrow handle and keep the gesture close to the
+    // compact slider's full travel while pacing it on the host clock.
+    { 0.15625F, 0.8958333333F, 0.9375F, 0.8958333333F, 300U, 12U, 16U,
+        300U },
 };
 
 inline constexpr SystemGestures classic_centered_tablet_system_gestures {
     "classic-centered-tablet-slider",
     { 0.3776041667F, 0.9375F, 0.8463541667F, 0.9375F, 1'400U, 7U, 200U,
         1'500U },
-    false,
 };
 
 // GraphicsServices publishes this dictionary through the GSCapabilities

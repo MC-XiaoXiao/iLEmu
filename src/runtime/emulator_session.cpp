@@ -2673,8 +2673,7 @@ void EmulatorSession::run()
                 case LiveControlCommandKind::Gesture:
                     note_interactive_host_activity();
                     if (command.wake_display &&
-                        (command.home_wake_barrier ||
-                            !initial_runtime->kernel->display_powered_on())) {
+                        !initial_runtime->kernel->display_powered_on()) {
                         initial_runtime->kernel->enqueue_system_button(
                             SystemButtonInput {
                                 SystemButton::Home, SystemButtonPhase::Down });
