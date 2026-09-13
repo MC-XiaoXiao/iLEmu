@@ -82,7 +82,10 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
          << "semaphore-wait: " << choice(abi.semaphore_wait_abi,
                 { "inline-seconds32", "inline-seconds64" }) << '\n'
          << "iokit-matching: " << choice(abi.iokit_matching_rpc,
-                { "plural-iterator", "inline-single-service-v1" }) << '\n'
+                { "plural-iterator", "inline-single-service-v1",
+                    "inline-single-service-after-variable-output" }) << '\n'
+         << "sandbox: " << choice(abi.sandbox_abi,
+                { "natural32-arguments", "wide64-arguments" }) << '\n'
          << "activation-hardware-model: " << choice(
                 abi.activation_hardware_model_policy,
                 { "retail", "development-board" }) << '\n'

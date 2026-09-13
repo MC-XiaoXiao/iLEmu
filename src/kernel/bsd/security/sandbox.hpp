@@ -7,6 +7,7 @@
 #pragma once
 
 #include <cstdint>
+#include "device_state/darwin_abi.hpp"
 
 namespace ilemu {
 
@@ -18,10 +19,12 @@ enum class CallResult {
     Unsupported,
     Success,
     BadAddress,
+    InvalidArgument,
 };
 
 [[nodiscard]] CallResult dispatch(
-    AddressSpace& memory, std::uint32_t operation, std::uint32_t argument);
+    AddressSpace& memory, DarwinSandboxAbi abi, std::uint32_t operation,
+    std::uint32_t argument);
 
 } // namespace bsd::sandbox
 } // namespace ilemu

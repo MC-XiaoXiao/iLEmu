@@ -31,12 +31,16 @@ bool CompatibilityKernel::dispatch_bsd_security(Cpu& cpu, std::uint32_t number)
 
     if (*policy == "Sandbox") {
         switch (bsd::sandbox::dispatch(
-            memory_, registers[1], registers[2])) {
+            memory_, shared_state_->darwin_abi.sandbox_abi,
+            registers[1], registers[2])) {
         case bsd::sandbox::CallResult::Success:
             bsd_success(cpu, 0);
             return true;
         case bsd::sandbox::CallResult::BadAddress:
             bsd_error(cpu, darwin::error::bad_address);
+            return true;
+        case bsd::sandbox::CallResult::InvalidArgument:
+            bsd_error(cpu, darwin::error::invalid_argument);
             return true;
         case bsd::sandbox::CallResult::Unsupported:
             break;

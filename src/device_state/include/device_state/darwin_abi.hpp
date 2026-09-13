@@ -58,6 +58,13 @@ enum class DarwinMachVmAddressWidth : std::uint8_t {
     Wide64,
 };
 
+// Sandbox MAC requests widened every argument slot, including pointers,
+// independently of the application's ARM32 address space.
+enum class DarwinSandboxAbi : std::uint8_t {
+    Natural32Arguments,
+    Wide64Arguments,
+};
+
 // ARM32 userland reads CPU capabilities and topology from a read-only
 // commpage. Its virtual address is a separately selected kernel ABI.
 enum class DarwinArmCommpageAbi : std::uint8_t {
@@ -178,6 +185,7 @@ struct DarwinAbi {
     DarwinIOKitMatchingRpcAbi iokit_matching_rpc {
         DarwinIOKitMatchingRpcAbi::PluralIteratorOnly
     };
+    DarwinSandboxAbi sandbox_abi { DarwinSandboxAbi::Natural32Arguments };
     // Firmware route databases can require a retail or development-board
     // identity for offline activation. Keep this contract independent of
     // product names and application paths.
