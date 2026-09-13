@@ -34,7 +34,8 @@ bool CompatibilityKernel::dispatch_mach_port_limit_message(
     auto& registers = cpu.registers();
     const auto& arguments =
         xnu::mig::mach_port::mach_port_set_attributes_arguments;
-    constexpr std::uint32_t minimum_request_size = 48;
+    // The inline attribute array may be empty (MACH_PORT_TEMPOWNER).
+    constexpr std::uint32_t minimum_request_size = 44;
     std::uint32_t result = darwin::mach::success;
     std::uint32_t name = xnu::ipc::null_name;
     std::uint32_t flavor = 0;
@@ -50,7 +51,7 @@ bool CompatibilityKernel::dispatch_mach_port_limit_message(
         count =
             memory_.read32(request.address + arguments[3].request_count_offset)
                 .value_or(0);
-        queue_limit =
+        queue_limit = count == 0U ? 0U :
             memory_.read32(request.address + arguments[3].request_offset)
                 .value_or(xnu::ipc::maximum_queue_limit + 1U);
         std::lock_guard mach_lock { shared_state_->mach_mutex };
@@ -59,13 +60,15 @@ bool CompatibilityKernel::dispatch_mach_port_limit_message(
         const auto entry =
             target ? shared_state_->mach_namespaces.lookup(*target, name)
                    : std::nullopt;
-        if (!target) {
-            result = darwin::mach::invalid_task;
-        } else if (flavor != 1U) { // MACH_PORT_LIMITS_INFO
+        if (count > (registers[2] - minimum_request_size) / 4U) {
             result = darwin::mach::invalid_argument;
-        } else if (count < 1U) {
+        } else if (!target) {
+            result = darwin::mach::invalid_task;
+        } else if (flavor != 1U && flavor != 4U) {
+            result = darwin::mach::invalid_argument;
+        } else if (flavor == 1U && count < 1U) {
             result = darwin::mach::failure;
-        } else if (queue_limit > xnu::ipc::maximum_queue_limit) {
+        } else if (flavor == 1U && queue_limit > xnu::ipc::maximum_queue_limit) {
             result = darwin::mach::invalid_value;
         } else if (name == xnu::ipc::null_name ||
                    name == xnu::ipc::dead_name) {
@@ -75,6 +78,10 @@ bool CompatibilityKernel::dispatch_mach_port_limit_message(
         } else if ((entry->type & xnu::ipc::type_mask(
                                       xnu::ipc::Right::Receive)) == 0) {
             result = darwin::mach::invalid_right;
+        } else if (flavor == 4U) { // MACH_PORT_TEMPOWNER
+            if (!shared_state_->mach_port_objects.set_temporary_owner(
+                    entry->object))
+                result = darwin::mach::invalid_argument;
         } else if (!shared_state_->mach_port_objects.set_queue_limit(
                        entry->object, queue_limit)) {
             result = darwin::mach::failure;

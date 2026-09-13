@@ -42,6 +42,9 @@ struct PortObject {
     std::uint32_t make_send_count { };
     std::uint32_t sequence_number { };
     std::uint32_t queue_limit { default_queue_limit };
+    // Receive rights prepared for transfer do not attribute queued-message
+    // importance to their temporary holder.
+    bool temporary_owner { };
 };
 
 class PortObjectTable {
@@ -75,6 +78,17 @@ public:
         if (found == objects_.end())
             return false;
         found->second.receive_owner = receive_owner;
+        if (receive_owner != 0)
+            found->second.temporary_owner = false;
+        return true;
+    }
+
+    [[nodiscard]] bool set_temporary_owner(PortObjectId object)
+    {
+        const auto found = objects_.find(object);
+        if (found == objects_.end() || found->second.kernel_owned)
+            return false;
+        found->second.temporary_owner = true;
         return true;
     }
 
