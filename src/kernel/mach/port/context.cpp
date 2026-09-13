@@ -14,24 +14,24 @@
 #include "mach/mig_wire_abi.hpp"
 
 #include "../support.hpp"
+#include "../vm/wire_format.hpp"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <optional>
+#include <vector>
 
 namespace ilemu {
 namespace {
 
     // Context accessors extend the base mach_port subsystem used for the
-    // adapter table. ARM32 publishes the context as one pointer-width word.
+    // adapter table. MIG represents the context as mach_vm_address_t, even
+    // when the public ARM32 wrapper exposes a natural-sized context pointer.
     constexpr std::uint32_t mach_port_get_context_identifier = 3228U;
     constexpr std::uint32_t mach_port_set_context_identifier = 3229U;
     constexpr std::uint32_t get_request_size = 36U;
-    constexpr std::uint32_t set_request_size = 40U;
     constexpr std::uint32_t simple_reply_size = 36U;
-    constexpr std::uint32_t get_success_reply_size = 40U;
     constexpr std::uint32_t name_offset = 32U;
     constexpr std::uint32_t context_offset = 36U;
 
@@ -45,6 +45,10 @@ bool CompatibilityKernel::dispatch_mach_port_context_message(
         return false;
 
     auto& registers = cpu.registers();
+    const auto wire = mach_vm_support::MachVmWireFormat::for_interface(
+        true, shared_state_->darwin_abi.mach_port_context);
+    const auto set_request_size = context_offset + wire.address_size();
+    const auto get_success_reply_size = simple_reply_size + wire.address_size();
     const auto required_request_size =
         is_get ? get_request_size : set_request_size;
     const auto required_reply_size =
@@ -56,15 +60,15 @@ bool CompatibilityKernel::dispatch_mach_port_context_message(
     }
     const auto name = memory_.read32(request.address + name_offset);
     const auto supplied_context =
-        is_get ? std::optional<std::uint32_t> { 0U }
-               : memory_.read32(request.address + context_offset);
+        is_get ? std::optional<std::uint64_t> { 0U }
+               : wire.read_address(memory_, request.address + context_offset);
     if (!name || !supplied_context) {
         registers[0] = darwin::mach_message::receive_invalid_data;
         return true;
     }
 
     auto result = darwin::mach::success;
-    std::uint32_t returned_context = 0U;
+    std::uint64_t returned_context = 0U;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto target = mach_support::target_task_for_port(
@@ -83,7 +87,7 @@ bool CompatibilityKernel::dispatch_mach_port_context_message(
             const auto context =
                 shared_state_->mach_port_contexts.find(entry->object);
             if (context != shared_state_->mach_port_contexts.end()) {
-                returned_context = static_cast<std::uint32_t>(context->second);
+                returned_context = context->second;
             }
         } else {
             shared_state_->mach_port_contexts[entry->object] =
@@ -91,9 +95,7 @@ bool CompatibilityKernel::dispatch_mach_port_context_message(
         }
     }
 
-    const std::array<std::uint32_t,
-        get_success_reply_size / sizeof(std::uint32_t)>
-        reply {
+    std::vector<std::uint32_t> reply {
             darwin::mig_wire::message_bits(
                 darwin::mig_wire::disposition_move_send_once),
             is_get && result == darwin::mach::success ? get_success_reply_size
@@ -105,8 +107,9 @@ bool CompatibilityKernel::dispatch_mach_port_context_message(
             0U,
             1U,
             result,
-            returned_context,
         };
+    if (is_get && result == darwin::mach::success)
+        wire.append_address(reply, returned_context);
     const auto reply_word_count =
         (is_get && result == darwin::mach::success ? get_success_reply_size
                                                    : simple_reply_size) /

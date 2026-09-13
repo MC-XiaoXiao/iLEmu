@@ -58,6 +58,7 @@ namespace {
         auto abi = darwin11_wide_vm_high_vectors_abi;
         abi.abi_epoch = DarwinAbiEpoch::Darwin13;
         abi.sandbox_abi = DarwinSandboxAbi::Wide64Arguments;
+        abi.mach_port_context = DarwinMachVmAddressWidth::Wide64;
         abi.iokit_matching_rpc =
             DarwinIOKitMatchingRpcAbi::InlineSingleServiceAfterVariableOutput;
         return abi;

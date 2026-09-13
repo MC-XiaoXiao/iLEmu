@@ -186,6 +186,10 @@ struct DarwinAbi {
         DarwinIOKitMatchingRpcAbi::PluralIteratorOnly
     };
     DarwinSandboxAbi sandbox_abi { DarwinSandboxAbi::Natural32Arguments };
+    // Port-context MIG fields widened after other Mach VM routines did.
+    DarwinMachVmAddressWidth mach_port_context {
+        DarwinMachVmAddressWidth::Natural32
+    };
     // Firmware route databases can require a retail or development-board
     // identity for offline activation. Keep this contract independent of
     // product names and application paths.

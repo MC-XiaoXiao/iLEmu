@@ -86,6 +86,8 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
                     "inline-single-service-after-variable-output" }) << '\n'
          << "sandbox: " << choice(abi.sandbox_abi,
                 { "natural32-arguments", "wide64-arguments" }) << '\n'
+         << "mach-port-context: " << choice(abi.mach_port_context,
+                { "natural32", "wide64" }) << '\n'
          << "activation-hardware-model: " << choice(
                 abi.activation_hardware_model_policy,
                 { "retail", "development-board" }) << '\n'
