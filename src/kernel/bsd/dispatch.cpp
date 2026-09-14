@@ -243,6 +243,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 60:
     case 59:
     case darwin::syscall::get_process_group:
+    case darwin::syscall::get_thread_identity:
     case kernel_bsd::interval_timer::set_syscall:
     case kernel_bsd::interval_timer::get_syscall:
     case 244: // posix_spawn

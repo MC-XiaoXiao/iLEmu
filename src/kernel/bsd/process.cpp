@@ -367,6 +367,13 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
     case 39: // getppid
         bsd_success(cpu, process_.parent_pid);
         return;
+    case darwin::syscall::get_thread_identity:
+        // XNU returns ESRCH when the calling thread has no temporary
+        // credential override. The compatibility kernel has no override
+        // state, so preserve that observable result without touching the
+        // caller-provided output pointers.
+        bsd_error(cpu, darwin::error::no_such_process);
+        return;
     case 43: // getegid
         bsd_success(cpu, process_.effective_gid);
         return;
