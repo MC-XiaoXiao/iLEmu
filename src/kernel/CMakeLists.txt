@@ -235,6 +235,7 @@ target_link_libraries(ilemu_kernel_iokit_audio PRIVATE
     iLEmu::foundation)
 
 add_library(ilemu_kernel_iokit_baseband STATIC
+    iokit/baseband/ip_appender.cpp
     iokit/baseband/service.cpp)
 add_library(iLEmu::kernel_iokit_baseband ALIAS
     ilemu_kernel_iokit_baseband)

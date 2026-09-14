@@ -35,6 +35,8 @@ std::optional<ServiceKind> matching_service(
 {
     if (contains(matching, serial_multiplexer_class))
         return ServiceKind::SerialMultiplexer;
+    if (contains(matching, ip_appender_class))
+        return ServiceKind::IpAppender;
     if (contains(matching, service_class) || contains(matching, registry_name))
         return ServiceKind::Baseband;
     return std::nullopt;
@@ -43,22 +45,30 @@ std::optional<ServiceKind> matching_service(
 std::uint32_t ensure_service_locked(
     KernelSharedState& state, ServiceKind profile)
 {
-    auto& cached_object = profile == ServiceKind::SerialMultiplexer
-                              ? state.serial_multiplexer_service
-                              : state.baseband_service;
-    if (cached_object != 0)
-        return cached_object;
+    const auto class_name = profile == ServiceKind::SerialMultiplexer
+                                ? serial_multiplexer_class
+                            : profile == ServiceKind::IpAppender
+                                ? ip_appender_class
+                                : service_class;
+    const auto existing = std::find_if(state.iokit_services.begin(),
+        state.iokit_services.end(), [class_name](const auto& entry) {
+            return entry.second.class_name == class_name;
+        });
+    if (existing != state.iokit_services.end())
+        return existing->first;
 
     const auto object = state.allocate_mach_object();
-    cached_object = object;
+    if (profile == ServiceKind::Baseband)
+        state.baseband_service = object;
+    else if (profile == ServiceKind::SerialMultiplexer)
+        state.serial_multiplexer_service = object;
     static_cast<void>(state.mach_port_objects.create(object));
     state.mach_queues.try_emplace(object);
     const auto serial_multiplexer =
         profile == ServiceKind::SerialMultiplexer;
     state.iokit_services.emplace(object,
         KernelSharedState::IOKitService {
-            std::string {
-                serial_multiplexer ? serial_multiplexer_class : service_class },
+            std::string { class_name },
             { "IOService" }, { }, { }, 0,
             serial_multiplexer
                 ? KernelSharedState::IOKitUserClientKind::SerialMultiplexer
@@ -70,7 +80,8 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
     const ProcessContext& process, std::uint32_t connection_object,
     std::uint32_t selector, std::span<const std::uint64_t> scalar_input,
     std::span<const std::byte> inband_input,
-    std::uint32_t scalar_output_capacity)
+    std::uint32_t scalar_output_capacity,
+    std::uint32_t inband_output_capacity)
 {
     constexpr std::uint64_t nanoseconds_per_second = 1'000'000'000ULL;
     constexpr std::uint64_t nanoseconds_per_microsecond = 1'000ULL;
@@ -85,6 +96,11 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         state.iokit_services.find(connection->second.service_port);
     if (service == state.iokit_services.end()) {
         return std::nullopt;
+    }
+
+    if (service->second.class_name == ip_appender_class) {
+        return dispatch_ip_appender_method(selector, scalar_input,
+            inband_input, scalar_output_capacity, inband_output_capacity);
     }
 
     if (service->second.class_name == service_class) {

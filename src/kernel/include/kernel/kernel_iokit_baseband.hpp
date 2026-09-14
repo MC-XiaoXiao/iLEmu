@@ -26,10 +26,12 @@ namespace kernel_iokit::baseband {
         "AppleSerialMultiplexer"
     };
     inline constexpr std::string_view registry_name { "baseband" };
+    inline constexpr std::string_view ip_appender_class { "AppleIPAppender" };
 
     enum class ServiceKind {
         Baseband,
         SerialMultiplexer,
+        IpAppender,
     };
 
     enum class SerialMultiplexerSelector : std::uint32_t {
@@ -46,7 +48,14 @@ namespace kernel_iokit::baseband {
     struct MethodResult {
         std::uint32_t return_code { };
         std::vector<std::uint64_t> scalar_output;
+        std::vector<std::byte> inband_output { };
     };
+
+    [[nodiscard]] MethodResult dispatch_ip_appender_method(
+        std::uint32_t selector, std::span<const std::uint64_t> scalar_input,
+        std::span<const std::byte> inband_input,
+        std::uint32_t scalar_output_capacity,
+        std::uint32_t inband_output_capacity);
 
     [[nodiscard]] std::optional<ServiceKind> matching_service(
         std::span<const std::byte> matching);
@@ -60,7 +69,8 @@ namespace kernel_iokit::baseband {
         std::uint32_t connection_object, std::uint32_t selector,
         std::span<const std::uint64_t> scalar_input,
         std::span<const std::byte> inband_input,
-        std::uint32_t scalar_output_capacity);
+        std::uint32_t scalar_output_capacity,
+        std::uint32_t inband_output_capacity = 0);
 
 } // namespace kernel_iokit::baseband
 } // namespace ilemu
