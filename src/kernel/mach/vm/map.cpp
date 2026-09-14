@@ -41,6 +41,7 @@ namespace {
     constexpr std::uint32_t kern_no_space = 3U;
     constexpr std::uint32_t kern_invalid_argument = 4U;
     constexpr std::uint32_t vm_protection_mask = 0x7U;
+    constexpr std::uint32_t vm_protection_is_mask = 0x40U;
     constexpr std::uint32_t vm_flags_user_map =
         0x00000001U | 0x00000002U | 0x00000010U | 0x00070000U |
         0xff000000U;
@@ -138,12 +139,16 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
     }
 
     const auto requested_address = *address;
+    auto effective_protection = *protection & ~vm_protection_is_mask;
+    auto effective_maximum_protection =
+        *maximum_protection & ~vm_protection_is_mask;
     const auto size = round_page_size(requested_size);
     std::uint32_t result = kern_success;
     if (*wide_address > UINT32_MAX || *wide_size > UINT32_MAX ||
         *wide_mask > UINT32_MAX || !size ||
         ((*flags & ~vm_flags_user_map) != 0) ||
-        ((*protection | *maximum_protection) & ~vm_protection_mask) != 0 ||
+        ((effective_protection | effective_maximum_protection) &
+            ~vm_protection_mask) != 0 ||
         *inheritance > static_cast<std::uint32_t>(VmInheritance::None)) {
         result = kern_invalid_argument;
     }
@@ -185,13 +190,21 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
 
     bool map_ok = false;
     if (result == kern_success && entry) {
+        // VM_PROT_IS_MASK requests the intersection with a named entry's
+        // permissions. Without it, exceeding those permissions remains an
+        // error. The flag is a mapping operation, never a page permission.
+        if ((*protection & vm_protection_is_mask) != 0U)
+            effective_protection &= entry->protection;
+        if ((*maximum_protection & vm_protection_is_mask) != 0U)
+            effective_maximum_protection &= entry->protection;
         if (*object_offset % AddressSpace::page_size != 0 ||
             *object_offset > entry->size ||
             *size > entry->size - *object_offset) {
             result = kern_invalid_argument;
-        } else if ((*protection & entry->protection) != *protection ||
-                   (*maximum_protection & entry->protection) !=
-                       *maximum_protection) {
+        } else if ((effective_protection & entry->protection) !=
+                       effective_protection ||
+                   (effective_maximum_protection & entry->protection) !=
+                       effective_maximum_protection) {
             result = kern_protection_failure;
         } else {
             const auto first_page =
@@ -208,11 +221,12 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
                     *copy != 0 ? AddressSpace::PageMappingMode::CopyOnWrite
                                : AddressSpace::PageMappingMode::Shared;
                 map_ok = memory_.map_page_backings(*address, *size,
-                    memory_permissions(*protection), pages, mode);
+                    memory_permissions(effective_protection), pages, mode);
             }
         }
     } else if (result == kern_success) {
-        map_ok = memory_.map(*address, *size, memory_permissions(*protection));
+        map_ok = memory_.map(
+            *address, *size, memory_permissions(effective_protection));
     }
     if (result == kern_success && !map_ok)
         result = kern_no_space;
@@ -251,6 +265,7 @@ bool CompatibilityKernel::dispatch_mach_vm_map_message(
         " object=" + std::to_string(*object_name) + " offset=" +
         std::to_string(*object_offset) + " copy=" + std::to_string(*copy != 0) +
         " protection=" + std::to_string(*protection) +
+        " effective-protection=" + std::to_string(effective_protection) +
         " inheritance=" + std::to_string(*inheritance) +
         " result=" + std::to_string(result) + "\n");
     registers[0] = kern_success;
