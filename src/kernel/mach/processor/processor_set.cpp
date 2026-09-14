@@ -77,6 +77,18 @@ bool CompatibilityKernel::dispatch_mach_processor_message(
     const auto message_id = request.identifier;
     const auto local_port = request.local_port;
 
+    if (message_id == mig_message_id(host_routine::host_processor_sets) ||
+        message_id == mig_message_id(host_routine::host_processor_set_priv)) {
+        // MIG identifiers are local to a destination's subsystem. The host
+        // privilege range overlaps launchd's vproc protocol, so a matching
+        // number alone must not intercept messages to a user-space server.
+        std::lock_guard mach_lock { shared_state_->mach_mutex };
+        const auto destination = shared_state_->mach_namespaces.resolve(
+            process_.pid, request.remote_port);
+        if (destination != mach_task_identity::initial_host_self_name)
+            return false;
+    }
+
     if (message_id == mig_message_id(host_routine::host_processor_sets) &&
         registers[3] >= complex_ool_ports_reply_size) {
         std::uint32_t name = 0;
