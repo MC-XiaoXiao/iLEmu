@@ -21,6 +21,20 @@ namespace ilemu {
 namespace {
 
 #if defined(ILEMU_HAS_SDL2)
+    DisplayGeometry input_coordinate_geometry(SDL_Window* window)
+    {
+        int width { };
+        int height { };
+        if (auto* renderer = SDL_GetRenderer(window))
+            SDL_RenderGetLogicalSize(renderer, &width, &height);
+        // SDL renderer events use its logical coordinates; a native Vulkan
+        // window without an SDL renderer delivers window coordinates.
+        if (width <= 0 || height <= 0)
+            SDL_GetWindowSize(window, &width, &height);
+        return { static_cast<std::uint32_t>(std::max(width, 0)),
+            static_cast<std::uint32_t>(std::max(height, 0)) };
+    }
+
     struct MappedTouch {
         TouchInput input;
         bool inside { };
@@ -106,15 +120,12 @@ namespace {
 bool SdlInput::poll(SDL_Window* window)
 {
 #if defined(ILEMU_HAS_SDL2)
-    int window_width = 1;
-    int window_height = 1;
-    SDL_GetWindowSize(window, &window_width, &window_height);
-    const auto viewport = fit_display_viewport(display_geometry_,
-        { static_cast<std::uint32_t>(std::max(window_width, 0)),
-            static_cast<std::uint32_t>(std::max(window_height, 0)) });
     SDL_Event event { };
     while (SDL_PollEvent(&event) != 0) {
-        process_event(event, window_width, window_height, viewport);
+        const auto coordinates = input_coordinate_geometry(window);
+        process_event(event, static_cast<int>(coordinates.width),
+            static_cast<int>(coordinates.height),
+            fit_display_viewport(display_geometry_, coordinates));
     }
 #else
     static_cast<void>(window);
@@ -149,13 +160,10 @@ bool SdlInput::wait(SDL_Window* window, std::chrono::nanoseconds timeout)
         indefinite ? SDL_WaitEvent(&event)
                    : SDL_WaitEventTimeout(&event, timeout_milliseconds);
     if (received != 0) {
-        int window_width = 1;
-        int window_height = 1;
-        SDL_GetWindowSize(window, &window_width, &window_height);
-        const auto viewport = fit_display_viewport(display_geometry_,
-            { static_cast<std::uint32_t>(std::max(window_width, 0)),
-                static_cast<std::uint32_t>(std::max(window_height, 0)) });
-        process_event(event, window_width, window_height, viewport);
+        const auto coordinates = input_coordinate_geometry(window);
+        process_event(event, static_cast<int>(coordinates.width),
+            static_cast<int>(coordinates.height),
+            fit_display_viewport(display_geometry_, coordinates));
     }
 #else
     static_cast<void>(window);

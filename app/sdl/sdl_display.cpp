@@ -54,6 +54,30 @@ namespace {
         SDL_SetHintWithPriority(sdl_wayland_scale_to_display_hint, "0",
             SDL_HINT_OVERRIDE);
     }
+
+    DisplayGeometry configure_renderer_coordinates(SDL_Renderer* renderer)
+    {
+        int width { };
+        int height { };
+        if (SDL_GetRendererOutputSize(renderer, &width, &height) != 0) {
+            throw std::runtime_error { "SDL renderer output query failed: " +
+                                       std::string { SDL_GetError() } };
+        }
+        int logical_width { };
+        int logical_height { };
+        SDL_RenderGetLogicalSize(renderer, &logical_width, &logical_height);
+        // Explicit logical coordinates make SDL2 and sdl2-compat transform
+        // mouse events consistently. Keep drawing in output pixels, with our
+        // own aspect-fit viewport, including after a resize or DPI change.
+        if (width > 0 && height > 0 &&
+            (logical_width != width || logical_height != height) &&
+            SDL_RenderSetLogicalSize(renderer, width, height) != 0) {
+            throw std::runtime_error { "SDL renderer logical size failed: " +
+                                       std::string { SDL_GetError() } };
+        }
+        return { static_cast<std::uint32_t>(std::max(width, 0)),
+            static_cast<std::uint32_t>(std::max(height, 0)) };
+    }
 #endif
 
     // Guest owners and firmware surface identifiers are narrower than the host
@@ -152,6 +176,14 @@ struct SdlDisplay::Impl {
         auto* result = SDL_CreateRenderer(target, -1, SDL_RENDERER_ACCELERATED);
         if (result == nullptr)
             result = SDL_CreateRenderer(target, -1, SDL_RENDERER_SOFTWARE);
+        if (result != nullptr) {
+            try {
+                static_cast<void>(configure_renderer_coordinates(result));
+            } catch (...) {
+                SDL_DestroyRenderer(result);
+                throw;
+            }
+        }
         return result;
     }
 
@@ -773,17 +805,9 @@ struct SdlDisplay::Impl {
             throw std::runtime_error { "SDL texture upload failed: " +
                                        std::string { SDL_GetError() } };
         }
-        int output_width { };
-        int output_height { };
-        if (SDL_GetRendererOutputSize(
-                renderer, &output_width, &output_height) != 0) {
-            throw std::runtime_error { "SDL renderer output query failed: " +
-                                       std::string { SDL_GetError() } };
-        }
         const auto viewport =
             fit_display_viewport({ frame.width, frame.height },
-                { static_cast<std::uint32_t>(std::max(output_width, 0)),
-                    static_cast<std::uint32_t>(std::max(output_height, 0)) });
+                configure_renderer_coordinates(renderer));
         const SDL_Rect destination { viewport.x, viewport.y,
             static_cast<int>(viewport.width),
             static_cast<int>(viewport.height) };
