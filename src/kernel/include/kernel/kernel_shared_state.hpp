@@ -596,6 +596,7 @@ struct KernelSharedState {
         // join facts from two different processes that share a PID.
         std::uint64_t incarnation { };
         darwin::memorystatus::ProcessState memory_status { };
+        bool importance_donor { };
     };
     struct ProcessKeventState {
         std::uint64_t exec_generation { };

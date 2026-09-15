@@ -2759,6 +2759,7 @@ void CompatibilityKernel::inherit_process_state(
     child_record.gid = process_.gid;
     child_record.effective_gid = process_.effective_gid;
     child_record.nice_value = process_.nice_value;
+    child_record.importance_donor = false;
     child_record.memory_status = darwin::memorystatus::initial_state(
         shared_state_->darwin_abi.memory_status_priority);
     child_record.exit_status = 0;

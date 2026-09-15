@@ -21,6 +21,7 @@ inline constexpr std::uint32_t call_pid_info = 2U;
 inline constexpr std::uint32_t flavor_pid_path_info = 11U;
 inline constexpr std::uint32_t flavor_pid_short_bsd_info = 13U;
 inline constexpr std::uint32_t short_bsd_info_size = 64U;
+inline constexpr std::uint32_t flag_importance_donor = 0x00400000U;
 
 // PROC_PIDPATHINFO accepts one to four MAXPATHLEN buffers. The kernel clears
 // and copies out the complete caller-provided range, not only the string.

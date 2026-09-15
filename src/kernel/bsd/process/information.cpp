@@ -61,7 +61,10 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
             const auto count = std::min<std::size_t>(record.command.size(), 15U);
             for (std::size_t index = 0; index < count; ++index)
                 output[16U + index] = static_cast<std::byte>(record.command[index]);
-            word(32, record.exited ? 4U : 0U);
+            word(32, (record.exited ? 4U : 0U) |
+                         (record.importance_donor
+                                 ? darwin::proc_info::flag_importance_donor
+                                 : 0U));
             word(36, record.effective_uid);
             word(40, record.effective_gid);
             word(44, record.uid);
