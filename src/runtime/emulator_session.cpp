@@ -2675,8 +2675,9 @@ void EmulatorSession::run()
                     break;
                 case LiveControlCommandKind::Gesture:
                     note_interactive_host_activity();
-                    if (command.wake_display &&
-                        !initial_runtime->kernel->display_powered_on()) {
+                    // Display power does not prove that the firmware is awake.
+                    // Keep unlock's physical HOME and swipe sequence together.
+                    if (command.wake_display) {
                         initial_runtime->kernel->enqueue_system_button(
                             SystemButtonInput {
                                 SystemButton::Home, SystemButtonPhase::Down });
