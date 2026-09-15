@@ -2335,7 +2335,9 @@ EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
         unlock_completion =
             complete_unlock_transition_locked(state, input_sequence);
     }
-    if (unlock_completion.completes_interrupted_home_exit &&
+    // Native HID owns the unlock and application-exit sequence. A second
+    // physical HOME after its swipe would act on the newly unlocked screen.
+    if (!native_input && unlock_completion.completes_interrupted_home_exit &&
         home_recovery_requested) {
         *home_recovery_requested = true;
     }
