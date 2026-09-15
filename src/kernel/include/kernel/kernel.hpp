@@ -569,6 +569,7 @@ private:
         const std::filesystem::path& path);
     [[nodiscard]] bool dispatch_bsd_debug(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool dispatch_bsd_security(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_code_signing(Cpu& cpu);
     void dispatch_bsd_socket(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_guarded_file(Cpu& cpu, std::uint32_t number);

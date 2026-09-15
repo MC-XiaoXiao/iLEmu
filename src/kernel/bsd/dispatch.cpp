@@ -458,6 +458,9 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 369:
         dispatch_bsd_kqueue(cpu, number);
         return;
+    case darwin::syscall::code_signing_operations:
+        dispatch_bsd_code_signing(cpu);
+        return;
     case darwin::syscall::mac_syscall:
         static_cast<void>(dispatch_bsd_security(cpu, number));
         return;
