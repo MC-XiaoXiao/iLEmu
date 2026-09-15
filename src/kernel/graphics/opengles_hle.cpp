@@ -1383,6 +1383,8 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
     // Resolve the native capability without patching its Objective-C entry.
     registry.register_guest_function(std::string { opengles_image },
         "-[EAGLContext GetMacroContextPrivate]");
+    registry.register_guest_function(std::string { opengles_image },
+        "_EAGLGetCurrentMacroContextPrivate");
     registry.register_objc_instance_method(std::string { opengles_image },
         "EAGLContext",
         "initWithAPI:properties:", "-[EAGLContext initWithAPI:properties:]",

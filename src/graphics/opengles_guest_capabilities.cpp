@@ -104,7 +104,10 @@ namespace {
 
 EaglContextAbi detect_eagl_context_abi(const UserlandHleCall& call)
 {
-    return call.symbol_address("-[EAGLContext GetMacroContextPrivate]")
+    // Stripped framework builds retain the C macro-context accessor even
+    // when the Objective-C implementation name is absent from the symbol table.
+    return (call.symbol_address("-[EAGLContext GetMacroContextPrivate]") ||
+               call.symbol_address("_EAGLGetCurrentMacroContextPrivate"))
                ? EaglContextAbi::FirmwareMacroDispatch
                : EaglContextAbi::HostManagedPublicAbi;
 }
