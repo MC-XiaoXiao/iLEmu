@@ -12,6 +12,7 @@
 
 #include "kernel/kernel.hpp"
 
+#include "kernel/darwin_memorystatus_abi.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "network/darwin_network_abi.hpp"
@@ -266,6 +267,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::semaphore_wait_signal:
     case darwin::syscall::semaphore_wait_signal_timespec:
     case darwin::proc_info::syscall_number:
+    case darwin::memorystatus::syscall_number:
     case 327:
     case 355:
     case darwin::syscall::pid_suspend:

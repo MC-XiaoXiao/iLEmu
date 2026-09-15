@@ -49,6 +49,7 @@
 #include "filesystem/hfs_metadata.hpp"
 #include "kernel/iokit_abi.hpp"
 #include "kernel/kernel_mach_task_identity.hpp"
+#include "kernel/darwin_memorystatus_abi.hpp"
 #include "kernel/vnode_watch.hpp"
 #include "device_state/launchd_job_catalog.hpp"
 #include "mach/mach_namespace.hpp"
@@ -594,6 +595,7 @@ struct KernelSharedState {
         // monotonic product-internal identity so transition observations never
         // join facts from two different processes that share a PID.
         std::uint64_t incarnation { };
+        darwin::memorystatus::ProcessState memory_status { };
     };
     struct ProcessKeventState {
         std::uint64_t exec_generation { };

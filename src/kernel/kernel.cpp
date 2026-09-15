@@ -447,6 +447,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
                 "SHELL=/bin/sh" },
             KernelSharedState::GraphicsInputAbi::Darwin9_0, { }, { },
             DisplayOrientation::Portrait, { }, 0U };
+    shared_state_->processes[process_.pid].memory_status =
+        darwin::memorystatus::initial_state(shared_state_->darwin_abi.memory_status_priority);
     install_commpage();
 }
 
@@ -1194,6 +1196,8 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
     record.effective_gid = process_.effective_gid;
     record.nice_value = process_.nice_value;
     if (new_process_incarnation) {
+        record.memory_status = darwin::memorystatus::initial_state(
+            shared_state_->darwin_abi.memory_status_priority);
         record.incarnation = shared_state_->next_process_incarnation++;
         if (record.incarnation == 0U)
             record.incarnation = shared_state_->next_process_incarnation++;
@@ -2741,6 +2745,8 @@ void CompatibilityKernel::inherit_process_state(
     child_record.gid = process_.gid;
     child_record.effective_gid = process_.effective_gid;
     child_record.nice_value = process_.nice_value;
+    child_record.memory_status = darwin::memorystatus::initial_state(
+        shared_state_->darwin_abi.memory_status_priority);
     child_record.exit_status = 0;
     child_record.termination_signal = 0;
     child_record.exited = false;

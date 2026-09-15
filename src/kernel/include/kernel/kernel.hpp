@@ -544,6 +544,8 @@ private:
         Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool dispatch_bsd_process_information(
         Cpu& cpu, std::uint32_t number);
+    [[nodiscard]] bool dispatch_bsd_memorystatus(
+        Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool dispatch_bsd_process_spawn(
         Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_filesystem(Cpu& cpu, std::uint32_t number);

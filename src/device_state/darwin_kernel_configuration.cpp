@@ -59,6 +59,7 @@ namespace {
         abi.abi_epoch = DarwinAbiEpoch::Darwin13;
         abi.sandbox_abi = DarwinSandboxAbi::Wide64Arguments;
         abi.mach_port_context = DarwinMachVmAddressWidth::Wide64;
+        abi.memory_status_priority = DarwinMemoryStatusPriorityAbi::SignedPriority;
         abi.iokit_matching_rpc =
             DarwinIOKitMatchingRpcAbi::InlineSingleServiceAfterVariableOutput;
         return abi;
@@ -202,6 +203,7 @@ namespace {
                     DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1,
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
                 .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
+                .memory_status_priority = DarwinMemoryStatusPriorityAbi::PriorityBands,
                 .capabilities = { .send_sigsys = true },
             },
         },

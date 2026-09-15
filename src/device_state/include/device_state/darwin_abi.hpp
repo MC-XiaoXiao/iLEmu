@@ -127,6 +127,14 @@ enum class DarwinIOKitMatchingRpcAbi : std::uint8_t {
     InlineSingleServiceAfterVariableOutput,
 };
 
+// Early memorystatus clients pass a signed priority (larger values are less
+// protected); later clients pass an ascending, bounded jetsam band.
+enum class DarwinMemoryStatusPriorityAbi : std::uint8_t {
+    Unsupported,
+    SignedPriority,
+    PriorityBands,
+};
+
 struct DarwinGuestCapabilities {
     // XNU's nosys entry returns ENOSYS and raises SIGSYS on the audited
     // production epochs. Unknown profiles conservatively suppress the signal
@@ -189,6 +197,9 @@ struct DarwinAbi {
     // Port-context MIG fields widened after other Mach VM routines did.
     DarwinMachVmAddressWidth mach_port_context {
         DarwinMachVmAddressWidth::Natural32
+    };
+    DarwinMemoryStatusPriorityAbi memory_status_priority {
+        DarwinMemoryStatusPriorityAbi::Unsupported
     };
     // Firmware route databases can require a retail or development-board
     // identity for offline activation. Keep this contract independent of
