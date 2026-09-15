@@ -22,7 +22,7 @@ public:
     explicit HidEventSystemHle(UserlandHleRegistry& registry);
     void set_shared_state(std::shared_ptr<KernelSharedState> state);
     void reset(std::uint32_t process);
-    void prepare_pending_event(
+    [[nodiscard]] bool prepare_pending_event(
         Cpu& cpu, std::uint32_t process, std::uint32_t svc_immediate);
 
 private:

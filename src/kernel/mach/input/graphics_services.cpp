@@ -120,6 +120,19 @@ namespace {
         return KernelSharedState::MachMessage::GraphicsInputKind::OtherSystem;
     }
 
+    HidEventQueue::KeyboardInput hid_button(const SystemButtonInput& input)
+    {
+        // USB HID Consumer page: Menu, Power, Volume Increment/Decrement.
+        std::uint32_t usage = 0;
+        switch (input.button) {
+        case SystemButton::Home: usage = 0x40U; break;
+        case SystemButton::Lock: usage = 0x30U; break;
+        case SystemButton::VolumeUp: usage = 0xe9U; break;
+        case SystemButton::VolumeDown: usage = 0xeaU; break;
+        }
+        return { 0x0cU, usage, input.phase == SystemButtonPhase::Down };
+    }
+
     std::uint64_t allocate_graphics_input_sequence_locked(
         KernelSharedState& state)
     {
@@ -2178,6 +2191,8 @@ EnqueueResult enqueue_touch(KernelSharedState& state, const TouchInput& input,
     const auto native_input = state.native_hid_touch_events
         ? state.hid_event_queue.enqueue({ sanitized, state.clock.now() })
         : false;
+    if (native_input)
+        state.note_io_event_transition();
 
     const auto terminal = sanitized.phase == TouchPhase::Up ||
                           sanitized.phase == TouchPhase::Cancel;
@@ -2380,6 +2395,13 @@ EnqueueResult enqueue_system_button(KernelSharedState& state,
         system_graphics_input_abi_locked(state, destination));
     const auto event_type = profile.system_button_type(input);
     if (service == state.bootstrap_service_objects.end()) {
+        // A firmware HID consumer can own system controls without publishing
+        // the legacy GraphicsServices system-event port. Let that consumer
+        // classify the physical key and perform its native wake/idle handling.
+        if (state.hid_event_queue.enqueue({ hid_button(input), state.clock.now() })) {
+            state.note_io_event_transition();
+            return EnqueueResult::Queued;
+        }
         state.pending_graphics_inputs.push_back(
             KernelSharedState::PendingGraphicsInput {
                 KernelSharedState::PendingGraphicsInput::Kind::SystemEvent, { },

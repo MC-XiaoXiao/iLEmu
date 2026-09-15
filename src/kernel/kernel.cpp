@@ -1422,25 +1422,39 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
 {
     std::lock_guard lock { mutex_ };
     bool delivered = false;
-    if (pending_mach_receives_.contains(cpu.processor_id())) {
+    const auto processor = cpu.processor_id();
+    if (pending_mach_receives_.contains(processor) &&
+        hid_event_system_hle_.prepare_pending_event(
+            cpu, process_.pid, 0x80U) &&
+        userland_hle_.dispatch(cpu, process_.pid, 0x80U)) {
+        // The firmware callback returns through a continuation that retries
+        // this receive boundary. Retire the old blocked receive before making
+        // the callback runnable so it cannot consume an unrelated message.
+        pending_mach_receives_.erase(processor);
+        process_.waiting_for_events = !pending_mach_receives_.empty();
+        cpu.clear_halt();
+        pending_io_poll_cache_.erase(processor);
+        note_timer_deadline_transition();
+        delivered = true;
+    } else if (pending_mach_receives_.contains(processor)) {
         delivered = deliver_pending_mach_if_ready_locked(cpu, true);
         if (delivered)
             note_timer_deadline_transition();
-    } else if (pending_io_poll_required_locked(cpu.processor_id())) {
+    } else if (pending_io_poll_required_locked(processor)) {
         const auto io_generation =
             shared_state_->io_event_generation_snapshot();
         const auto mach_generation =
             shared_state_->mach_queue_generation_snapshot();
         delivered = deliver_pending_io_locked(cpu);
         if (delivered) {
-            pending_io_poll_cache_.erase(cpu.processor_id());
+            pending_io_poll_cache_.erase(processor);
             note_timer_deadline_transition();
         } else {
             remember_pending_io_not_ready_locked(
-                cpu.processor_id(), io_generation, mach_generation);
+                processor, io_generation, mach_generation);
         }
     }
-    refresh_pending_event_processor_locked(cpu.processor_id());
+    refresh_pending_event_processor_locked(processor);
     return delivered;
 }
 
@@ -2771,7 +2785,8 @@ void CompatibilityKernel::dispatch(Cpu& cpu, std::uint32_t svc_immediate)
     // syscalls cannot force every blocked descriptor tree to be rescanned.
     note_timer_deadline_transition();
     std::lock_guard lock { mutex_ };
-    hid_event_system_hle_.prepare_pending_event(cpu, process_.pid, svc_immediate);
+    static_cast<void>(hid_event_system_hle_.prepare_pending_event(
+        cpu, process_.pid, svc_immediate));
     if (apple80211_hle_.deliver_pending_event(
             cpu, process_.pid, svc_immediate)) {
         output_.write(

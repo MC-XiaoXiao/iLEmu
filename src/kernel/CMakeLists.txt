@@ -24,6 +24,7 @@ add_library(ilemu_kernel STATIC
     kernel.cpp
     commpage.cpp
     hid_event_system_hle.cpp
+    hid_event_transaction.cpp
     hid_switch_query.cpp
     clock.cpp
     iokit.cpp

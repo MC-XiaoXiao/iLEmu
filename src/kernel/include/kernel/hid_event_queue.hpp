@@ -14,6 +14,7 @@
 #include <deque>
 #include <mutex>
 #include <optional>
+#include <variant>
 
 namespace ilemu {
 
@@ -23,9 +24,15 @@ public:
         std::uint32_t process;
         std::size_t processor;
         std::uint32_t system;
+        bool keyboard_events { };
+    };
+    struct KeyboardInput {
+        std::uint32_t usage_page;
+        std::uint32_t usage;
+        bool down;
     };
     struct Event {
-        TouchInput touch;
+        std::variant<TouchInput, KeyboardInput> input;
         std::uint64_t timestamp;
         std::uint32_t identity { 1U };
     };
@@ -52,7 +59,8 @@ public:
     [[nodiscard]] bool enqueue(Event event)
     {
         std::lock_guard lock { mutex_ };
-        if (!consumer_)
+        if (!consumer_ || (std::holds_alternative<KeyboardInput>(event.input) &&
+                              !consumer_->keyboard_events))
             return false;
         events_.push_back(event);
         return true;
