@@ -58,6 +58,7 @@
 #include "foundation/virtual_clock.hpp"
 #include "network/virtual_network.hpp"
 #include "network/virtual_udp.hpp"
+#include "network/local_socket_credentials.hpp"
 #include "mach/xnu_scheduler.hpp"
 
 namespace ilemu {
@@ -335,6 +336,7 @@ struct SocketPairEndpoint {
     std::uint32_t pair { };
     std::uint32_t side { };
     std::shared_ptr<SocketPairOpenDescription> description;
+    std::optional<bsd::LocalSocketCredentials> peer_credentials { };
 
     [[nodiscard]] bool local_read_open() const
     {
@@ -531,6 +533,7 @@ struct KernelSharedState {
         std::uint32_t owner_pid { };
         std::uint32_t owner_fd { };
         std::deque<SocketPairEndpoint> pending_endpoints;
+        std::optional<bsd::LocalSocketCredentials> credentials { };
     };
     struct DescriptorTransfer {
         enum class Kind : std::uint8_t { File, Virtual };

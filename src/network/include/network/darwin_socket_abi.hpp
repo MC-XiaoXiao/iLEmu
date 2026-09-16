@@ -43,6 +43,8 @@ namespace ilemu::darwin::socket {
     inline constexpr std::uint32_t message_dont_wait = 0x80;
 
     inline constexpr std::uint32_t option_level = 0xffff; // SOL_SOCKET
+    inline constexpr std::uint32_t local_option_level = 0;
+    inline constexpr std::uint32_t local_peer_credentials = 1; // LOCAL_PEERCRED
     inline constexpr std::uint32_t option_accept_connection = 0x0002;
     inline constexpr std::uint32_t option_reuse_address = 0x0004;
     inline constexpr std::uint32_t option_reuse_port = 0x0200;

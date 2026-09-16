@@ -697,6 +697,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         const auto pair = shared_state_->next_socket_pair++;
         auto endpoints = make_socket_pair_endpoints(pair);
+        endpoints.first.peer_credentials = listener->credentials;
+        endpoints.second.peer_credentials.emplace(
+            process_.effective_uid, process_.effective_gid);
         shared_state_->socket_pair_buffers.emplace(
             pair, std::array<std::deque<std::byte>, 2> { });
         socket_pair_endpoints_[fd] = std::move(endpoints.first);
@@ -961,6 +964,8 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                             KernelSharedState::UnixListener {
                                 process_.pid, registers[0], { } });
                 }
+                existing->credentials.emplace(
+                    process_.effective_uid, process_.effective_gid);
                 // unlink after bind but before listen leaves an unnamed
                 // listening socket. Do not resurrect the pathname.
                 if (linked)
@@ -1000,7 +1005,21 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
 
         std::vector<std::byte> value;
-        if (registers[1] == darwin::socket::option_level &&
+        if (registers[1] == darwin::socket::local_option_level &&
+            registers[2] == darwin::socket::local_peer_credentials &&
+            (socket->second.starts_with("unix-") ||
+                socket->second == "socketpair")) {
+            const auto endpoint = socket_pair_endpoints_.find(fd);
+            if (endpoint == socket_pair_endpoints_.end() ||
+                !endpoint->second.peer_credentials) {
+                bsd_error(cpu, socket->second == "unix-dgram"
+                                   ? bsd_support::invalid_argument
+                                   : bsd_support::not_connected);
+                return;
+            }
+            const auto encoded = endpoint->second.peer_credentials->encode();
+            value.assign(encoded.begin(), encoded.end());
+        } else if (registers[1] == darwin::socket::option_level &&
             registers[2] == darwin::socket::option_pending_bytes) {
             std::uint32_t pending_error = 0;
             const auto pending_count =
@@ -1068,6 +1087,12 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             }
         }
         if (value.empty()) {
+            output_.write("[network] unsupported getsockopt pid=" +
+                          std::to_string(process_.pid) + " fd=" +
+                          std::to_string(fd) + " level=" +
+                          std::to_string(registers[1]) + " option=" +
+                          std::to_string(registers[2]) + " capacity=" +
+                          std::to_string(capacity) + "\n");
             bsd_error(cpu, darwin::error::no_protocol_option);
             return;
         }
@@ -1355,6 +1380,11 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         descriptor_flags_[*second] = 0;
         const auto pair = shared_state_->next_socket_pair++;
         auto endpoints = make_socket_pair_endpoints(pair);
+        if (registers[1] == darwin::socket::stream) {
+            endpoints.first.peer_credentials.emplace(
+                process_.effective_uid, process_.effective_gid);
+            endpoints.second.peer_credentials = endpoints.first.peer_credentials;
+        }
         shared_state_->socket_pair_buffers.emplace(
             pair, std::array<std::deque<std::byte>, 2> { });
         socket_pair_endpoints_.emplace(*first, std::move(endpoints.first));
