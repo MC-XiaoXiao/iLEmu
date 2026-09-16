@@ -158,8 +158,11 @@ private:
         // (scale.x, scale.y, offset.x, offset.y) in texmatN. Some drivers use
         // the older scale-only texscaleN spelling.
         std::array<std::array<float, 4>, gles_abi::texture_unit_count>
-            texture_transforms { { { 1.0F, 1.0F, 0.0F, 0.0F },
-                { 1.0F, 1.0F, 0.0F, 0.0F } } };
+            texture_transforms = [] {
+                std::array<std::array<float, 4>, gles_abi::texture_unit_count> transforms;
+                transforms.fill({ 1.0F, 1.0F, 0.0F, 0.0F });
+                return transforms;
+            }();
         std::array<GlesTextureEnvironment, gles_abi::texture_unit_count>
             texture_environments;
         std::array<bool, gles_abi::texture_unit_count> sampled_textures { };

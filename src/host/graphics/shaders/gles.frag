@@ -41,15 +41,19 @@ struct TextureEnvironment {
 };
 
 layout(std140, binding = 0) uniform FixedFunctionState {
-    TextureEnvironment units[2];
+    TextureEnvironment units[4];
     ivec4 target_flags;
 } fixed_state;
 layout(binding = 1) uniform sampler2D image0;
 layout(binding = 2) uniform sampler2D image1;
+layout(binding = 3) uniform sampler2D image2;
+layout(binding = 4) uniform sampler2D image3;
 
 layout(location = 0) in vec4 primary_color;
 layout(location = 1) in vec2 texture0;
 layout(location = 2) in vec2 texture1;
+layout(location = 3) in vec2 texture2;
+layout(location = 4) in vec2 texture3;
 layout(location = 0) out vec4 output_color;
 
 vec4 select_source(
@@ -158,26 +162,20 @@ vec4 apply_environment(
     return result;
 }
 
+vec4 apply_unit(int unit, sampler2D image, vec2 coordinate, vec4 previous) {
+    TextureEnvironment environment = fixed_state.units[unit];
+    if (environment.mode_combine_enabled.w == 0) return previous;
+    vec4 sampled = sample_image(image, coordinate,
+        environment.scales_rectangle.z != 0.0,
+        environment.scales_rectangle.w != 0.0, environment.clamp_rectangle);
+    return apply_environment(environment, sampled, primary_color, previous);
+}
+
 void main() {
-    vec4 result = primary_color;
-    if (fixed_state.units[0].mode_combine_enabled.w != 0) {
-        vec4 sampled = sample_image(
-            image0, texture0,
-            fixed_state.units[0].scales_rectangle.z != 0.0,
-            fixed_state.units[0].scales_rectangle.w != 0.0,
-            fixed_state.units[0].clamp_rectangle);
-        result = apply_environment(
-            fixed_state.units[0], sampled, primary_color, result);
-    }
-    if (fixed_state.units[1].mode_combine_enabled.w != 0) {
-        vec4 sampled = sample_image(
-            image1, texture1,
-            fixed_state.units[1].scales_rectangle.z != 0.0,
-            fixed_state.units[1].scales_rectangle.w != 0.0,
-            fixed_state.units[1].clamp_rectangle);
-        result = apply_environment(
-            fixed_state.units[1], sampled, primary_color, result);
-    }
+    vec4 result = apply_unit(0, image0, texture0, primary_color);
+    result = apply_unit(1, image1, texture1, result);
+    result = apply_unit(2, image2, texture2, result);
+    result = apply_unit(3, image3, texture3, result);
     if (fixed_state.target_flags.x != 0) result.rgb *= result.a;
     output_color = clamp(result, 0.0, 1.0);
 }

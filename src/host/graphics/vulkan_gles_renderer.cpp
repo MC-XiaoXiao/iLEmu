@@ -123,203 +123,6 @@ namespace {
             static_cast<std::uint32_t>(bottom - y) };
     }
 
-#if 0
-constexpr std::string_view vertex_shader_source = R"(
-#version 450
-layout(location = 0) in vec4 in_position;
-layout(location = 1) in vec4 in_color;
-layout(location = 2) in vec2 in_texture0;
-layout(location = 3) in vec2 in_texture1;
-layout(location = 0) out vec4 primary_color;
-layout(location = 1) out vec2 texture0;
-layout(location = 2) out vec2 texture1;
-
-void main() {
-    gl_Position = vec4(
-        in_position.x, -in_position.y, in_position.z, in_position.w);
-    primary_color = in_color;
-    texture0 = in_texture0;
-    texture1 = in_texture1;
-}
-)";
-
-constexpr std::string_view fragment_shader_source = R"(
-#version 450
-
-const int GL_ADD = 0x0104;
-const int GL_BLEND = 0x0be2;
-const int GL_SRC_COLOR = 0x0300;
-const int GL_ONE_MINUS_SRC_COLOR = 0x0301;
-const int GL_SRC_ALPHA = 0x0302;
-const int GL_ONE_MINUS_SRC_ALPHA = 0x0303;
-const int GL_REPLACE = 0x1e01;
-const int GL_MODULATE = 0x2100;
-const int GL_DECAL = 0x2101;
-const int GL_TEXTURE = 0x1702;
-const int GL_COMBINE = 0x8570;
-const int GL_COMBINE_RGB = 0x8571;
-const int GL_COMBINE_ALPHA = 0x8572;
-const int GL_ADD_SIGNED = 0x8574;
-const int GL_INTERPOLATE = 0x8575;
-const int GL_CONSTANT = 0x8576;
-const int GL_PRIMARY_COLOR = 0x8577;
-const int GL_PREVIOUS = 0x8578;
-const int GL_SUBTRACT = 0x84e7;
-const int GL_DOT3_RGB = 0x86ae;
-const int GL_DOT3_RGBA = 0x86af;
-
-struct TextureEnvironment {
-    ivec4 mode_combine_enabled;
-    vec4 color;
-    ivec4 rgb_sources;
-    ivec4 alpha_sources;
-    ivec4 rgb_operands;
-    ivec4 alpha_operands;
-    vec4 scales_rectangle;
-    vec4 clamp_rectangle;
-};
-
-layout(std140, binding = 0) uniform FixedFunctionState {
-    TextureEnvironment units[2];
-} fixed_state;
-layout(binding = 1) uniform sampler2D image0;
-layout(binding = 2) uniform sampler2D image1;
-
-layout(location = 0) in vec4 primary_color;
-layout(location = 1) in vec2 texture0;
-layout(location = 2) in vec2 texture1;
-layout(location = 0) out vec4 output_color;
-
-vec4 select_source(
-    int source, vec4 texture_color, vec4 constant_color,
-    vec4 primary, vec4 previous) {
-    if (source == GL_TEXTURE) return texture_color;
-    if (source == GL_CONSTANT) return constant_color;
-    if (source == GL_PRIMARY_COLOR) return primary;
-    if (source == GL_PREVIOUS) return previous;
-    return vec4(0.0);
-}
-
-vec4 apply_rgb_operand(vec4 source, int operand) {
-    if (operand == GL_SRC_ALPHA) return vec4(source.a);
-    if (operand == GL_ONE_MINUS_SRC_ALPHA) return vec4(1.0 - source.a);
-    if (operand == GL_ONE_MINUS_SRC_COLOR) return vec4(1.0) - source;
-    return source;
-}
-
-float apply_alpha_operand(vec4 source, int operand) {
-    return operand == GL_ONE_MINUS_SRC_ALPHA ? 1.0 - source.a : source.a;
-}
-
-float combine_component(int mode, float a, float b, float c) {
-    if (mode == GL_REPLACE) return a;
-    if (mode == GL_MODULATE) return a * b;
-    if (mode == GL_ADD) return a + b;
-    if (mode == GL_ADD_SIGNED) return a + b - 0.5;
-    if (mode == GL_INTERPOLATE) return a * c + b * (1.0 - c);
-    if (mode == GL_SUBTRACT) return a - b;
-    return 0.0;
-}
-
-vec4 sample_image(
-    sampler2D image, vec2 coordinate, bool rectangle_coordinates,
-    bool clamp_coordinates, vec4 clamp_rectangle) {
-    if (!rectangle_coordinates) return texture(image, coordinate);
-    if (clamp_coordinates) {
-        coordinate = clamp(
-            coordinate, clamp_rectangle.xy, clamp_rectangle.zw);
-    }
-    vec2 size = vec2(textureSize(image, 0));
-    vec2 texel = coordinate / size;
-    return texture(image, texel);
-}
-
-vec4 apply_environment(
-    TextureEnvironment environment, vec4 sampled, vec4 primary,
-    vec4 previous) {
-    int mode = environment.mode_combine_enabled.x;
-    if (mode == GL_REPLACE) return sampled;
-    if (mode == GL_MODULATE) return previous * sampled;
-    if (mode == GL_DECAL) {
-        return vec4(
-            mix(previous.rgb, sampled.rgb, sampled.a), previous.a);
-    }
-    if (mode == GL_BLEND) {
-        return vec4(
-            mix(previous.rgb, environment.color.rgb, sampled.rgb),
-            previous.a * sampled.a);
-    }
-    if (mode == GL_ADD) {
-        return vec4(previous.rgb + sampled.rgb, previous.a * sampled.a);
-    }
-    if (mode != GL_COMBINE) return previous;
-
-    vec4 rgb_arguments[3];
-    float alpha_arguments[3];
-    for (int argument = 0; argument < 3; ++argument) {
-        vec4 rgb_source = select_source(
-            environment.rgb_sources[argument], sampled,
-            environment.color, primary, previous);
-        rgb_arguments[argument] = apply_rgb_operand(
-            rgb_source, environment.rgb_operands[argument]);
-        vec4 alpha_source = select_source(
-            environment.alpha_sources[argument], sampled,
-            environment.color, primary, previous);
-        alpha_arguments[argument] = apply_alpha_operand(
-            alpha_source, environment.alpha_operands[argument]);
-    }
-
-    int rgb_mode = environment.mode_combine_enabled.y;
-    int alpha_mode = environment.mode_combine_enabled.z;
-    vec4 result = previous;
-    if (rgb_mode == GL_DOT3_RGB || rgb_mode == GL_DOT3_RGBA) {
-        float value = 4.0 * dot(
-            rgb_arguments[0].rgb - vec3(0.5),
-            rgb_arguments[1].rgb - vec3(0.5));
-        result.rgb = vec3(value);
-        if (rgb_mode == GL_DOT3_RGBA) result.a = value;
-    } else {
-        for (int component = 0; component < 3; ++component) {
-            result[component] = combine_component(
-                rgb_mode, rgb_arguments[0][component],
-                rgb_arguments[1][component],
-                rgb_arguments[2][component]);
-        }
-    }
-    if (rgb_mode != GL_DOT3_RGBA) {
-        result.a = combine_component(
-            alpha_mode, alpha_arguments[0], alpha_arguments[1],
-            alpha_arguments[2]);
-    }
-    result.rgb *= environment.scales_rectangle.x;
-    result.a *= environment.scales_rectangle.y;
-    return result;
-}
-
-void main() {
-    vec4 result = primary_color;
-    if (fixed_state.units[0].mode_combine_enabled.w != 0) {
-        vec4 sampled = sample_image(
-            image0, texture0,
-            fixed_state.units[0].scales_rectangle.z != 0.0,
-            fixed_state.units[0].scales_rectangle.w != 0.0,
-            fixed_state.units[0].clamp_rectangle);
-        result = apply_environment(
-            fixed_state.units[0], sampled, primary_color, result);
-    }
-    if (fixed_state.units[1].mode_combine_enabled.w != 0) {
-        vec4 sampled = sample_image(
-            image1, texture1,
-            fixed_state.units[1].scales_rectangle.z != 0.0,
-            fixed_state.units[1].scales_rectangle.w != 0.0,
-            fixed_state.units[1].clamp_rectangle);
-        result = apply_environment(
-            fixed_state.units[1], sampled, primary_color, result);
-    }
-    output_color = clamp(result, 0.0, 1.0);
-}
-)";
-#endif
 
     void require_success(VkResult result, std::string_view operation)
     {
@@ -419,6 +222,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         std::array<float, 4> color { };
         std::array<float, 2> texture0 { };
         std::array<float, 2> texture1 { };
+        std::array<float, 2> texture2 { };
+        std::array<float, 2> texture3 { };
     };
 
     struct alignas(16) GpuTextureEnvironment {
@@ -438,9 +243,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         std::array<std::int32_t, 4> target_flags { };
     };
 
-    static_assert(sizeof(GpuVertex) == 48);
+    static_assert(gles_abi::texture_unit_count == 4);
+    static_assert(sizeof(GpuVertex) == 64);
     static_assert(sizeof(GpuTextureEnvironment) == 128);
-    static_assert(sizeof(GpuFixedFunctionState) == 272);
+    static_assert(sizeof(GpuFixedFunctionState) ==
+                  128 * gles_abi::texture_unit_count + 16);
 
     struct PipelineKey {
         enum class StencilMode : std::uint8_t {
@@ -1358,7 +1165,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                                 nullptr, &stencil_render_pass_),
                 "vkCreateRenderPass(stencil)");
 
-            std::array<VkDescriptorSetLayoutBinding, 3> bindings { };
+            std::array<VkDescriptorSetLayoutBinding, 1 + gles_abi::texture_unit_count> bindings { };
             bindings[0].binding = 0;
             bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             bindings[0].descriptorCount = 1;
@@ -2361,15 +2168,16 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         binding.binding = 0;
         binding.stride = sizeof(GpuVertex);
         binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-        std::array<VkVertexInputAttributeDescription, 4> attributes { };
+        std::array<VkVertexInputAttributeDescription, 2 + gles_abi::texture_unit_count> attributes { };
         attributes[0] = { 0, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
             static_cast<std::uint32_t>(offsetof(GpuVertex, position)) };
         attributes[1] = { 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
             static_cast<std::uint32_t>(offsetof(GpuVertex, color)) };
-        attributes[2] = { 2, 0, VK_FORMAT_R32G32_SFLOAT,
-            static_cast<std::uint32_t>(offsetof(GpuVertex, texture0)) };
-        attributes[3] = { 3, 0, VK_FORMAT_R32G32_SFLOAT,
-            static_cast<std::uint32_t>(offsetof(GpuVertex, texture1)) };
+        for (std::uint32_t unit = 0; unit < gles_abi::texture_unit_count; ++unit) {
+            attributes[2 + unit] = { 2 + unit, 0, VK_FORMAT_R32G32_SFLOAT,
+                static_cast<std::uint32_t>(offsetof(GpuVertex, texture0) +
+                                          unit * sizeof(std::array<float, 2>)) };
+        }
         auto vertex_input =
             make_vulkan_structure<VkPipelineVertexInputStateCreateInfo>(
                 VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO);
@@ -2535,7 +2343,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 if (state.render_target_inverted_vertical)
                     position[1] = -position[1];
                 result.push_back(GpuVertex { position, vertex.color,
-                    vertex.texture[0], vertex.texture[1] });
+                    vertex.texture[0], vertex.texture[1], vertex.texture[2],
+                    vertex.texture[3] });
             }
         };
         if (mode == gles_abi::triangles) {
@@ -3771,7 +3580,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             uniform_offset, sizeof(GpuFixedFunctionState) };
         const VkDescriptorImageInfo image_info { host_clamp_sampler_,
             source.image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        std::array<VkWriteDescriptorSet, 3> writes { };
+        std::array<VkWriteDescriptorSet, 1 + gles_abi::texture_unit_count> writes { };
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = descriptor;
         writes[0].dstBinding = 0;
@@ -4074,7 +3883,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                         source_target.image.sampler, source_target.image.view,
                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                     };
-                    std::array<VkWriteDescriptorSet, 3> writes { };
+                    std::array<VkWriteDescriptorSet, 1 + gles_abi::texture_unit_count> writes { };
                     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                     writes[0].dstSet = descriptor;
                     writes[0].dstBinding = 0;
@@ -4998,7 +4807,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 image_infos[index] = { sampler, image.view,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             }
-            std::array<VkWriteDescriptorSet, 3> writes { };
+            std::array<VkWriteDescriptorSet, 1 + gles_abi::texture_unit_count> writes { };
             writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[0].dstSet = descriptor;
             writes[0].dstBinding = 0;

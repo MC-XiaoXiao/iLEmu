@@ -2135,7 +2135,8 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                                : std::numeric_limits<std::uint32_t>::max();
         if (context == nullptr) {
             set_gl_error(call, gles_abi::invalid_operation);
-        } else if (index >= gles_abi::texture_unit_count) {
+        } else if (index >= open_gles_guest_capabilities(context->guest_capabilities)
+                                .texture_units) {
             set_gl_error(call, gles_abi::invalid_enum);
         } else {
             context->active_texture_unit = index;
@@ -2149,7 +2150,8 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
                                : std::numeric_limits<std::uint32_t>::max();
         if (context == nullptr) {
             set_gl_error(call, gles_abi::invalid_operation);
-        } else if (index >= gles_abi::texture_unit_count) {
+        } else if (index >= open_gles_guest_capabilities(context->guest_capabilities)
+                                .texture_units) {
             set_gl_error(call, gles_abi::invalid_enum);
         } else {
             context->client_active_texture_unit = index;
@@ -2272,8 +2274,8 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             break;
         case gles_abi::maximum_texture_units:
         case gles_abi::maximum_texture_image_units:
-            values[0] =
-                static_cast<std::uint32_t>(gles_abi::texture_unit_count);
+            values[0] = open_gles_guest_capabilities(context->guest_capabilities)
+                            .texture_units;
             break;
         case gles_abi::maximum_texture_size:
             values[0] = open_gles_guest_capabilities(context->guest_capabilities)

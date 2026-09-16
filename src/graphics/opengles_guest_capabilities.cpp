@@ -95,6 +95,7 @@ namespace {
     constexpr OpenGlesGuestCapabilities sgx543 = [] {
         auto capabilities = sgx535_framebuffer_objects;
         capabilities.name = "sgx543-framebuffer-object";
+        capabilities.texture_units = 4;
         capabilities.renderer = "PowerVR SGX 543";
         capabilities.version = "OpenGL ES-CM 1.1";
         return capabilities;
