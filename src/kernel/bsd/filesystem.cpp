@@ -1596,6 +1596,12 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         }
         constexpr std::uint32_t fsopt_nofollow = 0x00000001U;
         constexpr std::uint32_t fsopt_report_full_size = 0x00000004U;
+        constexpr std::uint32_t fsopt_pack_invalid_attributes = 0x00000008U;
+        if ((registers[4] & fsopt_pack_invalid_attributes) != 0U &&
+            (request.common & hfs::attribute::common_returned_attributes) == 0U) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return;
+        }
         const auto follow_symlink = (registers[4] & fsopt_nofollow) == 0;
         const auto host_path = resolve_guest_path(*path, follow_symlink);
         const auto metadata = query_hfs_metadata(host_path, follow_symlink);
@@ -1612,7 +1618,10 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             request.volume != 0
                 ? hfs::MetadataProvider::pack_volume_attributes(
                       *metadata, volume, request)
-                : hfs::MetadataProvider::pack_attributes(*metadata, request);
+                : hfs::MetadataProvider::pack_attributes(*metadata, request,
+                      (std::filesystem::path { "/" } /
+                          host_path.lexically_relative(rootfs_))
+                          .lexically_normal().generic_string());
         const auto full_size = static_cast<std::uint32_t>(result.size());
         if (result.size() > registers[3]) {
             result.resize(registers[3]);

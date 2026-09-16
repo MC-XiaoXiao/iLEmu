@@ -243,6 +243,14 @@ namespace {
             size += 4;
         if (mask & common_user_access)
             size += 4;
+        if (mask & common_file_id)
+            size += 8;
+        if (mask & common_parent_file_id)
+            size += 8;
+        if (mask & common_full_path)
+            size += 8;
+        if (mask & common_returned_attributes)
+            size += 20;
         return size;
     }
 
@@ -427,7 +435,8 @@ bool MetadataProvider::valid_request(const AttributeRequest& request)
         return false;
     }
     if (request.volume != 0) {
-        return (request.volume & ~volume_valid_mask) == 0 &&
+        return (request.common & ~volume_common_supported_mask) == 0 &&
+               (request.volume & ~volume_valid_mask) == 0 &&
                (request.volume & volume_info) != 0 && request.directory == 0 &&
                request.file == 0;
     }
@@ -436,7 +445,8 @@ bool MetadataProvider::valid_request(const AttributeRequest& request)
 }
 
 std::vector<std::byte> MetadataProvider::pack_attributes(
-    const Metadata& metadata, const AttributeRequest& request)
+    const Metadata& metadata, const AttributeRequest& request,
+    std::string_view guest_path)
 {
     using namespace attribute;
     const auto fixed_size =
@@ -446,7 +456,9 @@ std::vector<std::byte> MetadataProvider::pack_attributes(
     const auto name_size = (request.common & common_name) != 0
                                ? (metadata.name.size() + 1U + 3U) & ~3U
                                : 0U;
-    std::vector<std::byte> result(fixed_size + name_size);
+    const auto path_size = (request.common & common_full_path) != 0
+                               ? padded_string_size(guest_path) : 0U;
+    std::vector<std::byte> result(fixed_size + name_size + path_size);
     write32(result, 0, static_cast<std::uint32_t>(result.size()));
     std::size_t cursor = 4;
     auto word = [&](std::uint32_t value) {
@@ -465,6 +477,14 @@ std::vector<std::byte> MetadataProvider::pack_attributes(
         word(static_cast<std::uint32_t>(value.seconds));
         word(static_cast<std::uint32_t>(value.nanoseconds));
     };
+    // ATTR_CMN_RETURNED_ATTRS precedes all ordinary common attributes.
+    if (request.common & common_returned_attributes) {
+        word(request.common);
+        word(0);
+        word(metadata.directory ? request.directory : 0);
+        word(metadata.directory ? 0 : request.file);
+        word(0);
+    }
     if (request.common & common_name) {
         word(static_cast<std::uint32_t>(fixed_size - cursor));
         word(static_cast<std::uint32_t>(metadata.name.size() + 1U));
@@ -512,6 +532,14 @@ std::vector<std::byte> MetadataProvider::pack_attributes(
         word(metadata.flags);
     if (request.common & common_user_access)
         word(7); // emulated root credential
+    if (request.common & common_file_id)
+        wide(metadata.permanent_id);
+    if (request.common & common_parent_file_id)
+        wide(metadata.parent_catalog_id);
+    if (request.common & common_full_path) {
+        word(static_cast<std::uint32_t>(fixed_size + name_size - cursor));
+        word(static_cast<std::uint32_t>(guest_path.size() + 1U));
+    }
 
     if (metadata.directory) {
         const auto directory_value = [&](std::uint32_t bit,
@@ -551,6 +579,9 @@ std::vector<std::byte> MetadataProvider::pack_attributes(
         std::memcpy(result.data() + fixed_size, metadata.name.c_str(),
             metadata.name.size() + 1U);
     }
+    if (path_size != 0)
+        std::memcpy(result.data() + fixed_size + name_size,
+            guest_path.data(), guest_path.size());
     return result;
 }
 
@@ -601,6 +632,14 @@ std::vector<std::byte> MetadataProvider::pack_volume_attributes(
             result.data() + variable_cursor, value.data(), value.size());
         variable_cursor += padded_string_size(value);
     };
+
+    if (request.common & common_returned_attributes) {
+        word(request.common);
+        word(request.volume);
+        word(0);
+        word(0);
+        word(0);
+    }
 
     // Darwin 8's volume-common view represents the mounted filesystem, not
     // the root catalog record.  Consequently object IDs/type are zero while

@@ -46,7 +46,12 @@ namespace attribute {
     inline constexpr std::uint32_t common_access_mask = 0x00020000U;
     inline constexpr std::uint32_t common_flags = 0x00040000U;
     inline constexpr std::uint32_t common_user_access = 0x00200000U;
-    inline constexpr std::uint32_t common_supported_mask = 0x0027ffffU;
+    inline constexpr std::uint32_t common_file_id = 0x02000000U;
+    inline constexpr std::uint32_t common_parent_file_id = 0x04000000U;
+    inline constexpr std::uint32_t common_full_path = 0x08000000U;
+    inline constexpr std::uint32_t common_returned_attributes = 0x80000000U;
+    inline constexpr std::uint32_t common_supported_mask = 0x8e27ffffU;
+    inline constexpr std::uint32_t volume_common_supported_mask = 0x8027ffffU;
 
     inline constexpr std::uint32_t volume_filesystem_type = 0x00000001U;
     inline constexpr std::uint32_t volume_signature = 0x00000002U;
@@ -172,7 +177,8 @@ public:
         bool include_directory_entry_count = true) const;
     [[nodiscard]] static bool valid_request(const AttributeRequest& request);
     [[nodiscard]] static std::vector<std::byte> pack_attributes(
-        const Metadata& metadata, const AttributeRequest& request);
+        const Metadata& metadata, const AttributeRequest& request,
+        std::string_view guest_path = {});
     [[nodiscard]] static std::vector<std::byte> pack_volume_attributes(
         const Metadata& root_metadata, const VolumeMetadata& volume,
         const AttributeRequest& request);
