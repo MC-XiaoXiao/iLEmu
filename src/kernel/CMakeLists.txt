@@ -28,6 +28,7 @@ add_library(ilemu_kernel STATIC
     hid_switch_query.cpp
     clock.cpp
     iokit.cpp
+    iokit/diagnostic_data.cpp
     vnode_watch.cpp
     network.cpp)
 add_library(iLEmu::kernel ALIAS ilemu_kernel)

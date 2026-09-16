@@ -46,6 +46,7 @@
 
 #include "iokit/battery.hpp"
 #include "iokit/environment.hpp"
+#include "iokit/diagnostic_data.hpp"
 #include "iokit/power.hpp"
 #include "mach/support.hpp"
 
@@ -1097,6 +1098,11 @@ namespace {
         if (contains_text(matching, platform_expert_class)) {
             services.push_back(
                 ensure_platform_expert_service_locked(shared_state));
+        }
+        if (contains_text(matching,
+                kernel_iokit::DiagnosticDataService::service_class)) {
+            services.push_back(
+                kernel_iokit::DiagnosticDataService::ensure_locked(shared_state));
         }
         if (kernel_iokit::graphics::matches_service(matching) &&
             shared_state.graphics_accelerator !=
