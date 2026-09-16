@@ -17,6 +17,7 @@ inline constexpr std::int16_t filter_read = -1;
 inline constexpr std::int16_t filter_write = -2;
 inline constexpr std::int16_t filter_vnode = -4;
 inline constexpr std::int16_t filter_process = -5;
+inline constexpr std::int16_t filter_timer = -7;
 inline constexpr std::int16_t filter_mach_port = -8;
 inline constexpr std::int16_t filter_user = -10;
 
@@ -33,6 +34,10 @@ inline constexpr std::uint16_t event_error = 0x4000;
 inline constexpr std::uint16_t event_end_of_file = 0x8000;
 
 inline constexpr std::uint32_t process_note_exec = 0x20000000U;
+inline constexpr std::uint32_t timer_note_seconds = 0x00000001U;
+inline constexpr std::uint32_t timer_note_microseconds = 0x00000002U;
+inline constexpr std::uint32_t timer_note_nanoseconds = 0x00000004U;
+inline constexpr std::uint32_t timer_note_absolute = 0x00000008U;
 inline constexpr std::uint32_t process_note_exit = 0x80000000U;
 
 inline constexpr std::uint32_t vnode_note_delete = 0x00000001U;

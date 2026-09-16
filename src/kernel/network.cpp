@@ -1307,6 +1307,8 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
                        descriptor_writable(static_cast<std::uint32_t>(event.ident))) ||
                    (event.filter == darwin::kqueue::filter_mach_port &&
                        ready_mach_kevent_name(event).has_value()) ||
+                   (event.enabled && event.timer &&
+                       event.timer->expirations(shared_state_->clock.now()) != 0) ||
                    (event.enabled &&
                        event.filter == darwin::kqueue::filter_vnode &&
                        event.vnode_watch &&
@@ -1648,6 +1650,9 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                 ? filter_flags != 0U
             : registration->filter == darwin::kqueue::filter_mach_port
                 ? ready_mach_name.has_value()
+            : registration->filter == darwin::kqueue::filter_timer
+                ? registration->timer &&
+                    registration->timer->expirations(shared_state_->clock.now()) != 0
             : registration->filter == darwin::kqueue::filter_user
                 ? registration->user_triggered
                 : false;
@@ -1660,7 +1665,9 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         }
         if (const auto endpoint =
                 socket_pair_endpoints_.find(static_cast<std::uint32_t>(registration->ident));
-            endpoint != socket_pair_endpoints_.end()) {
+            endpoint != socket_pair_endpoints_.end() &&
+            (registration->filter == darwin::kqueue::filter_read ||
+                registration->filter == darwin::kqueue::filter_write)) {
             std::lock_guard socket_lock { shared_state_->socket_mutex };
             available = static_cast<std::uint32_t>(shared_state_
                     ->socket_pair_buffers[endpoint->second.pair]
@@ -1686,6 +1693,7 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         // set cannot strand messages behind the first reported member.
         if (clears_after_delivery &&
             registration->filter != darwin::kqueue::filter_process &&
+            registration->filter != darwin::kqueue::filter_timer &&
             registration->filter != darwin::kqueue::filter_vnode &&
             registration->filter != darwin::kqueue::filter_mach_port &&
             registration->clear_delivered &&
@@ -1703,6 +1711,10 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
         auto extension = registration->extension;
         auto data = registration->filter == darwin::kqueue::filter_user
             ? registration->data : static_cast<std::int64_t>(available);
+        if (registration->timer) {
+            data = registration->timer->expirations(shared_state_->clock.now());
+            extension[0] = 0;
+        }
         if (extended && registration->filter == darwin::kqueue::filter_mach_port &&
             (registration->filter_flags & darwin::mach_message::option_receive) != 0U) {
             const auto received = receive_kevent_mach_message(
@@ -1720,6 +1732,10 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
                 registration->user_data, extension }))
             return std::nullopt;
         ++written;
+        if (registration->timer) {
+            registration->timer->consume(shared_state_->clock.now());
+            note_timer_deadline_transition();
+        }
         if (clears_after_delivery) {
             registration->clear_delivered = true;
             registration->clear_available = available;

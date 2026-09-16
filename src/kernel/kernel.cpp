@@ -1630,6 +1630,14 @@ CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
         if (candidate && (!deadline || *candidate < *deadline))
             deadline = candidate;
     };
+    const auto consider_queue = [&](std::uint32_t fd) {
+        if (const auto queue = kqueues_.find(fd); queue != kqueues_.end()) {
+            for (const auto& event : queue->second) {
+                if (event.enabled && event.timer)
+                    consider(event.timer->deadline());
+            }
+        }
+    };
     if (const auto found = pending_timers_.find(processor);
         found != pending_timers_.end()) {
         consider(found->second.deadline);
@@ -1645,14 +1653,29 @@ CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
     if (const auto found = pending_kevents_.find(processor);
         found != pending_kevents_.end()) {
         consider(found->second.deadline);
+        consider_queue(found->second.queue_fd);
     }
     if (const auto found = pending_selects_.find(processor);
         found != pending_selects_.end()) {
         consider(found->second.deadline);
+        for (std::size_t word = 0; word < found->second.read_words.size(); ++word) {
+            auto bits = found->second.read_words[word];
+            while (bits != 0U) {
+                const auto bit = static_cast<std::uint32_t>(std::countr_zero(bits));
+                const auto fd = static_cast<std::uint32_t>(word * 32U) + bit;
+                if (fd < found->second.descriptor_count)
+                    consider_queue(fd);
+                bits &= bits - 1U;
+            }
+        }
     }
     if (const auto found = pending_polls_.find(processor);
         found != pending_polls_.end()) {
         consider(found->second.deadline);
+        for (const auto& entry : found->second.entries) {
+            if (entry.fd >= 0 && (entry.events & 1U) != 0U)
+                consider_queue(static_cast<std::uint32_t>(entry.fd));
+        }
     }
     if (const auto found = pending_socket_reads_.find(processor);
         found != pending_socket_reads_.end()) {
@@ -2378,16 +2401,16 @@ CompatibilityKernel::timer_deadline_snapshot() const
             consider(local_deadline, wait.deadline);
         }
         for (const auto& [processor, wait] : pending_kevents_) {
-            static_cast<void>(processor);
-            consider(local_deadline, wait.deadline);
+            static_cast<void>(wait);
+            consider(local_deadline, pending_io_deadline_locked(processor));
         }
         for (const auto& [processor, wait] : pending_selects_) {
-            static_cast<void>(processor);
-            consider(local_deadline, wait.deadline);
+            static_cast<void>(wait);
+            consider(local_deadline, pending_io_deadline_locked(processor));
         }
         for (const auto& [processor, wait] : pending_polls_) {
-            static_cast<void>(processor);
-            consider(local_deadline, wait.deadline);
+            static_cast<void>(wait);
+            consider(local_deadline, pending_io_deadline_locked(processor));
         }
         if (!scheduled_wifi_driver_events_.empty())
             consider(local_deadline,

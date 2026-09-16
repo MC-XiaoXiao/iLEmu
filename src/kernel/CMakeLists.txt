@@ -30,6 +30,7 @@ add_library(ilemu_kernel STATIC
     iokit.cpp
     iokit/diagnostic_data.cpp
     vnode_watch.cpp
+    kevent_timer.cpp
     network.cpp)
 add_library(iLEmu::kernel ALIAS ilemu_kernel)
 ilemu_configure_module(ilemu_kernel)

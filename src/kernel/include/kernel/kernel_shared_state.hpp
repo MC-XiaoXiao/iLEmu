@@ -12,6 +12,7 @@
 #pragma once
 
 #include "kernel/hid_event_queue.hpp"
+#include "kernel/kevent_timer.hpp"
 
 #include <algorithm>
 #include <array>
@@ -130,6 +131,7 @@ struct KeventRegistration {
     mutable std::uint64_t empty_mach_queue_generation { };
     std::optional<VnodeWatch> vnode_watch;
     std::array<std::uint64_t, 2> extension { };
+    std::optional<KeventTimer> timer;
 };
 
 struct PendingWait {

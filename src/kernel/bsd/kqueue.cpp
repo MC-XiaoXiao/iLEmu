@@ -84,8 +84,9 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
             const auto user_data = value->user_data;
             const auto signed_filter = value->filter;
             // File descriptors, task IDs and Mach names remain natural-sized.
-            // EVFILT_USER identifiers and opaque cookies retain all 64 bits.
+            // Timer/user identifiers and opaque cookies retain all 64 bits.
             if (signed_filter != darwin::kqueue::filter_user &&
+                signed_filter != darwin::kqueue::filter_timer &&
                 ident > UINT32_MAX) {
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return;
@@ -115,6 +116,18 @@ void CompatibilityKernel::dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number)
                     user_data,
                 };
                 registration.extension = value->extension;
+                if (signed_filter == darwin::kqueue::filter_timer) {
+                    registration.timer = KeventTimer::create(
+                        data, filter_flags, shared_state_->clock,
+                        (flags & darwin::kqueue::event_one_shot) != 0U);
+                    if (!registration.timer) {
+                        bsd_error(cpu, bsd_support::invalid_argument);
+                        return;
+                    }
+                    registration.flags |= darwin::kqueue::event_clear;
+                    if ((filter_flags & darwin::kqueue::timer_note_absolute) != 0U)
+                        registration.flags |= darwin::kqueue::event_one_shot;
+                }
                 registration.enabled =
                     (flags & darwin::kqueue::event_disable) == 0U;
                 if (signed_filter == darwin::kqueue::filter_vnode) {
