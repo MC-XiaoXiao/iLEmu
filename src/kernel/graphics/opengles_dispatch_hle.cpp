@@ -232,7 +232,7 @@ bool OpenGlesDispatchHle::prepare_dispatch(UserlandHleCall& call)
 {
     if (!dispatch_.empty())
         return true;
-    const auto unsupported = call.callable_alias("_gliNoop", 1U);
+    const auto unsupported = call.callable_handler(engine_image, "_gliNoop", 1U);
     if (!unsupported)
         return false;
     std::vector<std::uint32_t> table(

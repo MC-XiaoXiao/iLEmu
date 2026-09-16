@@ -19,6 +19,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -58,6 +59,11 @@ public:
         std::string_view symbol, std::size_t size) const;
     [[nodiscard]] std::optional<std::uint32_t> callable_alias(
         std::string_view symbol, std::uint8_t prefix_arguments);
+    // Export an exact registered handler into a host-owned dispatch table,
+    // including when the firmware no longer exports the optional entry.
+    [[nodiscard]] std::optional<std::uint32_t> callable_handler(
+        std::string_view image_suffix, std::string_view symbol,
+        std::uint8_t prefix_arguments);
     [[nodiscard]] std::optional<std::string> string_argument(
         std::size_t index, std::size_t maximum_size = 4096) const;
     [[nodiscard]] std::optional<std::string> objc_string_argument(
@@ -111,6 +117,9 @@ private:
     UserlandHleCall(UserlandHleRegistry& registry, Cpu& cpu,
         AddressSpace& memory, Output& output, std::uint32_t process_id,
         std::string_view symbol, std::uint8_t prefix_arguments = 0U);
+    [[nodiscard]] std::optional<std::uint32_t> callable_entry(
+        std::uint16_t id, std::string_view symbol,
+        std::uint8_t prefix_arguments);
 
     UserlandHleRegistry& registry_;
     Cpu& cpu_;
@@ -432,7 +441,7 @@ private:
     ArmArchitectureVersion shared_hle_plan_architecture_ { };
     std::uint64_t shared_hle_plan_registration_generation_ { };
     std::map<std::uint32_t, InstalledCall> installed_calls_;
-    std::map<std::pair<std::string, std::uint8_t>, std::uint32_t>
+    std::map<std::tuple<std::uint16_t, std::string, std::uint8_t>, std::uint32_t>
         callable_aliases_;
     std::map<std::string, std::uint32_t, std::less<>> installed_symbols_;
     std::map<std::string, bool, std::less<>> installed_symbol_thumb_;

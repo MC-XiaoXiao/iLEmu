@@ -742,18 +742,35 @@ std::optional<std::vector<std::byte>> UserlandHleCall::original_function_code(
 std::optional<std::uint32_t> UserlandHleCall::callable_alias(
     std::string_view symbol, std::uint8_t prefix_arguments)
 {
-    if (prefix_arguments > prefix_arguments_.size())
-        return std::nullopt;
-    const auto key = std::pair { std::string { symbol }, prefix_arguments };
-    if (const auto alias = registry_.callable_aliases_.find(key);
-        alias != registry_.callable_aliases_.end())
-        return alias->second;
     const auto source = symbol_address(symbol);
     if (!source)
         return std::nullopt;
     const auto installed = registry_.installed_calls_.find(*source);
     if (installed == registry_.installed_calls_.end())
         return std::nullopt;
+    return callable_entry(installed->second.id, symbol, prefix_arguments);
+}
+
+std::optional<std::uint32_t> UserlandHleCall::callable_handler(
+    std::string_view image_suffix, std::string_view symbol,
+    std::uint8_t prefix_arguments)
+{
+    const auto* registration = registry_.select_registration(image_suffix, symbol);
+    if (registration == nullptr || registration->prefix ||
+        registration->image_suffix != image_suffix)
+        return std::nullopt;
+    return callable_entry(registration->id, symbol, prefix_arguments);
+}
+
+std::optional<std::uint32_t> UserlandHleCall::callable_entry(
+    std::uint16_t id, std::string_view symbol, std::uint8_t prefix_arguments)
+{
+    if (prefix_arguments > prefix_arguments_.size())
+        return std::nullopt;
+    const auto key = std::tuple { id, std::string { symbol }, prefix_arguments };
+    if (const auto alias = registry_.callable_aliases_.find(key);
+        alias != registry_.callable_aliases_.end())
+        return alias->second;
     const auto address = registry_.persistent_trampoline_cursor_;
     if (address >= 0x61000000U)
         return std::nullopt;
@@ -763,13 +780,12 @@ std::optional<std::uint32_t> UserlandHleCall::callable_alias(
             MemoryPermission::Read | MemoryPermission::Write |
                 MemoryPermission::Execute))
         return std::nullopt;
-    const auto opcode = arm_svc_opcode | userland_hle_svc_namespace |
-                        installed->second.id;
+    const auto opcode = arm_svc_opcode | userland_hle_svc_namespace | id;
     if (!memory_.write32(address, opcode))
         return std::nullopt;
     cpu_.invalidate_cache_range(address, sizeof(opcode));
     registry_.installed_calls_.emplace(address,
-        UserlandHleRegistry::InstalledCall { installed->second.id,
+        UserlandHleRegistry::InstalledCall { id,
             std::string { symbol }, false, { }, prefix_arguments });
     registry_.persistent_trampoline_cursor_ += sizeof(opcode);
     registry_.callable_aliases_.emplace(key, address);
