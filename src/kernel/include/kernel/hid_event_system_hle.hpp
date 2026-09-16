@@ -6,9 +6,12 @@
 
 #pragma once
 
+#include "kernel/hid_accelerometer.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 
 namespace ilemu {
 
@@ -22,6 +25,10 @@ public:
     explicit HidEventSystemHle(UserlandHleRegistry& registry);
     void set_shared_state(std::shared_ptr<KernelSharedState> state);
     void reset(std::uint32_t process);
+    [[nodiscard]] std::optional<std::uint64_t> next_sample_deadline() const
+    {
+        return delivering_ ? std::nullopt : accelerometer_.next_deadline();
+    }
     [[nodiscard]] bool prepare_pending_event(
         Cpu& cpu, std::uint32_t process, std::uint32_t svc_immediate);
 
@@ -31,6 +38,7 @@ private:
     std::uint32_t consumer_process_ { };
     std::size_t consumer_processor_ { };
     bool delivering_ { };
+    HidAccelerometer accelerometer_;
 };
 
 } // namespace ilemu

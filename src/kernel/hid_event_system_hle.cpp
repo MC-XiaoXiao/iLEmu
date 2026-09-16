@@ -45,6 +45,11 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
                 consumer_process_ = consumer.process;
                 consumer_processor_ = consumer.processor;
                 state_->hid_event_queue.open(consumer);
+                accelerometer_.stop();
+                if (completed.symbol_address(
+                        "_IOHIDEventCreateAccelerometerEvent"))
+                    accelerometer_.start(state_->clock.now());
+                state_->note_kernel_event_transition();
             });
         });
     registry_.register_function(
@@ -54,7 +59,8 @@ HidEventSystemHle::HidEventSystemHle(UserlandHleRegistry& registry)
         });
     for (const auto symbol :
         { "_IOHIDEventCreateDigitizerEvent", "_IOHIDEventCreateKeyboardEvent",
-            "_IOHIDEventAppendEvent", "__IOHIDEventSystemDispatchEvent" }) {
+            "_IOHIDEventAppendEvent", "__IOHIDEventSystemDispatchEvent",
+            "_IOHIDEventCreateAccelerometerEvent" }) {
         registry_.register_guest_function("/IOKit", symbol);
     }
     registry_.register_guest_function("/CoreFoundation", "_CFRelease");
@@ -72,6 +78,9 @@ void HidEventSystemHle::reset(std::uint32_t process)
         state_->hid_event_queue.close(process);
     consumer_process_ = 0U;
     delivering_ = false;
+    accelerometer_.stop();
+    if (state_)
+        state_->note_kernel_event_transition();
 }
 
 bool HidEventSystemHle::prepare_pending_event(
@@ -84,8 +93,12 @@ bool HidEventSystemHle::prepare_pending_event(
         cpu.registers()[2] != 0U || (cpu.registers()[1] & 2U) == 0U)
         return false;
     const auto consumer = state_->hid_event_queue.consumer();
-    const auto event =
-        state_->hid_event_queue.take(process, cpu.processor_id());
+    auto event = state_->hid_event_queue.take(process, cpu.processor_id());
+    if (consumer && !event) {
+        event = accelerometer_.sample(state_->clock.now());
+        if (event)
+            state_->note_kernel_event_transition();
+    }
     if (!consumer || !event)
         return false;
     delivering_ = HidEventTransaction::enqueue(registry_, *consumer, *event,

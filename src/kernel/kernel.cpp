@@ -1493,8 +1493,10 @@ CompatibilityKernel::pending_event_poll_candidates()
                                        mach_generation;
     const auto deadline_due = pending_event_poll_deadline_ &&
                               guest_now >= *pending_event_poll_deadline_;
+    const auto sample_deadline = hid_event_system_hle_.next_sample_deadline();
+    const auto sample_due = sample_deadline && guest_now >= *sample_deadline;
     const auto host_probe_due = host_now >= pending_event_host_probe_;
-    if (!topology_changed && !readiness_changed && !deadline_due &&
+    if (!topology_changed && !readiness_changed && !deadline_due && !sample_due &&
         !host_probe_due) {
         return { };
     }
@@ -2399,6 +2401,7 @@ CompatibilityKernel::timer_deadline_snapshot() const
     std::uint64_t generation = 0;
     for (unsigned attempt = 0; attempt < 2U; ++attempt) {
         deadline = local_timer_deadline_cache_;
+        consider(deadline, hid_event_system_hle_.next_sample_deadline());
         {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             generation = shared_state_->kernel_event_generation_snapshot();

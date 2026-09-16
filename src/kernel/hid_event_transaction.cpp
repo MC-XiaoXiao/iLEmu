@@ -34,6 +34,7 @@ namespace {
 
     constexpr auto create_digitizer = "_IOHIDEventCreateDigitizerEvent";
     constexpr auto create_keyboard = "_IOHIDEventCreateKeyboardEvent";
+    constexpr auto create_accelerometer = "_IOHIDEventCreateAccelerometerEvent";
 
     void prepare_digitizer(UserlandHleCall& call,
         const HidEventQueue::Event& event, float width, float height,
@@ -44,8 +45,8 @@ namespace {
             touch.phase == TouchPhase::Down || touch.phase == TouchPhase::Move;
         using Profile = Arm32DigitizerEventProfile;
         auto mask = Profile::position_changed;
-        if (!collection || digitizer_abi ==
-                               DarwinHidDigitizerAbi::CollectionContactChanges) {
+        if (!collection ||
+            digitizer_abi == DarwinHidDigitizerAbi::CollectionContactChanges) {
             if (touch.phase != TouchPhase::Move)
                 mask |= Profile::range_changed | Profile::touch_changed;
             if (touch.phase == TouchPhase::Down)
@@ -83,14 +84,19 @@ namespace {
             , completion_ { std::move(completion) }
             , step_ { std::holds_alternative<TouchInput>(event.input)
                           ? Step::Hand
-                          : Step::Keyboard }
+                      : std::holds_alternative<HidEventQueue::KeyboardInput>(
+                            event.input)
+                          ? Step::Keyboard
+                          : Step::Accelerometer }
         {
         }
 
         bool start(UserlandHleRegistry& registry, std::size_t processor)
         {
             return registry.queue_guest_function(
-                step_ == Step::Hand ? create_digitizer : create_keyboard,
+                step_ == Step::Hand       ? create_digitizer
+                : step_ == Step::Keyboard ? create_keyboard
+                                          : create_accelerometer,
                 processor,
                 [self = shared_from_this()](
                     UserlandHleCall& call) { self->setup(call); },
@@ -100,6 +106,7 @@ namespace {
 
     private:
         enum class Step {
+            Accelerometer,
             Keyboard,
             Hand,
             Finger,
@@ -112,6 +119,22 @@ namespace {
         {
             auto& r = call.cpu().registers();
             switch (step_) {
+            case Step::Accelerometer: {
+                const auto& acceleration =
+                    std::get<HidEventQueue::Acceleration>(event_.input);
+                r[13] -= 16U;
+                r[0] = 0U;
+                r[1] = static_cast<std::uint32_t>(event_.timestamp);
+                r[2] = static_cast<std::uint32_t>(event_.timestamp >> 32U);
+                r[3] = std::bit_cast<std::uint32_t>(acceleration.x);
+                const std::array<std::uint32_t, 3> arguments {
+                    std::bit_cast<std::uint32_t>(acceleration.y),
+                    std::bit_cast<std::uint32_t>(acceleration.z), 0U
+                };
+                static_cast<void>(call.memory().copy_in(
+                    r[13], std::as_bytes(std::span { arguments })));
+                break;
+            }
             case Step::Keyboard: {
                 const auto& key =
                     std::get<HidEventQueue::KeyboardInput>(event_.input);
@@ -157,6 +180,7 @@ namespace {
         {
             const char* symbol = nullptr;
             switch (step_) {
+            case Step::Accelerometer:
             case Step::Keyboard:
                 root_event_ = call.argument(0);
                 if (!root_event_) {
@@ -222,9 +246,8 @@ bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
     DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
     std::function<void()> completion)
 {
-    return std::make_shared<NativeEventTransaction>(
-        std::move(event), consumer.system, geometry, digitizer_abi,
-        std::move(completion))
+    return std::make_shared<NativeEventTransaction>(std::move(event),
+        consumer.system, geometry, digitizer_abi, std::move(completion))
         ->start(registry, consumer.processor);
 }
 

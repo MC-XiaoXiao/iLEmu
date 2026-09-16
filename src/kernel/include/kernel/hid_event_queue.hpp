@@ -31,8 +31,13 @@ public:
         std::uint32_t usage;
         bool down;
     };
+    struct Acceleration {
+        float x;
+        float y;
+        float z;
+    };
     struct Event {
-        std::variant<TouchInput, KeyboardInput> input;
+        std::variant<TouchInput, KeyboardInput, Acceleration> input;
         std::uint64_t timestamp;
         std::uint32_t identity { 1U };
     };
