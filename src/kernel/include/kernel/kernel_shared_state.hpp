@@ -1046,10 +1046,14 @@ struct KernelSharedState {
         std::uint32_t notify_object { };
         std::uint32_t sync { };
     };
+    // Dead-name and send-possible requests share one ipc_entry notification
+    // slot, so replacement, rename and right teardown use the same lifecycle.
     struct MachDeadNameNotificationRequest {
         std::uint32_t target_object { };
         std::uint32_t notify_object { };
         std::uint32_t sync { };
+        bool send_possible { };
+        bool armed { };
     };
     // The caller must hold mach_mutex. This allocates a global ipc_port object
     // identifier, never a task-local Mach name. The stride keeps synthetic
@@ -1317,10 +1321,14 @@ struct KernelSharedState {
         mach_queue_generation.fetch_add(1, std::memory_order_release);
     }
 
-    // The caller holds mach_mutex. Remove a member from every prepost queue
-    // once its last message has been consumed or discarded.
+    // The caller holds mach_mutex. Deliver armed name notifications when a
+    // destination can accept another message.
+    void notify_send_possible_locked(std::uint32_t destination);
+
+    // Remove empty members from every prepost queue after delivery/discard.
     void note_mach_message_dequeued_locked(std::uint32_t destination)
     {
+        notify_send_possible_locked(destination);
         const auto links = mach_port_set_links_by_member.find(destination);
         if (links == mach_port_set_links_by_member.end())
             return;
@@ -1569,6 +1577,9 @@ struct KernelSharedState {
     std::map<std::pair<std::uint32_t, std::uint32_t>,
         MachDeadNameNotificationRequest>
         mach_dead_name_notifications;
+    // A conservative index: cancellation can leave an entry until its next
+    // dequeue. This avoids scanning all name notifications on ordinary IPC.
+    std::set<std::uint32_t> mach_send_possible_armed_destinations;
     std::set<std::pair<std::uint32_t, std::uint32_t>> semaphore_wakeups;
     // Destruction wakes semaphore waiters with KERN_TERMINATED rather than as a
     // successful signal. Keep that result distinct from ordinary wakeups while

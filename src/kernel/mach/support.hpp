@@ -43,6 +43,7 @@ namespace mach_support {
     inline constexpr std::uint32_t mach_notify_port_deleted = 65;
     inline constexpr std::uint32_t mach_notify_port_destroyed = 69;
     inline constexpr std::uint32_t mach_notify_no_senders = 70;
+    inline constexpr std::uint32_t mach_notify_send_possible = 66;
     inline constexpr std::uint32_t mach_notify_send_once = 71;
     inline constexpr std::uint32_t mach_notify_dead_name = 72;
 

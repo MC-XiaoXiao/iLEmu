@@ -418,6 +418,7 @@ target_sources(ilemu_kernel PRIVATE
     mach/task_vm_message.cpp
     mach/rights_message.cpp
     mach/notification_message.cpp
+    mach/send_possible.cpp
     mach/traps.cpp)
 target_link_libraries(ilemu_kernel PRIVATE
     iLEmu::kernel_mach_transport

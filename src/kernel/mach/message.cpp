@@ -716,6 +716,16 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                         ? 0U
                         : queue->second.size();
                 if (port && queue_depth >= port->queue_limit) {
+                    if ((registers[1] & darwin::mach_message::option_send_notify) != 0U &&
+                        destination_right != xnu::ipc::Right::SendOnce) {
+                        const auto notification = shared_state_->mach_dead_name_notifications.find(
+                            std::pair { process_.pid, *remote_port });
+                        if (notification != shared_state_->mach_dead_name_notifications.end() &&
+                            notification->second.send_possible) {
+                            notification->second.armed = true;
+                            shared_state_->mach_send_possible_armed_destinations.insert(remote_object);
+                        }
+                    }
                     registers[0] = darwin::mach_message::send_timed_out;
                     return;
                 }

@@ -169,6 +169,7 @@ namespace mach_message {
     inline constexpr std::uint32_t option_send = 0x0000'0001U;
     inline constexpr std::uint32_t option_receive = 0x0000'0002U;
     inline constexpr std::uint32_t option_send_timeout = 0x0000'0010U;
+    inline constexpr std::uint32_t option_send_notify = 0x0000'0080U;
     inline constexpr std::uint32_t option_receive_large = 0x0000'0004U;
     inline constexpr std::uint32_t option_receive_timeout = 0x0000'0100U;
     inline constexpr std::uint32_t type_copy_send = 19U;

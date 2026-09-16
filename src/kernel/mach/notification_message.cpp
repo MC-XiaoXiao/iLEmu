@@ -116,7 +116,8 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
                 result = 4;
             } else if (notification != mach_notify_port_destroyed &&
                        notification != mach_notify_no_senders &&
-                       notification != mach_notify_dead_name) {
+                       notification != mach_notify_dead_name &&
+                       notification != mach_notify_send_possible) {
                 result = 18; // KERN_INVALID_VALUE
             } else if (!entry) {
                 result = 15; // KERN_INVALID_NAME
@@ -124,7 +125,8 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
                            notification == mach_notify_no_senders) &&
                        (entry->type & receive_type) == 0) {
                 result = 17; // KERN_INVALID_RIGHT
-            } else if (notification == mach_notify_dead_name &&
+            } else if ((notification == mach_notify_dead_name ||
+                           notification == mach_notify_send_possible) &&
                        (entry->type & dead_name_types) == 0) {
                 result = 17;
             } else if (notification == mach_notify_port_destroyed &&
@@ -151,7 +153,8 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
                 if (result == 0) {
                     const auto dead_type =
                         xnu::ipc::type_mask(xnu::ipc::Right::DeadName);
-                    if (notification == mach_notify_dead_name) {
+                    if (notification == mach_notify_dead_name ||
+                        notification == mach_notify_send_possible) {
                         const auto key = std::pair { *target, name };
                         if (const auto previous = shared_state_
                                 ->mach_dead_name_notifications.find(key);
@@ -170,7 +173,8 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
                                 previous);
                         }
                         if ((entry->type & dead_type) != 0) {
-                            if (sync == 0 || notify_object == 0) {
+                            if ((sync == 0 && notification == mach_notify_dead_name) ||
+                                notify_object == 0) {
                                 result = 4; // KERN_INVALID_ARGUMENT
                             } else {
                                 static_cast<void>(
@@ -185,7 +189,14 @@ bool CompatibilityKernel::dispatch_mach_notification_message(
                                 key,
                                 KernelSharedState::
                                     MachDeadNameNotificationRequest {
-                                        entry->object, notify_object, sync });
+                                        entry->object, notify_object, sync,
+                                        notification == mach_notify_send_possible,
+                                        sync != 0U });
+                            if (notification == mach_notify_send_possible &&
+                                sync != 0U) {
+                                shared_state_->mach_send_possible_armed_destinations.insert(entry->object);
+                                shared_state_->notify_send_possible_locked(entry->object);
+                            }
                         }
                     } else {
                         const auto key =

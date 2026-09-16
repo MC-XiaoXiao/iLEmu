@@ -85,6 +85,8 @@ bool CompatibilityKernel::dispatch_mach_port_limit_message(
         } else if (!shared_state_->mach_port_objects.set_queue_limit(
                        entry->object, queue_limit)) {
             result = darwin::mach::failure;
+        } else {
+            shared_state_->notify_send_possible_locked(entry->object);
         }
     }
 

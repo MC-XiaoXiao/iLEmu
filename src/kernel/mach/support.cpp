@@ -515,6 +515,7 @@ namespace mach_support {
         // Make the scheduler revisit its cached namespace capability on the
         // next poll.
         state.note_mach_queue_topology_change_locked();
+        state.mach_send_possible_armed_destinations.erase(object);
         struct RemovalGuard {
             KernelSharedState& state;
             std::uint32_t object;
