@@ -849,21 +849,17 @@ namespace {
             KernelSharedState::IOKitRegistryProperty {
                 KernelSharedState::IOKitRegistryProperty::Kind::Data,
                 bytes_from_string(shared_state.device_model_number) });
-        // Darwin 8's early Lockdown path calls CFRetain on the result of the
-        // platform serial query without first handling kIOReturnNotFound. The
-        // audited ABI contract records whether that legacy property is present;
-        // unknown firmware remains conservative.
-        if (shared_state.darwin_abi.capabilities
-                .expose_legacy_platform_serial) {
-            const auto serial = std::string { "iLEmu-" } +
-                                shared_state.device_product_type + "-" +
-                                shared_state.device_model_number;
-            service.properties.emplace(
-                std::string { platform_serial_number_property },
-                KernelSharedState::IOKitRegistryProperty {
-                    KernelSharedState::IOKitRegistryProperty::Kind::String,
-                    bytes_from_string(serial) });
-        }
+        // Platform identity belongs to the virtual device across Darwin ABIs.
+        // Native MobileGestalt clients require the serial as well as legacy
+        // Lockdown; use the same existing virtual identity for every client.
+        const auto serial = std::string { "iLEmu-" } +
+                            shared_state.device_product_type + "-" +
+                            shared_state.device_model_number;
+        service.properties.emplace(
+            std::string { platform_serial_number_property },
+            KernelSharedState::IOKitRegistryProperty {
+                KernelSharedState::IOKitRegistryProperty::Kind::String,
+                bytes_from_string(serial) });
         shared_state.iokit_services.emplace(object, std::move(service));
         return object;
     }

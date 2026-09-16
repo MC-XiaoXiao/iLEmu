@@ -96,9 +96,7 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
          << std::boolalpha
          << "send-sigsys: " << abi.capabilities.send_sigsys << '\n'
          << "cache-trap-grants-execute: "
-         << abi.capabilities.arm_cache_trap_grants_execute << '\n'
-         << "legacy-platform-serial: "
-         << abi.capabilities.expose_legacy_platform_serial << '\n';
+         << abi.capabilities.arm_cache_trap_grants_execute << '\n';
     output.write(text.str());
 }
 

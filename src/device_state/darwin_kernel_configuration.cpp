@@ -78,7 +78,6 @@ namespace {
                 .capabilities = {
                     .send_sigsys = true,
                     .arm_cache_trap_grants_execute = true,
-                    .expose_legacy_platform_serial = true,
                 },
             },
         },
