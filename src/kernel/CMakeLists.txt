@@ -335,6 +335,7 @@ add_library(ilemu_kernel_mach_port STATIC
     mach/port/context.cpp
     mach/port/enumeration.cpp
     mach/port/kernel_rpc.cpp
+    mach/port/guarded.cpp
     mach/port/limits.cpp
     mach/port/membership.cpp)
 add_library(iLEmu::kernel_mach_port ALIAS

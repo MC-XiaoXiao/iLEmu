@@ -84,14 +84,23 @@ bool CompatibilityKernel::dispatch_mach_port_context_message(
                                       xnu::ipc::Right::Receive)) == 0U) {
             result = darwin::mach::invalid_right;
         } else if (is_get) {
+            const auto port = shared_state_->mach_port_objects.lookup(entry->object);
             const auto context =
                 shared_state_->mach_port_contexts.find(entry->object);
-            if (context != shared_state_->mach_port_contexts.end()) {
+            if (context != shared_state_->mach_port_contexts.end() &&
+                (!port || !port->strict_guard)) {
                 returned_context = context->second;
             }
         } else {
-            shared_state_->mach_port_contexts[entry->object] =
-                *supplied_context;
+            const auto port = shared_state_->mach_port_objects.lookup(entry->object);
+            if (port && port->strict_guard) {
+                result = darwin::mach::invalid_argument;
+            } else {
+                shared_state_->mach_port_contexts[entry->object] = *supplied_context;
+                if (port && port->guard)
+                    static_cast<void>(shared_state_->mach_port_objects.set_guard(
+                        entry->object, *supplied_context));
+            }
         }
     }
 

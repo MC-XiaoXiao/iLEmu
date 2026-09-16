@@ -13,6 +13,7 @@
 #include "kernel/darwin_abi.hpp"
 
 #include "../support.hpp"
+#include "guarded.hpp"
 
 #include <mutex>
 
@@ -23,7 +24,10 @@ using namespace mach_support;
 bool CompatibilityKernel::dispatch_mach_port_kernel_rpc_trap(
     Cpu& cpu, std::uint32_t trap)
 {
-    if (trap != 16U && trap != 17U && trap != 18U && trap != 19U &&
+    const bool guarded = shared_state_->darwin_abi.mach_kernel_rpc ==
+            DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps &&
+        (trap == 24U || trap == 25U || trap == 41U || trap == 42U);
+    if (!guarded && trap != 16U && trap != 17U && trap != 18U && trap != 19U &&
         trap != 20U && trap != 21U && trap != 22U && trap != 23U) {
         return false;
     }
@@ -34,6 +38,12 @@ bool CompatibilityKernel::dispatch_mach_port_kernel_rpc_trap(
         *shared_state_, process_.pid, registers[0]);
     if (!target || *target != process_.pid) {
         registers[0] = darwin::mach_message::send_invalid_destination;
+        return true;
+    }
+
+    if (guarded) {
+        registers[0] = dispatch_guarded_port_trap(
+            *shared_state_, memory_, *target, registers, trap);
         return true;
     }
 

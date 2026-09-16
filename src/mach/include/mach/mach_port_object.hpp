@@ -45,6 +45,8 @@ struct PortObject {
     // Receive rights prepared for transfer do not attribute queued-message
     // importance to their temporary holder.
     bool temporary_owner { };
+    std::optional<std::uint64_t> guard { };
+    bool strict_guard { };
 };
 
 class PortObjectTable {
@@ -99,6 +101,17 @@ public:
         if (found == objects_.end())
             return false;
         found->second.make_send_count = count;
+        return true;
+    }
+
+    [[nodiscard]] bool set_guard(PortObjectId object,
+        std::optional<std::uint64_t> guard, bool strict = false)
+    {
+        const auto found = objects_.find(object);
+        if (found == objects_.end())
+            return false;
+        found->second.guard = guard;
+        found->second.strict_guard = guard.has_value() && strict;
         return true;
     }
 
