@@ -602,6 +602,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
             std::uint32_t port_set = 0;
             std::uint32_t mscount = 0;
             std::uint32_t msgcount = 0;
+            bool has_send_rights = false;
             std::uint32_t result = 15; // KERN_INVALID_NAME
             {
                 std::lock_guard mach_lock { shared_state_->mach_mutex };
@@ -651,6 +652,12 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                                 entry->object)) {
                         mscount = object->make_send_count;
                     }
+                    // Include rights held by messages and kernel services as
+                    // well as task namespaces, just like no-senders delivery.
+                    // Native transaction fences depend on this becoming false
+                    // when their last sender releases the port.
+                    has_send_rights = port_has_send_rights_locked(
+                        *shared_state_, entry->object);
                     if (const auto queue =
                             shared_state_->mach_queues.find(entry->object);
                         queue != shared_state_->mach_queues.end()) {
@@ -679,7 +686,7 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
                 5, // mps_qlimit
                 msgcount, // mps_msgcount
                 0, // mps_sorights
-                1, // mps_srights
+                has_send_rights ? 1U : 0U, // mps_srights
                 0, // mps_pdrequest
                 0, // mps_nsrequest
                 0, // mps_flags

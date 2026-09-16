@@ -364,12 +364,9 @@ namespace mach_support {
         return state.mach_namespaces.resolve(sender, name);
     }
 
-    bool enqueue_no_senders_notification_locked(
-        KernelSharedState& state, std::uint32_t object)
+    bool port_has_send_rights_locked(
+        const KernelSharedState& state, std::uint32_t object)
     {
-        const auto key = std::pair { object, mach_notify_no_senders };
-        const auto request = state.mach_notifications.find(key);
-        const auto port_object = state.mach_port_objects.lookup(object);
         const auto inflight = state.mach_inflight_send_rights.find(object);
         const auto has_inflight =
             inflight != state.mach_inflight_send_rights.end() &&
@@ -378,11 +375,20 @@ namespace mach_support {
         const auto has_kernel_hold =
             kernel_hold != state.mach_kernel_send_rights.end() &&
             kernel_hold->second != 0;
+        return state.mach_namespaces.right_reference_count(
+                   object, xnu::ipc::Right::Send) != 0 ||
+               has_inflight || has_kernel_hold;
+    }
+
+    bool enqueue_no_senders_notification_locked(
+        KernelSharedState& state, std::uint32_t object)
+    {
+        const auto key = std::pair { object, mach_notify_no_senders };
+        const auto request = state.mach_notifications.find(key);
+        const auto port_object = state.mach_port_objects.lookup(object);
         if (request == state.mach_notifications.end() || !port_object ||
             request->second.notify_object == xnu::ipc::null_name ||
-            state.mach_namespaces.right_reference_count(
-                object, xnu::ipc::Right::Send) != 0 ||
-            has_inflight || has_kernel_hold ||
+            port_has_send_rights_locked(state, object) ||
             port_object->make_send_count < request->second.sync) {
             return false;
         }

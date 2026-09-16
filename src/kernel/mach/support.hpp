@@ -105,6 +105,8 @@ namespace mach_support {
         const KernelSharedState& state, std::uint32_t process_id,
         std::uint32_t port_name);
 
+    [[nodiscard]] bool port_has_send_rights_locked(
+        const KernelSharedState& state, std::uint32_t object);
     [[nodiscard]] bool enqueue_no_senders_notification_locked(
         KernelSharedState& state, std::uint32_t object);
     void enqueue_dead_name_notification_locked(KernelSharedState& state,
