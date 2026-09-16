@@ -918,8 +918,12 @@ namespace mach_support {
             }
             static_cast<void>(state.remove_mach_port_set_member_from_all_locked(
                 entry->object));
+            // XNU ipc_port_clear_receiver discards receiver-local state when
+            // MOVE_RECEIVE puts the port in transit. The next receiver may
+            // install its own context/guard without inheriting the old one.
+            state.mach_port_contexts.erase(entry->object);
             static_cast<void>(
-                state.mach_port_objects.set_receive_owner(entry->object, 0));
+                state.mach_port_objects.clear_receiver(entry->object));
             return true;
         }
         if (right != xnu::ipc::Right::Send &&
@@ -959,8 +963,9 @@ namespace mach_support {
                 // The port remains active without a receiver until the
                 // MOVE_RECEIVE descriptor is copied out by the notification
                 // receiver.
+                state.mach_port_contexts.erase(object);
                 static_cast<void>(
-                    state.mach_port_objects.set_receive_owner(object, 0));
+                    state.mach_port_objects.clear_receiver(object));
                 return;
             }
             // A dead notification endpoint cannot consume the receive right.

@@ -94,6 +94,20 @@ public:
         return true;
     }
 
+    [[nodiscard]] bool clear_receiver(PortObjectId object)
+    {
+        const auto found = objects_.find(object);
+        if (found == objects_.end())
+            return false;
+        auto& port = found->second;
+        port.receive_owner = 0;
+        port.make_send_count = 0;
+        port.sequence_number = 0;
+        port.guard.reset();
+        port.strict_guard = false;
+        return true;
+    }
+
     [[nodiscard]] bool set_make_send_count(
         PortObjectId object, std::uint32_t count)
     {
