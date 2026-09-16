@@ -37,14 +37,18 @@ namespace {
         return profile == DarwinPthreadAbi::BsdThreadRegisterV1 ||
                profile == DarwinPthreadAbi::BsdThreadRegisterV1TsdBase ||
                profile == DarwinPthreadAbi::
-                              BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues;
+                              BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues ||
+               profile == DarwinPthreadAbi::
+                              BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues;
     }
 
     [[nodiscard]] std::uint32_t workqueue_priority_count_for_abi(
         DarwinPthreadAbi profile) noexcept
     {
         if (profile == DarwinPthreadAbi::
-                           BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues) {
+                           BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues ||
+            profile == DarwinPthreadAbi::
+                           BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues) {
             return 4U;
         }
         return supports_bsdthread_register_v1(profile) ? 3U : 0U;
@@ -53,6 +57,10 @@ namespace {
     [[nodiscard]] std::uint32_t thread_pointer_for_pthread(
         DarwinPthreadAbi profile, std::uint32_t pthread_address) noexcept
     {
+        if (profile == DarwinPthreadAbi::
+                           BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues) {
+            return pthread_address + 0xa4U;
+        }
         if (profile == DarwinPthreadAbi::BsdThreadRegisterV1TsdBase ||
             profile == DarwinPthreadAbi::
                            BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues) {

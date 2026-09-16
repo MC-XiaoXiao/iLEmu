@@ -29,6 +29,9 @@ enum class DarwinPthreadAbi : std::uint8_t {
     // Darwin 11 retains the ARM32 v1 registration/TSD layout and adds the
     // background workqueue priority to high/default/low.
     BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,
+    // Split libpthread retains v1 registration and four queues, but moves
+    // its embedded TSD past the expanded thread bookkeeping fields.
+    BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,
     BsdThreadRegisterV2,
 };
 

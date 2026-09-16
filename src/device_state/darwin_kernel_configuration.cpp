@@ -195,7 +195,8 @@ namespace {
             .darwin_release = "14.0.0",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::Later,
-                .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV2,
+                .pthread_abi = DarwinPthreadAbi::
+                    BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,
                 .mach_vm_address = DarwinMachVmAddressWidth::Wide64,
                 .arm_commpage = DarwinArmCommpageAbi::HighDataAddress,
                 .shared_region_abi =
