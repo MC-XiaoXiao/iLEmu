@@ -954,6 +954,34 @@ struct SdlDisplay::Impl {
     }
 #endif
 
+    HostGraphicsDevice::PresentResult present_native_frame(
+        const std::shared_ptr<HostGraphicsDevice>& graphics,
+        const DisplayFrame& frame)
+    {
+        const auto deadline =
+            std::chrono::steady_clock::now() + presentation_flush_timeout;
+        auto& performance = performance_counters();
+        while (true) {
+            performance.record_native_present_attempt();
+            const auto result = graphics->present(frame.host_surface);
+            if (result != HostGraphicsDevice::PresentResult::Skipped)
+                return result;
+            performance.record_native_present_skipped();
+            // A busy swapchain retains this frame and its surface lease.
+            // Retry on the presenter worker without blocking input or letting
+            // a later frame overtake it.
+            std::unique_lock lock { frame_mutex };
+            if (presentation_available.wait_for(lock,
+                    std::chrono::milliseconds { 1 }, [this] {
+                        return presentation_stopping || !running ||
+                               presentation_failed;
+                    }) ||
+                std::chrono::steady_clock::now() >= deadline) {
+                return HostGraphicsDevice::PresentResult::Failed;
+            }
+        }
+    }
+
     void start_native_presenter()
     {
         if (presentation_thread.joinable() || presentation_failed || !running)
@@ -1015,19 +1043,14 @@ struct SdlDisplay::Impl {
                         std::move(worker_last_presented_frame));
                     lock.unlock();
                 }
-                if (telemetry_enabled)
-                    performance.record_native_present_attempt();
                 const auto result =
                     prepared && graphics && frame.host_surface
-                        ? graphics->present(frame.host_surface)
+                        ? present_native_frame(graphics, frame)
                         : HostGraphicsDevice::PresentResult::Failed;
                 if (result == HostGraphicsDevice::PresentResult::Queued) {
                     presented_frames.fetch_add(1, std::memory_order_release);
                     performance.record_native_present(
                         frame.sequence, frame.submitted_at);
-                } else if (result ==
-                           HostGraphicsDevice::PresentResult::Skipped) {
-                    performance.record_native_present_skipped();
                 } else {
                     performance.record_native_present_failure();
                 }
