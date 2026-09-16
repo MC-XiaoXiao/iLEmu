@@ -1171,7 +1171,7 @@ void CompatibilityKernel::install_main_image_hle(
 
 void CompatibilityKernel::set_process_image(std::string_view guest_path,
     std::span<const std::byte> code_signature_entitlements,
-    const MachOImage* dynamic_linker)
+    const MachOImage* dynamic_linker, const MachOImage* executable)
 {
     process_image_ = guest_path;
     if (is_application_executable_path(guest_path) &&
@@ -1200,6 +1200,10 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
     record.effective_gid = process_.effective_gid;
     record.nice_value = process_.nice_value;
     if (new_process_incarnation) {
+        record.start_wall_nanoseconds = shared_state_->clock.wall_time();
+        if (const auto parent = shared_state_->processes.find(process_.parent_pid);
+            parent != shared_state_->processes.end())
+            record.parent_incarnation = parent->second.incarnation;
         record.memory_status = darwin::memorystatus::initial_state(
             shared_state_->darwin_abi.memory_status_priority);
         record.incarnation = shared_state_->next_process_incarnation++;
@@ -1209,6 +1213,8 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
         record.signal_stopped = false;
     }
     record.exited = false;
+    record.executable_uuid = executable && executable->uuid()
+        ? *executable->uuid() : std::array<std::byte, 16> { };
     record.audit_identity_version = shared_state_->next_audit_identity_version++;
     record.exit_status = 0;
     record.termination_signal = 0;
@@ -2791,6 +2797,9 @@ void CompatibilityKernel::inherit_process_state(
     child_record.pid_suspended = false;
     child_record.signal_stopped = false;
     child_record.incarnation = shared_state_->next_process_incarnation++;
+    child_record.parent_incarnation =
+        shared_state_->processes[parent.process_.pid].incarnation;
+    child_record.start_wall_nanoseconds = shared_state_->clock.wall_time();
     child_record.audit_identity_version = shared_state_->next_audit_identity_version++;
     if (child_record.incarnation == 0U)
         child_record.incarnation = shared_state_->next_process_incarnation++;

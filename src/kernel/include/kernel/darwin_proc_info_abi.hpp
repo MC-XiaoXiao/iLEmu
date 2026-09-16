@@ -20,7 +20,11 @@ inline constexpr std::uint32_t syscall_number = 336U;
 inline constexpr std::uint32_t call_pid_info = 2U;
 inline constexpr std::uint32_t flavor_pid_path_info = 11U;
 inline constexpr std::uint32_t flavor_pid_short_bsd_info = 13U;
+inline constexpr std::uint32_t flavor_pid_unique_identifier_info = 17U;
+inline constexpr std::uint32_t flavor_pid_bsd_info_with_identity = 18U;
 inline constexpr std::uint32_t short_bsd_info_size = 64U;
+inline constexpr std::uint32_t unique_identifier_info_size = 56U;
+inline constexpr std::uint32_t bsd_info_size = 136U;
 inline constexpr std::uint32_t flag_importance_donor = 0x00400000U;
 
 // PROC_PIDPATHINFO accepts one to four MAXPATHLEN buffers. The kernel clears

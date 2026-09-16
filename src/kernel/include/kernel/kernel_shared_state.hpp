@@ -599,6 +599,9 @@ struct KernelSharedState {
         // monotonic product-internal identity so transition observations never
         // join facts from two different processes that share a PID.
         std::uint64_t incarnation { };
+        std::uint64_t parent_incarnation { };
+        std::uint64_t start_wall_nanoseconds { };
+        std::array<std::byte, 16> executable_uuid { };
         // Audit tokens distinguish both PID reuse and replacement by exec.
         std::uint32_t audit_identity_version { };
         darwin::memorystatus::ProcessState memory_status { };

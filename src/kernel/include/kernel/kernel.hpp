@@ -429,7 +429,8 @@ public:
         Cpu& cpu, std::string_view mapped_guest_path = { });
     void set_process_image(std::string_view guest_path,
         std::span<const std::byte> code_signature_entitlements = { },
-        const MachOImage* dynamic_linker = nullptr);
+        const MachOImage* dynamic_linker = nullptr,
+        const MachOImage* executable = nullptr);
     void set_process_arguments(const std::vector<std::string>& arguments,
         const std::vector<std::string>& environment);
     [[nodiscard]] const std::map<std::size_t, PendingWait>&
