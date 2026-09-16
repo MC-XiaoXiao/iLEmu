@@ -580,8 +580,17 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                         registers[0] = 0x1000000eU;
                         return;
                     }
-                    ool_port_arrays.push_back(
-                        { descriptor.offset, descriptor.count_or_size });
+                    KernelSharedState::MachMessage::OolPortArray array {
+                        descriptor.offset, descriptor.count_or_size, { } };
+                    for (std::uint32_t element = 0;
+                        element < descriptor.count_or_size; ++element) {
+                        if (memory_.read32(descriptor.address_or_name +
+                                element * darwin::mig_wire::word_size) ==
+                            xnu::ipc::dead_name) {
+                            array.dead_elements.push_back(element);
+                        }
+                    }
+                    ool_port_arrays.push_back(std::move(array));
                     if (descriptor.deallocate() && byte_size != 0) {
                         ool_deallocations.emplace_back(
                             descriptor.address_or_name, byte_size);
@@ -768,7 +777,8 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                         if (descriptor.kind ==
                             mach_transport::DescriptorKind::Port) {
                             const auto name = descriptor.address_or_name;
-                            if (name == xnu::ipc::null_name)
+                            if (name == xnu::ipc::null_name ||
+                                name == xnu::ipc::dead_name)
                                 continue;
                             if (const auto transfer =
                                     capture(name, descriptor.disposition(),
@@ -793,7 +803,8 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                                         descriptor.address_or_name +
                                         element * darwin::mig_wire::word_size)
                                     .value_or(0);
-                            if (name == xnu::ipc::null_name)
+                            if (name == xnu::ipc::null_name ||
+                                name == xnu::ipc::dead_name)
                                 continue;
                             if (const auto transfer =
                                     capture(name, descriptor.disposition(),

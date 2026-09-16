@@ -488,6 +488,9 @@ struct KernelSharedState {
         struct OolPortArray {
             std::uint32_t descriptor_offset { };
             std::uint32_t count { };
+            // Literal MACH_PORT_DEAD elements carry no capability. Null
+            // elements are implicit; live rights use PortTransfer instead.
+            std::vector<std::uint32_t> dead_elements;
         };
 
         std::vector<std::byte> bytes;

@@ -626,10 +626,12 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
                 0xffU;
             const auto sender_name =
                 read_little_word(pending_message.bytes, offset);
-            if (sender_name == xnu::ipc::null_name) {
+            if (sender_name == xnu::ipc::null_name ||
+                sender_name == xnu::ipc::dead_name) {
                 // ipc_kmsg_copyout always exposes a port descriptor using its
                 // receive-side type, including descriptors that carry
-                // MACH_PORT_NULL. MIG validates the descriptor type before
+                // MACH_PORT_NULL or MACH_PORT_DEAD. Neither sentinel owns a
+                // capability. MIG validates the descriptor type before
                 // looking at the name, so retaining COPY_SEND/MAKE_SEND here
                 // incorrectly rejects a valid null result.
                 write_little_word(received->bytes, offset + 8U,
@@ -701,6 +703,14 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         }
         const auto byte_size = array.count * darwin::mig_wire::word_size;
         std::vector<std::byte> names(byte_size);
+        for (const auto element : array.dead_elements) {
+            if (element >= array.count) {
+                outcome.status = 0x10004008U;
+                return outcome;
+            }
+            write_little_word(names, element * darwin::mig_wire::word_size,
+                xnu::ipc::dead_name);
+        }
         for (const auto& transfer : pending_message.port_transfers) {
             if (transfer.descriptor_offset != array.descriptor_offset ||
                 !transfer.array_index) {
