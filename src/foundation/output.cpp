@@ -21,6 +21,7 @@ namespace {
             "[loader]",
             "[clock]",
             "[process]",
+            "[cpu] fatal",
             "[display]",
             "[baseband]",
             "[watch]",
