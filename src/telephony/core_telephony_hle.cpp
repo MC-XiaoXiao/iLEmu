@@ -87,9 +87,10 @@ namespace {
     // These are exported CF objects rather than callable entry points. Keep the
     // data and function dependencies separate so shared-cache mappings publish
     // __DATA exports without treating their bytes as executable code.
-    constexpr std::array<std::string_view, 5> core_telephony_data_exports {
+    constexpr std::array<std::string_view, 6> core_telephony_data_exports {
         "_kCTRegistrationStatusNotRegistered",
         "_kCTRegistrationNetworkSelectionModeDisabled",
+        "_kCTRegistrationRadioAccessTechnologyUnknown",
         offline_sim_status_export,
         call_status_change_notification,
         call_dictionary_key,
@@ -174,9 +175,9 @@ namespace {
         call.set_return(exported_object(call, variable));
     }
 
-    void return_empty_server_string(UserlandHleCall& call)
+    void return_empty_server_string(UserlandHleCall& call, bool offline_transport)
     {
-        if (!is_offline_ui_client(call)) {
+        if (!offline_transport && !is_offline_ui_client(call)) {
             call.resume_original();
             return;
         }
@@ -848,9 +849,24 @@ void register_core_telephony_hle(UserlandHleRegistry& registry,
     }
     for (const auto symbol : offline_server_string_queries) {
         registry.register_function(std::string { core_telephony_image },
-            std::string { symbol },
-            [](UserlandHleCall& call) { return_empty_server_string(call); });
+            std::string { symbol }, [offline_transport](UserlandHleCall& call) {
+                return_empty_server_string(call, offline_transport);
+            });
     }
+    registry.register_function(std::string { core_telephony_image },
+        "__CTServerConnectionGetRadioAccessTechnology",
+        [offline_transport](UserlandHleCall& call) {
+            if (!offline_transport) {
+                call.resume_original();
+                return;
+            }
+            // An unregistered offline radio has no selected access technology.
+            // Use the firmware's own constant, also for daemon audio clients.
+            return_server_value(call,
+                exported_object(
+                    call, "_kCTRegistrationRadioAccessTechnologyUnknown"),
+                true);
+        });
     registry.register_function(std::string { core_telephony_image },
         "__CTServerConnectionGetEmergencyCallBackMode",
         [offline_transport](UserlandHleCall& call) {
@@ -883,16 +899,27 @@ void register_core_telephony_hle(UserlandHleRegistry& registry,
             return_server_failure(call, call.argument(0), call.argument(2),
                 equipment_info_unavailable_error);
         });
-    registry.register_function(std::string { core_telephony_image },
-        "__CTServerConnectionCopyMobileEquipmentInfo",
-        [offline_transport](UserlandHleCall& call) {
-            if (!offline_transport) {
-                call.resume_original();
-                return;
-            }
-            return_server_failure(call, call.argument(0), call.argument(2),
-                equipment_info_unavailable_error);
-        });
+    // These queries require physical modem/SIM data. The offline transport
+    // cannot provide it, including to system services starting before
+    // CommCenter. Let each native client handle the missing hardware result.
+    for (const auto symbol : {
+             "__CTServerConnectionCopyMobileEquipmentInfo",
+             "__CTServerConnectionCopyAudioVocoderInfo",
+             "__CTServerConnectionCopyGid1",
+             "__CTServerConnectionCopyGid2",
+         }) {
+        registry.register_function(std::string { core_telephony_image }, symbol,
+            [offline_transport](UserlandHleCall& call) {
+                if (!offline_transport) {
+                    call.resume_original();
+                    return;
+                }
+                return_server_failure(call, call.argument(0), call.argument(2),
+                    call.argument(1) && call.argument(2)
+                        ? equipment_info_unavailable_error
+                        : 22U);
+            });
+    }
     registry.register_function(std::string { core_telephony_image },
         "__CTServerConnectionGetSIMStatus",
         [offline_transport](UserlandHleCall& call) {
