@@ -249,7 +249,20 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         bsd_success(cpu, 0);
         return;
     }
-    case 5: { // open
+    case 5: // open
+    case 216: { // open_dprotected_np
+        const auto flags = registers[1];
+        const auto mode = number == 216U ? registers[4] : registers[2];
+        constexpr std::uint32_t raw_encrypted = 1U; // O_DP_GETRAWENCRYPTED
+        if (number == 216U && (registers[3] & raw_encrypted) != 0U &&
+            (flags & darwin::open_flag::access_mode) !=
+                darwin::open_flag::read_only) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+        // The VFS exposes an unencrypted volume (F_GETPROTECTIONCLASS=0).
+        // Raw reads therefore use the same bytes and descriptor lifecycle as
+        // open; a requested creation class adds no encryption metadata.
         const auto path = memory_.read_c_string(registers[0]);
         if (!path) {
             bsd_error(cpu, bsd_support::bad_address);
@@ -268,7 +281,6 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         const auto host = resolve_guest_path(*path);
-        const auto flags = registers[1];
         std::shared_ptr<bsd::baseband_device::OpenDescription>
             baseband_description;
         output_.write("[vfs] open " + *path + "\n");
@@ -440,7 +452,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                     shared_state_->guest_file_generation_registry->publish(
                         host, GuestFileMutationKind::InstallReplace));
                 output_.write("[vfs] create " + *path + " mode=" +
-                              std::to_string(registers[2] & 07777U) + "\n");
+                              std::to_string(mode & 07777U) + "\n");
             }
             const auto status = std::filesystem::status(host, error);
             if (error || (!std::filesystem::is_regular_file(status) &&
@@ -484,7 +496,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                 shared_state_->hfs_metadata_overrides[metadata->permanent_id];
             metadata_override.mode =
                 0100000U |
-                (registers[2] & ~process_.file_creation_mask & 07777U);
+                (mode & ~process_.file_creation_mask & 07777U);
             metadata_override.owner = process_.effective_uid;
             metadata_override.group = process_.effective_gid;
             metadata_override.creation_time = timestamp;

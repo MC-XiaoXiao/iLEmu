@@ -335,6 +335,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 201:
     case 196:
     case 199:
+    case 216: // open_dprotected_np
     case 220:
     case 221:
     case 344:
