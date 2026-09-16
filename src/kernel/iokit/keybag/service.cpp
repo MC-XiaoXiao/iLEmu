@@ -27,6 +27,7 @@ namespace {
     constexpr std::uint32_t get_keybag_lock_state_selector = 7U;
     constexpr std::uint32_t get_device_lock_state_selector = 17U;
     constexpr std::uint32_t get_system_keybag_selector = 14U;
+    constexpr std::uint32_t copy_keybag_uuid_selector = 23U;
     constexpr std::uint32_t load_blastable_bytes_selector = 5U;
     constexpr std::uint32_t store_blastable_bytes_selector = 6U;
     // MobileKeyBag treats device state 3 as an unlocked device with no
@@ -197,6 +198,22 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         inband_output_capacity == 0U) {
         return MethodResult {
             iokit_abi::success, { device_lock_state_no_passcode }, { } };
+    }
+    if (selector == copy_keybag_uuid_selector) {
+        constexpr std::uint32_t uuid_size = 16U;
+        if (scalar_input.size() != 1U || !inband_input.empty() ||
+            scalar_output_capacity != 0U || inband_output_capacity < uuid_size)
+            return MethodResult { iokit_abi::bad_argument, { }, { } };
+        // Handles allocated by this store are positive. Zero aliases the
+        // system bag; unregistered special bags and unknown handles do not
+        // exist. Native MobileKeyBag distinguishes absence from unsupported
+        // UUID export and can safely skip cleanup of an unregistered bag.
+        const auto handle = scalar_input.front();
+        const bool known = handle == 0U ||
+                           handle == state.system_keybag_handle ||
+                           (handle > 0U && handle < state.next_keybag_handle);
+        if (!known)
+            return MethodResult { iokit_abi::not_found, { }, { } };
     }
     // AppleKeyStore's symmetric system-bag ABI uses selectors 10/11 for
     // authenticated wrapping/unwrapping. The no-passcode model already exposes
