@@ -493,6 +493,7 @@ struct KernelSharedState {
         std::vector<std::byte> bytes;
         std::uint32_t destination { };
         std::uint32_t sender_pid { };
+        std::uint32_t sender_identity_version { };
         // Set only for Guest-originated messages while CPU diagnostics are
         // enabled. This is host monotonic time, deliberately separate from the
         // Guest mach_absolute_time domain used by the probe.
@@ -598,6 +599,8 @@ struct KernelSharedState {
         // monotonic product-internal identity so transition observations never
         // join facts from two different processes that share a PID.
         std::uint64_t incarnation { };
+        // Audit tokens distinguish both PID reuse and replacement by exec.
+        std::uint32_t audit_identity_version { };
         darwin::memorystatus::ProcessState memory_status { };
         bool importance_donor { };
         std::uint32_t dyld_all_image_info_address { };
@@ -1445,6 +1448,7 @@ struct KernelSharedState {
     float springboard_unlock_touch_end_y { };
     std::uint64_t next_application_launch_token { 1 };
     std::uint64_t next_process_incarnation { 1 };
+    std::uint32_t next_audit_identity_version { 1 };
     std::uint64_t next_foreground_transition_generation { 1 };
     // One active immutable observation is sufficient for the current
     // foreground handoff. Replacing it is explicit and bounded; no event path

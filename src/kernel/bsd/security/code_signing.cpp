@@ -16,7 +16,7 @@
 
 namespace ilemu {
 
-void CompatibilityKernel::dispatch_bsd_code_signing(Cpu& cpu)
+void CompatibilityKernel::dispatch_bsd_code_signing(Cpu& cpu, bool require_audit_token)
 {
     constexpr std::uint32_t entitlements_blob = 7U;
     constexpr std::uint32_t entitlement_magic = 0xfade7171U;
@@ -26,6 +26,11 @@ void CompatibilityKernel::dispatch_bsd_code_signing(Cpu& cpu)
     const auto operation = registers[1];
     const auto address = registers[2];
     const auto capacity = registers[3];
+    const auto audit_address = require_audit_token ? registers[4] : 0U;
+    if (require_audit_token && audit_address == 0U) {
+        bsd_error(cpu, darwin::error::invalid_argument);
+        return;
+    }
     std::vector<std::byte> payload;
     {
         const std::lock_guard lock { shared_state_->mach_mutex };
@@ -33,6 +38,21 @@ void CompatibilityKernel::dispatch_bsd_code_signing(Cpu& cpu)
         if (target == shared_state_->processes.end() || target->second.exited) {
             bsd_error(cpu, darwin::error::no_such_process);
             return;
+        }
+        if (require_audit_token) {
+            constexpr std::uint32_t audit_token_size = 8U * sizeof(std::uint32_t);
+            if (!memory_.accessible(audit_address, audit_token_size,
+                    MemoryPermission::Read)) {
+                bsd_error(cpu, darwin::error::bad_address);
+                return;
+            }
+            const auto token_pid = memory_.read32(audit_address + 20U);
+            const auto token_version = memory_.read32(audit_address + 28U);
+            if (token_pid != target_pid ||
+                token_version != target->second.audit_identity_version) {
+                bsd_error(cpu, darwin::error::no_such_process);
+                return;
+            }
         }
         if (operation != entitlements_blob) {
             bsd_error(cpu, darwin::error::invalid_argument);

@@ -145,7 +145,7 @@ std::optional<ReceivedMessage> prepare_received_message(
             message.sender_gid,
             message.sender_pid,
             message.sender_pid,
-            0,
+            message.sender_identity_version,
         };
         for (std::size_t index = 0; index < audit_token.size(); ++index) {
             write_word(result.bytes, aligned_size + 20U + index * 4U,

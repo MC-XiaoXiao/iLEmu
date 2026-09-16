@@ -259,6 +259,7 @@ namespace syscall {
     inline constexpr std::uint32_t update_file_times = 138;
     inline constexpr std::uint32_t update_file_times_fd = 139;
     inline constexpr std::uint32_t code_signing_operations = 169;
+    inline constexpr std::uint32_t code_signing_audit_operations = 170;
     inline constexpr std::uint32_t set_group_id = 181;
     inline constexpr std::uint32_t set_effective_group_id = 182;
     inline constexpr std::uint32_t set_effective_user_id = 183;
