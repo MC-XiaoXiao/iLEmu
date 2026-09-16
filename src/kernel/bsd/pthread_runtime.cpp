@@ -433,7 +433,10 @@ void CompatibilityKernel::notify_thread_blocked(std::size_t processor)
 bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
 {
     const auto profile = shared_state_->darwin_abi.pthread_abi;
-    if (!supports_bsdthread_register_v1(profile))
+    // The thread identity query is independent of the registration layout.
+    const bool supports_thread_identity =
+        number == 372 && profile == DarwinPthreadAbi::BsdThreadRegisterV2;
+    if (!supports_bsdthread_register_v1(profile) && !supports_thread_identity)
         return false;
 
     auto& registers = cpu.registers();
