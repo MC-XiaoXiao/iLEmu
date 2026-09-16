@@ -201,6 +201,8 @@ namespace {
                     DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar,
                 .mach_vm_address = DarwinMachVmAddressWidth::Wide64,
                 .arm_commpage = DarwinArmCommpageAbi::HighDataAddress,
+                .initial_apple_vector_abi =
+                    DarwinInitialAppleVectorAbi::LegacyExecutablePath,
                 .shared_region_abi =
                     DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1,
                 .mach_kernel_rpc =
