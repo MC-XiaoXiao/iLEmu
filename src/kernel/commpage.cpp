@@ -40,6 +40,9 @@ void CompatibilityKernel::install_commpage()
     if (shared_state_->darwin_abi.arm_commpage ==
         DarwinArmCommpageAbi::HighAddress)
         install(0xffff1000U);
+    if (shared_state_->darwin_abi.arm_commpage ==
+        DarwinArmCommpageAbi::HighDataAddress)
+        install(0xffff4000U);
 }
 
 } // namespace ilemu

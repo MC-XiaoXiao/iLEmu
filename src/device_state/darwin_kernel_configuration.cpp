@@ -197,6 +197,7 @@ namespace {
                 .abi_epoch = DarwinAbiEpoch::Later,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV2,
                 .mach_vm_address = DarwinMachVmAddressWidth::Wide64,
+                .arm_commpage = DarwinArmCommpageAbi::HighDataAddress,
                 .shared_region_abi =
                     DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1,
                 .mach_kernel_rpc =

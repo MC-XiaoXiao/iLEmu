@@ -70,6 +70,7 @@ enum class DarwinSandboxAbi : std::uint8_t {
 enum class DarwinArmCommpageAbi : std::uint8_t {
     LegacyAddress,
     HighAddress,
+    HighDataAddress,
 };
 
 // Later ARM32 firmware added a fixed mach_vm shared-region mapping array plus
