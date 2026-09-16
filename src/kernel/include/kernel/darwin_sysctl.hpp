@@ -42,6 +42,7 @@ inline constexpr std::uint32_t kernel_version = 4;
 inline constexpr std::uint32_t kernel_clock_rate = 12;
 inline constexpr std::uint32_t kernel_security_level = 9;
 inline constexpr std::uint32_t kernel_process = 14;
+inline constexpr std::uint32_t kernel_boot_time = 21;
 inline constexpr std::uint32_t kernel_maximum_files_per_process = 29;
 inline constexpr std::uint32_t kernel_process_arguments = 38;
 inline constexpr std::uint32_t kernel_process_arguments2 = 49;

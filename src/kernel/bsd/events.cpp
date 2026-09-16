@@ -2264,6 +2264,25 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             case darwin::sysctl::kernel_build_version:
                 write_read_only_string(identity.build_version);
                 return;
+            case darwin::sysctl::kernel_boot_time: {
+                const auto boot = shared_state_->clock.boot_time();
+                const std::array<std::uint32_t, 2> timeval {
+                    static_cast<std::uint32_t>(
+                        boot / VirtualClock::nanoseconds_per_second),
+                    static_cast<std::uint32_t>(
+                        (boot % VirtualClock::nanoseconds_per_second) / 1000U)
+                };
+                std::array<std::byte, 8> bytes { };
+                for (std::size_t index = 0; index < timeval.size(); ++index) {
+                    for (std::size_t byte = 0; byte < sizeof(std::uint32_t);
+                        ++byte) {
+                        bytes[index * sizeof(std::uint32_t) + byte] =
+                            static_cast<std::byte>(timeval[index] >> (byte * 8U));
+                    }
+                }
+                write_read_only_bytes(bytes);
+                return;
+            }
             case darwin::sysctl::kernel_clock_rate: {
                 // Darwin 11 exposes struct clockinfo for KERN_CLOCKRATE:
                 // hz, tick, tickadj, stathz and profhz. These are stable

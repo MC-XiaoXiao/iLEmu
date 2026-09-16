@@ -18,6 +18,7 @@ namespace {
     constexpr std::uint32_t writable = 0x40000000U;
     constexpr std::uint32_t integer_type = 2U;
     constexpr std::uint32_t string_type = 3U;
+    constexpr std::uint32_t structure_type = 5U;
     constexpr std::uint32_t quad_type = 4U;
 
     struct NamedObject {
@@ -50,6 +51,8 @@ namespace {
         NamedObject { "kern.argmax", control_kernel, 8 },
         NamedObject { "kern.hostname", control_kernel, 10,
             readable | writable | string_type, "A" },
+        NamedObject { "kern.boottime", control_kernel, kernel_boot_time,
+            readable | structure_type, "S,timeval" },
         NamedObject { "kern.netboot", control_kernel, 40 },
         NamedObject { "kern.osversion", control_kernel, kernel_build_version,
             readable | string_type, "A" },

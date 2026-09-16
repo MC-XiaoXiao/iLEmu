@@ -26,6 +26,8 @@ public:
 
     [[nodiscard]] std::uint64_t now() const;
     [[nodiscard]] std::uint64_t wall_time() const;
+    // Calendar time at monotonic zero; follows RTC adjustments atomically.
+    [[nodiscard]] std::uint64_t boot_time() const;
     void set_wall_time(std::uint64_t unix_time_nanoseconds);
     // Retained for deterministic fixtures that seed a known calendar value.
     void synchronize_wall_time(std::uint64_t unix_time_nanoseconds);

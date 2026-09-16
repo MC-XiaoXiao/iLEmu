@@ -64,6 +64,12 @@ std::uint64_t VirtualClock::wall_time() const
     return positive_offset + monotonic_time;
 }
 
+std::uint64_t VirtualClock::boot_time() const
+{
+    const auto offset = wall_time_offset_.load(std::memory_order_relaxed);
+    return offset > 0 ? static_cast<std::uint64_t>(offset) : 0U;
+}
+
 void VirtualClock::set_wall_time(std::uint64_t unix_time_nanoseconds)
 {
     wall_time_offset_.store(calendar_offset(unix_time_nanoseconds, now()),
