@@ -41,6 +41,7 @@ namespace {
     constexpr std::uint32_t vm_protection_write = 2U;
     constexpr std::uint32_t vm_protection_execute = 4U;
     constexpr std::uint32_t maximum_inheritance = 2U;
+    constexpr std::uint32_t vm_flags_return_data_address = 0x00100000U;
 
     [[nodiscard]] std::optional<std::uint32_t> round_page_size(
         std::uint32_t size)
@@ -125,13 +126,21 @@ bool CompatibilityKernel::dispatch_mach_vm_remap_message(
         registers[0] = kern_success;
         return true;
     }
-    auto target_address = static_cast<std::uint32_t>(*target_wire);
+    constexpr auto page_mask = AddressSpace::page_size - 1U;
+    auto target_address = static_cast<std::uint32_t>(*target_wire) & ~page_mask;
     const auto requested_size = static_cast<std::uint32_t>(*size_wire);
     const auto mask = static_cast<std::uint32_t>(*mask_wire);
-    const auto source_address = static_cast<std::uint32_t>(*source_wire);
+    const auto requested_source_address = static_cast<std::uint32_t>(*source_wire);
+    const auto source_address = requested_source_address & ~page_mask;
+    const auto data_offset = (*flags & vm_flags_return_data_address) != 0U
+        ? requested_source_address & page_mask : 0U;
 
-    const auto requested_target_address = target_address;
-    const auto size = round_page_size(requested_size);
+    // XNU rounds the source down even for the legacy interface. When callers
+    // request the data address, include its page offset in the covered extent
+    // so a small byte range crossing a page boundary maps both pages.
+    const auto requested_target_address = static_cast<std::uint32_t>(*target_wire);
+    const auto size = requested_size <= UINT32_MAX - data_offset
+        ? round_page_size(requested_size + data_offset) : std::nullopt;
     const auto descriptor_type =
         *descriptor_metadata >> darwin::mig_wire::descriptor_type_shift;
     const auto descriptor_disposition =
@@ -151,7 +160,9 @@ bool CompatibilityKernel::dispatch_mach_vm_remap_message(
     std::uint32_t result = kern_success;
     if (*body_count != descriptor_count || descriptor_type != 0U ||
         descriptor_disposition != darwin::mig_wire::disposition_copy_send ||
-        !size || source_address % AddressSpace::page_size != 0U ||
+        requested_size == 0U || !size ||
+        static_cast<std::uint64_t>(source_address) + size.value_or(0U) >
+            (std::uint64_t { 1 } << 32U) ||
         *inheritance > maximum_inheritance || !target_pid || !source_pid ||
         *target_pid != process_.pid) {
         result = kern_invalid_argument;
@@ -228,7 +239,8 @@ bool CompatibilityKernel::dispatch_mach_vm_remap_message(
         1U,
         result,
     };
-    profile.append_address(reply, target_address);
+    profile.append_address(reply, result == kern_success
+        ? target_address + data_offset : requested_target_address);
     reply.push_back(protection);
     reply.push_back(protection);
     if (!write_words(memory_, request.address, reply))
@@ -242,7 +254,7 @@ bool CompatibilityKernel::dispatch_mach_vm_remap_message(
                   " size=" + std::to_string(size.value_or(0U)) + " mask=" +
                   std::to_string(mask) + " flags=" + std::to_string(*flags) +
                   " source-pid=" + std::to_string(source_pid.value_or(0U)) +
-                  " source=" + std::to_string(source_address) +
+                  " source=" + std::to_string(requested_source_address) +
                   " copy=" + std::to_string(*copy != 0U) +
                   " inheritance=" + std::to_string(*inheritance) +
                   " protection=" + std::to_string(protection) +
