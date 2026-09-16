@@ -82,7 +82,8 @@ namespace {
 
 } // namespace
 
-void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
+void CompatibilityKernel::dispatch_mach_message(
+    Cpu& cpu, std::optional<std::uint32_t> receive_address)
 {
     auto& registers = cpu.registers();
     const auto message_address = registers[0];
@@ -110,7 +111,8 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                 return;
             }
             pending_mach_receives_[cpu.processor_id()] =
-                PendingMachReceive { message_address, registers[3],
+                PendingMachReceive { receive_address.value_or(message_address),
+                    registers[3],
                     registers[4], registers[1], cpu.processor_id(), deadline,
                     receive_object,
                     shared_state_->mach_port_sets.contains(*receive_object), 0,
@@ -149,328 +151,336 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
         registers[0] = 0x1000000eU; // MACH_SEND_INVALID_MEMORY
         return;
     }
-    if (const auto result = handle_clock_mach_request(memory_, *shared_state_,
-            process_, *message_id, message_address, registers[2], registers[3],
-            *remote_port, *local_port)) {
-        registers[0] = *result;
-        return;
-    }
-    const MachMessageRequest request { message_address, *bits, *remote_port,
-        *local_port, *message_id };
-    if (dispatch_mach_host_message(cpu, request) ||
-        dispatch_mach_processor_message(cpu, request) ||
-        dispatch_mach_port_message(cpu, request) ||
-        dispatch_mach_port_context_message(cpu, request) ||
-        dispatch_mach_task_enumeration_message(cpu, request) ||
-        dispatch_mach_task_info_message(cpu, request) ||
-        dispatch_mach_task_exception_message(cpu, request) ||
-        dispatch_mach_thread_lifecycle_message(cpu, request) ||
-        dispatch_mach_thread_state_message(cpu, request) ||
-        dispatch_mach_task_vm_message(cpu, request) ||
-        dispatch_mach_rights_message(cpu, request) ||
-        dispatch_mach_notification_message(cpu, request)) {
-        return;
-    }
-    const auto* vproc_log_contract =
-        protocol_vproc::contract_for_log_message(*message_id);
-    if (vproc_log_contract != nullptr && registers[2] >= 48U) {
-        const auto& arguments = xnu::mig::protocol_vproc::log_arguments;
-        const auto priority =
-            memory_.read32(message_address + arguments[1].request_offset)
-                .value_or(0);
-        const auto error =
-            memory_.read32(message_address + arguments[2].request_offset)
-                .value_or(0);
-        const auto count =
-            memory_.read32(message_address + arguments[3].request_count_offset)
-                .value_or(0);
-        const auto padded_count = (count + 3U) & ~3U;
-        const auto valid_log_shape =
-            count != 0U && count <= arguments[3].wire_size &&
-            padded_count <= std::numeric_limits<std::uint32_t>::max() -
-                                arguments[3].request_offset &&
-            arguments[3].request_offset + padded_count == registers[2];
-        if (!valid_log_shape)
-            vproc_log_contract = nullptr;
-        const auto available = valid_log_shape ? count : 0U;
-        std::string message;
-        if (available != 0) {
-            if (const auto bytes = memory_.read_bytes(
-                    message_address + arguments[3].request_offset, available)) {
-                for (const auto byte : *bytes) {
-                    const auto character = std::to_integer<unsigned char>(byte);
-                    if (character == 0)
-                        break;
-                    message.push_back(character >= 0x20U && character <= 0x7eU
-                                          ? static_cast<char>(character)
-                                          : '.');
-                }
-            }
-        }
-        if (vproc_log_contract != nullptr) {
-            output_.write(
-                "[launchd-log] pid=" + std::to_string(process_.pid) +
-                " profile=" + std::string { vproc_log_contract->name } +
-                " priority=" + std::to_string(priority) +
-                " error=" + std::to_string(error) +
-                (message.empty() ? std::string { } : " message=" + message) +
-                "\n");
-            const std::array<std::uint32_t, 9> reply {
-                18U,
-                36U,
-                *local_port,
-                0U,
-                0U,
-                *message_id + 100U,
-                0x00000000U,
-                0x00000001U,
-                0U,
-            };
-            registers[0] = write_message_words(memory_, message_address, reply)
-                               ? 0U
-                               : 0x10004008U;
+    // Synthetic MIG providers currently encode their reply in the request
+    // buffer. A distinct overwrite target must use queued IPC, never silently
+    // overwrite a read-only caller's input. Kernel destinations are rejected
+    // below until those providers expose separate reply storage.
+    const auto separate_receive = wants_receive && receive_address &&
+        *receive_address != message_address;
+    if (!separate_receive) {
+        if (const auto result = handle_clock_mach_request(memory_, *shared_state_,
+                process_, *message_id, message_address, registers[2], registers[3],
+                *remote_port, *local_port)) {
+            registers[0] = *result;
             return;
         }
-    }
-    if (*message_id ==
-            mig_message_id(xnu::mig::bootstrap::Routine::get_self) &&
-        *remote_port == process_.bootstrap_port && registers[3] >= 40U) {
-        // The root bootstrap provider can query its own job port before it has
-        // created a server receive loop. Handle only this structural
-        // self-owned case; child requests continue to route to their provider.
-        std::uint32_t job_name = 0U;
-        {
-            std::lock_guard mach_lock { shared_state_->mach_mutex };
-            const auto object = shared_state_->mach_namespaces.resolve(
-                process_.pid, *remote_port);
-            const auto port = object
-                                  ? shared_state_->mach_port_objects.lookup(
-                                        *object)
-                                  : std::nullopt;
-            if (object && port && port->receive_owner == process_.pid) {
-                job_name = shared_state_->mach_namespaces
-                               .copyout(process_.pid, *object,
-                                   xnu::ipc::type_mask(
-                                       xnu::ipc::Right::Send))
-                               .value_or(0U);
-                if (job_name != 0U) {
-                    static_cast<void>(shared_state_->mach_port_objects
-                            .increment_make_send_count(*object));
-                }
-            }
-        }
-        if (job_name != 0U) {
-            const std::array<std::uint32_t, 10> reply {
-                darwin::mig_wire::message_bits(
-                    darwin::mig_wire::disposition_move_send_once, 0U, true),
-                40U,
-                *local_port,
-                0U,
-                0U,
-                *message_id + 100U,
-                1U,
-                job_name,
-                0U,
-                darwin::mig_wire::port_descriptor_metadata(
-                    darwin::mig_wire::disposition_move_send),
-            };
-            registers[0] = write_message_words(memory_, message_address, reply)
-                               ? darwin::mach::success
-                               : darwin::mach_message::receive_invalid_data;
-            output_.write("[bootstrap] self job resolved pid=" +
-                          std::to_string(process_.pid) +
-                          " name=" + std::to_string(job_name) + "\n");
+        const MachMessageRequest request { message_address, *bits, *remote_port,
+            *local_port, *message_id };
+        if (dispatch_mach_host_message(cpu, request) ||
+            dispatch_mach_processor_message(cpu, request) ||
+            dispatch_mach_port_message(cpu, request) ||
+            dispatch_mach_port_context_message(cpu, request) ||
+            dispatch_mach_task_enumeration_message(cpu, request) ||
+            dispatch_mach_task_info_message(cpu, request) ||
+            dispatch_mach_task_exception_message(cpu, request) ||
+            dispatch_mach_thread_lifecycle_message(cpu, request) ||
+            dispatch_mach_thread_state_message(cpu, request) ||
+            dispatch_mach_task_vm_message(cpu, request) ||
+            dispatch_mach_rights_message(cpu, request) ||
+            dispatch_mach_notification_message(cpu, request)) {
             return;
         }
-    }
-    if (const auto result = handle_iokit_mach_request(memory_, output_,
-            *shared_state_, process_, *message_id, message_address,
-            registers[2], registers[3], *remote_port, *local_port,
-            IOKitMachCallSite { registers[15], registers[14], registers[7] },
-            surface_store_.get())) {
-        // A flattened UIKit client may establish its display timing after its
-        // event route, with no LayerKit context to provide another callback.
-        // The common readiness helper validates process identity, launch
-        // intent, prewarm state, event ownership, and live display
-        // participation before it can publish a foreground scene, so unrelated
-        // IOKit traffic is inert.
-        graphics_services_input::activate_resolved_application(
-            *shared_state_, process_.pid, scene_coordinator_.get());
-        registers[0] = *result;
-        return;
-    }
-
-    if (*message_id ==
-            mig_message_id(xnu::mig::bootstrap::Routine::look_up) &&
-        *remote_port == process_.bootstrap_port && registers[3] >= 40U) {
-        const auto service_name = memory_.read_c_string(
-            message_address +
-                xnu::mig::bootstrap::look_up_arguments[2].request_offset,
-            128U);
-        if (service_name &&
-            *service_name == media_library_service::bootstrap_name &&
-            media_library_service::can_serve_empty_catalogue(rootfs_)) {
-            std::uint32_t service_name_in_task = 0;
-            std::uint32_t service_object = 0;
+        const auto* vproc_log_contract =
+            protocol_vproc::contract_for_log_message(*message_id);
+        if (vproc_log_contract != nullptr && registers[2] >= 48U) {
+            const auto& arguments = xnu::mig::protocol_vproc::log_arguments;
+            const auto priority =
+                memory_.read32(message_address + arguments[1].request_offset)
+                    .value_or(0);
+            const auto error =
+                memory_.read32(message_address + arguments[2].request_offset)
+                    .value_or(0);
+            const auto count =
+                memory_.read32(message_address + arguments[3].request_count_offset)
+                    .value_or(0);
+            const auto padded_count = (count + 3U) & ~3U;
+            const auto valid_log_shape =
+                count != 0U && count <= arguments[3].wire_size &&
+                padded_count <= std::numeric_limits<std::uint32_t>::max() -
+                                    arguments[3].request_offset &&
+                arguments[3].request_offset + padded_count == registers[2];
+            if (!valid_log_shape)
+                vproc_log_contract = nullptr;
+            const auto available = valid_log_shape ? count : 0U;
+            std::string message;
+            if (available != 0) {
+                if (const auto bytes = memory_.read_bytes(
+                        message_address + arguments[3].request_offset, available)) {
+                    for (const auto byte : *bytes) {
+                        const auto character = std::to_integer<unsigned char>(byte);
+                        if (character == 0)
+                            break;
+                        message.push_back(character >= 0x20U && character <= 0x7eU
+                                              ? static_cast<char>(character)
+                                              : '.');
+                    }
+                }
+            }
+            if (vproc_log_contract != nullptr) {
+                output_.write(
+                    "[launchd-log] pid=" + std::to_string(process_.pid) +
+                    " profile=" + std::string { vproc_log_contract->name } +
+                    " priority=" + std::to_string(priority) +
+                    " error=" + std::to_string(error) +
+                    (message.empty() ? std::string { } : " message=" + message) +
+                    "\n");
+                const std::array<std::uint32_t, 9> reply {
+                    18U,
+                    36U,
+                    *local_port,
+                    0U,
+                    0U,
+                    *message_id + 100U,
+                    0x00000000U,
+                    0x00000001U,
+                    0U,
+                };
+                registers[0] = write_message_words(memory_, message_address, reply)
+                                   ? 0U
+                                   : 0x10004008U;
+                return;
+            }
+        }
+        if (*message_id ==
+                mig_message_id(xnu::mig::bootstrap::Routine::get_self) &&
+            *remote_port == process_.bootstrap_port && registers[3] >= 40U) {
+            // The root bootstrap provider can query its own job port before it has
+            // created a server receive loop. Handle only this structural
+            // self-owned case; child requests continue to route to their provider.
+            std::uint32_t job_name = 0U;
             {
                 std::lock_guard mach_lock { shared_state_->mach_mutex };
-                const auto generation =
-                    shared_state_->bootstrap_service_generations.find(
-                        *service_name);
-                if (generation ==
-                        shared_state_->bootstrap_service_generations.end() ||
-                    generation->second == 0U) {
-                    auto service =
-                        shared_state_->bootstrap_service_objects.find(
-                            *service_name);
-                    if (service ==
-                        shared_state_->bootstrap_service_objects.end()) {
-                        service_object = shared_state_->allocate_mach_object();
-                        if (shared_state_->mach_port_objects.create(
-                                service_object)) {
-                            shared_state_->mach_queues.try_emplace(
-                                service_object);
-                            service =
-                                shared_state_->bootstrap_service_objects
-                                    .emplace(*service_name, service_object)
-                                    .first;
-                        } else {
-                            service_object = 0;
-                        }
-                    } else {
-                        service_object = service->second;
-                    }
-                    if (service_object != 0) {
-                        service_name_in_task =
-                            shared_state_->mach_namespaces
-                                .copyout(process_.pid, service_object,
-                                    xnu::ipc::type_mask(
-                                        xnu::ipc::Right::Send))
-                                .value_or(0);
+                const auto object = shared_state_->mach_namespaces.resolve(
+                    process_.pid, *remote_port);
+                const auto port = object
+                                      ? shared_state_->mach_port_objects.lookup(
+                                            *object)
+                                      : std::nullopt;
+                if (object && port && port->receive_owner == process_.pid) {
+                    job_name = shared_state_->mach_namespaces
+                                   .copyout(process_.pid, *object,
+                                       xnu::ipc::type_mask(
+                                           xnu::ipc::Right::Send))
+                                   .value_or(0U);
+                    if (job_name != 0U) {
+                        static_cast<void>(shared_state_->mach_port_objects
+                                .increment_make_send_count(*object));
                     }
                 }
             }
-            if (service_name_in_task != 0) {
+            if (job_name != 0U) {
                 const std::array<std::uint32_t, 10> reply {
                     darwin::mig_wire::message_bits(
-                        darwin::mig_wire::disposition_move_send_once, 0, true),
+                        darwin::mig_wire::disposition_move_send_once, 0U, true),
                     40U,
                     *local_port,
                     0U,
                     0U,
                     *message_id + 100U,
                     1U,
-                    service_name_in_task,
+                    job_name,
                     0U,
                     darwin::mig_wire::port_descriptor_metadata(
                         darwin::mig_wire::disposition_move_send),
                 };
-                registers[0] =
-                    write_message_words(memory_, message_address, reply)
-                        ? 0U
-                        : 0x10004008U;
-                output_.write("[media] empty-catalogue service resolved pid=" +
-                              std::to_string(process_.pid) + "\n");
+                registers[0] = write_message_words(memory_, message_address, reply)
+                                   ? darwin::mach::success
+                                   : darwin::mach_message::receive_invalid_data;
+                output_.write("[bootstrap] self job resolved pid=" +
+                              std::to_string(process_.pid) +
+                              " name=" + std::to_string(job_name) + "\n");
                 return;
             }
         }
-    }
-
-    if (media_library_service::is_request_identifier(*message_id)) {
-        bool media_service = false;
-        {
-            std::lock_guard mach_lock { shared_state_->mach_mutex };
-            const auto destination = shared_state_->mach_namespaces.resolve(
-                process_.pid, *remote_port);
-            const auto service = shared_state_->bootstrap_service_objects.find(
-                std::string { media_library_service::bootstrap_name });
-            media_service =
-                destination &&
-                service != shared_state_->bootstrap_service_objects.end() &&
-                *destination == service->second;
-        }
-        auto payload = media_library_service::reply_payload(*message_id)
-                           .value_or(std::vector<std::uint32_t> {
-                               0U, 1U, darwin::mig::bad_id });
-        const auto reply_size =
-            static_cast<std::uint32_t>(darwin::mig_wire::message_header_size +
-                                       payload.size() * sizeof(std::uint32_t));
-        if (media_service && registers[3] >= reply_size) {
-            std::vector<std::uint32_t> reply {
-                darwin::mig_wire::message_bits(
-                    darwin::mig_wire::disposition_move_send_once),
-                reply_size,
-                *local_port,
-                0U,
-                0U,
-                *message_id + 100U,
-            };
-            reply.insert(reply.end(), payload.begin(), payload.end());
-            registers[0] = write_message_words(memory_, message_address, reply)
-                               ? 0U
-                               : 0x10004008U;
-            output_.write("[media] empty-catalogue request pid=" +
-                          std::to_string(process_.pid) +
-                          " id=" + std::to_string(*message_id) + "\n");
+        if (const auto result = handle_iokit_mach_request(memory_, output_,
+                *shared_state_, process_, *message_id, message_address,
+                registers[2], registers[3], *remote_port, *local_port,
+                IOKitMachCallSite { registers[15], registers[14], registers[7] },
+                surface_store_.get())) {
+            // A flattened UIKit client may establish its display timing after its
+            // event route, with no LayerKit context to provide another callback.
+            // The common readiness helper validates process identity, launch
+            // intent, prewarm state, event ownership, and live display
+            // participation before it can publish a foreground scene, so unrelated
+            // IOKit traffic is inert.
+            graphics_services_input::activate_resolved_application(
+                *shared_state_, process_.pid, scene_coordinator_.get());
+            registers[0] = *result;
             return;
         }
-    }
 
-    // The host source fallback replaces the hardware render worker only after
-    // the guest media service has selected, opened, and prepared its source.
-    // Complete the current-source rate operation at that boundary: routing it
-    // into the native renderer would synchronously wait for the replaced
-    // worker and trigger the service's RPC-timeout recovery. All source and
-    // item lifecycle messages continue through the firmware service.
-    if (wants_send && local_port && *local_port != xnu::ipc::null_name &&
-        registers[2] >= darwin::mig_wire::message_header_size &&
-        registers[2] <= 64U * 1024U &&
-        registers[3] >= darwin::mig_wire::simple_reply_payload_base) {
-        if (const auto bytes = memory_.read_bytes(message_address, registers[2]);
-            bytes) {
-            const auto property = celestial_volume_protocol::
-                decode_source_float_property_request(*message_id, *bytes);
-            if (property && !property->source && property->property == "rate" &&
-                audio_service_->observe_service_source_property(
-                    property->source, property->property, property->value)) {
-                constexpr auto reply_size =
-                    darwin::mig_wire::simple_reply_payload_base;
-                const std::array<std::uint32_t,
-                    reply_size / sizeof(std::uint32_t)>
-                    reply {
+        if (*message_id ==
+                mig_message_id(xnu::mig::bootstrap::Routine::look_up) &&
+            *remote_port == process_.bootstrap_port && registers[3] >= 40U) {
+            const auto service_name = memory_.read_c_string(
+                message_address +
+                    xnu::mig::bootstrap::look_up_arguments[2].request_offset,
+                128U);
+            if (service_name &&
+                *service_name == media_library_service::bootstrap_name &&
+                media_library_service::can_serve_empty_catalogue(rootfs_)) {
+                std::uint32_t service_name_in_task = 0;
+                std::uint32_t service_object = 0;
+                {
+                    std::lock_guard mach_lock { shared_state_->mach_mutex };
+                    const auto generation =
+                        shared_state_->bootstrap_service_generations.find(
+                            *service_name);
+                    if (generation ==
+                            shared_state_->bootstrap_service_generations.end() ||
+                        generation->second == 0U) {
+                        auto service =
+                            shared_state_->bootstrap_service_objects.find(
+                                *service_name);
+                        if (service ==
+                            shared_state_->bootstrap_service_objects.end()) {
+                            service_object = shared_state_->allocate_mach_object();
+                            if (shared_state_->mach_port_objects.create(
+                                    service_object)) {
+                                shared_state_->mach_queues.try_emplace(
+                                    service_object);
+                                service =
+                                    shared_state_->bootstrap_service_objects
+                                        .emplace(*service_name, service_object)
+                                        .first;
+                            } else {
+                                service_object = 0;
+                            }
+                        } else {
+                            service_object = service->second;
+                        }
+                        if (service_object != 0) {
+                            service_name_in_task =
+                                shared_state_->mach_namespaces
+                                    .copyout(process_.pid, service_object,
+                                        xnu::ipc::type_mask(
+                                            xnu::ipc::Right::Send))
+                                    .value_or(0);
+                        }
+                    }
+                }
+                if (service_name_in_task != 0) {
+                    const std::array<std::uint32_t, 10> reply {
                         darwin::mig_wire::message_bits(
-                            darwin::mig_wire::disposition_move_send_once),
-                        reply_size,
+                            darwin::mig_wire::disposition_move_send_once, 0, true),
+                        40U,
                         *local_port,
                         0U,
                         0U,
                         *message_id + 100U,
-                        0U,
                         1U,
+                        service_name_in_task,
                         0U,
+                        darwin::mig_wire::port_descriptor_metadata(
+                            darwin::mig_wire::disposition_move_send),
                     };
-                registers[0] =
-                    write_message_words(memory_, message_address, reply)
-                        ? darwin::mach::success
-                        : darwin::mach_message::receive_invalid_data;
-                output_.line("[audio] source-property source=current key=rate value=" +
-                             std::to_string(property->value) + " completed=host");
+                    registers[0] =
+                        write_message_words(memory_, message_address, reply)
+                            ? 0U
+                            : 0x10004008U;
+                    output_.write("[media] empty-catalogue service resolved pid=" +
+                                  std::to_string(process_.pid) + "\n");
+                    return;
+                }
+            }
+        }
+
+        if (media_library_service::is_request_identifier(*message_id)) {
+            bool media_service = false;
+            {
+                std::lock_guard mach_lock { shared_state_->mach_mutex };
+                const auto destination = shared_state_->mach_namespaces.resolve(
+                    process_.pid, *remote_port);
+                const auto service = shared_state_->bootstrap_service_objects.find(
+                    std::string { media_library_service::bootstrap_name });
+                media_service =
+                    destination &&
+                    service != shared_state_->bootstrap_service_objects.end() &&
+                    *destination == service->second;
+            }
+            auto payload = media_library_service::reply_payload(*message_id)
+                               .value_or(std::vector<std::uint32_t> {
+                                   0U, 1U, darwin::mig::bad_id });
+            const auto reply_size =
+                static_cast<std::uint32_t>(darwin::mig_wire::message_header_size +
+                                           payload.size() * sizeof(std::uint32_t));
+            if (media_service && registers[3] >= reply_size) {
+                std::vector<std::uint32_t> reply {
+                    darwin::mig_wire::message_bits(
+                        darwin::mig_wire::disposition_move_send_once),
+                    reply_size,
+                    *local_port,
+                    0U,
+                    0U,
+                    *message_id + 100U,
+                };
+                reply.insert(reply.end(), payload.begin(), payload.end());
+                registers[0] = write_message_words(memory_, message_address, reply)
+                                   ? 0U
+                                   : 0x10004008U;
+                output_.write("[media] empty-catalogue request pid=" +
+                              std::to_string(process_.pid) +
+                              " id=" + std::to_string(*message_id) + "\n");
                 return;
             }
         }
-    }
 
-    if (*message_id ==
-            mig_message_id(xnu::mig::bootstrap::Routine::look_up) &&
-        process_.pid == 1 && registers[3] >= 36) {
-        // launchd probes its own bootstrap namespace before its server
-        // receive loop exists. Match XNU/launchd's normal early negative
-        // lookup; requests from child processes are routed to PID 1 below.
-        registers[0] = write_bootstrap_lookup_failure(
-                           memory_, message_address, *local_port, *message_id)
-                           ? 0U
-                           : 0x10004008U;
-        return;
+        // The host source fallback replaces the hardware render worker only after
+        // the guest media service has selected, opened, and prepared its source.
+        // Complete the current-source rate operation at that boundary: routing it
+        // into the native renderer would synchronously wait for the replaced
+        // worker and trigger the service's RPC-timeout recovery. All source and
+        // item lifecycle messages continue through the firmware service.
+        if (wants_send && local_port && *local_port != xnu::ipc::null_name &&
+            registers[2] >= darwin::mig_wire::message_header_size &&
+            registers[2] <= 64U * 1024U &&
+            registers[3] >= darwin::mig_wire::simple_reply_payload_base) {
+            if (const auto bytes = memory_.read_bytes(message_address, registers[2]);
+                bytes) {
+                const auto property = celestial_volume_protocol::
+                    decode_source_float_property_request(*message_id, *bytes);
+                if (property && !property->source && property->property == "rate" &&
+                    audio_service_->observe_service_source_property(
+                        property->source, property->property, property->value)) {
+                    constexpr auto reply_size =
+                        darwin::mig_wire::simple_reply_payload_base;
+                    const std::array<std::uint32_t,
+                        reply_size / sizeof(std::uint32_t)>
+                        reply {
+                            darwin::mig_wire::message_bits(
+                                darwin::mig_wire::disposition_move_send_once),
+                            reply_size,
+                            *local_port,
+                            0U,
+                            0U,
+                            *message_id + 100U,
+                            0U,
+                            1U,
+                            0U,
+                        };
+                    registers[0] =
+                        write_message_words(memory_, message_address, reply)
+                            ? darwin::mach::success
+                            : darwin::mach_message::receive_invalid_data;
+                    output_.line("[audio] source-property source=current key=rate value=" +
+                                 std::to_string(property->value) + " completed=host");
+                    return;
+                }
+            }
+        }
+
+        if (*message_id ==
+                mig_message_id(xnu::mig::bootstrap::Routine::look_up) &&
+            process_.pid == 1 && registers[3] >= 36) {
+            // launchd probes its own bootstrap namespace before its server
+            // receive loop exists. Match XNU/launchd's normal early negative
+            // lookup; requests from child processes are routed to PID 1 below.
+            registers[0] = write_bootstrap_lookup_failure(
+                               memory_, message_address, *local_port, *message_id)
+                               ? 0U
+                               : 0x10004008U;
+            return;
+        }
     }
     if (wants_send && registers[2] >= 24 && registers[2] <= 64U * 1024U) {
         auto bytes = memory_.read_bytes(message_address, registers[2]);
@@ -642,6 +652,10 @@ void CompatibilityKernel::dispatch_mach_message(Cpu& cpu)
                     ? shared_state_->mach_port_objects.lookup(remote_object)
                     : std::nullopt;
             if (destination_port && destination_port->kernel_owned) {
+                if (separate_receive) {
+                    registers[0] = darwin::mach_message::receive_invalid_data;
+                    return;
+                }
                 // ipc_kobject_server initializes a generic mig_reply_error_t
                 // before looking up the routine. A valid kernel object with no
                 // matching demux entry therefore returns MIG_BAD_ID; it is

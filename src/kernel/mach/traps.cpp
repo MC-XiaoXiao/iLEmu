@@ -122,6 +122,10 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
     case 31: // mach_msg_trap
         dispatch_mach_message(cpu);
         return;
+    case 32: // mach_msg_overwrite_trap: ARM passes argument eight in r8.
+        dispatch_mach_message(cpu, registers[8] != 0U
+                ? std::optional { registers[8] } : std::nullopt);
+        return;
     case 26: { // mach_reply_port
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto port = shared_state_->allocate_mach_object();

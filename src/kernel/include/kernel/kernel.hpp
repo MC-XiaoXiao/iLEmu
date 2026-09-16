@@ -594,7 +594,8 @@ private:
         Cpu& cpu, std::uint32_t trap);
     [[nodiscard]] bool dispatch_mach_vm_kernel_rpc_trap(
         Cpu& cpu, std::uint32_t trap);
-    void dispatch_mach_message(Cpu& cpu);
+    void dispatch_mach_message(Cpu& cpu,
+        std::optional<std::uint32_t> receive_address = std::nullopt);
     [[nodiscard]] bool dispatch_mach_host_message(
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_processor_message(
