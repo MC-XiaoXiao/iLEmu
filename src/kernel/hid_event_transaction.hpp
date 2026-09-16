@@ -14,12 +14,14 @@
 namespace ilemu {
 
 class UserlandHleRegistry;
+enum class DarwinHidDigitizerAbi : std::uint8_t;
 
 class HidEventTransaction {
 public:
     [[nodiscard]] static bool enqueue(UserlandHleRegistry& registry,
         const HidEventQueue::Consumer& consumer, HidEventQueue::Event event,
-        DisplayGeometry geometry, std::function<void()> completion);
+        DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
+        std::function<void()> completion);
 };
 
 } // namespace ilemu

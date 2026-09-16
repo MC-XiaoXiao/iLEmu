@@ -89,7 +89,8 @@ bool HidEventSystemHle::prepare_pending_event(
     if (!consumer || !event)
         return false;
     delivering_ = HidEventTransaction::enqueue(registry_, *consumer, *event,
-        state_->user_interface_geometry, [this] { delivering_ = false; });
+        state_->user_interface_geometry, state_->darwin_abi.hid_digitizer,
+        [this] { delivering_ = false; });
     return delivering_;
 }
 

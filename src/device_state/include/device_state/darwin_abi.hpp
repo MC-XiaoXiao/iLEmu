@@ -135,6 +135,14 @@ enum class DarwinMemoryStatusPriorityAbi : std::uint8_t {
     PriorityBands,
 };
 
+// Earlier HID consumers derive hand phases from the collection's contact
+// changes. Later consumers route child contacts separately and interpret
+// collection contact changes as touch-count-only notifications.
+enum class DarwinHidDigitizerAbi : std::uint8_t {
+    CollectionContactChanges,
+    ChildContactChanges,
+};
+
 struct DarwinGuestCapabilities {
     // XNU's nosys entry returns ENOSYS and raises SIGSYS on the audited
     // production epochs. Unknown profiles conservatively suppress the signal
@@ -195,6 +203,9 @@ struct DarwinAbi {
     };
     DarwinMemoryStatusPriorityAbi memory_status_priority {
         DarwinMemoryStatusPriorityAbi::Unsupported
+    };
+    DarwinHidDigitizerAbi hid_digitizer {
+        DarwinHidDigitizerAbi::CollectionContactChanges
     };
     // Firmware route databases can require a retail or development-board
     // identity for offline activation. Keep this contract independent of

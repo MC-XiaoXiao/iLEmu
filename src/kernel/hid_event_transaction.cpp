@@ -6,6 +6,7 @@
 
 #include "hid_event_transaction.hpp"
 
+#include "device_state/darwin_abi.hpp"
 #include "foundation/cpu.hpp"
 #include "foundation/userland_hle.hpp"
 
@@ -36,14 +37,15 @@ namespace {
 
     void prepare_digitizer(UserlandHleCall& call,
         const HidEventQueue::Event& event, float width, float height,
-        bool collection)
+        bool collection, DarwinHidDigitizerAbi digitizer_abi)
     {
         const auto& touch = std::get<TouchInput>(event.input);
         const auto active =
             touch.phase == TouchPhase::Down || touch.phase == TouchPhase::Move;
         using Profile = Arm32DigitizerEventProfile;
         auto mask = Profile::position_changed;
-        if (!collection) {
+        if (!collection || digitizer_abi ==
+                               DarwinHidDigitizerAbi::CollectionContactChanges) {
             if (touch.phase != TouchPhase::Move)
                 mask |= Profile::range_changed | Profile::touch_changed;
             if (touch.phase == TouchPhase::Down)
@@ -72,10 +74,12 @@ namespace {
     public:
         using Completion = std::function<void()>;
         NativeEventTransaction(HidEventQueue::Event event, std::uint32_t system,
-            DisplayGeometry geometry, Completion completion)
+            DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
+            Completion completion)
             : event_ { event }
             , system_ { system }
             , geometry_ { geometry }
+            , digitizer_abi_ { digitizer_abi }
             , completion_ { std::move(completion) }
             , step_ { std::holds_alternative<TouchInput>(event.input)
                           ? Step::Hand
@@ -128,7 +132,8 @@ namespace {
             case Step::Finger:
                 prepare_digitizer(call, event_,
                     static_cast<float>(geometry_.width),
-                    static_cast<float>(geometry_.height), step_ == Step::Hand);
+                    static_cast<float>(geometry_.height), step_ == Step::Hand,
+                    digitizer_abi_);
                 break;
             case Step::Append:
                 r[0] = root_event_;
@@ -203,6 +208,7 @@ namespace {
         HidEventQueue::Event event_;
         std::uint32_t system_;
         DisplayGeometry geometry_;
+        DarwinHidDigitizerAbi digitizer_abi_;
         Completion completion_;
         Step step_;
         std::uint32_t root_event_ { };
@@ -213,10 +219,12 @@ namespace {
 
 bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
     const HidEventQueue::Consumer& consumer, HidEventQueue::Event event,
-    DisplayGeometry geometry, std::function<void()> completion)
+    DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
+    std::function<void()> completion)
 {
     return std::make_shared<NativeEventTransaction>(
-        std::move(event), consumer.system, geometry, std::move(completion))
+        std::move(event), consumer.system, geometry, digitizer_abi,
+        std::move(completion))
         ->start(registry, consumer.processor);
 }
 
