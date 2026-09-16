@@ -485,7 +485,7 @@ void EmulatorSession::run()
     auto initial_memory = std::make_unique<AddressSpace>();
     initial_memory->set_parallel_access(guest_processor_count > 1);
     ProcessLoader loader { rootfs, *initial_memory, guest_architecture,
-        session_catalog.index(), darwin_abi.initial_apple_vector_abi };
+        session_catalog.index(), darwin_abi.initial_apple_vector_abi, darwin_abi.address_layout };
     std::vector<std::string> initial_environment {
         "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "HOME=/var/root", "SHELL=/bin/sh"
     };
@@ -1758,7 +1758,7 @@ void EmulatorSession::run()
                 catalog_maintenance.poll(*initial_runtime->kernel, true);
                 ProcessLoader validator { rootfs, *runtime_ptr->memory,
                     guest_architecture, session_catalog.index(),
-                    darwin_abi.initial_apple_vector_abi };
+                    darwin_abi.initial_apple_vector_abi, darwin_abi.address_layout };
                 if (!validator.validate(path)) {
                     output.line(
                         "[process] exec rejected pid=" +
@@ -1814,7 +1814,7 @@ void EmulatorSession::run()
                     };
                     ProcessLoader loader { rootfs, *child_runtime->memory,
                         guest_architecture, session_catalog.index(),
-                        darwin_abi.initial_apple_vector_abi };
+                        darwin_abi.initial_apple_vector_abi, darwin_abi.address_layout };
                     loaded =
                         loader.load(path, std::move(arguments), environment);
                 }
@@ -3792,7 +3792,7 @@ void EmulatorSession::run()
                     runtime.memory->clear();
                     ProcessLoader exec_loader { rootfs, *runtime.memory,
                         guest_architecture, session_catalog.index(),
-                        darwin_abi.initial_apple_vector_abi };
+                        darwin_abi.initial_apple_vector_abi, darwin_abi.address_layout };
                     auto loaded = exec_loader.load(pending.path,
                         std::move(pending.arguments), pending.environment);
                     runtime.kernel->set_process_arguments(

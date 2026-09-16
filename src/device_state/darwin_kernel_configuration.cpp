@@ -206,6 +206,7 @@ namespace {
                 .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
                 .memory_status_priority = DarwinMemoryStatusPriorityAbi::PriorityBands,
                 .hid_digitizer = DarwinHidDigitizerAbi::ChildContactChanges,
+                .address_layout = DarwinAddressLayout::ExpandedArmSharedRegion,
                 .capabilities = { .send_sigsys = true },
             },
         },

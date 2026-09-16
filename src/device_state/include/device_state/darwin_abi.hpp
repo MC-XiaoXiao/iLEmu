@@ -12,6 +12,7 @@
 #include "network/darwin_abi_route.hpp"
 #include "foundation/darwin_notify_state_hle.hpp"
 #include "foundation/darwin_process_start_abi.hpp"
+#include "foundation/darwin_address_layout.hpp"
 #include "foundation/device_identity.hpp"
 
 namespace ilemu {
@@ -214,6 +215,7 @@ struct DarwinAbi {
     ActivationHardwareModelPolicy activation_hardware_model_policy {
         ActivationHardwareModelPolicy::Retail
     };
+    DarwinAddressLayout address_layout { DarwinAddressLayout::ClassicArm };
     DarwinGuestCapabilities capabilities;
 };
 

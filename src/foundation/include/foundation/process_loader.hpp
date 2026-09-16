@@ -15,6 +15,7 @@
 
 #include "foundation/address_space.hpp"
 #include "foundation/darwin_process_start_abi.hpp"
+#include "foundation/darwin_address_layout.hpp"
 #include "foundation/macho.hpp"
 
 namespace ilemu {
@@ -37,7 +38,8 @@ public:
         ArmArchitectureVersion architecture = ArmArchitectureVersion::Armv6K,
         ExecutableCatalog* catalog = nullptr,
         DarwinInitialAppleVectorAbi initial_apple_vector_abi =
-            DarwinInitialAppleVectorAbi::KeyedExecutablePath);
+            DarwinInitialAppleVectorAbi::KeyedExecutablePath,
+        DarwinAddressLayout address_layout = DarwinAddressLayout::ClassicArm);
 
     LoadedProcess load(std::string guest_executable,
         std::vector<std::string> arguments = { },
@@ -61,6 +63,7 @@ private:
     AddressSpace& memory_;
     ArmArchitectureVersion architecture_;
     ExecutableCatalog* catalog_ { };
+    DarwinAddressLayout address_layout_;
     DarwinInitialAppleVectorAbi initial_apple_vector_abi_ {
         DarwinInitialAppleVectorAbi::KeyedExecutablePath
     };

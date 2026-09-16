@@ -39,8 +39,6 @@ namespace {
     constexpr std::uint32_t arm_mapping_size = 5U * sizeof(std::uint32_t);
     constexpr std::uint32_t mach_vm_mapping_size =
         (3U * sizeof(std::uint64_t)) + (2U * sizeof(std::uint32_t));
-    constexpr std::uint32_t arm_shared_region_base = 0x3000'0000U;
-    constexpr std::uint32_t arm_shared_region_end = 0x4000'0000U;
     constexpr std::uint32_t arm_shared_half_size = 0x0800'0000U;
     constexpr std::uint32_t vm_protection_copy_on_write = 0x08U;
     constexpr std::uint32_t vm_protection_zero_fill = 0x10U;
@@ -55,9 +53,6 @@ namespace {
         AddressSpace::page_size / sizeof(std::uint32_t) / 8U;
     constexpr std::uint32_t maximum_mapping_count =
         (2U * arm_shared_half_size) / AddressSpace::page_size;
-    constexpr std::uint32_t maximum_range_count =
-        (arm_shared_region_end - arm_shared_region_base) /
-        AddressSpace::page_size;
 
     struct Mapping {
         std::uint32_t address { };
@@ -167,7 +162,7 @@ namespace {
     }
 
     [[nodiscard]] bool in_arm_shared_region(
-        std::uint32_t address, std::uint32_t size)
+        std::uint32_t address, std::uint32_t size, DarwinAddressBounds bounds)
     {
         if (size == 0 || add_overflows(address, size))
             return false;
@@ -176,14 +171,17 @@ namespace {
         // VM map.  The pmap nesting boundary is an implementation detail, not
         // a forbidden gap: newer unslid caches legitimately have a mapping
         // that crosses the older 0x38000000 nesting boundary.
-        return address >= arm_shared_region_base &&
-               end <= arm_shared_region_end;
+        return address >= bounds.shared_region_base &&
+               end <= bounds.shared_region_end;
     }
 
     [[nodiscard]] SharedRegionRangeRead read_shared_region_ranges(
         const AddressSpace& memory, std::uint32_t range_count,
-        std::uint32_t ranges_address)
+        std::uint32_t ranges_address, DarwinAddressBounds bounds)
     {
+        const auto maximum_range_count =
+            (bounds.shared_region_end - bounds.shared_region_base) /
+            AddressSpace::page_size;
         if (range_count > maximum_range_count ||
             (range_count != 0 && ranges_address == 0)) {
             return { { }, bsd_support::invalid_argument };
@@ -215,7 +213,7 @@ namespace {
                 !page_aligned(*range_size) ||
                 !in_arm_shared_region(
                     static_cast<std::uint32_t>(*range_address),
-                    static_cast<std::uint32_t>(*range_size))) {
+                    static_cast<std::uint32_t>(*range_size), bounds)) {
                 return { { }, bsd_support::invalid_argument };
             }
             const auto start = static_cast<std::uint32_t>(*range_address);
@@ -240,23 +238,24 @@ namespace {
     }
 
     [[nodiscard]] std::vector<SharedRegionRange> ranges_to_release(
-        const AddressSpace& memory, const std::vector<SharedRegionRange>& keep)
+        const AddressSpace& memory, const std::vector<SharedRegionRange>& keep,
+        DarwinAddressBounds bounds)
     {
         std::vector<SharedRegionRange> release;
         std::size_t keep_index = 0;
-        for (std::uint64_t cursor = arm_shared_region_base;
-            cursor < arm_shared_region_end;) {
+        for (std::uint64_t cursor = bounds.shared_region_base;
+            cursor < bounds.shared_region_end;) {
             const auto region = memory.mapping_region_at_or_after(
                 static_cast<std::uint32_t>(cursor));
             if (!region)
                 break;
             const auto mapped_start = std::max<std::uint64_t>(
                 cursor, std::max<std::uint64_t>(
-                            region->address, arm_shared_region_base));
-            if (mapped_start >= arm_shared_region_end)
+                            region->address, bounds.shared_region_base));
+            if (mapped_start >= bounds.shared_region_end)
                 break;
             const auto mapped_end =
-                std::min<std::uint64_t>(region->end, arm_shared_region_end);
+                std::min<std::uint64_t>(region->end, bounds.shared_region_end);
             if (mapped_end <= mapped_start) {
                 cursor = std::max<std::uint64_t>(
                     cursor + AddressSpace::page_size, region->end);
@@ -360,9 +359,9 @@ namespace {
     }
 
     [[nodiscard]] bool valid_mapping(
-        const Mapping& mapping, std::uintmax_t file_size)
+        const Mapping& mapping, std::uintmax_t file_size, DarwinAddressBounds bounds)
     {
-        return in_arm_shared_region(mapping.address, mapping.size) &&
+        return in_arm_shared_region(mapping.address, mapping.size, bounds) &&
                page_aligned(mapping.address) &&
                page_aligned(mapping.file_offset) &&
                (mapping.initial_protection &
@@ -389,13 +388,13 @@ namespace {
 
     [[nodiscard]] std::optional<std::vector<Mapping>> read_mappings(
         const AddressSpace& memory, std::uint32_t address, std::uint32_t count,
-        std::uintmax_t file_size, MappingLayout layout)
+        std::uintmax_t file_size, MappingLayout layout, DarwinAddressBounds bounds)
     {
         std::vector<Mapping> mappings;
         mappings.reserve(count);
         for (std::uint32_t index = 0; index < count; ++index) {
             const auto mapping = read_mapping(memory, address, index, layout);
-            if (!mapping || !valid_mapping(*mapping, file_size)) {
+            if (!mapping || !valid_mapping(*mapping, file_size, bounds)) {
                 return std::nullopt;
             }
             mappings.push_back(*mapping);
@@ -415,10 +414,10 @@ namespace {
     }
 
     [[nodiscard]] std::optional<std::uint32_t> first_mapped_shared_region_page(
-        const AddressSpace& memory)
+        const AddressSpace& memory, DarwinAddressBounds bounds)
     {
-        for (std::uint64_t address = arm_shared_region_base;
-            address < arm_shared_region_end;
+        for (std::uint64_t address = bounds.shared_region_base;
+            address < bounds.shared_region_end;
             address += AddressSpace::page_size) {
             const auto page = static_cast<std::uint32_t>(address);
             if (memory.mapped(page, AddressSpace::page_size))
@@ -428,13 +427,14 @@ namespace {
     }
 
     [[nodiscard]] bool mappings_fit(const AddressSpace& memory,
-        const std::vector<Mapping>& mappings, std::uint32_t slide)
+        const std::vector<Mapping>& mappings, std::uint32_t slide,
+        DarwinAddressBounds bounds)
     {
         for (const auto& mapping : mappings) {
             if (add_overflows(mapping.address, slide))
                 return false;
             const auto address = mapping.address + slide;
-            if (!in_arm_shared_region(address, mapping.size) ||
+            if (!in_arm_shared_region(address, mapping.size, bounds) ||
                 memory.mapped(address, mapping.size)) {
                 return false;
             }
@@ -444,9 +444,9 @@ namespace {
 
     [[nodiscard]] std::optional<std::uint32_t> choose_slide(
         const AddressSpace& memory, const std::vector<Mapping>& mappings,
-        bool may_slide)
+        bool may_slide, DarwinAddressBounds bounds)
     {
-        if (mappings_fit(memory, mappings, 0))
+        if (mappings_fit(memory, mappings, 0, bounds))
             return 0;
         if (!may_slide || mappings.empty())
             return std::nullopt;
@@ -456,7 +456,7 @@ namespace {
         for (std::uint64_t slide = AddressSpace::page_size;
             slide < arm_shared_half_size; slide += AddressSpace::page_size) {
             if (mappings_fit(
-                    memory, mappings, static_cast<std::uint32_t>(slide))) {
+                    memory, mappings, static_cast<std::uint32_t>(slide), bounds)) {
                 return static_cast<std::uint32_t>(slide);
             }
         }
@@ -643,8 +643,9 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
     Cpu& cpu, std::uint32_t number)
 {
     auto& registers = cpu.registers();
+    const auto bounds = darwin_address_bounds(shared_state_->darwin_abi.address_layout);
     if (number == 294) { // shared_region_check_np
-        const auto start_address = first_mapped_shared_region_page(memory_);
+        const auto start_address = first_mapped_shared_region_page(memory_, bounds);
         if (!start_address) {
             bsd_error(cpu, 12); // ENOMEM: shared region exists but is empty.
         } else if (!memory_.write64(registers[0], *start_address)) {
@@ -662,12 +663,12 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
         // releasing every mapped shared-region interval outside the requested
         // ranges.
         const auto parsed =
-            read_shared_region_ranges(memory_, registers[0], registers[1]);
+            read_shared_region_ranges(memory_, registers[0], registers[1], bounds);
         if (parsed.error != 0) {
             bsd_error(cpu, parsed.error);
             return true;
         }
-        const auto release = ranges_to_release(memory_, parsed.ranges);
+        const auto release = ranges_to_release(memory_, parsed.ranges, bounds);
         for (const auto& range : release) {
             static_cast<void>(
                 memory_.unmap(range.address, range.end - range.address));
@@ -746,11 +747,11 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
     auto layout = fixed_mapping_contract ? MappingLayout::MachVm64
                                          : MappingLayout::Arm32Words;
     auto mappings = read_mappings(memory_, mappings_address, mapping_count,
-        mapping_validation_size, layout);
+        mapping_validation_size, layout, bounds);
     if (!mappings && !fixed_mapping_contract) {
         layout = MappingLayout::MachVm64;
         mappings = read_mappings(memory_, mappings_address, mapping_count,
-            mapping_validation_size, layout);
+            mapping_validation_size, layout, bounds);
     }
     if (!mappings) {
         bsd_error(cpu, bsd_support::invalid_argument);
@@ -759,7 +760,7 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
     diagnostics.checkpoint(SharedRegionDiagnosticPhase::ReadMappings);
 
     const auto address_slide = choose_slide(
-        memory_, *mappings, !fixed_mapping_contract && slide_address != 0);
+        memory_, *mappings, !fixed_mapping_contract && slide_address != 0, bounds);
     if (!address_slide) {
         bsd_error(cpu, 12); // ENOMEM / KERN_NO_SPACE
         return true;

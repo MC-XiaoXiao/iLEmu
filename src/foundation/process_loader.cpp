@@ -25,9 +25,7 @@
 namespace ilemu {
 namespace {
 
-    constexpr std::uint32_t stack_base = 0x2ff00000U;
     constexpr std::uint32_t stack_size = 0x00100000U;
-    constexpr std::uint32_t stack_top = stack_base + stack_size;
     constexpr std::size_t maximum_interpreter_line = 256;
     constexpr std::size_t maximum_interpreter_depth = 4;
     constexpr std::string_view launch_services_directory_name {
@@ -111,11 +109,13 @@ namespace {
 
 ProcessLoader::ProcessLoader(std::filesystem::path rootfs, AddressSpace& memory,
     ArmArchitectureVersion architecture, ExecutableCatalog* catalog,
-    DarwinInitialAppleVectorAbi initial_apple_vector_abi)
+    DarwinInitialAppleVectorAbi initial_apple_vector_abi,
+    DarwinAddressLayout address_layout)
     : rootfs_ { std::move(rootfs) }
     , memory_ { memory }
     , architecture_ { architecture }
     , catalog_ { catalog }
+    , address_layout_ { address_layout }
     , initial_apple_vector_abi_ { initial_apple_vector_abi }
 {
 }
@@ -191,6 +191,8 @@ LoadedProcess ProcessLoader::load(std::string guest_executable,
     executable.map_into(memory_, &executable_mapping_context);
     FileMappingBatchContext dynamic_linker_mapping_context;
     dynamic_linker.map_into(memory_, &dynamic_linker_mapping_context);
+    const auto stack_top = darwin_address_bounds(address_layout_).stack_top;
+    const auto stack_base = stack_top - stack_size;
     if (!memory_.map(stack_base, stack_size,
             MemoryPermission::Read | MemoryPermission::Write)) {
         throw std::runtime_error { "failed to map initial user stack" };

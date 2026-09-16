@@ -2530,7 +2530,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                             darwin::resource::maximum_open_files);
                         break;
                     case 35:
-                        value = 0x30000000U;
+                        value = darwin_address_bounds(
+                            shared_state_->darwin_abi.address_layout).stack_top;
                         break; // KERN_USRSTACK32
                     case 40: // KERN_NETBOOT
                     case 66:
