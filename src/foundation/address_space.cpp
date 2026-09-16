@@ -199,18 +199,16 @@ std::uint64_t AddressSpace::exclusive_reservation_key(
 
 void AddressSpace::set_parallel_access(bool enabled)
 {
-    std::unique_lock lock { mutex_ };
+    std::unique_lock lock { mutex_, std::defer_lock };
+    if (!owns_exclusive_access())
+        lock.lock();
     parallel_access_ = enabled;
-    jit_page_table_enabled_ = !enabled;
+    jit_page_table_enabled_ = true;
     if (!jit_read_page_table_ && !jit_write_page_table_)
         return;
-    if (enabled) {
-        clear_jit_page_table_locked();
-    } else {
-        for (const auto& [address, page] : *pages_) {
-            static_cast<void>(page);
-            refresh_jit_page_locked(address);
-        }
+    for (const auto& [address, page] : *pages_) {
+        static_cast<void>(page);
+        refresh_jit_page_locked(address);
     }
 }
 
@@ -228,6 +226,16 @@ std::uint8_t** AddressSpace::jit_read_page_table()
     if (!jit_page_table_enabled_)
         return nullptr;
     ensure_jit_page_tables_locked();
+    bool direct_reads = !parallel_access_;
+#if defined(__x86_64__) || defined(_M_X64)
+    direct_reads = direct_reads || owns_exclusive_access();
+#endif
+    if (!direct_reads) {
+        // Checked stores update scalar values under the address-space lock.
+        // A raw load on another lane could otherwise observe a partial store.
+        static JitPageTableStorage checked_reads;
+        return checked_reads.entries();
+    }
     return jit_read_page_table_->entries();
 }
 
@@ -237,6 +245,17 @@ std::uint8_t** AddressSpace::jit_write_page_table()
     if (!jit_page_table_enabled_ || !jit_write_page_table_enabled_)
         return nullptr;
     ensure_jit_page_tables_locked();
+    bool direct_writes = !parallel_access_;
+#if defined(__x86_64__) || defined(_M_X64)
+    // The x64 backend reloads executor page-table links on every JIT entry.
+    direct_writes = direct_writes || owns_exclusive_access();
+#endif
+    if (!direct_writes) {
+        // Shared by every parallel lane. Serialized slices can select the
+        // guarded private-write table through their executor's runtime link.
+        static JitPageTableStorage checked_writes;
+        return checked_writes.entries();
+    }
     return jit_write_page_table_->entries();
 }
 
@@ -381,7 +400,7 @@ void AddressSpace::synchronize_shared_write_tracking()
 AddressSpace::ReadLock AddressSpace::read_lock() const
 {
     ReadLock lock { mutex_, std::defer_lock };
-    if (parallel_access_)
+    if (parallel_access_ && !owns_exclusive_access())
         lock.lock();
     return lock;
 }
@@ -389,9 +408,37 @@ AddressSpace::ReadLock AddressSpace::read_lock() const
 AddressSpace::WriteLock AddressSpace::write_lock()
 {
     WriteLock lock { mutex_, std::defer_lock };
-    if (parallel_access_)
+    if (parallel_access_ && !owns_exclusive_access())
         lock.lock();
     return lock;
+}
+
+thread_local const AddressSpace::ExclusiveAccess*
+    AddressSpace::exclusive_access_ = nullptr;
+
+bool AddressSpace::owns_exclusive_access() const noexcept
+{
+    for (auto* scope = exclusive_access_; scope != nullptr;
+        scope = scope->previous_) {
+        if (&scope->memory_ == this)
+            return true;
+    }
+    return false;
+}
+
+AddressSpace::ExclusiveAccess::ExclusiveAccess(AddressSpace& memory)
+    : memory_ { memory }
+    , lock_ { memory.mutex_, std::defer_lock }
+    , previous_ { exclusive_access_ }
+{
+    if (memory.parallel_access_ && !memory.owns_exclusive_access())
+        lock_.lock();
+    exclusive_access_ = this;
+}
+
+AddressSpace::ExclusiveAccess::~ExclusiveAccess()
+{
+    exclusive_access_ = previous_;
 }
 
 bool AddressSpace::map(
@@ -1328,8 +1375,14 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
     constexpr auto read_required = static_cast<std::uint8_t>(
         mapped_page_flag | permission_bits(MemoryPermission::Read));
     const auto* page = find_page_locked(base);
-    if (read_entry && (flags & read_required) == read_required &&
-        page != nullptr && page->backing) {
+    // The table is selected only while this address space is exclusively
+    // owned. Shared mappings still require their backing's synchronization.
+    const bool direct_read_safe = !parallel_access_ ||
+        (page != nullptr && !page->shared_writable && page->backing &&
+            !page->backing->shared_write_tracking_enabled());
+    if (read_entry && direct_read_safe &&
+        (flags & read_required) == read_required && page != nullptr &&
+        page->backing) {
         *read_entry = jit_page_pointer(*page->backing, base);
     }
 
@@ -1337,6 +1390,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
         mapped_page_flag | permission_bits(MemoryPermission::Read) |
         permission_bits(MemoryPermission::Write));
     if (!jit_write_page_table_enabled_ || !write_entry ||
+        (parallel_access_ && page != nullptr && page->shared_writable) ||
         (flags & write_required) != write_required ||
         tracks_write_locked(base, page_size) ||
         (page != nullptr && page->backing &&
@@ -2243,7 +2297,9 @@ AddressSpace::mapping_region_at_or_after(std::uint32_t address) const
 std::unique_ptr<AddressSpace> AddressSpace::clone() const
 {
     auto result = std::make_unique<AddressSpace>();
-    std::unique_lock source_lock { mutex_ };
+    std::unique_lock source_lock { mutex_, std::defer_lock };
+    if (!owns_exclusive_access())
+        source_lock.lock();
     std::unique_lock destination_lock { result->mutex_ };
 
     constexpr auto address_space_end = std::uint64_t { 1 } << 32U;
@@ -2311,8 +2367,7 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
         !result->exclusive_write_tracked_pages_.empty(),
         std::memory_order_release);
     result->parallel_access_ = parallel_access_;
-    result->jit_page_table_enabled_ =
-        jit_page_table_enabled_ && !parallel_access_;
+    result->jit_page_table_enabled_ = jit_page_table_enabled_;
 
     // VM_INHERIT_NONE removes the complete mapping from the child while the
     // parent's interval and resident backing remain intact.

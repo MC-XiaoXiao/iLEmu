@@ -3035,6 +3035,19 @@ private:
 
     void load_state(Cpu& cpu)
     {
+        // Serialized scopes may select direct private accesses. Parallel
+        // lanes use checked tables so scalar loads cannot race checked stores.
+        // Rebind at every run boundary, reusing emitted code and page guards.
+        if (auto** read_table = callbacks_->jit_read_page_table()) {
+            execution_context_->link(read_page_table_link_cell_,
+                static_cast<std::uint64_t>(
+                    reinterpret_cast<std::uintptr_t>(read_table)));
+        }
+        if (auto** write_table = callbacks_->jit_write_page_table()) {
+            execution_context_->link(page_table_link_cell_,
+                static_cast<std::uint64_t>(
+                    reinterpret_cast<std::uintptr_t>(write_table)));
+        }
         clear_halt();
         jit_->Regs() = cpu.state_.registers;
         jit_->ExtRegs() = cpu.state_.extension_registers;
@@ -5216,13 +5229,11 @@ CpuCluster::CpuCluster(std::size_t initial_processor_count,
         monitor.SetAddressResolver(
             &GuestExclusiveAddressResolver::resolve_callback,
             address_resolver_.get());
-        // A serialized physical CPU can revoke a page's direct-write entry
-        // immediately before LDREX through the MemoryReadExclusive hook.
-        // Multi-slot clusters keep all writes checked because another slot
-        // may already be executing a direct store while that hook runs.
-        if (monitor_processor_count_ > 1) {
-            memory.disable_jit_write_page_table();
-        }
+        // Parallel execution selects the checked-write table. A scheduler
+        // serialized slice may reuse the guarded private-write table because
+        // no other guest lane can race the LDREX page-revocation hook.
+        if (monitor_processor_count_ > 1)
+            memory.set_parallel_access(true);
     }
     if (!address_resolver_) {
         memory.set_exclusive_write_observer([&monitor] { monitor.Clear(); });

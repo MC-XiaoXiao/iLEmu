@@ -3657,8 +3657,15 @@ void EmulatorSession::run()
             guest_execution_coordinator->run(execution_requests);
         } else {
             for (auto& prepared : prepared_slices) {
-                if (scheduler.contains(prepared.scheduled.thread))
+                if (scheduler.contains(prepared.scheduled.thread)) {
+                    // Background compilation has its own executor/memory
+                    // lock order. Batch scalar accesses only when no such
+                    // compiler can compete with this serialized guest slice.
+                    std::optional<AddressSpace::ExclusiveAccess> access;
+                    if (!profile_precompile_enabled)
+                        access.emplace(*prepared.runtime->memory);
                     GuestExecutionCoordinator::execute(prepared.execution);
+                }
             }
         }
 

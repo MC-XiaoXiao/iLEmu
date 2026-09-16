@@ -17,7 +17,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <shared_mutex>
 #include <span>
 #include <string>
 #include <unordered_set>
@@ -80,8 +79,25 @@ public:
 
     // Selects the synchronization policy before guest execution starts. The
     // physical single-core device runs all memory access on the scheduler
-    // thread; optional multi-core sessions retain shared/exclusive locking.
+    // thread; multi-core sessions synchronize memory accesses. Direct JIT
+    // access is available only inside a serialized exclusive scope.
     void set_parallel_access(bool enabled);
+    // A serialized execution slice can hold the memory lock once. Nested
+    // accesses on its own thread reuse that lock; other host readers retain
+    // ordinary exclusion. Parallel guest lanes must not use this scope.
+    class ExclusiveAccess {
+    public:
+        explicit ExclusiveAccess(AddressSpace& memory);
+        ~ExclusiveAccess();
+        ExclusiveAccess(const ExclusiveAccess&) = delete;
+        ExclusiveAccess& operator=(const ExclusiveAccess&) = delete;
+
+    private:
+        friend class AddressSpace;
+        AddressSpace& memory_;
+        std::unique_lock<std::mutex> lock_;
+        const ExclusiveAccess* previous_;
+    };
     // A shared Dynarmic monitor can conservatively invalidate all reservations
     // whenever this address space performs a checked Guest write. Direct JIT
     // writes are only installed for private pages, so shared/COW writes pass
@@ -92,12 +108,13 @@ public:
     // Read and write tables are separate: immutable/file/COW pages may be read
     // directly, while only private/shared-writable pages bypass write
     // callbacks. Null entries transparently fall back to the checked callbacks.
-    // Both tables remain valid for this AddressSpace's lifetime.
+    // Tables remain valid for this AddressSpace's lifetime. Re-select the
+    // tables at each execution entry: parallel lanes use checked tables,
+    // while an exclusive serialized scope may expose guarded private accesses.
     [[nodiscard]] std::uint8_t** jit_read_page_table();
     [[nodiscard]] std::uint8_t** jit_write_page_table();
-    // Debug write watchpoints and parallel virtual-CPU sessions require every
-    // access to pass through callbacks. Existing JITs retain a valid all-null
-    // table after this call.
+    // Debug watchpoints can require every access to pass through callbacks.
+    // Existing JITs retain a valid all-null table after this call.
     void disable_jit_page_table();
     // Exact exclusive reservation tracking needs checked writes so each store
     // can advance its backing identity; immutable/read-only direct accesses may
@@ -347,8 +364,8 @@ private:
     using PageLookupChunk = std::array<Page*, page_lookup_chunk_size>;
     using PagePermissionChunk =
         std::array<std::uint8_t, page_permission_chunk_size>;
-    using ReadLock = std::shared_lock<std::shared_mutex>;
-    using WriteLock = std::unique_lock<std::shared_mutex>;
+    using ReadLock = std::unique_lock<std::mutex>;
+    using WriteLock = std::unique_lock<std::mutex>;
 
     template <typename T>
     [[nodiscard]] std::optional<T> read_integer(
@@ -419,8 +436,13 @@ private:
         std::size_t page_index);
     [[nodiscard]] ReadLock read_lock() const;
     [[nodiscard]] WriteLock write_lock();
+    [[nodiscard]] bool owns_exclusive_access() const noexcept;
+    static thread_local const ExclusiveAccess* exclusive_access_;
 
-    mutable std::shared_mutex mutex_;
+    // Scalar guest accesses are short and interleave reads with writes. A
+    // single mutex avoids the reader-accounting overhead of a reader/writer
+    // lock while retaining mutual exclusion for parallel execution/faults.
+    mutable std::mutex mutex_;
     bool parallel_access_ { true };
     VmMap vm_map_;
     VmMap translation_profile_map_;
