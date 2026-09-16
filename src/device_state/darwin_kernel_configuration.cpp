@@ -202,7 +202,7 @@ namespace {
                 .shared_region_abi =
                     DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1,
                 .mach_kernel_rpc =
-                    DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1,
+                    DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps,
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
                 .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
                 .memory_status_priority = DarwinMemoryStatusPriorityAbi::PriorityBands,

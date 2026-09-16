@@ -92,6 +92,7 @@ enum class DarwinSharedRegionAbi : std::uint8_t {
 enum class DarwinMachKernelRpcAbi : std::uint8_t {
     LegacyMigOnly,
     DirectVmAndPortTrapsV1,
+    DirectWideVmAndPortTraps,
 };
 
 // Darwin 10 introduced the psynch syscall family in slots that older ARM32

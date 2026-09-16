@@ -50,6 +50,15 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
         return false;
 
     auto& registers = cpu.registers();
+    if (shared_state_->darwin_abi.mach_kernel_rpc ==
+            DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps &&
+        (trap == 11U || trap == 13U || trap == 15U)) {
+        // The wide-only trap table removed vm_allocate/vm_deallocate and
+        // repurposed slot 15 from vm_protect to mach_vm_map. Let libsystem's
+        // native slow path use the complete MIG mapping implementation.
+        registers[0] = darwin::mach_message::send_invalid_destination;
+        return true;
+    }
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         const auto target = target_task_for_port(
