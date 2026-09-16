@@ -9,6 +9,8 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <string_view>
 
 namespace ilemu::surface_transport {
@@ -20,6 +22,7 @@ namespace ilemu::surface_transport {
 enum class Kind : std::uint8_t {
     CoreSurfaceClientBuffer,
     IOSurfaceClient,
+    IOSurfaceClientExtendedMetadata,
 };
 
 struct ClientAbi {
@@ -90,10 +93,66 @@ inline constexpr ClientAbi io_surface_client {
         "_kIOSurfaceOffset" },
 };
 
+// The extended metadata transport retains the public CFRuntime wrapper and
+// reference header, but expands both the metadata prefix and client storage.
+inline constexpr ClientAbi io_surface_client_extended_metadata = [] {
+    auto profile = io_surface_client;
+    profile.name = "io-surface-client-extended-metadata";
+    profile.client_structure_size = 1360;
+    profile.identifier_offset = 24;
+    profile.allocation_size_offset = 28;
+    profile.width_offset = 32;
+    profile.height_offset = 36;
+    profile.bytes_per_row_offset = 40;
+    profile.data_offset_offset = 44;
+    profile.pixel_format_offset = 48;
+    profile.plane_count_offset = 56;
+    return profile;
+}();
+
+// Decode only a leaf word accessor returning r0 from [r0 + immediate].
+// Both audited instruction forms return directly, without a prologue or
+// additional computation. Other functions cannot identify a client layout.
+[[nodiscard]] constexpr std::optional<std::uint32_t> accessor_offset(
+    std::span<const std::byte> code)
+{
+    const auto word = [&](std::size_t offset, std::size_t size) {
+        std::uint32_t value = 0;
+        for (std::size_t i = 0; i < size; ++i)
+            value |= std::to_integer<std::uint32_t>(code[offset + i]) << (8 * i);
+        return value;
+    };
+    if (code.size() >= 4 && (word(0, 2) & 0xf83fU) == 0x6800U &&
+        word(2, 2) == 0x4770U)
+        return ((word(0, 2) >> 6) & 0x1fU) * 4U;
+    if (code.size() >= 8 && (word(0, 4) & 0xfffff000U) == 0xe5900000U &&
+        word(4, 4) == 0xe12fff1eU)
+        return word(0, 4) & 0xfffU;
+    return std::nullopt;
+}
+
+[[nodiscard]] constexpr Kind io_surface_kind(
+    std::span<const std::byte> width, std::span<const std::byte> height)
+{
+    if (accessor_offset(width) ==
+            io_surface_client_extended_metadata.width_offset &&
+        accessor_offset(height) ==
+            io_surface_client_extended_metadata.height_offset)
+        return Kind::IOSurfaceClientExtendedMetadata;
+    return Kind::IOSurfaceClient;
+}
+
 [[nodiscard]] constexpr const ClientAbi& for_kind(Kind kind)
 {
-    return kind == Kind::IOSurfaceClient ? io_surface_client
-                                         : core_surface_client_buffer;
+    switch (kind) {
+    case Kind::IOSurfaceClientExtendedMetadata:
+        return io_surface_client_extended_metadata;
+    case Kind::IOSurfaceClient:
+        return io_surface_client;
+    case Kind::CoreSurfaceClientBuffer:
+        return core_surface_client_buffer;
+    }
+    return core_surface_client_buffer;
 }
 
 } // namespace ilemu::surface_transport

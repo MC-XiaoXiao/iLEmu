@@ -33,6 +33,7 @@
 #include "foundation/scene_coordinator.hpp"
 #include "graphics/surface_store.hpp"
 #include "foundation/userland_hle.hpp"
+#include "surface_transport_hle.hpp"
 
 namespace ilemu {
 namespace {
@@ -856,7 +857,7 @@ void CoreSurfaceHle::dispatch(UserlandHleCall& call)
     }
     const auto transport =
         symbol.starts_with(surface_transport::io_surface_client.symbol_prefix)
-            ? surface_transport::Kind::IOSurfaceClient
+            ? surface_transport::io_surface_kind(call)
             : surface_transport::Kind::CoreSurfaceClientBuffer;
     const auto& profile = surface_transport::for_kind(transport);
     if (!symbol.starts_with(profile.symbol_prefix)) {

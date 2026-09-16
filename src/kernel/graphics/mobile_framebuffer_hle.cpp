@@ -37,6 +37,7 @@
 #include "graphics/surface_store.hpp"
 #include "graphics/surface_transport_abi.hpp"
 #include "foundation/userland_hle.hpp"
+#include "surface_transport_hle.hpp"
 
 namespace ilemu {
 namespace {
@@ -925,10 +926,7 @@ void MobileFramebufferHle::set_layer(UserlandHleCall& call)
     // IOSurface symbol family is loaded, the genuine CoreSurface CFRuntime
     // wrapper forwards to an IOSurfaceClient instead. Select by that exported
     // transport capability, not by firmware build or calling application.
-    const auto& transport =
-        call.image_loaded(surface_transport::io_surface_client.image_suffix)
-            ? surface_transport::io_surface_client
-            : surface_transport::core_surface_client_buffer;
+    const auto& transport = surface_transport::loaded_client_abi(call);
     if (surface > std::numeric_limits<std::uint32_t>::max() -
                       transport.public_client_pointer_offset) {
         call.set_return(iokit_abi::bad_argument);
