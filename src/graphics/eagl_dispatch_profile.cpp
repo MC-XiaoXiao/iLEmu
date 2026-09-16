@@ -41,11 +41,14 @@ std::optional<std::uint32_t> EaglContextFirstArm32Profile::dispatch_slot(
             base = first & 15U;
             destination = second >> 12U;
             immediate = second & 0xfffU;
-        } else if (!wide && (first & 0xff87U) == 0x4780U) {
+        } else if (!wide && (first & 0xff07U) == 0x4700U) {
             const auto target = (first >> 3U) & 15U;
             if (passes_context && function_offsets[target])
                 return (*function_offsets[target] - front_dispatch_offset) / 4U;
-            return std::nullopt;
+            // Leaf wrappers tail-call the driver with BX; their earlier
+            // conditional BX LR handles a missing current context.
+            if (target != 14U || (first & 0x80U) != 0U)
+                return std::nullopt;
         }
         if (!tls_register && (offset >= 24U || first == 0x4770U ||
                 (first & 0xff00U) == 0xbd00U ||
