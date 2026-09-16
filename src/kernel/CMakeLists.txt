@@ -164,6 +164,7 @@ add_library(ilemu_kernel_bsd_process STATIC
     bsd/process/interval_timer.cpp
     bsd/process/memorystatus.cpp
     bsd/process/policy.cpp
+    bsd/process/resource_monitor.cpp
     bsd/process/spawn.cpp)
 add_library(iLEmu::kernel_bsd_process ALIAS
     ilemu_kernel_bsd_process)

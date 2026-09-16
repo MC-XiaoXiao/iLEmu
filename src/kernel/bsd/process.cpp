@@ -11,6 +11,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/bsd/kern/kern_resource.c
 
 #include "kernel/kernel.hpp"
+#include "process/resource_monitor.hpp"
 #include "security/extensions.hpp"
 
 #include "foundation/application_path.hpp"
@@ -241,6 +242,15 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
 
     auto& registers = cpu.registers();
     switch (number) {
+    case kernel_bsd::resource_monitor::syscall_number: {
+        const auto error = kernel_bsd::resource_monitor::control(memory_,
+            *shared_state_, process_, registers[0], registers[1], registers[2]);
+        if (error != 0U)
+            bsd_error(cpu, error);
+        else
+            bsd_success(cpu, 0);
+        return;
+    }
     case 0: { // syscall: call number in r0, arguments shifted by one register
         const auto indirect_number = registers[0];
         for (std::size_t index = 0; index < 6; ++index) {

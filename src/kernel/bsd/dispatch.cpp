@@ -11,6 +11,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-1699.22.73/bsd/kern/syscalls.master
 
 #include "kernel/kernel.hpp"
+#include "process/resource_monitor.hpp"
 
 #include "kernel/darwin_process_policy_abi.hpp"
 #include "kernel/darwin_memorystatus_abi.hpp"
@@ -264,6 +265,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::init_groups:
     case darwin::syscall::get_resource_limit:
     case darwin::syscall::set_resource_limit:
+    case kernel_bsd::resource_monitor::syscall_number:
     case darwin::syscall::disable_thread_signal:
     case 333:
     case darwin::syscall::semaphore_wait_signal:
