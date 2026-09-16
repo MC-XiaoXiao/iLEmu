@@ -133,6 +133,13 @@ enum class DarwinIOKitMatchingRpcAbi : std::uint8_t {
     InlineSingleServiceAfterVariableOutput,
 };
 
+// The LCD user client moved from SoC-specific registry classes to a common
+// class. This changes guest discovery, independently of the physical panel.
+enum class DarwinFramebufferRegistryAbi : std::uint8_t {
+    DeviceSpecificClass,
+    UnifiedClcdClass,
+};
+
 // Early memorystatus clients pass a signed priority (larger values are less
 // protected); later clients pass an ascending, bounded jetsam band.
 enum class DarwinMemoryStatusPriorityAbi : std::uint8_t {
@@ -201,6 +208,9 @@ struct DarwinAbi {
     };
     DarwinIOKitMatchingRpcAbi iokit_matching_rpc {
         DarwinIOKitMatchingRpcAbi::PluralIteratorOnly
+    };
+    DarwinFramebufferRegistryAbi framebuffer_registry {
+        DarwinFramebufferRegistryAbi::DeviceSpecificClass
     };
     DarwinSandboxAbi sandbox_abi { DarwinSandboxAbi::Natural32Arguments };
     // Port-context MIG fields widened after other Mach VM routines did.

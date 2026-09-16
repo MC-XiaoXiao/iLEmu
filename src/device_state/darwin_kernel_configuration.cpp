@@ -197,6 +197,8 @@ namespace {
                 .abi_epoch = DarwinAbiEpoch::Later,
                 .pthread_abi = DarwinPthreadAbi::
                     BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,
+                .io_connect_method =
+                    DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar,
                 .mach_vm_address = DarwinMachVmAddressWidth::Wide64,
                 .arm_commpage = DarwinArmCommpageAbi::HighDataAddress,
                 .shared_region_abi =
@@ -205,6 +207,11 @@ namespace {
                     DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps,
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
                 .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
+                .iokit_matching_rpc = DarwinIOKitMatchingRpcAbi::
+                    InlineSingleServiceAfterVariableOutput,
+                .framebuffer_registry =
+                    DarwinFramebufferRegistryAbi::UnifiedClcdClass,
+                .mach_port_context = DarwinMachVmAddressWidth::Wide64,
                 .memory_status_priority = DarwinMemoryStatusPriorityAbi::PriorityBands,
                 .hid_digitizer = DarwinHidDigitizerAbi::ChildContactChanges,
                 .address_layout = DarwinAddressLayout::ExpandedArmSharedRegion,

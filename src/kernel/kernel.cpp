@@ -284,7 +284,10 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     shared_state_->graphics_driver_bundle =
         std::string { device_model_.screen.driver_bundle() };
     shared_state_->framebuffer_service_class =
-        std::string { device_model_.screen.framebuffer_service_class };
+        resolved.abi.framebuffer_registry ==
+                DarwinFramebufferRegistryAbi::UnifiedClcdClass
+            ? "AppleCLCD"
+            : std::string { device_model_.screen.framebuffer_service_class };
     shared_state_->external_framebuffer =
         device_model_.screen.external_framebuffer;
     shared_state_->ambient_light_sensor = device_model_.ambient_light_sensor;
