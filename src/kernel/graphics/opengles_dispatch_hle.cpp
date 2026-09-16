@@ -7,6 +7,7 @@
 #include "opengles_dispatch_hle.hpp"
 
 #include "foundation/address_space.hpp"
+#include "foundation/cpu.hpp"
 #include "foundation/output.hpp"
 #include "foundation/userland_hle.hpp"
 #include "graphics/eagl_dispatch_profile.hpp"
@@ -99,6 +100,8 @@ OpenGlesDispatchHle::OpenGlesDispatchHle(
                 call.set_return(set_surface_parameter(call,
                     found->second.host_context, parameter, call.argument(2)));
                 return;
+            case 701U: // client linked-OS compatibility hint
+            case 927U: // shared ES3 object semantics
             case 0x3a0U:
             case 0x3a1U:
             case 0x3e3U:
@@ -115,11 +118,10 @@ OpenGlesDispatchHle::OpenGlesDispatchHle(
     registry.register_function(
         engine_image, "_gliGetInteger", [this](UserlandHleCall& call) {
             const auto parameter = call.argument(1);
-            if (parameter == 0xe0U && !dispatch_.empty()) {
-                call.set_return(call.write32(call.argument(2),
-                                    DispatchProfile::dispatch_bytes)
-                                    ? 0U
-                                    : bad_address);
+            // This query has no context dependency. Let the firmware report
+            // its own table extent, including before a host context exists.
+            if (parameter == 0xe0U) {
+                call.resume_original_persistently();
                 return;
             }
             const auto found = contexts_.find(call.argument(0));
@@ -190,6 +192,7 @@ void OpenGlesDispatchHle::reset()
     contexts_.clear();
     shared_references_.clear();
     dispatch_.clear();
+    profile_.reset();
     pixel_format_ = 0U;
 }
 
@@ -198,6 +201,7 @@ void OpenGlesDispatchHle::inherit_state(const OpenGlesDispatchHle& parent)
     contexts_ = parent.contexts_;
     shared_references_ = parent.shared_references_;
     dispatch_ = parent.dispatch_;
+    profile_ = parent.profile_;
     pixel_format_ = parent.pixel_format_;
 }
 
@@ -232,11 +236,13 @@ bool OpenGlesDispatchHle::prepare_dispatch(UserlandHleCall& call)
 {
     if (!dispatch_.empty())
         return true;
+    if (!profile_)
+        return false;
     const auto unsupported = call.callable_handler(engine_image, "_gliNoop", 1U);
     if (!unsupported)
         return false;
     std::vector<std::uint32_t> table(
-        DispatchProfile::dispatch_bytes / 4U, *unsupported);
+        profile_->dispatch_bytes() / 4U, *unsupported);
     constexpr std::array<std::string_view, 9> required_functions {
         "_glGetError", "_glGetString", "_glBindTexture", "_glDrawArrays",
         "_glDrawElements", "_glClear", "_glViewport", "_glFlush", "_glFinish"
@@ -248,7 +254,7 @@ bool OpenGlesDispatchHle::prepare_dispatch(UserlandHleCall& call)
             continue;
         const auto code = call.original_function_code(symbol, 192U);
         const auto slot =
-            code ? DispatchProfile::dispatch_slot(*code) : std::nullopt;
+            code ? profile_->dispatch_slot(*code) : std::nullopt;
         if (!slot)
             continue;
         const auto alias = call.callable_alias(symbol, 1U);
@@ -277,6 +283,34 @@ void OpenGlesDispatchHle::choose_pixel_format(UserlandHleCall& call)
         detect_eagl_context_abi(call) !=
             EaglContextAbi::FirmwareMacroDispatch) {
         call.resume_original_persistently();
+        return;
+    }
+    if (!profile_) {
+        const auto size_output = call.allocate_data(4U, 4U);
+        if (size_output == 0U) {
+            call.set_return(bad_renderer);
+            return;
+        }
+        const std::array<std::uint32_t, 4> arguments { call.argument(0),
+            call.argument(1), call.argument(2), call.argument(3) };
+        if (!call.call_guest_function("_gliGetInteger",
+                [this, size_output, arguments](UserlandHleCall& returned) {
+                    const auto bytes = returned.memory().read32(size_output);
+                    if (returned.argument(0) != 0U || !bytes ||
+                        !(profile_ = DispatchProfile::from_dispatch_bytes(*bytes))) {
+                        returned.set_return(bad_renderer);
+                        return;
+                    }
+                    std::copy(arguments.begin(), arguments.end(),
+                        returned.cpu().registers().begin());
+                    choose_pixel_format(returned);
+                })) {
+            call.set_return(bad_renderer);
+            return;
+        }
+        call.cpu().registers()[0] = 0U;
+        call.cpu().registers()[1] = 0xe0U;
+        call.cpu().registers()[2] = size_output;
         return;
     }
     const auto output = call.argument(0);
@@ -387,7 +421,8 @@ void OpenGlesDispatchHle::create_context(
         }
         shared = found->second.shared;
     }
-    if ((flags & 12U) == 0U || (flags & 12U) == 12U) {
+    const auto api = profile_ ? profile_->client_api(flags) : std::nullopt;
+    if (!api) {
         call.set_return(bad_value);
         return;
     }
@@ -399,9 +434,9 @@ void OpenGlesDispatchHle::create_context(
     if (output == 0U || front == 0U || back == 0U ||
         !call.memory().accessible(output, 4U, MemoryPermission::Write) ||
         !call.memory().accessible(
-            front, DispatchProfile::dispatch_bytes, MemoryPermission::Write) ||
+            front, profile_->dispatch_bytes(), MemoryPermission::Write) ||
         !call.memory().accessible(
-            back, DispatchProfile::dispatch_bytes, MemoryPermission::Write)) {
+            back, profile_->dispatch_bytes(), MemoryPermission::Write)) {
         call.set_return(bad_address);
         return;
     }
@@ -431,7 +466,7 @@ void OpenGlesDispatchHle::create_context(
     ++shared_references_[shared];
     call.output().write(
         "[gles] GLI context created handle=" + std::to_string(handle) +
-        " api=" + std::to_string((flags & 8U) != 0U ? 2U : 1U) + "\n");
+        " api=" + std::to_string(*api) + "\n");
     call.set_return(call.memory().write32(output, handle) ? 0U : bad_address);
 }
 

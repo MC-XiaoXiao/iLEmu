@@ -7,6 +7,8 @@
 
 #pragma once
 
+#include "graphics/eagl_dispatch_profile.hpp"
+
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -48,6 +50,7 @@ private:
     std::map<std::uint32_t, Context> contexts_;
     std::map<std::uint32_t, std::uint32_t> shared_references_;
     std::vector<std::uint32_t> dispatch_;
+    std::optional<EaglContextFirstArm32Profile> profile_;
     std::uint32_t pixel_format_ { };
 };
 

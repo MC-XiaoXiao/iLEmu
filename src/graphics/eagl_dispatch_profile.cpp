@@ -11,8 +11,30 @@
 
 namespace ilemu {
 
+std::optional<EaglContextFirstArm32Profile>
+EaglContextFirstArm32Profile::from_dispatch_bytes(std::uint32_t bytes)
+{
+    if (bytes == 0xe24U || bytes == 0x102cU)
+        return EaglContextFirstArm32Profile { bytes };
+    return std::nullopt;
+}
+
+std::optional<std::uint32_t> EaglContextFirstArm32Profile::client_api(
+    std::uint32_t flags) const
+{
+    const bool extended_api = dispatch_bytes_ == 0x102cU;
+    const auto api_flags = flags & (extended_api ? 0x78U : 0x0cU);
+    if (api_flags == (extended_api ? 0x10U : 0x04U))
+        return 1U;
+    if (api_flags == (extended_api ? 0x20U : 0x08U))
+        return 2U;
+    if (extended_api && api_flags == 0x40U)
+        return 3U;
+    return std::nullopt;
+}
+
 std::optional<std::uint32_t> EaglContextFirstArm32Profile::dispatch_slot(
-    std::span<const std::byte> code)
+    std::span<const std::byte> code) const
 {
     const auto halfword = [&](std::size_t offset) {
         return std::to_integer<std::uint32_t>(code[offset]) |
@@ -62,7 +84,7 @@ std::optional<std::uint32_t> EaglContextFirstArm32Profile::dispatch_slot(
                 if (destination == 0U && immediate == context_offset)
                     passes_context = true;
                 else if (immediate >= front_dispatch_offset &&
-                         immediate - front_dispatch_offset < dispatch_bytes &&
+                         immediate - front_dispatch_offset < dispatch_bytes_ &&
                          (immediate & 3U) == 0U)
                     function_offsets[destination] = immediate;
             }
