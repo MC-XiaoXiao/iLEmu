@@ -1167,7 +1167,8 @@ void CompatibilityKernel::install_main_image_hle(
 }
 
 void CompatibilityKernel::set_process_image(std::string_view guest_path,
-    std::span<const std::byte> code_signature_entitlements)
+    std::span<const std::byte> code_signature_entitlements,
+    const MachOImage* dynamic_linker)
 {
     process_image_ = guest_path;
     if (is_application_executable_path(guest_path) &&
@@ -1209,6 +1210,21 @@ void CompatibilityKernel::set_process_image(std::string_view guest_path,
     record.termination_signal = 0;
     record.command = std::move(name);
     record.executable_path = std::string { guest_path };
+    // The loader maps dyld at its preferred address. Publish the live native
+    // section, which dyld itself fills as images are loaded and unloaded.
+    record.dyld_all_image_info_address = 0;
+    record.dyld_all_image_info_size = 0;
+    if (dynamic_linker != nullptr) {
+        for (const auto& segment : dynamic_linker->segments()) {
+            for (const auto& section : segment.sections) {
+                if (section.segment == "__DATA" &&
+                    section.name == "__all_image_info") {
+                    record.dyld_all_image_info_address = section.address;
+                    record.dyld_all_image_info_size = section.size;
+                }
+            }
+        }
+    }
     record.code_signature_entitlements.assign(
         code_signature_entitlements.begin(), code_signature_entitlements.end());
     record.display_orientation =

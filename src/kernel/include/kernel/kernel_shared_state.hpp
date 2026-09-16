@@ -597,6 +597,8 @@ struct KernelSharedState {
         std::uint64_t incarnation { };
         darwin::memorystatus::ProcessState memory_status { };
         bool importance_donor { };
+        std::uint32_t dyld_all_image_info_address { };
+        std::uint32_t dyld_all_image_info_size { };
     };
     struct ProcessKeventState {
         std::uint64_t exec_generation { };

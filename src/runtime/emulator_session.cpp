@@ -1260,7 +1260,8 @@ void EmulatorSession::run()
     initial->kernel->set_process_arguments(
         process.arguments, initial_environment);
     initial->kernel->set_process_image(process.executable_path,
-        process.executable.code_signature_entitlements());
+        process.executable.code_signature_entitlements(),
+        &process.dynamic_linker);
     precompile_startup_profile(*initial, process.executable_path);
     observe_runtime_jit_memory_counted(*initial);
     initial->kernel->enqueue_baseband_input(baseband_input);
@@ -1824,7 +1825,8 @@ void EmulatorSession::run()
                     child_runtime->kernel->set_process_arguments(
                         loaded.arguments, environment);
                     child_runtime->kernel->set_process_image(
-                        path, loaded.executable.code_signature_entitlements());
+                        path, loaded.executable.code_signature_entitlements(),
+                        &loaded.dynamic_linker);
                     child_runtime->kernel->prepare_exec(0);
                     auto& child_cpu = child_runtime->cpus->cpu(0);
                     child_cpu.reset();
@@ -3789,7 +3791,8 @@ void EmulatorSession::run()
                     runtime.kernel->set_process_arguments(
                         loaded.arguments, pending.environment);
                     runtime.kernel->set_process_image(pending.path,
-                        loaded.executable.code_signature_entitlements());
+                        loaded.executable.code_signature_entitlements(),
+                        &loaded.dynamic_linker);
                     runtime.kernel->prepare_exec(pending.processor);
                     auto& exec_cpu = runtime.cpus->cpu(pending.processor);
                     exec_cpu.reset();

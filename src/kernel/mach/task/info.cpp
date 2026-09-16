@@ -91,8 +91,15 @@ bool CompatibilityKernel::dispatch_mach_task_info_message(
             *shared_state_, process_.pid, request.remote_port);
     }
     const auto word_count = flavor ? requested_word_count(*flavor) : 0U;
+    const auto target_record = target_pid
+                                   ? shared_state_->processes.find(*target_pid)
+                                   : shared_state_->processes.end();
+    const bool missing_dyld_info =
+        flavor && *flavor == darwin::mach::task_info::dyld_info_flavor &&
+        (target_record == shared_state_->processes.end() ||
+            target_record->second.dyld_all_image_info_address == 0U);
     if (!flavor || !capacity || !target_pid || word_count == 0U ||
-        *capacity < word_count) {
+        *capacity < word_count || missing_dyld_info) {
         const std::array<std::uint32_t,
             simple_reply_size / sizeof(std::uint32_t)>
             reply {
@@ -159,6 +166,12 @@ bool CompatibilityKernel::dispatch_mach_task_info_message(
         }
         if (info.size() > 9)
             info[9] = darwin::mach::task_info::timeshare_policy;
+    }
+    if (*flavor == darwin::mach::task_info::dyld_info_flavor) {
+        // mach_vm_address_t and mach_vm_size_t are 64-bit even on ARM32.
+        info[0] = target_record->second.dyld_all_image_info_address;
+        info[2] = target_record->second.dyld_all_image_info_size;
+        info[4] = 0; // TASK_DYLD_ALL_IMAGE_INFO_32
     }
     reply.insert(reply.end(), info.begin(), info.end());
     registers[0] = write_words(memory_, request.address, reply)

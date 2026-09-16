@@ -35,7 +35,7 @@ inline constexpr std::uint32_t basic_64_flavor = 5;
 inline constexpr std::size_t basic_64_word_count = 8;
 
 inline constexpr std::uint32_t dyld_info_flavor = 17;
-inline constexpr std::size_t dyld_info_word_count = 3;
+inline constexpr std::size_t dyld_info_word_count = 5;
 
 inline constexpr std::uint32_t timeshare_policy = 1;
 
