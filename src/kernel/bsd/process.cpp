@@ -12,6 +12,7 @@
 
 #include "kernel/kernel.hpp"
 #include "process/resource_monitor.hpp"
+#include "process/uuid_policy.hpp"
 #include "security/extensions.hpp"
 
 #include "foundation/application_path.hpp"
@@ -242,6 +243,15 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
 
     auto& registers = cpu.registers();
     switch (number) {
+    case kernel_bsd::uuid_policy::syscall_number: {
+        const auto error = kernel_bsd::uuid_policy::control(memory_, process_,
+            registers[0], registers[1], registers[2]);
+        if (error != 0U)
+            bsd_error(cpu, error);
+        else
+            bsd_success(cpu, 0);
+        return;
+    }
     case kernel_bsd::resource_monitor::syscall_number: {
         const auto error = kernel_bsd::resource_monitor::control(memory_,
             *shared_state_, process_, registers[0], registers[1], registers[2]);
