@@ -131,6 +131,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     switch (number) {
     case 441: // guarded_open_np
     case 442: // guarded_close_np
+    case 443: // guarded_kqueue_np
         dispatch_bsd_guarded_file(cpu, number);
         return;
     case 322: { // VersionSensitive nosys/iopolicysys collision.

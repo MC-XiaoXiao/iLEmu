@@ -26,6 +26,29 @@ bool CompatibilityKernel::reject_guarded_descriptor(
 void CompatibilityKernel::dispatch_bsd_guarded_file(Cpu& cpu, std::uint32_t number)
 {
     auto& registers = cpu.registers();
+    if (number == 443U) {
+        const auto attributes = registers[1];
+        if ((attributes & DarwinFileGuard::duplicate) == 0U ||
+            (attributes & ~0x0fU) != 0U) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+        const auto guard = memory_.read64(registers[0]);
+        if (!guard || *guard == 0U) {
+            bsd_error(cpu, guard ? darwin::error::invalid_argument
+                                : darwin::error::bad_address);
+            return;
+        }
+        dispatch_bsd_kqueue(cpu, darwin::syscall::kqueue);
+        if ((cpu.cpsr() & bsd_support::carry_flag) != 0U)
+            return;
+        const auto fd = registers[0];
+        descriptor_guards_.emplace(fd, DarwinFileGuard { *guard, attributes });
+        descriptor_flags_[fd] = 1U;
+        output_.write("[guard] kqueue pid=" + std::to_string(process_.pid) +
+            " fd=" + std::to_string(fd) + "\n");
+        return;
+    }
     const auto guard = memory_.read64(registers[1]);
     if (!guard) {
         bsd_error(cpu, darwin::error::bad_address);
