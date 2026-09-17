@@ -1152,13 +1152,9 @@ std::size_t CompatibilityKernel::install_mapped_user_image(Cpu& cpu,
 void CompatibilityKernel::install_main_image_hle(
     Cpu& cpu, std::string_view mapped_guest_path)
 {
-    auto relative =
-        std::filesystem::path { mapped_guest_path.empty()
-                                    ? std::string_view { process_image_ }
-                                    : mapped_guest_path };
-    if (relative.is_absolute())
-        relative = relative.relative_path();
-    const auto host_path = rootfs_ / relative;
+    const auto host_path = resolve_guest_path(mapped_guest_path.empty()
+            ? process_image_
+            : std::string { mapped_guest_path });
     const auto image = MachOImage::parse(
         host_path, arm_architecture_for_model(device_model_.processor.model));
     for (const auto& segment : image.segments()) {

@@ -8,6 +8,7 @@
 #include "foundation/process_loader.hpp"
 
 #include "foundation/executable_catalog.hpp"
+#include "foundation/rootfs_path_resolver.hpp"
 
 #include <algorithm>
 #include <array>
@@ -137,7 +138,7 @@ std::filesystem::path ProcessLoader::host_path(
             };
         }
     }
-    return rootfs_ / relative;
+    return RootfsPathResolver { rootfs_ }.resolve(guest_path);
 }
 
 MachOImage ProcessLoader::parse_catalogued(
