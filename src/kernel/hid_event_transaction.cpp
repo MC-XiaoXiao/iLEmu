@@ -22,13 +22,15 @@ namespace {
     // passes CGFloat coordinates as float words on the stack. The firmware
     // owns the event layout, collection metadata and reference counting.
     struct Arm32DigitizerEventProfile {
-        static constexpr std::uint32_t finger = 0x22U;
-        static constexpr std::uint32_t hand = 0x23U;
+        static constexpr std::uint32_t finger = 2U;
+        static constexpr std::uint32_t hand = 3U;
         static constexpr std::uint32_t range_changed = 1U;
         static constexpr std::uint32_t touch_changed = 2U;
         static constexpr std::uint32_t position_changed = 4U;
         static constexpr std::uint32_t identity_changed = 0x20U;
         static constexpr std::uint32_t cancelled = 0x80U;
+        // Contacts originate on the built-in display, not an indirect pad.
+        static constexpr std::uint32_t display_integrated = 0x80000U;
         static constexpr std::uint32_t stack_scratch_bytes = 64U;
     };
 
@@ -65,7 +67,7 @@ namespace {
             std::bit_cast<std::uint32_t>(touch.x / width),
             std::bit_cast<std::uint32_t>(touch.y / height), 0U,
             std::bit_cast<std::uint32_t>(active ? 1.0F : 0.0F), 0U,
-            active ? 1U : 0U, active ? 1U : 0U, 0U };
+            active ? 1U : 0U, active ? 1U : 0U, Profile::display_integrated };
         static_cast<void>(call.memory().copy_in(
             r[13], std::as_bytes(std::span { arguments })));
     }
