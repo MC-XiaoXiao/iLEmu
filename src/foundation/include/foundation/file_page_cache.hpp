@@ -477,6 +477,11 @@ public:
     load_pages(const std::filesystem::path& path, std::uint64_t file_offset,
         std::uint32_t size);
 
+    // Host descriptor writes bypass GuestPageBacking. Reflect their completed
+    // byte range into every live MAP_SHARED page for the same file object.
+    [[nodiscard]] std::size_t reflect_descriptor_write(int file_descriptor,
+        std::uint64_t file_offset, std::span<const std::byte> bytes);
+
     [[nodiscard]] std::size_t page_count() const;
     [[nodiscard]] FilePageCacheStats stats() const;
 
@@ -505,6 +510,15 @@ private:
         std::list<Key>::iterator lru_position;
     };
 
+    struct MutablePageKey {
+        std::uint64_t device { };
+        std::uint64_t inode { };
+        std::uint64_t file_offset { };
+
+        friend constexpr auto operator<=>(
+            const MutablePageKey&, const MutablePageKey&) = default;
+    };
+
     void touch_locked(std::map<Key, PageRecord>::iterator iterator);
     void erase_path_locked(const std::string& path);
     void touch_identity_locked(
@@ -514,6 +528,7 @@ private:
         std::map<std::string, Identity>::iterator iterator);
     void evict_identity_locked();
     void evict_locked();
+    void prune_mutable_pages_locked();
 
     mutable std::mutex mutex_;
     FilePageCacheLimits limits_;
@@ -522,6 +537,9 @@ private:
     std::list<std::string> identity_lru_;
     std::map<Key, PageRecord> pages_;
     std::list<Key> lru_;
+    std::multimap<MutablePageKey, std::weak_ptr<GuestPageBacking>>
+        mutable_pages_;
+    std::size_t mutable_page_insertions_since_prune_ { };
     FilePageCacheStats stats_;
 };
 

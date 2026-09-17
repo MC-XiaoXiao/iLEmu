@@ -1802,6 +1802,13 @@ void FilePageCache::evict_locked()
     }
 }
 
+void FilePageCache::prune_mutable_pages_locked()
+{
+    std::erase_if(mutable_pages_,
+        [](const auto& entry) { return entry.second.expired(); });
+    mutable_page_insertions_since_prune_ = 0;
+}
+
 FilePageCache::FilePageCache(FilePageCacheLimits limits,
     std::shared_ptr<GuestFileGenerationRegistry> generation_registry)
     : limits_ { limits }
@@ -2090,6 +2097,13 @@ std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
         entry->second.page = page;
         lru_.push_back(key);
         entry->second.lru_position = std::prev(lru_.end());
+        if (!key.immutable_snapshot) {
+            mutable_pages_.emplace(MutablePageKey { mapping->generation.device,
+                                       mapping->generation.inode, file_offset },
+                page);
+            if (++mutable_page_insertions_since_prune_ >= 1024U)
+                prune_mutable_pages_locked();
+        }
         evict_locked();
         return page;
     }
@@ -2119,6 +2133,77 @@ FilePageCache::load_pages(const std::filesystem::path& path,
         result.push_back(load_page(*mapping, offset, byte_count));
     }
     return result;
+}
+
+std::size_t FilePageCache::reflect_descriptor_write(int file_descriptor,
+    std::uint64_t file_offset, std::span<const std::byte> bytes)
+{
+    if (file_descriptor < 0 || bytes.empty() ||
+        bytes.size() - 1U >
+            std::numeric_limits<std::uint64_t>::max() - file_offset) {
+        return 0;
+    }
+
+    struct stat status { };
+    if (::fstat(file_descriptor, &status) != 0)
+        return 0;
+
+    const auto device = static_cast<std::uint64_t>(status.st_dev);
+    const auto inode = static_cast<std::uint64_t>(status.st_ino);
+    const auto last_offset = file_offset + bytes.size() - 1U;
+    const auto first_page =
+        file_offset & ~(std::uint64_t { guest_memory_page_size } - 1U);
+    const auto last_page =
+        last_offset & ~(std::uint64_t { guest_memory_page_size } - 1U);
+
+    std::vector<std::shared_ptr<GuestPageBacking>> pages;
+    {
+        const std::scoped_lock lock { mutex_ };
+        for (auto page_offset = first_page;;
+            page_offset += guest_memory_page_size) {
+            const auto [begin, end] = mutable_pages_.equal_range(
+                MutablePageKey { device, inode, page_offset });
+            for (auto page = begin; page != end;) {
+                if (auto backing = page->second.lock()) {
+                    pages.push_back(std::move(backing));
+                    ++page;
+                } else {
+                    page = mutable_pages_.erase(page);
+                }
+            }
+            if (page_offset == last_page)
+                break;
+        }
+    }
+
+    std::size_t updated_pages = 0;
+    for (const auto& page : pages) {
+        page->materialize();
+        const auto page_begin = page->file_offset_;
+        const auto page_end = page_begin + page->file_byte_count_;
+        const auto update_begin = std::max(file_offset, page_begin);
+        const auto update_end = std::min(file_offset + bytes.size(), page_end);
+        if (update_begin >= update_end)
+            continue;
+
+        const auto source_offset =
+            static_cast<std::size_t>(update_begin - file_offset);
+        const auto page_offset =
+            static_cast<std::size_t>(update_begin - page_begin);
+        const auto count = static_cast<std::size_t>(update_end - update_begin);
+        {
+            const std::scoped_lock page_lock { page->mutex_ };
+            std::copy_n(
+                bytes.begin() + static_cast<std::ptrdiff_t>(source_offset),
+                count,
+                page->bytes.begin() + static_cast<std::ptrdiff_t>(page_offset));
+        }
+        page->invalidate_reservation_identity(
+            static_cast<std::uint32_t>(page_offset), count);
+        page->publish_shared_write();
+        ++updated_pages;
+    }
+    return updated_pages;
 }
 
 std::size_t FilePageCache::page_count() const

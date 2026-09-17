@@ -213,6 +213,12 @@ void CompatibilityKernel::dispatch_bsd_aio(Cpu& cpu, std::uint32_t number)
                     } else {
                         completion.result = static_cast<std::int32_t>(result);
                         static_cast<void>(
+                            shared_state_->shared_mapping_page_cache
+                                ->reflect_descriptor_write(
+                                    description->host_descriptor(), position,
+                                    std::span<const std::byte> { bytes->data(),
+                                        static_cast<std::size_t>(result) }));
+                        static_cast<void>(
                             shared_state_->guest_file_generation_registry
                                 ->publish_descriptor(
                                     file_descriptors_.at(descriptor),

@@ -1071,6 +1071,11 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         static_cast<void>(
+            shared_state_->shared_mapping_page_cache->reflect_descriptor_write(
+                description->host_descriptor(), offset,
+                std::span<const std::byte> {
+                    bytes->data(), static_cast<std::size_t>(result) }));
+        static_cast<void>(
             shared_state_->guest_file_generation_registry->publish_descriptor(
                 file->second, description->host_descriptor(),
                 GuestFileMutationKind::Write));

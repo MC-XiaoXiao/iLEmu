@@ -624,6 +624,11 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                         std::error_code { errno, std::generic_category() }));
                 return;
             }
+            static_cast<void>(shared_state_->shared_mapping_page_cache
+                    ->reflect_descriptor_write(description->host_descriptor(),
+                        position,
+                        std::span<const std::byte> {
+                            bytes->data(), static_cast<std::size_t>(result) }));
             file_offsets_[fd] = position + static_cast<std::size_t>(result);
             static_cast<void>(shared_state_->guest_file_generation_registry
                     ->publish_descriptor(file->second,
