@@ -55,6 +55,41 @@ namespace {
         return address ? call.memory().read32(*address).value_or(0) : 0;
     }
 
+    void copy_brick_state(UserlandHleCall& call, bool activated)
+    {
+        const auto value = exported_object(
+            call, activated ? cf_boolean_false : cf_boolean_true);
+        if (value == 0) {
+            call.resume_original_persistently();
+        } else {
+            call.set_return(value);
+        }
+    }
+
+    void copy_activation_state(UserlandHleCall& call, bool activated)
+    {
+        if (!call.symbol_address(create_cf_string)) {
+            call.resume_original_persistently();
+            return;
+        }
+
+        const auto value =
+            call.intern_string(activated ? "Activated" : "Unactivated");
+        if (value == 0) {
+            call.set_return(0);
+            return;
+        }
+
+        auto& registers = call.cpu().registers();
+        registers[0] = 0;
+        registers[1] = value;
+        registers[2] = cf_string_encoding_utf8;
+        if (!call.call_guest_function(
+                create_cf_string, [](UserlandHleCall&) { })) {
+            call.set_return(0);
+        }
+    }
+
 } // namespace
 
 void register_lockdown_hle(UserlandHleRegistry& registry,
@@ -72,19 +107,26 @@ void register_lockdown_hle(UserlandHleRegistry& registry,
         registry.register_guest_data_symbol(
             std::string { core_foundation_image },
             std::string { cf_boolean_true });
+        registry.register_function(std::string { lockdown_image },
+            "_lockdown_copy_brickState",
+            [activated = *activated](UserlandHleCall& call) {
+                copy_brick_state(call, activated);
+            });
     }
+    // The convenience APIs can call the internal transport directly instead
+    // of going through lockdown_copy_value. Expose the same device state at
+    // both public query boundaries.
+    registry.register_function(std::string { lockdown_image },
+        "_lockdown_copy_activationState",
+        [activated = *activated](UserlandHleCall& call) {
+            copy_activation_state(call, activated);
+        });
     registry.register_function(std::string { lockdown_image },
         std::string { copy_value },
         [activated = *activated, profile](UserlandHleCall& call) {
             if (profile.brick_state &&
                 is_lockdown_query(call, brick_state_key, "BrickState")) {
-                const auto value = exported_object(
-                    call, activated ? cf_boolean_false : cf_boolean_true);
-                if (value == 0) {
-                    call.resume_original_persistently();
-                } else {
-                    call.set_return(value);
-                }
+                copy_brick_state(call, activated);
                 return;
             }
             if (!is_lockdown_query(
@@ -95,26 +137,7 @@ void register_lockdown_hle(UserlandHleRegistry& registry,
                 call.resume_original_persistently();
                 return;
             }
-            if (!call.symbol_address(create_cf_string)) {
-                call.resume_original_persistently();
-                return;
-            }
-
-            const auto value =
-                call.intern_string(activated ? "Activated" : "Unactivated");
-            if (value == 0) {
-                call.set_return(0);
-                return;
-            }
-
-            auto& registers = call.cpu().registers();
-            registers[0] = 0;
-            registers[1] = value;
-            registers[2] = cf_string_encoding_utf8;
-            if (!call.call_guest_function(
-                    create_cf_string, [](UserlandHleCall&) { })) {
-                call.set_return(0);
-            }
+            copy_activation_state(call, activated);
         });
 }
 
