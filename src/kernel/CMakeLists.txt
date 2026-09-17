@@ -260,12 +260,17 @@ target_link_libraries(ilemu_kernel_iokit_camera PRIVATE
     iLEmu::foundation)
 
 add_library(ilemu_kernel_iokit_display STATIC
+    iokit/display/backlight.cpp
     iokit/display/vsync.cpp)
 add_library(iLEmu::kernel_iokit_display ALIAS
     ilemu_kernel_iokit_display)
 ilemu_configure_module(ilemu_kernel_iokit_display)
 target_link_libraries(ilemu_kernel_iokit_display PRIVATE
     iLEmu::foundation)
+if(TARGET PkgConfig::PLIST)
+    target_link_libraries(ilemu_kernel_iokit_display PRIVATE PkgConfig::PLIST)
+    target_compile_definitions(ilemu_kernel_iokit_display PRIVATE ILEMU_HAS_LIBPLIST=1)
+endif()
 
 add_library(ilemu_kernel_iokit_graphics STATIC
     iokit/graphics/service.cpp)

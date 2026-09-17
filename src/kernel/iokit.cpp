@@ -45,8 +45,9 @@
 #include "network/wifi_state.hpp"
 
 #include "iokit/battery.hpp"
-#include "iokit/environment.hpp"
 #include "iokit/diagnostic_data.hpp"
+#include "iokit/display/backlight.hpp"
+#include "iokit/environment.hpp"
 #include "iokit/power.hpp"
 #include "mach/support.hpp"
 
@@ -803,6 +804,8 @@ namespace {
             KernelSharedState::IOKitRegistryProperty {
                 KernelSharedState::IOKitRegistryProperty::Kind::Boolean,
                 { std::byte { 0 } } });
+        if (!external)
+            kernel_iokit::BacklightControl::publish(service);
         shared_state.iokit_services.emplace(port, std::move(service));
         return port;
     }
@@ -1196,7 +1199,8 @@ namespace {
                 ? apple_h1clcd_class
                 : std::string_view { shared_state.framebuffer_service_class };
         if (contains_text(matching, framebuffer_service_class) ||
-            contains_text(matching, mobile_framebuffer_class)) {
+            contains_text(matching, mobile_framebuffer_class) ||
+            kernel_iokit::BacklightControl::matches(matching)) {
             services.push_back(
                 ensure_mobile_framebuffer_service_locked(shared_state));
         }
@@ -2259,12 +2263,20 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                     device_mig::id(
                         device_mig::Routine::io_connect_set_properties) ||
                 network_stack_connection);
-        const auto result =
-            accepted ? iokit_abi::success : iokit_abi::bad_argument;
+        auto result = accepted ? iokit_abi::success : iokit_abi::bad_argument;
         if (data &&
             message_id == static_cast<std::uint32_t>(
-                              iokit_abi::Message::RegistryEntrySetProperties))
-            shared_state.nvram_serialized = *data;
+                              iokit_abi::Message::RegistryEntrySetProperties)) {
+            std::lock_guard mach_lock { shared_state.mach_mutex };
+            const auto service = shared_state.iokit_services.find(remote_object);
+            if (service != shared_state.iokit_services.end() &&
+                service->second.properties.contains("backlight-control")) {
+                result = kernel_iokit::BacklightControl::set_properties(
+                    service->second, *data);
+            } else {
+                shared_state.nvram_serialized = *data;
+            }
+        }
         const std::array<std::uint32_t, 10> reply {
             18,
             40,
