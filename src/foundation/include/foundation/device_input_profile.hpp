@@ -31,9 +31,9 @@ struct SystemGestures {
 
 inline constexpr SystemGestures classic_compact_system_gestures {
     "classic-compact-slider",
-    // Cover the usable display width so slider layouts with a longer track
-    // still receive one continuous HOME-plus-swipe gesture.
-    { 0.001F, 0.8958333333F, 0.999F, 0.8958333333F, 300U, 12U, 16U, 300U },
+    // Begin inside the slider handle for hit-tested controls, then reach the
+    // display edge for full-screen recognizers with a longer travel threshold.
+    { 0.15625F, 0.8958333333F, 0.999F, 0.8958333333F, 300U, 12U, 16U, 300U },
 };
 
 inline constexpr SystemGestures classic_centered_tablet_system_gestures {
