@@ -42,7 +42,9 @@ namespace {
     std::optional<std::vector<float>> read_floats(
         UserlandHleCall& call, std::uint32_t address, std::size_t count)
     {
-        if (address == 0U || count > 16U)
+        if (address == 0U ||
+            count > GlesProgramState::maximum_uniform_components ||
+            count > (std::numeric_limits<std::uint32_t>::max() - address) / 4U)
             return std::nullopt;
         std::vector<float> values(count);
         for (std::size_t index = 0; index < count; ++index) {
@@ -122,12 +124,21 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
         const auto array = context.generic_arrays.find(*location);
         return array == context.generic_arrays.end() ? nullptr : &array->second;
     };
-    const auto* position = array_for("vertex_position");
+    const auto* position =
+        array_for(program->interface_profile.position_attribute);
     if (position == nullptr || !position->enabled)
         return std::nullopt;
     result.position_array = *position;
-    if (const auto* color = array_for(program->interface_profile.color_attribute))
-        result.color_array = *color;
+    if (const auto color_location = programs_.attribute(context.current_program,
+            program->interface_profile.color_attribute);
+        color_location &&
+        *color_location < context.current_generic_attributes.size()) {
+        result.current_color =
+            context.current_generic_attributes[*color_location];
+        const auto color = context.generic_arrays.find(*color_location);
+        if (color != context.generic_arrays.end())
+            result.color_array = color->second;
+    }
     for (std::size_t unit = 0; unit < result.texture_arrays.size(); ++unit) {
         const auto suffix = std::to_string(unit);
         if (const auto* texture =
@@ -140,9 +151,10 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
             result.texture_transforms[unit] = { transform->values[0],
                 transform->values[1], transform->values[2],
                 transform->values[3] };
-        } else if (const auto* scale = programs_.uniform(context.current_program,
-                       std::string { "texscale" } + suffix);
-                   scale != nullptr && scale->value_count >= 2U) {
+        } else if (const auto* scale =
+                       programs_.uniform(context.current_program,
+                           std::string { "texscale" } + suffix);
+            scale != nullptr && scale->value_count >= 2U) {
             result.texture_transforms[unit][0] = scale->values[0];
             result.texture_transforms[unit][1] = scale->values[1];
         }
@@ -150,7 +162,9 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
     if (const auto* matrix =
             programs_.uniform(context.current_program, "vertex_matrix");
         matrix != nullptr && matrix->value_count == 16U) {
-        result.vertex_matrix = GlesMatrix { matrix->values };
+        std::array<float, 16> values;
+        std::copy_n(matrix->values.begin(), values.size(), values.begin());
+        result.vertex_matrix = GlesMatrix { values };
     }
 
     const auto fragment = programs_.shader_source(
@@ -168,7 +182,8 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
             std::string_view::npos;
     }
 
-    const auto output = fragment.find(program->interface_profile.fragment_output);
+    const auto output =
+        fragment.find(program->interface_profile.fragment_output);
     const auto expression = output == std::string_view::npos
                                 ? std::string_view { }
                                 : fragment.substr(output);
@@ -189,12 +204,147 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
     } else if (expression.find(color + " * s0 * (1.0 - s1.a)") !=
                std::string_view::npos) {
         set_previous_times_texture_alpha(unit1, true);
-    } else if (expression.find(color + " * s0 * s1.a") != std::string_view::npos) {
+    } else if (expression.find(color + " * s0 * s1.a") !=
+               std::string_view::npos) {
         set_previous_times_texture_alpha(unit1, false);
     } else if (expression.find(color + " * s0.a") != std::string_view::npos) {
         set_previous_times_texture_alpha(unit0, false);
     } else if (expression.find("= s0") != std::string_view::npos) {
         unit0.mode = gles_abi::replace;
+    }
+
+    for (const auto& input : program->interface_profile.matrix_texture_inputs) {
+        if (!input.valid())
+            continue;
+        const auto* sampler =
+            programs_.uniform(context.current_program, input.sampler);
+        const auto sampled_unit =
+            sampler && sampler->integer ? *sampler->integer : 0;
+        if (sampled_unit < 0 || static_cast<std::size_t>(sampled_unit) >=
+                                    result.sampled_textures.size()) {
+            continue;
+        }
+        const auto unit = static_cast<std::size_t>(sampled_unit);
+        const auto* texture_array = array_for(input.attribute);
+        if (texture_array != nullptr)
+            result.texture_arrays[unit] = *texture_array;
+        result.sampled_textures[unit] = true;
+        result.rectangle_textures[unit] = input.rectangle;
+
+        const auto assign_matrix =
+            [&](std::size_t stage, std::string_view name,
+                GlesProgramInterfaceProfile::MatrixOrder order) {
+                const auto* matrix =
+                    programs_.uniform(context.current_program, name);
+                if (matrix == nullptr || matrix->value_count != 9U ||
+                    order == GlesProgramInterfaceProfile::MatrixOrder::None) {
+                    return;
+                }
+                std::copy_n(matrix->values.begin(), 9U,
+                    result.texture_matrices[unit][stage].values.begin());
+                result.texture_matrices[unit][stage].order = order;
+            };
+        assign_matrix(0U, input.vertex_matrix, input.vertex_matrix_order);
+        assign_matrix(1U, input.fragment_matrix, input.fragment_matrix_order);
+
+        const auto* color_uniform =
+            programs_.uniform(context.current_program, input.color_uniform);
+        if (color_uniform != nullptr && color_uniform->value_count >= 4U) {
+            auto& environment = result.texture_environments[unit];
+            environment.mode = gles_abi::combine;
+            environment.combine_rgb = gles_abi::modulate;
+            environment.combine_alpha = gles_abi::modulate;
+            environment.color = { color_uniform->values[0],
+                color_uniform->values[1], color_uniform->values[2],
+                color_uniform->values[3] };
+            environment.rgb_sources[0] = gles_abi::texture_source;
+            environment.rgb_sources[1] = gles_abi::constant;
+            environment.alpha_sources[0] = gles_abi::texture_source;
+            environment.alpha_sources[1] = gles_abi::constant;
+        }
+    }
+    for (const auto& input :
+        program->interface_profile.projected_texture_inputs) {
+        if (!input.valid())
+            continue;
+        const auto* sampler =
+            programs_.uniform(context.current_program, input.sampler);
+        const auto sampled_unit =
+            sampler && sampler->integer ? *sampler->integer : 0;
+        if (sampled_unit < 0 || static_cast<std::size_t>(sampled_unit) >=
+                                    result.sampled_textures.size()) {
+            continue;
+        }
+        const auto unit = static_cast<std::size_t>(sampled_unit);
+        const auto* transform =
+            programs_.uniform(context.current_program, input.transform_uniform);
+        if (transform == nullptr || transform->value_count < 4U)
+            continue;
+        result.sampled_textures[unit] = true;
+        result.rectangle_textures[unit] = input.rectangle;
+        result.projected_textures[unit] = true;
+        result.projection_transforms[unit] = { transform->values[0],
+            transform->values[1], transform->values[2], transform->values[3] };
+        if (program->interface_profile.fragment_operation !=
+            GlesFragmentOperation::TextureEnvironment) {
+            result.fragment_operation =
+                program->interface_profile.fragment_operation;
+            result.fragment_operation_texture_unit = unit;
+        }
+    }
+    const auto& filter = program->interface_profile.filter;
+    if (filter.operation != GlesFilterProfile::Operation::None) {
+        const auto* sampler =
+            programs_.uniform(context.current_program, filter.sampler);
+        const auto unit_index =
+            sampler && sampler->integer ? *sampler->integer : 0;
+        if (unit_index >= 0 && static_cast<std::size_t>(unit_index) <
+                                   result.sampled_textures.size()) {
+            const auto unit = static_cast<std::size_t>(unit_index);
+            result.filter.operation = filter.operation;
+            result.filter.texture_unit = unit;
+            result.sampled_textures[unit] = true;
+            if (filter.operation ==
+                GlesFilterProfile::Operation::WeightedSamples) {
+                if (const auto* array = array_for(filter.coordinate_attribute))
+                    result.texture_arrays[unit] = *array;
+                const auto* transform = programs_.uniform(
+                    context.current_program, filter.coordinate_transform);
+                if (transform && transform->value_count >= 4U)
+                    std::copy_n(transform->values.begin(), 4U,
+                        result.texture_transforms[unit].begin());
+                const auto* offsets =
+                    programs_.uniform(context.current_program, filter.offsets);
+                const auto* weights =
+                    programs_.uniform(context.current_program, filter.weights);
+                for (const auto& tap : filter.taps) {
+                    auto& resolved =
+                        result.filter.taps[result.filter.tap_count++];
+                    if (offsets &&
+                        tap.offset_index * 2U + 1U < offsets->value_count) {
+                        resolved[0] = tap.offset_sign *
+                                      offsets->values[tap.offset_index * 2U] *
+                                      result.texture_transforms[unit][0];
+                        resolved[1] =
+                            tap.offset_sign *
+                            offsets->values[tap.offset_index * 2U + 1U] *
+                            result.texture_transforms[unit][1];
+                    }
+                    if (weights && tap.weight_index < weights->value_count)
+                        resolved[2] = weights->values[tap.weight_index];
+                }
+            } else if (filter.operation ==
+                       GlesFilterProfile::Operation::ColorMatrix) {
+                const auto* matrix = programs_.uniform(
+                    context.current_program, filter.color_matrix);
+                if (matrix && matrix->value_count >= 12U) {
+                    for (std::size_t column = 0; column < 4U; ++column)
+                        std::copy_n(matrix->values.data() + column * 3U, 3U,
+                            result.filter.color_columns[column].begin());
+                }
+                result.filter.color_columns[3][3] = 1.0F;
+            }
+        }
     }
     return result;
 }
@@ -399,6 +549,61 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
     add("_glEnableVertexAttribArray", set_attribute_enabled);
     add("_glDisableVertexAttribArray", set_attribute_enabled);
 
+    const auto set_current_attribute = [this](UserlandHleCall& call,
+                                           std::size_t components,
+                                           bool vector) {
+        auto* context = current_context(call);
+        const auto index = call.argument(0);
+        if (context == nullptr) {
+            set_gl_error(call, gles_abi::invalid_operation);
+            return;
+        }
+        if (index >= gles_abi::maximum_vertex_attributes) {
+            set_gl_error(call, gles_abi::invalid_value);
+            return;
+        }
+        std::array<float, 4> value { 0.0F, 0.0F, 0.0F, 1.0F };
+        if (vector) {
+            const auto source = read_floats(call, call.argument(1), components);
+            if (!source) {
+                set_gl_error(call, gles_abi::invalid_operation);
+                return;
+            }
+            std::copy(source->begin(), source->end(), value.begin());
+        } else {
+            for (std::size_t component = 0; component < components;
+                ++component) {
+                value[component] =
+                    std::bit_cast<float>(call.argument(component + 1U));
+            }
+        }
+        context->current_generic_attributes[index] = value;
+    };
+    add("_glVertexAttrib1f", [set_current_attribute](UserlandHleCall& call) {
+        set_current_attribute(call, 1U, false);
+    });
+    add("_glVertexAttrib2f", [set_current_attribute](UserlandHleCall& call) {
+        set_current_attribute(call, 2U, false);
+    });
+    add("_glVertexAttrib3f", [set_current_attribute](UserlandHleCall& call) {
+        set_current_attribute(call, 3U, false);
+    });
+    add("_glVertexAttrib4f", [set_current_attribute](UserlandHleCall& call) {
+        set_current_attribute(call, 4U, false);
+    });
+    add("_glVertexAttrib1fv", [set_current_attribute](UserlandHleCall& call) {
+        set_current_attribute(call, 1U, true);
+    });
+    add("_glVertexAttrib2fv", [set_current_attribute](UserlandHleCall& call) {
+        set_current_attribute(call, 2U, true);
+    });
+    add("_glVertexAttrib3fv", [set_current_attribute](UserlandHleCall& call) {
+        set_current_attribute(call, 3U, true);
+    });
+    add("_glVertexAttrib4fv", [set_current_attribute](UserlandHleCall& call) {
+        set_current_attribute(call, 4U, true);
+    });
+
     const auto set_float_uniform = [this](UserlandHleCall& call,
                                        std::size_t components) {
         auto* context = current_context(call);
@@ -410,23 +615,46 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
         }
         if (location == -1)
             return;
-        if (count < 0 || count > 1) {
+        if (count < 0 ||
+            static_cast<std::size_t>(count) >
+                GlesProgramState::maximum_uniform_components / components) {
             set_gl_error(call, gles_abi::invalid_value);
             return;
         }
         if (count == 0)
             return;
-        const auto values = read_floats(call, call.argument(2), components);
+        const auto values = read_floats(call, call.argument(2),
+            components * static_cast<std::size_t>(count));
         if (!values || !programs_.set_uniform(
                            context->current_program, location, *values)) {
             set_gl_error(call, gles_abi::invalid_operation);
         }
     };
+    add("_glUniform1fv", [set_float_uniform](UserlandHleCall& call) {
+        set_float_uniform(call, 1U);
+    });
     add("_glUniform2fv", [set_float_uniform](UserlandHleCall& call) {
         set_float_uniform(call, 2U);
     });
+    add("_glUniform3fv", [set_float_uniform](UserlandHleCall& call) {
+        set_float_uniform(call, 3U);
+    });
     add("_glUniform4fv", [set_float_uniform](UserlandHleCall& call) {
         set_float_uniform(call, 4U);
+    });
+    add("_glUniform4f", [this](UserlandHleCall& call) {
+        auto* context = current_context(call);
+        const auto location = static_cast<std::int32_t>(call.argument(0));
+        if (location == -1)
+            return;
+        const std::array value { std::bit_cast<float>(call.argument(1)),
+            std::bit_cast<float>(call.argument(2)),
+            std::bit_cast<float>(call.argument(3)),
+            std::bit_cast<float>(call.argument(4)) };
+        if (context == nullptr || context->current_program == 0U ||
+            !programs_.set_uniform(context->current_program, location, value)) {
+            set_gl_error(call, gles_abi::invalid_operation);
+        }
     });
     add("_glUniform1f", [this](UserlandHleCall& call) {
         auto* context = current_context(call);
@@ -450,7 +678,8 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
             set_gl_error(call, gles_abi::invalid_operation);
         }
     });
-    add("_glUniformMatrix4fv", [this](UserlandHleCall& call) {
+    const auto set_matrix_uniform = [this](UserlandHleCall& call,
+                                        std::size_t components) {
         auto* context = current_context(call);
         const auto location = static_cast<std::int32_t>(call.argument(0));
         const auto count = static_cast<std::int32_t>(call.argument(1));
@@ -466,11 +695,17 @@ void OpenGlesHle::register_programmable_gles(UserlandHleRegistry& registry)
             set_gl_error(call, gles_abi::invalid_value);
             return;
         }
-        const auto values = read_floats(call, call.argument(3), 16U);
+        const auto values = read_floats(call, call.argument(3), components);
         if (!values || !programs_.set_uniform(
                            context->current_program, location, *values)) {
             set_gl_error(call, gles_abi::invalid_operation);
         }
+    };
+    add("_glUniformMatrix3fv", [set_matrix_uniform](UserlandHleCall& call) {
+        set_matrix_uniform(call, 9U);
+    });
+    add("_glUniformMatrix4fv", [set_matrix_uniform](UserlandHleCall& call) {
+        set_matrix_uniform(call, 16U);
     });
 
     add("_glGetShaderiv", [this](UserlandHleCall& call) {

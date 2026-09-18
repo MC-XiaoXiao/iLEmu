@@ -123,7 +123,6 @@ namespace {
             static_cast<std::uint32_t>(bottom - y) };
     }
 
-
     void require_success(VkResult result, std::string_view operation)
     {
         if (result == VK_SUCCESS)
@@ -224,6 +223,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         std::array<float, 2> texture1 { };
         std::array<float, 2> texture2 { };
         std::array<float, 2> texture3 { };
+        std::array<float, 2> projected_texture0 { };
+        std::array<float, 2> projected_texture1 { };
+        std::array<float, 2> projected_texture2 { };
+        std::array<float, 2> projected_texture3 { };
     };
 
     struct alignas(16) GpuTextureEnvironment {
@@ -241,13 +244,18 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         std::array<GpuTextureEnvironment, gles_abi::texture_unit_count>
             units { };
         std::array<std::int32_t, 4> target_flags { };
+        std::array<std::int32_t, 4> filter_flags { };
+        std::array<std::array<float, 4>, GlesFilterProfile::maximum_taps>
+            filter_taps { };
+        std::array<std::array<float, 4>, 4> filter_color_columns { };
     };
 
     static_assert(gles_abi::texture_unit_count == 4);
-    static_assert(sizeof(GpuVertex) == 64);
+    static_assert(sizeof(GpuVertex) == 96);
     static_assert(sizeof(GpuTextureEnvironment) == 128);
     static_assert(sizeof(GpuFixedFunctionState) ==
-                  128 * gles_abi::texture_unit_count + 16);
+                  128 * gles_abi::texture_unit_count + 32 +
+                      16 * GlesFilterProfile::maximum_taps + 64);
 
     struct PipelineKey {
         enum class StencilMode : std::uint8_t {
@@ -371,11 +379,15 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
         struct Target {
             Image image;
+            Image render_target_snapshot;
             Image stencil;
             Buffer download;
             VkFramebuffer framebuffer { };
             VkFramebuffer stencil_framebuffer { };
             VkImageLayout layout { VK_IMAGE_LAYOUT_UNDEFINED };
+            VkImageLayout render_target_snapshot_layout {
+                VK_IMAGE_LAYOUT_UNDEFINED
+            };
             std::uint64_t cpu_generation { };
             PerfSurfaceKind kind { PerfSurfaceKind::GlesRenderTarget };
             bool valid { };
@@ -875,11 +887,16 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 VkPhysicalDeviceProperties properties { };
                 vkGetPhysicalDeviceProperties(device, &properties);
                 switch (properties.deviceType) {
-                case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU: return 300;
-                case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU: return 200;
-                case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU: return 100;
-                case VK_PHYSICAL_DEVICE_TYPE_CPU: return 0;
-                default: return 50;
+                case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+                    return 300;
+                case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+                    return 200;
+                case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+                    return 100;
+                case VK_PHYSICAL_DEVICE_TYPE_CPU:
+                    return 0;
+                default:
+                    return 50;
                 }
             };
             std::stable_sort(devices.begin(), devices.end(),
@@ -932,8 +949,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             if (physical_device_ == VK_NULL_HANDLE) {
                 throw std::runtime_error {
                     selection == GlesDeviceSelection::SoftwareOnly
-                        ? "Vulkan exposes no CPU graphics queue; install a CPU Vulkan ICD"
-                        : "Vulkan exposes no compatible graphics/presentation queue"
+                        ? "Vulkan exposes no CPU graphics queue; install a CPU "
+                          "Vulkan ICD"
+                        : "Vulkan exposes no compatible graphics/presentation "
+                          "queue"
                 };
             }
             VkFormatProperties color_properties { };
@@ -1165,7 +1184,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                                 nullptr, &stencil_render_pass_),
                 "vkCreateRenderPass(stencil)");
 
-            std::array<VkDescriptorSetLayoutBinding, 1 + gles_abi::texture_unit_count> bindings { };
+            std::array<VkDescriptorSetLayoutBinding,
+                1 + gles_abi::texture_unit_count>
+                bindings { };
             bindings[0].binding = 0;
             bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             bindings[0].descriptorCount = 1;
@@ -1887,8 +1908,16 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             maximum - target.stencil.allocation_size) {
             return maximum;
         }
+        const auto render_images =
+            target.image.allocation_size >
+                    maximum - target.render_target_snapshot.allocation_size
+                ? maximum
+                : target.image.allocation_size +
+                      target.render_target_snapshot.allocation_size;
         const auto images =
-            target.image.allocation_size + target.stencil.allocation_size;
+            render_images > maximum - target.stencil.allocation_size
+                ? maximum
+                : render_images + target.stencil.allocation_size;
         return images > maximum - target.download.size
                    ? maximum
                    : images + target.download.size;
@@ -2168,15 +2197,27 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         binding.binding = 0;
         binding.stride = sizeof(GpuVertex);
         binding.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-        std::array<VkVertexInputAttributeDescription, 2 + gles_abi::texture_unit_count> attributes { };
+        std::array<VkVertexInputAttributeDescription,
+            2 + 2 * gles_abi::texture_unit_count>
+            attributes { };
         attributes[0] = { 0, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
             static_cast<std::uint32_t>(offsetof(GpuVertex, position)) };
         attributes[1] = { 1, 0, VK_FORMAT_R32G32B32A32_SFLOAT,
             static_cast<std::uint32_t>(offsetof(GpuVertex, color)) };
-        for (std::uint32_t unit = 0; unit < gles_abi::texture_unit_count; ++unit) {
+        for (std::uint32_t unit = 0; unit < gles_abi::texture_unit_count;
+            ++unit) {
             attributes[2 + unit] = { 2 + unit, 0, VK_FORMAT_R32G32_SFLOAT,
-                static_cast<std::uint32_t>(offsetof(GpuVertex, texture0) +
-                                          unit * sizeof(std::array<float, 2>)) };
+                static_cast<std::uint32_t>(
+                    offsetof(GpuVertex, texture0) +
+                    unit * sizeof(std::array<float, 2>)) };
+            attributes[2 + gles_abi::texture_unit_count + unit] = {
+                static_cast<std::uint32_t>(
+                    2U + gles_abi::texture_unit_count + unit),
+                0, VK_FORMAT_R32G32_SFLOAT,
+                static_cast<std::uint32_t>(
+                    offsetof(GpuVertex, projected_texture0) +
+                    unit * sizeof(std::array<float, 2>))
+            };
         }
         auto vertex_input =
             make_vulkan_structure<VkPipelineVertexInputStateCreateInfo>(
@@ -2344,7 +2385,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     position[1] = -position[1];
                 result.push_back(GpuVertex { position, vertex.color,
                     vertex.texture[0], vertex.texture[1], vertex.texture[2],
-                    vertex.texture[3] });
+                    vertex.texture[3], vertex.projected_texture[0],
+                    vertex.projected_texture[1], vertex.projected_texture[2],
+                    vertex.projected_texture[3] });
             }
         };
         if (mode == gles_abi::triangles) {
@@ -2381,7 +2424,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                                                      environment.mode),
                 static_cast<std::int32_t>(environment.combine_rgb),
                 static_cast<std::int32_t>(environment.combine_alpha),
-                source.enabled ? 1 : 0 };
+                source.enabled ? (source.projected ? 2 : 1) : 0 };
             destination.color = environment.color;
             for (std::size_t argument = 0; argument < 3; ++argument) {
                 destination.rgb_sources[argument] = static_cast<std::int32_t>(
@@ -2399,6 +2442,16 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         }
         result.target_flags[0] =
             state.render_target_premultiplied && !state.blend_enabled ? 1 : 0;
+        result.target_flags[1] =
+            static_cast<std::int32_t>(state.fragment_operation);
+        result.target_flags[2] =
+            static_cast<std::int32_t>(state.fragment_operation_texture_unit);
+        result.filter_flags = { static_cast<std::int32_t>(
+                                    state.filter.operation),
+            static_cast<std::int32_t>(state.filter.texture_unit),
+            static_cast<std::int32_t>(state.filter.tap_count), 0 };
+        result.filter_taps = state.filter.taps;
+        result.filter_color_columns = state.filter.color_columns;
         return result;
     }
 
@@ -3580,7 +3633,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             uniform_offset, sizeof(GpuFixedFunctionState) };
         const VkDescriptorImageInfo image_info { host_clamp_sampler_,
             source.image.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
-        std::array<VkWriteDescriptorSet, 1 + gles_abi::texture_unit_count> writes { };
+        std::array<VkWriteDescriptorSet, 1 + gles_abi::texture_unit_count>
+            writes { };
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = descriptor;
         writes[0].dstBinding = 0;
@@ -3883,7 +3937,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                         source_target.image.sampler, source_target.image.view,
                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                     };
-                    std::array<VkWriteDescriptorSet, 1 + gles_abi::texture_unit_count> writes { };
+                    std::array<VkWriteDescriptorSet,
+                        1 + gles_abi::texture_unit_count>
+                        writes { };
                     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
                     writes[0].dstSet = descriptor;
                     writes[0].dstBinding = 0;
@@ -4514,25 +4570,20 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 return false;
             }
 
-            const auto frame_bytes =
-                static_cast<VkDeviceSize>(frame.width) * frame.height *
-                sizeof(std::uint32_t);
+            const auto frame_bytes = static_cast<VkDeviceSize>(frame.width) *
+                                     frame.height * sizeof(std::uint32_t);
             const auto vertex_bytes =
                 static_cast<VkDeviceSize>(expanded.size()) * sizeof(GpuVertex);
-            auto& gpu_target = target_surface_preparation
-                                   ? prepare_host_surface(*frame.host_surface,
-                                         target_surface_preparation->cpu_frame,
-                                         target_surface_preparation
-                                             ->cpu_generation,
-                                         target_surface_preparation
-                                             ->gpu_generation,
-                                         std::move(target_surface_preparation
-                                                       ->cpu_damage))
-                                   : ensure_target(
-                                         target, frame.width, frame.height);
+            auto& gpu_target =
+                target_surface_preparation
+                    ? prepare_host_surface(*frame.host_surface,
+                          target_surface_preparation->cpu_frame,
+                          target_surface_preparation->cpu_generation,
+                          target_surface_preparation->gpu_generation,
+                          std::move(target_surface_preparation->cpu_damage))
+                    : ensure_target(target, frame.width, frame.height);
             if (target_surface_preparation && !gpu_target.valid) {
-                last_failure_reason_.store(
-                    PerfFallbackReason::InvalidTarget,
+                last_failure_reason_.store(PerfFallbackReason::InvalidTarget,
                     std::memory_order_relaxed);
                 return false;
             }
@@ -4562,6 +4613,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
             constexpr std::array<std::uint32_t, 1> white_pixel { 0xffffffffU };
             std::array<bool, gles_abi::texture_unit_count> texture_changed { };
+            std::array<bool, gles_abi::texture_unit_count>
+                selected_render_target_snapshots { };
             std::array<CachedTexture*, gles_abi::texture_unit_count>
                 selected_textures { };
             std::array<Target*, gles_abi::texture_unit_count>
@@ -4597,6 +4650,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 }
                 const auto width = level ? level->width : 1U;
                 const auto height = level ? level->height : 1U;
+                if (unit.samples_render_target) {
+                    selected_render_target_snapshots[index] = true;
+                    continue;
+                }
                 if (level && level->host_surface &&
                     level->host_surface->key() != target &&
                     gpu_newer_host_surfaces[index] == level->host_surface) {
@@ -4668,6 +4725,20 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                         break;
                     }
                 }
+            }
+
+            const auto samples_render_target =
+                std::ranges::any_of(selected_render_target_snapshots,
+                    [](bool selected) { return selected; });
+            if (samples_render_target &&
+                gpu_target.render_target_snapshot.image == VK_NULL_HANDLE) {
+                gpu_target.render_target_snapshot =
+                    create_image(frame.width, frame.height,
+                        VK_IMAGE_USAGE_TRANSFER_DST_BIT |
+                            VK_IMAGE_USAGE_SAMPLED_BIT,
+                        true, false);
+                gpu_target.render_target_snapshot_layout =
+                    VK_IMAGE_LAYOUT_UNDEFINED;
             }
 
             if (texture_cache_over_budget()) {
@@ -4791,7 +4862,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             std::array<VkDescriptorImageInfo, gles_abi::texture_unit_count>
                 image_infos { };
             for (std::size_t index = 0; index < image_infos.size(); ++index) {
-                const auto& image = selected_surface_targets[index]
+                const auto& image = selected_render_target_snapshots[index]
+                                        ? gpu_target.render_target_snapshot
+                                    : selected_surface_targets[index]
                                         ? selected_surface_targets[index]->image
                                         : selected_textures[index]->image;
                 auto sampler = image.sampler;
@@ -4807,7 +4880,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 image_infos[index] = { sampler, image.view,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
             }
-            std::array<VkWriteDescriptorSet, 1 + gles_abi::texture_unit_count> writes { };
+            std::array<VkWriteDescriptorSet, 1 + gles_abi::texture_unit_count>
+                writes { };
             writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             writes[0].dstSet = descriptor;
             writes[0].dstBinding = 0;
@@ -4833,6 +4907,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 end_render_pass();
             if (!gpu_target.valid ||
                 gpu_target.layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL ||
+                samples_render_target ||
                 std::any_of(texture_changed.begin(), texture_changed.end(),
                     [](bool changed) { return changed; }) ||
                 std::any_of(selected_surface_targets.begin(),
@@ -4953,6 +5028,59 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 texture.revision = texture_revisions[index];
                 texture.last_upload_batch = batch_sequence_;
             }
+            if (samples_render_target) {
+                transition_image(commands.command, gpu_target.image.image,
+                    gpu_target.layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                    VK_ACCESS_TRANSFER_READ_BIT);
+                const auto snapshot_source_stage =
+                    gpu_target.render_target_snapshot_layout ==
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                        ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+                        : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+                const auto snapshot_source_access =
+                    gpu_target.render_target_snapshot_layout ==
+                            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                        ? VK_ACCESS_SHADER_READ_BIT
+                        : VkAccessFlags { };
+                transition_image(commands.command,
+                    gpu_target.render_target_snapshot.image,
+                    gpu_target.render_target_snapshot_layout,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, snapshot_source_stage,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT, snapshot_source_access,
+                    VK_ACCESS_TRANSFER_WRITE_BIT);
+                VkImageCopy copy { };
+                copy.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                copy.srcSubresource.layerCount = 1U;
+                copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                copy.dstSubresource.layerCount = 1U;
+                copy.extent = { frame.width, frame.height, 1U };
+                vkCmdCopyImage(commands.command, gpu_target.image.image,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    gpu_target.render_target_snapshot.image,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1U, &copy);
+                transition_image(commands.command,
+                    gpu_target.render_target_snapshot.image,
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+                transition_image(commands.command, gpu_target.image.image,
+                    VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                    VK_PIPELINE_STAGE_TRANSFER_BIT,
+                    VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                    VK_ACCESS_TRANSFER_READ_BIT,
+                    VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+                        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
+                gpu_target.render_target_snapshot_layout =
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                gpu_target.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            }
 
             auto render_begin = make_vulkan_structure<VkRenderPassBeginInfo>(
                 VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO);
@@ -5035,12 +5163,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 std::unique_ptr<GlesRenderer> create_vulkan_gles_renderer(
     const std::filesystem::path& pipeline_cache,
     const VulkanPresenterConfiguration* presenter,
-    GlesDeviceSelection selection,
-    std::string* failure) noexcept
+    GlesDeviceSelection selection, std::string* failure) noexcept
 {
     try {
-        auto renderer =
-            std::make_unique<VulkanGlesRenderer>(pipeline_cache, presenter, selection);
+        auto renderer = std::make_unique<VulkanGlesRenderer>(
+            pipeline_cache, presenter, selection);
         std::clog << "[gles-renderer] selected " << renderer->name() << "\n";
         return renderer;
     } catch (const std::exception& error) {

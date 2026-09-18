@@ -11,6 +11,7 @@
 #include <span>
 
 #include "graphics/gles_abi.hpp"
+#include "graphics/gles_program_interface_profile.hpp"
 
 namespace ilemu {
 
@@ -22,6 +23,8 @@ struct GlesRasterVertex {
     std::array<float, 4> position { 0.0F, 0.0F, 0.0F, 1.0F };
     std::array<float, 4> color { 1.0F, 1.0F, 1.0F, 1.0F };
     std::array<std::array<float, 2>, gles_abi::texture_unit_count> texture { };
+    std::array<std::array<float, 2>, gles_abi::texture_unit_count>
+        projected_texture { };
 };
 
 struct GlesTextureEnvironment {
@@ -46,9 +49,23 @@ struct GlesRasterTextureUnit {
     GlesTextureEnvironment environment;
     bool enabled { };
     bool rectangle { };
+    bool projected { };
+    bool samples_render_target { };
+};
+
+struct GlesRasterFilter {
+    GlesFilterProfile::Operation operation {
+        GlesFilterProfile::Operation::None
+    };
+    std::size_t texture_unit { };
+    std::size_t tap_count { };
+    // xy: texture-coordinate offset; z: weight; w: reserved.
+    std::array<std::array<float, 4>, GlesFilterProfile::maximum_taps> taps { };
+    std::array<std::array<float, 4>, 4> color_columns { };
 };
 
 struct GlesRasterState {
+    GlesRasterFilter filter;
     // Separates per-context texture namespaces from a shared render target.
     std::uint64_t resource_owner { };
     std::int32_t viewport_x { };
@@ -74,6 +91,10 @@ struct GlesRasterState {
     // premultiplied source-over images. Keep this target-local so imported
     // CoreSurface scanout layers retain their existing alpha semantics.
     bool render_target_premultiplied { };
+    GlesFragmentOperation fragment_operation {
+        GlesFragmentOperation::TextureEnvironment
+    };
+    std::size_t fragment_operation_texture_unit { };
 };
 
 [[nodiscard]] std::uint32_t premultiply_argb(std::uint32_t pixel);

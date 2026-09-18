@@ -28,6 +28,8 @@ const int GL_PREVIOUS = 0x8578;
 const int GL_SUBTRACT = 0x84e7;
 const int GL_DOT3_RGB = 0x86ae;
 const int GL_DOT3_RGBA = 0x86af;
+const int FRAGMENT_COLOR_DODGE = 1;
+const int FRAGMENT_PLUS_LIGHTER = 2;
 
 struct TextureEnvironment {
     ivec4 mode_combine_enabled;
@@ -43,6 +45,9 @@ struct TextureEnvironment {
 layout(std140, binding = 0) uniform FixedFunctionState {
     TextureEnvironment units[4];
     ivec4 target_flags;
+    ivec4 filter_flags;
+    vec4 filter_taps[16];
+    vec4 filter_color_columns[4];
 } fixed_state;
 layout(binding = 1) uniform sampler2D image0;
 layout(binding = 2) uniform sampler2D image1;
@@ -54,6 +59,10 @@ layout(location = 1) in vec2 texture0;
 layout(location = 2) in vec2 texture1;
 layout(location = 3) in vec2 texture2;
 layout(location = 4) in vec2 texture3;
+layout(location = 5) noperspective in vec2 projected_texture0;
+layout(location = 6) noperspective in vec2 projected_texture1;
+layout(location = 7) noperspective in vec2 projected_texture2;
+layout(location = 8) noperspective in vec2 projected_texture3;
 layout(location = 0) out vec4 output_color;
 
 vec4 select_source(
@@ -171,11 +180,106 @@ vec4 apply_unit(int unit, sampler2D image, vec2 coordinate, vec4 previous) {
     return apply_environment(environment, sampled, primary_color, previous);
 }
 
+vec4 sample_unit_offset(int unit, vec2 offset) {
+    TextureEnvironment environment = fixed_state.units[unit];
+    bool projected = environment.mode_combine_enabled.w > 1;
+    if (unit == 0) return sample_image(image0,
+        (projected ? projected_texture0 : texture0) + offset,
+        environment.scales_rectangle.z != 0.0,
+        environment.scales_rectangle.w != 0.0, environment.clamp_rectangle);
+    if (unit == 1) return sample_image(image1,
+        (projected ? projected_texture1 : texture1) + offset,
+        environment.scales_rectangle.z != 0.0,
+        environment.scales_rectangle.w != 0.0, environment.clamp_rectangle);
+    if (unit == 2) return sample_image(image2,
+        (projected ? projected_texture2 : texture2) + offset,
+        environment.scales_rectangle.z != 0.0,
+        environment.scales_rectangle.w != 0.0, environment.clamp_rectangle);
+    return sample_image(image3,
+        (projected ? projected_texture3 : texture3) + offset,
+        environment.scales_rectangle.z != 0.0,
+        environment.scales_rectangle.w != 0.0, environment.clamp_rectangle);
+}
+
+vec4 apply_fragment_operation(int operation, vec4 source, vec4 destination) {
+    if (operation == FRAGMENT_COLOR_DODGE) {
+        vec4 result = destination * (1.0 - source.a) +
+                      source * (1.0 - destination.a);
+        result.rgb += mix(vec3(source.a),
+            destination.rgb * source.a * source.a /
+                max(source.a - source.rgb, vec3(0.005)),
+            step(vec3(0.005), source.a - source.rgb));
+        result.a += destination.a * source.a;
+        result.rgb = min(result.rgb, vec3(result.a));
+        return result;
+    }
+    vec4 result = source + destination;
+    result.rgb = result.a - result.rgb;
+    result = clamp(result, 0.0, 1.0);
+    result.rgb = result.a - result.rgb;
+    return result;
+}
+
+vec4 apply_filter() {
+    int operation = fixed_state.filter_flags.x;
+    int unit = fixed_state.filter_flags.y;
+    if (operation == 1) {
+        vec4 result = vec4(0.0);
+        for (int tap = 0; tap < fixed_state.filter_flags.z; ++tap) {
+            vec4 parameters = fixed_state.filter_taps[tap];
+            result += sample_unit_offset(unit, parameters.xy) * parameters.z;
+        }
+        return result;
+    }
+    vec4 sampled = sample_unit_offset(unit, vec2(0.0));
+    if (operation == 2) {
+        return mat4(fixed_state.filter_color_columns[0],
+            fixed_state.filter_color_columns[1],
+            fixed_state.filter_color_columns[2],
+            fixed_state.filter_color_columns[3]) * sampled;
+    }
+    float luminance = dot(sampled.rgb, vec3(.2125, .7154, .0721));
+    return vec4(sampled.rgb, luminance * luminance);
+}
+
 void main() {
-    vec4 result = apply_unit(0, image0, texture0, primary_color);
-    result = apply_unit(1, image1, texture1, result);
-    result = apply_unit(2, image2, texture2, result);
-    result = apply_unit(3, image3, texture3, result);
+    if (fixed_state.filter_flags.x != 0) {
+        output_color = clamp(apply_filter(), 0.0, 1.0);
+        return;
+    }
+    int operation = fixed_state.target_flags.y;
+    int destination_unit = fixed_state.target_flags.z;
+    bool destination_operation = operation == FRAGMENT_COLOR_DODGE ||
+                                 operation == FRAGMENT_PLUS_LIGHTER;
+    vec4 result = primary_color;
+    if (!destination_operation || destination_unit != 0) {
+        result = apply_unit(0, image0,
+            fixed_state.units[0].mode_combine_enabled.w > 1 ?
+                projected_texture0 : texture0,
+            result);
+    }
+    if (!destination_operation || destination_unit != 1) {
+        result = apply_unit(1, image1,
+            fixed_state.units[1].mode_combine_enabled.w > 1 ?
+                projected_texture1 : texture1,
+            result);
+    }
+    if (!destination_operation || destination_unit != 2) {
+        result = apply_unit(2, image2,
+            fixed_state.units[2].mode_combine_enabled.w > 1 ?
+                projected_texture2 : texture2,
+            result);
+    }
+    if (!destination_operation || destination_unit != 3) {
+        result = apply_unit(3, image3,
+            fixed_state.units[3].mode_combine_enabled.w > 1 ?
+                projected_texture3 : texture3,
+            result);
+    }
+    if (destination_operation) {
+        result = apply_fragment_operation(
+            operation, result, sample_unit_offset(destination_unit, vec2(0.0)));
+    }
     if (fixed_state.target_flags.x != 0) result.rgb *= result.a;
     output_color = clamp(result, 0.0, 1.0);
 }

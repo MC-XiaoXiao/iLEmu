@@ -142,6 +142,8 @@ std::optional<std::uint32_t> GlesProgramState::attribute(
 std::int32_t GlesProgramState::uniform_location(
     std::uint32_t program_name, std::string_view name)
 {
+    if (name.ends_with("[0]"))
+        name.remove_suffix(3U);
     auto* program_value = program(program_name);
     if (program_value == nullptr || !program_value->linked || name.empty())
         return -1;
@@ -179,11 +181,14 @@ bool GlesProgramState::set_uniform(std::uint32_t program_name,
         return false;
     const auto found = program_value->uniforms.find(location);
     if (found == program_value->uniforms.end() ||
-        values.size() > found->second.values.size()) {
+        values.size() > maximum_uniform_components) {
         return false;
     }
+    // A partial upload preserves the remaining array elements.
+    if (found->second.values.size() < values.size())
+        found->second.values.resize(values.size());
     std::copy(values.begin(), values.end(), found->second.values.begin());
-    found->second.value_count = values.size();
+    found->second.value_count = found->second.values.size();
     found->second.integer.reset();
     return true;
 }
@@ -205,6 +210,8 @@ bool GlesProgramState::set_uniform(
 const GlesProgramState::Uniform* GlesProgramState::uniform(
     std::uint32_t program_name, std::string_view name) const
 {
+    if (name.ends_with("[0]"))
+        name.remove_suffix(3U);
     const auto* program_value = program(program_name);
     if (program_value == nullptr)
         return nullptr;

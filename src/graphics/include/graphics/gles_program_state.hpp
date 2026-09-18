@@ -25,6 +25,7 @@ namespace ilemu {
 // values needed to adapt conventional programmable inputs to that pipeline.
 class GlesProgramState {
 public:
+    static constexpr std::size_t maximum_uniform_components = 4096U;
     struct Shader {
         std::uint32_t type { };
         std::string source;
@@ -34,7 +35,7 @@ public:
 
     struct Uniform {
         std::string name;
-        std::array<float, 16> values { };
+        std::vector<float> values;
         std::size_t value_count { };
         std::optional<std::int32_t> integer;
     };

@@ -15,6 +15,7 @@
 #include <optional>
 #include <set>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -146,11 +147,29 @@ private:
         ArrayPointer vertex_array;
         ArrayPointer color_array;
         std::map<std::uint32_t, ArrayPointer> generic_arrays;
+        std::array<std::array<float, 4>, gles_abi::maximum_vertex_attributes>
+            current_generic_attributes = [] {
+                std::array<std::array<float, 4>,
+                    gles_abi::maximum_vertex_attributes>
+                    values;
+                values.fill({ 0.0F, 0.0F, 0.0F, 1.0F });
+                return values;
+            }();
         std::uint32_t current_program { };
     };
     struct ProgrammableDrawState {
+        GlesRasterFilter filter;
+        struct TextureMatrix {
+            std::array<float, 9> values { 1.0F, 0.0F, 0.0F, 0.0F, 1.0F, 0.0F,
+                0.0F, 0.0F, 1.0F };
+            GlesProgramInterfaceProfile::MatrixOrder order {
+                GlesProgramInterfaceProfile::MatrixOrder::None
+            };
+        };
+
         ContextState::ArrayPointer position_array;
         ContextState::ArrayPointer color_array;
+        std::array<float, 4> current_color { 0.0F, 0.0F, 0.0F, 1.0F };
         std::array<ContextState::ArrayPointer, gles_abi::texture_unit_count>
             texture_arrays;
         GlesMatrix vertex_matrix;
@@ -159,14 +178,24 @@ private:
         // the older scale-only texscaleN spelling.
         std::array<std::array<float, 4>, gles_abi::texture_unit_count>
             texture_transforms = [] {
-                std::array<std::array<float, 4>, gles_abi::texture_unit_count> transforms;
+                std::array<std::array<float, 4>, gles_abi::texture_unit_count>
+                    transforms;
                 transforms.fill({ 1.0F, 1.0F, 0.0F, 0.0F });
                 return transforms;
             }();
+        std::array<std::array<TextureMatrix, 2>, gles_abi::texture_unit_count>
+            texture_matrices;
+        std::array<std::array<float, 4>, gles_abi::texture_unit_count>
+            projection_transforms;
         std::array<GlesTextureEnvironment, gles_abi::texture_unit_count>
             texture_environments;
         std::array<bool, gles_abi::texture_unit_count> sampled_textures { };
         std::array<bool, gles_abi::texture_unit_count> rectangle_textures { };
+        std::array<bool, gles_abi::texture_unit_count> projected_textures { };
+        GlesFragmentOperation fragment_operation {
+            GlesFragmentOperation::TextureEnvironment
+        };
+        std::size_t fragment_operation_texture_unit { };
     };
     enum class RenderTargetKind : std::uint8_t {
         Display,
@@ -231,6 +260,7 @@ private:
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_compatibility_surface(
         HostSurfaceDescriptor descriptor);
     void draw(UserlandHleCall& call, bool indexed);
+    void read_pixels(UserlandHleCall& call);
     [[nodiscard]] bool display_write_allowed(UserlandHleCall& call) const;
     void register_eagl(UserlandHleRegistry& registry);
     void register_egl(UserlandHleRegistry& registry);

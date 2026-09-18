@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -30,6 +31,8 @@ namespace {
         std::array<float, 4> color { };
         std::array<std::array<float, 2>, gles_abi::texture_unit_count>
             texture { };
+        std::array<std::array<float, 2>, gles_abi::texture_unit_count>
+            projected_texture { };
     };
 
     float edge(const ScreenVertex& a, const ScreenVertex& b, float x, float y)
@@ -278,9 +281,48 @@ namespace {
         return result;
     }
 
+    std::uint32_t apply_fragment_operation(GlesFragmentOperation operation,
+        std::uint32_t source_pixel, std::uint32_t destination_pixel)
+    {
+        const auto source = unpack_color(source_pixel);
+        const auto destination = unpack_color(destination_pixel);
+        Color result { };
+        if (operation == GlesFragmentOperation::ColorDodge) {
+            for (std::size_t component = 0; component < 3U; ++component) {
+                const auto denominator = source[3] - source[component];
+                const auto blend = denominator >= 0.005F
+                                       ? destination[component] * source[3] *
+                                             source[3] /
+                                             std::max(denominator, 0.005F)
+                                       : source[3];
+                result[component] =
+                    destination[component] * (1.0F - source[3]) +
+                    source[component] * (1.0F - destination[3]) + blend;
+            }
+            result[3] = destination[3] * (1.0F - source[3]) +
+                        source[3] * (1.0F - destination[3]) +
+                        destination[3] * source[3];
+            for (std::size_t component = 0; component < 3U; ++component)
+                result[component] = std::min(result[component], result[3]);
+        } else if (operation == GlesFragmentOperation::PlusLighter) {
+            const auto alpha = source[3] + destination[3];
+            result[3] = std::clamp(alpha, 0.0F, 1.0F);
+            for (std::size_t component = 0; component < 3U; ++component) {
+                const auto inverted = std::clamp(
+                    alpha - source[component] - destination[component], 0.0F,
+                    1.0F);
+                result[component] = result[3] - inverted;
+            }
+        } else {
+            return source_pixel;
+        }
+        return pack_color(result);
+    }
+
     std::uint32_t sample_texture(const GlesRasterState& state,
         const GlesRasterTextureUnit& unit, float s, float t,
-        const std::array<float, 4>& gradient)
+        const std::array<float, 4>& gradient,
+        const DisplayFrame* render_target_snapshot)
     {
         if (!unit.enabled || state.resources == nullptr || unit.texture == 0) {
             return 0xffffffffU;
@@ -288,16 +330,29 @@ namespace {
         const auto* texture = state.resources->texture(unit.texture);
         if (texture == nullptr)
             return 0xffffffffU;
-        const auto level = texture->levels.find(0);
-        if (level == texture->levels.end() || level->second.width == 0 ||
-            level->second.height == 0 || level->second.argb.empty()) {
-            return 0xffffffffU;
+        const std::vector<std::uint32_t>* pixels { };
+        std::uint32_t image_width { };
+        std::uint32_t image_height { };
+        if (unit.samples_render_target && render_target_snapshot != nullptr) {
+            pixels = &render_target_snapshot->pixels;
+            image_width = render_target_snapshot->width;
+            image_height = render_target_snapshot->height;
+        } else {
+            const auto level = texture->levels.find(0);
+            if (level == texture->levels.end())
+                return 0xffffffffU;
+            pixels = &level->second.argb;
+            image_width = level->second.width;
+            image_height = level->second.height;
         }
+        if (image_width == 0U || image_height == 0U ||
+            pixels->size() !=
+                static_cast<std::size_t>(image_width) * image_height)
+            return 0xffffffffU;
         if (!std::isfinite(s) || !std::isfinite(t))
             return 0xffffffffU;
         const auto sampling = GlesSamplerState::from_parameters(
             texture->parameters, unit.rectangle);
-        const auto& image = level->second;
         const auto coordinate = [](float value, std::uint32_t dimension,
                                     std::uint32_t wrap, bool rectangle) {
             if (rectangle)
@@ -329,19 +384,19 @@ namespace {
             return static_cast<std::uint32_t>(index);
         };
         const auto texel = [&](std::int32_t x, std::int32_t y) {
-            return image.argb[static_cast<std::size_t>(
-                                  address(y, image.height, sampling.wrap_t)) *
-                                  image.width +
-                              address(x, image.width, sampling.wrap_s)];
+            return (*pixels)[static_cast<std::size_t>(
+                                 address(y, image_height, sampling.wrap_t)) *
+                                 image_width +
+                             address(x, image_width, sampling.wrap_s)];
         };
         const auto x =
-            coordinate(s, image.width, sampling.wrap_s, unit.rectangle);
+            coordinate(s, image_width, sampling.wrap_s, unit.rectangle);
         const auto y =
-            coordinate(t, image.height, sampling.wrap_t, unit.rectangle);
+            coordinate(t, image_height, sampling.wrap_t, unit.rectangle);
         const auto width =
-            unit.rectangle ? 1.0F : static_cast<float>(image.width);
+            unit.rectangle ? 1.0F : static_cast<float>(image_width);
         const auto height =
-            unit.rectangle ? 1.0F : static_cast<float>(image.height);
+            unit.rectangle ? 1.0F : static_cast<float>(image_height);
         const auto footprint =
             std::max(std::hypot(gradient[0] * width, gradient[1] * height),
                 std::hypot(gradient[2] * width, gradient[3] * height));
@@ -367,7 +422,8 @@ namespace {
 
     void draw_triangle(DisplayFrame& frame,
         const std::array<ScreenVertex, 3>& triangle,
-        const GlesRasterState& state)
+        const GlesRasterState& state,
+        const DisplayFrame* render_target_snapshot)
     {
         const auto area =
             edge(triangle[0], triangle[1], triangle[2].x, triangle[2].y);
@@ -493,47 +549,128 @@ namespace {
                 }
                 const auto primary = modulate(0xffffffffU, color);
                 auto pixel = primary;
+                std::optional<std::uint32_t> operation_destination;
                 for (std::size_t unit_index = 0;
                     unit_index < state.texture_units.size(); ++unit_index) {
                     const auto& unit = state.texture_units[unit_index];
                     if (!unit.enabled)
                         continue;
-                    const auto texture_s =
-                        (triangle[0].texture[unit_index][0] *
-                                triangle[0].inverse_w * w0 +
-                            triangle[1].texture[unit_index][0] *
-                                triangle[1].inverse_w * w1 +
-                            triangle[2].texture[unit_index][0] *
-                                triangle[2].inverse_w * w2) /
-                        inverse_w;
-                    const auto texture_t =
-                        (triangle[0].texture[unit_index][1] *
-                                triangle[0].inverse_w * w0 +
-                            triangle[1].texture[unit_index][1] *
-                                triangle[1].inverse_w * w1 +
-                            triangle[2].texture[unit_index][1] *
-                                triangle[2].inverse_w * w2) /
-                        inverse_w;
-                    const auto& numerator = numerator_gradient[unit_index];
-                    const std::array<float, 4> gradient {
-                        (numerator[0] - texture_s * reciprocal_gradient[0]) /
-                            inverse_w,
-                        (numerator[1] - texture_t * reciprocal_gradient[0]) /
-                            inverse_w,
-                        (numerator[2] - texture_s * reciprocal_gradient[1]) /
-                            inverse_w,
-                        (numerator[3] - texture_t * reciprocal_gradient[1]) /
-                            inverse_w
-                    };
-                    const auto sampled = sample_texture(
-                        state, unit, texture_s, texture_t, gradient);
-                    pixel = apply_texture_environment(
-                        unit.environment, sampled, primary, pixel);
+                    float texture_s { };
+                    float texture_t { };
+                    std::array<float, 4> gradient { };
+                    if (unit.projected) {
+                        texture_s =
+                            triangle[0].projected_texture[unit_index][0] * w0 +
+                            triangle[1].projected_texture[unit_index][0] * w1 +
+                            triangle[2].projected_texture[unit_index][0] * w2;
+                        texture_t =
+                            triangle[0].projected_texture[unit_index][1] * w0 +
+                            triangle[1].projected_texture[unit_index][1] * w1 +
+                            triangle[2].projected_texture[unit_index][1] * w2;
+                        for (std::size_t vertex = 0; vertex < triangle.size();
+                            ++vertex) {
+                            gradient[0] +=
+                                triangle[vertex]
+                                    .projected_texture[unit_index][0] *
+                                dx[vertex];
+                            gradient[1] +=
+                                triangle[vertex]
+                                    .projected_texture[unit_index][1] *
+                                dx[vertex];
+                            gradient[2] +=
+                                triangle[vertex]
+                                    .projected_texture[unit_index][0] *
+                                dy[vertex];
+                            gradient[3] +=
+                                triangle[vertex]
+                                    .projected_texture[unit_index][1] *
+                                dy[vertex];
+                        }
+                    } else {
+                        texture_s = (triangle[0].texture[unit_index][0] *
+                                            triangle[0].inverse_w * w0 +
+                                        triangle[1].texture[unit_index][0] *
+                                            triangle[1].inverse_w * w1 +
+                                        triangle[2].texture[unit_index][0] *
+                                            triangle[2].inverse_w * w2) /
+                                    inverse_w;
+                        texture_t = (triangle[0].texture[unit_index][1] *
+                                            triangle[0].inverse_w * w0 +
+                                        triangle[1].texture[unit_index][1] *
+                                            triangle[1].inverse_w * w1 +
+                                        triangle[2].texture[unit_index][1] *
+                                            triangle[2].inverse_w * w2) /
+                                    inverse_w;
+                        const auto& numerator = numerator_gradient[unit_index];
+                        gradient = { (numerator[0] -
+                                         texture_s * reciprocal_gradient[0]) /
+                                         inverse_w,
+                            (numerator[1] -
+                                texture_t * reciprocal_gradient[0]) /
+                                inverse_w,
+                            (numerator[2] -
+                                texture_s * reciprocal_gradient[1]) /
+                                inverse_w,
+                            (numerator[3] -
+                                texture_t * reciprocal_gradient[1]) /
+                                inverse_w };
+                    }
+                    const auto sampled = sample_texture(state, unit, texture_s,
+                        texture_t, gradient, render_target_snapshot);
+                    if (state.filter.operation !=
+                            GlesFilterProfile::Operation::None &&
+                        unit_index == state.filter.texture_unit) {
+                        Color filtered { };
+                        if (state.filter.operation ==
+                            GlesFilterProfile::Operation::WeightedSamples) {
+                            for (std::size_t index = 0;
+                                index < state.filter.tap_count; ++index) {
+                                const auto& tap = state.filter.taps[index];
+                                const auto sample =
+                                    unpack_color(sample_texture(state, unit,
+                                        texture_s + tap[0], texture_t + tap[1],
+                                        gradient, render_target_snapshot));
+                                for (std::size_t component = 0; component < 4U;
+                                    ++component)
+                                    filtered[component] +=
+                                        sample[component] * tap[2];
+                            }
+                        } else if (state.filter.operation ==
+                                   GlesFilterProfile::Operation::ColorMatrix) {
+                            const auto sample = unpack_color(sampled);
+                            for (std::size_t column = 0; column < 4U; ++column)
+                                for (std::size_t row = 0; row < 4U; ++row)
+                                    filtered[row] +=
+                                        sample[column] *
+                                        state.filter.color_columns[column][row];
+                        } else {
+                            filtered = unpack_color(sampled);
+                            const auto luminance = filtered[0] * .2125F +
+                                                   filtered[1] * .7154F +
+                                                   filtered[2] * .0721F;
+                            filtered[3] = luminance * luminance;
+                        }
+                        pixel = pack_color(filtered);
+                    } else if (state.fragment_operation !=
+                                   GlesFragmentOperation::TextureEnvironment &&
+                               unit_index ==
+                                   state.fragment_operation_texture_unit) {
+                        operation_destination = sampled;
+                    } else {
+                        pixel = apply_texture_environment(
+                            unit.environment, sampled, primary, pixel);
+                    }
+                }
+                if (operation_destination) {
+                    pixel = apply_fragment_operation(state.fragment_operation,
+                        pixel, *operation_destination);
                 }
                 // Blending already applies the source representation selected
                 // by its factors. Only a direct replacement needs conversion
                 // to the premultiplied render-target representation.
-                if (state.render_target_premultiplied && !state.blend_enabled)
+                if (state.render_target_premultiplied && !state.blend_enabled &&
+                    state.filter.operation ==
+                        GlesFilterProfile::Operation::None)
                     pixel = premultiply_argb(pixel);
                 const auto offset = static_cast<std::size_t>(y) * frame.width +
                                     static_cast<std::size_t>(x);
@@ -589,6 +726,11 @@ bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
     auto raster_state = state;
     if (primitive->ignores_culling())
         raster_state.cull_enabled = false;
+    std::optional<DisplayFrame> render_target_snapshot;
+    if (std::ranges::any_of(state.texture_units,
+            [](const auto& unit) { return unit.samples_render_target; })) {
+        render_target_snapshot = frame;
+    }
     std::vector<ScreenVertex> screen;
     screen.reserve(primitive_vertices.size());
     for (const auto& vertex : primitive_vertices) {
@@ -606,11 +748,12 @@ bool GlesSoftwareRasterizer::draw(DisplayFrame& frame,
         const auto host_y = state.render_target_inverted_vertical
                                 ? window_y
                                 : static_cast<float>(frame.height) - window_y;
-        screen.push_back(ScreenVertex {
-            window_x, host_y, inverse_w, vertex.color, vertex.texture });
+        screen.push_back(ScreenVertex { window_x, host_y, inverse_w,
+            vertex.color, vertex.texture, vertex.projected_texture });
     }
     const auto emit = [&](std::size_t a, std::size_t b, std::size_t c) {
-        draw_triangle(frame, { screen[a], screen[b], screen[c] }, raster_state);
+        draw_triangle(frame, { screen[a], screen[b], screen[c] }, raster_state,
+            render_target_snapshot ? &*render_target_snapshot : nullptr);
     };
     if (primitive->mode() == gles_abi::triangles) {
         for (std::size_t index = 0; index + 2 < screen.size(); index += 3) {
