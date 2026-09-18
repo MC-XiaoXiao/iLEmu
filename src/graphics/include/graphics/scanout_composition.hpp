@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <span>
 
 #include "graphics/gles_rasterizer.hpp"
@@ -55,6 +56,13 @@ public:
         std::uint32_t screen_height, const GlesRasterState& state,
         std::span<const GlesRasterVertex> vertices) const;
 
+    // Preserve current-frame backdrop coverage independently of the complete
+    // unblended background retained for legacy scene reconstruction.
+    void observe_composited_background(GlesRenderTargetKey key,
+        const std::shared_ptr<HostSurface>& surface, std::uint32_t screen_width,
+        std::uint32_t screen_height, const GlesRasterState& state,
+        std::span<const GlesRasterVertex> vertices);
+
     [[nodiscard]] bool capture_background(std::uint32_t process_id,
         std::uint64_t renderer_owner, GlesRenderTargetKey key,
         const std::shared_ptr<HostSurface>& surface, GlesRenderer& renderer,
@@ -65,6 +73,7 @@ private:
         std::shared_ptr<HostSurface> surface;
         std::uint64_t observed_presentation { };
         bool active { };
+        std::optional<HostRectangle> composited_background_region;
         bool scene_composited { };
         bool primary_background_restored { };
         bool textured_background_drawn { };

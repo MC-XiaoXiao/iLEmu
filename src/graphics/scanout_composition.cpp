@@ -57,10 +57,13 @@ namespace {
             maximum_y = std::max(maximum_y, host_y);
         }
 
-        auto left = static_cast<std::int32_t>(std::floor(minimum_x));
-        auto right = static_cast<std::int32_t>(std::ceil(maximum_x));
-        auto top = static_cast<std::int32_t>(std::floor(minimum_y));
-        auto bottom = static_cast<std::int32_t>(std::ceil(maximum_y));
+        // GLES rasterizes at pixel centers. Expanding to enclosing integer
+        // edges adds a spurious row when transformed edges differ from an
+        // integer by floating-point roundoff, defeating coverage checks.
+        auto left = static_cast<std::int32_t>(std::ceil(minimum_x - 0.5F));
+        auto right = static_cast<std::int32_t>(std::ceil(maximum_x - 0.5F));
+        auto top = static_cast<std::int32_t>(std::ceil(minimum_y - 0.5F));
+        auto bottom = static_cast<std::int32_t>(std::ceil(maximum_y - 0.5F));
         left = std::clamp(left, 0, static_cast<std::int32_t>(width));
         right = std::clamp(right, 0, static_cast<std::int32_t>(width));
         top = std::clamp(top, 0, static_cast<std::int32_t>(height));
@@ -176,6 +179,7 @@ void ScanoutComposition::begin_draw(GlesRenderTargetKey key,
     frame.primary_background_restored = false;
     frame.textured_background_drawn = false;
     frame.solid_background_deferred = false;
+    frame.composited_background_region.reset();
 }
 
 bool ScanoutComposition::restore_background(std::uint32_t process_id,
@@ -225,6 +229,18 @@ bool ScanoutComposition::restore_background(std::uint32_t process_id,
     const auto frame = frames_.find(key);
     if (frame == frames_.end())
         return true;
+    // Native compositors can draw a blended, scissored backdrop before a
+    // translucent local scene. Those pixels belong to this frame; replacing
+    // them with a retained background destroys the already composed effect.
+    if (const auto& region = frame->second.composited_background_region;
+        region && rectangle->x >= region->x && rectangle->y >= region->y &&
+        static_cast<std::int64_t>(rectangle->x) + rectangle->width <=
+            static_cast<std::int64_t>(region->x) + region->width &&
+        static_cast<std::int64_t>(rectangle->y) + rectangle->height <=
+            static_cast<std::int64_t>(region->y) + region->height) {
+        frame->second.scene_composited = true;
+        return true;
+    }
     const auto primary_scene = static_cast<std::uint64_t>(scene_level->height) *
                                    primary_scene_height_denominator >=
                                static_cast<std::uint64_t>(descriptor.height) *
@@ -314,6 +330,35 @@ bool ScanoutComposition::is_background_draw(
            maximum_x >= 1.0F - edge_tolerance &&
            minimum_y <= -1.0F + edge_tolerance &&
            maximum_y >= 1.0F - edge_tolerance;
+}
+
+void ScanoutComposition::observe_composited_background(
+    GlesRenderTargetKey key, const std::shared_ptr<HostSurface>& surface,
+    std::uint32_t screen_width, std::uint32_t screen_height,
+    const GlesRasterState& state, std::span<const GlesRasterVertex> vertices)
+{
+    const auto frame = frames_.find(key);
+    if (frame == frames_.end())
+        return;
+    auto coverage = state;
+    coverage.blend_enabled = false;
+    coverage.scissor_enabled = false;
+    if (!is_background_draw(surface, screen_width, screen_height, coverage,
+            vertices)) {
+        return;
+    }
+    if (!state.blend_enabled && !state.scissor_enabled) {
+        frame->second.composited_background_region.reset();
+        return;
+    }
+    if (!std::ranges::any_of(state.texture_units,
+            [](const auto& unit) { return unit.enabled; }) ||
+        !std::ranges::all_of(state.color_mask,
+            [](bool enabled) { return enabled; })) {
+        return;
+    }
+    frame->second.composited_background_region =
+        draw_rectangle(screen_width, screen_height, state, vertices);
 }
 
 bool ScanoutComposition::capture_background(std::uint32_t process_id,

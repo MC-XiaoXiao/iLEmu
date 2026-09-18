@@ -1396,6 +1396,11 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
     const auto textured_background_candidate = std::ranges::any_of(
         state.texture_units, [](const auto& unit) { return unit.enabled; });
     const auto save_scanout_background = [&] {
+        if (binding->backing_identifier && binding->host_surface && display_) {
+            scanout_composition_.observe_composited_background(binding->key,
+                binding->host_surface, display_->width(), display_->height(),
+                state, vertices);
+        }
         return !capture_scanout_background ||
                (command_encoder_ &&
                    scanout_composition_.capture_background(call.process_id(),
