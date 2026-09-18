@@ -284,10 +284,7 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
             callout;
         vsync.async_reference[iokit_abi::display_vsync::async_refcon_index] =
             refcon;
-        const auto was_enabled = vsync.enabled;
         vsync.enabled = callout != 0 && refcon != 0;
-        if (was_enabled != vsync.enabled)
-            vsync.last_notification_frame_time.reset();
         if (!vsync.enabled) {
             // A message queued before disable belongs to the old registration
             // window. Do not let a sleeping receiver consume it after selector
@@ -592,33 +589,22 @@ void deliver_due_vsync_locked(KernelSharedState& state, std::uint64_t deadline)
         if (!queue_has_vsync(queue, connection_object,
                 registration.registration_generation)) {
             const auto period = iokit_abi::display_vsync::period_absolute_time;
-            const auto frame_time =
-                registration.last_notification_frame_time
-                    ? *registration.last_notification_frame_time + period
-                    : indexed_deadline;
+            // Sample the latest elapsed panel pulse on the same hardware
+            // clock used by mach_absolute_time and animation begin times.
+            // Counting only delivered callbacks makes slow consumers drift
+            // behind that clock and expose model layers before animations start.
+            const auto elapsed_periods = (deadline - indexed_deadline) / period;
+            const auto frame_time = indexed_deadline + elapsed_periods * period;
             ++registration.sequence;
             state.enqueue_mach_message_locked(registration.notification_port,
-                // Physical timer deadlines can be coalesced while the prior
-                // callback is pending. Advance the guest-visible sample by one
-                // panel period per notification actually delivered so
-                // animation state cannot jump over undisplayed frames.
                 make_vsync_message(
                     connection_object, registration, frame_time));
-            registration.last_notification_frame_time = frame_time;
             performance_counters().record_vsync_due(registration.owner_pid,
                 registration.async_reference
                     [iokit_abi::display_vsync::async_refcon_index],
                 registration.sequence);
             performance_counters().record_display_vsync_queued();
         } else {
-            // A completed callback can race with retirement of its queued
-            // message. In that case this pulse was not hidden by an active
-            // animation callback, so keep the continuous sample baseline on
-            // the physical panel phase. A genuinely pending callback retains
-            // its last delivered sample and therefore cannot skip animation
-            // states when the host is late.
-            if (registration.callback_sequence >= registration.sequence)
-                registration.last_notification_frame_time = indexed_deadline;
             performance_counters().record_display_vsync_coalesced();
         }
         const auto period = iokit_abi::display_vsync::period_absolute_time;

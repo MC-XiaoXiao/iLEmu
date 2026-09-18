@@ -1830,7 +1830,6 @@ void record_springboard_lock_state(KernelSharedState& state, bool active)
                 continue;
             // Preserve the valid callback window on the panel's fixed phase.
             registration.enabled = true;
-            registration.last_notification_frame_time.reset();
             if (!registration.next_deadline ||
                 *registration.next_deadline <= now) {
                 registration.next_deadline = now - now % period + period;
