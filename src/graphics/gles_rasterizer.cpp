@@ -313,6 +313,17 @@ namespace {
                     1.0F);
                 result[component] = result[3] - inverted;
             }
+        } else if (operation == GlesFragmentOperation::LuminanceSourceOver) {
+            const auto luminance = destination[0] * 0.2125F +
+                                   destination[1] * 0.7154F +
+                                   destination[2] * 0.0721F;
+            const auto squared = luminance * luminance;
+            const auto scale = squared * squared;
+            for (std::size_t component = 0; component < 4U; ++component) {
+                result[component] = destination[component] *
+                                        (1.0F - source[3] * scale) +
+                                    source[component] * scale;
+            }
         } else {
             return source_pixel;
         }

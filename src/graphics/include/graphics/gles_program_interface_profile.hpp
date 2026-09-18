@@ -20,6 +20,7 @@ enum class GlesFragmentOperation : std::uint32_t {
     TextureEnvironment,
     ColorDodge,
     PlusLighter,
+    LuminanceSourceOver,
 };
 
 // Conventional compositor shaders expose either a single color varying or
@@ -27,6 +28,7 @@ enum class GlesFragmentOperation : std::uint32_t {
 // independently of the process, device or firmware that supplied the program.
 struct GlesProgramInterfaceProfile {
     GlesFilterProfile filter;
+    bool transparent_output { };
     enum class MatrixOrder {
         None,
         VectorTimesMatrix,

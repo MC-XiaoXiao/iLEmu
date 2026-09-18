@@ -30,6 +30,7 @@ const int GL_DOT3_RGB = 0x86ae;
 const int GL_DOT3_RGBA = 0x86af;
 const int FRAGMENT_COLOR_DODGE = 1;
 const int FRAGMENT_PLUS_LIGHTER = 2;
+const int FRAGMENT_LUMINANCE_SOURCE_OVER = 3;
 
 struct TextureEnvironment {
     ivec4 mode_combine_enabled;
@@ -213,6 +214,12 @@ vec4 apply_fragment_operation(int operation, vec4 source, vec4 destination) {
         result.rgb = min(result.rgb, vec3(result.a));
         return result;
     }
+    if (operation == FRAGMENT_LUMINANCE_SOURCE_OVER) {
+        float luminance = dot(destination.rgb, vec3(0.2125, 0.7154, 0.0721));
+        float squared = luminance * luminance;
+        source *= squared * squared;
+        return destination * (1.0 - source.a) + source;
+    }
     vec4 result = source + destination;
     result.rgb = result.a - result.rgb;
     result = clamp(result, 0.0, 1.0);
@@ -250,7 +257,8 @@ void main() {
     int operation = fixed_state.target_flags.y;
     int destination_unit = fixed_state.target_flags.z;
     bool destination_operation = operation == FRAGMENT_COLOR_DODGE ||
-                                 operation == FRAGMENT_PLUS_LIGHTER;
+                                 operation == FRAGMENT_PLUS_LIGHTER ||
+                                 operation == FRAGMENT_LUMINANCE_SOURCE_OVER;
     vec4 result = primary_color;
     if (!destination_operation || destination_unit != 0) {
         result = apply_unit(0, image0,

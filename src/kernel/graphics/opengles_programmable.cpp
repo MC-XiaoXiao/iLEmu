@@ -292,6 +292,13 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
             result.fragment_operation_texture_unit = unit;
         }
     }
+    if (program->interface_profile.transparent_output) {
+        result.current_color = { 0.0F, 0.0F, 0.0F, 0.0F };
+        result.color_array.enabled = false;
+        result.sampled_textures.fill(false);
+        result.fragment_operation = GlesFragmentOperation::TextureEnvironment;
+        return result;
+    }
     const auto& filter = program->interface_profile.filter;
     if (filter.operation != GlesFilterProfile::Operation::None) {
         const auto* sampler =

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cctype>
 #include <optional>
+#include <regex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -179,7 +180,8 @@ namespace {
 
     GlesFragmentOperation classify_fragment_operation(
         const std::vector<std::string_view>& tokens,
-        std::string_view color_varying, std::string_view sampled)
+        std::string_view color_varying, std::string_view sampled,
+        const std::string& fragment)
     {
         const auto assignments = local_vec4_assignments(tokens);
         auto source = assigned_from(tokens, assignments, color_varying);
@@ -194,6 +196,26 @@ namespace {
         const auto destination = assigned_from(tokens, assignments, sampled);
         if (source.empty() || destination.empty())
             return GlesFragmentOperation::TextureEnvironment;
+
+        // Match the complete helper contract, including its parameters and
+        // call site. Names are guest supplied; only the expression determines
+        // the operation.
+        static const std::regex luminance_source_over(
+            R"((?:(?:lowp|mediump|highp)\s+)?vec4\s+(\w+)\s*\(\s*(?:(?:lowp|mediump|highp)\s+)?vec4\s+(\w+))"
+            R"(\s*,\s*(?:(?:lowp|mediump|highp)\s+)?vec4\s+(\w+)\s*\)\s*\{)"
+            R"(\s*(?:(?:lowp|mediump|highp)\s+)?float\s+(\w+)\s*=\s*dot\s*\(\s*\3\.rgb\s*,\s*vec3\s*\()"
+            R"(\s*0?\.2125\s*,\s*0?\.7154\s*,\s*0?\.0721\s*\)\s*\)\s*;\s*\2\s*=\s*\2\s*\*\s*\(\s*\4\s*\*)"
+            R"(\s*\4\s*\)\s*\*\s*\(\s*\4\s*\*\s*\4\s*\)\s*;\s*return\s+\3\s*\*\s*\(\s*1(?:\.0*)?\s*-)"
+            R"(\s*\2\.a\s*\)\s*\+\s*\2\s*;\s*\})");
+        std::smatch luminance_match;
+        if (std::regex_search(fragment, luminance_match, luminance_source_over)) {
+            const auto function = luminance_match[1].str();
+            const std::array call { std::string_view { function },
+                std::string_view { "(" }, source, std::string_view { "," },
+                destination, std::string_view { ")" } };
+            if (contains_sequence(tokens, call))
+                return GlesFragmentOperation::LuminanceSourceOver;
+        }
 
         for (const auto& assignment : assignments) {
             const auto result = assignment.name;
@@ -389,6 +411,17 @@ GlesProgramInterfaceProfile GlesProgramInterfaceProfile::from_sources(
 {
     GlesProgramInterfaceProfile result;
     result.filter = GlesFilterProfile::from_sources(vertex, fragment);
+    // A constant zero source is used for empty compositor content. Preserve
+    // its transparent output even when the vertex color is opaque. Restrict
+    // the contract to a complete main body, so later writes cannot invalidate
+    // the constant expression.
+    const auto uncommented = std::regex_replace(std::string { fragment },
+        std::regex(R"(/\*[\s\S]*?\*/|//[^\n]*)"), "");
+    const std::regex transparent_main(
+        R"(void\s+main\s*\(\s*(?:void)?\s*\)\s*\{\s*(?:(?:lowp|mediump|highp)\s+)?vec4\s+(\w+)\s*=)"
+        R"(\s*vec4\s*\(\s*0(?:\.0*)?\s*\)\s*;\s*(?:gl_FragColor|gl_FragData\s*\[\s*0\s*\])\s*=\s*(?:\w+)"
+        R"(\s*\*\s*\1|\1\s*\*\s*\w+|\1)\s*;\s*\})");
+    result.transparent_output = std::regex_search(uncommented, transparent_main);
     const auto vertex_tokens = tokenize(vertex);
     const auto fragment_tokens = tokenize(fragment);
     const auto vertex_declarations = declarations(vertex_tokens);
@@ -458,7 +491,7 @@ GlesProgramInterfaceProfile GlesProgramInterfaceProfile::from_sources(
             if (const auto sampled = projective_sample_result(
                     fragment_tokens, sampler, varying)) {
                 result.fragment_operation = classify_fragment_operation(
-                    fragment_tokens, result.color_varying, *sampled);
+                    fragment_tokens, result.color_varying, *sampled, uncommented);
             }
             break;
         }
