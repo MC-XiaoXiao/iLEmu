@@ -68,16 +68,20 @@ void append_identity(
 
 void write_u32(std::ostream& stream, std::uint32_t value)
 {
-    for (unsigned shift = 0; shift < 32U; shift += 8U) {
-        stream.put(static_cast<char>(value >> shift));
+    std::array<char, sizeof(value)> bytes;
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        bytes[index] = static_cast<char>(value >> (index * 8U));
     }
+    stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
 void write_u64(std::ostream& stream, std::uint64_t value)
 {
-    for (unsigned shift = 0; shift < 64U; shift += 8U) {
-        stream.put(static_cast<char>(value >> shift));
+    std::array<char, sizeof(value)> bytes;
+    for (std::size_t index = 0; index < bytes.size(); ++index) {
+        bytes[index] = static_cast<char>(value >> (index * 8U));
     }
+    stream.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
 }
 
 void write_u8(std::ostream& stream, std::uint8_t value)
@@ -918,6 +922,8 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
             }
         }
     }
+    if (!reliable_entry_points_current_)
+        ++mutation_revision_;
     reliable_entry_points_current_ = true;
     return summary;
 }
@@ -1163,9 +1169,9 @@ bool ExecutableCatalog::save(const std::filesystem::path& path) const noexcept
             std::filesystem::remove(temporary, error);
             return false;
         };
-        std::ofstream stream { temporary, std::ios::binary | std::ios::trunc };
-        if (!stream)
-            return fail();
+        // Serialize once, then hash and publish the same bytes. Reopening the
+        // temporary file to hash it adds a full read to every catalog refresh.
+        std::ostringstream stream { std::ios::binary };
         stream.write(catalog_magic.data(),
             static_cast<std::streamsize>(catalog_magic.size()));
         write_u32(stream, catalog_schema_version);
@@ -1241,26 +1247,20 @@ bool ExecutableCatalog::save(const std::filesystem::path& path) const noexcept
                 write_u64(stream, entry_point);
             }
         }
-        stream.flush();
         if (!stream)
             return fail();
-        stream.close();
-
-        std::ifstream payload_stream { temporary, std::ios::binary };
-        if (!payload_stream)
-            return fail();
-        const std::string payload { std::istreambuf_iterator<char> {
-                                        payload_stream },
-            std::istreambuf_iterator<char> { } };
-        if (payload_stream.bad())
+        const auto payload = stream.view();
+        if (payload.size() > maximum_manifest_file_size - catalog_checksum_size)
             return fail();
         const auto checksum = ilemu::sha256(std::span<const std::byte> {
             reinterpret_cast<const std::byte*>(payload.data()),
             payload.size() });
         std::ofstream checksum_stream { temporary,
-            std::ios::binary | std::ios::app };
+            std::ios::binary | std::ios::trunc };
         if (!checksum_stream)
             return fail();
+        checksum_stream.write(
+            payload.data(), static_cast<std::streamsize>(payload.size()));
         checksum_stream.write(
             reinterpret_cast<const char*>(checksum.digest.data()),
             static_cast<std::streamsize>(checksum.digest.size()));
@@ -1268,6 +1268,8 @@ bool ExecutableCatalog::save(const std::filesystem::path& path) const noexcept
         if (!checksum_stream)
             return fail();
         checksum_stream.close();
+        if (!checksum_stream)
+            return fail();
 
         std::error_code error;
         std::filesystem::rename(temporary, path, error);
@@ -1462,24 +1464,25 @@ ExecutableCatalogEntry& ExecutableCatalog::upsert(ContentIdentity identity,
 
 void ExecutableCatalog::remove_path(const std::filesystem::path& path)
 {
-    ++mutation_revision_;
+    bool changed = false;
+    bool removed_entry = false;
     for (auto entry = entries_.begin(); entry != entries_.end();) {
-        entry->aliases.erase(
-            std::remove(entry->aliases.begin(), entry->aliases.end(), path),
-            entry->aliases.end());
-        entry->file_generations.erase(
-            std::remove_if(entry->file_generations.begin(),
-                entry->file_generations.end(),
-                [&path](const ExecutableCatalogPathGeneration& record) {
-                    return record.path == path;
-                }),
-            entry->file_generations.end());
+        changed |= std::erase(entry->aliases, path) != 0U;
+        changed |= std::erase_if(entry->file_generations,
+                       [&path](const ExecutableCatalogPathGeneration& record) {
+                           return record.path == path;
+                       }) != 0U;
         if (entry->aliases.empty()) {
             entry = entries_.erase(entry);
+            removed_entry = true;
         } else {
             ++entry;
         }
     }
+    if (changed || removed_entry)
+        ++mutation_revision_;
+    if (!removed_entry)
+        return;
     identity_index_.clear();
     identity_index_.reserve(entries_.size());
     for (std::size_t index = 0; index < entries_.size(); ++index) {

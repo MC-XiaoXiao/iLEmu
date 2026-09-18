@@ -121,7 +121,10 @@ void CatalogMaintenance::accept_completion()
             std::error_code remove_error;
             std::filesystem::remove(
                 catalog_completion->staged_manifest, remove_error);
-        } else {
+        } else if (catalog_completion->catalog->revision() !=
+                   catalog_completion->base_revision) {
+            // Data-file and directory events still need inspection, but only
+            // replace and republish a catalog whose entries actually changed.
             catalog_.entries_ = std::move(*catalog_completion->catalog);
             catalog_.loaded_ = true;
             bool manifest_published = false;
@@ -289,8 +292,10 @@ void CatalogMaintenance::schedule()
             try {
                 completion.summary = completion.catalog->refresh_paths(
                     root, completion.paths, architecture, *known_identities);
-                completion.manifest_staged =
-                    completion.catalog->save(staged_manifest);
+                if (completion.catalog->revision() != base_revision) {
+                    completion.manifest_staged =
+                        completion.catalog->save(staged_manifest);
+                }
             } catch (const std::exception& error) {
                 completion.error = error.what();
             } catch (...) {
