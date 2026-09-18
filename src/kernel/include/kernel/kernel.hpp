@@ -745,6 +745,8 @@ private:
         std::uint32_t address, std::uint32_t length_address);
     [[nodiscard]] std::optional<std::uint32_t> install_host_socket(
         std::shared_ptr<HostSocket> socket);
+    void dispatch_apple80211_ioctl(
+        Cpu& cpu, std::uint32_t fd, std::string_view name);
     void apply_wifi_transition(
         const WifiSnapshot& before, const WifiSnapshot& after);
     void post_network_event(std::string_view interface_name,

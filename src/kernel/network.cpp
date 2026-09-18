@@ -41,6 +41,31 @@ namespace {
     constexpr std::uint32_t einval = 22;
     constexpr std::uint32_t enotconn = 57;
 
+    void post_kernel_event(KernelSharedState& state, std::uint32_t event_class,
+        std::uint32_t event_subclass, std::uint32_t event_code,
+        std::span<const std::byte> event_data)
+    {
+        std::lock_guard socket_lock { state.socket_mutex };
+        const auto identifier = state.next_kernel_event_identifier++;
+        KernelSharedState::KernelEvent event {
+            identifier,
+            darwin::network::kernel_event_vendor_apple,
+            event_class,
+            event_subclass,
+            event_code,
+            darwin::network::make_kernel_event(identifier,
+                darwin::network::kernel_event_vendor_apple,
+                event_class, event_subclass,
+                event_code, event_data),
+        };
+        state.kernel_events.push_back(std::move(event));
+        while (state.kernel_events.size() >
+               darwin::network::maximum_retained_kernel_events) {
+            state.kernel_events.pop_front();
+        }
+        state.note_io_event_transition();
+    }
+
 } // namespace
 
 namespace kernel_network {
@@ -972,6 +997,68 @@ void CompatibilityKernel::apply_wifi_transition(
             darwin::network::kernel_event_inet_address_deleted,
             std::move(deleted_address_snapshot));
     }
+    const bool association_changed =
+        before.associated_access_point.has_value() != after.associated_access_point.has_value() ||
+        (before.associated_access_point && after.associated_access_point &&
+            before.associated_access_point->bssid != after.associated_access_point->bssid);
+    if (before.powered != after.powered)
+        inject_wifi_driver_event(0, 1); // APPLE80211_M_POWER_CHANGED
+    if (association_changed) {
+        inject_wifi_driver_event(0, 2); // APPLE80211_M_SSID_CHANGED
+        inject_wifi_driver_event(0, 3); // APPLE80211_M_BSSID_CHANGED
+    }
+    if (before.powered != after.powered || association_changed)
+        inject_wifi_driver_event(0, 4); // APPLE80211_M_LINK_CHANGED
+
+}
+
+void CompatibilityKernel::inject_wifi_driver_event(
+    std::uint32_t, std::uint32_t event)
+{
+    if (event == 0)
+        return;
+    namespace wifi_driver = darwin::network::apple80211_driver;
+    for (const auto& [descriptor, kind] : virtual_descriptors_) {
+        if (kind == wifi_driver::event_descriptor_kind) {
+            auto& stream = wifi_driver_event_streams_[descriptor];
+            if (!stream)
+                stream = std::make_shared<wifi_driver::EventStream>();
+            stream->enqueue(event);
+        }
+    }
+    // Native Apple80211 clients consume a kern_event_msg with a fixed
+    // IFNAMSIZ name payload through PF_SYSTEM/SYSPROTO_EVENT.
+    constexpr std::uint32_t ieee80211_event_class = 6;
+    constexpr std::uint32_t apple80211_event_subclass = 1;
+    constexpr std::uint32_t link_changed_event = 4;
+    constexpr std::size_t link_changed_data_size = 20;
+    std::vector<std::byte> payload(darwin::network::interface_name_size +
+        (event == link_changed_event ? link_changed_data_size : 0));
+    if (event == link_changed_event) {
+        const auto radio = wifi_state_->snapshot();
+        const auto signal = radio.associated_access_point
+            ? std::clamp(radio.associated_access_point->rssi -
+                    wifi_driver::scan_signal_floor_dbm,
+                  0, wifi_driver::scan_signal_ceiling_dbm -
+                         wifi_driver::scan_signal_floor_dbm)
+            : 0;
+        // Five ARM32 words: link-down, signal, involuntary, reason, subreason.
+        const std::array<std::uint32_t, 5> link_data {
+            radio.associated_access_point ? 0U : 1U,
+            static_cast<std::uint32_t>(signal), 0, 0, 0
+        };
+        for (std::size_t index = 0; index < link_data.size(); ++index) {
+            for (std::size_t byte = 0; byte < 4; ++byte) {
+                payload[darwin::network::interface_name_size + index * 4 + byte] =
+                    static_cast<std::byte>((link_data[index] >> (byte * 8)) & 0xffU);
+            }
+        }
+    }
+    constexpr std::string_view name { "en0" };
+    std::transform(name.begin(), name.end(), payload.begin(),
+        [](char value) { return static_cast<std::byte>(value); });
+    post_kernel_event(*shared_state_, ieee80211_event_class,
+        apple80211_event_subclass, event, payload);
 }
 
 void CompatibilityKernel::post_network_event(std::string_view interface_name,
@@ -997,25 +1084,9 @@ void CompatibilityKernel::post_network_event(std::string_view interface_name,
                       ? darwin::network::make_ipv6_network_event_data(snapshot)
                       : darwin::network::make_network_event_data(snapshot));
 
-    std::lock_guard socket_lock { shared_state_->socket_mutex };
-    const auto identifier = shared_state_->next_kernel_event_identifier++;
-    KernelSharedState::KernelEvent event {
-        identifier,
-        darwin::network::kernel_event_vendor_apple,
-        darwin::network::kernel_event_network_class,
-        event_subclass,
-        event_code,
-        darwin::network::make_kernel_event(identifier,
-            darwin::network::kernel_event_vendor_apple,
-            darwin::network::kernel_event_network_class, event_subclass,
-            event_code, event_data),
-    };
-    shared_state_->kernel_events.push_back(std::move(event));
-    while (shared_state_->kernel_events.size() >
-           darwin::network::maximum_retained_kernel_events) {
-        shared_state_->kernel_events.pop_front();
-    }
-    shared_state_->note_io_event_transition();
+    post_kernel_event(*shared_state_,
+        darwin::network::kernel_event_network_class, event_subclass,
+        event_code, event_data);
 }
 
 void CompatibilityKernel::post_data_link_event(

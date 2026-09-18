@@ -2597,23 +2597,6 @@ void CompatibilityKernel::schedule_due_audio_io(std::uint64_t deadline)
         callback->native, callback->io_proc_id, *processor);
 }
 
-void CompatibilityKernel::inject_wifi_driver_event(
-    std::uint32_t, std::uint32_t event)
-{
-    if (event == 0)
-        return;
-    namespace wifi_driver = darwin::network::apple80211_driver;
-    for (const auto& [descriptor, kind] : virtual_descriptors_) {
-        if (kind == wifi_driver::event_descriptor_kind) {
-            auto& stream = wifi_driver_event_streams_[descriptor];
-            if (!stream)
-                stream = std::make_shared<wifi_driver::EventStream>();
-            stream->enqueue(event);
-        }
-    }
-    shared_state_->note_io_event_transition();
-}
-
 void CompatibilityKernel::reap_stopped_audio_threads()
 {
     for (const auto processor :

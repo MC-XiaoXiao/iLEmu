@@ -426,7 +426,9 @@ struct KernelSharedState {
         std::uint32_t family { };
         std::uint32_t unit { };
         std::uint32_t mtu { };
+        // Link framing and physical media are distinct: Wi-Fi carries Ethernet.
         std::uint8_t type { };
+        std::uint32_t media_type { };
         std::array<std::byte, 6> link_address { };
         std::uint8_t link_address_length { };
         bool has_ipv4 { };
@@ -1073,13 +1075,14 @@ struct KernelSharedState {
                          darwin::network::interface_flag_running,
                      1, darwin::network::interface_family_loopback, 0,
                      darwin::network::default_loopback_mtu,
-                     darwin::network::interface_type_loopback, { }, 0 } },
+                     darwin::network::interface_type_loopback, 0, { }, 0 } },
         { "en0", { darwin::network::interface_flag_broadcast |
                          darwin::network::interface_flag_simplex |
                          darwin::network::interface_flag_multicast,
                      2, darwin::network::interface_family_ethernet, 0,
                      darwin::network::default_ethernet_mtu,
                      darwin::network::interface_type_ethernet,
+                     darwin::network::media_type_ieee80211,
                      virtual_network::interface_mac_address, 6 } },
     };
     std::uint32_t next_kernel_event_identifier { 1 };

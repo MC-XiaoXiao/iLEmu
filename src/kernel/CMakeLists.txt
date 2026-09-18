@@ -211,6 +211,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/socket.cpp
     bsd/network/process_sockets.cpp
     bsd/events.cpp
+    bsd/apple80211.cpp
     bsd/kqueue.cpp
     bsd/device/offline_serial.cpp
     bsd/support.cpp)

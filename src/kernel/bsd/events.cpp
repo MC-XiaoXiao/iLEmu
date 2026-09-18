@@ -43,9 +43,6 @@
 
 namespace {
 
-constexpr auto wifi_scan_completion_delay =
-    10U * ilemu::darwin::mach::scheduler::nanoseconds_per_millisecond;
-
 [[nodiscard]] bool is_printable_ascii(std::byte value)
 {
     const auto character = std::to_integer<unsigned char>(value);
@@ -775,426 +772,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             namespace wifi_driver = darwin::network::apple80211_driver;
             if (registers[1] == wifi_driver::set_request ||
                 registers[1] == wifi_driver::get_request) {
-                const auto command =
-                    memory_.read32(registers[2] + wifi_driver::command_offset);
-                const auto data_length = memory_.read32(
-                    registers[2] + wifi_driver::data_length_offset);
-                const auto data_address = memory_.read32(
-                    registers[2] + wifi_driver::data_address_offset);
-                if (!command || !data_length || !data_address) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                    return;
-                }
-                bool service_available = false;
-                {
-                    std::lock_guard mach_lock { shared_state_->mach_mutex };
-                    service_available = shared_state_->wifi_service_available;
-                }
-                if (name != "en0" || !service_available) {
-                    output_.write("[wifi-driver] reject pid=" +
-                                  std::to_string(process_.pid) +
-                                  " fd=" + std::to_string(fd) +
-                                  " interface=" + name + "\n");
-                    bsd_error(cpu, 6); // ENXIO
-                    return;
-                }
-                if (registers[1] == wifi_driver::set_request &&
-                    *command == wifi_driver::command_scan) {
-                    apple80211_scan_delivered_.erase(fd);
-                    static_cast<void>(wifi_state_->scan());
-                    const auto now = shared_state_->clock.now();
-                    const auto deadline =
-                        wifi_scan_completion_delay >
-                                std::numeric_limits<std::uint64_t>::max() - now
-                            ? std::numeric_limits<std::uint64_t>::max()
-                            : now + wifi_scan_completion_delay;
-                    scheduled_wifi_driver_events_.emplace(
-                        deadline, wifi_driver::event_scan_completed);
-                    output_.write("[wifi-driver] scan-start pid=" +
-                                  std::to_string(process_.pid) +
-                                  " fd=" + std::to_string(fd) + "\n");
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::set_request &&
-                    *command == wifi_driver::command_power) {
-                    if (*data_address == 0 ||
-                        *data_length < wifi_driver::power_state_size) {
-                        bsd_error(cpu, *data_address == 0
-                                           ? bsd_support::bad_address
-                                           : bsd_support::invalid_argument);
-                        return;
-                    }
-                    const auto count = memory_.read32(
-                        *data_address + wifi_driver::power_state_count_offset);
-                    const auto power = memory_.read32(
-                        *data_address +
-                        wifi_driver::power_state_first_value_offset);
-                    if (!count || !power || *count == 0) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    const auto before = wifi_state_->snapshot();
-                    static_cast<void>(wifi_state_->set_power(*power != 0));
-                    const auto after = wifi_state_->snapshot();
-                    apply_wifi_transition(before, after);
-                    apple80211_hle_.publish_state_change(before, after);
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    *command == wifi_driver::command_interface_probe) {
-                    output_.write("[wifi-driver] probe pid=" +
-                                  std::to_string(process_.pid) + " fd=" +
-                                  std::to_string(fd) + " interface=en0\n");
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    *command == wifi_driver::command_capability_probe &&
-                    *data_length == 0U) {
-                    output_.write("[wifi-driver] capability-probe pid=" +
-                                  std::to_string(process_.pid) + " fd=" +
-                                  std::to_string(fd) + "\\n");
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    *command == wifi_driver::command_power) {
-                    if (*data_address == 0 ||
-                        *data_length < wifi_driver::power_state_size ||
-                        !memory_.write32(
-                            *data_address +
-                                wifi_driver::power_state_count_offset,
-                            1) ||
-                        !memory_.write32(
-                            *data_address +
-                                wifi_driver::power_state_first_value_offset,
-                            wifi_state_->snapshot().powered ? 1U : 0U)) {
-                        bsd_error(cpu, *data_address == 0
-                                           ? bsd_support::bad_address
-                                           : bsd_support::invalid_argument);
-                        return;
-                    }
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    *command == wifi_driver::command_state) {
-                    if (!memory_.write32(
-                            registers[2] +
-                                wifi_driver::inline_scalar_value_offset,
-                            wifi_state_->snapshot().associated_access_point
-                                ? 1U
-                                : 0U)) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    *command == wifi_driver::command_association_result) {
-                    if (!wifi_state_->snapshot().associated_access_point) {
-                        bsd_error(cpu, 57); // ENOTCONN
-                        return;
-                    }
-                    if (!memory_.write32(
-                            registers[2] +
-                                wifi_driver::inline_scalar_value_offset,
-                            wifi_driver::association_result_success)) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    *command == wifi_driver::command_rate) {
-                    const auto associated =
-                        wifi_state_->snapshot().associated_access_point;
-                    if (!associated) {
-                        bsd_error(cpu, 57); // ENOTCONN
-                        return;
-                    }
-                    if (!memory_.write32(
-                            registers[2] +
-                                wifi_driver::inline_scalar_value_offset,
-                            associated->link_rate_mbps)) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    *command == wifi_driver::command_current_ssid) {
-                    if (*data_address == 0 ||
-                        *data_length < wifi_driver::current_ssid_size) {
-                        bsd_error(cpu, *data_address == 0
-                                           ? bsd_support::bad_address
-                                           : bsd_support::invalid_argument);
-                        return;
-                    }
-                    const auto associated =
-                        wifi_state_->snapshot().associated_access_point;
-                    if (!associated) {
-                        // A successful command means that an association
-                        // exists. Returning an empty successful payload makes
-                        // legacy Apple80211 clients construct a non-null
-                        // "current network" object from a scan result.
-                        bsd_error(cpu, 57); // ENOTCONN
-                        return;
-                    }
-                    const auto copied =
-                        std::min<std::size_t>(associated->ssid.size(),
-                            wifi_driver::current_ssid_size);
-                    std::array<std::byte, wifi_driver::current_ssid_size>
-                        ssid { };
-                    std::transform(associated->ssid.begin(),
-                        associated->ssid.begin() + copied, ssid.begin(),
-                        [](char value) {
-                            return static_cast<std::byte>(
-                                static_cast<unsigned char>(value));
-                        });
-                    if (!memory_.copy_in(
-                            *data_address, std::span { ssid.data(), copied }) ||
-                        !memory_.write32(
-                            registers[2] + wifi_driver::data_length_offset,
-                            static_cast<std::uint32_t>(copied))) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    *command == wifi_driver::command_current_bssid) {
-                    if (*data_address == 0 ||
-                        *data_length < wifi_driver::current_bssid_size) {
-                        bsd_error(cpu, *data_address == 0
-                                           ? bsd_support::bad_address
-                                           : bsd_support::invalid_argument);
-                        return;
-                    }
-                    const auto associated =
-                        wifi_state_->snapshot().associated_access_point;
-                    if (!associated) {
-                        bsd_error(cpu, 57); // ENOTCONN
-                        return;
-                    }
-                    if (!memory_.copy_in(
-                            *data_address, std::span { associated->bssid.data(),
-                                               associated->bssid.size() })) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    *command == wifi_driver::command_channel) {
-                    if (*data_address == 0 ||
-                        *data_length < wifi_driver::channel_state_size) {
-                        bsd_error(cpu, *data_address == 0
-                                           ? bsd_support::bad_address
-                                           : bsd_support::invalid_argument);
-                        return;
-                    }
-                    const auto associated =
-                        wifi_state_->snapshot().associated_access_point;
-                    if (!associated) {
-                        bsd_error(cpu, 57); // ENOTCONN
-                        return;
-                    }
-                    if (!memory_.write32(
-                            *data_address +
-                                wifi_driver::channel_state_channel_offset,
-                            associated->channel) ||
-                        !memory_.write32(
-                            *data_address +
-                                wifi_driver::channel_state_flags_offset,
-                            0)) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    (*command == wifi_driver::command_rssi ||
-                        *command == wifi_driver::command_noise)) {
-                    if (*data_address == 0 ||
-                        *data_length < wifi_driver::signal_state_size) {
-                        bsd_error(cpu, *data_address == 0
-                                           ? bsd_support::bad_address
-                                           : bsd_support::invalid_argument);
-                        return;
-                    }
-                    const auto associated =
-                        wifi_state_->snapshot().associated_access_point;
-                    if (!associated) {
-                        bsd_error(cpu, 57); // ENOTCONN
-                        return;
-                    }
-                    const auto signal = static_cast<std::uint32_t>(
-                        *command == wifi_driver::command_rssi ? associated->rssi
-                                                              : -90);
-                    if (!memory_.write32(
-                            *data_address +
-                                wifi_driver::signal_state_count_offset,
-                            1) ||
-                        !memory_.write32(
-                            *data_address +
-                                wifi_driver::signal_state_unit_offset,
-                            0) ||
-                        !memory_.write32(
-                            *data_address +
-                                wifi_driver::
-                                    signal_state_control_average_offset,
-                            signal) ||
-                        !memory_.write32(
-                            *data_address +
-                                wifi_driver::
-                                    signal_state_extension_average_offset,
-                            signal) ||
-                        !memory_.write32(
-                            *data_address +
-                                wifi_driver::signal_state_last_offset,
-                            signal)) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    *command == wifi_driver::command_driver_name) {
-                    if (*data_address == 0 || *data_length == 0) {
-                        bsd_error(cpu, *data_address == 0
-                                           ? bsd_support::bad_address
-                                           : bsd_support::invalid_argument);
-                        return;
-                    }
-                    constexpr auto driver_name = wifi_driver::event_device_name;
-                    std::vector<std::byte> name_buffer(
-                        std::min<std::size_t>(
-                            *data_length, driver_name.size() + 1),
-                        std::byte { 0 });
-                    std::transform(driver_name.begin(),
-                        driver_name.begin() + std::min(driver_name.size(),
-                                                  name_buffer.size() - 1),
-                        name_buffer.begin(), [](char value) {
-                            return static_cast<std::byte>(
-                                static_cast<unsigned char>(value));
-                        });
-                    if (!memory_.copy_in(*data_address, name_buffer)) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    *command == wifi_driver::command_scan_result) {
-                    if (apple80211_scan_delivered_.contains(fd)) {
-                        output_.write("[wifi-driver] scan-end pid=" +
-                                      std::to_string(process_.pid) +
-                                      " fd=" + std::to_string(fd) + "\n");
-                        bsd_error(cpu,
-                            5); // EIO terminates the firmware scan iterator.
-                        return;
-                    }
-                    const auto access_points = wifi_state_->scan();
-                    if (access_points.empty()) {
-                        bsd_error(cpu, 5);
-                        return;
-                    }
-                    const auto& access_point = access_points.front();
-                    if (*data_address == 0 ||
-                        *data_length < wifi_driver::scan_result_size ||
-                        access_point.ssid.size() > 32) {
-                        bsd_error(cpu, *data_address == 0
-                                           ? bsd_support::bad_address
-                                           : bsd_support::invalid_argument);
-                        return;
-                    }
-                    const auto ie_scratch = memory_.read32(
-                        *data_address + wifi_driver::scan_ie_pointer_offset);
-                    if (!ie_scratch) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    // Preserve only the firmware-owned IE scratch pointer.
-                    // Copying the entire input record would leak uninitialized
-                    // caller flags into the native parser and can make a
-                    // discovered AP appear associated.
-                    const auto result =
-                        wifi_driver::make_network_record(&access_point,
-                            wifi_driver::aligned_network_record_layout, 0,
-                            *ie_scratch);
-                    if (!result || !memory_.copy_in(*data_address, *result)) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    apple80211_scan_delivered_.insert(fd);
-                    output_.write("[wifi-driver] scan-result pid=" +
-                                  std::to_string(process_.pid) +
-                                  " fd=" + std::to_string(fd) +
-                                  " ssid=" + access_point.ssid + "\n");
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                if (registers[1] == wifi_driver::get_request &&
-                    *command == wifi_driver::command_current_network) {
-                    const auto layout =
-                        shared_state_->darwin_abi
-                                    .apple80211_ioctl ==
-                                DarwinApple80211IoctlAbi::
-                                    CompactCurrentNetworkRecord
-                            ? wifi_driver::compact_network_record_layout
-                            : wifi_driver::aligned_network_record_layout;
-                    if (*data_address == 0 || *data_length < layout.size) {
-                        bsd_error(cpu, *data_address == 0
-                                           ? bsd_support::bad_address
-                                           : bsd_support::invalid_argument);
-                        return;
-                    }
-                    const auto ie_length =
-                        memory_.read16(*data_address + layout.ie_length_offset);
-                    const auto ie_pointer = memory_.read32(
-                        *data_address + layout.ie_pointer_offset);
-                    if (!ie_length || !ie_pointer ||
-                        (*ie_length != 0 && *ie_pointer == 0)) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    const auto associated =
-                        wifi_state_->snapshot().associated_access_point;
-                    const auto record = wifi_driver::make_network_record(
-                        associated ? &*associated : nullptr, layout, *ie_length,
-                        *ie_pointer);
-                    if (!record || !memory_.copy_in(*data_address, *record)) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                    output_.write("[wifi-driver] current-network pid=" +
-                                  std::to_string(process_.pid) +
-                                  " fd=" + std::to_string(fd) + " layout=" +
-                                  std::to_string(layout.size) + " associated=" +
-                                  std::to_string(associated.has_value()) +
-                                  "\n");
-                    bsd_success(cpu, 0);
-                    return;
-                }
-                output_.write(
-                    "[wifi-driver] unsupported pid=" +
-                    std::to_string(process_.pid) + " fd=" + std::to_string(fd) +
-                    " operation=" +
-                    (registers[1] == wifi_driver::get_request ? "get" : "set") +
-                    " command=" + std::to_string(*command) +
-                    " length=" + std::to_string(*data_length) + "\n");
-                bsd_error(cpu, bsd_support::invalid_argument);
+                dispatch_apple80211_ioctl(cpu, fd, name);
                 return;
             }
             std::unique_lock network_lock { shared_state_->network_mutex };
@@ -1206,8 +784,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             const auto ioctl_identity =
                 darwin::network::ioctl_identity(registers[1]);
             if (ioctl_identity == darwin::network::ioctl_get_interface_media) {
-                const auto ethernet = interface->second.type ==
-                                      darwin::network::interface_type_ethernet;
+                const auto media_type = interface->second.media_type;
+                const auto has_media = media_type != 0;
                 const auto active =
                     (interface->second.flags &
                         (darwin::network::interface_flag_up |
@@ -1215,12 +793,12 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     (darwin::network::interface_flag_up |
                         darwin::network::interface_flag_running);
                 const auto automatic_media =
-                    darwin::network::media_type_ethernet |
-                    darwin::network::media_subtype_auto;
+                    media_type | darwin::network::media_subtype_auto;
                 const auto active_media =
-                    darwin::network::media_type_ethernet |
-                    darwin::network::media_subtype_100_tx |
-                    darwin::network::media_option_full_duplex;
+                    media_type == darwin::network::media_type_ethernet
+                        ? media_type | darwin::network::media_subtype_100_tx |
+                              darwin::network::media_option_full_duplex
+                        : automatic_media;
                 const std::array<std::uint32_t, 2> available_media {
                     automatic_media, active_media
                 };
@@ -1234,7 +812,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     bsd_error(cpu, bsd_support::bad_address);
                     return;
                 }
-                if (ethernet && *list_address != 0) {
+                if (has_media && *list_address != 0) {
                     const auto copied = std::min<std::size_t>(
                         *requested_count, available_media.size());
                     for (std::size_t index = 0; index < copied; ++index) {
@@ -1249,7 +827,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     }
                 }
                 const auto media_status =
-                    ethernet
+                    has_media
                         ? darwin::network::media_status_valid |
                               (active ? darwin::network::media_status_active
                                       : 0U)
@@ -1257,7 +835,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 if (!memory_.write32(
                         registers[2] +
                             darwin::network::interface_media_current_offset,
-                        ethernet ? active_media : 0U) ||
+                        has_media ? active_media : 0U) ||
                     !memory_.write32(
                         registers[2] +
                             darwin::network::interface_media_mask_offset,
@@ -1269,11 +847,11 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     !memory_.write32(
                         registers[2] +
                             darwin::network::interface_media_active_offset,
-                        ethernet ? active_media : 0U) ||
+                        has_media ? active_media : 0U) ||
                     !memory_.write32(
                         registers[2] +
                             darwin::network::interface_media_count_offset,
-                        ethernet
+                        has_media
                             ? static_cast<std::uint32_t>(available_media.size())
                             : 0U)) {
                     bsd_error(cpu, bsd_support::bad_address);
@@ -1290,10 +868,9 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     bsd_error(cpu, bsd_support::bad_address);
                     return;
                 }
-                if (interface->second.type !=
-                        darwin::network::interface_type_ethernet ||
+                if (interface->second.media_type == 0 ||
                     (*media & darwin::network::media_type_mask) !=
-                        darwin::network::media_type_ethernet) {
+                        interface->second.media_type) {
                     bsd_error(cpu, bsd_support::invalid_argument);
                     return;
                 }
