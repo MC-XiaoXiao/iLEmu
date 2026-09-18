@@ -648,8 +648,10 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 }
                 const auto channel_name =
                     extract_mux_channel_name(memory_, argument, *payload);
-                const auto requested_unit = memory_.read32(
+                auto requested_unit = memory_.read32(
                     argument + sizeof(std::uint32_t));
+                if (requested_unit == darwin::tty::asm_unassigned_dlci)
+                    requested_unit.reset();
                 if (!shared_state_->baseband_device_state
                         .dynamic_channels_available()) {
                     output_.write(

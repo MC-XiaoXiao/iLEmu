@@ -148,6 +148,9 @@ inline constexpr std::size_t ioaos_general_data_size = 0x100U;
 inline constexpr std::uint32_t ioaos_general_data_query =
     sized_command(ioctl_output, 'y', 0x91, ioaos_general_data_size);
 inline constexpr std::size_t asm_new_dlci_minimum_size = 0x48U;
+// An unassigned channel result requests driver allocation. Clients may pass
+// either zero or this signed -1 sentinel before the in/out ioctl.
+inline constexpr std::uint32_t asm_unassigned_dlci = 0xffff'ffffU;
 // Newer ASMCreateDLCIInfo_t layouts append a 64-byte driver-owned device path
 // at byte 48. The original 72-byte layout ends after its channel metadata.
 inline constexpr std::size_t asm_new_dlci_path_offset = 48U;
