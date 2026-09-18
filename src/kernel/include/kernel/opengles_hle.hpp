@@ -78,6 +78,7 @@ private:
         bool dirty { };
     };
     struct ContextState {
+        std::uint32_t client_api { 1U };
         struct FramebufferState {
             std::uint32_t color_texture_target { };
             std::uint32_t color_texture { };
@@ -196,6 +197,7 @@ private:
             GlesFragmentOperation::TextureEnvironment
         };
         std::size_t fragment_operation_texture_unit { };
+        bool framebuffer_fetch { };
     };
     enum class RenderTargetKind : std::uint8_t {
         Display,
@@ -217,7 +219,8 @@ private:
     [[nodiscard]] ThreadState& thread(UserlandHleCall& call);
     [[nodiscard]] ContextState* current_context(UserlandHleCall& call);
     [[nodiscard]] ContextState* eagl_context(UserlandHleCall& call);
-    [[nodiscard]] ContextState default_context_state() const;
+    [[nodiscard]] ContextState default_context_state(
+        std::uint32_t client_api = 1U) const;
     void set_gl_error(UserlandHleCall& call, std::uint32_t error);
     void set_array_pointer(UserlandHleCall& call, std::uint32_t array);
     [[nodiscard]] GlesMatrix* current_matrix(ContextState& context);

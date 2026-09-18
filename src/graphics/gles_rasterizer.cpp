@@ -566,6 +566,13 @@ namespace {
                     const auto& unit = state.texture_units[unit_index];
                     if (!unit.enabled)
                         continue;
+                    if (unit.framebuffer_fetch) {
+                        operation_destination =
+                            frame.pixels[static_cast<std::size_t>(y) *
+                                             frame.width +
+                                         x];
+                        continue;
+                    }
                     float texture_s { };
                     float texture_t { };
                     std::array<float, 4> gradient { };
@@ -680,7 +687,9 @@ namespace {
                 // by its factors. Only a direct replacement needs conversion
                 // to the premultiplied render-target representation.
                 if (state.render_target_premultiplied && !state.blend_enabled &&
-                    state.filter.operation ==
+                    !std::ranges::any_of(state.texture_units, [](const auto& unit) {
+                        return unit.enabled && unit.framebuffer_fetch;
+                    }) && state.filter.operation ==
                         GlesFilterProfile::Operation::None)
                     pixel = premultiply_argb(pixel);
                 const auto offset = static_cast<std::size_t>(y) * frame.width +

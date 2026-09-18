@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 namespace ilemu {
@@ -49,5 +50,9 @@ struct OpenGlesGuestCapabilities {
 
 [[nodiscard]] OpenGlesGuestCapabilitySet open_gles_framebuffer_capabilities(
     OpenGlesGuestCapabilitySet kind);
+
+// Shader capabilities follow the context API, not the firmware or host GPU.
+[[nodiscard]] std::string open_gles_extensions(
+    OpenGlesGuestCapabilitySet kind, std::uint32_t client_api);
 
 } // namespace ilemu

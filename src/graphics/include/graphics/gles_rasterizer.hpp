@@ -51,6 +51,7 @@ struct GlesRasterTextureUnit {
     bool rectangle { };
     bool projected { };
     bool samples_render_target { };
+    bool framebuffer_fetch { };
 };
 
 struct GlesRasterFilter {

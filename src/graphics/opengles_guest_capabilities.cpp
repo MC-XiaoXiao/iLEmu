@@ -147,4 +147,13 @@ OpenGlesGuestCapabilitySet open_gles_framebuffer_capabilities(
     return OpenGlesGuestCapabilitySet::MbxLiteFramebufferObjects;
 }
 
+std::string open_gles_extensions(
+    OpenGlesGuestCapabilitySet kind, std::uint32_t client_api)
+{
+    std::string result { open_gles_guest_capabilities(kind).extensions };
+    if (client_api >= 2U)
+        result += " GL_EXT_shader_framebuffer_fetch";
+    return result;
+}
+
 } // namespace ilemu

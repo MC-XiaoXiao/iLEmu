@@ -183,6 +183,13 @@ vec4 apply_unit(int unit, sampler2D image, vec2 coordinate, vec4 previous) {
 
 vec4 sample_unit_offset(int unit, vec2 offset) {
     TextureEnvironment environment = fixed_state.units[unit];
+    if (environment.mode_combine_enabled.w == 3) {
+        ivec2 pixel = ivec2(gl_FragCoord.xy);
+        if (unit == 0) return texelFetch(image0, pixel, 0);
+        if (unit == 1) return texelFetch(image1, pixel, 0);
+        if (unit == 2) return texelFetch(image2, pixel, 0);
+        return texelFetch(image3, pixel, 0);
+    }
     bool projected = environment.mode_combine_enabled.w > 1;
     if (unit == 0) return sample_image(image0,
         (projected ? projected_texture0 : texture0) + offset,

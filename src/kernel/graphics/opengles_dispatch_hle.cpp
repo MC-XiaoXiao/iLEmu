@@ -461,7 +461,7 @@ void OpenGlesDispatchHle::create_context(
         shared_references_.emplace(shared, 0U);
     }
     const auto host_context = owner_.next_context_++;
-    owner_.contexts_.emplace(host_context, owner_.default_context_state());
+    owner_.contexts_.emplace(host_context, owner_.default_context_state(*api));
     contexts_.emplace(handle, Context { host_context, shared, { } });
     ++shared_references_[shared];
     call.output().write(

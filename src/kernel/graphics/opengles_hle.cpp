@@ -322,9 +322,11 @@ OpenGlesHle::ContextState* OpenGlesHle::current_context(UserlandHleCall& call)
     return context == contexts_.end() ? nullptr : &context->second;
 }
 
-OpenGlesHle::ContextState OpenGlesHle::default_context_state() const
+OpenGlesHle::ContextState OpenGlesHle::default_context_state(
+    std::uint32_t client_api) const
 {
     auto state = ContextState { };
+    state.client_api = client_api;
     state.guest_capabilities = default_guest_capabilities_;
     const auto geometry =
         display_ ? display_->geometry() : default_display_geometry;
@@ -1358,6 +1360,13 @@ void OpenGlesHle::draw(UserlandHleCall& call, bool indexed)
             unit_index == state.fragment_operation_texture_unit &&
             binding->framebuffer_texture != 0U &&
             raster_unit.texture == binding->framebuffer_texture;
+        if (programmable && programmable->framebuffer_fetch &&
+            unit_index == state.fragment_operation_texture_unit) {
+            raster_unit.texture = 0U;
+            raster_unit.samples_render_target = true;
+            raster_unit.framebuffer_fetch = true;
+            continue;
+        }
         if (!raster_unit.enabled)
             continue;
         if (pixmap_surface == nullptr ||
@@ -1575,13 +1584,13 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                 const auto key = std::pair { process_id, object };
                 if (!eagl_contexts_.contains(key)) {
                     const auto handle = next_context_++;
-                    contexts_.emplace(handle, default_context_state());
+                    contexts_.emplace(handle, default_context_state(api));
                     eagl_contexts_.emplace(key, handle);
                 }
                 call.set_return(object);
                 return;
             }
-            call.resume_original_persistently([this, process_id](
+            call.resume_original_persistently([this, process_id, api](
                                                   UserlandHleCall& completed) {
                 const auto initialized_object = completed.argument(0);
                 if (initialized_object == 0U)
@@ -1594,7 +1603,7 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                 const auto handle =
                     driver_context ? *driver_context : next_context_++;
                 if (!driver_context)
-                    contexts_.emplace(handle, default_context_state());
+                    contexts_.emplace(handle, default_context_state(api));
                 eagl_contexts_.emplace(key, handle);
             });
         });
@@ -2300,8 +2309,11 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
             value = profile.version;
             break;
         case gl_extensions:
-            value = profile.extensions;
-            break;
+            call.set_return(call.intern_string(open_gles_extensions(
+                context ? context->guest_capabilities
+                        : OpenGlesGuestCapabilitySet::MbxLiteLegacy,
+                context ? context->client_api : 1U)));
+            return;
         default:
             call.set_return(0);
             return;

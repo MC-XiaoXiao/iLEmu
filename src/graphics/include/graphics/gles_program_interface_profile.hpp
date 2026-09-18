@@ -29,6 +29,7 @@ enum class GlesFragmentOperation : std::uint32_t {
 struct GlesProgramInterfaceProfile {
     GlesFilterProfile filter;
     bool transparent_output { };
+    bool framebuffer_fetch { };
     enum class MatrixOrder {
         None,
         VectorTimesMatrix,

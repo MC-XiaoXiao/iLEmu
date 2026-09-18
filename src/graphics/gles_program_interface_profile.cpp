@@ -497,6 +497,18 @@ GlesProgramInterfaceProfile GlesProgramInterfaceProfile::from_sources(
         }
     }
 
+    const std::array<std::string_view, 4> fetched_pixel { "gl_LastFragData",
+        "[", "0", "]" };
+    if (contains_sequence(fragment_tokens, fetched_pixel)) {
+        const auto assignments = local_vec4_assignments(fragment_tokens);
+        const auto sampled =
+            assigned_from(fragment_tokens, assignments, "gl_LastFragData");
+        result.fragment_operation = classify_fragment_operation(
+            fragment_tokens, result.color_varying, sampled, uncommented);
+        result.framebuffer_fetch = result.fragment_operation !=
+                                   GlesFragmentOperation::TextureEnvironment;
+    }
+
     auto texture_attributes = attributes;
     std::erase(texture_attributes, result.position_attribute);
     std::erase(texture_attributes, result.color_attribute);

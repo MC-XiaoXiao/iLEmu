@@ -328,6 +328,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         [[nodiscard]] bool refresh_presentation_surface() override;
 
     private:
+        bool draw_batch(DisplayFrame& frame, GlesRenderTargetKey target,
+            std::span<const GlesRasterVertex> vertices, std::uint32_t mode,
+            const GlesRasterState& state);
         class Encoder;
         struct Buffer {
             VkDevice device { };
@@ -2424,7 +2427,10 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                                                      environment.mode),
                 static_cast<std::int32_t>(environment.combine_rgb),
                 static_cast<std::int32_t>(environment.combine_alpha),
-                source.enabled ? (source.projected ? 2 : 1) : 0 };
+                source.enabled ? (source.framebuffer_fetch ? 3
+                                     : source.projected    ? 2
+                                                           : 1)
+                               : 0 };
             destination.color = environment.color;
             for (std::size_t argument = 0; argument < 3; ++argument) {
                 destination.rgb_sources[argument] = static_cast<std::int32_t>(
@@ -2440,8 +2446,16 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             destination.scales_rectangle = { environment.rgb_scale,
                 environment.alpha_scale, source.rectangle ? 1.0F : 0.0F, 0.0F };
         }
-        result.target_flags[0] =
-            state.render_target_premultiplied && !state.blend_enabled ? 1 : 0;
+        // A fetched destination and the shader's composite are already in
+        // render-target representation; do not premultiply that result twice.
+        const auto framebuffer_fetch =
+            std::ranges::any_of(state.texture_units, [](const auto& unit) {
+                return unit.enabled && unit.framebuffer_fetch;
+            });
+        result.target_flags[0] = state.render_target_premultiplied &&
+                                        !state.blend_enabled && !framebuffer_fetch
+                                    ? 1
+                                    : 0;
         result.target_flags[1] =
             static_cast<std::int32_t>(state.fragment_operation);
         result.target_flags[2] =
@@ -4439,6 +4453,49 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     }
 
     bool VulkanGlesRenderer::draw(DisplayFrame& frame,
+        GlesRenderTargetKey target, std::span<const GlesRasterVertex> vertices,
+        std::uint32_t mode, const GlesRasterState& state)
+    {
+        const auto fetches_framebuffer =
+            std::ranges::any_of(state.texture_units, [](const auto& unit) {
+                return unit.enabled && unit.framebuffer_fetch;
+            });
+        if (!fetches_framebuffer)
+            return draw_batch(frame, target, vertices, mode, state);
+
+        // Framebuffer fetch is coherent between primitives, including those in
+        // one guest draw. Refresh the existing GPU snapshot before each
+        // primitive instead of sampling a stale snapshot of the whole batch.
+        const auto batch =
+            GlesPrimitiveAssembler::assemble(vertices, mode, state);
+        if (!batch)
+            return false;
+        const auto source = batch->vertices();
+        auto primitive_state = state;
+        if (batch->ignores_culling())
+            primitive_state.cull_enabled = false;
+        const auto emit = [&](std::size_t a, std::size_t b, std::size_t c) {
+            const std::array triangle { source[a], source[b], source[c] };
+            return draw_batch(
+                frame, target, triangle, gles_abi::triangles, primitive_state);
+        };
+        if (batch->mode() == gles_abi::triangles) {
+            for (std::size_t i = 0; i + 2U < source.size(); i += 3U)
+                if (!emit(i, i + 1U, i + 2U))
+                    return false;
+        } else if (batch->mode() == gles_abi::triangle_strip) {
+            for (std::size_t i = 2U; i < source.size(); ++i)
+                if (!emit(i - 2U + (i & 1U), i - 1U - (i & 1U), i))
+                    return false;
+        } else if (batch->mode() == gles_abi::triangle_fan) {
+            for (std::size_t i = 2U; i < source.size(); ++i)
+                if (!emit(0U, i - 1U, i))
+                    return false;
+        }
+        return true;
+    }
+
+    bool VulkanGlesRenderer::draw_batch(DisplayFrame& frame,
         GlesRenderTargetKey target, std::span<const GlesRasterVertex> vertices,
         std::uint32_t mode, const GlesRasterState& state)
     {

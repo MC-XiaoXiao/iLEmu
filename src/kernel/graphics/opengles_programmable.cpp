@@ -292,6 +292,18 @@ OpenGlesHle::programmable_draw_state(const ContextState& context) const
             result.fragment_operation_texture_unit = unit;
         }
     }
+    if (program->interface_profile.framebuffer_fetch) {
+        const auto free_unit = std::find(result.sampled_textures.begin(),
+            result.sampled_textures.end(), false);
+        if (free_unit == result.sampled_textures.end())
+            return std::nullopt;
+        result.fragment_operation_texture_unit = static_cast<std::size_t>(
+            std::distance(result.sampled_textures.begin(), free_unit));
+        result.fragment_operation =
+            program->interface_profile.fragment_operation;
+        result.framebuffer_fetch = true;
+        *free_unit = true;
+    }
     if (program->interface_profile.transparent_output) {
         result.current_color = { 0.0F, 0.0F, 0.0F, 0.0F };
         result.color_array.enabled = false;
