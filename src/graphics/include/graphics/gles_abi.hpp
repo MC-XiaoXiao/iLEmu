@@ -21,6 +21,7 @@ inline constexpr std::uint32_t texture_2d = 0x0de1U;
 inline constexpr std::uint32_t texture_rectangle_apple = 0x84f5U;
 inline constexpr std::uint32_t texture_min_filter = 0x2801U;
 inline constexpr std::uint32_t texture_mag_filter = 0x2800U;
+inline constexpr std::uint32_t texture_max_anisotropy = 0x84feU;
 inline constexpr std::uint32_t texture_wrap_s = 0x2802U;
 inline constexpr std::uint32_t texture_wrap_t = 0x2803U;
 inline constexpr std::uint32_t nearest = 0x2600U;

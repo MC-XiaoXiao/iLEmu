@@ -39,6 +39,7 @@
 #include "graphics/gles_primitive_assembler.hpp"
 #include "graphics/gles_resources.hpp"
 #include "graphics/gles_sampler_state.hpp"
+#include "graphics/gles_texture_mip_chain.hpp"
 
 namespace ilemu {
 namespace {
@@ -358,6 +359,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             std::uint32_t width { };
             std::uint32_t height { };
             VkDeviceSize allocation_size { };
+            std::uint32_t mip_levels { 1U };
             bool rectangle { };
 
             Image() = default;
@@ -442,7 +444,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         [[nodiscard]] Image create_image(std::uint32_t width,
             std::uint32_t height, VkImageUsageFlags usage, bool sampled,
             bool rectangle, VkFormat format = color_format,
-            VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT) const;
+            VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT,
+            std::uint32_t mip_levels = 1U) const;
         void ensure_buffer(
             Buffer& buffer, VkDeviceSize size, VkBufferUsageFlags usage) const;
         [[nodiscard]] Target& ensure_target(
@@ -532,7 +535,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             VkImageLayout old_layout, VkImageLayout new_layout,
             VkPipelineStageFlags source_stage,
             VkPipelineStageFlags destination_stage, VkAccessFlags source_access,
-            VkAccessFlags destination_access) const;
+            VkAccessFlags destination_access,
+            std::uint32_t mip_levels = 1U) const;
         void destroy() noexcept;
 
         VkInstance instance_ { };
@@ -547,6 +551,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         std::vector<VkSemaphore> presentation_render_finished_;
         VkPhysicalDevice physical_device_ { };
         bool hardware_accelerated_ { };
+        float maximum_sampler_anisotropy_ { 1.0F };
         VkFormat stencil_format_ { VK_FORMAT_UNDEFINED };
         VkDevice device_ { };
         VmaAllocator image_allocator_ { };
@@ -649,6 +654,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         , width { std::exchange(other.width, 0) }
         , height { std::exchange(other.height, 0) }
         , allocation_size { std::exchange(other.allocation_size, 0) }
+        , mip_levels { std::exchange(other.mip_levels, 1U) }
         , rectangle { std::exchange(other.rectangle, false) }
     {
     }
@@ -668,6 +674,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         width = std::exchange(other.width, 0);
         height = std::exchange(other.height, 0);
         allocation_size = std::exchange(other.allocation_size, 0);
+        mip_levels = std::exchange(other.mip_levels, 1U);
         rectangle = std::exchange(other.rectangle, false);
         return *this;
     }
@@ -1009,6 +1016,15 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     1, std::min({ maximum_texture_cache_budget, proportional,
                            largest_device_local_heap / 2U }));
             }
+            VkPhysicalDeviceFeatures supported_features { };
+            vkGetPhysicalDeviceFeatures(physical_device_, &supported_features);
+            VkPhysicalDeviceFeatures enabled_features { };
+            enabled_features.samplerAnisotropy =
+                supported_features.samplerAnisotropy;
+            if (enabled_features.samplerAnisotropy) {
+                maximum_sampler_anisotropy_ =
+                    physical_properties.limits.maxSamplerAnisotropy;
+            }
             constexpr float queue_priority = 1.0F;
             auto queue_info = make_vulkan_structure<VkDeviceQueueCreateInfo>(
                 VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO);
@@ -1017,6 +1033,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             queue_info.pQueuePriorities = &queue_priority;
             auto device_info = make_vulkan_structure<VkDeviceCreateInfo>(
                 VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO);
+            device_info.pEnabledFeatures = &enabled_features;
             device_info.queueCreateInfoCount = 1;
             device_info.pQueueCreateInfos = &queue_info;
             constexpr std::array swapchain_extensions {
@@ -1659,7 +1676,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     VulkanGlesRenderer::Image VulkanGlesRenderer::create_image(
         std::uint32_t width, std::uint32_t height, VkImageUsageFlags usage,
         bool sampled, bool rectangle, VkFormat format,
-        VkImageAspectFlags aspect) const
+        VkImageAspectFlags aspect, std::uint32_t mip_levels) const
     {
         Image result;
         result.allocator = image_allocator_;
@@ -1667,12 +1684,13 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         result.width = width;
         result.height = height;
         result.rectangle = rectangle;
+        result.mip_levels = mip_levels;
         auto image_info = make_vulkan_structure<VkImageCreateInfo>(
             VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO);
         image_info.imageType = VK_IMAGE_TYPE_2D;
         image_info.format = format;
         image_info.extent = { width, height, 1 };
-        image_info.mipLevels = 1;
+        image_info.mipLevels = mip_levels;
         image_info.arrayLayers = 1;
         image_info.samples = VK_SAMPLE_COUNT_1_BIT;
         image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
@@ -1700,7 +1718,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             VK_COMPONENT_SWIZZLE_IDENTITY, VK_COMPONENT_SWIZZLE_IDENTITY,
             VK_COMPONENT_SWIZZLE_IDENTITY };
         view_info.subresourceRange.aspectMask = aspect;
-        view_info.subresourceRange.levelCount = 1;
+        view_info.subresourceRange.levelCount = mip_levels;
         view_info.subresourceRange.layerCount = 1;
         require_success(
             vkCreateImageView(device_, &view_info, nullptr, &result.view),
@@ -1747,13 +1765,22 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         info.magFilter = GlesSamplerState::linear_filter(state.mag_filter)
                              ? VK_FILTER_LINEAR
                              : VK_FILTER_NEAREST;
-        info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        info.mipmapMode =
+            state.min_filter == gles_abi::nearest_mipmap_linear ||
+                    state.min_filter == gles_abi::linear_mipmap_linear
+                ? VK_SAMPLER_MIPMAP_MODE_LINEAR
+                : VK_SAMPLER_MIPMAP_MODE_NEAREST;
         info.addressModeU = wrap(state.wrap_s);
         info.addressModeV = wrap(state.wrap_t);
         info.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-        info.maxAnisotropy = 1.0F;
-        // The resource upload path currently publishes level zero only.
-        info.maxLod = 0.0F;
+        info.maxAnisotropy =
+            std::min(state.max_anisotropy, maximum_sampler_anisotropy_);
+        info.anisotropyEnable = info.maxAnisotropy > 1.0F;
+        // The image view limits access to the uploaded guest mip levels.
+        info.maxLod = state.min_filter >= gles_abi::nearest_mipmap_nearest &&
+                              state.min_filter <= gles_abi::linear_mipmap_linear
+                          ? VK_LOD_CLAMP_NONE
+                          : 0.0F;
         VkSampler sampler { };
         require_success(vkCreateSampler(device_, &info, nullptr, &sampler),
             "vkCreateSampler(texture)");
@@ -2473,7 +2500,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         VkImage image, VkImageLayout old_layout, VkImageLayout new_layout,
         VkPipelineStageFlags source_stage,
         VkPipelineStageFlags destination_stage, VkAccessFlags source_access,
-        VkAccessFlags destination_access) const
+        VkAccessFlags destination_access, std::uint32_t mip_levels) const
     {
         auto barrier = make_vulkan_structure<VkImageMemoryBarrier>(
             VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER);
@@ -2485,7 +2512,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.image = image;
         barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.levelCount = 1;
+        barrier.subresourceRange.levelCount = mip_levels;
         barrier.subresourceRange.layerCount = 1;
         vkCmdPipelineBarrier(command, source_stage, destination_stage, 0, 0,
             nullptr, 0, nullptr, 1, &barrier);
@@ -4680,6 +4707,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 selected_upload_offsets { };
             std::array<const std::uint32_t*, gles_abi::texture_unit_count>
                 selected_pixels { };
+            std::array<std::optional<GlesTextureMipChain>,
+                gles_abi::texture_unit_count> selected_mips;
             std::array<VkDeviceSize, gles_abi::texture_unit_count>
                 selected_byte_counts { };
             std::array<std::uint64_t, gles_abi::texture_unit_count>
@@ -4732,8 +4761,22 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 }
                 const auto* pixels =
                     level ? level->argb.data() : white_pixel.data();
-                const auto byte_count = static_cast<VkDeviceSize>(width) *
-                                        height * sizeof(std::uint32_t);
+                auto byte_count = static_cast<VkDeviceSize>(width) *
+                                  height * sizeof(std::uint32_t);
+                auto revision = level ? level->revision : 1U;
+                if (level) {
+                    selected_mips[index].emplace(
+                        *state.resources->texture(unit.texture), unit.rectangle);
+                    const auto levels = selected_mips[index]->levels();
+                    for (std::size_t mip = 1; mip < levels.size(); ++mip) {
+                        byte_count +=
+                            levels[mip]->argb.size() * sizeof(std::uint32_t);
+                        revision = std::max(revision, levels[mip]->revision);
+                    }
+                }
+                const auto mip_count = static_cast<std::uint32_t>(
+                    selected_mips[index] ? selected_mips[index]->levels().size()
+                                         : 1U);
                 TextureKey key;
                 key.owner = level ? state.resource_owner : 0;
                 key.rectangle = unit.rectangle;
@@ -4750,7 +4793,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 cached.last_used = ++texture_use_sequence_;
                 if (cached.image.image == VK_NULL_HANDLE ||
                     cached.image.width != width ||
-                    cached.image.height != height) {
+                    cached.image.height != height ||
+                    cached.image.mip_levels != mip_count) {
                     if (cached.image.image != VK_NULL_HANDLE) {
                         submit_commands(
                             false, PerfSubmitReason::ResourceLifetime);
@@ -4759,7 +4803,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     auto replacement = create_image(width, height,
                         VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                             VK_IMAGE_USAGE_SAMPLED_BIT,
-                        true, unit.rectangle);
+                        true, unit.rectangle, color_format,
+                        VK_IMAGE_ASPECT_COLOR_BIT, mip_count);
                     texture_cache_bytes_ -= std::min(
                         texture_cache_bytes_, cached.image.allocation_size);
                     texture_cache_bytes_ += replacement.allocation_size;
@@ -4769,7 +4814,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 selected_textures[index] = &cached;
                 selected_pixels[index] = pixels;
                 selected_byte_counts[index] = byte_count;
-                texture_revisions[index] = level ? level->revision : 1;
+                texture_revisions[index] = revision;
                 texture_changed[index] =
                     cached.revision != texture_revisions[index];
                 if (texture_changed[index] &&
@@ -4907,8 +4952,19 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     continue;
                 const auto byte_count = selected_byte_counts[index];
                 const auto offset = align_staging(commands.staging_bytes_used);
-                upload(commands.staging, selected_pixels[index],
-                    static_cast<std::size_t>(byte_count), offset);
+                if (!selected_mips[index]) {
+                    upload(commands.staging, selected_pixels[index],
+                        static_cast<std::size_t>(byte_count), offset);
+                } else {
+                    auto mip_offset = offset;
+                    for (const auto* mip : selected_mips[index]->levels()) {
+                        const auto size =
+                            mip->argb.size() * sizeof(std::uint32_t);
+                        upload(commands.staging, mip->argb.data(), size,
+                            mip_offset);
+                        mip_offset += size;
+                    }
+                }
                 commands.staging_bytes_used = offset + byte_count;
                 selected_upload_offsets[index] = offset;
             }
@@ -5067,21 +5123,31 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                         : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                     VK_PIPELINE_STAGE_TRANSFER_BIT,
                     texture.revision != 0 ? VK_ACCESS_SHADER_READ_BIT : 0,
-                    VK_ACCESS_TRANSFER_WRITE_BIT);
-                VkBufferImageCopy copy { };
-                copy.bufferOffset = selected_upload_offsets[index];
-                copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-                copy.imageSubresource.layerCount = 1;
-                copy.imageExtent = { image.width, image.height, 1 };
+                    VK_ACCESS_TRANSFER_WRITE_BIT, image.mip_levels);
+                std::array<VkBufferImageCopy, 32> copies { };
+                auto offset = selected_upload_offsets[index];
+                for (std::uint32_t mip = 0; mip < image.mip_levels; ++mip) {
+                    auto& copy = copies[mip];
+                    copy.bufferOffset = offset;
+                    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+                    copy.imageSubresource.mipLevel = mip;
+                    copy.imageSubresource.layerCount = 1;
+                    copy.imageExtent = { std::max(1U, image.width >> mip),
+                        std::max(1U, image.height >> mip), 1 };
+                    offset += static_cast<VkDeviceSize>(copy.imageExtent.width) *
+                              copy.imageExtent.height * sizeof(std::uint32_t);
+                }
                 vkCmdCopyBufferToImage(commands.command,
                     commands.staging.buffer, image.image,
-                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+                    VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, image.mip_levels,
+                    copies.data());
                 transition_image(commands.command, image.image,
                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_TRANSFER_BIT,
                     VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT);
+                    VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                    image.mip_levels);
                 texture.revision = texture_revisions[index];
                 texture.last_upload_batch = batch_sequence_;
             }

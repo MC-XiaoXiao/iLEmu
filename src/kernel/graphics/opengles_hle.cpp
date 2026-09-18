@@ -3653,7 +3653,8 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         if (error != gles_abi::no_error)
             set_gl_error(call, error);
     });
-    const auto set_texture_parameter = [this](UserlandHleCall& call) {
+    const auto set_texture_parameter = [this](UserlandHleCall& call,
+                                           std::uint32_t value) {
         auto* context = current_context(call);
         if (context == nullptr) {
             set_gl_error(call, gles_abi::invalid_operation);
@@ -3669,14 +3670,55 @@ void OpenGlesHle::register_gles(UserlandHleRegistry& registry)
         const auto binding = target == gles_abi::texture_rectangle_apple
                                  ? unit.bound_texture_rectangle
                                  : unit.bound_texture_2d;
-        const auto error = resources_.set_texture_parameter(
-            binding, call.argument(1), call.argument(2));
+        if (call.argument(1) == gles_abi::texture_max_anisotropy) {
+            const auto anisotropy = std::bit_cast<float>(value);
+            if (!std::isfinite(anisotropy) || anisotropy < 1.0F) {
+                set_gl_error(call, gles_abi::invalid_value);
+                return;
+            }
+        }
+        const auto error =
+            resources_.set_texture_parameter(binding, call.argument(1), value);
         if (error != gles_abi::no_error)
             set_gl_error(call, error);
     };
-    add("_glTexParameteri", set_texture_parameter);
-    add("_glTexParameterf", set_texture_parameter);
-    add("_glTexParameterx", set_texture_parameter);
+    add("_glTexParameteri", [set_texture_parameter](UserlandHleCall& call) {
+        const auto raw = call.argument(2);
+        const auto value =
+            call.argument(1) == gles_abi::texture_max_anisotropy
+                ? std::bit_cast<std::uint32_t>(
+                      static_cast<float>(static_cast<std::int32_t>(raw)))
+                : raw;
+        set_texture_parameter(call, value);
+    });
+    add("_glTexParameterf",
+        [this, set_texture_parameter](UserlandHleCall& call) {
+            // Keep continuous parameters as float bits in the resource store.
+            const auto raw = call.argument(2);
+            if (call.argument(1) == gles_abi::texture_max_anisotropy) {
+                set_texture_parameter(call, raw);
+                return;
+            }
+            const auto value = std::bit_cast<float>(raw);
+            if (!std::isfinite(value) || value < 0.0F ||
+                static_cast<double>(value) >
+                    std::numeric_limits<std::uint32_t>::max()) {
+                set_gl_error(call, gles_abi::invalid_enum);
+                return;
+            }
+            set_texture_parameter(
+                call, static_cast<std::uint32_t>(std::round(value)));
+        });
+    add("_glTexParameterx", [set_texture_parameter](UserlandHleCall& call) {
+        const auto raw = call.argument(2);
+        const auto value =
+            call.argument(1) == gles_abi::texture_max_anisotropy
+                ? std::bit_cast<std::uint32_t>(
+                      static_cast<float>(static_cast<std::int32_t>(raw)) /
+                      65536.0F)
+                : raw;
+        set_texture_parameter(call, value);
+    });
     const auto set_texture_environment = [this](UserlandHleCall& call,
                                              float parameter) {
         auto* context = current_context(call);

@@ -8,6 +8,8 @@
 
 #include "graphics/gles_abi.hpp"
 
+#include <bit>
+#include <cmath>
 #include <compare>
 #include <cstdint>
 #include <map>
@@ -19,6 +21,8 @@ struct GlesSamplerState {
     std::uint32_t mag_filter { gles_abi::linear };
     std::uint32_t wrap_s { gles_abi::repeat };
     std::uint32_t wrap_t { gles_abi::repeat };
+
+    float max_anisotropy { 1.0F };
 
     auto operator<=>(const GlesSamplerState&) const = default;
 
@@ -60,6 +64,11 @@ struct GlesSamplerState {
         };
         result.wrap_s = wrap(gles_abi::texture_wrap_s, result.wrap_s);
         result.wrap_t = wrap(gles_abi::texture_wrap_t, result.wrap_t);
+        const auto anisotropy =
+            std::bit_cast<float>(read(gles_abi::texture_max_anisotropy,
+                std::bit_cast<std::uint32_t>(1.0F)));
+        if (std::isfinite(anisotropy) && anisotropy >= 1.0F)
+            result.max_anisotropy = anisotropy;
         return result;
     }
 };
