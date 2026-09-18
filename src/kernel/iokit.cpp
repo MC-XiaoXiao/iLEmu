@@ -932,10 +932,8 @@ namespace {
             std::string { io80211_controller_class }, { "IOService" }, { },
             "IOService:/AppleARMIODevice/IO80211Controller", bus_object
         };
-        service.properties.emplace(std::string { bsd_name_property },
-            KernelSharedState::IOKitRegistryProperty {
-                KernelSharedState::IOKitRegistryProperty::Kind::String,
-                bytes_from_string("en0") });
+        // The BSD identity belongs to IO80211Interface. Publishing it on
+        // the controller makes IOBSDNameMatching resolve the wrong hierarchy.
         service.properties.emplace(std::string { network_root_type_property },
             KernelSharedState::IOKitRegistryProperty {
                 KernelSharedState::IOKitRegistryProperty::Kind::String,
