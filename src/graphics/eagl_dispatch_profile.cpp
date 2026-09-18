@@ -14,7 +14,7 @@ namespace ilemu {
 std::optional<EaglContextFirstArm32Profile>
 EaglContextFirstArm32Profile::from_dispatch_bytes(std::uint32_t bytes)
 {
-    if (bytes == 0xe24U || bytes == 0x102cU)
+    if (bytes == 0xe24U || bytes == 0xe48U || bytes == 0x102cU)
         return EaglContextFirstArm32Profile { bytes };
     return std::nullopt;
 }
