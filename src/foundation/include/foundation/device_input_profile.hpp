@@ -31,9 +31,9 @@ struct SystemGestures {
 
 inline constexpr SystemGestures classic_compact_system_gestures {
     "classic-compact-slider",
-    // Start inside the native arrow handle and keep the gesture close to the
-    // compact slider's full travel while pacing it on the host clock.
-    { 0.15625F, 0.8958333333F, 0.9375F, 0.8958333333F, 300U, 12U, 16U, 300U },
+    // Cover the usable display width so slider layouts with a longer track
+    // still receive one continuous HOME-plus-swipe gesture.
+    { 0.001F, 0.8958333333F, 0.999F, 0.8958333333F, 300U, 12U, 16U, 300U },
 };
 
 inline constexpr SystemGestures classic_centered_tablet_system_gestures {
