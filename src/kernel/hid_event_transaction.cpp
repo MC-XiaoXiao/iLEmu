@@ -29,6 +29,10 @@ namespace {
         static constexpr std::uint32_t position_changed = 4U;
         static constexpr std::uint32_t identity_changed = 0x20U;
         static constexpr std::uint32_t cancelled = 0x80U;
+        // Grape digitizer origin qualifiers consumed by native edge recognizers.
+        static constexpr std::uint32_t edge_tip = 0x800U;
+        static constexpr std::uint32_t corner = 0x1000U;
+        static constexpr float edge_extent = 10.0F;
         // Contacts originate on the built-in display, not an indirect pad.
         static constexpr std::uint32_t display_integrated = 0x80000U;
         static constexpr std::uint32_t stack_scratch_bytes = 64U;
@@ -48,13 +52,28 @@ namespace {
         using Profile = Arm32DigitizerEventProfile;
         auto mask = Profile::position_changed;
         if (!collection ||
-            digitizer_abi == DarwinHidDigitizerAbi::CollectionContactChanges) {
+            digitizer_abi != DarwinHidDigitizerAbi::ChildContactChanges) {
             if (touch.phase != TouchPhase::Move)
                 mask |= Profile::range_changed | Profile::touch_changed;
             if (touch.phase == TouchPhase::Down)
                 mask |= Profile::identity_changed;
             if (touch.phase == TouchPhase::Cancel)
                 mask |= Profile::cancelled;
+        }
+        if (collection && event.contact_origin &&
+            digitizer_abi ==
+                DarwinHidDigitizerAbi::CollectionContactChangesWithEdgeOrigin) {
+            const auto& origin = *event.contact_origin;
+            const bool horizontal_edge =
+                origin[0] < Profile::edge_extent ||
+                origin[0] >= width - Profile::edge_extent;
+            const bool vertical_edge =
+                origin[1] < Profile::edge_extent ||
+                origin[1] >= height - Profile::edge_extent;
+            if (horizontal_edge && vertical_edge)
+                mask |= Profile::corner;
+            else if (horizontal_edge || vertical_edge)
+                mask |= Profile::edge_tip;
         }
         auto& r = call.cpu().registers();
         r[13] -= Profile::stack_scratch_bytes;

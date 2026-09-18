@@ -9,6 +9,7 @@
 
 #include "foundation/touch_input.hpp"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -40,6 +41,7 @@ public:
         std::variant<TouchInput, KeyboardInput, Acceleration> input;
         std::uint64_t timestamp;
         std::uint32_t identity { 1U };
+        std::optional<std::array<float, 2>> contact_origin { };
     };
 
     void open(Consumer consumer)
@@ -47,6 +49,7 @@ public:
         std::lock_guard lock { mutex_ };
         consumer_ = consumer;
         events_.clear();
+        contact_origin_.reset();
     }
     void close(std::uint32_t process)
     {
@@ -54,6 +57,7 @@ public:
         if (consumer_ && consumer_->process == process) {
             consumer_.reset();
             events_.clear();
+            contact_origin_.reset();
         }
     }
     [[nodiscard]] std::optional<Consumer> consumer() const
@@ -67,6 +71,14 @@ public:
         if (!consumer_ || (std::holds_alternative<KeyboardInput>(event.input) &&
                               !consumer_->keyboard_events))
             return false;
+        if (const auto* touch = std::get_if<TouchInput>(&event.input)) {
+            if (touch->phase == TouchPhase::Down)
+                contact_origin_ = std::array { touch->x, touch->y };
+            event.contact_origin = contact_origin_;
+            if (touch->phase == TouchPhase::Up ||
+                touch->phase == TouchPhase::Cancel)
+                contact_origin_.reset();
+        }
         events_.push_back(event);
         return true;
     }
@@ -86,6 +98,7 @@ private:
     mutable std::mutex mutex_;
     std::optional<Consumer> consumer_;
     std::deque<Event> events_;
+    std::optional<std::array<float, 2>> contact_origin_;
 };
 
 } // namespace ilemu

@@ -148,12 +148,12 @@ enum class DarwinMemoryStatusPriorityAbi : std::uint8_t {
     PriorityBands,
 };
 
-// Earlier HID consumers derive hand phases from the collection's contact
-// changes. Later consumers route child contacts separately and interpret
-// collection contact changes as touch-count-only notifications.
+// Contact routing and digitizer-origin metadata consumed by the native HID
+// stack. Preserve child-only routing for consumers with that wake contract.
 enum class DarwinHidDigitizerAbi : std::uint8_t {
     CollectionContactChanges,
     ChildContactChanges,
+    CollectionContactChangesWithEdgeOrigin,
 };
 
 struct DarwinGuestCapabilities {

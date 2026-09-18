@@ -216,7 +216,7 @@ namespace {
                 .sandbox_abi = DarwinSandboxAbi::Wide64Arguments,
                 .mach_port_context = DarwinMachVmAddressWidth::Wide64,
                 .memory_status_priority = DarwinMemoryStatusPriorityAbi::PriorityBands,
-                .hid_digitizer = DarwinHidDigitizerAbi::ChildContactChanges,
+                .hid_digitizer = DarwinHidDigitizerAbi::CollectionContactChangesWithEdgeOrigin,
                 .address_layout = DarwinAddressLayout::ExpandedArmSharedRegion,
                 .capabilities = { .send_sigsys = true },
             },
