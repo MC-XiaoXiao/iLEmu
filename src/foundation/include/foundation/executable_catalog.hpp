@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <span>
@@ -94,6 +95,11 @@ struct ExecutableCatalogScanSummary {
 
 class ExecutableCatalog {
 public:
+    ExecutableCatalog() = default;
+    // Copies are immutable snapshots until a mutating operation detaches the
+    // backing index. Keeping value semantics also leaves moved sources usable.
+    ExecutableCatalog(const ExecutableCatalog&) = default;
+    ExecutableCatalog& operator=(const ExecutableCatalog&) = default;
     [[nodiscard]] const ExecutableCatalogEntry& register_image(
         const MachOImage& image);
     [[nodiscard]] const ExecutableCatalogEntry& register_path(
@@ -152,7 +158,10 @@ public:
     // are never used as a substitute for runtime mapping validation.
     [[nodiscard]] std::span<const ExecutableCatalogEntry>
     entries() const noexcept;
-    [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return storage_->entries.size();
+    }
     // Host-container estimate for diagnostics. This includes vector capacity,
     // unordered-index buckets/nodes, and owned string/vector storage; it is not
     // an allocator or operating-system RSS measurement.
@@ -178,9 +187,13 @@ private:
         const std::filesystem::path& root, ArmArchitectureVersion architecture,
         const ExecutableCatalog* previous);
 
-    std::vector<ExecutableCatalogEntry> entries_;
-    std::unordered_map<ContentIdentity, std::size_t, ContentIdentityHash>
-        identity_index_;
+    struct Storage {
+        std::vector<ExecutableCatalogEntry> entries;
+        std::unordered_map<ContentIdentity, std::size_t, ContentIdentityHash>
+            identity_index;
+    };
+    void detach_storage();
+    std::shared_ptr<Storage> storage_ { std::make_shared<Storage>() };
     // Older manifests classified N_SECT symbols by segment protection and can
     // therefore contain __cstring/data addresses. They remain readable for
     // generation migration, but their entry lists must never be consumed or

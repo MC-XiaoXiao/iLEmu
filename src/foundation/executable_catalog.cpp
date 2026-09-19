@@ -720,8 +720,7 @@ std::size_t ExecutableCatalog::register_shared_cache(
 ExecutableCatalogScanSummary ExecutableCatalog::register_tree(
     const std::filesystem::path& root, ArmArchitectureVersion architecture)
 {
-    entries_.clear();
-    identity_index_.clear();
+    storage_ = std::make_shared<Storage>();
     return scan_tree(root, architecture, nullptr);
 }
 
@@ -729,8 +728,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_tree(
     const std::filesystem::path& root, ArmArchitectureVersion architecture)
 {
     ExecutableCatalog previous = std::move(*this);
-    entries_.clear();
-    identity_index_.clear();
+    storage_ = std::make_shared<Storage>();
     return scan_tree(root, architecture, &previous);
 }
 
@@ -770,7 +768,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
     std::set<std::filesystem::path> requested_subtrees;
     const auto has_catalog_descendant =
         [this, &is_in_subtree](const std::filesystem::path& subtree) {
-            for (const auto& entry : entries_) {
+            for (const auto& entry : storage_->entries) {
                 for (const auto& alias : entry.aliases) {
                     if (alias != subtree && is_in_subtree(alias, subtree))
                         return true;
@@ -839,7 +837,7 @@ ExecutableCatalogScanSummary ExecutableCatalog::refresh_paths(
     }
 
     std::set<std::filesystem::path> old_paths;
-    for (const auto& entry : entries_) {
+    for (const auto& entry : storage_->entries) {
         for (const auto& alias : entry.aliases) {
             if (requested_files.contains(alias) ||
                 std::any_of(requested_subtrees.begin(),
@@ -1143,8 +1141,10 @@ bool ExecutableCatalog::load(const std::filesystem::path& path) noexcept
             for (auto& entry : entries)
                 entry.reliable_entry_points.clear();
         }
-        entries_ = std::move(entries);
-        identity_index_ = std::move(identity_index);
+        auto storage = std::make_shared<Storage>();
+        storage->entries = std::move(entries);
+        storage->identity_index = std::move(identity_index);
+        storage_ = std::move(storage);
         reliable_entry_points_current_ = reliable_entry_points_current;
         ++mutation_revision_;
         return true;
@@ -1157,7 +1157,8 @@ bool ExecutableCatalog::save(const std::filesystem::path& path) const noexcept
 {
     std::filesystem::path temporary;
     try {
-        if (path.empty() || entries_.size() > maximum_manifest_entries) {
+        if (path.empty() ||
+            storage_->entries.size() > maximum_manifest_entries) {
             return false;
         }
         const auto parent = path.parent_path();
@@ -1175,8 +1176,8 @@ bool ExecutableCatalog::save(const std::filesystem::path& path) const noexcept
         stream.write(catalog_magic.data(),
             static_cast<std::streamsize>(catalog_magic.size()));
         write_u32(stream, catalog_schema_version);
-        write_u32(stream, static_cast<std::uint32_t>(entries_.size()));
-        for (const auto& entry : entries_) {
+        write_u32(stream, static_cast<std::uint32_t>(storage_->entries.size()));
+        for (const auto& entry : storage_->entries) {
             if (entry.aliases.size() > maximum_manifest_items ||
                 entry.file_generations.size() > maximum_manifest_items ||
                 entry.kinds.size() > maximum_manifest_items ||
@@ -1288,9 +1289,10 @@ bool ExecutableCatalog::save(const std::filesystem::path& path) const noexcept
 const ExecutableCatalogEntry* ExecutableCatalog::find(
     const ContentIdentity& identity) const
 {
-    const auto iterator = identity_index_.find(identity);
-    return iterator == identity_index_.end() ? nullptr
-                                             : &entries_[iterator->second];
+    const auto iterator = storage_->identity_index.find(identity);
+    return iterator == storage_->identity_index.end()
+               ? nullptr
+               : &storage_->entries[iterator->second];
 }
 
 const ExecutableCatalogEntry* ExecutableCatalog::find_path(
@@ -1298,7 +1300,7 @@ const ExecutableCatalogEntry* ExecutableCatalog::find_path(
 {
     const auto normalized = normalize_path(path);
     const ExecutableCatalogEntry* fallback = nullptr;
-    for (const auto& entry : entries_) {
+    for (const auto& entry : storage_->entries) {
         if (std::find(entry.aliases.begin(), entry.aliases.end(), normalized) ==
             entry.aliases.end()) {
             continue;
@@ -1376,7 +1378,7 @@ std::vector<std::uint64_t> ExecutableCatalog::fixed_mapping_entry_points(
 std::size_t ExecutableCatalog::reliable_entry_point_count() const noexcept
 {
     std::size_t count = 0;
-    for (const auto& entry : entries_) {
+    for (const auto& entry : storage_->entries) {
         if (entry.reliable_entry_points.size() <=
             std::numeric_limits<std::size_t>::max() - count) {
             count += entry.reliable_entry_points.size();
@@ -1390,8 +1392,8 @@ std::size_t ExecutableCatalog::reliable_entry_point_count() const noexcept
 std::vector<ContentIdentity> ExecutableCatalog::content_identities() const
 {
     std::vector<ContentIdentity> identities;
-    identities.reserve(entries_.size());
-    for (const auto& entry : entries_) {
+    identities.reserve(storage_->entries.size());
+    for (const auto& entry : storage_->entries) {
         identities.push_back(entry.content_identity);
     }
     return identities;
@@ -1400,7 +1402,7 @@ std::vector<ContentIdentity> ExecutableCatalog::content_identities() const
 std::span<const ExecutableCatalogEntry>
 ExecutableCatalog::entries() const noexcept
 {
-    return entries_;
+    return storage_->entries;
 }
 
 std::filesystem::path ExecutableCatalog::normalize_path(
@@ -1428,14 +1430,21 @@ ExecutableCatalogKind ExecutableCatalog::classify(
     return ExecutableCatalogKind::MachO;
 }
 
+void ExecutableCatalog::detach_storage()
+{
+    if (!storage_.unique())
+        storage_ = std::make_shared<Storage>(*storage_);
+}
+
 ExecutableCatalogEntry& ExecutableCatalog::upsert(ContentIdentity identity,
     const std::filesystem::path& path, ExecutableCatalogKind kind)
 {
+    detach_storage();
     ++mutation_revision_;
-    const auto existing = identity_index_.find(identity);
-    if (existing == identity_index_.end()) {
-        const auto index = entries_.size();
-        entries_.push_back(ExecutableCatalogEntry {
+    const auto existing = storage_->identity_index.find(identity);
+    if (existing == storage_->identity_index.end()) {
+        const auto index = storage_->entries.size();
+        storage_->entries.push_back(ExecutableCatalogEntry {
             .content_identity = identity,
             .aliases = { path },
             .file_generations = { },
@@ -1450,10 +1459,10 @@ ExecutableCatalogEntry& ExecutableCatalog::upsert(ContentIdentity identity,
             .mappings = { },
             .reliable_entry_points = { },
         });
-        identity_index_.emplace(std::move(identity), index);
-        return entries_.back();
+        storage_->identity_index.emplace(std::move(identity), index);
+        return storage_->entries.back();
     }
-    auto& entry = entries_[existing->second];
+    auto& entry = storage_->entries[existing->second];
     if (std::find(entry.aliases.begin(), entry.aliases.end(), path) ==
         entry.aliases.end()) {
         entry.aliases.push_back(path);
@@ -1464,16 +1473,32 @@ ExecutableCatalogEntry& ExecutableCatalog::upsert(ContentIdentity identity,
 
 void ExecutableCatalog::remove_path(const std::filesystem::path& path)
 {
+    // Data-file notifications usually leave the index unchanged. Preserve the
+    // snapshot unless the original removal pass would change any entry,
+    // including orphaned generation records in older manifests.
+    const auto changes_entry = [&path](const ExecutableCatalogEntry& entry) {
+        return entry.aliases.empty() ||
+               std::find(entry.aliases.begin(), entry.aliases.end(), path) !=
+                   entry.aliases.end() ||
+               std::any_of(entry.file_generations.begin(),
+                   entry.file_generations.end(),
+                   [&path](const auto& record) { return record.path == path; });
+    };
+    if (std::none_of(
+            storage_->entries.begin(), storage_->entries.end(), changes_entry))
+        return;
+    detach_storage();
     bool changed = false;
     bool removed_entry = false;
-    for (auto entry = entries_.begin(); entry != entries_.end();) {
+    for (auto entry = storage_->entries.begin();
+        entry != storage_->entries.end();) {
         changed |= std::erase(entry->aliases, path) != 0U;
         changed |= std::erase_if(entry->file_generations,
                        [&path](const ExecutableCatalogPathGeneration& record) {
                            return record.path == path;
                        }) != 0U;
         if (entry->aliases.empty()) {
-            entry = entries_.erase(entry);
+            entry = storage_->entries.erase(entry);
             removed_entry = true;
         } else {
             ++entry;
@@ -1483,16 +1508,18 @@ void ExecutableCatalog::remove_path(const std::filesystem::path& path)
         ++mutation_revision_;
     if (!removed_entry)
         return;
-    identity_index_.clear();
-    identity_index_.reserve(entries_.size());
-    for (std::size_t index = 0; index < entries_.size(); ++index) {
-        identity_index_.emplace(entries_[index].content_identity, index);
+    storage_->identity_index.clear();
+    storage_->identity_index.reserve(storage_->entries.size());
+    for (std::size_t index = 0; index < storage_->entries.size(); ++index) {
+        storage_->identity_index.emplace(
+            storage_->entries[index].content_identity, index);
     }
 }
 
 std::size_t ExecutableCatalog::resident_bytes_estimate() const noexcept
 {
-    std::size_t total = entries_.capacity() * sizeof(ExecutableCatalogEntry);
+    std::size_t total =
+        storage_->entries.capacity() * sizeof(ExecutableCatalogEntry);
     const auto add = [&total](std::size_t bytes) {
         total = bytes > std::numeric_limits<std::size_t>::max() - total
                     ? std::numeric_limits<std::size_t>::max()
@@ -1502,7 +1529,7 @@ std::size_t ExecutableCatalog::resident_bytes_estimate() const noexcept
         add(path.native().capacity() *
             sizeof(std::filesystem::path::value_type));
     };
-    for (const auto& entry : entries_) {
+    for (const auto& entry : storage_->entries) {
         add(entry.aliases.capacity() * sizeof(std::filesystem::path));
         for (const auto& alias : entry.aliases)
             add_path(alias);
@@ -1518,9 +1545,9 @@ std::size_t ExecutableCatalog::resident_bytes_estimate() const noexcept
         add(entry.mappings.capacity() * sizeof(ExecutableMappingIdentity));
         add(entry.reliable_entry_points.capacity() * sizeof(std::uint64_t));
     }
-    add(identity_index_.bucket_count() * sizeof(void*));
-    add(identity_index_.size() *
-        (sizeof(typename decltype(identity_index_)::value_type) +
+    add(storage_->identity_index.bucket_count() * sizeof(void*));
+    add(storage_->identity_index.size() *
+        (sizeof(typename decltype(storage_->identity_index)::value_type) +
             2U * sizeof(void*)));
     return total;
 }
