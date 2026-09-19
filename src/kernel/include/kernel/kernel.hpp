@@ -461,6 +461,8 @@ public:
     [[nodiscard]] TimerDeadlineSnapshot timer_deadline_snapshot() const;
     [[nodiscard]] std::optional<std::uint64_t>
     next_display_vsync_deadline() const;
+    // Owner of the earliest registered pulse, independent of this kernel task.
+    [[nodiscard]] std::optional<std::uint32_t> next_display_vsync_process() const;
     [[nodiscard]] std::optional<std::size_t> display_vsync_receiver_processor();
     // Return the exact queued Mach receiver or, after synchronous mach_msg
     // delivery, the processor that now owns the uncompleted firmware callback.

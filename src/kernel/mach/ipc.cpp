@@ -96,6 +96,20 @@ bool CompatibilityKernel::deliver_pending_mach(Cpu& cpu)
     return delivered;
 }
 
+std::optional<std::uint32_t>
+CompatibilityKernel::next_display_vsync_process() const
+{
+    std::lock_guard mach_lock { shared_state_->mach_mutex };
+    if (shared_state_->iokit_display_vsync_deadlines.empty())
+        return std::nullopt;
+    const auto connection =
+        shared_state_->iokit_display_vsync_deadlines.begin()->second;
+    const auto registration = shared_state_->iokit_display_vsync.find(connection);
+    if (registration == shared_state_->iokit_display_vsync.end())
+        return std::nullopt;
+    return registration->second.owner_pid;
+}
+
 std::optional<std::size_t>
 CompatibilityKernel::display_vsync_receiver_processor()
 {

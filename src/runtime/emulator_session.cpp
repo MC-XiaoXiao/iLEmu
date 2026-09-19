@@ -4073,19 +4073,11 @@ void EmulatorSession::run()
             // the next polling iteration in both cases;
             // resolve_display_urgent_threads() still selects a thread only when
             // it has a pending VSync receive.
-            display_urgent_process.reset();
-            std::optional<std::uint64_t> earliest_vsync;
-            for (auto& runtime : runtimes) {
-                if (runtime->kernel->process().exited)
-                    continue;
-                const auto deadline =
-                    runtime->kernel->next_display_vsync_deadline();
-                if (deadline &&
-                    (!earliest_vsync || *deadline < *earliest_vsync)) {
-                    earliest_vsync = deadline;
-                    display_urgent_process = runtime->kernel->process().pid;
-                }
-            }
+            // The deadline is global shared-device state. Its registration
+            // supplies the owner; querying it through each task would select
+            // the first runtime even when that task has no display connection.
+            display_urgent_process =
+                initial_runtime->kernel->next_display_vsync_process();
             if (!display_urgent_process)
                 display_urgent_process =
                     display_scanout_owner->kernel->process().pid;
