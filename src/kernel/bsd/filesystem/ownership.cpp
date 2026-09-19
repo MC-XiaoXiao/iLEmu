@@ -270,24 +270,35 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         bsd_success(cpu, 0);
         return true;
     }
-    case darwin::syscall::change_owner: {
+    case darwin::syscall::change_owner:
+    case darwin::syscall::change_owner_no_follow: {
         const auto path = memory_.read_c_string(registers[0]);
         if (!path) {
             bsd_error(cpu, bsd_support::bad_address);
             return true;
         }
-        const auto host = resolve_guest_path(*path);
+        const bool follow_symlink =
+            number != darwin::syscall::change_owner_no_follow;
+        const auto host = resolve_guest_path(*path, follow_symlink);
         std::error_code error;
-        const auto metadata = query_hfs_metadata(host, true);
-        if (!std::filesystem::exists(host, error) || !metadata) {
-            bsd_error(cpu, darwin::error::no_entry);
+        // lchown changes the link vnode, including a dangling link. Both
+        // operations share credential checks and the guest metadata overlay.
+        const auto status = follow_symlink
+                                ? std::filesystem::status(host, error)
+                                : std::filesystem::symlink_status(host, error);
+        const auto metadata = query_hfs_metadata(host, follow_symlink);
+        if (path->empty() || error || !std::filesystem::exists(status) ||
+            !metadata) {
+            bsd_error(cpu, bsd_support::darwin_filesystem_error(
+                error, darwin::error::no_entry));
             return true;
         }
         const auto requested_owner = registers[1];
         const auto requested_group = registers[2];
         if (!change_owner(*metadata, requested_owner, requested_group))
             return true;
-        output_.write("[vfs] chown " + *path +
+        output_.write(std::string { follow_symlink ? "[vfs] chown "
+                                                  : "[vfs] lchown " } + *path +
                       " uid=" + std::to_string(requested_owner) +
                       " gid=" + std::to_string(requested_group) + "\n");
         bsd_success(cpu, 0);

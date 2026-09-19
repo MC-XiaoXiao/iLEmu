@@ -220,6 +220,7 @@ namespace syscall {
     inline constexpr std::uint32_t unlink = 10;
     inline constexpr std::uint32_t change_mode = 15;
     inline constexpr std::uint32_t change_owner = 16;
+    inline constexpr std::uint32_t change_owner_no_follow = 364;
     inline constexpr std::uint32_t change_flags = 34;
     inline constexpr std::uint32_t change_flags_fd = 35;
     inline constexpr std::uint32_t revoke = 56;

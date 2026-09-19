@@ -310,6 +310,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 13:
     case darwin::syscall::change_mode:
     case darwin::syscall::change_owner:
+    case darwin::syscall::change_owner_no_follow:
     case 18:
     case 33:
     case darwin::syscall::change_flags:
