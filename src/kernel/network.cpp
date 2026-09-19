@@ -1527,6 +1527,15 @@ std::optional<std::uint32_t> CompatibilityKernel::ready_mach_port_name(
         const auto set = shared_state_->mach_port_sets.find(entry->object);
         if (set == shared_state_->mach_port_sets.end())
             return std::nullopt;
+        // Enqueue, dequeue and membership changes maintain the same prepost
+        // FIFO used by Mach receive under mach_mutex. An empty FIFO rules out
+        // queued messages; a populated set retains its existing member order.
+        const auto preposts =
+            shared_state_->mach_port_set_preposts.find(entry->object);
+        if (preposts == shared_state_->mach_port_set_preposts.end() ||
+            preposts->second.empty()) {
+            return std::nullopt;
+        }
         for (const auto member_object : set->second) {
             if (!queue_has_message(member_object))
                 continue;
