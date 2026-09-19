@@ -325,6 +325,10 @@ public:
     [[nodiscard]] std::size_t cached_file_mapping_count() const;
     [[nodiscard]] std::size_t cached_file_page_count() const;
     [[nodiscard]] FilePageCacheStats file_page_cache_stats() const;
+    [[nodiscard]] std::shared_ptr<FilePageCache> file_page_cache() const
+    {
+        return file_page_cache_;
+    }
     [[nodiscard]] std::size_t mapping_region_count() const;
     [[nodiscard]] std::optional<MappingRegion> mapping_region_at_or_after(
         std::uint32_t address) const;

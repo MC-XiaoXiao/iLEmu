@@ -66,6 +66,7 @@ namespace ilemu {
 
 class HostFileSyncRequest;
 class HostFileSynchronizer;
+class HostFileMappingPreparer;
 
 class HostSocket;
 class KeyStore;
@@ -2016,6 +2017,7 @@ struct KernelSharedState {
     mutable std::mutex socket_mutex;
     // Created on first use under filesystem_mutex; shared across processes.
     std::shared_ptr<HostFileSynchronizer> file_synchronizer;
+    std::shared_ptr<HostFileMappingPreparer> file_mapping_preparer;
     mutable std::mutex filesystem_mutex;
 };
 

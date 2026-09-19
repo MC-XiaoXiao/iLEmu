@@ -207,6 +207,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/filesystem.cpp
     bsd/descriptor_lifecycle.cpp
     bsd/descriptor_memory.cpp
+    bsd/vm/mapping.cpp
     bsd/bpf.cpp
     bsd/socket.cpp
     bsd/network/process_sockets.cpp

@@ -397,6 +397,13 @@ public:
     {
         wifi_state_->set_preferred_networks(std::move(ssids));
     }
+    // The runtime supplies its mandatory I/O executor. Embedded synchronous
+    // callers retain their existing dispatch contract when none is installed.
+    void set_file_mapping_preparer(std::shared_ptr<HostFileMappingPreparer> preparer)
+    {
+        const std::lock_guard lock { shared_state_->filesystem_mutex };
+        shared_state_->file_mapping_preparer = std::move(preparer);
+    }
     void set_host_network_policy(HostNetworkPolicy policy);
     [[nodiscard]] WifiSnapshot wifi_snapshot() const
     {
@@ -712,6 +719,16 @@ private:
         bool waking_blocked_receiver);
     bool deliver_pending_io_locked(Cpu& cpu);
     bool deliver_pending_file_sync(Cpu& cpu);
+    struct PendingFileMapping {
+        std::array<std::uint32_t, 7> arguments { };
+        std::filesystem::path path;
+        std::shared_ptr<FileMappingPreparation> preparation;
+        std::shared_ptr<FilePageCache> cache;
+        AddressSpace::PageMappingMode mode { AddressSpace::PageMappingMode::CopyOnWrite };
+    };
+    void dispatch_bsd_mmap(Cpu& cpu);
+    void complete_bsd_mapping(Cpu& cpu, PendingFileMapping mapping);
+    bool deliver_pending_file_mapping(Cpu& cpu);
     [[nodiscard]] bool pending_io_poll_required_locked(
         std::size_t processor) const;
     void remember_pending_io_not_ready_locked(std::size_t processor,
@@ -958,6 +975,7 @@ private:
     std::map<std::size_t, PendingHostAccept> pending_host_accepts_;
     std::map<std::size_t, PendingHostWrite> pending_host_writes_;
     std::map<std::size_t, PendingFileSync> pending_file_syncs_;
+    std::map<std::size_t, PendingFileMapping> pending_file_mappings_;
     std::map<std::size_t, PendingBasebandWrite> pending_baseband_writes_;
     std::map<std::size_t, PendingUnixAccept> pending_unix_accepts_;
     std::map<std::size_t, PendingFlock> pending_flocks_;

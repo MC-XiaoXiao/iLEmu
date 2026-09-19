@@ -957,6 +957,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     pending_host_accepts_.clear();
     pending_host_writes_.clear();
     pending_file_syncs_.clear();
+    pending_file_mappings_.clear();
     pending_baseband_writes_.clear();
     pending_unix_accepts_.clear();
     pending_flocks_.clear();
@@ -1549,6 +1550,7 @@ bool CompatibilityKernel::has_pending_event_locked(
            pending_host_accepts_.contains(processor) ||
            pending_host_writes_.contains(processor) ||
            pending_file_syncs_.contains(processor) ||
+           pending_file_mappings_.contains(processor) ||
            pending_baseband_writes_.contains(processor) ||
            pending_unix_accepts_.contains(processor) ||
            pending_semaphore_waits_.contains(processor) ||
@@ -1691,7 +1693,8 @@ CompatibilityKernel::pending_io_deadline_locked(std::size_t processor) const
 bool CompatibilityKernel::pending_io_requires_host_poll_locked(
     std::size_t processor) const
 {
-    if (pending_file_syncs_.contains(processor) ||
+    if (pending_file_mappings_.contains(processor) ||
+        pending_file_syncs_.contains(processor) ||
         pending_host_connects_.contains(processor) ||
         pending_host_accepts_.contains(processor) ||
         pending_host_writes_.contains(processor) ||
@@ -1858,6 +1861,8 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
         cpu.clear_halt();
         return true;
     }
+    if (pending_file_mappings_.contains(cpu.processor_id()))
+        return deliver_pending_file_mapping(cpu);
     if (pending_file_syncs_.contains(cpu.processor_id()))
         return deliver_pending_file_sync(cpu);
     if (const auto pending = pending_host_writes_.find(cpu.processor_id());
@@ -2215,6 +2220,10 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
 
 std::string CompatibilityKernel::wait_reason(std::size_t processor) const
 {
+    if (const auto pending = pending_file_mappings_.find(processor);
+        pending != pending_file_mappings_.end()) {
+        return "mmap(fd=" + std::to_string(pending->second.arguments[4]) + ")";
+    }
     if (const auto pending = pending_file_syncs_.find(processor);
         pending != pending_file_syncs_.end()) {
         return "fsync(fd=" + std::to_string(pending->second.fd) + ")";

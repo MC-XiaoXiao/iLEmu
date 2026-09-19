@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <list>
 #include <map>
 #include <memory>
@@ -266,6 +267,28 @@ struct GuestFileBacking {
     std::uint64_t end_offset { };
 };
 
+class FilePageCache;
+
+// A pinned file range awaiting identity verification. A pending preparation
+// does not expose a backing; completion publishes only a fully validated one.
+class FileMappingPreparation {
+public:
+    [[nodiscard]] static std::shared_ptr<FileMappingPreparation> begin(
+        std::shared_ptr<FilePageCache> cache, const std::filesystem::path& path,
+        std::uint64_t file_offset, std::uint32_t size);
+    [[nodiscard]] bool ready() const noexcept;
+    [[nodiscard]] std::optional<std::shared_ptr<GuestFileBacking>> result() const;
+    void complete();
+
+private:
+    friend class FilePageCache;
+    std::shared_ptr<FilePageCache> cache_;
+    std::function<std::shared_ptr<GuestFileBacking>()> completion_;
+    std::shared_ptr<GuestFileBacking> result_;
+    std::atomic_flag started_ { };
+    std::atomic<bool> ready_ { false };
+};
+
 struct GuestPageBacking {
     mutable GuestPageBytes bytes { };
 
@@ -488,6 +511,15 @@ public:
     [[nodiscard]] FilePageCacheStats stats() const;
 
 private:
+    friend class FileMappingPreparation;
+    [[nodiscard]] std::shared_ptr<FileMappingPreparation> prepare_mapping(
+        const std::filesystem::path& path, std::uint64_t file_offset,
+        std::uint32_t size, std::optional<GuestFileGeneration> expected_generation,
+        std::optional<ContentIdentity> expected_content_identity,
+        std::shared_ptr<const std::vector<std::byte>> immutable_snapshot,
+        std::shared_ptr<const ImmutableFileView> immutable_file_view,
+        std::shared_ptr<const GuestFileBacking> reusable_mapping);
+
     struct Identity {
         GuestFileGeneration generation;
         std::uint64_t generation_revision { };

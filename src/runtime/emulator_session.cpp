@@ -8,6 +8,7 @@
 #include "runtime/emulator_session.hpp"
 #include "crypto/key_store.hpp"
 #include "debug/control_channel.hpp"
+#include "foundation/host_file_mapping.hpp"
 #include "foundation/host_memory.hpp"
 #include "graphics/display_presenter.hpp"
 #include "graphics/boot_logo.hpp"
@@ -1440,9 +1441,11 @@ void EmulatorSession::run()
         precompile_tasks_by_target { };
     std::array<std::atomic<std::uint64_t>, jit_precompile_target_count>
         precompile_blocks_by_target { };
+    auto file_mapping_preparer = std::make_shared<HostFileMappingPreparer>();
     std::function<void(Runtime&)> configure_runtime;
     configure_runtime = [&](Runtime& runtime) {
         auto* runtime_ptr = &runtime;
+        runtime.kernel->set_file_mapping_preparer(file_mapping_preparer);
         runtime.kernel->set_host_network_policy(network_policy);
         runtime.kernel->set_mapped_executable_handler(
             [runtime_ptr, &session_catalog, &catalog_mapped_executable_ranges,

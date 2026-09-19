@@ -1843,8 +1843,64 @@ std::optional<std::shared_ptr<GuestFileBacking>> FilePageCache::open_mapping(
     std::shared_ptr<const ImmutableFileView> immutable_file_view,
     std::shared_ptr<const GuestFileBacking> reusable_mapping)
 {
-    if (size == 0 || file_offset % guest_memory_page_size != 0) {
+    auto preparation =
+        prepare_mapping(path, file_offset, size, std::move(expected_generation),
+            std::move(expected_content_identity), std::move(immutable_snapshot),
+            std::move(immutable_file_view), std::move(reusable_mapping));
+    if (!preparation)
         return std::nullopt;
+    preparation->complete();
+    const auto result = preparation->result();
+    return result && *result ? result : std::nullopt;
+}
+
+std::shared_ptr<FileMappingPreparation> FileMappingPreparation::begin(
+    std::shared_ptr<FilePageCache> cache, const std::filesystem::path& path,
+    std::uint64_t file_offset, std::uint32_t size)
+{
+    if (!cache)
+        return { };
+    auto preparation = cache->prepare_mapping(
+        path, file_offset, size, std::nullopt, std::nullopt, { }, { }, { });
+    if (preparation)
+        preparation->cache_ = std::move(cache);
+    return preparation;
+}
+
+bool FileMappingPreparation::ready() const noexcept
+{
+    return ready_.load(std::memory_order_acquire);
+}
+
+std::optional<std::shared_ptr<GuestFileBacking>>
+FileMappingPreparation::result() const
+{
+    return ready() ? std::optional { result_ } : std::nullopt;
+}
+
+void FileMappingPreparation::complete()
+{
+    if (started_.test_and_set(std::memory_order_acq_rel))
+        return;
+    try {
+        result_ = completion_();
+    } catch (...) {
+        result_.reset();
+    }
+    completion_ = { };
+    ready_.store(true, std::memory_order_release);
+}
+
+std::shared_ptr<FileMappingPreparation> FilePageCache::prepare_mapping(
+    const std::filesystem::path& path, std::uint64_t file_offset,
+    std::uint32_t size, std::optional<GuestFileGeneration> expected_generation,
+    std::optional<ContentIdentity> expected_content_identity,
+    std::shared_ptr<const std::vector<std::byte>> immutable_snapshot,
+    std::shared_ptr<const ImmutableFileView> immutable_file_view,
+    std::shared_ptr<const GuestFileBacking> reusable_mapping)
+{
+    if (size == 0 || file_offset % guest_memory_page_size != 0) {
+        return { };
     }
 
     const auto reusable =
@@ -1859,28 +1915,24 @@ std::optional<std::shared_ptr<GuestFileBacking>> FilePageCache::open_mapping(
                         reusable_mapping->content_identity)
             ? std::move(reusable_mapping)
             : std::shared_ptr<const GuestFileBacking> { };
-    bool borrowed_descriptor = false;
+    std::shared_ptr<GuestFileIoState> descriptor_owner;
     int descriptor = -1;
     if (reusable) {
         const auto& io_state = reusable->io_state;
         if (!io_state)
-            return std::nullopt;
+            return { };
         const std::scoped_lock lock { io_state->mutex };
         descriptor = io_state->file_descriptor;
         if (descriptor < 0)
-            return std::nullopt;
-        borrowed_descriptor = true;
+            return { };
+        descriptor_owner = io_state;
     } else if (!immutable_file_view) {
         descriptor = open_file_descriptor(path);
         if (descriptor < 0)
-            return std::nullopt;
+            return { };
+        descriptor_owner = std::make_shared<GuestFileIoState>();
+        descriptor_owner->file_descriptor = descriptor;
     }
-    const auto close_descriptor = [&]() {
-        if (descriptor >= 0 && !borrowed_descriptor) {
-            static_cast<void>(::close(descriptor));
-        }
-        descriptor = -1;
-    };
 
     struct stat file_stat { };
     std::uintmax_t file_size { };
@@ -1892,36 +1944,30 @@ std::optional<std::shared_ptr<GuestFileBacking>> FilePageCache::open_mapping(
     } else {
         if (::fstat(descriptor, &file_stat) != 0 ||
             !S_ISREG(file_stat.st_mode) || file_stat.st_size < 0) {
-            close_descriptor();
-            return std::nullopt;
+            return { };
         }
         file_size = static_cast<std::uintmax_t>(file_stat.st_size);
         generation = generation_from_stat(file_stat);
         modified = file_time_from_stat(file_stat);
     }
     if (reusable && generation != reusable->generation) {
-        close_descriptor();
-        return std::nullopt;
+        return { };
     }
     if (immutable_snapshot && immutable_snapshot->size() != file_size) {
-        close_descriptor();
-        return std::nullopt;
+        return { };
     }
     if (expected_generation && *expected_generation != generation) {
-        close_descriptor();
-        return std::nullopt;
+        return { };
     }
     if (file_offset > file_size) {
-        close_descriptor();
-        return std::nullopt;
+        return { };
     }
     const auto available = file_size - file_offset;
     const auto page_rounded_available =
         (available + guest_memory_page_size - 1U) &
         ~(static_cast<std::uintmax_t>(guest_memory_page_size) - 1U);
     if (size > page_rounded_available) {
-        close_descriptor();
-        return std::nullopt;
+        return { };
     }
     // An immutable view already carries the exact generation and content
     // identity. Use its content-addressed backing as the page-cache key and
@@ -1987,87 +2033,113 @@ std::optional<std::shared_ptr<GuestFileBacking>> FilePageCache::open_mapping(
         ++stats_.identity_hits;
     }
     if (!content_identity) {
-        const auto identity_result = shared_file_identity(
-            normalized_path, descriptor, generation, generation_revision);
-        content_identity = identity_result.content_identity;
-        if (!content_identity) {
-            close_descriptor();
-            return std::nullopt;
-        }
-        const std::scoped_lock lock { mutex_ };
-        if (identity_result.computed) {
-            ++stats_.sha_computations;
-            stats_.sha_bytes += static_cast<std::uint64_t>(file_size);
-        } else {
-            ++stats_.identity_hits;
-        }
-        store_identity_locked(
-            normalized_path, Identity { generation, generation_revision,
-                                 *content_identity, { } });
-    }
-    if (!immutable_file_view) {
-        struct stat final_file_stat { };
-        if (::fstat(descriptor, &final_file_stat) != 0 ||
-            !same_file_stat(file_stat, final_file_stat)) {
-            close_descriptor();
-            return std::nullopt;
-        }
-    }
-    if (expected_content_identity &&
-        *expected_content_identity != *content_identity) {
-        close_descriptor();
-        return std::nullopt;
-    }
-
-    // Every immutable executable mapping used to retain its own descriptor.
-    // Firmware fork fan-out maps the same binaries into many AddressSpaces and
-    // can therefore exhaust a normal host RLIMIT_NOFILE even though only a
-    // modest number of distinct vnodes are in use. Share the descriptor for an
-    // unchanged canonical path/generation; replacement installs a new record
-    // while existing mappings keep the old vnode alive through their shared
-    // state.
-    std::shared_ptr<GuestFileIoState> io_state;
-    if (reusable) {
-        io_state = reusable->io_state;
-    } else if (!immutable_file_view) {
-        const std::scoped_lock lock { global_identity_mutex };
-        const auto identity = global_identities.find(normalized_path);
-        if (identity != global_identities.end() &&
-            identity->second.generation == generation &&
-            identity_revision_matches(
-                identity->second.generation_revision, generation_revision) &&
-            identity->second.content_identity == *content_identity) {
-            touch_global_identity_locked(identity);
-            io_state = identity->second.io_state.lock();
-            if (!io_state) {
-                io_state = std::make_shared<GuestFileIoState>();
-                io_state->file_descriptor = descriptor;
-                descriptor = -1;
-                identity->second.io_state = io_state;
+        {
+            const std::scoped_lock lock { global_identity_mutex };
+            const auto identity = global_identities.find(normalized_path);
+            if (identity != global_identities.end() &&
+                identity->second.generation == generation &&
+                identity_revision_matches(identity->second.generation_revision,
+                    generation_revision)) {
+                touch_global_identity_locked(identity);
+                content_identity = identity->second.content_identity;
             }
         }
+        if (content_identity) {
+            const std::scoped_lock cache_lock { mutex_ };
+            store_identity_locked(
+                normalized_path, Identity { generation, generation_revision,
+                                     *content_identity, { } });
+            ++stats_.identity_hits;
+        }
     }
-    if (!io_state) {
-        io_state = std::make_shared<GuestFileIoState>();
-        io_state->file_descriptor = descriptor;
-        descriptor = -1;
-    } else {
-        close_descriptor();
-    }
+    auto preparation = std::make_shared<FileMappingPreparation>();
+    const auto cached_identity = content_identity.has_value();
+    preparation->completion_ =
+        [this, path, file_offset, size, expected_content_identity,
+            immutable_snapshot = std::move(immutable_snapshot),
+            immutable_file_view = std::move(immutable_file_view), reusable,
+            descriptor_owner = std::move(descriptor_owner), descriptor,
+            file_stat, file_size, available, generation, modified,
+            normalized_path, generation_registry, generation_revision,
+            content_identity]() mutable -> std::shared_ptr<GuestFileBacking> {
+        if (!content_identity) {
+            const auto identity_result = shared_file_identity(
+                normalized_path, descriptor, generation, generation_revision);
+            content_identity = identity_result.content_identity;
+            if (!content_identity) {
+                return { };
+            }
+            const std::scoped_lock lock { mutex_ };
+            if (identity_result.computed) {
+                ++stats_.sha_computations;
+                stats_.sha_bytes += static_cast<std::uint64_t>(file_size);
+            } else {
+                ++stats_.identity_hits;
+            }
+            store_identity_locked(
+                normalized_path, Identity { generation, generation_revision,
+                                     *content_identity, { } });
+        }
+        if (!immutable_file_view) {
+            struct stat final_file_stat { };
+            if (::fstat(descriptor, &final_file_stat) != 0 ||
+                !same_file_stat(file_stat, final_file_stat)) {
+                return { };
+            }
+        }
+        if (expected_content_identity &&
+            *expected_content_identity != *content_identity) {
+            return { };
+        }
 
-    auto mapping = std::make_shared<GuestFileBacking>(path, file_offset,
-        file_offset + std::min<std::uintmax_t>(size, available));
-    mapping->cache_path = normalized_path;
-    mapping->file_size = file_size;
-    mapping->modified = modified;
-    mapping->generation = generation;
-    mapping->generation_revision = generation_revision;
-    mapping->content_identity = *content_identity;
-    mapping->immutable_snapshot = std::move(immutable_snapshot);
-    mapping->immutable_file_view = std::move(immutable_file_view);
-    mapping->generation_registry = generation_registry;
-    mapping->io_state = std::move(io_state);
-    return mapping;
+        // Every immutable executable mapping used to retain its own descriptor.
+        // Firmware fork fan-out maps the same binaries into many AddressSpaces
+        // and can therefore exhaust a normal host RLIMIT_NOFILE even though
+        // only a modest number of distinct vnodes are in use. Share the
+        // descriptor for an unchanged canonical path/generation; replacement
+        // installs a new record while existing mappings keep the old vnode
+        // alive through their shared state.
+        std::shared_ptr<GuestFileIoState> io_state;
+        if (reusable) {
+            io_state = reusable->io_state;
+        } else if (!immutable_file_view) {
+            const std::scoped_lock lock { global_identity_mutex };
+            const auto identity = global_identities.find(normalized_path);
+            if (identity != global_identities.end() &&
+                identity->second.generation == generation &&
+                identity_revision_matches(identity->second.generation_revision,
+                    generation_revision) &&
+                identity->second.content_identity == *content_identity) {
+                touch_global_identity_locked(identity);
+                io_state = identity->second.io_state.lock();
+                if (!io_state) {
+                    io_state = descriptor_owner;
+                    identity->second.io_state = io_state;
+                }
+            }
+        }
+        if (!io_state) {
+            io_state = descriptor_owner ? descriptor_owner
+                                        : std::make_shared<GuestFileIoState>();
+        }
+
+        auto mapping = std::make_shared<GuestFileBacking>(path, file_offset,
+            file_offset + std::min<std::uintmax_t>(size, available));
+        mapping->cache_path = normalized_path;
+        mapping->file_size = file_size;
+        mapping->modified = modified;
+        mapping->generation = generation;
+        mapping->generation_revision = generation_revision;
+        mapping->content_identity = *content_identity;
+        mapping->immutable_snapshot = std::move(immutable_snapshot);
+        mapping->immutable_file_view = std::move(immutable_file_view);
+        mapping->generation_registry = generation_registry;
+        mapping->io_state = std::move(io_state);
+        return mapping;
+    };
+    if (cached_identity)
+        preparation->complete();
+    return preparation;
 }
 
 std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
