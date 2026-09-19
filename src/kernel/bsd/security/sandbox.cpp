@@ -18,6 +18,7 @@
 namespace ilemu::bsd::sandbox {
 namespace {
 
+    constexpr std::uint32_t initialize_compiled_profile = 0U;
     constexpr std::uint32_t initialize_named_profile = 1U;
     constexpr std::uint32_t check_operation = 2U;
     constexpr std::uint32_t path_filter = 1U;
@@ -31,12 +32,13 @@ CallResult dispatch(
     AddressSpace& memory, DarwinSandboxAbi abi, std::uint32_t operation,
     std::uint32_t argument)
 {
-    if (operation != check_operation && operation != initialize_named_profile)
+    if (operation != check_operation && operation != initialize_named_profile &&
+        operation != initialize_compiled_profile)
         return CallResult::Unsupported;
     const auto slot_size =
         abi == DarwinSandboxAbi::Wide64Arguments ? 8U : 4U;
-    const auto slot_count =
-        operation == initialize_named_profile ? 1U : request_word_count;
+    const auto slot_count = operation == initialize_named_profile ? 1U
+        : operation == initialize_compiled_profile ? 2U : request_word_count;
     const auto request_size = static_cast<std::uint32_t>(slot_count) * slot_size;
     if (argument == 0U ||
         argument >
@@ -56,6 +58,25 @@ CallResult dispatch(
         request[index] = *value;
     }
 
+    if (operation == initialize_compiled_profile) {
+        // The compiled declaration carries a profile pointer and byte length
+        // in ABI-sized slots. Validate the complete guest buffer without
+        // allocating a host copy or installing a host policy. Like named
+        // initialization below, this belongs to the existing non-enforcing
+        // compatibility provider; it is not a compiled-policy interpreter.
+        const auto profile_address = request[0];
+        const auto profile_size = request[1];
+        if (profile_size == 0U)
+            return CallResult::InvalidArgument;
+        if (profile_address == 0U || profile_address > UINT32_MAX ||
+            profile_size > UINT32_MAX ||
+            profile_size > (std::uint64_t { 1 } << 32U) - profile_address ||
+            !memory.accessible(static_cast<std::uint32_t>(profile_address),
+                static_cast<std::size_t>(profile_size), MemoryPermission::Read))
+            return CallResult::BadAddress;
+        return CallResult::Success;
+    }
+
     if (operation == initialize_named_profile) {
         if (request[0] == 0U || request[0] > UINT32_MAX)
             return CallResult::BadAddress;
@@ -66,8 +87,7 @@ CallResult dispatch(
         if (name->empty())
             return CallResult::InvalidArgument;
         // Named-profile initialization uses the same non-enforcing guest
-        // provider as checks below. No host sandbox policy is installed, and
-        // compiled-profile operations remain unsupported.
+        // provider as checks below. No host sandbox policy is installed.
         return CallResult::Success;
     }
 
