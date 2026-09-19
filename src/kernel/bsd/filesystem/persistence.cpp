@@ -9,17 +9,42 @@
 
 #include "kernel/kernel.hpp"
 
+#include "foundation/host_file_sync.hpp"
+
 #include "kernel/darwin_abi.hpp"
 
-#include <cerrno>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <system_error>
-
-#include <unistd.h>
+#include <utility>
 
 #include "../support.hpp"
 
 namespace ilemu {
+
+bool CompatibilityKernel::deliver_pending_file_sync(Cpu& cpu)
+{
+    if (const auto pending = pending_file_syncs_.find(cpu.processor_id());
+        pending != pending_file_syncs_.end()) {
+        const auto result = pending->second.request->result();
+        if (!result)
+            return false;
+        if (*result != 0) {
+            bsd_error(cpu, bsd_support::darwin_filesystem_error(
+                std::error_code { *result, std::generic_category() }));
+        } else {
+            bsd_success(cpu, 0);
+            output_.write("[vfs] fsync fd=" +
+                          std::to_string(pending->second.fd) + "\n");
+        }
+        pending_file_syncs_.erase(pending);
+        process_.waiting_for_events = false;
+        cpu.clear_halt();
+        return true;
+    }
+    return false;
+}
 
 bool CompatibilityKernel::dispatch_bsd_filesystem_persistence(
     Cpu& cpu, std::uint32_t number)
@@ -43,15 +68,21 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_persistence(
         bsd_error(cpu, bsd_support::bad_file_descriptor);
         return true;
     }
-    const auto result = ::fsync(description->host_descriptor());
-    const auto sync_error = errno;
-    if (result != 0) {
-        bsd_error(cpu, bsd_support::darwin_filesystem_error(std::error_code {
-                           sync_error, std::generic_category() }));
-        return true;
+    std::shared_ptr<HostFileSynchronizer> synchronizer;
+    {
+        const std::lock_guard lock { shared_state_->filesystem_mutex };
+        if (!shared_state_->file_synchronizer) {
+            shared_state_->file_synchronizer =
+                std::make_shared<HostFileSynchronizer>();
+        }
+        synchronizer = shared_state_->file_synchronizer;
     }
-    output_.write("[vfs] fsync fd=" + std::to_string(fd) + "\n");
+    auto request = synchronizer->synchronize(description->host_descriptor());
+    pending_file_syncs_.insert_or_assign(cpu.processor_id(),
+        PendingFileSync { fd, std::move(request) });
+    process_.waiting_for_events = true;
     bsd_success(cpu, 0);
+    cpu.halt(Dynarmic::HaltReason::UserDefined5);
     return true;
 }
 

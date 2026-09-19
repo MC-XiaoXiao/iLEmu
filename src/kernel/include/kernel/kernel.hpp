@@ -711,6 +711,7 @@ private:
         const KeventRegistration& registration, std::size_t processor,
         bool waking_blocked_receiver);
     bool deliver_pending_io_locked(Cpu& cpu);
+    bool deliver_pending_file_sync(Cpu& cpu);
     [[nodiscard]] bool pending_io_poll_required_locked(
         std::size_t processor) const;
     void remember_pending_io_not_ready_locked(std::size_t processor,
@@ -956,6 +957,7 @@ private:
     std::map<std::size_t, PendingHostConnect> pending_host_connects_;
     std::map<std::size_t, PendingHostAccept> pending_host_accepts_;
     std::map<std::size_t, PendingHostWrite> pending_host_writes_;
+    std::map<std::size_t, PendingFileSync> pending_file_syncs_;
     std::map<std::size_t, PendingBasebandWrite> pending_baseband_writes_;
     std::map<std::size_t, PendingUnixAccept> pending_unix_accepts_;
     std::map<std::size_t, PendingFlock> pending_flocks_;

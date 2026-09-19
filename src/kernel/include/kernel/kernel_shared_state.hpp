@@ -64,6 +64,9 @@
 
 namespace ilemu {
 
+class HostFileSyncRequest;
+class HostFileSynchronizer;
+
 class HostSocket;
 class KeyStore;
 class SurfaceTransportLease;
@@ -203,6 +206,11 @@ struct PendingHostAccept {
     std::uint32_t address { };
     std::uint32_t length_address { };
     std::size_t processor { };
+};
+
+struct PendingFileSync {
+    std::uint32_t fd { };
+    std::shared_ptr<HostFileSyncRequest> request;
 };
 
 struct PendingHostWrite {
@@ -2006,6 +2014,8 @@ struct KernelSharedState {
     std::mutex mach_mutex;
     std::shared_ptr<bsd::sandbox::Extensions> sandbox_extensions;
     mutable std::mutex socket_mutex;
+    // Created on first use under filesystem_mutex; shared across processes.
+    std::shared_ptr<HostFileSynchronizer> file_synchronizer;
     mutable std::mutex filesystem_mutex;
 };
 
