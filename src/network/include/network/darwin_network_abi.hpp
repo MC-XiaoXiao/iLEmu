@@ -165,6 +165,9 @@ namespace apple80211_driver {
     inline constexpr std::uint32_t command_associate = 20;
     inline constexpr std::uint32_t command_association_result = 21;
     inline constexpr std::uint32_t command_disassociate = 22;
+    inline constexpr std::uint32_t command_supported_channels = 27;
+    inline constexpr std::uint32_t channel_list_header_size = 8;
+    inline constexpr std::uint32_t channel_record_size = 12;
     inline constexpr std::uint32_t association_ssid_length_offset = 12;
     inline constexpr std::uint32_t association_ssid_offset = 16;
     inline constexpr std::uint32_t association_bssid_offset = 48;

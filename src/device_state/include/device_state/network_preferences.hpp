@@ -36,6 +36,7 @@ struct NetworkPreferencesAirport {
     std::string_view interface_name;
     std::array<std::byte, 6> mac_address { };
     NetworkPreferencesIpv4 ipv4;
+    std::string_view default_network_ssid;
 };
 
 // Ensures that the simulated device's writable SystemConfiguration state has

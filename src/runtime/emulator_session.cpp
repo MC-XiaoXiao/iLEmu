@@ -370,6 +370,7 @@ void EmulatorSession::run()
                 .gateway = virtual_network::gateway_address,
                 .dns_servers = { virtual_network::dns_proxy_address },
             },
+        .default_network_ssid = virtual_network::access_point_ssid,
     };
     const auto network_preferences =
         ensure_network_preferences(rootfs, airport_configuration);

@@ -235,8 +235,9 @@ namespace {
             return { };
         }
         PlistOwner root { parsed };
-        if (!string_equals(
-                plist_dict_get_item(root.get(), "JoinMode"), "Automatic")) {
+        const auto join_mode = plist_dict_get_item(root.get(), "JoinMode");
+        if (!string_equals(join_mode, "Automatic") &&
+            !string_equals(join_mode, "Preferred")) {
             return { };
         }
 
@@ -444,8 +445,8 @@ namespace {
         std::filesystem::rename(temporary, path);
     }
 
-    bool ensure_wifi_capability_preferences(
-        const RootfsPathResolver& resolver)
+    bool ensure_wifi_preferences(
+        const RootfsPathResolver& resolver, std::string_view default_ssid)
     {
         const auto path = resolver.resolve(
             "/Library/Preferences/SystemConfiguration/com.apple.wifi.plist");
@@ -457,7 +458,8 @@ namespace {
                 plist_from_memory(bytes.data(),
                     static_cast<std::uint32_t>(bytes.size()), &parsed,
                     &format) != PLIST_ERR_SUCCESS ||
-                parsed == nullptr || plist_get_node_type(parsed) != PLIST_DICT) {
+                parsed == nullptr ||
+                plist_get_node_type(parsed) != PLIST_DICT) {
                 if (parsed != nullptr)
                     plist_free(parsed);
                 throw std::runtime_error {
@@ -473,11 +475,60 @@ namespace {
         // WiFiManager on legacy firmware treats a missing capability as an
         // uninitialized serialized-data response. Add only the default for a
         // missing key; an explicit guest value remains guest-owned.
-        if (plist_dict_get_item(root.get(), "WAPIEnabled") != nullptr)
-            return false;
-        plist_dict_set_item(root.get(), "WAPIEnabled", plist_new_bool(0));
-        write_plist_atomically(path, root.get(), format);
-        return true;
+        bool changed = false;
+        if (plist_dict_get_item(root.get(), "WAPIEnabled") == nullptr)
+            ensure_bool(root.get(), "WAPIEnabled", false, changed);
+        if (plist_dict_get_item(root.get(), "Custom network settings") == nullptr)
+            static_cast<void>(ensure_dictionary(
+                root.get(), "Custom network settings", changed));
+
+        // Keep the migration marker outside firmware-owned preferences:
+        // forgetting the last network may remove the known-networks key.
+        const auto marker =
+            resolver.resolve("/var/db/ilemu/wifi-defaults.plist");
+        const bool initialize =
+            !default_ssid.empty() && !std::filesystem::exists(marker);
+        if (initialize) {
+            const auto known =
+                ensure_array(root.get(), "List of known networks", changed);
+            bool found = false;
+            for (std::uint32_t index = 0; index < plist_array_get_size(known);
+                ++index) {
+                const auto network = plist_array_get_item(known, index);
+                if (plist_get_node_type(network) == PLIST_DICT &&
+                    string_equals(plist_dict_get_item(network, "SSID_STR"),
+                        default_ssid)) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                const auto network = plist_new_dict();
+                plist_dict_set_item(network, "SSID",
+                    plist_new_data(default_ssid.data(), default_ssid.size()));
+                ensure_string(network, "SSID_STR", default_ssid, changed);
+                ensure_bool(network, "enabled", true, changed);
+                ensure_bool(network, "isValid", true, changed);
+                ensure_uint(network, "AP_MODE", 2, changed);
+                ensure_uint(network, "isWPA", 0, changed);
+                ensure_uint(network, "authMode", 0, changed);
+                plist_array_append_item(known, network);
+                changed = true;
+            }
+            if (plist_dict_get_item(root.get(), "JoinMode") == nullptr)
+                ensure_string(root.get(), "JoinMode", "Automatic", changed);
+            if (plist_dict_get_item(root.get(), "AllowEnable") == nullptr)
+                ensure_bool(root.get(), "AllowEnable", true, changed);
+        }
+        if (changed)
+            write_plist_atomically(path, root.get(), format);
+        if (initialize) {
+            PlistOwner state { plist_new_dict() };
+            bool marker_changed = false;
+            ensure_uint(state.get(), "Version", 1, marker_changed);
+            write_plist_atomically(marker, state.get(), PLIST_FORMAT_XML);
+        }
+        return changed;
     }
 
 #endif
@@ -495,10 +546,11 @@ NetworkPreferencesResult ensure_network_preferences(
 
 #if defined(ILEMU_HAS_LIBPLIST)
     result.supported = true;
-    result.preferred_wifi_networks = preferred_wifi_networks(resolver);
     bool wifi_capability_changed = false;
     if (airport_configuration)
-        wifi_capability_changed = ensure_wifi_capability_preferences(resolver);
+        wifi_capability_changed = ensure_wifi_preferences(
+            resolver, airport_configuration->default_network_ssid);
+    result.preferred_wifi_networks = preferred_wifi_networks(resolver);
     auto bytes = read_file(result.path);
     plist_t parsed = nullptr;
     plist_format_t format = PLIST_FORMAT_XML;

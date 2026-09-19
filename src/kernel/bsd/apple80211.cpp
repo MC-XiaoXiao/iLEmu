@@ -294,6 +294,38 @@ void CompatibilityKernel::dispatch_apple80211_ioctl(
         return;
     }
     if (registers[1] == wifi_driver::get_request &&
+        *command == wifi_driver::command_supported_channels) {
+        constexpr std::uint32_t channel_count = 11;
+        constexpr std::uint32_t channel_2ghz_flag = 1U << 3U;
+        constexpr auto size = wifi_driver::channel_list_header_size +
+                              channel_count * wifi_driver::channel_record_size;
+        if (*data_address == 0 || *data_length < size) {
+            bsd_error(cpu, *data_address == 0 ? bsd_support::bad_address
+                                              : bsd_support::invalid_argument);
+            return;
+        }
+        // Advertise the virtual radio's complete 2.4 GHz channel range,
+        // independently of the channel currently occupied by its AP.
+        std::array<std::uint32_t, size / sizeof(std::uint32_t)> channels { };
+        channels[0] = 1;
+        channels[1] = channel_count;
+        for (std::uint32_t index = 0; index < channel_count; ++index) {
+            channels[2 + index * 3] = 1;
+            channels[3 + index * 3] = index + 1;
+            channels[4 + index * 3] = channel_2ghz_flag;
+        }
+        for (std::size_t index = 0; index < channels.size(); ++index) {
+            if (!memory_.write32(*data_address +
+                    static_cast<std::uint32_t>(index * sizeof(std::uint32_t)),
+                    channels[index])) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+        }
+        bsd_success(cpu, 0);
+        return;
+    }
+    if (registers[1] == wifi_driver::get_request &&
         *command == wifi_driver::command_channel) {
         if (*data_address == 0 ||
             *data_length < wifi_driver::channel_state_size) {
