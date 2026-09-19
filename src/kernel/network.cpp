@@ -1524,6 +1524,15 @@ std::optional<std::uint32_t> CompatibilityKernel::ready_mach_port_name(
                !queue->second.empty();
     };
     if ((entry->type & xnu::ipc::type_mask(Right::PortSet)) != 0U) {
+        // Enqueue and membership changes maintain the existing prepost queue
+        // under mach_mutex. An empty queue rules out every member at once;
+        // retain membership order below when a ready member does exist.
+        const auto preposts =
+            shared_state_->mach_port_set_preposts.find(entry->object);
+        if (preposts == shared_state_->mach_port_set_preposts.end() ||
+            preposts->second.empty()) {
+            return std::nullopt;
+        }
         const auto set = shared_state_->mach_port_sets.find(entry->object);
         if (set == shared_state_->mach_port_sets.end())
             return std::nullopt;
