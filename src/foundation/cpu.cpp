@@ -2470,6 +2470,17 @@ public:
             callbacks_->discard_translation_location(descriptor);
             return PrecompileDisposition::Unstable;
         }
+        if (target == JitPrecompileTarget::NativeCode) {
+            // The process may already have compiled this prediction on demand.
+            // Reuse its validated native block before preparing optional IR;
+            // a pending invalidation or changed generation remains a miss.
+            auto* const slab = execution_context_->native_code_slab();
+            Dynarmic::A32::NativeCodeSlab::BlockDescriptor block;
+            if (slab->find_block(
+                    descriptor, slab->generation_snapshot(), block)) {
+                return PrecompileDisposition::SharedSlabHit;
+            }
+        }
         const auto key = callbacks_->artifact_key(descriptor);
         const auto probe =
             key ? artifact_probes_.find(descriptor) : artifact_probes_.end();
