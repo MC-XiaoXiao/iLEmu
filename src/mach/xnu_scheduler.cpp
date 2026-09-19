@@ -133,11 +133,33 @@ std::size_t XnuScheduler::runnable_count_at_or_above_priority(
     std::int32_t priority) const
 {
     const auto minimum = clamp_priority(priority);
-    return static_cast<std::size_t>(std::count_if(
-        threads_.begin(), threads_.end(), [minimum](const auto& entry) {
-            const auto& record = entry.second;
-            return record.queued && record.info.scheduled_priority >= minimum;
-        }));
+    // Queue membership already tracks priority changes, binding and blocking.
+    // Count only populated priority buckets instead of visiting sleeping and
+    // running threads on every host cooperation budget query.
+    const auto count_queue = [minimum](const RunQueue& queue) {
+        std::size_t count = 0;
+        if (queue.high_queue < minimum)
+            return count;
+        const auto first_word = static_cast<std::size_t>(minimum) / 32U;
+        for (auto word_index = first_word;
+             word_index < queue.bitmap.size(); ++word_index) {
+            auto word = queue.bitmap[word_index];
+            if (word_index == first_word)
+                word &= ~std::uint32_t { 0 } << (minimum % 32);
+            while (word != 0) {
+                const auto priority_index =
+                    word_index * 32U +
+                    static_cast<std::size_t>(std::countr_zero(word));
+                count += queue.queues[priority_index].size();
+                word &= word - 1U;
+            }
+        }
+        return count;
+    };
+    auto count = count_queue(processor_set_run_queue_);
+    for (const auto& queue : processor_run_queues_)
+        count += count_queue(queue);
+    return count;
 }
 
 std::optional<XnuThreadId> XnuScheduler::oldest_runnable_thread(
