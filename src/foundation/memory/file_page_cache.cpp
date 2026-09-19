@@ -1573,14 +1573,20 @@ void GuestPageBacking::materialize() const
     const std::scoped_lock file_lock { io_state->mutex };
     if (const auto prefetched_page =
             io_state->prefetched_pages.find(file_offset_);
-        prefetched_page != io_state->prefetched_pages.end()) {
+        !shared_vnode_ && prefetched_page != io_state->prefetched_pages.end()) {
         bytes = prefetched_page->second;
         io_state->prefetched_pages.erase(prefetched_page);
     } else {
         const auto aligned_start = file_offset_ & ~(file_prefetch_bytes - 1U);
-        const auto read_start = std::max(file->first_offset, aligned_start);
-        const auto read_size =
-            std::min(file->end_offset - read_start, file_prefetch_bytes);
+        // Shared vnode bytes may change through another mapping or a descriptor
+        // before the next fault. Do not retain speculative nonresident bytes.
+        const auto read_start = shared_vnode_
+                                    ? file_offset_
+                                    : std::max(file->first_offset, aligned_start);
+        const auto read_size = shared_vnode_
+                                   ? static_cast<std::uint64_t>(file_byte_count_)
+                                   : std::min(file->end_offset - read_start,
+                                         file_prefetch_bytes);
         const auto read_pages = static_cast<std::size_t>(
             (read_size + guest_memory_page_size - 1U) / guest_memory_page_size);
         if (io_state->file_descriptor >= 0 &&
@@ -1716,10 +1722,10 @@ bool GuestPageBacking::flush_file()
 bool FilePageCache::Key::operator<(const Key& other) const
 {
     return std::tie(path, generation, generation_revision, content_identity,
-               file_offset, byte_count, immutable_snapshot) <
+               file_offset, byte_count, immutable_snapshot, shared_vnode) <
            std::tie(other.path, other.generation, other.generation_revision,
                other.content_identity, other.file_offset, other.byte_count,
-               other.immutable_snapshot);
+               other.immutable_snapshot, other.shared_vnode);
 }
 
 void FilePageCache::touch_locked(std::map<Key, PageRecord>::iterator iterator)
@@ -2066,15 +2072,32 @@ std::optional<std::shared_ptr<GuestFileBacking>> FilePageCache::open_mapping(
 
 std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
     const std::shared_ptr<GuestFileBacking>& mapping, std::uint64_t file_offset,
-    std::uint32_t byte_count)
+    std::uint32_t byte_count, bool shared_vnode)
 {
+    // A shared mapping follows the live vnode page, even after the ordinary
+    // cache entry was evicted or a write changed the file generation. Private
+    // mappings continue using their exact immutable generation key below.
+    const auto live_shared_page_locked = [&]() -> std::shared_ptr<GuestPageBacking> {
+        if (!shared_vnode)
+            return { };
+        const auto [first, last] = mutable_pages_.equal_range(MutablePageKey {
+            mapping->generation.device, mapping->generation.inode, file_offset });
+        for (auto it = first; it != last; ++it) {
+            if (auto page = it->second.lock(); page &&
+                page->shared_vnode_ && page->file_byte_count_ == byte_count)
+                return page;
+        }
+        return { };
+    };
     const Key key { mapping->cache_path, mapping->generation,
         mapping->generation_revision, mapping->content_identity, file_offset,
         byte_count,
         static_cast<bool>(mapping->immutable_snapshot) ||
-            static_cast<bool>(mapping->immutable_file_view) };
+            static_cast<bool>(mapping->immutable_file_view), shared_vnode };
     {
         const std::scoped_lock lock { mutex_ };
+        if (auto shared = live_shared_page_locked())
+            return shared;
         if (const auto cached = pages_.find(key); cached != pages_.end()) {
             touch_locked(cached);
             return cached->second.page;
@@ -2087,8 +2110,11 @@ std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
     page->file_offset_ = file_offset;
     page->file_byte_count_ = byte_count;
     page->has_file_source_ = true;
+    page->shared_vnode_ = shared_vnode;
     {
         const std::scoped_lock lock { mutex_ };
+        if (auto shared = live_shared_page_locked())
+            return shared;
         const auto [entry, inserted] = pages_.try_emplace(key, PageRecord { });
         if (!inserted) {
             touch_locked(entry);

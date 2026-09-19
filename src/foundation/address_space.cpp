@@ -831,24 +831,41 @@ bool AddressSpace::map_file(std::uint32_t address, std::uint32_t size,
     if (!backing)
         return false;
 
+    if (!map_file_backing(address, size, permissions, *backing,
+            file_page_cache_, PageMappingMode::CopyOnWrite))
+        return false;
+    if (batch_context && !batch_context->backing)
+        batch_context->backing = *backing;
+    return true;
+}
+
+bool AddressSpace::map_file_backing(std::uint32_t address, std::uint32_t size,
+    MemoryPermission permissions, std::shared_ptr<GuestFileBacking> backing,
+    std::shared_ptr<FilePageCache> cache, PageMappingMode mode)
+{
+    if (!backing || !cache || size == 0 || range_overflows(address, size) ||
+        address % page_size != 0 || backing->first_offset % page_size != 0 ||
+        backing->end_offset <= backing->first_offset ||
+        (static_cast<std::uint64_t>(size) - 1U) / page_size >
+            (backing->end_offset - backing->first_offset - 1U) / page_size ||
+        (mode != PageMappingMode::CopyOnWrite &&
+            (backing->immutable_snapshot || backing->immutable_file_view)))
+        return false;
     auto lock = write_lock();
     const auto end = page_range_end(address, size);
     if (vm_map_.overlaps(address, end))
         return false;
     invalidate_mapping_leases_locked(address, end);
-    const auto [mapping, inserted] = file_mappings_.emplace(
-        address, FileMapping { end, file_offset, *backing });
+    const auto file_offset = backing->first_offset;
+    const auto [mapping, inserted] = file_mappings_.emplace(address,
+        FileMapping { end, file_offset, std::move(backing), std::move(cache), mode });
     static_cast<void>(mapping);
     if (!inserted)
         return false;
     vm_map_.map_or(address, end, permissions);
-    // map_file rejects any overlapping VM range, so the new pages have no
-    // permissions to preserve. Use the range setter; unlike the OR path used
-    // by map(), it can fill sparse permission chunks in bulk.
+    // The range has no resident pages or previous permissions to preserve.
     set_page_permissions_locked(address, end, permissions);
     bump_executable_content_generation_locked();
-    if (batch_context && !batch_context->backing)
-        batch_context->backing = *backing;
     return true;
 }
 
@@ -1118,6 +1135,7 @@ AddressSpace::Page& AddressSpace::ensure_page_locked(std::uint32_t address)
     ensure_unique_page_map_locked();
     const auto base = page_base(address);
     auto [page, inserted] = pages_->try_emplace(base);
+    bool faulted = false;
     if (!page->second.backing) {
         if (const auto* mapping = find_file_mapping_locked(base)) {
             performance_counters().record_page_miss();
@@ -1129,21 +1147,41 @@ AddressSpace::Page& AddressSpace::ensure_page_locked(std::uint32_t address)
             const auto byte_count =
                 static_cast<std::uint32_t>(std::min<std::uint64_t>(
                     page_size, mapping->backing->end_offset - file_offset));
-            auto backing = file_page_cache_->load_page(
-                mapping->backing, file_offset, byte_count);
-            // A resident AddressSpace page always owns fully initialized bytes.
-            // Page-in remains lazy at the range level, while ordinary guest
-            // reads no longer re-enter GuestPageBacking's one-time
-            // materialization lock.
-            backing->materialize();
-            page->second.backing = std::move(backing);
-            page->second.file_cached = true;
-            page->second.copy_on_write_possible = true;
+            fault_file_page_locked(base, page->second, *mapping,
+                file_offset, byte_count);
+            faulted = true;
         }
     }
     if (inserted)
         cache_page_locked(base, page->second);
+    if (faulted)
+        refresh_jit_page_locked(base);
     return page->second;
+}
+
+void AddressSpace::fault_file_page_locked(std::uint32_t address, Page& page,
+    const FileMapping& mapping, std::uint64_t file_offset,
+    std::uint32_t byte_count)
+{
+    const bool shared = mapping.mode != PageMappingMode::CopyOnWrite;
+    auto backing = mapping.cache->load_page(
+        mapping.backing, file_offset, byte_count, shared);
+    // Only publish fully initialized resident bytes to the ordinary read and
+    // JIT fast paths. Shared mappings reuse the same clustered page-in path.
+    backing->materialize();
+    page.backing = std::move(backing);
+    page.file_cached = !shared;
+    page.copy_on_write_possible = !shared;
+    page.shared_writable = shared;
+    page.file_writeback_capable = mapping.mode == PageMappingMode::SharedFile;
+    page.file_writeback = page.file_writeback_capable &&
+        (page_permission_locked(address / page_size) &
+            permission_bits(MemoryPermission::Write)) != 0U;
+    if (shared && tracks_write_locked(address, page_size)) {
+        const auto epoch = GuestPageBacking::shared_write_tracking_epoch();
+        const auto changed = page.backing->enable_shared_write_tracking();
+        finish_shared_write_tracking_locked(epoch, changed ? 1U : 0U, true);
+    }
 }
 
 bool AddressSpace::range_needs_file_fault_locked(
@@ -1215,16 +1253,8 @@ bool AddressSpace::fault_file_pages(std::uint32_t address, std::size_t size)
                 const auto byte_count =
                     static_cast<std::uint32_t>(std::min<std::uint64_t>(
                         page_size, cluster_file_end - file_page));
-                auto backing = file_page_cache_->load_page(
-                    mapping.backing, file_page, byte_count);
-                // The vnode-style cluster fault publishes ready pages as one
-                // unit. Descriptor-backed mappings perform one host read for
-                // the cluster; immutable executable mappings copy each page
-                // from their snapshot.
-                backing->materialize();
-                resident->second.backing = std::move(backing);
-                resident->second.file_cached = true;
-                resident->second.copy_on_write_possible = true;
+                fault_file_page_locked(guest_base, resident->second, mapping,
+                    file_page, byte_count);
             }
             if (inserted)
                 cache_page_locked(guest_base, resident->second);
@@ -1282,7 +1312,7 @@ void AddressSpace::unmap_file_mappings_locked(
             replacements.emplace_back(
                 start, FileMapping { address, source.file_offset,
                            make_backing(*source.backing, source.file_offset,
-                               left_file_end) });
+                               left_file_end), source.cache, source.mode });
         }
         if (source.end > end) {
             const auto right_start = static_cast<std::uint32_t>(end);
@@ -1291,7 +1321,7 @@ void AddressSpace::unmap_file_mappings_locked(
             replacements.emplace_back(right_start,
                 FileMapping { source.end, right_file_offset,
                     make_backing(*source.backing, right_file_offset,
-                        source.backing->end_offset) });
+                        source.backing->end_offset), source.cache, source.mode });
         }
     }
     for (auto& replacement : replacements) {
@@ -1914,7 +1944,8 @@ bool AddressSpace::is_read_only_executable(
         const auto page_address = static_cast<std::uint32_t>(base);
         const auto* page = find_page_locked(page_address);
         if (page == nullptr || !page->backing) {
-            if (find_file_mapping_locked(page_address) == nullptr)
+            const auto* mapping = find_file_mapping_locked(page_address);
+            if (mapping == nullptr || mapping->mode != PageMappingMode::CopyOnWrite)
                 return false;
             continue;
         }
@@ -1950,7 +1981,8 @@ AddressSpace::executable_backing_identity(
             return std::nullopt;
         const auto mapping_iterator = std::prev(mapping_after);
         const auto& mapping = mapping_iterator->second;
-        if (page_address >= mapping.end || !mapping.backing) {
+        if (page_address >= mapping.end || !mapping.backing ||
+            mapping.mode != PageMappingMode::CopyOnWrite) {
             return std::nullopt;
         }
 

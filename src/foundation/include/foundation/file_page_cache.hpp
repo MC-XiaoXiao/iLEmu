@@ -318,6 +318,7 @@ private:
     // Set before this page is published and never changed afterwards. This
     // avoids taking the page lock for anonymous and already-private pages.
     bool has_file_source_ { };
+    bool shared_vnode_ { };
     std::atomic<bool> shared_write_tracking_ { };
     std::atomic<std::uint64_t> shared_write_generation_ { };
 };
@@ -471,7 +472,8 @@ public:
     // remains byte-lazy; GuestPageBacking::materialize performs clustered I/O.
     [[nodiscard]] std::shared_ptr<GuestPageBacking> load_page(
         const std::shared_ptr<GuestFileBacking>& mapping,
-        std::uint64_t file_offset, std::uint32_t byte_count);
+        std::uint64_t file_offset, std::uint32_t byte_count,
+        bool shared_vnode = false);
 
     [[nodiscard]] std::optional<std::vector<std::shared_ptr<GuestPageBacking>>>
     load_pages(const std::filesystem::path& path, std::uint64_t file_offset,
@@ -501,6 +503,7 @@ private:
         std::uint64_t file_offset { };
         std::uint32_t byte_count { };
         bool immutable_snapshot { };
+        bool shared_vnode { };
 
         [[nodiscard]] bool operator<(const Key& other) const;
     };

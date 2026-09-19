@@ -188,6 +188,11 @@ public:
         Shared,
         SharedFile,
     };
+    // Publishes a validated file range without creating resident pages. Shared
+    // ranges fault through the supplied vnode cache and retain writeback mode.
+    bool map_file_backing(std::uint32_t address, std::uint32_t size,
+        MemoryPermission permissions, std::shared_ptr<GuestFileBacking> backing,
+        std::shared_ptr<FilePageCache> cache, PageMappingMode mode);
     // Exposes an existing page-aligned range as a Mach named-memory object.
     // Existing fork/file-cache COW backings are detached first; subsequent
     // mappings of the returned pages observe shared writes like XNU vm_map.
@@ -344,6 +349,8 @@ private:
         std::uint64_t end { };
         std::uint64_t file_offset { };
         std::shared_ptr<GuestFileBacking> backing;
+        std::shared_ptr<FilePageCache> cache;
+        PageMappingMode mode { PageMappingMode::CopyOnWrite };
     };
     struct TrackedWriteRange {
         std::uint32_t begin { };
@@ -397,6 +404,9 @@ private:
         std::uint32_t address, std::uint64_t end);
     void share_pages_locked(std::uint32_t address, std::uint64_t end,
         std::vector<std::shared_ptr<GuestPageBacking>>* output);
+    void fault_file_page_locked(std::uint32_t address, Page& page,
+        const FileMapping& mapping, std::uint64_t file_offset,
+        std::uint32_t byte_count);
     void cache_page_locked(std::uint32_t address, Page& page);
     void uncache_page_locked(std::uint32_t address);
     void ensure_unique_page_map_locked();

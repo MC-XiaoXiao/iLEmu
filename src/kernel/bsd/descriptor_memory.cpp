@@ -1257,15 +1257,13 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                 }
             }
             if ((flags & darwin::map_flag::shared) != 0) {
-                auto pages =
-                    shared_state_->shared_mapping_page_cache->load_pages(
-                        found->second, offset, size);
-                if (!pages) {
+                auto backing =
+                    shared_state_->shared_mapping_page_cache->open_mapping(
+                        found->second, offset, mapped_size);
+                if (!backing) {
                     bsd_error(cpu, bsd_support::invalid_argument);
                     return;
                 }
-                for (const auto& page : *pages)
-                    page->materialize();
                 AddressSpace::PageMappingMode mapping_mode =
                     AddressSpace::PageMappingMode::SharedFile;
                 {
@@ -1277,8 +1275,9 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                         mapping_mode = AddressSpace::PageMappingMode::Shared;
                     }
                 }
-                if (!memory_.map_page_backings(address, mapped_size,
-                        permissions, *pages, mapping_mode)) {
+                if (!memory_.map_file_backing(address, mapped_size, permissions,
+                        *backing, shared_state_->shared_mapping_page_cache,
+                        mapping_mode)) {
                     bsd_error(cpu, darwin::error::no_memory);
                     return;
                 }
