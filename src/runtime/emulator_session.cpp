@@ -3660,10 +3660,12 @@ void EmulatorSession::run()
             for (auto& prepared : prepared_slices) {
                 if (scheduler.contains(prepared.scheduled.thread)) {
                     // Background compilation has its own executor/memory
-                    // lock order. Batch scalar accesses only when no such
-                    // compiler can compete with this serialized guest slice.
+                    // lock order. Tasks are admitted between guest batches
+                    // and retained until finished, so an empty task list
+                    // excludes a compiler for this address space. A profile
+                    // mode alone does not imply concurrent compilation.
                     std::optional<AddressSpace::ExclusiveAccess> access;
-                    if (!profile_precompile_enabled)
+                    if (prepared.runtime->precompile_tasks.empty())
                         access.emplace(*prepared.runtime->memory);
                     GuestExecutionCoordinator::execute(prepared.execution);
                 }
