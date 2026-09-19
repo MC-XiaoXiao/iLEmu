@@ -38,6 +38,25 @@
 #include "support.hpp"
 
 namespace ilemu {
+namespace {
+
+    std::optional<std::string> read_unix_socket_path(
+        const AddressSpace& memory, std::uint32_t address, std::uint32_t size)
+    {
+        // SUN_LEN excludes the terminating NUL. Full sockaddr_un buffers may
+        // include it, so accept either representation within the supplied size.
+        const auto bytes = memory.read_bytes(address, size);
+        if (!bytes)
+            return std::nullopt;
+        const auto end = std::find(bytes->begin(), bytes->end(), std::byte { 0 });
+        std::string path;
+        path.reserve(static_cast<std::size_t>(end - bytes->begin()));
+        std::transform(bytes->begin(), end, std::back_inserter(path),
+            [](std::byte value) { return std::to_integer<char>(value); });
+        return path;
+    }
+
+} // namespace
 
 void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
 {
@@ -671,8 +690,13 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         std::string name;
         if (*family == 1) {
-            name = memory_.read_c_string(registers[1] + 2, registers[2] - 2)
-                       .value_or("");
+            const auto path = read_unix_socket_path(
+                memory_, registers[1] + 2, registers[2] - 2);
+            if (!path) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            name = *path;
         }
         output_.write("[network] connect pid=" + std::to_string(process_.pid) +
                       " fd=" + std::to_string(fd) +
@@ -822,8 +846,13 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         }
         std::string name;
         if (*family == 1) {
-            name = memory_.read_c_string(registers[1] + 2, registers[2] - 2)
-                       .value_or("");
+            const auto path = read_unix_socket_path(
+                memory_, registers[1] + 2, registers[2] - 2);
+            if (!path) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            name = *path;
         } else {
             name = "family:" + std::to_string(*family);
         }
