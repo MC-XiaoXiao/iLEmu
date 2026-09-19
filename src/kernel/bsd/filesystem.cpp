@@ -1333,12 +1333,12 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         auto cached_entries = directory_entries_cache_.find(cache_key);
         if (cached_entries == directory_entries_cache_.end()) {
             const auto current_metadata =
-                query_hfs_metadata(descriptor->second, true, false);
+                hfs_metadata_.query_directory_entry(descriptor->second, true);
             const auto parent_path = descriptor->second == rootfs_
                                          ? descriptor->second
                                          : descriptor->second.parent_path();
             const auto parent_metadata =
-                query_hfs_metadata(parent_path, true, false);
+                hfs_metadata_.query_directory_entry(parent_path, true);
             std::vector<DirectoryEntry> entries {
                 { ".", 4,
                     current_metadata ? current_metadata->catalog_id : 2U },
@@ -1353,21 +1353,18 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
                         iterator->path())) {
                     continue;
                 }
-                const auto status = iterator->symlink_status(directory_error);
-                if (directory_error)
-                    break;
                 const auto metadata =
-                    query_hfs_metadata(iterator->path(), false, false);
+                    hfs_metadata_.query_directory_entry(iterator->path(), false);
                 if (!metadata) {
                     directory_error = std::make_error_code(std::errc::io_error);
                     break;
                 }
                 std::uint8_t type = 0;
-                if (std::filesystem::is_directory(status))
+                if (metadata->type == std::filesystem::file_type::directory)
                     type = 4;
-                else if (std::filesystem::is_regular_file(status))
+                else if (metadata->type == std::filesystem::file_type::regular)
                     type = 8;
-                else if (std::filesystem::is_symlink(status))
+                else if (metadata->type == std::filesystem::file_type::symlink)
                     type = 10;
                 entries.push_back({ iterator->path().filename().string(), type,
                     metadata->catalog_id });

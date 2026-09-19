@@ -101,6 +101,18 @@ namespace {
         return fnv_catalog_id(std::as_bytes(std::span { identity }));
     }
 
+    std::uint32_t catalog_id(const std::filesystem::path& root,
+        const std::filesystem::path& path, const struct stat& status,
+        bool follow_symlink)
+    {
+        if (path.lexically_normal() == root.lexically_normal())
+            return hfs_root_catalog_id;
+        if (status.st_nlink > 1)
+            return path_catalog_id(root, path);
+        return numeric_xattr(path, "user.hfsfuse.record.cnid", follow_symlink)
+            .value_or(inode_catalog_id(status));
+    }
+
     bool is_within_root(
         const std::filesystem::path& root, const std::filesystem::path& path)
     {
@@ -320,6 +332,29 @@ MetadataProvider::MetadataProvider(std::filesystem::path root)
 {
 }
 
+std::optional<DirectoryEntryMetadata> MetadataProvider::query_directory_entry(
+    const std::filesystem::path& path, bool follow_symlink) const
+{
+    struct stat status { };
+    if ((follow_symlink ? ::stat(path.c_str(), &status)
+                        : ::lstat(path.c_str(), &status)) != 0) {
+        return std::nullopt;
+    }
+    using Type = std::filesystem::file_type;
+    const auto type = S_ISDIR(status.st_mode)    ? Type::directory
+                      : S_ISREG(status.st_mode) ? Type::regular
+                      : S_ISLNK(status.st_mode) ? Type::symlink
+                      : S_ISBLK(status.st_mode) ? Type::block
+                      : S_ISCHR(status.st_mode) ? Type::character
+                      : S_ISFIFO(status.st_mode) ? Type::fifo
+                      : S_ISSOCK(status.st_mode) ? Type::socket
+                                                : Type::unknown;
+    // Enumeration only needs identity and type. Full attribute queries may
+    // walk ancestors and read resource forks; none of that changes these fields.
+    return DirectoryEntryMetadata {
+        catalog_id(root_, path, status, follow_symlink), type };
+}
+
 std::optional<Metadata> MetadataProvider::query(
     const std::filesystem::path& path, bool follow_symlink,
     bool include_directory_entry_count) const
@@ -354,12 +389,7 @@ std::optional<Metadata> MetadataProvider::query(
             .value_or(0);
     result.link_count = static_cast<std::uint32_t>(status.st_nlink);
     result.permanent_id = inode_catalog_id(status);
-    result.catalog_id =
-        is_root ? hfs_root_catalog_id
-        : status.st_nlink > 1
-            ? path_catalog_id(root_, path)
-            : numeric_xattr(path, "user.hfsfuse.record.cnid", follow_symlink)
-                  .value_or(result.permanent_id);
+    result.catalog_id = catalog_id(root_, path, status, follow_symlink);
     if (is_root) {
         result.parent_catalog_id = hfs_root_parent_id;
     } else {

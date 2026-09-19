@@ -132,6 +132,11 @@ struct Metadata {
     bool directory { };
 };
 
+struct DirectoryEntryMetadata {
+    std::uint32_t catalog_id { };
+    std::filesystem::file_type type { std::filesystem::file_type::none };
+};
+
 struct MetadataOverride {
     std::optional<std::uint32_t> mode;
     std::optional<std::uint32_t> owner;
@@ -175,6 +180,8 @@ public:
     [[nodiscard]] std::optional<Metadata> query(
         const std::filesystem::path& path, bool follow_symlink,
         bool include_directory_entry_count = true) const;
+    [[nodiscard]] std::optional<DirectoryEntryMetadata> query_directory_entry(
+        const std::filesystem::path& path, bool follow_symlink) const;
     [[nodiscard]] static bool valid_request(const AttributeRequest& request);
     [[nodiscard]] static std::vector<std::byte> pack_attributes(
         const Metadata& metadata, const AttributeRequest& request,
