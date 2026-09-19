@@ -446,12 +446,15 @@ void CompatibilityKernel::dispatch_apple80211_ioctl(
             return;
         }
         const auto associated = wifi_state_->snapshot().associated_access_point;
-        if (!associated) {
-            bsd_error(cpu, 57); // ENOTCONN: no current network.
+        // The embedded current-BSS query reports absence as ENOTCONN.
+        // The older current-network snapshot selector returns an empty
+        // record: its clients still serialize that snapshot when unassociated.
+        if (!associated && *command == embedded_current_network) {
+            bsd_error(cpu, 57); // ENOTCONN: no current BSS.
             return;
         }
         const auto record = wifi_driver::make_network_record(
-            &*associated, layout, 0, *ie_pointer);
+            associated ? &*associated : nullptr, layout, 0, *ie_pointer);
         if (!record || !memory_.copy_in(*data_address, *record)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
