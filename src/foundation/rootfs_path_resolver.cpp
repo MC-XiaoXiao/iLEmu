@@ -34,7 +34,8 @@ namespace {
 
 std::filesystem::path RootfsPathResolver::resolve(std::string_view guest_path,
     const std::filesystem::path& guest_working_directory,
-    bool follow_final_symlink) const
+    bool follow_final_symlink,
+    std::vector<std::filesystem::path>* traversed_paths) const
 {
     std::filesystem::path guest { guest_path };
     if (!guest.is_absolute())
@@ -50,6 +51,8 @@ std::filesystem::path RootfsPathResolver::resolve(std::string_view guest_path,
         bool restarted = false;
         for (std::size_t index = 0; index < components.size(); ++index) {
             prefix /= components[index];
+            if (traversed_paths)
+                traversed_paths->push_back(rootfs_ / prefix);
             const auto final_component = index + 1U == components.size();
             if (final_component && !follow_final_symlink)
                 continue;

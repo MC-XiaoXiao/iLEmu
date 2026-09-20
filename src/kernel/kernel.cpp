@@ -959,6 +959,8 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     pending_host_accepts_.clear();
     pending_host_writes_.clear();
     pending_file_syncs_.clear();
+    pending_file_renames_.clear();
+    pending_filesystem_dispatches_.clear();
     pending_file_mappings_.clear();
     pending_baseband_writes_.clear();
     pending_unix_accepts_.clear();
@@ -1488,6 +1490,7 @@ std::vector<std::size_t>
 CompatibilityKernel::pending_event_poll_candidates()
 {
     std::lock_guard lock { mutex_ };
+    service_completed_file_renames();
     const auto io_generation = shared_state_->io_event_generation_snapshot();
     const auto mach_generation =
         shared_state_->mach_queue_generation_snapshot();
@@ -1552,6 +1555,8 @@ bool CompatibilityKernel::has_pending_event_locked(
            pending_host_accepts_.contains(processor) ||
            pending_host_writes_.contains(processor) ||
            pending_file_syncs_.contains(processor) ||
+           pending_file_renames_.contains(processor) ||
+           pending_filesystem_dispatches_.contains(processor) ||
            pending_file_mappings_.contains(processor) ||
            pending_baseband_writes_.contains(processor) ||
            pending_unix_accepts_.contains(processor) ||
@@ -1697,6 +1702,8 @@ bool CompatibilityKernel::pending_io_requires_host_poll_locked(
 {
     if (pending_file_mappings_.contains(processor) ||
         pending_file_syncs_.contains(processor) ||
+        pending_file_renames_.contains(processor) ||
+        pending_filesystem_dispatches_.contains(processor) ||
         pending_host_connects_.contains(processor) ||
         pending_host_accepts_.contains(processor) ||
         pending_host_writes_.contains(processor) ||
@@ -1865,6 +1872,10 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
     }
     if (pending_file_mappings_.contains(cpu.processor_id()))
         return deliver_pending_file_mapping(cpu);
+    if (pending_filesystem_dispatches_.contains(cpu.processor_id()))
+        return deliver_pending_filesystem_dispatch(cpu);
+    if (pending_file_renames_.contains(cpu.processor_id()))
+        return deliver_pending_file_rename(cpu);
     if (pending_file_syncs_.contains(cpu.processor_id()))
         return deliver_pending_file_sync(cpu);
     if (const auto pending = pending_host_writes_.find(cpu.processor_id());
@@ -2222,6 +2233,10 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
 
 std::string CompatibilityKernel::wait_reason(std::size_t processor) const
 {
+    if (pending_file_renames_.contains(processor))
+        return "rename";
+    if (pending_filesystem_dispatches_.contains(processor))
+        return "filesystem namespace";
     if (const auto pending = pending_file_mappings_.find(processor);
         pending != pending_file_mappings_.end()) {
         return "mmap(fd=" + std::to_string(pending->second.arguments[4]) + ")";
@@ -2748,6 +2763,9 @@ void CompatibilityKernel::inherit_process_state(
     // kernel thread object.
     process_.thread_disk_io_policies.clear();
     file_descriptors_ = parent.file_descriptors_;
+    // Inherited descriptors also inherit namespace changes already in flight;
+    // the child's current thread does not inherit the parent's syscall wait.
+    file_rename_effects_ = parent.file_rename_effects_;
     regular_file_open_descriptions_ = parent.regular_file_open_descriptions_;
     virtual_block_descriptors_ = parent.virtual_block_descriptors_;
     file_offsets_ = parent.file_offsets_;

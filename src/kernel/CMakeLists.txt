@@ -114,7 +114,8 @@ target_link_libraries(ilemu_kernel_bsd_filesystem_locking PRIVATE
     iLEmu::foundation)
 
 add_library(ilemu_kernel_bsd_filesystem_persistence STATIC
-    bsd/filesystem/persistence.cpp)
+    bsd/filesystem/persistence.cpp
+    bsd/filesystem/rename.cpp)
 add_library(iLEmu::kernel_bsd_filesystem_persistence ALIAS
     ilemu_kernel_bsd_filesystem_persistence)
 ilemu_configure_module(ilemu_kernel_bsd_filesystem_persistence)

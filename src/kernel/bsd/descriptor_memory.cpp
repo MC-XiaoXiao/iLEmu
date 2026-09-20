@@ -55,6 +55,35 @@ namespace {
 void CompatibilityKernel::dispatch_bsd_descriptor_memory(
     Cpu& cpu, std::uint32_t number)
 {
+    service_completed_file_renames();
+    if (shared_state_->filesystem_renames_pending.load(std::memory_order_acquire) != 0) {
+        const auto needs_namespace = [&] {
+            switch (number) {
+            case 41: // dup retains an already-open vnode
+            case 42: // pipe
+            case 73: // munmap
+            case darwin::syscall::duplicate_to:
+            case darwin::syscall::get_descriptor_table_size:
+            case darwin::syscall::memory_synchronize:
+            case darwin::syscall::memory_protect:
+            case darwin::syscall::memory_advise:
+                return false;
+            case 197: // mmap only resolves a pathname for a file backing
+                return (cpu.registers()[3] & darwin::map_flag::anonymous) == 0;
+            case 266: // shm_open
+            case 267: // shm_unlink
+                return true;
+            default:
+                auto fd = cpu.registers()[0];
+                if (const auto duplicate = duplicated_descriptors_.find(fd);
+                    duplicate != duplicated_descriptors_.end())
+                    fd = duplicate->second;
+                return file_descriptors_.contains(fd);
+            }
+        };
+        if (needs_namespace() && defer_filesystem_dispatch(cpu, number))
+            return;
+    }
     auto& registers = cpu.registers();
     switch (number) {
     case darwin::syscall::read: {

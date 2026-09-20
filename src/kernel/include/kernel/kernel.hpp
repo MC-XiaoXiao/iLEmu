@@ -719,6 +719,12 @@ private:
         bool waking_blocked_receiver);
     bool deliver_pending_io_locked(Cpu& cpu);
     bool deliver_pending_file_sync(Cpu& cpu);
+    void dispatch_bsd_filesystem_rename(Cpu& cpu);
+    bool deliver_pending_file_rename(Cpu& cpu);
+    void service_completed_file_renames();
+    bool filesystem_dispatch_conflicts_with_rename(Cpu& cpu, std::uint32_t number) const;
+    bool defer_filesystem_dispatch(Cpu& cpu, std::uint32_t number);
+    bool deliver_pending_filesystem_dispatch(Cpu& cpu);
     struct PendingFileMapping {
         std::array<std::uint32_t, 7> arguments { };
         std::filesystem::path path;
@@ -975,6 +981,9 @@ private:
     std::map<std::size_t, PendingHostAccept> pending_host_accepts_;
     std::map<std::size_t, PendingHostWrite> pending_host_writes_;
     std::map<std::size_t, PendingFileSync> pending_file_syncs_;
+    std::map<std::size_t, std::shared_ptr<PendingFileRename>> pending_file_renames_;
+    std::vector<std::shared_ptr<PendingFileRename>> file_rename_effects_;
+    std::map<std::size_t, PendingFilesystemDispatch> pending_filesystem_dispatches_;
     std::map<std::size_t, PendingFileMapping> pending_file_mappings_;
     std::map<std::size_t, PendingBasebandWrite> pending_baseband_writes_;
     std::map<std::size_t, PendingUnixAccept> pending_unix_accepts_;

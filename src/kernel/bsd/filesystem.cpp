@@ -105,6 +105,11 @@ namespace {
 void CompatibilityKernel::dispatch_bsd_filesystem(
     Cpu& cpu, std::uint32_t number)
 {
+    service_completed_file_renames();
+    if (shared_state_->filesystem_renames_pending.load(std::memory_order_acquire) != 0 &&
+        filesystem_dispatch_conflicts_with_rename(cpu, number) &&
+        defer_filesystem_dispatch(cpu, number))
+        return;
     if (dispatch_bsd_filesystem_control(cpu, number)) {
         return;
     }
@@ -767,109 +772,9 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         bsd_success(cpu, static_cast<std::uint32_t>(count));
         return;
     }
-    case 128: { // rename
-        const auto source_path = memory_.read_c_string(registers[0]);
-        const auto destination_path = memory_.read_c_string(registers[1]);
-        if (!source_path || !destination_path) {
-            bsd_error(cpu, bsd_support::bad_address);
-            return;
-        }
-        const auto source = resolve_guest_path(*source_path, false);
-        const auto destination = resolve_guest_path(*destination_path, false);
-        if (source.lexically_normal() == rootfs_.lexically_normal()) {
-            bsd_error(cpu, 16U); // EBUSY
-            return;
-        }
-        std::error_code source_status_error;
-        const auto source_status =
-            std::filesystem::symlink_status(source, source_status_error);
-        const bool source_is_directory =
-            !source_status_error &&
-            std::filesystem::is_directory(source_status);
-        const auto source_metadata = query_hfs_metadata(source, false);
-        const auto replaced_metadata = query_hfs_metadata(destination, false);
-        // POSIX specifies rename(old, new) as a successful no-op when both
-        // names already refer to the same inode.  This also avoids disturbing
-        // the two resource-fork sidecar links or their shared metadata.
-        if (source_metadata && replaced_metadata &&
-            source_metadata->permanent_id == replaced_metadata->permanent_id) {
-            bsd_success(cpu, 0);
-            return;
-        }
-        std::error_code error;
-        bool renamed = false;
-        {
-            const std::lock_guard filesystem_lock {
-                shared_state_->filesystem_mutex
-            };
-            std::filesystem::rename(source, destination, error);
-            if (!error) {
-                renamed = true;
-                const auto source_resource =
-                    hfs::MetadataProvider::resource_sidecar(source);
-                const auto destination_resource =
-                    hfs::MetadataProvider::resource_sidecar(destination);
-                std::error_code resource_error;
-                if (std::filesystem::is_regular_file(
-                        source_resource, resource_error)) {
-                    resource_error.clear();
-                    static_cast<void>(std::filesystem::remove(
-                        destination_resource, resource_error));
-                    resource_error.clear();
-                    std::filesystem::rename(
-                        source_resource, destination_resource, resource_error);
-                } else {
-                    resource_error.clear();
-                    static_cast<void>(std::filesystem::remove(
-                        destination_resource, resource_error));
-                    resource_error.clear();
-                }
-                if (resource_error)
-                    error = resource_error;
-                if (replaced_metadata) {
-                    shared_state_->hfs_metadata_overrides.erase(
-                        replaced_metadata->permanent_id);
-                    shared_state_->hfs_named_attribute_overrides.erase(
-                        replaced_metadata->permanent_id);
-                }
-            }
-        }
-        if (renamed) {
-            if (source_is_directory) {
-                shared_state_->guest_file_generation_registry
-                    ->publish_subtree_rename(source, destination);
-            } else {
-                shared_state_->guest_file_generation_registry->publish_rename(
-                    source, destination);
-            }
-            directory_entries_cache_.clear();
-        }
-        if (error) {
-            bsd_error(cpu, bsd_support::darwin_filesystem_error(error));
-            return;
-        }
-        const auto remap_open_path = [&](std::filesystem::path& open_path) {
-            const auto normalized = open_path.lexically_normal();
-            if (normalized == source.lexically_normal()) {
-                open_path = destination;
-                return;
-            }
-            const auto relative = normalized.lexically_relative(source);
-            if (relative.empty() || relative == ".")
-                return;
-            const auto first = *relative.begin();
-            if (first != "..")
-                open_path = destination / relative;
-        };
-        for (auto& [descriptor, open_path] : file_descriptors_) {
-            static_cast<void>(descriptor);
-            remap_open_path(open_path);
-        }
-        output_.write(
-            "[vfs] rename " + *source_path + " -> " + *destination_path + "\n");
-        bsd_success(cpu, 0);
+    case 128: // rename
+        dispatch_bsd_filesystem_rename(cpu);
         return;
-    }
     case 136: { // mkdir
         const auto path = memory_.read_c_string(registers[0]);
         if (!path) {

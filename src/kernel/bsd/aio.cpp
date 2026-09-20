@@ -99,6 +99,10 @@ namespace {
 
 void CompatibilityKernel::dispatch_bsd_aio(Cpu& cpu, std::uint32_t number)
 {
+    service_completed_file_renames();
+    if (shared_state_->filesystem_renames_pending.load(std::memory_order_acquire) != 0 &&
+        defer_filesystem_dispatch(cpu, number))
+        return;
     auto& registers = cpu.registers();
 
     const auto resolve_descriptor = [&](std::uint32_t descriptor) {

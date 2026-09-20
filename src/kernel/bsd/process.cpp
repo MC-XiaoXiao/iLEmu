@@ -124,6 +124,9 @@ void CompatibilityKernel::release_process_descriptors()
     host_sockets_.clear();
     pending_host_writes_.clear();
     pending_file_syncs_.clear();
+    pending_file_renames_.clear();
+    pending_filesystem_dispatches_.clear();
+    file_rename_effects_.clear();
     pending_file_mappings_.clear();
     pending_baseband_writes_.clear();
     wifi_driver_event_streams_.clear();

@@ -64,6 +64,8 @@
 
 namespace ilemu {
 
+class HostFileRenameRequest;
+class HostFileRenamer;
 class HostFileSyncRequest;
 class HostFileSynchronizer;
 class HostFileMappingPreparer;
@@ -207,6 +209,18 @@ struct PendingHostAccept {
     std::uint32_t address { };
     std::uint32_t length_address { };
     std::size_t processor { };
+};
+
+struct PendingFilesystemDispatch {
+    std::uint32_t number;
+    std::array<std::uint32_t, 16> registers;
+};
+
+struct PendingFileRename {
+    std::filesystem::path source;
+    std::filesystem::path destination;
+    std::shared_ptr<HostFileRenameRequest> request;
+    std::atomic<bool> published { false };
 };
 
 struct PendingFileSync {
@@ -2030,8 +2044,13 @@ struct KernelSharedState {
     mutable std::mutex socket_mutex;
     // Created on first use under filesystem_mutex; shared across processes.
     std::shared_ptr<HostFileSynchronizer> file_synchronizer;
-    std::shared_ptr<HostFileMappingPreparer> file_mapping_preparer;
     mutable std::mutex filesystem_mutex;
+    std::shared_ptr<HostFileRenamer> file_renamer;
+    std::atomic<std::size_t> filesystem_renames_pending { 0 };
+    // Completion survives the originating thread/process, including slot reuse.
+    std::mutex file_rename_completions_mutex;
+    std::deque<std::shared_ptr<PendingFileRename>> file_rename_completions;
+    std::shared_ptr<HostFileMappingPreparer> file_mapping_preparer;
 };
 
 // The caller must hold mach_mutex. A remote application may own cached scene
