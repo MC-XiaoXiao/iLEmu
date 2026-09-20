@@ -596,6 +596,9 @@ void deliver_due_vsync_locked(KernelSharedState& state, std::uint64_t deadline)
             const auto elapsed_periods = (deadline - indexed_deadline) / period;
             const auto frame_time = indexed_deadline + elapsed_periods * period;
             ++registration.sequence;
+            registration.receiver_hint_deadline =
+                std::chrono::steady_clock::now() +
+                std::chrono::nanoseconds { 3 * period };
             state.enqueue_mach_message_locked(registration.notification_port,
                 make_vsync_message(
                     connection_object, registration, frame_time));

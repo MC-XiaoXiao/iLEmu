@@ -2973,9 +2973,13 @@ void EmulatorSession::run()
                         scheduled_snapshots.front().second.string());
             scheduled_snapshots.erase(scheduled_snapshots.begin());
         }
+        bool display_receive_pending = false;
         const auto resolve_display_urgent_threads = [&]() {
-            if (!display_urgent_process)
+            display_receive_pending = false;
+            if (!display_urgent_process) {
+                display_urgent_receiver_thread.reset();
                 return;
+            }
             for (auto& runtime : runtimes) {
                 if (runtime->kernel->process().pid != *display_urgent_process ||
                     runtime->kernel->process().exited) {
@@ -2989,6 +2993,7 @@ void EmulatorSession::run()
                 if (const auto processor =
                         runtime->kernel->display_vsync_dependency_processor();
                     processor) {
+                    display_receive_pending = true;
                     const XnuThreadId receiver_thread { *display_urgent_process,
                         static_cast<std::uint32_t>(*processor) };
                     if (!display_urgent_receiver_thread ||
@@ -3020,6 +3025,8 @@ void EmulatorSession::run()
                 }
                 break;
             }
+            if (!display_receive_pending)
+                display_urgent_receiver_thread.reset();
         };
         resolve_display_urgent_threads();
         synchronize_device_time_to_host();
@@ -3283,12 +3290,11 @@ void EmulatorSession::run()
         }();
         const auto observed_inflight_callback =
             [&]() -> std::optional<std::pair<XnuThreadId, std::uint64_t>> {
-            // A callback can become in-flight only after the queued
-            // notification established one of these local dependencies. Avoid
-            // another pair of kernel/Mach locks on every idle host-loop
-            // iteration.
-            if (!display_urgent_process ||
-                (!display_urgent_thread && !display_urgent_receiver_thread))
+            // NotifyFunc can consume the receive dependency in the preceding
+            // slice, including the first callback before a local callback hint
+            // exists. Resolve in-flight work from the registration even after
+            // the receive hint has been retired.
+            if (!display_urgent_process)
                 return std::nullopt;
             for (const auto& runtime : runtimes) {
                 if (!runtime->kernel->process().exited &&
@@ -3332,7 +3338,8 @@ void EmulatorSession::run()
             std::chrono::steady_clock::now() <
                 *display_inflight_callback_deadline;
         const auto display_callback_work_active =
-            display_callback_pending || display_inflight_callback_active;
+            display_receive_pending || display_callback_pending ||
+            display_inflight_callback_active;
         if (!display_callback_work_active)
             display_yielded_thread.reset();
         if (performance_counters().cpu_source_diagnostics_enabled() &&
@@ -3407,7 +3414,8 @@ void EmulatorSession::run()
                 .foreground_transition_process = transition_process,
                 .active_process = active_process,
                 .interaction_generation = interaction_generation,
-                .realtime_notification_pending = display_callback_pending,
+                .realtime_notification_pending =
+                    display_receive_pending || display_callback_pending,
                 .realtime_work_pending = display_callback_work_active,
                 .realtime_inflight = display_inflight_callback_active,
                 .realtime_lease_active =

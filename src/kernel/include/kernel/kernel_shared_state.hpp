@@ -785,6 +785,12 @@ struct KernelSharedState {
         // NotifyFunc consumes it so the scheduler can continue the real
         // callback dependency chain.
         std::optional<std::uint32_t> last_receiver_processor;
+        // A runnable receive continuation can outlive one pulse. Validate the
+        // real thread object before reusing its slot for a later notification.
+        std::uint32_t last_receiver_thread_object { };
+        // A queued pulse grants only a bounded host scheduling hint. Coalesced
+        // pulses do not renew it; guest clocks and notification bytes are untouched.
+        std::chrono::steady_clock::time_point receiver_hint_deadline { };
         std::uint64_t receiver_sequence { };
         // Host-only completion watermark for queued VSync notifications. The
         // sequence advances only when a real Mach message is enqueued, and this
@@ -1793,6 +1799,13 @@ struct KernelSharedState {
             return;
         }
         registration.last_receiver_processor = processor_id;
+        registration.last_receiver_thread_object = 0U;
+        if (const auto task = task_thread_port_objects.find(process_id);
+            task != task_thread_port_objects.end()) {
+            if (const auto thread = task->second.find(processor_id);
+                thread != task->second.end())
+                registration.last_receiver_thread_object = thread->second;
+        }
         registration.receiver_sequence = notification_sequence;
     }
 

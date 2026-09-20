@@ -135,6 +135,7 @@ CompatibilityKernel::display_vsync_dependency_processor()
     std::lock_guard mach_lock { shared_state_->mach_mutex };
 
     std::optional<std::size_t> delivered_receiver;
+    std::optional<std::size_t> unread_receiver;
     for (const auto& [connection_object, registration] :
         shared_state_->iokit_display_vsync) {
         static_cast<void>(connection_object);
@@ -151,8 +152,37 @@ CompatibilityKernel::display_vsync_dependency_processor()
             delivered_receiver =
                 static_cast<std::size_t>(*registration.last_receiver_processor);
         }
+        if (!unread_receiver && registration.last_receiver_processor &&
+            registration.last_receiver_thread_object != 0U &&
+            registration.sequence > registration.receiver_sequence &&
+            std::chrono::steady_clock::now() <
+                registration.receiver_hint_deadline) {
+            const auto task =
+                shared_state_->task_thread_port_objects.find(process_.pid);
+            if (task == shared_state_->task_thread_port_objects.end())
+                continue;
+            const auto thread =
+                task->second.find(*registration.last_receiver_processor);
+            if (thread == task->second.end() ||
+                thread->second != registration.last_receiver_thread_object)
+                continue;
+            const auto queue =
+                shared_state_->mach_queues.find(registration.notification_port);
+            if (queue != shared_state_->mach_queues.end() &&
+                std::any_of(queue->second.begin(), queue->second.end(),
+                    [&](const auto& message) {
+                        return message.display_vsync_connection_object ==
+                                   connection_object &&
+                               message.display_vsync_registration_generation ==
+                                   registration.registration_generation &&
+                               message.display_vsync_sequence ==
+                                   registration.sequence;
+                    })) {
+                unread_receiver = *registration.last_receiver_processor;
+            }
+        }
     }
-    return delivered_receiver;
+    return delivered_receiver ? delivered_receiver : unread_receiver;
 }
 
 std::optional<std::size_t>

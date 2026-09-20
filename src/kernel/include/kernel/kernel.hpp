@@ -471,8 +471,8 @@ public:
     // Owner of the earliest registered pulse, independent of this kernel task.
     [[nodiscard]] std::optional<std::uint32_t> next_display_vsync_process() const;
     [[nodiscard]] std::optional<std::size_t> display_vsync_receiver_processor();
-    // Return the exact queued Mach receiver or, after synchronous mach_msg
-    // delivery, the processor that now owns the uncompleted firmware callback.
+    // Return the blocked Mach receiver, a bounded live receive continuation for
+    // an unread pulse, or the receiver awaiting the firmware callback boundary.
     // This is host-only scheduling metadata and does not alter the receive ABI.
     [[nodiscard]] std::optional<std::size_t>
     display_vsync_dependency_processor();
