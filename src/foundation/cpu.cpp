@@ -147,8 +147,6 @@ namespace {
     constexpr std::uint64_t host_yield_min_tick_budget = 256U;
     constexpr std::uint64_t host_yield_max_tick_budget = 8192U;
     constexpr auto host_yield_urgent_window = std::chrono::microseconds { 250 };
-    constexpr auto host_yield_slow_translation_threshold =
-        std::chrono::microseconds { 250 };
     constexpr std::size_t jit_profile_precompile_batch_size = 16U;
     constexpr std::size_t jit_profile_precompile_target_queue_entry_capacity =
         jit_profile_precompile_batch_size;
@@ -1235,12 +1233,10 @@ private:
         std::uint64_t translation_nanoseconds,
         const Dynarmic::IR::Block* optimized_block) noexcept
     {
-        maybe_check_host_yield(
-            0U, translation_nanoseconds >=
-                    static_cast<std::uint64_t>(
-                        std::chrono::duration_cast<std::chrono::nanoseconds>(
-                            host_yield_slow_translation_threshold)
-                            .count()));
+        // Translation does not consume guest ticks. Even individually short
+        // compilations can exhaust a host slice before the execution probes
+        // reach their count threshold, so check at every translation boundary.
+        maybe_check_host_yield(0U, true);
         // Ordinary guest execution is latency-sensitive. Artifact production
         // remains reserved for an explicit precompile request, but a complete
         // descriptor is retained in fixed executor-local storage for a later
