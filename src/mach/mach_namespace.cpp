@@ -71,10 +71,12 @@ void MachNamespaceTable::destroy_task(TaskId task) { spaces_.erase(task); }
 void MachNamespaceTable::index_name(
     Space& space, MachObject object, MachName name)
 {
-    auto& names = space.names_by_object[object];
+    auto& indexed = space.names_by_object[object];
+    auto& names = indexed.names;
     const auto position = std::lower_bound(names.begin(), names.end(), name);
     if (position == names.end() || *position != name)
         names.insert(position, name);
+    indexed.rights |= space.entries.at(name).type;
 }
 
 void MachNamespaceTable::unindex_name(
@@ -83,19 +85,38 @@ void MachNamespaceTable::unindex_name(
     const auto object_names = space.names_by_object.find(object);
     if (object_names == space.names_by_object.end())
         return;
-    auto& names = object_names->second;
+    auto& names = object_names->second.names;
     const auto position = std::lower_bound(names.begin(), names.end(), name);
     if (position != names.end() && *position == name)
         names.erase(position);
     if (names.empty())
         space.names_by_object.erase(object_names);
+    else
+        refresh_indexed_rights(space, object);
+}
+
+void MachNamespaceTable::refresh_indexed_rights(Space& space, MachObject object)
+{
+    const auto found = space.names_by_object.find(object);
+    if (found == space.names_by_object.end())
+        return;
+    auto& indexed = found->second;
+    const auto previous_rights = indexed.rights;
+    indexed.rights = 0;
+    for (const auto name : indexed.names) {
+        indexed.rights |= space.entries.at(name).type;
+        // Removal usually leaves another alias with the same rights. Once
+        // every previous right is found, no further alias can add one.
+        if ((indexed.rights & previous_rights) == previous_rights)
+            break;
+    }
 }
 
 const std::vector<MachName>* MachNamespaceTable::indexed_names(
     const Space& space, MachObject object)
 {
     const auto names = space.names_by_object.find(object);
-    return names == space.names_by_object.end() ? nullptr : &names->second;
+    return names == space.names_by_object.end() ? nullptr : &names->second.names;
 }
 
 bool MachNamespaceTable::install(TaskId task, MachName name, MachObject object,
@@ -109,6 +130,7 @@ bool MachNamespaceTable::install(TaskId task, MachName name, MachObject object,
         if (existing->second.object != object)
             return false;
         add_types(existing->second, type, user_references, true);
+        space.names_by_object.at(object).rights |= type;
         return true;
     }
     space.entries.emplace(name, make_entry(object, type, user_references));
@@ -152,6 +174,7 @@ std::optional<MachName> MachNamespaceTable::copyout(
         names && !names->empty()) {
         const auto name = names->front();
         add_types(space.entries.at(name), type, 1, true);
+        space.names_by_object.at(object).rights |= type;
         return name;
     }
     return allocate(task, object, type);
@@ -174,6 +197,7 @@ std::optional<MachName> MachNamespaceTable::copyout_at_name(
         names && !names->empty()) {
         const auto name = names->front();
         add_types(space.entries.at(name), type, 1, true);
+        space.names_by_object.at(object).rights |= type;
         return name;
     }
     if (object == null_name || type == 0 || !valid_name(preferred_name) ||
@@ -230,15 +254,9 @@ bool MachNamespaceTable::owns_right(
     const auto space = spaces_.find(task);
     if (space == spaces_.end())
         return false;
-    const auto names = indexed_names(space->second, object);
-    if (names == nullptr)
-        return false;
-    const auto mask = type_mask(right);
-    return std::any_of(names->begin(), names->end(), [&](MachName name) {
-        const auto entry = space->second.entries.find(name);
-        return entry != space->second.entries.end() &&
-               (entry->second.type & mask) != 0U;
-    });
+    const auto names = space->second.names_by_object.find(object);
+    return names != space->second.names_by_object.end() &&
+           (names->second.rights & type_mask(right)) != 0U;
 }
 
 std::vector<NamedEntry> MachNamespaceTable::entries(TaskId task) const
@@ -351,6 +369,8 @@ bool MachNamespaceTable::modify_references(
         if (entry->second.type == 0) {
             unindex_name(space->second, entry->second.object, name);
             space->second.entries.erase(entry);
+        } else {
+            refresh_indexed_rights(space->second, entry->second.object);
         }
     }
     return true;
@@ -401,6 +421,11 @@ std::vector<NamedEntry> MachNamespaceTable::mark_object_dead(MachObject object)
             entry.user_references[send_once_index] = 0;
             entry.user_references[dead_index] = references;
         }
+        auto& rights = space.names_by_object.at(object).rights;
+        constexpr auto converted =
+            type_mask(Right::Send) | type_mask(Right::SendOnce);
+        if ((rights & converted) != 0U)
+            rights = (rights & ~converted) | type_mask(Right::DeadName);
     }
     return affected;
 }
@@ -426,6 +451,8 @@ bool MachNamespaceTable::remove_type(
     if (entry->second.type == 0) {
         unindex_name(space->second, entry->second.object, name);
         space->second.entries.erase(entry);
+    } else {
+        refresh_indexed_rights(space->second, entry->second.object);
     }
     return true;
 }
@@ -458,6 +485,8 @@ bool MachNamespaceTable::deallocate(TaskId task, MachName name)
     if (entry->second.type == 0) {
         unindex_name(space->second, entry->second.object, name);
         space->second.entries.erase(entry);
+    } else {
+        refresh_indexed_rights(space->second, entry->second.object);
     }
     return true;
 }
