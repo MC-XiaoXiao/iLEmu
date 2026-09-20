@@ -963,7 +963,8 @@ struct SdlDisplay::Impl {
         auto& performance = performance_counters();
         while (true) {
             performance.record_native_present_attempt();
-            const auto result = graphics->present(frame.host_surface);
+            const auto result =
+                graphics->present(frame.host_surface, frame.nominal_period);
             if (result != HostGraphicsDevice::PresentResult::Skipped)
                 return result;
             performance.record_native_present_skipped();

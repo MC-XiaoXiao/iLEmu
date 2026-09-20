@@ -6,6 +6,7 @@
 
 #include "vulkan_gles_renderer.hpp"
 #include "vulkan_memory_allocator.hpp"
+#include "vulkan_present_timing.hpp"
 
 #include <algorithm>
 #include <array>
@@ -321,6 +322,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         create_command_encoder() override;
         [[nodiscard]] PresentResult present(
             const std::shared_ptr<HostSurface>& surface) override;
+        [[nodiscard]] PresentResult present(
+            const std::shared_ptr<HostSurface>& surface,
+            std::chrono::nanoseconds nominal_period) override;
         [[nodiscard]] bool native_presentation_available() const override
         {
             return presentation_swapchain_ != VK_NULL_HANDLE;
@@ -519,7 +523,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         [[nodiscard]] bool create_presentation_swapchain();
         [[nodiscard]] bool recreate_presentation_surface();
         void destroy_presentation_swapchain() noexcept;
-        [[nodiscard]] PresentResult present_target(Target& target);
+        [[nodiscard]] PresentResult present_target(
+            Target& target, std::chrono::nanoseconds nominal_period);
         void discard_commands() noexcept;
         [[nodiscard]] VkShaderModule create_shader_module(
             std::span<const std::uint32_t> code) const;
@@ -539,6 +544,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             std::uint32_t mip_levels = 1U) const;
         void destroy() noexcept;
 
+        VulkanPresentTiming presentation_timing_;
         VkInstance instance_ { };
         VulkanPresenterConfiguration presenter_;
         VkSurfaceKHR presentation_surface_ { };
@@ -865,6 +871,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             instance_extensions.reserve(presenter_.instance_extensions.size());
             for (const auto& extension : presenter_.instance_extensions)
                 instance_extensions.push_back(extension.c_str());
+            if (presenter_.create_surface)
+                presentation_timing_.add_instance_extensions(
+                    instance_extensions);
             instance_info.enabledExtensionCount =
                 static_cast<std::uint32_t>(instance_extensions.size());
             instance_info.ppEnabledExtensionNames =
@@ -1036,9 +1045,11 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             device_info.pEnabledFeatures = &enabled_features;
             device_info.queueCreateInfoCount = 1;
             device_info.pQueueCreateInfos = &queue_info;
-            constexpr std::array swapchain_extensions {
+            std::vector<const char*> swapchain_extensions {
                 VK_KHR_SWAPCHAIN_EXTENSION_NAME
             };
+            presentation_timing_.configure_device(instance_, physical_device_,
+                presentation_surface_, swapchain_extensions, device_info);
             if (presentation_surface_ != VK_NULL_HANDLE) {
                 device_info.enabledExtensionCount =
                     static_cast<std::uint32_t>(swapchain_extensions.size());
@@ -1048,6 +1059,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             require_success(vkCreateDevice(physical_device_, &device_info,
                                 nullptr, &device_),
                 "vkCreateDevice");
+            presentation_timing_.set_device(device_);
             VmaAllocatorCreateInfo allocator_info { };
             allocator_info.physicalDevice = physical_device_;
             allocator_info.device = device_;
@@ -1379,6 +1391,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         info.presentMode = VK_PRESENT_MODE_FIFO_KHR;
         info.clipped = VK_TRUE;
         info.oldSwapchain = presentation_swapchain_;
+        info.flags =
+            presentation_timing_.swapchain_flags(presentation_surface_);
         VkSwapchainKHR swapchain { };
         if (vkCreateSwapchainKHR(device_, &info, nullptr, &swapchain) !=
             VK_SUCCESS) {
@@ -1414,6 +1428,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         }
         destroy_presentation_swapchain();
         presentation_swapchain_ = swapchain;
+        presentation_timing_.attach(swapchain, info.flags);
         presentation_format_ = selected.format;
         presentation_extent_ = extent;
         presentation_images_ = std::move(images);
@@ -1447,6 +1462,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
 
     void VulkanGlesRenderer::destroy_presentation_swapchain() noexcept
     {
+        presentation_timing_.detach();
         if (device_ != VK_NULL_HANDLE) {
             for (const auto semaphore : presentation_render_finished_) {
                 if (semaphore != VK_NULL_HANDLE)
@@ -2775,7 +2791,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     }
 
     HostGraphicsDevice::PresentResult VulkanGlesRenderer::present_target(
-        Target& target)
+        Target& target, std::chrono::nanoseconds nominal_period)
     {
         // A presentation attempt is also a command-stream flush, even when the
         // host swapchain is temporarily unavailable. Encoder::submit relies on
@@ -2925,7 +2941,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             const PerformanceLatencyScope latency {
                 PerfLatencyKind::QueuePresent
             };
-            result = vkQueuePresentKHR(queue_, &present);
+            result =
+                presentation_timing_.present(queue_, present, nominal_period);
         }
         if (result == VK_ERROR_SURFACE_LOST_KHR) {
             if (!recreate_presentation_surface()) {
@@ -2933,7 +2950,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     std::memory_order_relaxed);
                 return PresentResult::Failed;
             }
-            return present_target(target);
+            return present_target(target, nominal_period);
         }
         if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
             acquired == VK_SUBOPTIMAL_KHR) {
@@ -4395,6 +4412,13 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
     HostGraphicsDevice::PresentResult VulkanGlesRenderer::present(
         const std::shared_ptr<HostSurface>& surface)
     {
+        return present(surface, { });
+    }
+
+    HostGraphicsDevice::PresentResult VulkanGlesRenderer::present(
+        const std::shared_ptr<HostSurface>& surface,
+        std::chrono::nanoseconds nominal_period)
+    {
         if (!surface)
             return PresentResult::Failed;
         last_failure_reason_.store(
@@ -4431,7 +4455,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                     submit_commands(false, PerfSubmitReason::Presentation);
                     return PresentResult::Failed;
                 }
-                presented = present_target(target);
+                presented = present_target(target, nominal_period);
             }
             if (presented != PresentResult::Failed)
                 surface->mark_gpu_synchronized(cpu_generation);

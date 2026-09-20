@@ -45,8 +45,10 @@ DisplayState::DisplayState()
 {
 }
 
-DisplayState::DisplayState(DisplayGeometry geometry)
+DisplayState::DisplayState(
+    DisplayGeometry geometry, std::chrono::nanoseconds nominal_period)
     : geometry_ { geometry.valid() ? geometry : default_display_geometry }
+    , nominal_period_ { nominal_period }
     , pixels_(geometry_.pixel_count(), 0xff000000U)
 {
 }
@@ -215,6 +217,8 @@ void DisplayState::present(std::uint32_t owner_process_id)
                 content_owner_process_id_ };
         }
         frame.orientation = content_orientation_;
+        if (powered_on_)
+            frame.nominal_period = nominal_period_;
     }
     attach_presentation_leases(frame);
     const PerformanceLatencyScope latency { PerfLatencyKind::DisplayPresent };

@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <compare>
 #include <cstdint>
 #include <deque>
@@ -278,6 +279,13 @@ public:
         const HostSurface& surface) const = 0;
     [[nodiscard]] virtual PresentResult present(
         const std::shared_ptr<HostSurface>& surface) = 0;
+    [[nodiscard]] virtual PresentResult present(
+        const std::shared_ptr<HostSurface>& surface,
+        std::chrono::nanoseconds nominal_period)
+    {
+        static_cast<void>(nominal_period);
+        return present(surface);
+    }
     [[nodiscard]] virtual bool native_presentation_available() const = 0;
     // Quiesce and release only the native window-presentation objects while
     // retaining render targets and the rest of the graphics device. Frontends

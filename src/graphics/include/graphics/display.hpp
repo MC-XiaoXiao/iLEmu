@@ -47,6 +47,9 @@ struct DisplayFrame {
     // by DisplayState.
     std::chrono::steady_clock::time_point submitted_at { };
     std::chrono::steady_clock::time_point native_queued_at { };
+    // Emulated display cadence, independent of the host refresh rate. Zero
+    // denotes a synthetic frame or an immediate power transition.
+    std::chrono::nanoseconds nominal_period { };
     // Host-endian 0xAARRGGBB pixels. Backends perform any required upload
     // format conversion without exposing it to the guest graphics HLE.
     std::vector<std::uint32_t> pixels;
@@ -84,7 +87,8 @@ public:
         std::function<DisplayOrientation(std::uint32_t process_id)>;
 
     DisplayState();
-    explicit DisplayState(DisplayGeometry geometry);
+    explicit DisplayState(DisplayGeometry geometry,
+        std::chrono::nanoseconds nominal_period = { });
 
     void set_presenter(Presenter presenter);
     void set_orientation_resolver(OrientationResolver resolver);
@@ -116,6 +120,7 @@ private:
     void refresh_surface_content_revision();
 
     DisplayGeometry geometry_;
+    std::chrono::nanoseconds nominal_period_;
     mutable std::mutex mutex_;
     std::vector<std::uint32_t> pixels_;
     std::shared_ptr<HostSurface> host_surface_;

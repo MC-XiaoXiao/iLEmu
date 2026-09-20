@@ -197,7 +197,9 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     , hfs_volumes_ { rootfs_, device_model_.memory.storage_bytes }
     , hfs_metadata_ { rootfs_ }
     , display_state_ { std::make_shared<DisplayState>(
-          device_model_.screen.panel) }
+          device_model_.screen.panel,
+          std::chrono::nanoseconds {
+              iokit_abi::display_vsync::period_absolute_time }) }
     , audio_service_ { std::make_shared<AudioService>(rootfs_) }
     , userland_hle_ { memory_, output_ }
     , hid_event_system_hle_ { userland_hle_ }
