@@ -1371,6 +1371,10 @@ bool CompatibilityKernel::descriptor_readable(std::uint32_t fd) const
         return false;
     return std::any_of(
         queue->second.begin(), queue->second.end(), [&](const auto& event) {
+            // Disabled knotes cannot make a kqueue readable to select/poll or
+            // to another kqueue watching this descriptor.
+            if (!event.enabled)
+                return false;
             return (event.ident != fd &&
                        event.filter == darwin::kqueue::filter_read &&
                        descriptor_readable(static_cast<std::uint32_t>(event.ident))) ||
@@ -1666,6 +1670,13 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
     std::uint32_t written = 0;
     for (auto registration = queue->second.begin();
         registration != queue->second.end();) {
+        // Match the disabled-knote readiness rule before querying ports,
+        // processes or vnode watches. Preserve the not-ready edge reset.
+        if (!registration->enabled) {
+            registration->clear_delivered = false;
+            ++registration;
+            continue;
+        }
         std::uint32_t filter_flags = 0;
         std::uint32_t available = 1;
         auto process_exec_generation_at_evaluation =
@@ -1719,8 +1730,7 @@ std::optional<std::uint32_t> CompatibilityKernel::collect_ready_kevents(
             available = static_cast<std::uint32_t>(registration->data);
         }
         const auto ready =
-            !registration->enabled ? false
-            : registration->filter == darwin::kqueue::filter_read
+            registration->filter == darwin::kqueue::filter_read
                 ? descriptor_readable(static_cast<std::uint32_t>(registration->ident))
             : registration->filter == darwin::kqueue::filter_write
                 ? descriptor_writable(static_cast<std::uint32_t>(registration->ident))
