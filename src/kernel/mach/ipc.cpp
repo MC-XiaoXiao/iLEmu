@@ -284,20 +284,10 @@ bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(
         return false;
     }
 
-    // A blocked receive is attached to the object selected at receive start.
-    // XNU wakes it with MACH_RCV_PORT_CHANGED when that queue is destroyed or
-    // the receive right is lost; adding a set link keeps the direct waiter on
-    // the original object. A later reuse of the original name must never
-    // redirect the waiter to a different object.
+    // The receive implementation validates the original object and right under
+    // this same lock, including MACH_RCV_PORT_CHANGED after right loss. Reuse
+    // that completion path instead of walking the namespace twice per poll.
     std::lock_guard mach_lock { shared_state_->mach_mutex };
-    if (!pending_mach_receive_is_usable_locked(
-            *shared_state_, process_.pid, pending->second)) {
-        cpu.registers()[0] = darwin::mach_message::receive_port_changed;
-        pending_mach_receives_.erase(pending);
-        process_.waiting_for_events = !pending_mach_receives_.empty();
-        cpu.clear_halt();
-        return true;
-    }
     return deliver_pending_mach_locked(cpu, waking_blocked_receiver);
 }
 
@@ -327,12 +317,10 @@ CompatibilityKernel::preferred_pending_mach_receiver_locked(
     // Reconstruct that choice here so host CPU polling order cannot redirect a
     // shared-port message to a later port set.
     for (auto& [processor, pending] : pending_mach_receives_) {
-        if (!pending_mach_receive_is_usable_locked(
-                *shared_state_, process_.pid, pending)) {
-            continue;
-        }
         if (!pending.receive_is_port_set &&
-            *pending.receive_object == queued_port) {
+            pending.receive_object == queued_port &&
+            pending_mach_receive_is_usable_locked(
+                *shared_state_, process_.pid, pending)) {
             consider(Candidate { pending.wait_queue_sequence,
                 pending.wait_queue_sequence, processor });
         }
