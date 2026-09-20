@@ -917,6 +917,9 @@ namespace mach_support {
                     task, name, xnu::ipc::type_mask(right))) {
                 return false;
             }
+            // A standalone port has no set topology to invalidate, but its
+            // old blocked receiver must still observe MACH_RCV_PORT_CHANGED.
+            state.note_mach_queue_topology_change_locked();
             static_cast<void>(state.remove_mach_port_set_member_from_all_locked(
                 entry->object));
             // XNU ipc_port_clear_receiver discards receiver-local state when
@@ -949,6 +952,9 @@ namespace mach_support {
     {
         if (state.mach_ports_being_removed.contains(object))
             return;
+        // A port-destroyed notification may keep the object alive in transit.
+        // Revoke cached receives even when there is no port-set membership.
+        state.note_mach_queue_topology_change_locked();
         static_cast<void>(
             state.remove_mach_port_set_member_from_all_locked(object));
 

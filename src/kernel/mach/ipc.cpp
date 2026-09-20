@@ -270,15 +270,13 @@ bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(
     if (pending == pending_mach_receives_.end())
         return false;
 
-    // Every enqueue, receive-right invalidation and port-set topology change
-    // advances this generation while holding mach_mutex. If neither it nor the
-    // Guest deadline changed, the previous empty-queue result is still valid;
-    // avoid taking the global IPC lock and walking the task namespace for every
-    // host scheduler pass.
-    const auto queue_generation =
-        shared_state_->mach_queue_generation_snapshot();
+    // Only enqueues visible to this receive (including port-set members),
+    // receive-right invalidation and topology changes require another locked
+    // query. Unrelated messages leave an empty receive's snapshot valid.
     if (pending->second.receive_object &&
-        pending->second.observed_queue_generation == queue_generation &&
+        pending->second.observed_queue_generation ==
+            shared_state_->mach_receive_generation_snapshot(
+                *pending->second.receive_object) &&
         (!pending->second.deadline ||
             shared_state_->clock.now() < *pending->second.deadline)) {
         return false;
@@ -432,7 +430,8 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         // enqueue.
         if (!has_visible_message) {
             receive.observed_queue_generation =
-                shared_state_->mach_queue_generation_snapshot();
+                shared_state_->mach_receive_generation_snapshot(
+                    *receive.receive_object);
         }
         return std::nullopt;
     }
@@ -708,6 +707,9 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
                 release_inflight_send_right_locked(*shared_state_, *object);
             }
             if (*right == xnu::ipc::Right::Receive) {
+                // Legacy uncaptured descriptors can revoke the sender's
+                // receive right at copyout without another enqueue.
+                shared_state_->note_mach_queue_topology_change_locked();
                 static_cast<void>(
                     shared_state_->remove_mach_port_set_member_from_all_locked(
                         *object));

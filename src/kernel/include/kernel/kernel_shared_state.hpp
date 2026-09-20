@@ -55,6 +55,7 @@
 #include "device_state/launchd_job_catalog.hpp"
 #include "mach/mach_namespace.hpp"
 #include "mach/mach_port_object.hpp"
+#include "mach/receive_queue_generation.hpp"
 #include "foundation/touch_input.hpp"
 #include "foundation/virtual_clock.hpp"
 #include "network/virtual_network.hpp"
@@ -163,9 +164,9 @@ struct PendingMachReceive {
     // waiter that started on a port set continues to use that set object after
     // its name is renamed.
     bool receive_is_port_set { };
-    // The shared queue generation observed while this receive last found no
-    // message. A new enqueue or a port-set addition advances the generation,
-    // while an unchanged value proves another locked tree walk cannot succeed.
+    // The object-scoped generation observed while this receive last found no
+    // message. Enqueues to the object or its set members, rights loss and
+    // topology changes invalidate this snapshot; unrelated queues need not.
     std::uint64_t observed_queue_generation { };
     // XNU places a blocked receiver into a FIFO wait queue. Keep the insertion
     // order so a port linked to more than one port set wakes the same waiter
@@ -1306,7 +1307,7 @@ struct KernelSharedState {
     // poll from the scheduler. Keep the cheap readiness snapshot lock-free;
     // the queue and every generation transition remain serialized by
     // mach_mutex.
-    std::atomic_uint64_t mach_queue_generation { 1 };
+    xnu::ipc::ReceiveQueueGeneration mach_queue_generation;
     // Timer/deadline topology can change at any Guest kernel entry. Keep this
     // conservative generation separate from descriptor readiness: ordinary
     // syscalls must not invalidate every unrelated blocked kqueue.
@@ -1345,7 +1346,12 @@ struct KernelSharedState {
                 }
             }
         }
-        mach_queue_generation.fetch_add(1, std::memory_order_release);
+        mach_queue_generation.note_enqueue(destination);
+        if (const auto links = mach_port_set_links_by_member.find(destination);
+            links != mach_port_set_links_by_member.end()) {
+            for (const auto& link : links->second)
+                mach_queue_generation.note_enqueue(link.set_object);
+        }
     }
 
     // The caller holds mach_mutex. Deliver armed name notifications when a
@@ -1376,12 +1382,18 @@ struct KernelSharedState {
     // newly visible without enqueueing another message.
     void note_mach_queue_topology_change_locked()
     {
-        mach_queue_generation.fetch_add(1, std::memory_order_release);
+        mach_queue_generation.note_topology_change();
     }
 
     [[nodiscard]] std::uint64_t mach_queue_generation_snapshot() const
     {
-        return mach_queue_generation.load(std::memory_order_acquire);
+        return mach_queue_generation.snapshot();
+    }
+
+    [[nodiscard]] std::uint64_t mach_receive_generation_snapshot(
+        std::uint32_t object) const
+    {
+        return mach_queue_generation.snapshot(object);
     }
 
     void note_kernel_event_transition()
