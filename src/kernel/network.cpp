@@ -1426,6 +1426,33 @@ bool CompatibilityKernel::descriptor_writable(std::uint32_t fd) const
 
 bool CompatibilityKernel::descriptor_requires_host_poll(std::uint32_t fd) const
 {
+    // Most pending waits refer to leaf descriptors. Avoid allocating a cycle
+    // guard for those immutable terminal cases; recursive traversal remains
+    // unchanged for dup chains and kqueues with active read/write knotes.
+    if (!duplicated_descriptors_.contains(fd)) {
+        if (host_sockets_.contains(fd) || virtual_udp_sockets_.contains(fd) ||
+            bpf_descriptors_.contains(fd) ||
+            wifi_driver_event_streams_.contains(fd)) {
+            return true;
+        }
+        if (const auto kind = virtual_descriptors_.find(fd);
+            kind != virtual_descriptors_.end() &&
+            (kind->second == bsd::baseband_device::descriptor_kind ||
+                kind->second == bsd::offline_serial_device::descriptor_kind)) {
+            return true;
+        }
+        const auto queue = kqueues_.find(fd);
+        if (queue == kqueues_.end())
+            return false;
+        const auto active = std::any_of(queue->second.begin(), queue->second.end(),
+            [](const auto& registration) {
+                return registration.enabled &&
+                    (registration.filter == darwin::kqueue::filter_read ||
+                        registration.filter == darwin::kqueue::filter_write);
+            });
+        if (!active)
+            return false;
+    }
     std::unordered_set<std::uint32_t> visited;
     return descriptor_requires_host_poll(fd, visited);
 }
