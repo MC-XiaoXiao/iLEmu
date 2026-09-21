@@ -41,6 +41,7 @@ namespace {
         .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
         .stack_snapshot_abi = DarwinStackSnapshotAbi::LegacyFourArguments,
         .iokit_matching_rpc = DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1,
+        .io_service_state = DarwinIOServiceStateAbi::StateWithBusyAccounting,
         .capabilities = { .send_sigsys = true },
     };
 
@@ -115,6 +116,8 @@ namespace {
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
                 .activation_hardware_model_policy =
                     ActivationHardwareModelPolicy::DevelopmentBoard,
+                .io_service_state =
+                    DarwinIOServiceStateAbi::StateWithBusyAccounting,
                 .capabilities = { .send_sigsys = true },
             },
         },
@@ -131,6 +134,8 @@ namespace {
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
                 .activation_hardware_model_policy =
                     ActivationHardwareModelPolicy::DevelopmentBoard,
+                .io_service_state =
+                    DarwinIOServiceStateAbi::StateWithBusyAccounting,
                 .capabilities = { .send_sigsys = true },
             },
         },
@@ -148,6 +153,8 @@ namespace {
                 .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
                 .activation_hardware_model_policy =
                     ActivationHardwareModelPolicy::DevelopmentBoard,
+                .io_service_state =
+                    DarwinIOServiceStateAbi::StateWithBusyAccounting,
                 .capabilities = { .send_sigsys = true },
             },
         },
@@ -172,6 +179,8 @@ namespace {
                     DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1,
                 .activation_hardware_model_policy =
                     ActivationHardwareModelPolicy::DevelopmentBoard,
+                .io_service_state =
+                    DarwinIOServiceStateAbi::StateWithBusyAccounting,
                 .capabilities = { .send_sigsys = true },
             },
         },
@@ -218,6 +227,8 @@ namespace {
                 .memory_status_priority = DarwinMemoryStatusPriorityAbi::PriorityBands,
                 .hid_digitizer = DarwinHidDigitizerAbi::CollectionContactChangesWithEdgeOrigin,
                 .address_layout = DarwinAddressLayout::ExpandedArmSharedRegion,
+                .io_service_state =
+                    DarwinIOServiceStateAbi::StateWithBusyAccounting,
                 .capabilities = { .send_sigsys = true },
             },
         },

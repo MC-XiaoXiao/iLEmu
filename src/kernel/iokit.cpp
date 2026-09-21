@@ -2330,7 +2330,9 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         constexpr std::uint64_t first_match = 1ULL << 4U;
         constexpr std::uint64_t active_state =
             registered | matched | first_publish | first_match;
-        constexpr std::uint32_t reply_size = 44U;
+        const bool busy_accounting = shared_state.darwin_abi.io_service_state ==
+            DarwinIOServiceStateAbi::StateWithBusyAccounting;
+        const std::uint32_t reply_size = busy_accounting ? 56U : 44U;
         if (receive_size < reply_size)
             return mach_rcv_invalid_data;
 
@@ -2341,7 +2343,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
         }
         const auto result = valid_service ? iokit_abi::success
                                           : iokit_abi::bad_argument;
-        const std::array<std::uint32_t, reply_size / sizeof(std::uint32_t)>
+        const std::array<std::uint32_t, 11>
             reply {
                 mach_reply_bits,
                 reply_size,
@@ -2361,7 +2363,16 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                      std::to_string(remote_object) + " state=" +
                      std::to_string(valid_service ? active_state : 0U) +
                      " result=" + std::to_string(result) + "\n");
-        return write_reply(memory, message_address, reply);
+        const auto write_result = write_reply(memory, message_address, reply);
+        if (write_result != 0 || !busy_accounting)
+            return write_result;
+        // Services are published synchronously: no outstanding busy work or
+        // accumulated busy time. ARM32 MIG packs these fields at 4-byte
+        // alignment, including the trailing uint64_t.
+        const std::array<std::uint32_t, 3> accounting {
+            iokit_abi::service_busy_state_quiet, 0U, 0U
+        };
+        return write_reply(memory, message_address + 44U, accounting);
     }
 
     if (message_id == device_mig::id(

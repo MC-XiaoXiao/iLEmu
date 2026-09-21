@@ -55,6 +55,13 @@ enum class DarwinIOConnectMethodAbi : std::uint8_t {
     MachVm64OolStructureThenScalar,
 };
 
+// io_service_get_state kept its MIG id when busy accounting was appended
+// to the reply. Legacy clients require the original, shorter message.
+enum class DarwinIOServiceStateAbi : std::uint8_t {
+    StateOnly,
+    StateWithBusyAccounting,
+};
+
 // Address width changed within the Darwin 11 ARM32 family. It is independent
 // of the kernel epoch and of vm_map's always-natural-sized address fields.
 enum class DarwinMachVmAddressWidth : std::uint8_t {
@@ -230,6 +237,9 @@ struct DarwinAbi {
         ActivationHardwareModelPolicy::Retail
     };
     DarwinAddressLayout address_layout { DarwinAddressLayout::ClassicArm };
+    DarwinIOServiceStateAbi io_service_state {
+        DarwinIOServiceStateAbi::StateOnly
+    };
     DarwinGuestCapabilities capabilities;
 };
 
