@@ -13,7 +13,7 @@ namespace ilemu {
 
 namespace {
 
-    constexpr std::array<DeviceModel, 9> models {
+    constexpr std::array<DeviceModel, 10> models {
         DeviceModel {
             .identity = {
                 .product_type = "iPhone1,1",
@@ -200,6 +200,52 @@ namespace {
                 .graphics_services = {
                     .device_name = "iPhone",
                     .marketing_name = "iPhone 4S",
+                    .supports_multitasking = true,
+                    .supports_cellular_data = true,
+                },
+                .external_framebuffer = {
+                    .service_class = "AppleM2TVOut",
+                    .geometry = { 720U, 480U },
+                },
+            },
+            .keybag = virtual_keybag_capabilities,
+            .baseband = {
+                .transport = BasebandTransport::Offline,
+                .device_available = true,
+            },
+            .audio = AudioHardwareProfile::CodecBasebandVoiceRouting,
+        },
+        DeviceModel {
+            .identity = {
+                .product_type = "iPhone5,1",
+                .board_config = "N41AP",
+                .activation_hardware_model = "N41DEV",
+                .model_number = "MD634",
+                .activation_hardware_model_policy =
+                    ActivationHardwareModelPolicy::Retail,
+            },
+            .processor = {
+                .soc = "Apple A6 (S5L8950)",
+                .model = ArmCpuModelKind::AppleSwift,
+                .bus_hz = 100'000'000,
+                .topology = GuestCpuTopology::symmetric_cores(2U, 1'300'000'000U,
+                    GuestCpuPerformanceClass::Performance,
+                    guest_cpu_isa::armv7 | guest_cpu_isa::thumb |
+                        guest_cpu_isa::thumb2,
+                    10U),
+            },
+            .memory = {
+                .ram_bytes = 1024ULL * 1024ULL * 1024ULL,
+                .storage_bytes = 16ULL * 1024ULL * 1024ULL * 1024ULL,
+            },
+            .screen = {
+                .panel = DisplayGeometry { 640U, 1136U },
+                .user_interface = DisplayGeometry { 320U, 568U },
+                .accelerator = GraphicsAcceleratorKind::Sgx543,
+                .framebuffer_service_class = "AppleCLCD",
+                .graphics_services = {
+                    .device_name = "iPhone",
+                    .marketing_name = "iPhone 5",
                     .supports_multitasking = true,
                     .supports_cellular_data = true,
                 },

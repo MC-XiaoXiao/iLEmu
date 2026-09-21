@@ -1434,6 +1434,8 @@ std::string mach_cpu_name(std::uint32_t cpu_type, std::uint32_t cpu_subtype)
         return "ARM-XScale";
     case 9:
         return "ARMv7";
+    case 11:
+        return "ARMv7s";
     default:
         return "ARM-subtype-" + std::to_string(cpu_subtype & 0xffU);
     }

@@ -37,6 +37,8 @@ struct DeviceProcessorProfile {
             return "Cortex-A8";
         case ArmCpuModelKind::CortexA9:
             return "Cortex-A9";
+        case ArmCpuModelKind::AppleSwift:
+            return "Apple Swift";
         }
         return {};
     }

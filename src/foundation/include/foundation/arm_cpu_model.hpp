@@ -23,6 +23,7 @@ enum class ArmCpuModelKind : std::uint8_t {
     Arm1176JzfS,
     CortexA8,
     CortexA9,
+    AppleSwift,
 };
 
 // ARM permits implementation-defined handling for instructions whose result
@@ -41,6 +42,7 @@ enum class ArmUnpredictableInstructionPolicy : std::uint8_t {
         return ArmArchitectureVersion::Armv6K;
     case ArmCpuModelKind::CortexA8:
     case ArmCpuModelKind::CortexA9:
+    case ArmCpuModelKind::AppleSwift:
         return ArmArchitectureVersion::Armv7;
     }
     return ArmArchitectureVersion::Armv6K;
@@ -56,6 +58,15 @@ enum class ArmUnpredictableInstructionPolicy : std::uint8_t {
         return 9U; // CPU_SUBTYPE_ARM_V7
     }
     return 6U;
+}
+
+[[nodiscard]] constexpr std::uint32_t mach_cpu_subtype_for_model(
+    ArmCpuModelKind kind) noexcept
+{
+    // CPU_SUBTYPE_ARM_V7S is the Mach-O ABI selected by Apple's Swift core.
+    if (kind == ArmCpuModelKind::AppleSwift)
+        return 11U;
+    return mach_cpu_subtype_for_architecture(arm_architecture_for_model(kind));
 }
 
 // A device-specific ARM core model. It selects both the decoder architecture

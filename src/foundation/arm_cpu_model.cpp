@@ -179,6 +179,7 @@ std::unique_ptr<ArmCpuModel> make_arm_cpu_model(
         return std::make_unique<Arm1176CpuModel>(clock_hz);
     case ArmCpuModelKind::CortexA8:
     case ArmCpuModelKind::CortexA9:
+    case ArmCpuModelKind::AppleSwift:
         return std::make_unique<Armv7CpuModel>(kind, clock_hz);
     }
     throw std::invalid_argument { "unsupported ARM CPU model" };

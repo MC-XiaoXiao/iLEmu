@@ -303,8 +303,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         device_model_.keybag.virtual_effaceable_storage_available;
     shared_state_->effaceable_storage_blob =
         device_model_.keybag.virtual_effaceable_storage_blob;
-    shared_state_->device_cpu_subtype = mach_cpu_subtype_for_architecture(
-        arm_architecture_for_model(device_model_.processor.model));
+    shared_state_->device_cpu_subtype =
+        mach_cpu_subtype_for_model(device_model_.processor.model);
     const auto virtual_baseband =
         device_model_.baseband.transport == BasebandTransport::Virtual;
     const auto offline_baseband =
