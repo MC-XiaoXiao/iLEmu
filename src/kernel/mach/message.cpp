@@ -702,17 +702,11 @@ void CompatibilityKernel::dispatch_mach_message(
             // A task-local send name resolves to one global ipc_port
             // object. Port-set membership is retained separately because
             // a receive right may be temporarily in transit.
-            const auto is_port_set_member = std::any_of(
-                shared_state_->mach_port_sets.begin(),
-                shared_state_->mach_port_sets.end(), [&](const auto& port_set) {
-                    return std::find(port_set.second.begin(),
-                               port_set.second.end(),
-                               remote_object) != port_set.second.end();
-                });
             routable =
                 destination_object &&
                 (shared_state_->mach_port_objects.contains(remote_object) ||
-                    is_port_set_member);
+                    shared_state_->mach_port_set_links_by_member.contains(
+                        remote_object));
             // CoreFoundation deliberately uses a zero-timeout send for run-loop
             // wakeups. XNU rejects a duplicate wakeup once the port's
             // one-message queue is full; allowing it to grow without bound
