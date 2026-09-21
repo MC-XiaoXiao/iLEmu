@@ -14,7 +14,9 @@
 #include "mach/mig_wire_abi.hpp"
 #include "mach/vm_map_mig_ids.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cstddef>
 #include <cstdint>
 
 #include "../support.hpp"
@@ -33,6 +35,27 @@ namespace {
     constexpr std::uint32_t reply_size = 36U;
 
 } // namespace
+
+bool CompatibilityKernel::unmap_memory(
+    Cpu& cpu, std::uint32_t address, std::uint32_t size)
+{
+    if (!memory_.unmap(address, size))
+        return false;
+    if (size == 0U)
+        return true;
+
+    constexpr auto page_mask =
+        static_cast<std::uint64_t>(AddressSpace::page_size - 1U);
+    const auto first = static_cast<std::uint64_t>(address) & ~page_mask;
+    const auto requested_end = static_cast<std::uint64_t>(address) + size;
+    const auto end = std::min<std::uint64_t>(
+        (requested_end + page_mask) & ~page_mask, std::uint64_t { 1 } << 32U);
+    if (end > first) {
+        cpu.invalidate_cache_range(static_cast<std::uint32_t>(first),
+            static_cast<std::size_t>(end - first));
+    }
+    return true;
+}
 
 bool CompatibilityKernel::dispatch_mach_vm_deallocate_message(
     Cpu& cpu, const MachMessageRequest& request)
@@ -66,7 +89,7 @@ bool CompatibilityKernel::dispatch_mach_vm_deallocate_message(
     if (address && size && targets_current_task) {
         // vm_deallocate treats an already-unmapped subrange as success; unmap
         // whatever currently overlaps the requested page range.
-        static_cast<void>(memory_.unmap(*address, *size));
+        static_cast<void>(unmap_memory(cpu, *address, *size));
         result = darwin::mach::success;
     }
 

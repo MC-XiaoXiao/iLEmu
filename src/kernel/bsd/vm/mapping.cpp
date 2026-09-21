@@ -170,7 +170,7 @@ void CompatibilityKernel::complete_bsd_mapping(
             bsd_error(cpu, bsd_support::invalid_argument);
             return;
         }
-        memory_.unmap(address, mapped_size);
+        static_cast<void>(unmap_memory(cpu, address, mapped_size));
     }
     if ((flags & darwin::map_flag::anonymous) == 0) {
         if (!memory_.map_file_backing(address, mapped_size, permissions,

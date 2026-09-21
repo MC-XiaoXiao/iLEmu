@@ -200,7 +200,7 @@ bool CompatibilityKernel::dispatch_mach_vm_remap_message(
     if (result == kern_success &&
         guest_region_overlaps(memory_, target_address, *size)) {
         if ((*flags & darwin::mach::vm_flags_overwrite) == 0U ||
-            !memory_.unmap(target_address, *size)) {
+            !unmap_memory(cpu, target_address, *size)) {
             result = kern_no_space;
         }
     }

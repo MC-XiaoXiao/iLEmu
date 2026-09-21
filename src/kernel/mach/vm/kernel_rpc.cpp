@@ -95,7 +95,7 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
         if (allocation.result == darwin::mach::success &&
             !(wide ? memory_.write64(address_pointer, allocation.address)
                    : memory_.write32(address_pointer, allocation.address))) {
-            static_cast<void>(memory_.unmap(
+            static_cast<void>(unmap_memory(cpu,
                 allocation.address, static_cast<std::uint32_t>(size)));
             registers[0] = darwin::mach::invalid_address;
             return true;
@@ -150,7 +150,7 @@ bool CompatibilityKernel::dispatch_mach_vm_kernel_rpc_trap(
         registers[0] = darwin::mach::invalid_argument;
         return true;
     }
-    static_cast<void>(memory_.unmap(static_cast<std::uint32_t>(address),
+    static_cast<void>(unmap_memory(cpu, static_cast<std::uint32_t>(address),
         static_cast<std::uint32_t>(size)));
     registers[0] = darwin::mach::success;
     return true;
