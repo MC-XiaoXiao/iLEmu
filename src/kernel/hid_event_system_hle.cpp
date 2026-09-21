@@ -86,8 +86,7 @@ void HidEventSystemHle::reset(std::uint32_t process)
 bool HidEventSystemHle::prepare_pending_event(
     Cpu& cpu, std::uint32_t process, std::uint32_t svc_immediate)
 {
-    if (consumer_process_ != process ||
-        consumer_processor_ != cpu.processor_id() || !state_ || delivering_ ||
+    if (!is_event_consumer(process, cpu.processor_id()) || !state_ || delivering_ ||
         svc_immediate != 0x80U ||
         static_cast<std::int32_t>(cpu.registers()[12]) != -31 ||
         cpu.registers()[2] != 0U || (cpu.registers()[1] & 2U) == 0U)

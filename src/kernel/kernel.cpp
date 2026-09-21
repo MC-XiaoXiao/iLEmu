@@ -1525,8 +1525,15 @@ CompatibilityKernel::pending_event_poll_candidates()
     std::optional<std::uint64_t> next_deadline;
     bool requires_host_probe = false;
     for (const auto processor : pending_event_processors_) {
-        if (pending_mach_receives_.contains(processor) ||
-            pending_io_poll_required_locked(processor)) {
+        const auto receive = pending_mach_receives_.find(processor);
+        // HID callbacks enter through a blocked receive independently of its
+        // Mach queue. Keep that consumer eligible even while the queue is empty.
+        const auto hid_receiver =
+            hid_event_system_hle_.is_event_consumer(process_.pid, processor);
+        if (receive != pending_mach_receives_.end()
+                ? hid_receiver || mach_receive_poll_required_locked(
+                                      receive->second, guest_now)
+                : pending_io_poll_required_locked(processor)) {
             processors.push_back(processor);
         }
         if (const auto deadline = pending_io_deadline_locked(processor);

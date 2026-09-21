@@ -25,6 +25,11 @@ public:
     explicit HidEventSystemHle(UserlandHleRegistry& registry);
     void set_shared_state(std::shared_ptr<KernelSharedState> state);
     void reset(std::uint32_t process);
+    [[nodiscard]] bool is_event_consumer(
+        std::uint32_t process, std::size_t processor) const
+    {
+        return consumer_process_ == process && consumer_processor_ == processor;
+    }
     [[nodiscard]] std::optional<std::uint64_t> next_sample_deadline() const
     {
         return delivering_ ? std::nullopt : accelerometer_.next_deadline();

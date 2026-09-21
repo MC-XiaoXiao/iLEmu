@@ -702,6 +702,8 @@ private:
         bool shared_cache_mapping = false);
     void install_commpage();
     void configure_darwin_notify_state();
+    [[nodiscard]] bool mach_receive_poll_required_locked(
+        const PendingMachReceive& pending, std::uint64_t now) const;
     bool deliver_pending_mach_if_ready_locked(
         Cpu& cpu, bool waking_blocked_receiver);
     [[nodiscard]] std::optional<std::size_t>

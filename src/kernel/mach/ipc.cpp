@@ -263,22 +263,26 @@ std::optional<std::size_t> CompatibilityKernel::pending_mach_receiver_processor(
     return preferred_pending_mach_receiver_locked(object);
 }
 
+bool CompatibilityKernel::mach_receive_poll_required_locked(
+    const PendingMachReceive& pending, std::uint64_t now) const
+{
+    // Only enqueues visible to this receive (including port-set members),
+    // receive-right invalidation and topology changes require another locked
+    // query. Unrelated messages leave an empty receive's snapshot valid.
+    return !pending.receive_object ||
+        pending.observed_queue_generation !=
+            shared_state_->mach_receive_generation_snapshot(
+                *pending.receive_object) ||
+        (pending.deadline && now >= *pending.deadline);
+}
+
 bool CompatibilityKernel::deliver_pending_mach_if_ready_locked(
     Cpu& cpu, bool waking_blocked_receiver)
 {
     const auto pending = pending_mach_receives_.find(cpu.processor_id());
-    if (pending == pending_mach_receives_.end())
-        return false;
-
-    // Only enqueues visible to this receive (including port-set members),
-    // receive-right invalidation and topology changes require another locked
-    // query. Unrelated messages leave an empty receive's snapshot valid.
-    if (pending->second.receive_object &&
-        pending->second.observed_queue_generation ==
-            shared_state_->mach_receive_generation_snapshot(
-                *pending->second.receive_object) &&
-        (!pending->second.deadline ||
-            shared_state_->clock.now() < *pending->second.deadline)) {
+    if (pending == pending_mach_receives_.end() ||
+        !mach_receive_poll_required_locked(
+            pending->second, shared_state_->clock.now())) {
         return false;
     }
 
