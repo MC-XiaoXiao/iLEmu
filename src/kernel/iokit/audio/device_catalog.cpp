@@ -223,6 +223,44 @@ namespace {
             application_voice_source, false, std::nullopt, voice_sources },
     };
 
+    // Speaker protection is a separate HAL endpoint. Its route handler uses
+    // the UID "Speaker" and resolves the ordinary output controls on that
+    // endpoint before connecting it to the Codec device.
+    constexpr std::array speaker_protection_streams {
+        IOAudio2StreamDescription {
+            .identifier = 1,
+            .direction = IOAudio2StreamDirection::Output,
+            .starting_channel = 1,
+            .buffer_mapping_options = 1,
+            .buffer_size = 4096,
+            .format = codec_streams[0].format,
+            .available_formats = {},
+        },
+        IOAudio2StreamDescription {
+            .identifier = 2,
+            .direction = IOAudio2StreamDirection::Input,
+            .starting_channel = 1,
+            .buffer_mapping_options = 1,
+            .buffer_size = 2048,
+            .format = codec_streams[1].format,
+            .available_formats = {},
+        },
+    };
+    constexpr std::array speaker_protection_controls {
+        IOAudio2ControlDescription { 5U, boolean_control_base_class,
+            mute_control_class, output_scope, 0U, 0U, false, std::nullopt,
+            { } },
+        IOAudio2ControlDescription { 7U, level_control_base_class,
+            volume_control_class, output_scope, 0U, 254U, false,
+            master_output_range, { } },
+        IOAudio2ControlDescription { 8U, level_control_base_class,
+            volume_control_class, output_scope, 1U, 63U, false,
+            channel_output_range, { } },
+        IOAudio2ControlDescription { 9U, boolean_control_base_class,
+            mute_control_class, output_scope, 1U, 0U, false, std::nullopt,
+            { } },
+    };
+
     constexpr std::array device_catalog {
         IOAudio2DeviceDescription {
             .name = "Built-in Audio",
@@ -253,11 +291,30 @@ namespace {
         },
     };
 
+    constexpr std::array speaker_protection_device_catalog {
+        device_catalog[0],
+        device_catalog[1],
+        device_catalog[2],
+        IOAudio2DeviceDescription {
+            .name = "Speaker",
+            .manufacturer = "Apple Computer, Inc.",
+            .uid = "Speaker",
+            .transport_type = built_in_transport_type,
+            .io_buffer_frame_size = 1024,
+            .streams = speaker_protection_streams,
+            .controls = speaker_protection_controls,
+        },
+    };
+
 } // namespace
 
 std::span<const IOAudio2DeviceDescription> IOAudio2DeviceCatalog::devices(
     AudioHardwareProfile profile)
 {
+    if (profile ==
+        AudioHardwareProfile::CodecBasebandVoiceRoutingSpeakerProtection)
+        return std::span { speaker_protection_device_catalog };
+
     const auto devices = std::span { device_catalog };
     return profile == AudioHardwareProfile::CodecBasebandVoiceRouting
                ? devices
@@ -265,12 +322,13 @@ std::span<const IOAudio2DeviceDescription> IOAudio2DeviceCatalog::devices(
 }
 
 const IOAudio2DeviceDescription* IOAudio2DeviceCatalog::find(
-    std::string_view uid)
+    std::string_view uid, AudioHardwareProfile profile)
 {
+    const auto available_devices = devices(profile);
     const auto device =
-        std::find_if(device_catalog.begin(), device_catalog.end(),
+        std::find_if(available_devices.begin(), available_devices.end(),
             [uid](const auto& candidate) { return candidate.uid == uid; });
-    return device == device_catalog.end() ? nullptr : &*device;
+    return device == available_devices.end() ? nullptr : &*device;
 }
 
 } // namespace ilemu::kernel_iokit::audio

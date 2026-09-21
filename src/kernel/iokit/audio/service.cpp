@@ -372,7 +372,8 @@ namespace {
         const auto connection = state.iokit_connections.find(connection_object);
         for (const auto& [uid, service_object] : state.ioaudio2_services) {
             if (service_object == connection->second.service_port)
-                return IOAudio2DeviceCatalog::find(uid);
+                return IOAudio2DeviceCatalog::find(
+                    uid, state.audio_hardware_profile);
         }
         return nullptr;
     }

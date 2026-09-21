@@ -259,7 +259,8 @@ namespace {
                 .transport = BasebandTransport::Offline,
                 .device_available = true,
             },
-            .audio = AudioHardwareProfile::CodecBasebandVoiceRouting,
+            .audio =
+                AudioHardwareProfile::CodecBasebandVoiceRoutingSpeakerProtection,
         },
         DeviceModel {
             .identity = {

@@ -34,6 +34,9 @@ struct BasebandProfile {
 enum class AudioHardwareProfile : std::uint8_t {
     CodecBaseband,
     CodecBasebandVoiceRouting,
+    // Speaker-protection hardware exposes a separate Speaker endpoint in
+    // addition to the codec/baseband/voice routing graph.
+    CodecBasebandVoiceRoutingSpeakerProtection,
 };
 
 // A physical ambient-light controller is discovered by early ThermalMonitor

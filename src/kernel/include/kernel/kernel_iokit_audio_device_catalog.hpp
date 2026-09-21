@@ -84,7 +84,8 @@ public:
     [[nodiscard]] static std::span<const IOAudio2DeviceDescription> devices(
         AudioHardwareProfile profile = AudioHardwareProfile::CodecBaseband);
     [[nodiscard]] static const IOAudio2DeviceDescription* find(
-        std::string_view uid);
+        std::string_view uid,
+        AudioHardwareProfile profile = AudioHardwareProfile::CodecBaseband);
 };
 
 } // namespace ilemu::kernel_iokit::audio
