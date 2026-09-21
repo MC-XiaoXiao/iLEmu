@@ -912,6 +912,13 @@ bool UserlandHleCall::continue_deferred_guest_function(
         std::move(setup), std::move(completion));
 }
 
+bool UserlandHleCall::continue_deferred_guest_callback(
+    std::uint32_t address, Continuation setup, Continuation completion)
+{
+    return registry_.defer_guest_callback(address, cpu_.processor_id(), false,
+        std::move(setup), std::move(completion));
+}
+
 void UserlandHleCall::resume_original() { resume_original_ = true; }
 
 void UserlandHleCall::resume_original_persistently()
@@ -2604,9 +2611,23 @@ bool UserlandHleRegistry::defer_guest_function(std::string_view symbol,
     const auto thumb = installed_symbol_thumb_.find(symbol);
     if (!address || thumb == installed_symbol_thumb_.end())
         return false;
+    return defer_guest_callback(*address | (thumb->second ? 1U : 0U),
+        processor_id, wait_for_receive_boundary, std::move(setup),
+        std::move(completion));
+}
+
+bool UserlandHleRegistry::defer_guest_callback(std::uint32_t address,
+    std::size_t processor_id, bool wait_for_receive_boundary, Handler setup,
+    Handler completion)
+{
+    const auto thumb = (address & 1U) != 0U;
+    address &= ~1U;
+    if (!setup || address == 0U || !memory_.mapped(address, thumb ? 2U : 4U)) {
+        return false;
+    }
     deferred_guest_calls_.push_back(
-        DeferredGuestCall { *address, processor_id, wait_for_receive_boundary,
-            thumb->second, std::move(setup), std::move(completion) });
+        DeferredGuestCall { address, processor_id, wait_for_receive_boundary,
+            thumb, std::move(setup), std::move(completion) });
     return true;
 }
 

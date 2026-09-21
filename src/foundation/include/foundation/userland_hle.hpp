@@ -96,6 +96,11 @@ public:
     // service decoding remains one event-loop delivery.
     [[nodiscard]] bool continue_deferred_guest_function(std::string_view symbol,
         Continuation setup, Continuation completion = { });
+    // Continue the current deferred transaction through a runtime-registered
+    // guest callback. Function pointers retain the ARM/Thumb selector in bit
+    // zero, just like native Darwin callback registrations.
+    [[nodiscard]] bool continue_deferred_guest_callback(std::uint32_t address,
+        Continuation setup, Continuation completion = { });
     // Stop intercepting this entry in the current process and execute the
     // original guest implementation from its first instruction.
     void resume_original();
@@ -400,6 +405,9 @@ private:
         std::uint32_t return_address,
         UserlandHleCall::Continuation continuation);
     [[nodiscard]] bool defer_guest_function(std::string_view symbol,
+        std::size_t processor_id, bool wait_for_receive_boundary, Handler setup,
+        Handler completion);
+    [[nodiscard]] bool defer_guest_callback(std::uint32_t address,
         std::size_t processor_id, bool wait_for_receive_boundary, Handler setup,
         Handler completion);
     [[nodiscard]] bool deliver_deferred_guest_function(

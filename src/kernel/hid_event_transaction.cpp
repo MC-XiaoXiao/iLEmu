@@ -44,14 +44,18 @@ namespace {
 
     void prepare_digitizer(UserlandHleCall& call,
         const HidEventQueue::Event& event, float width, float height,
-        bool collection, DarwinHidDigitizerAbi digitizer_abi)
+        bool collection, bool collection_contact_changes,
+        DarwinHidDigitizerAbi digitizer_abi)
     {
         const auto& touch = std::get<TouchInput>(event.input);
         const auto active =
             touch.phase == TouchPhase::Down || touch.phase == TouchPhase::Move;
         using Profile = Arm32DigitizerEventProfile;
         auto mask = Profile::position_changed;
-        if (!collection ||
+        // Raw IOHIDEventSystemClient callbacks consume collection lifecycle
+        // changes. Darwin's primary dispatcher may instead require the
+        // device-profiled child-only contract, so keep the roles independent.
+        if (!collection || collection_contact_changes ||
             digitizer_abi != DarwinHidDigitizerAbi::ChildContactChanges) {
             if (touch.phase != TouchPhase::Move)
                 mask |= Profile::range_changed | Profile::touch_changed;
@@ -111,6 +115,17 @@ namespace {
                           : Step::Accelerometer }
         {
         }
+        NativeEventTransaction(HidEventQueue::Event event,
+            HidEventQueue::Observer observer, DisplayGeometry geometry,
+            DarwinHidDigitizerAbi digitizer_abi, Completion completion)
+            : event_ { event }
+            , observer_ { observer }
+            , geometry_ { geometry }
+            , digitizer_abi_ { digitizer_abi }
+            , completion_ { std::move(completion) }
+            , step_ { Step::Hand }
+        {
+        }
 
         bool start(UserlandHleRegistry& registry, std::size_t processor)
         {
@@ -134,6 +149,7 @@ namespace {
             Append,
             ReleaseFinger,
             Dispatch,
+            Callback,
             ReleaseEvent
         };
         void setup(UserlandHleCall& call)
@@ -177,7 +193,7 @@ namespace {
                 prepare_digitizer(call, event_,
                     static_cast<float>(geometry_.width),
                     static_cast<float>(geometry_.height), step_ == Step::Hand,
-                    digitizer_abi_);
+                    observer_.has_value(), digitizer_abi_);
                 break;
             case Step::Append:
                 r[0] = root_event_;
@@ -190,6 +206,12 @@ namespace {
             case Step::Dispatch:
                 r[0] = system_;
                 r[1] = root_event_;
+                break;
+            case Step::Callback:
+                r[0] = observer_->target;
+                r[1] = observer_->refcon;
+                r[2] = observer_->client;
+                r[3] = root_event_;
                 break;
             case Step::ReleaseEvent:
                 r[0] = root_event_;
@@ -230,10 +252,15 @@ namespace {
                 symbol = "_CFRelease";
                 break;
             case Step::ReleaseFinger:
-                step_ = Step::Dispatch;
-                symbol = "__IOHIDEventSystemDispatchEvent";
+                if (observer_) {
+                    step_ = Step::Callback;
+                } else {
+                    step_ = Step::Dispatch;
+                    symbol = "__IOHIDEventSystemDispatchEvent";
+                }
                 break;
             case Step::Dispatch:
+            case Step::Callback:
                 step_ = Step::ReleaseEvent;
                 symbol = "_CFRelease";
                 break;
@@ -241,17 +268,26 @@ namespace {
                 completion_();
                 return;
             }
-            if (!call.continue_deferred_guest_function(
-                    symbol,
-                    [self = shared_from_this()](
-                        UserlandHleCall& next) { self->setup(next); },
-                    [self = shared_from_this()](
-                        UserlandHleCall& next) { self->complete(next); })) {
+            const auto setup = [self = shared_from_this()](
+                                   UserlandHleCall& next) {
+                self->setup(next);
+            };
+            const auto completed = [self = shared_from_this()](
+                                       UserlandHleCall& next) {
+                self->complete(next);
+            };
+            const auto queued = step_ == Step::Callback
+                                    ? call.continue_deferred_guest_callback(
+                                          observer_->callback, setup, completed)
+                                    : call.continue_deferred_guest_function(
+                                          symbol, setup, completed);
+            if (!queued) {
                 completion_();
             }
         }
         HidEventQueue::Event event_;
-        std::uint32_t system_;
+        std::uint32_t system_ { };
+        std::optional<HidEventQueue::Observer> observer_;
         DisplayGeometry geometry_;
         DarwinHidDigitizerAbi digitizer_abi_;
         Completion completion_;
@@ -270,6 +306,16 @@ bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
     return std::make_shared<NativeEventTransaction>(std::move(event),
         consumer.system, geometry, digitizer_abi, std::move(completion))
         ->start(registry, consumer.processor);
+}
+
+bool HidEventTransaction::enqueue(UserlandHleRegistry& registry,
+    const HidEventQueue::Observer& observer, HidEventQueue::Event event,
+    DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
+    std::function<void()> completion)
+{
+    return std::make_shared<NativeEventTransaction>(std::move(event), observer,
+        geometry, digitizer_abi, std::move(completion))
+        ->start(registry, observer.processor);
 }
 
 } // namespace ilemu

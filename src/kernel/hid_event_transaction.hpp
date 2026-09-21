@@ -22,6 +22,10 @@ public:
         const HidEventQueue::Consumer& consumer, HidEventQueue::Event event,
         DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
         std::function<void()> completion);
+    [[nodiscard]] static bool enqueue(UserlandHleRegistry& registry,
+        const HidEventQueue::Observer& observer, HidEventQueue::Event event,
+        DisplayGeometry geometry, DarwinHidDigitizerAbi digitizer_abi,
+        std::function<void()> completion);
 };
 
 } // namespace ilemu
