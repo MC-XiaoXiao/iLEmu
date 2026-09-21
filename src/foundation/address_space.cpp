@@ -303,12 +303,12 @@ void AddressSpace::track_exclusive_access(
         // Keep every local alias guarded, including already guarded aliases
         // when another granule on the physical page acquires a reservation.
         const auto* backing = page->backing.get();
-        for (auto& [alias_address, alias_mask] :
-            exclusive_write_tracked_pages_) {
-            const auto* alias = find_page_locked(alias_address);
+        for (auto marker = exclusive_write_tracked_pages_.begin();
+            marker != exclusive_write_tracked_pages_.end(); ++marker) {
+            const auto* alias = find_page_locked(marker.key());
             if (alias != nullptr && alias->shared_writable &&
                 alias->backing.get() == backing)
-                alias_mask |= mask;
+                marker.value() |= mask;
         }
         std::vector<std::uint32_t> aliases;
         for (const auto alias_address : direct_jit_write_pages_) {
@@ -360,7 +360,7 @@ void AddressSpace::release_exclusive_write_tracking_locked(
                     marker_page->backing && written_page != nullptr &&
                     written_page->shared_writable &&
                     written_page->backing == marker_page->backing)) {
-                marker->second &=
+                marker.value() &=
                     ~reservation_granule_mask(address, size, written_address);
             }
         }

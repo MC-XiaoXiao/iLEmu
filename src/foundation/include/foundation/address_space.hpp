@@ -21,6 +21,7 @@
 #include <string>
 #include <unordered_set>
 #include <vector>
+#include <tsl/robin_map.h>
 
 #include "foundation/file_page_cache.hpp"
 #include "foundation/memory_permission.hpp"
@@ -488,7 +489,9 @@ private:
     // Each page carries a mask of live physical reservation granules. Keep
     // writes guarded until every marked granule is invalidated or the serial
     // processor switches Guest threads. Unmapping drops its markers too.
-    std::unordered_map<std::uint32_t, std::uint64_t>
+    // Flat storage reuses buckets across LDREX/STREX node churn. Prime bucket
+    // counts avoid clustering the naturally page-aligned address keys.
+    tsl::robin_pg_map<std::uint32_t, std::uint64_t>
         exclusive_write_tracked_pages_;
     std::atomic<bool> exclusive_write_tracking_active_ { };
     std::atomic<std::uint64_t> observed_shared_write_tracking_epoch_ { };
