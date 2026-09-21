@@ -2466,7 +2466,9 @@ CompatibilityKernel::timer_deadline_snapshot() const
     for (unsigned attempt = 0; attempt < 2U; ++attempt) {
         deadline = local_timer_deadline_cache_;
         consider(deadline, hid_event_system_hle_.next_sample_deadline());
-        {
+        generation = shared_state_->kernel_event_generation_snapshot();
+        if (!shared_timer_deadline_snapshot_ ||
+            shared_timer_deadline_snapshot_->generation != generation) {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             generation = shared_state_->kernel_event_generation_snapshot();
             if (!shared_state_->shared_timer_deadline_cache_valid ||
@@ -2490,8 +2492,10 @@ CompatibilityKernel::timer_deadline_snapshot() const
                     generation;
                 shared_state_->shared_timer_deadline_cache_valid = true;
             }
-            consider(deadline, shared_state_->shared_timer_deadline_cache);
+            shared_timer_deadline_snapshot_ = TimerDeadlineSnapshot {
+                generation, shared_state_->shared_timer_deadline_cache };
         }
+        consider(deadline, shared_timer_deadline_snapshot_->deadline);
         const auto after =
             shared_state_->kernel_event_generation_snapshot();
         if (after == generation)
@@ -2697,6 +2701,7 @@ void CompatibilityKernel::inherit_process_state(
 {
     const auto inherit_fork_state = inheritance == ProcessInheritance::Fork;
     shared_state_ = parent.shared_state_;
+    shared_timer_deadline_snapshot_.reset();
     display_state_ = parent.display_state_;
     presentation_tracker_ = parent.presentation_tracker_;
     scene_coordinator_ = parent.scene_coordinator_;

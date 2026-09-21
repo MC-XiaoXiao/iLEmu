@@ -1014,6 +1014,9 @@ private:
     bool pending_event_poll_observed_ { };
     mutable std::optional<std::uint64_t> local_timer_deadline_cache_;
     mutable bool local_timer_deadline_cache_valid_ { };
+    // Scheduler-owned copy of the shared snapshot, populated under mach_mutex.
+    // The atomic event generation invalidates it without reading shared data.
+    mutable std::optional<TimerDeadlineSnapshot> shared_timer_deadline_snapshot_;
     std::uint32_t timer_trace_count_ { };
     std::uint32_t port_status_trace_count_ { };
     std::uint32_t thread_trace_count_ { };
