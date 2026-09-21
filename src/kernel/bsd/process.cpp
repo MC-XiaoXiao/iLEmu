@@ -987,7 +987,7 @@ void CompatibilityKernel::dispatch_bsd_process(Cpu& cpu, std::uint32_t number)
                     bsd_error(cpu, darwin::error::no_such_process);
                     return;
                 }
-                if (resume != iterator->second.pid_suspended) {
+                if (resume == iterator->second.pid_suspended) {
                     iterator->second.pid_suspended = !resume;
                     target_processes.push_back(
                         static_cast<std::uint32_t>(target_pid));
