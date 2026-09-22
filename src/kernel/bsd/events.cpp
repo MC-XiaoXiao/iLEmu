@@ -2080,7 +2080,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     *mib1 == 35 || *mib1 == 40 || *mib1 == 54 ||
                     *mib1 == 66)) ||
             (*mib0 == darwin::sysctl::control_hardware &&
-                (*mib1 == darwin::sysctl::hardware_cpu_count ||
+                (darwin::sysctl::is_hardware_cpu_count_selector(*mib1) ||
                     *mib1 == darwin::sysctl::hardware_byte_order ||
                     *mib1 == darwin::sysctl::hardware_physical_memory ||
                     *mib1 == darwin::sysctl::hardware_user_memory ||
@@ -2092,8 +2092,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     *mib1 == darwin::sysctl::hardware_l2_settings ||
                     *mib1 == darwin::sysctl::hardware_l2_cache_size ||
                     *mib1 == darwin::sysctl::hardware_l3_settings ||
-                    *mib1 == darwin::sysctl::hardware_l3_cache_size ||
-                    *mib1 == darwin::sysctl::hardware_available_cpu))) {
+                    *mib1 == darwin::sysctl::hardware_l3_cache_size))) {
             // Common read-only capacity/boot values plus HW_NCPU.
             if (registers[4] != 0) {
                 bsd_error(cpu, 1); // EPERM: read-only MIB
@@ -2146,6 +2145,14 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                                   shared_state_->device_ram_bytes)
                             : shared_state_->device_ram_bytes;
                     switch (*mib1) {
+                    case darwin::sysctl::hardware_cpu_count:
+                    case darwin::sysctl::hardware_available_cpu:
+                    case darwin::sysctl::hardware_physical_cpu:
+                    case darwin::sysctl::hardware_physical_cpu_max:
+                    case darwin::sysctl::hardware_logical_cpu:
+                    case darwin::sysctl::hardware_logical_cpu_max:
+                        value = virtual_processor_count_;
+                        break;
                     case darwin::sysctl::hardware_byte_order:
                         value = 1234;
                         break; // HW_BYTEORDER
@@ -2191,8 +2198,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                         value = 0;
                         break; // HW_L3{SETTINGS,CACHESIZE}
                     default:
-                        value = 1;
-                        break; // CPU counts
+                        break;
                     }
                 }
                 if (!memory_.write32(registers[2], value)) {

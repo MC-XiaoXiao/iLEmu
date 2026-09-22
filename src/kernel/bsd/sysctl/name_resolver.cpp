@@ -60,7 +60,7 @@ namespace {
             readable | string_type, "A" },
         NamedObject { "hw.model", control_hardware, hardware_model,
             readable | string_type, "A" },
-        NamedObject { "hw.ncpu", control_hardware, 3 },
+        NamedObject { "hw.ncpu", control_hardware, hardware_cpu_count },
         NamedObject { "hw.byteorder", control_hardware, 4 },
         NamedObject { "hw.physmem", control_hardware, 5 },
         NamedObject { "hw.usermem", control_hardware, 6 },
@@ -83,7 +83,18 @@ namespace {
             hardware_l3_cache_size },
         NamedObject { "hw.memsize", control_hardware, 24,
             readable | quad_type, "Q" },
-        NamedObject { "hw.availcpu", control_hardware, 25 },
+        NamedObject { "hw.activecpu", control_hardware,
+            hardware_available_cpu },
+        NamedObject { "hw.availcpu", control_hardware,
+            hardware_available_cpu },
+        NamedObject { "hw.physicalcpu", control_hardware,
+            hardware_physical_cpu },
+        NamedObject { "hw.physicalcpu_max", control_hardware,
+            hardware_physical_cpu_max },
+        NamedObject { "hw.logicalcpu", control_hardware,
+            hardware_logical_cpu },
+        NamedObject { "hw.logicalcpu_max", control_hardware,
+            hardware_logical_cpu_max },
     };
 
 } // namespace

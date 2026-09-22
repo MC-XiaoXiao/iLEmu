@@ -74,6 +74,28 @@ inline constexpr std::uint32_t hardware_l3_settings = 21;
 inline constexpr std::uint32_t hardware_l3_cache_size = 22;
 inline constexpr std::uint32_t hardware_memory_size = 24;
 inline constexpr std::uint32_t hardware_available_cpu = 25;
+// XNU registers these named nodes with OID_AUTO. The compatibility kernel
+// assigns stable selectors for sysctlbyname's name-to-OID round trip.
+inline constexpr std::uint32_t hardware_physical_cpu = 1000;
+inline constexpr std::uint32_t hardware_physical_cpu_max = 1001;
+inline constexpr std::uint32_t hardware_logical_cpu = 1002;
+inline constexpr std::uint32_t hardware_logical_cpu_max = 1003;
+
+[[nodiscard]] constexpr bool is_hardware_cpu_count_selector(
+    std::uint32_t selector)
+{
+    switch (selector) {
+    case hardware_cpu_count:
+    case hardware_available_cpu:
+    case hardware_physical_cpu:
+    case hardware_physical_cpu_max:
+    case hardware_logical_cpu:
+    case hardware_logical_cpu_max:
+        return true;
+    default:
+        return false;
+    }
+}
 
 struct ObjectIdentifier {
     std::array<std::uint32_t, 2> components { };
