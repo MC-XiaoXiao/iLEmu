@@ -3426,6 +3426,14 @@ void EmulatorSession::run()
         if (dispatch.explicit_handoff_stale)
             scheduler_handoff_thread.reset();
         const auto preferred_thread = dispatch.preferred_thread;
+        const bool debugger_only =
+            dispatch.reason == GuestDispatchReason::Debugger;
+        const auto preferred_info =
+            preferred_thread ? scheduler.info(*preferred_thread) : std::nullopt;
+        const auto preferred_processor = preferred_info &&
+                preferred_info->bound_processor
+            ? *preferred_info->bound_processor
+            : 0U;
         // Keep the scanout owner identity across scheduler iterations.  The
         // realtime pacer can take the `guest ahead` path below without
         // executing a guest slice; clearing this identity here would then make
@@ -3441,8 +3449,14 @@ void EmulatorSession::run()
             ++processor) {
             if (bounded_execution && reservable_ticks == 0)
                 break;
-            const auto scheduled =
-                scheduler.choose_next(processor, preferred_thread);
+            if (debugger_only && processor != preferred_processor)
+                continue;
+            const auto hint = processor == preferred_processor
+                                  ? preferred_thread
+                                  : std::nullopt;
+            auto scheduled = scheduler.choose_next(processor, hint);
+            if (!scheduled && hint && !debugger_only)
+                scheduled = scheduler.choose_next(processor);
             if (scheduled) {
                 if (scheduler_handoff_thread &&
                     *scheduler_handoff_thread == scheduled->thread) {
@@ -3522,8 +3536,10 @@ void EmulatorSession::run()
                 }
             }
             // A debugger-selected thread is the only thread allowed to make
-            // progress for this resume request.
-            if (preferred_thread)
+            // progress for this resume request. Other handoff hints consume
+            // one processor; the remaining processors still select from XNU's
+            // run queues independently.
+            if (debugger_only)
                 break;
         }
 
