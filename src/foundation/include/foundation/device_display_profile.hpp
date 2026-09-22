@@ -5,6 +5,8 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
+#include <string>
 #include <string_view>
 
 #include "foundation/display_geometry.hpp"
@@ -66,6 +68,11 @@ struct DeviceDisplayProfile {
         }
         return {};
     }
+
+    // Prefer the established driver name when present. Some firmware ships
+    // another revision of the same accelerator family's private GL bundle.
+    [[nodiscard]] std::string resolve_driver_bundle(
+        const std::filesystem::path& rootfs) const;
 };
 
 } // namespace ilemu

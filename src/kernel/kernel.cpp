@@ -284,7 +284,7 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
     shared_state_->graphics_accelerator = device_model_.screen.accelerator;
     shared_state_->audio_hardware_profile = device_model_.audio;
     shared_state_->graphics_driver_bundle =
-        std::string { device_model_.screen.driver_bundle() };
+        device_model_.screen.resolve_driver_bundle(rootfs_);
     shared_state_->framebuffer_service_class =
         resolved.abi.framebuffer_registry ==
                 DarwinFramebufferRegistryAbi::UnifiedClcdClass

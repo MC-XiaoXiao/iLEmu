@@ -16,6 +16,7 @@ add_library(ilemu_foundation STATIC
     arm_unpredictable_instruction.cpp
     cpu.cpp
     darwin_notify_state_hle.cpp
+    device_display_profile.cpp
     device_model.cpp
     dynarmic_ir_artifact.cpp
     dyld_shared_cache.cpp
