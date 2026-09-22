@@ -14,6 +14,7 @@
 #include "../../mach/support.hpp"
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 #include "../support.hpp"
@@ -121,6 +122,71 @@ std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal)
 
 void CompatibilityKernel::dispatch_bsd_signal(Cpu& cpu, std::uint32_t number)
 {
+    if (number == darwin::syscall::alternate_signal_stack) {
+        const auto new_address = cpu.registers()[0];
+        const auto old_address = cpu.registers()[1];
+        const auto processor = cpu.processor_id();
+        const auto existing = alternate_signal_stacks_.find(processor);
+        const auto old_stack = existing == alternate_signal_stacks_.end()
+                                   ? AlternateSignalStack { 0, 0,
+                                         darwin::signal::alternate_stack_disabled }
+                                   : existing->second;
+
+        // XNU copies the old stack out before reading the new one, including
+        // when both user pointers alias. Keep the same observable ordering.
+        if (old_address != 0) {
+            if (old_address > std::numeric_limits<std::uint32_t>::max() - 8U ||
+                !memory_.write32(old_address, old_stack.address) ||
+                !memory_.write32(old_address + 4U, old_stack.size) ||
+                !memory_.write32(old_address + 8U, old_stack.flags)) {
+                bsd_error(cpu, darwin::error::bad_address);
+                return;
+            }
+        }
+        if (new_address == 0) {
+            bsd_success(cpu, 0);
+            return;
+        }
+        if (new_address > std::numeric_limits<std::uint32_t>::max() - 8U) {
+            bsd_error(cpu, darwin::error::bad_address);
+            return;
+        }
+        const auto address = memory_.read32(new_address);
+        const auto size = memory_.read32(new_address + 4U);
+        const auto flags = memory_.read32(new_address + 8U);
+        if (!address || !size || !flags) {
+            bsd_error(cpu, darwin::error::bad_address);
+            return;
+        }
+        if ((*flags & ~darwin::signal::alternate_stack_disabled) != 0) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+        if ((*flags & darwin::signal::alternate_stack_disabled) != 0) {
+            if ((old_stack.flags & darwin::signal::alternate_stack_on_stack) !=
+                0) {
+                bsd_error(cpu, darwin::error::invalid_argument);
+                return;
+            }
+            alternate_signal_stacks_[processor] =
+                AlternateSignalStack { old_stack.address, old_stack.size,
+                    darwin::signal::alternate_stack_disabled };
+        } else {
+            if ((old_stack.flags & darwin::signal::alternate_stack_on_stack) !=
+                0) {
+                bsd_error(cpu, darwin::error::operation_not_permitted);
+                return;
+            }
+            if (*size < darwin::signal::alternate_stack_minimum_size) {
+                bsd_error(cpu, darwin::error::no_memory);
+                return;
+            }
+            alternate_signal_stacks_[processor] =
+                AlternateSignalStack { *address, *size, 0 };
+        }
+        bsd_success(cpu, 0);
+        return;
+    }
     if (number == 111U) { // sigsuspend
         constexpr std::uint32_t unblockable =
             (1U << (darwin::signal::kill - 1U)) |

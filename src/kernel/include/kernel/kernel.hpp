@@ -945,6 +945,12 @@ private:
     std::set<std::size_t> disabled_thread_signals_;
     std::array<std::array<std::uint32_t, 4>, 32> signal_actions_ { };
     std::uint32_t signal_mask_ { };
+    struct AlternateSignalStack {
+        std::uint32_t address { };
+        std::uint32_t size { };
+        std::uint32_t flags { };
+    };
+    std::map<std::size_t, AlternateSignalStack> alternate_signal_stacks_;
     std::uint64_t random_state_ { 0x69a5'1e8d'4c3b'2701ULL };
     std::shared_ptr<KernelSharedState> shared_state_ {
         std::make_shared<KernelSharedState>()

@@ -907,6 +907,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     next_display_scanout_deadline_.reset();
     signal_actions_ = { };
     signal_mask_ = 0;
+    alternate_signal_stacks_.clear();
     pthread_runtime_.prepare_exec();
     shared_state_->psynch_runtime->clear_process(process_.pid);
     process_.waiting_for_events = false;
@@ -2819,6 +2820,7 @@ void CompatibilityKernel::inherit_process_state(
     random_state_ = parent.random_state_ ^ child_pid;
     thread_ports_.clear();
     thread_ports_.emplace(0, process_.thread_port);
+    alternate_signal_stacks_.clear();
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         if (!mach_task_identity::inherit_child(

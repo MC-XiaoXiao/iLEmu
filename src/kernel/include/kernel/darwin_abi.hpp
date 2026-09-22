@@ -212,6 +212,7 @@ namespace syscall {
     inline constexpr std::uint32_t set_user_id = 23;
     inline constexpr std::uint32_t ptrace = 26;
     inline constexpr std::uint32_t kill = 37;
+    inline constexpr std::uint32_t alternate_signal_stack = 53;
     inline constexpr std::uint32_t get_process_group = 81;
     // gettid(2) reports a thread's temporary credential override, rather than
     // returning a numeric thread identifier.
@@ -361,6 +362,11 @@ namespace flock_operation {
 } // namespace flock_operation
 
 namespace signal {
+    // ARM32 user32_sigaltstack: ss_sp, ss_size, ss_flags. XNU's legacy
+    // minimum remains 8 KiB even though the public MINSIGSTKSZ is larger.
+    inline constexpr std::uint32_t alternate_stack_disabled = 0x4;
+    inline constexpr std::uint32_t alternate_stack_on_stack = 0x1;
+    inline constexpr std::uint32_t alternate_stack_minimum_size = 8 * 1024;
     inline constexpr std::uint32_t count = 32;
     inline constexpr std::uint32_t abort = 6;
     inline constexpr std::uint32_t kill = 9;

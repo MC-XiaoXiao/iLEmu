@@ -102,6 +102,7 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
                 process_.thread_disk_io_policies.erase(*target_object);
                 pending_psynch_waits_.erase(target->second);
                 thread_ports_.erase(target->second);
+                alternate_signal_stacks_.erase(target->second);
             }
             std::lock_guard mach_lock { shared_state_->mach_mutex };
             auto task =

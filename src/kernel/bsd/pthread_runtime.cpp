@@ -574,6 +574,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
 
         pthread_runtime_.remove_worker(processor);
         thread_ports_.erase(processor);
+        alternate_signal_stacks_.erase(processor);
         pending_mach_receives_.erase(processor);
         pending_psynch_waits_.erase(processor);
         shared_state_->psynch_runtime->cancel_wait(

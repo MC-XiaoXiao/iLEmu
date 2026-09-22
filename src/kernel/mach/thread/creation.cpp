@@ -42,6 +42,7 @@ CompatibilityKernel::create_guest_thread(
     pending_io_poll_cache_.erase(*processor);
     refresh_pending_event_processor_locked(*processor);
     thread_ports_.erase(*processor);
+    alternate_signal_stacks_.erase(*processor);
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
         if (auto task =
