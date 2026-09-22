@@ -3661,6 +3661,8 @@ void EmulatorSession::run()
                 });
         for (auto& prepared : prepared_slices) {
             prepared.deferred_svc = parallel_guest_batch;
+            prepared.execution.cpu->set_parallel_memory_allowed(
+                parallel_guest_batch && prepared.runtime->precompile_tasks.empty());
             prepared.execution.cpu->set_svc_dispatch_mode(
                 parallel_guest_batch ? SvcDispatchMode::Deferred
                                      : SvcDispatchMode::Immediate);

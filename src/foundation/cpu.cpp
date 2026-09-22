@@ -6,6 +6,7 @@
 // and CPU callbacks.
 
 #include "foundation/cpu.hpp"
+#include "foundation/guest_execution_coordinator.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1337,6 +1338,7 @@ public:
 
     void MemoryReadExclusive(std::uint32_t address, std::size_t size) override
     {
+        memory_.leave_parallel_access();
         memory_.track_exclusive_access(address, size);
     }
 
@@ -1349,6 +1351,13 @@ public:
     {
         return swap(address, value, &AddressSpace::exchange32);
     }
+
+    void MemoryWriteExclusiveBegin(std::uint32_t, std::size_t) override
+    {
+        memory_.leave_parallel_access();
+    }
+    void MemoryExecutionSuspend() override { memory_.suspend_parallel_access(); }
+    void MemoryExecutionResume() override { memory_.resume_parallel_access(); }
 
     bool MemoryWriteExclusive8(std::uint32_t address, std::uint8_t value,
         std::uint8_t expected) override
@@ -1498,6 +1507,11 @@ public:
                                          std::max(host_slice_budget,
                                              std::chrono::nanoseconds::zero())
                                    : std::chrono::steady_clock::time_point { };
+    }
+
+    void limit_ticks(std::uint64_t ticks) noexcept
+    {
+        ticks_remaining_ = std::min(ticks_remaining_, ticks);
     }
 
     CpuRunResult result(Dynarmic::HaltReason reason) const
@@ -2244,7 +2258,12 @@ public:
         diagnostics.checkpoint(PerfLatencyKind::CpuRunLoadState);
         const auto effective_host_slice_budget =
             std::max(host_slice_budget, std::chrono::nanoseconds::zero());
-        callbacks_->begin(single_step ? 1 : ticks,
+        auto native_ticks = cooperative_execution && !single_step &&
+                effective_host_slice_budget > std::chrono::nanoseconds::zero()
+            ? std::min<std::uint64_t>(ticks,
+                  host_execution_budget_.next(effective_host_slice_budget))
+            : (single_step ? 1U : ticks);
+        callbacks_->begin(native_ticks,
             cooperative_execution && !single_step, effective_host_slice_budget);
         diagnostics.checkpoint(PerfLatencyKind::CpuRunCallbacksBegin);
         try {
@@ -2258,18 +2277,57 @@ public:
                 set_portable_demand_provider(portable_demand_provider_enabled);
             }
             diagnostics.checkpoint(PerfLatencyKind::CpuRunArtifactPreload);
-            const auto native_block_budget =
-                cooperative_execution && !single_step
-                ? host_execution_budget_.next(effective_host_slice_budget)
-                : 0U;
-            jit_->SetHostExecutionBlockBudget(native_block_budget);
+            std::optional<AddressSpace::ParallelAccess> parallel_access;
+#if defined(__x86_64__) || defined(_M_X64)
+            if (cpu.parallel_memory_allowed_ && cooperative_execution &&
+                GuestExecutionCoordinator::has_native_entry_barrier() &&
+                cpu.svc_dispatch_mode_ == SvcDispatchMode::Deferred &&
+                !single_step && !cpu.memory_write_watch_address_) {
+                parallel_access.emplace(
+                    memory_, execution_slot_, cpu.processor_id());
+                bind_memory_tables();
+                jit_->PrepareRun();
+            }
+#endif
+            native_ticks = GuestExecutionCoordinator::synchronize_native_entry(native_ticks);
+            callbacks_->limit_ticks(native_ticks);
+            memory_yield_requested_.store(false, std::memory_order_relaxed);
+            if (parallel_access)
+                parallel_access->activate([](void* context) noexcept {
+                    auto& executor = *static_cast<JitExecutor*>(context);
+                    executor.memory_yield_requested_.store(
+                        true, std::memory_order_relaxed);
+                    executor.jit_->HaltExecution(Dynarmic::HaltReason::UserDefined2);
+                }, this);
             const auto jit_started = std::chrono::steady_clock::now();
-            const auto reason = single_step ? jit_->Step() : jit_->Run();
+            Dynarmic::HaltReason reason { };
+            bool memory_pause_seen { };
+            for (;;) {
+                memory_yield_requested_.store(false, std::memory_order_relaxed);
+                reason = single_step ? jit_->Step() : jit_->Run();
+                const auto partial = callbacks_->result(reason);
+                if (!memory_yield_requested_.load(std::memory_order_relaxed) ||
+                    reason != Dynarmic::HaltReason::UserDefined2 ||
+                    partial.svc_calls != 0U || partial.host_yielded ||
+                    guest_preemption_requested_ ||
+                    cpu.requested_halt_reason_ != Dynarmic::HaltReason { } ||
+                    partial.ticks_consumed >= native_ticks ||
+                    execution_context_->cache_invalidation_epoch() !=
+                        observed_invalidation_epoch_ ||
+                    std::chrono::steady_clock::now() - jit_started >=
+                        effective_host_slice_budget)
+                    break;
+                // The native boundary has released the lease. Resume the
+                // saved PC after pending writers publish their changes, within
+                // the same Guest slice. No instruction or syscall is replayed.
+                // Ending the worker batch here would strand a producer whose
+                // consumer still needs to finish this slice.
+                memory_pause_seen = true;
+            }
+            parallel_access.reset();
             const auto jit_elapsed =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - jit_started);
-            const auto native_budget_result =
-                jit_->GetHostExecutionBudgetResult();
             if (portable_demand_provider_enabled)
                 set_portable_demand_provider(false);
             diagnostics.checkpoint(PerfLatencyKind::CpuRunExecute);
@@ -2277,16 +2335,22 @@ public:
             auto result = callbacks_->result(reason);
             result.host_execution_ns = static_cast<std::uint64_t>(
                 std::max<std::int64_t>(0, jit_elapsed.count()));
-            const auto callback_host_yielded = result.host_yielded;
-            if (native_budget_result.supported) {
-                result.host_yield_checks +=
-                    native_budget_result.blocks_executed;
-                result.host_yielded =
-                    result.host_yielded || native_budget_result.exhausted;
-                if (native_budget_result.exhausted && !callback_host_yielded) {
-                    host_execution_budget_.observe(
-                        native_budget_result.blocks_executed, jit_elapsed);
-                }
+            result.host_yielded = result.host_yielded ||
+                memory_yield_requested_.load(std::memory_order_relaxed);
+            const bool native_budget_exhausted =
+                native_ticks != 0U && native_ticks < ticks &&
+                result.ticks_consumed >= native_ticks;
+            if (native_budget_exhausted) {
+                ++result.host_yield_checks;
+                result.host_yielded = true;
+            }
+            if (cooperative_execution && !single_step && native_ticks != 0U &&
+                result.ticks_consumed >= native_ticks && result.svc_calls == 0U &&
+                !memory_pause_seen &&
+                !memory_yield_requested_.load(std::memory_order_relaxed)) {
+                // An overrun detected by AddTicks is precisely a sample that
+                // must tighten the next budget; do not discard it as a yield.
+                host_execution_budget_.observe(result.ticks_consumed, jit_elapsed);
             }
             if (entry_location != 0U && result.ticks_consumed != 0U) {
                 mark_native_preimport_used(entry_location);
@@ -2986,6 +3050,9 @@ private:
             callbacks_->cpu_model().architecture_version());
         config.always_little_endian = true;
         config.enable_cycle_counting = true;
+        // Reuse the cycle countdown for host cooperation instead of charging
+        // every translated block for a second mutable countdown.
+        config.enable_host_execution_block_budget = false;
         config.check_halt_on_memory_access = true;
         config.code_cache_size = code_cache_size_;
         config.coprocessors[15] = cp15_;
@@ -3042,11 +3109,11 @@ private:
         record_code_cache_usage();
     }
 
-    void load_state(Cpu& cpu)
+    void bind_memory_tables()
     {
-        // Serialized scopes may select direct private accesses. Parallel
-        // lanes use checked tables so scalar loads cannot race checked stores.
-        // Rebind at every run boundary, reusing emitted code and page guards.
+        // Select serial, leased parallel, or checked views at entry. Reuse
+        // emitted code; the memory gate protects view revocation and backing
+        // lifetime while a parallel native slice is executing.
         if (auto** read_table = callbacks_->jit_read_page_table()) {
             execution_context_->link(read_page_table_link_cell_,
                 static_cast<std::uint64_t>(
@@ -3057,6 +3124,11 @@ private:
                 static_cast<std::uint64_t>(
                     reinterpret_cast<std::uintptr_t>(write_table)));
         }
+    }
+
+    void load_state(Cpu& cpu)
+    {
+        bind_memory_tables();
         clear_halt();
         jit_->Regs() = cpu.state_.registers;
         jit_->ExtRegs() = cpu.state_.extension_registers;
@@ -3240,6 +3312,7 @@ private:
         exclusive_monitor_values_link_cell_address_ { };
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
     JitHostExecutionBudget host_execution_budget_;
+    std::atomic<bool> memory_yield_requested_ { };
     std::size_t code_cache_size_ { 64U * 1024U * 1024U };
     bool recorded_shared_memory_ { };
     std::uint64_t recorded_shared_used_bytes_ { };
@@ -5238,9 +5311,9 @@ CpuCluster::CpuCluster(std::size_t initial_processor_count,
         monitor.SetAddressResolver(
             &GuestExclusiveAddressResolver::resolve_callback,
             address_resolver_.get());
-        // Parallel execution selects the checked-write table. A scheduler
-        // serialized slice may reuse the guarded private-write table because
-        // no other guest lane can race the LDREX page-revocation hook.
+        // Checked accesses remain the default. Scheduler-authorized native
+        // slices may select leased views; exclusive callbacks revoke them
+        // before acquiring the shared reservation monitor.
         if (monitor_processor_count_ > 1)
             memory.set_parallel_access(true);
     }

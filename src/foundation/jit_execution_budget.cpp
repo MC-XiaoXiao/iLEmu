@@ -8,7 +8,6 @@
 #include "foundation/jit_execution_budget.hpp"
 
 #include <algorithm>
-#include <limits>
 
 namespace ilemu {
 
@@ -18,45 +17,30 @@ std::uint32_t JitHostExecutionBudget::next(
     if (target <= std::chrono::nanoseconds::zero())
         return 0U;
 
-    const auto target_nanoseconds = static_cast<std::uint64_t>(target.count());
-    const auto usable_nanoseconds = target_nanoseconds /
-                                    target_utilization_denominator *
-                                    target_utilization_numerator;
-    const auto predicted = std::max<std::uint64_t>(
-        1U, usable_nanoseconds / estimated_nanoseconds_per_block_);
-    return static_cast<std::uint32_t>(
-        std::min<std::uint64_t>(predicted, maximum_blocks));
+    const auto usable_nanoseconds =
+        static_cast<long double>(target.count()) * 7.0L / 8.0L;
+    const auto predicted = usable_nanoseconds / estimated_nanoseconds_per_tick_;
+    return static_cast<std::uint32_t>(std::clamp(
+        predicted, 1.0L, static_cast<long double>(maximum_ticks)));
 }
 
 void JitHostExecutionBudget::observe(
-    std::uint32_t blocks_executed, std::chrono::nanoseconds elapsed) noexcept
+    std::uint64_t ticks_executed, std::chrono::nanoseconds elapsed) noexcept
 {
-    if (blocks_executed == 0U || elapsed <= std::chrono::nanoseconds::zero())
+    if (ticks_executed == 0U || elapsed <= std::chrono::nanoseconds::zero())
         return;
 
-    const auto elapsed_nanoseconds =
-        static_cast<std::uint64_t>(elapsed.count());
-    auto sample =
-        std::max<std::uint64_t>(1U, elapsed_nanoseconds / blocks_executed);
-
-    // A callback, signal, or one unusually costly translation should tighten
-    // the next run promptly without permanently poisoning the predictor.
-    // Likewise, cached execution may increase throughput by at most one
-    // quarter of the measured gap per observation.
-    const auto lower =
-        std::max<std::uint64_t>(1U, estimated_nanoseconds_per_block_ / 8U);
-    const auto upper = estimated_nanoseconds_per_block_ >
-                               std::numeric_limits<std::uint64_t>::max() / 8U
-                           ? std::numeric_limits<std::uint64_t>::max()
-                           : estimated_nanoseconds_per_block_ * 8U;
-    sample = std::clamp(sample, lower, upper);
-    if (sample > estimated_nanoseconds_per_block_) {
-        estimated_nanoseconds_per_block_ +=
-            (sample - estimated_nanoseconds_per_block_ + 1U) / 2U;
-    } else {
-        estimated_nanoseconds_per_block_ -=
-            (estimated_nanoseconds_per_block_ - sample) / 4U;
-    }
+    auto sample = std::max(minimum_nanoseconds_per_tick,
+        static_cast<long double>(elapsed.count()) / ticks_executed);
+    // Retain bounded, asymmetric adaptation: react quickly to expensive work,
+    // and increase throughput gradually after translation or a host pause.
+    sample = std::clamp(sample,
+        std::max(minimum_nanoseconds_per_tick,
+            estimated_nanoseconds_per_tick_ / 8.0L),
+        estimated_nanoseconds_per_tick_ * 8.0L);
+    const auto weight = sample > estimated_nanoseconds_per_tick_ ? 2.0L : 4.0L;
+    estimated_nanoseconds_per_tick_ +=
+        (sample - estimated_nanoseconds_per_tick_) / weight;
 }
 
 } // namespace ilemu

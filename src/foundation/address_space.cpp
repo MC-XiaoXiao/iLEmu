@@ -122,42 +122,6 @@ namespace {
 
 } // namespace
 
-struct AddressSpace::JitPageTableStorage {
-    static constexpr std::size_t byte_size =
-        AddressSpace::page_count * sizeof(std::uint8_t*);
-
-    JitPageTableStorage()
-    {
-        mapping = ::mmap(nullptr, byte_size, PROT_READ | PROT_WRITE,
-            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-        if (mapping == MAP_FAILED) {
-            mapping = nullptr;
-            throw std::bad_alloc { };
-        }
-    }
-
-    ~JitPageTableStorage()
-    {
-        if (mapping != nullptr) {
-            static_cast<void>(::munmap(mapping, byte_size));
-        }
-    }
-
-    [[nodiscard]] std::uint8_t** entries() const
-    {
-        return static_cast<std::uint8_t**>(mapping);
-    }
-
-    void clear()
-    {
-        if (::madvise(mapping, byte_size, MADV_DONTNEED) != 0) {
-            std::memset(mapping, 0, byte_size);
-        }
-    }
-
-    void* mapping { };
-};
-
 AddressSpace::AddressSpace()
     : observed_shared_write_tracking_epoch_ {
         GuestPageBacking::shared_write_tracking_epoch()
@@ -216,16 +180,22 @@ void AddressSpace::set_exclusive_write_observer(std::function<void()> observer)
 {
     auto lock = write_lock();
     exclusive_write_observer_ = std::move(observer);
+    clear_parallel_views_locked();
 }
 
 std::uint8_t** AddressSpace::jit_page_table() { return jit_write_page_table(); }
 
 std::uint8_t** AddressSpace::jit_read_page_table()
 {
+    if (auto* scope = parallel_scope();
+        scope && scope->lease_ && scope->lease_->held())
+        return parallel_table_locked(false);
     auto lock = write_lock();
     if (!jit_page_table_enabled_)
         return nullptr;
     ensure_jit_page_tables_locked();
+    if (auto** table = parallel_table_locked(false))
+        return table;
     bool direct_reads = !parallel_access_;
 #if defined(__x86_64__) || defined(_M_X64)
     direct_reads = direct_reads || owns_exclusive_access();
@@ -241,10 +211,15 @@ std::uint8_t** AddressSpace::jit_read_page_table()
 
 std::uint8_t** AddressSpace::jit_write_page_table()
 {
+    if (auto* scope = parallel_scope();
+        scope && scope->lease_ && scope->lease_->held())
+        return parallel_table_locked(true);
     auto lock = write_lock();
     if (!jit_page_table_enabled_ || !jit_write_page_table_enabled_)
         return nullptr;
     ensure_jit_page_tables_locked();
+    if (auto** table = parallel_table_locked(true))
+        return table;
     bool direct_writes = !parallel_access_;
 #if defined(__x86_64__) || defined(_M_X64)
     // The x64 backend reloads executor page-table links on every JIT entry.
@@ -273,6 +248,7 @@ void AddressSpace::disable_jit_write_page_table()
     jit_write_page_table_enabled_ = false;
     if (jit_write_page_table_)
         jit_write_page_table_->clear();
+    clear_parallel_views_locked();
     direct_jit_write_pages_.clear();
     exclusive_write_tracked_pages_.clear();
     exclusive_write_tracking_active_.store(false, std::memory_order_release);
@@ -1401,6 +1377,7 @@ void AddressSpace::ensure_jit_page_tables_locked()
 
 void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
 {
+    invalidate_parallel_page_locked(address);
     if (!jit_read_page_table_ && !jit_write_page_table_)
         return;
     const auto base = page_base(address);
@@ -1472,6 +1449,7 @@ void AddressSpace::refresh_jit_page_range_locked(
 
 void AddressSpace::invalidate_shared_write_jit_pages_locked()
 {
+    clear_parallel_views_locked();
     if (!jit_write_page_table_)
         return;
     auto** entries = jit_write_page_table_->entries();
@@ -1509,6 +1487,7 @@ void AddressSpace::clear_jit_page_table_locked()
         jit_read_page_table_->clear();
     if (jit_write_page_table_)
         jit_write_page_table_->clear();
+    clear_parallel_views_locked();
     direct_jit_write_pages_.clear();
 }
 
@@ -1679,6 +1658,8 @@ std::optional<T> AddressSpace::read_integer(
                                 page->backing->bytes[offset + index])
                             << (index * 8U));
                     }
+                    const_cast<AddressSpace*>(this)->grant_parallel_page_locked(
+                        address, false);
                     return value;
                 }
                 if (find_file_mapping_locked(address) == nullptr)
@@ -1734,6 +1715,7 @@ bool AddressSpace::write_integer(std::uint32_t address, T value)
         // page guard. The refresh can then restore only an otherwise eligible
         // direct-write entry without a second AddressSpace pass.
         release_exclusive_write_tracking_locked(address, sizeof(T));
+        grant_parallel_page_locked(address, true);
         return true;
     }
     for (std::size_t i = 0; i < sizeof(T); ++i) {

@@ -11,6 +11,7 @@ ilemu_configure_module(ilemu_foundation_memory)
 
 add_library(ilemu_foundation STATIC
     address_space.cpp
+    address_space_parallel.cpp
     application_display.cpp
     arm_cpu_model.cpp
     arm_unpredictable_instruction.cpp
@@ -34,6 +35,7 @@ add_library(ilemu_foundation STATIC
     jit_artifact_diagnostics.cpp
     jit_code_cache_governor.cpp
     jit_execution_budget.cpp
+    jit_page_table.cpp
     jit_translation_profile.cpp
     jit_work_policy.cpp
     jit_work_scheduler.cpp

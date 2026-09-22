@@ -12,36 +12,23 @@
 
 namespace ilemu {
 
-// Converts a wall-time cooperation target into a one-shot native-block
-// budget. The estimate is executor-local because translation density and
-// generated block size differ substantially between Guest processes and
-// execution lanes.
+// Converts wall-time cooperation targets to the existing Guest cycle budget.
+// Measuring ticks rather than adding a second per-block countdown keeps hot
+// native execution cheap; consumed Guest ticks retain their original meaning.
 class JitHostExecutionBudget {
 public:
     [[nodiscard]] std::uint32_t next(
         std::chrono::nanoseconds target) const noexcept;
 
-    void observe(std::uint32_t blocks_executed,
+    void observe(std::uint64_t ticks_executed,
         std::chrono::nanoseconds elapsed) noexcept;
 
-    [[nodiscard]] std::uint64_t estimated_nanoseconds_per_block() const noexcept
-    {
-        return estimated_nanoseconds_per_block_;
-    }
-
 private:
-    // The initial estimate is deliberately translation-aware. During a cold
-    // run it yields close to a 2 ms boundary; cached native execution then
-    // raises the budget from measurements instead of paying cold-path cost
-    // forever.
-    static constexpr std::uint64_t initial_nanoseconds_per_block = 15'000U;
-    static constexpr std::uint32_t maximum_blocks = 262'144U;
-    static constexpr std::uint32_t target_utilization_numerator = 7U;
-    static constexpr std::uint32_t target_utilization_denominator = 8U;
-
-    std::uint64_t estimated_nanoseconds_per_block_ {
-        initial_nanoseconds_per_block
-    };
+    static constexpr std::uint32_t maximum_ticks = 16'777'216U;
+    static constexpr long double minimum_nanoseconds_per_tick = 1.0L / 1024.0L;
+    // Conservative during cold translation; hot observations converge without
+    // rounding sub-nanosecond instruction costs to a whole nanosecond.
+    long double estimated_nanoseconds_per_tick_ { 500.0L };
 };
 
 } // namespace ilemu

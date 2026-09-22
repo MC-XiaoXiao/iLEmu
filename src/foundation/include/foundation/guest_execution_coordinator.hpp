@@ -42,6 +42,12 @@ public:
 
     void run(std::span<GuestExecutionRequest*> requests);
     static void execute(GuestExecutionRequest& request) noexcept;
+    // Finish per-lane preparation before any lane starts its native lease.
+    // Keep a short remaining quantum or host cap from leaving its peer
+    // running alone for the rest of the batch. This caps work only; each
+    // scheduled thread retains its own Guest quantum and consumed ticks.
+    static std::uint64_t synchronize_native_entry(std::uint64_t tick_budget);
+    [[nodiscard]] static bool has_native_entry_barrier() noexcept;
 
 private:
     void worker_loop();

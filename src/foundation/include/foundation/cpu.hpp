@@ -242,6 +242,7 @@ public:
     void set_cthread_self(std::optional<std::uint32_t> value);
     void set_svc_handler(SvcHandler handler);
     void set_svc_dispatch_mode(SvcDispatchMode mode);
+    void set_parallel_memory_allowed(bool enabled) { parallel_memory_allowed_ = enabled; }
     void set_memory_write_watchpoint(
         std::uint32_t address, MemoryWriteHandler handler);
     void set_debug_breakpoints_enabled(bool enabled);
@@ -267,6 +268,7 @@ private:
     SvcDispatchMode svc_dispatch_mode_ { SvcDispatchMode::Immediate };
     std::optional<std::uint32_t> memory_write_watch_address_;
     bool debug_breakpoints_enabled_ { };
+    bool parallel_memory_allowed_ { };
     Dynarmic::HaltReason requested_halt_reason_ { };
 };
 

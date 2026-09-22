@@ -24,6 +24,8 @@
 #include <tsl/robin_map.h>
 
 #include "foundation/file_page_cache.hpp"
+#include "foundation/guest_memory_gate.hpp"
+#include "foundation/jit_page_table.hpp"
 #include "foundation/memory_permission.hpp"
 #include "foundation/vm_map.hpp"
 
@@ -96,9 +98,31 @@ public:
     private:
         friend class AddressSpace;
         AddressSpace& memory_;
-        std::unique_lock<std::mutex> lock_;
+        std::unique_lock<GuestMemoryGate> lock_;
         const ExclusiveAccess* previous_;
     };
+    // A bounded native-execution lease. Checked callbacks and compilation
+    // suspend it; exclusive instructions leave it before taking monitor locks.
+    class ParallelAccess {
+    public:
+        ParallelAccess(AddressSpace& memory, std::size_t slot, std::size_t owner);
+        ~ParallelAccess();
+        void activate(GuestMemoryGate::Lease::Interrupt interrupt, void* context);
+        ParallelAccess(const ParallelAccess&) = delete;
+        ParallelAccess& operator=(const ParallelAccess&) = delete;
+    private:
+        friend class AddressSpace;
+        AddressSpace& memory_;
+        std::size_t slot_;
+        std::size_t owner_;
+        ParallelAccess* previous_;
+        std::optional<GuestMemoryGate::Lease> lease_;
+        bool enabled_ { true };
+    };
+    void suspend_parallel_access();
+    void resume_parallel_access();
+    void leave_parallel_access();
+
     // A shared Dynarmic monitor can conservatively invalidate all reservations
     // whenever this address space performs a checked Guest write. Direct JIT
     // writes are only installed for private pages, so shared/COW writes pass
@@ -336,6 +360,29 @@ public:
     [[nodiscard]] std::unique_ptr<AddressSpace> clone() const;
 
 private:
+    struct ParallelView {
+        JitPageTableStorage reads;
+        JitPageTableStorage writes;
+        std::unordered_set<std::uint32_t> touched;
+        std::optional<std::size_t> owner;
+    };
+    struct ParallelPage {
+        std::size_t first_reader;
+        bool shared { };
+        bool written { };
+    };
+    struct ParallelState {
+        std::map<std::size_t, std::unique_ptr<ParallelView>> views;
+        tsl::robin_pg_map<std::uint32_t, ParallelPage> pages;
+    };
+    std::unique_ptr<ParallelState> parallel_state_;
+    static thread_local ParallelAccess* parallel_scope_;
+    [[nodiscard]] ParallelAccess* parallel_scope() const noexcept;
+    void grant_parallel_page_locked(std::uint32_t address, bool writing);
+    void invalidate_parallel_page_locked(std::uint32_t address);
+    void clear_parallel_views_locked();
+    [[nodiscard]] std::uint8_t** parallel_table_locked(bool writing);
+
     struct Page {
         std::shared_ptr<GuestPageBacking> backing;
         std::uint64_t write_generation { };
@@ -365,7 +412,6 @@ private:
         std::uint32_t begin { };
         std::uint64_t end { };
     };
-    struct JitPageTableStorage;
     static constexpr std::size_t page_lookup_chunk_size = 1024;
     static constexpr std::size_t page_lookup_chunk_count =
         page_count / page_lookup_chunk_size;
@@ -376,8 +422,8 @@ private:
     using PageLookupChunk = std::array<Page*, page_lookup_chunk_size>;
     using PagePermissionChunk =
         std::array<std::uint8_t, page_permission_chunk_size>;
-    using ReadLock = std::unique_lock<std::mutex>;
-    using WriteLock = std::unique_lock<std::mutex>;
+    using ReadLock = std::unique_lock<GuestMemoryGate>;
+    using WriteLock = std::unique_lock<GuestMemoryGate>;
 
     template <typename T>
     [[nodiscard]] std::optional<T> read_integer(
@@ -454,10 +500,9 @@ private:
     [[nodiscard]] bool owns_exclusive_access() const noexcept;
     static thread_local const ExclusiveAccess* exclusive_access_;
 
-    // Scalar guest accesses are short and interleave reads with writes. A
-    // single mutex avoids the reader-accounting overhead of a reader/writer
-    // lock while retaining mutual exclusion for parallel execution/faults.
-    mutable std::mutex mutex_;
+    // Checked accesses and mapping changes take exclusive ownership. Native
+    // slices use revocable read leases to keep direct pointers valid.
+    mutable GuestMemoryGate mutex_;
     bool parallel_access_ { true };
     VmMap vm_map_;
     VmMap translation_profile_map_;
