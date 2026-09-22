@@ -190,9 +190,17 @@ std::uint8_t** AddressSpace::jit_read_page_table()
     if (auto* scope = parallel_scope();
         scope && scope->lease_ && scope->lease_->held())
         return parallel_table_locked(false);
-    auto lock = write_lock();
+    if (auto* scope = parallel_scope(); scope && scope->enabled_) {
+        // ParallelAccess prepared these stable, channel-local tables already.
+        // Binding a pointer does not require stopping other native channels.
+        auto lock = metadata_lock();
+        return parallel_table_locked(false);
+    }
+    auto lock = metadata_lock();
     if (!jit_page_table_enabled_)
         return nullptr;
+    if (lock.owns_lock() && (!jit_read_page_table_ || !jit_write_page_table_))
+        mutex_.quiesce();
     ensure_jit_page_tables_locked();
     if (auto** table = parallel_table_locked(false))
         return table;
@@ -214,9 +222,17 @@ std::uint8_t** AddressSpace::jit_write_page_table()
     if (auto* scope = parallel_scope();
         scope && scope->lease_ && scope->lease_->held())
         return parallel_table_locked(true);
-    auto lock = write_lock();
+    if (auto* scope = parallel_scope(); scope && scope->enabled_) {
+        // ParallelAccess prepared these stable, channel-local tables already.
+        // Binding a pointer does not require stopping other native channels.
+        auto lock = metadata_lock();
+        return parallel_table_locked(true);
+    }
+    auto lock = metadata_lock();
     if (!jit_page_table_enabled_ || !jit_write_page_table_enabled_)
         return nullptr;
+    if (lock.owns_lock() && (!jit_read_page_table_ || !jit_write_page_table_))
+        mutex_.quiesce();
     ensure_jit_page_tables_locked();
     if (auto** table = parallel_table_locked(true))
         return table;
@@ -392,6 +408,16 @@ void AddressSpace::synchronize_shared_write_tracking()
     invalidate_shared_write_jit_pages_locked();
     observed_shared_write_tracking_epoch_.store(
         target, std::memory_order_release);
+}
+
+AddressSpace::WriteLock AddressSpace::metadata_lock() const
+{
+    WriteLock lock { mutex_, std::defer_lock };
+    if (parallel_access_ && !owns_exclusive_access()) {
+        mutex_.lock_metadata();
+        lock = WriteLock { mutex_, std::adopt_lock };
+    }
+    return lock;
 }
 
 AddressSpace::ReadLock AddressSpace::read_lock() const
@@ -1643,7 +1669,7 @@ std::optional<T> AddressSpace::read_integer(
     static_assert(std::is_unsigned_v<T>);
     for (;;) {
         {
-            auto lock = read_lock();
+            auto lock = scalar_access_lock(address, sizeof(T), false);
             if (!range_accessible_locked(address, sizeof(T), access)) {
                 return std::nullopt;
             }
@@ -1688,7 +1714,7 @@ template <typename T>
 bool AddressSpace::write_integer(std::uint32_t address, T value)
 {
     static_assert(std::is_unsigned_v<T>);
-    auto lock = write_lock();
+    auto lock = scalar_access_lock(address, sizeof(T), true);
     if (!range_accessible_locked(address, sizeof(T), MemoryPermission::Write)) {
         return false;
     }

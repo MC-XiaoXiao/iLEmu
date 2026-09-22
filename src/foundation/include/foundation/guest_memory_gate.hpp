@@ -3,41 +3,41 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 #pragma once
 
-#include <atomic>
+#include <condition_variable>
 #include <mutex>
-#include <shared_mutex>
 
 namespace ilemu {
 
-// Native execution holds a read lease. Checked accesses temporarily release
-// their lease before taking the exclusive gate, so they never upgrade in place.
+// Metadata transactions serialize checked users. Native leases are separate:
+// a transaction drains only leases whose direct pointers it may invalidate.
 class GuestMemoryGate {
 public:
+    using Conflict = bool (*)(const void* resource, const void* operation) noexcept;
+
     class Lease {
     public:
         using Interrupt = void (*)(void*) noexcept;
-        Lease(GuestMemoryGate& gate, Interrupt interrupt, void* context)
-            : gate_ { gate }, previous_ { current_ },
-              interrupt_ { interrupt }, context_ { context }
+        Lease(GuestMemoryGate& gate, Interrupt interrupt, void* context,
+            const void* resource)
+            : gate_ { gate }, previous_ { current_ }, interrupt_ { interrupt },
+              context_ { context }, resource_ { resource }
         {
             std::lock_guard lock { gate_.leases_mutex_ };
+            blocked_ = gate_.transaction_active_;
             next_ = gate_.leases_;
             gate_.leases_ = this;
             current_ = this;
         }
         ~Lease()
         {
-            active_.store(false, std::memory_order_relaxed);
-            {
-                std::lock_guard lock { gate_.leases_mutex_ };
-                auto** entry = &gate_.leases_;
-                while (*entry != this)
-                    entry = &(*entry)->next_;
-                *entry = next_;
-            }
-            if (enabled_ && depth_ == 0)
-                gate_.mutex_.unlock_shared();
+            std::lock_guard lock { gate_.leases_mutex_ };
+            active_ = false;
+            auto** entry = &gate_.leases_;
+            while (*entry != this)
+                entry = &(*entry)->next_;
+            *entry = next_;
             current_ = previous_;
+            gate_.leases_changed_.notify_all();
         }
         Lease(const Lease&) = delete;
         Lease& operator=(const Lease&) = delete;
@@ -45,31 +45,21 @@ public:
         void suspend()
         {
             if (depth_++ == 0 && enabled_) {
-                active_.store(false, std::memory_order_relaxed);
-                gate_.mutex_.unlock_shared();
+                std::lock_guard lock { gate_.leases_mutex_ };
+                active_ = false;
+                gate_.leases_changed_.notify_all();
             }
         }
         void resume()
         {
             if (depth_ == 1 && enabled_) {
-                for (;;) {
-                    // Do not re-enter ahead of a writer that requested our
-                    // pause. Also close the registration/acquisition race.
-                    for (auto pending = gate_.pending_writers_.load(std::memory_order_acquire);
-                         pending != 0;
-                         pending = gate_.pending_writers_.load(std::memory_order_acquire))
-                        gate_.pending_writers_.wait(pending, std::memory_order_acquire);
-                    gate_.mutex_.lock_shared();
-                    active_.store(true, std::memory_order_seq_cst);
-                    if (gate_.pending_writers_.load(std::memory_order_seq_cst) == 0)
-                        break;
-                    active_.store(false, std::memory_order_relaxed);
-                    gate_.mutex_.unlock_shared();
-                }
+                std::unique_lock lock { gate_.leases_mutex_ };
+                gate_.leases_changed_.wait(lock, [this] { return !blocked_; });
+                active_ = true;
             }
             --depth_;
         }
-        // Called while the lease is suspended under its exclusive gate.
+        // Called while suspended by a metadata transaction.
         void disable() noexcept { enabled_ = false; }
         [[nodiscard]] bool held() const noexcept { return enabled_ && depth_ == 0; }
 
@@ -80,47 +70,73 @@ public:
         Lease* next_ { };
         Interrupt interrupt_;
         void* context_;
-        std::atomic<bool> active_ { false };
+        const void* resource_;
+        bool active_ { };
+        bool blocked_ { };
         unsigned depth_ { 1 };
         bool enabled_ { true };
     };
 
-    void lock()
+    // Acquire metadata without touching native data or revoking any pointer.
+    // The caller must classify the operation, then quiesce before data access
+    // or mutation. Until then, existing native users run but cannot re-enter.
+    void lock_metadata()
     {
         auto* lease = current_lease();
         if (lease)
             lease->suspend();
         try {
-            if (!mutex_.try_lock()) {
-                pending_writers_.fetch_add(1U, std::memory_order_seq_cst);
-                try {
-                    // Request a block-boundary exit rather than waiting for a
-                    // full computation slice before a checked access can proceed.
-                    // Registration protects callback lifetime; callbacks only
-                    // publish an atomic JIT halt and never acquire memory locks.
-                    {
-                        std::lock_guard lock { leases_mutex_ };
-                        for (auto* reader = leases_; reader; reader = reader->next_)
-                            if (reader->active_.load(std::memory_order_seq_cst))
-                                reader->interrupt_(reader->context_);
-                    }
-                    mutex_.lock();
-                } catch (...) {
-                    pending_writers_.fetch_sub(1U, std::memory_order_release);
-                    pending_writers_.notify_all();
-                    throw;
-                }
-                pending_writers_.fetch_sub(1U, std::memory_order_release);
-                pending_writers_.notify_all();
-            }
+            mutex_.lock();
         } catch (...) {
             if (lease)
                 lease->resume();
             throw;
         }
+        std::lock_guard lock { leases_mutex_ };
+        transaction_active_ = true;
+        for (auto* reader = leases_; reader; reader = reader->next_)
+            reader->blocked_ = true;
+    }
+
+    // Requires the metadata transaction. The predicate only reads stable view
+    // metadata. Null means a full mapping/lifecycle boundary. No callback may
+    // acquire another lock: interrupts merely request an atomic JIT halt.
+    void quiesce(Conflict conflict = nullptr, const void* operation = nullptr)
+    {
+        std::unique_lock lock { leases_mutex_ };
+        for (auto* reader = leases_; reader; reader = reader->next_) {
+            reader->blocked_ = !conflict || conflict(reader->resource_, operation);
+            if (reader->blocked_ && reader->active_)
+                reader->interrupt_(reader->context_);
+        }
+        leases_changed_.notify_all();
+        leases_changed_.wait(lock, [this] {
+            for (auto* reader = leases_; reader; reader = reader->next_)
+                if (reader->blocked_ && reader->active_)
+                    return false;
+            return true;
+        });
+    }
+
+    void lock()
+    {
+        lock_metadata();
+        try {
+            quiesce();
+        } catch (...) {
+            unlock();
+            throw;
+        }
     }
     void unlock()
     {
+        {
+            std::lock_guard lock { leases_mutex_ };
+            transaction_active_ = false;
+            for (auto* reader = leases_; reader; reader = reader->next_)
+                reader->blocked_ = false;
+        }
+        leases_changed_.notify_all();
         mutex_.unlock();
         if (auto* lease = current_lease())
             lease->resume();
@@ -135,10 +151,11 @@ private:
         return nullptr;
     }
     inline static thread_local Lease* current_ { };
-    std::shared_mutex mutex_;
+    std::mutex mutex_;
     std::mutex leases_mutex_;
+    std::condition_variable leases_changed_;
     Lease* leases_ { };
-    std::atomic<unsigned> pending_writers_ { };
+    bool transaction_active_ { };
 };
 
 } // namespace ilemu

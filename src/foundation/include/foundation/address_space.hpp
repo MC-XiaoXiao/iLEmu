@@ -65,6 +65,7 @@ struct FileMappingBatchContext {
 [[nodiscard]] AddressSpaceWriteStats address_space_write_stats() noexcept;
 
 class AddressSpace {
+    struct ParallelView;
 public:
     using MappingRegion = VmMap::MappingRegion;
     static constexpr std::uint32_t page_size = guest_memory_page_size;
@@ -116,6 +117,7 @@ public:
         std::size_t slot_;
         std::size_t owner_;
         ParallelAccess* previous_;
+        ParallelView* view_ { };
         std::optional<GuestMemoryGate::Lease> lease_;
         bool enabled_ { true };
     };
@@ -366,14 +368,8 @@ private:
         std::unordered_set<std::uint32_t> touched;
         std::optional<std::size_t> owner;
     };
-    struct ParallelPage {
-        std::size_t first_reader;
-        bool shared { };
-        bool written { };
-    };
     struct ParallelState {
         std::map<std::size_t, std::unique_ptr<ParallelView>> views;
-        tsl::robin_pg_map<std::uint32_t, ParallelPage> pages;
     };
     std::unique_ptr<ParallelState> parallel_state_;
     static thread_local ParallelAccess* parallel_scope_;
@@ -497,6 +493,10 @@ private:
         std::size_t page_index);
     [[nodiscard]] ReadLock read_lock() const;
     [[nodiscard]] WriteLock write_lock();
+    // Does not grant access to backing bytes or permission to revoke pointers.
+    [[nodiscard]] WriteLock metadata_lock() const;
+    [[nodiscard]] WriteLock scalar_access_lock(
+        std::uint32_t address, std::size_t size, bool writing) const;
     [[nodiscard]] bool owns_exclusive_access() const noexcept;
     static thread_local const ExclusiveAccess* exclusive_access_;
 
