@@ -733,9 +733,12 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
         registers[0] = 0;
         return true;
     }
-    if (*message_id == darwin::mach::thread_policy::policy_set_message &&
-        registers[3] >= darwin::mach::thread_policy::minimum_request_size) {
+    if (*message_id == darwin::mach::thread_policy::policy_set_message) {
         using namespace darwin::mach::thread_policy;
+        if (registers[3] < simple_reply_size) {
+            registers[0] = darwin::mach_message::receive_invalid_data;
+            return true;
+        }
         const auto flavor =
             memory_.read32(message_address + request_flavor_offset);
         const auto count =
@@ -749,11 +752,14 @@ bool CompatibilityKernel::dispatch_mach_task_vm_message(
         }
 
         std::vector<std::uint32_t> policy;
-        bool valid = flavor && count && target_thread &&
+        // mach_msg's send size bounds the variable-length policy array.
+        // The receive limit only describes the (smaller) MIG reply buffer.
+        bool valid = registers[2] >= minimum_request_size &&
+                     flavor && count && target_thread &&
                      *count <= maximum_policy_word_count &&
                      request_policy_offset + static_cast<std::size_t>(*count) *
                                                  sizeof(std::uint32_t) <=
-                         registers[3];
+                         registers[2];
         if (valid) {
             policy.reserve(*count);
             for (std::uint32_t index = 0; index < *count; ++index) {
