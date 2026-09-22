@@ -418,6 +418,12 @@ std::optional<CoreAudioHle::ScheduledIoProc> CoreAudioHle::take_due_io_proc(
         return std::nullopt;
     }
 
+    // The hardware sample clock advances independently of callback dispatch.
+    // Anchor a new run once; later callbacks retain their scheduled timestamps
+    // so scheduler jitter cannot stretch the PCM timeline on every period.
+    if (registration.next_deadline == 0)
+        registration.next_deadline = now;
+
     const auto stack_pointer = registration.stack + callback_stack_size -
                                callback_stack_argument_space;
     const auto memory_ready =
@@ -432,7 +438,7 @@ std::optional<CoreAudioHle::ScheduledIoProc> CoreAudioHle::take_due_io_proc(
         registration.memory->write32(
             registration.output_buffers + 12U, registration.output_samples) &&
         write_timestamp(*registration.memory, registration.timestamp,
-            registration.sample_time, now) &&
+            registration.sample_time, registration.next_deadline) &&
         registration.memory->write32(
             stack_pointer, registration.output_buffers) &&
         registration.memory->write32(
@@ -481,8 +487,7 @@ std::optional<CoreAudioHle::ScheduledIoProc> CoreAudioHle::take_due_io_proc(
                                       ? registration.buffer_frame_size
                                       : buffer_frame_size_) *
                 virtual_time_units_per_second / sample_rate);
-    registration.next_deadline =
-        std::max(now, registration.next_deadline) + period;
+    registration.next_deadline += period;
     registration.in_flight = true;
     if (registration.output != nullptr && registration.callback_count < 2U) {
         registration.output->line(
