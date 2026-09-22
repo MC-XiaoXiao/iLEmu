@@ -40,17 +40,19 @@ public:
     GuestExecutionCoordinator& operator=(
         const GuestExecutionCoordinator&) = delete;
 
+    // The caller owns a request until wait() returns it. Only the control
+    // thread submits/collects; Guest kernel state is never touched by workers.
+    void submit(GuestExecutionRequest& request);
+    [[nodiscard]] GuestExecutionRequest* wait();
+    // Dispatch and drain a kernel commit window, preserving the old runtime
+    // boundary while individual execution channels remain independently usable.
     void run(std::span<GuestExecutionRequest*> requests);
     static void execute(GuestExecutionRequest& request) noexcept;
-    // Finish per-lane preparation before any lane starts its native lease.
-    // Keep a short remaining quantum or host cap from leaving its peer
-    // running alone for the rest of the batch. This caps work only; each
-    // scheduled thread retains its own Guest quantum and consumed ticks.
-    static std::uint64_t synchronize_native_entry(std::uint64_t tick_budget);
-    [[nodiscard]] static bool has_native_entry_barrier() noexcept;
+    [[nodiscard]] static bool in_execution_channel() noexcept;
 
 private:
-    void worker_loop();
+    void worker_loop(std::size_t index);
+    void stop() noexcept;
 
     struct Impl;
     std::unique_ptr<Impl> impl_;
