@@ -348,6 +348,27 @@ void AddressSpace::release_exclusive_write_tracking_locked(
         return;
     const auto first = page_base(address);
     const auto end = page_range_end(address, size);
+    if (end == static_cast<std::uint64_t>(first) + page_size) {
+        const auto* written_page = find_page_locked(first);
+        if (written_page == nullptr || !written_page->shared_writable ||
+            !written_page->backing) {
+            // A private page cannot invalidate a writable shared alias. Most
+            // scalar writes therefore need one lookup, not a scan of every
+            // reservation held elsewhere in this address space.
+            const auto marker = exclusive_write_tracked_pages_.find(first);
+            if (marker == exclusive_write_tracked_pages_.end())
+                return;
+            marker.value() &= ~reservation_granule_mask(address, size, first);
+            if (marker->second == 0U) {
+                exclusive_write_tracked_pages_.erase(marker);
+                refresh_jit_page_locked(first);
+                if (exclusive_write_tracked_pages_.empty())
+                    exclusive_write_tracking_active_.store(
+                        false, std::memory_order_release);
+            }
+            return;
+        }
+    }
     for (auto marker = exclusive_write_tracked_pages_.begin();
         marker != exclusive_write_tracked_pages_.end();) {
         const auto page_address = marker->first;
