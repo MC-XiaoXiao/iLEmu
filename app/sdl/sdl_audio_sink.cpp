@@ -168,6 +168,10 @@ struct SdlAudioSink::Impl {
             }
         }
         if (state.queued_chunks.empty()) {
+            // Natural completion (or an underrun) ends the buffered run just
+            // like an explicit stop. Give the next PCM run the same short
+            // device lead instead of racing the next host callback forever.
+            state.streaming_needs_lead = true;
             state.fade_frames_remaining = 0;
             state.fade_frames_total = 0;
         }
