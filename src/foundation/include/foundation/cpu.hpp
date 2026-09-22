@@ -165,6 +165,8 @@ struct CpuRunResult {
     std::uint64_t host_yield_checks { };
     // The JIT body alone, excluding scheduler and kernel dispatch overhead.
     std::uint64_t host_execution_ns { };
+    // Compilation cost is not a sample of steady-state Guest throughput.
+    bool translated_code { };
 };
 
 enum class SvcDispatchMode : std::uint8_t {

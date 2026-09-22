@@ -1234,6 +1234,7 @@ private:
         std::uint64_t translation_nanoseconds,
         const Dynarmic::IR::Block* optimized_block) noexcept
     {
+        translated_code_ = true;
         // Translation does not consume guest ticks. Even individually short
         // compilations can exhaust a host slice before the execution probes
         // reach their count threshold, so check at every translation boundary.
@@ -1490,6 +1491,7 @@ public:
     {
         ticks_remaining_ = ticks;
         consumed_ = 0;
+        translated_code_ = false;
         svc_.reset();
         svc_calls_ = 0;
         fault_.reset();
@@ -1518,7 +1520,7 @@ public:
     {
         return CpuRunResult { reason, consumed_, svc_, svc_calls_, fault_,
             breakpoint_, exception_, host_yield_requested_,
-            host_yield_checks_ };
+            host_yield_checks_, 0U, translated_code_ };
     }
 
     [[nodiscard]] const ArmCpuModel& cpu_model() const { return cpu_model_; }
@@ -2003,6 +2005,7 @@ private:
     std::uint64_t host_yield_tick_accumulator_ { };
     std::uint64_t host_yield_tick_budget_ { };
     std::uint64_t host_yield_checks_ { };
+    bool translated_code_ { };
     std::chrono::steady_clock::time_point host_slice_deadline_ { };
     std::unique_ptr<JitTranslationProfileRecorder> translation_recorder_;
     std::shared_ptr<JitWorkObservationSignal> jit_work_signal_;
