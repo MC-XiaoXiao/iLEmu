@@ -39,13 +39,20 @@ namespace {
 } // namespace
 
 XnuScheduler::XnuScheduler(std::uint64_t quantum_ticks,
-    std::uint64_t scheduler_tick_ticks, std::size_t processor_count)
+    std::uint64_t scheduler_tick_ticks, std::size_t processor_count,
+    std::uint32_t guest_ticks_per_second)
     : processor_run_queues_(processor_count)
     , quantum_ticks_ { quantum_ticks }
     , scheduler_tick_ticks_ { scheduler_tick_ticks }
+    , minimum_realtime_computation_ticks_ { std::max<std::uint64_t>(1,
+          static_cast<std::uint64_t>(guest_ticks_per_second) * 50 /
+              xnu::scheduler::microseconds_per_second) }
+    , maximum_realtime_computation_ticks_ { std::max<std::uint64_t>(1,
+          static_cast<std::uint64_t>(guest_ticks_per_second) * 50'000 /
+              xnu::scheduler::microseconds_per_second) }
 {
     if (quantum_ticks_ == 0 || scheduler_tick_ticks_ == 0 ||
-        processor_run_queues_.empty()) {
+        guest_ticks_per_second == 0 || processor_run_queues_.empty()) {
         throw std::invalid_argument {
             "XNU scheduler intervals must be non-zero"
         };
@@ -486,10 +493,8 @@ bool XnuScheduler::set_realtime(XnuThreadId thread, std::uint64_t period_ticks,
     bool preemptible)
 {
     if (constraint_ticks < computation_ticks ||
-        computation_ticks <
-            xnu::scheduler::minimum_realtime_computation_ticks ||
-        computation_ticks >
-            xnu::scheduler::maximum_realtime_computation_ticks) {
+        computation_ticks < minimum_realtime_computation_ticks_ ||
+        computation_ticks > maximum_realtime_computation_ticks_) {
         return false;
     }
     const auto iterator = threads_.find(thread);
@@ -497,6 +502,11 @@ bool XnuScheduler::set_realtime(XnuThreadId thread, std::uint64_t period_ticks,
         return false;
     auto& record = iterator->second;
     const auto was_timeshare = record.info.timeshare;
+    // A queued RT thread can change its deadline without changing priority.
+    // Remove its old ordering key before updating either field.
+    const auto was_queued = record.queued;
+    if (was_queued)
+        remove_from_queue(thread, record);
     record.info.timeshare = false;
     record.info.realtime = true;
     if (record.info.state != XnuThreadState::Waiting && was_timeshare) {
@@ -510,6 +520,8 @@ bool XnuScheduler::set_realtime(XnuThreadId thread, std::uint64_t period_ticks,
         saturating_add(realtime_clock_ticks_, constraint_ticks);
     record.info.remaining_quantum = computation_ticks;
     recompute_priority(thread, record);
+    if (was_queued)
+        enqueue(thread, QueuePosition::Back);
     return true;
 }
 
@@ -879,10 +891,12 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position)
             ? processor_run_queues_.at(*record.info.bound_processor)
             : processor_set_run_queue_;
     auto& queue = run_queue.queues[static_cast<std::size_t>(priority)];
+    record.enqueue_sequence = next_enqueue_sequence_++;
     if (record.info.realtime &&
         priority >= xnu::scheduler::realtime_queue_priority) {
         const auto realtime_key =
-            RealtimeQueueKey { record.info.realtime_deadline, thread };
+            RealtimeQueueKey { record.info.realtime_deadline,
+                record.enqueue_sequence, thread };
         run_queue.realtime_order.insert(realtime_key);
         record.realtime_queue_key = realtime_key;
         record.queue_position = queue.insert(queue.end(), thread);
@@ -895,7 +909,6 @@ void XnuScheduler::enqueue(XnuThreadId thread, QueuePosition position)
     record.queued_priority = priority;
     record.front_continuation = position == QueuePosition::Front;
     record.queued_processor = record.info.bound_processor;
-    record.enqueue_sequence = next_enqueue_sequence_++;
     if (dispatch_diagnostics_enabled_ &&
         record.enqueued_at == std::chrono::steady_clock::time_point { }) {
         record.enqueued_at = std::chrono::steady_clock::now();
@@ -990,7 +1003,7 @@ XnuThreadId XnuScheduler::peek_highest(const RunQueue& run_queue) const
                 "XNU realtime queue index is inconsistent"
             };
         }
-        const auto thread = run_queue.realtime_order.begin()->second;
+        const auto thread = run_queue.realtime_order.begin()->thread;
         const auto iterator = threads_.find(thread);
         if (iterator == threads_.end() || !iterator->second.queued ||
             iterator->second.queued_priority != priority) {

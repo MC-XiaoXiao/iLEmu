@@ -1398,7 +1398,7 @@ void EmulatorSession::run()
     XnuScheduler scheduler { guest_ticks_per_second /
                                  xnu::scheduler::default_preemption_rate,
         guest_ticks_per_second / xnu::scheduler::scheduler_ticks_per_second,
-        guest_processor_count };
+        guest_processor_count, guest_ticks_per_second };
     GuestExecutionPolicy guest_execution_policy { std::chrono::nanoseconds {
         static_cast<std::int64_t>(
             iokit_abi::display_vsync::period_absolute_time) } };

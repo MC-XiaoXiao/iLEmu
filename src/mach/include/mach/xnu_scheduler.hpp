@@ -160,7 +160,9 @@ public:
         std::uint64_t quantum_ticks = xnu::scheduler::standard_quantum_ticks,
         std::uint64_t scheduler_tick_ticks =
             xnu::scheduler::scheduler_tick_interval,
-        std::size_t processor_count = 1);
+        std::size_t processor_count = 1,
+        std::uint32_t guest_ticks_per_second =
+            xnu::scheduler::default_guest_ticks_per_second);
 
     void set_dispatch_diagnostics(bool enabled);
 
@@ -259,7 +261,13 @@ public:
 
 private:
     using ReadyQueue = std::list<XnuThreadId>;
-    using RealtimeQueueKey = std::pair<std::uint64_t, XnuThreadId>;
+    struct RealtimeQueueKey {
+        std::uint64_t deadline;
+        std::uint64_t enqueue_sequence;
+        XnuThreadId thread;
+
+        auto operator<=>(const RealtimeQueueKey&) const = default;
+    };
 
     struct RunQueue {
         std::array<ReadyQueue, xnu::scheduler::run_queue_count> queues;
@@ -363,6 +371,8 @@ private:
     std::size_t active_timeshare_count_ { };
     std::uint64_t quantum_ticks_ { };
     std::uint64_t scheduler_tick_ticks_ { };
+    std::uint64_t minimum_realtime_computation_ticks_ { };
+    std::uint64_t maximum_realtime_computation_ticks_ { };
     std::uint32_t priority_usage_shift_ { };
     std::uint64_t elapsed_since_scheduler_tick_ { };
     std::uint64_t elapsed_ticks_ { };
