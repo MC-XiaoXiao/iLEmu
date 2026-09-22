@@ -28,9 +28,23 @@ bool GuestParallelismPolicy::should_serialize(XnuThreadId thread) const
                history->second.mode == Mode::Serial);
 }
 
-void GuestParallelismPolicy::observe(
-    XnuThreadId thread, std::uint64_t ticks_consumed, std::uint64_t svc_calls,
-    std::uint64_t host_execution_ns, bool ran_parallel)
+std::optional<std::uint64_t> GuestParallelismPolicy::measurement_tick_limit(
+    XnuThreadId thread) const
+{
+    const auto history = histories_.find(thread);
+    // A thread can enter a compute phase immediately after initialization
+    // syscalls. Bound its recovery as well as both throughput probe modes.
+    if (history == histories_.end() ||
+        history->second.syscall_density_score >= serialize_score ||
+        history->second.mode == Mode::ProbeParallel ||
+        history->second.mode == Mode::ProbeSerial)
+        return minimum_sample_ticks * 4U;
+    return std::nullopt;
+}
+
+void GuestParallelismPolicy::observe(XnuThreadId thread,
+    std::uint64_t ticks_consumed, std::uint64_t svc_calls,
+    std::uint64_t host_execution_ns, bool ran_parallel, bool translated_code)
 {
     auto& history = histories_[thread];
     const auto dense = svc_calls != 0 && ticks_consumed / svc_calls <
@@ -42,12 +56,12 @@ void GuestParallelismPolicy::observe(
         --history.syscall_density_score;
     }
 
-    if (svc_calls != 0U || ticks_consumed < minimum_sample_ticks ||
-        host_execution_ns == 0U)
+    if (translated_code || svc_calls != 0U ||
+        ticks_consumed < minimum_sample_ticks || host_execution_ns == 0U)
         return;
 
-    const bool expected_parallel = history.mode == Mode::Parallel ||
-                                   history.mode == Mode::ProbeParallel;
+    const bool expected_parallel =
+        history.mode == Mode::Parallel || history.mode == Mode::ProbeParallel;
     if (ran_parallel != expected_parallel)
         return;
 
@@ -61,8 +75,9 @@ void GuestParallelismPolicy::observe(
     const auto choose_mode = [&] {
         // Two concurrent guest lanes are useful only if their combined rate
         // beats two serialized fast-memory slices. Keep a margin for noise.
-        const auto serial_rate = static_cast<long double>(history.serial.ticks) /
-                                 history.serial.host_ns;
+        const auto serial_rate =
+            static_cast<long double>(history.serial.ticks) /
+            history.serial.host_ns;
         const auto parallel_rate =
             static_cast<long double>(history.parallel.ticks) /
             history.parallel.host_ns;
@@ -82,8 +97,7 @@ void GuestParallelismPolicy::observe(
     } else if (history.mode == Mode::ProbeSerial &&
                history.serial.count == probe_slices) {
         choose_mode();
-    } else if (history.mode == Mode::Parallel ||
-               history.mode == Mode::Serial) {
+    } else if (history.mode == Mode::Parallel || history.mode == Mode::Serial) {
         if (++history.stable_slices >= reprobe_slices) {
             history.stable_slices = 0;
             if (history.mode == Mode::Parallel) {

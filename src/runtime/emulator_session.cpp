@@ -105,6 +105,7 @@ namespace {
         std::size_t thread_index { };
         GuestExecutionRequest execution;
         bool deferred_svc { };
+        bool throughput_measurement_limited { };
     };
 
 } // namespace
@@ -3652,6 +3653,35 @@ void EmulatorSession::run()
             });
         }
 
+        // Serial selection can stop after its first lane. Bound that lane too,
+        // including syscall-density recovery, so short compute phases do not
+        // finish before the policy can reconsider parallel execution. When
+        // probing a batch, bound stable peers as well.
+        std::optional<std::uint64_t> measurement_tick_limit;
+        if (guest_processor_count > 1U) {
+            for (const auto& prepared : prepared_slices) {
+                if (prepared_slices.size() == 1U &&
+                    !guest_parallelism_policy.should_serialize(
+                        prepared.scheduled.thread))
+                    continue;
+                if (const auto limit =
+                        guest_parallelism_policy.measurement_tick_limit(
+                            prepared.scheduled.thread))
+                    measurement_tick_limit =
+                        measurement_tick_limit
+                            ? std::min(*measurement_tick_limit, *limit)
+                            : *limit;
+            }
+        }
+        if (measurement_tick_limit) {
+            for (auto& prepared : prepared_slices) {
+                if (prepared.execution.tick_budget > *measurement_tick_limit) {
+                    prepared.execution.tick_budget = *measurement_tick_limit;
+                    prepared.throughput_measurement_limited = true;
+                }
+            }
+        }
+
         const auto parallel_guest_batch =
             prepared_slices.size() > 1U &&
             std::none_of(prepared_slices.begin(), prepared_slices.end(),
@@ -3662,7 +3692,8 @@ void EmulatorSession::run()
         for (auto& prepared : prepared_slices) {
             prepared.deferred_svc = parallel_guest_batch;
             prepared.execution.cpu->set_parallel_memory_allowed(
-                parallel_guest_batch && prepared.runtime->precompile_tasks.empty());
+                parallel_guest_batch &&
+                prepared.runtime->precompile_tasks.empty());
             prepared.execution.cpu->set_svc_dispatch_mode(
                 parallel_guest_batch ? SvcDispatchMode::Deferred
                                      : SvcDispatchMode::Immediate);
@@ -3732,6 +3763,9 @@ void EmulatorSession::run()
             const auto index = prepared.thread_index;
             auto& cpu = *prepared.execution.cpu;
             auto result = std::move(prepared.execution.result);
+            if (prepared.throughput_measurement_limited &&
+                result.ticks_consumed >= prepared.execution.tick_budget)
+                result.host_yielded = true;
             if (performance_counters().cpu_source_diagnostics_enabled() &&
                 result.svc_calls != 0 && result.ticks_consumed < 10'000U) {
                 if (diagnostic_svc_spin_thread != scheduled->thread) {
@@ -3760,9 +3794,10 @@ void EmulatorSession::run()
                 diagnostic_svc_spin_calls = 0;
                 diagnostic_svc_spin_report_at = 1'000;
             }
-            guest_parallelism_policy.observe(
-                scheduled->thread, result.ticks_consumed, result.svc_calls,
-                result.host_execution_ns, prepared.deferred_svc);
+            guest_parallelism_policy.observe(scheduled->thread,
+                result.ticks_consumed, result.svc_calls,
+                result.host_execution_ns, prepared.deferred_svc,
+                result.translated_code);
             if (prepared.deferred_svc && result.svc) {
                 runtime.kernel->dispatch(cpu, *result.svc);
                 // UserDefined2 is shared by deferred SVC and host cooperation.

@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <optional>
 
 #include "mach/xnu_scheduler.hpp"
 
@@ -21,13 +22,17 @@ namespace ilemu {
 // worker barrier for every SVC.
 class GuestParallelismPolicy {
 public:
-    GuestParallelismPolicy(std::uint64_t guest_ticks_per_second,
-        std::size_t processor_count);
+    GuestParallelismPolicy(
+        std::uint64_t guest_ticks_per_second, std::size_t processor_count);
 
     [[nodiscard]] bool should_serialize(XnuThreadId thread) const;
+    // Bound both sides of a throughput comparison rather than charging short
+    // tasks several complete serial quanta merely to choose an execution mode.
+    [[nodiscard]] std::optional<std::uint64_t> measurement_tick_limit(
+        XnuThreadId thread) const;
     void observe(XnuThreadId thread, std::uint64_t ticks_consumed,
         std::uint64_t svc_calls, std::uint64_t host_execution_ns,
-        bool ran_parallel);
+        bool ran_parallel, bool translated_code = false);
     void forget(XnuThreadId thread);
     void forget_process(std::uint32_t process_id);
 
