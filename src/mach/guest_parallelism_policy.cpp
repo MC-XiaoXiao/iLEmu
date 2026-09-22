@@ -12,9 +12,10 @@
 namespace ilemu {
 
 GuestParallelismPolicy::GuestParallelismPolicy(
-    std::uint64_t guest_ticks_per_second)
+    std::uint64_t guest_ticks_per_second, std::size_t processor_count)
     : minimum_parallel_ticks_per_svc_ { std::max<std::uint64_t>(
           1, guest_ticks_per_second / minimum_parallel_intervals_per_second) }
+    , processor_count_ { std::max<std::size_t>(1, processor_count) }
 {
 }
 
@@ -22,29 +23,77 @@ bool GuestParallelismPolicy::should_serialize(XnuThreadId thread) const
 {
     const auto history = histories_.find(thread);
     return history != histories_.end() &&
-           history->second.syscall_density_score >= serialize_score;
+           (history->second.syscall_density_score >= serialize_score ||
+               history->second.mode == Mode::ProbeSerial ||
+               history->second.mode == Mode::Serial);
 }
 
 void GuestParallelismPolicy::observe(
-    XnuThreadId thread, std::uint64_t ticks_consumed, std::uint64_t svc_calls)
+    XnuThreadId thread, std::uint64_t ticks_consumed, std::uint64_t svc_calls,
+    std::uint64_t host_execution_ns, bool ran_parallel)
 {
-    auto history = histories_.find(thread);
+    auto& history = histories_[thread];
     const auto dense = svc_calls != 0 && ticks_consumed / svc_calls <
                                              minimum_parallel_ticks_per_svc_;
     if (dense) {
-        if (history == histories_.end()) {
-            history = histories_.try_emplace(thread).first;
-        }
-        history->second.syscall_density_score = std::min<std::uint8_t>(
-            maximum_score, history->second.syscall_density_score + 1U);
-        return;
+        history.syscall_density_score = std::min<std::uint8_t>(
+            maximum_score, history.syscall_density_score + 1U);
+    } else if (history.syscall_density_score != 0U) {
+        --history.syscall_density_score;
     }
-    if (history == histories_.end())
+
+    if (svc_calls != 0U || ticks_consumed < minimum_sample_ticks ||
+        host_execution_ns == 0U)
         return;
-    if (history->second.syscall_density_score > 1U) {
-        --history->second.syscall_density_score;
-    } else {
-        histories_.erase(history);
+
+    const bool expected_parallel = history.mode == Mode::Parallel ||
+                                   history.mode == Mode::ProbeParallel;
+    if (ran_parallel != expected_parallel)
+        return;
+
+    auto& sample = ran_parallel ? history.parallel : history.serial;
+    if (sample.count == probe_slices)
+        sample = { };
+    sample.ticks += ticks_consumed;
+    sample.host_ns += host_execution_ns;
+    ++sample.count;
+
+    const auto choose_mode = [&] {
+        // Two concurrent guest lanes are useful only if their combined rate
+        // beats two serialized fast-memory slices. Keep a margin for noise.
+        const auto serial_rate = static_cast<long double>(history.serial.ticks) /
+                                 history.serial.host_ns;
+        const auto parallel_rate =
+            static_cast<long double>(history.parallel.ticks) /
+            history.parallel.host_ns;
+        history.mode = serial_rate > parallel_rate * processor_count_ * 1.15L
+                           ? Mode::Serial
+                           : Mode::Parallel;
+        history.stable_slices = 0;
+    };
+
+    if (history.mode == Mode::ProbeParallel &&
+        history.parallel.count == probe_slices) {
+        if (history.serial.count == 0U) {
+            history.mode = Mode::ProbeSerial;
+        } else {
+            choose_mode();
+        }
+    } else if (history.mode == Mode::ProbeSerial &&
+               history.serial.count == probe_slices) {
+        choose_mode();
+    } else if (history.mode == Mode::Parallel ||
+               history.mode == Mode::Serial) {
+        if (++history.stable_slices >= reprobe_slices) {
+            history.stable_slices = 0;
+            if (history.mode == Mode::Parallel) {
+                history.serial = { };
+                history.mode = Mode::ProbeSerial;
+            } else {
+                history.parallel = { };
+                history.mode = Mode::ProbeParallel;
+            }
+        }
     }
 }
 

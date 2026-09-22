@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <map>
 
@@ -20,25 +21,48 @@ namespace ilemu {
 // worker barrier for every SVC.
 class GuestParallelismPolicy {
 public:
-    explicit GuestParallelismPolicy(std::uint64_t guest_ticks_per_second);
+    GuestParallelismPolicy(std::uint64_t guest_ticks_per_second,
+        std::size_t processor_count);
 
     [[nodiscard]] bool should_serialize(XnuThreadId thread) const;
     void observe(XnuThreadId thread, std::uint64_t ticks_consumed,
-        std::uint64_t svc_calls);
+        std::uint64_t svc_calls, std::uint64_t host_execution_ns,
+        bool ran_parallel);
     void forget(XnuThreadId thread);
     void forget_process(std::uint32_t process_id);
 
 private:
+    enum class Mode : std::uint8_t {
+        ProbeParallel,
+        ProbeSerial,
+        Parallel,
+        Serial,
+    };
+
+    struct Sample {
+        std::uint64_t ticks { };
+        std::uint64_t host_ns { };
+        std::uint8_t count { };
+    };
+
     struct ThreadHistory {
         std::uint8_t syscall_density_score { };
+        Mode mode { Mode::ProbeParallel };
+        Sample parallel;
+        Sample serial;
+        std::uint16_t stable_slices { };
     };
 
     static constexpr std::uint8_t serialize_score = 2;
     static constexpr std::uint8_t maximum_score = 4;
     static constexpr std::uint64_t minimum_parallel_intervals_per_second =
         4'000;
+    static constexpr std::uint64_t minimum_sample_ticks = 50'000;
+    static constexpr std::uint8_t probe_slices = 3;
+    static constexpr std::uint16_t reprobe_slices = 128;
 
     std::uint64_t minimum_parallel_ticks_per_svc_ { };
+    std::size_t processor_count_ { };
     std::map<XnuThreadId, ThreadHistory> histories_;
 };
 

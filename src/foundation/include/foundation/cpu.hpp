@@ -163,6 +163,8 @@ struct CpuRunResult {
     // host slice boundary from a guest AST/deferred-SVC stop.
     bool host_yielded { };
     std::uint64_t host_yield_checks { };
+    // The JIT body alone, excluding scheduler and kernel dispatch overhead.
+    std::uint64_t host_execution_ns { };
 };
 
 enum class SvcDispatchMode : std::uint8_t {

@@ -1405,7 +1405,8 @@ void EmulatorSession::run()
     GuestDispatchPolicy guest_dispatch_policy { std::chrono::nanoseconds {
         static_cast<std::int64_t>(
             iokit_abi::display_vsync::period_absolute_time) } };
-    GuestParallelismPolicy guest_parallelism_policy { guest_ticks_per_second };
+    GuestParallelismPolicy guest_parallelism_policy {
+        guest_ticks_per_second, guest_processor_count };
     std::optional<XnuThreadId> last_serial_thread;
     std::optional<XnuThreadId> scheduler_handoff_thread;
     std::optional<std::uint32_t> display_urgent_process;
@@ -3742,7 +3743,8 @@ void EmulatorSession::run()
                 diagnostic_svc_spin_report_at = 1'000;
             }
             guest_parallelism_policy.observe(
-                scheduled->thread, result.ticks_consumed, result.svc_calls);
+                scheduled->thread, result.ticks_consumed, result.svc_calls,
+                result.host_execution_ns, prepared.deferred_svc);
             if (prepared.deferred_svc && result.svc) {
                 runtime.kernel->dispatch(cpu, *result.svc);
                 // UserDefined2 is shared by deferred SVC and host cooperation.

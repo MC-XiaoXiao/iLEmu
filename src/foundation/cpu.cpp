@@ -2275,6 +2275,8 @@ public:
             diagnostics.checkpoint(PerfLatencyKind::CpuRunExecute);
             record_dispatch_counters();
             auto result = callbacks_->result(reason);
+            result.host_execution_ns = static_cast<std::uint64_t>(
+                std::max<std::int64_t>(0, jit_elapsed.count()));
             const auto callback_host_yielded = result.host_yielded;
             if (native_budget_result.supported) {
                 result.host_yield_checks +=
