@@ -278,15 +278,22 @@ DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::broadcast_condition(
         waiter = queue.waiters.erase(waiter);
         outcome.result += generation_increment;
     }
-    if (outcome.woken_threads.empty()) {
-        auto count = static_cast<std::uint32_t>(unlock_and_count_generation) &
-                     generation_mask;
-        count >>= 8U;
-        if (count == 0U)
-            count = 1U;
-        queue.preposts.push_back(Prepost { upper_sequence, count,
+    // A broadcast can race waiters entering the kernel. XNU retains a
+    // broadcast entry while its L/S generations are unbalanced, even when
+    // some threads have already been woken. The low half of cvudgen is a
+    // separate difference field, not the number of outstanding waiters.
+    static_cast<void>(unlock_and_count_generation);
+    const auto signaled_sequence =
+        static_cast<std::uint32_t>(lock_and_signal_generation >> 32U) &
+        generation_mask;
+    const auto outstanding =
+        ((upper_sequence - signaled_sequence) & generation_mask) >> 8U;
+    if (outstanding > outcome.woken_threads.size()) {
+        queue.preposts.push_back(Prepost { upper_sequence,
+            outstanding -
+                static_cast<std::uint32_t>(outcome.woken_threads.size()),
             DarwinPsynchWaitKind::Condition });
-        outcome.result = condition_prepost_bit;
+        outcome.result |= condition_prepost_bit;
     }
     prune_queue_locked(key);
     return outcome;
