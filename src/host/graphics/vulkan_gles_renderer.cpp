@@ -2471,7 +2471,9 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                                   (normalized[2][1] - normalized[0][1]) -
                               (normalized[1][1] - normalized[0][1]) *
                                   (normalized[2][0] - normalized[0][0]);
-            if (std::abs(area) < 1.0e-6F)
+            // A thin image slice can cover a pixel even when its normalized
+            // area is tiny. Discard only genuinely degenerate geometry.
+            if (!std::isfinite(area) || area == 0.0F)
                 return;
             const auto front_facing =
                 state.front_face == gles_abi::counter_clockwise ? area > 0.0F
