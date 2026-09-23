@@ -24,7 +24,6 @@ namespace {
     constexpr std::uint32_t write_waiter_bit = 0x04U;
     constexpr std::uint32_t sequence_save_mask = 0x1cU;
     constexpr std::uint32_t overlap_bit = 0x40U;
-    constexpr std::uint32_t initial_bit = 0x80U;
     constexpr std::uint32_t condition_prepost_bit = 0x02U;
     constexpr std::uint32_t mutex_prepost_bit = 0x04U;
     constexpr std::uint32_t first_fit_policy = 0x80U;
@@ -322,7 +321,9 @@ DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_rwlock(
     const auto key =
         queue_key(thread.process_id, address, flags, QueueFamily::RwLock);
     auto& queue = queues_[key];
-    if ((lock_generation & initial_bit) != 0U || !queue.rw)
+    // The initial bit remains set across several waiters until the first
+    // successful unlock. Keep their queue bookkeeping and any unlock prepost.
+    if (!queue.rw)
         queue.rw = RwState { };
     auto& rw = *queue.rw;
     const auto lock_sequence = lock_generation & generation_mask;
@@ -380,7 +381,7 @@ DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::unlock_rwlock(
     const auto key =
         queue_key(process_id, address, flags, QueueFamily::RwLock);
     auto& queue = queues_[key];
-    if ((lock_generation & initial_bit) != 0U || !queue.rw)
+    if (!queue.rw)
         queue.rw = RwState { };
     auto& rw = *queue.rw;
     const auto lock_sequence = lock_generation & generation_mask;
