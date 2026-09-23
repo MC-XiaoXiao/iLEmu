@@ -1676,6 +1676,40 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                 eagl_contexts_.emplace(key, handle);
             });
         });
+    registry.register_objc_instance_method(std::string { opengles_image },
+        "EAGLContext", "API", "-[EAGLContext API]",
+        [this](UserlandHleCall& call) {
+            if (eagl_context_abi_ != EaglContextAbi::HostManagedPublicAbi) {
+                call.resume_original_persistently();
+                return;
+            }
+            const auto object = eagl_contexts_.find(
+                { call.process_id(), call.argument(0) });
+            if (object == eagl_contexts_.end()) {
+                call.resume_original_persistently();
+                return;
+            }
+            const auto context = contexts_.find(object->second);
+            if (context == contexts_.end()) {
+                call.resume_original_persistently();
+                return;
+            }
+            // The host-managed initializer has no firmware _private record.
+            // Answer the public query from the context it created.
+            call.set_return(context->second.client_api);
+        });
+    registry.register_objc_instance_method(std::string { opengles_image },
+        "EAGLContext", "sharegroup", "-[EAGLContext sharegroup]",
+        [this](UserlandHleCall& call) {
+            if (eagl_context_abi_ != EaglContextAbi::HostManagedPublicAbi ||
+                !eagl_contexts_.contains(
+                    { call.process_id(), call.argument(0) })) {
+                call.resume_original_persistently();
+                return;
+            }
+            // Host-managed contexts have no firmware sharegroup object.
+            call.set_return(0U);
+        });
     registry.register_objc_class_method(std::string { opengles_image },
         "EAGLContext",
         "setCurrentContext:", "+[EAGLContext setCurrentContext:]",
