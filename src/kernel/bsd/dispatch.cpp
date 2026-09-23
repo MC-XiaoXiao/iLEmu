@@ -19,6 +19,7 @@
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
 #include "network/darwin_network_abi.hpp"
+#include "network/darwin_abi_route.hpp"
 #include "kernel/darwin_proc_info_abi.hpp"
 #include "kernel/darwin_resource_abi.hpp"
 #include "network/darwin_route_socket.hpp"
@@ -135,6 +136,24 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 442: // guarded_close_np
     case 443: // guarded_kqueue_np
         dispatch_bsd_guarded_file(cpu, number);
+        return;
+    case 444: // change_fdguard_np
+        if (darwin_abi_route_supported(guarded_fd_change_route,
+                shared_state_->darwin_abi.abi_epoch)) {
+            dispatch_bsd_guarded_file(cpu, number);
+        } else {
+            dispatch_bsd_nosys(cpu,
+                shared_state_->darwin_abi.capabilities.send_sigsys);
+        }
+        return;
+    case 447: // connectx
+        if (darwin_abi_route_supported(connectx_route,
+                shared_state_->darwin_abi.abi_epoch)) {
+            dispatch_bsd_socket(cpu, number);
+        } else {
+            dispatch_bsd_nosys(cpu,
+                shared_state_->darwin_abi.capabilities.send_sigsys);
+        }
         return;
     case 322: { // VersionSensitive nosys/iopolicysys collision.
         if (!darwin_abi_route_supported(legacy_iopolicysys_route,

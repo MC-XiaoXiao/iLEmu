@@ -26,6 +26,120 @@ bool CompatibilityKernel::reject_guarded_descriptor(
 void CompatibilityKernel::dispatch_bsd_guarded_file(Cpu& cpu, std::uint32_t number)
 {
     auto& registers = cpu.registers();
+    if (number == 444U) {
+        const auto fd = registers[0];
+        const auto old_guard_address = registers[1];
+        const auto old_guard_flags = registers[2];
+        const auto new_guard_address = registers[3];
+        const auto new_guard_flags = registers[4];
+        const auto descriptor_flags_address = registers[5];
+
+        std::optional<std::uint64_t> old_guard;
+        if (old_guard_address != 0U) {
+            old_guard = memory_.read64(old_guard_address);
+            if (!old_guard) {
+                bsd_error(cpu, darwin::error::bad_address);
+                return;
+            }
+        }
+        std::optional<std::uint64_t> new_guard;
+        if (new_guard_address != 0U) {
+            new_guard = memory_.read64(new_guard_address);
+            if (!new_guard) {
+                bsd_error(cpu, darwin::error::bad_address);
+                return;
+            }
+        }
+
+        std::uint32_t requested_descriptor_flags = 0U;
+        if (descriptor_flags_address != 0U) {
+            const auto requested = memory_.read32(descriptor_flags_address);
+            if (!requested) {
+                bsd_error(cpu, darwin::error::bad_address);
+                return;
+            }
+            requested_descriptor_flags = *requested;
+        }
+
+        if (!descriptor_valid(fd)) {
+            bsd_error(cpu, bsd_support::bad_file_descriptor);
+            return;
+        }
+
+        const auto current_flags = descriptor_flags_.contains(fd)
+                                       ? descriptor_flags_.at(fd)
+                                       : 0U;
+        if (descriptor_flags_address != 0U &&
+            !memory_.write32(descriptor_flags_address, current_flags)) {
+            bsd_error(cpu, darwin::error::bad_address);
+            return;
+        }
+
+        const auto found = descriptor_guards_.find(fd);
+        const bool is_guarded = found != descriptor_guards_.end();
+        if (is_guarded) {
+            if (!old_guard || old_guard_flags == 0U) {
+                bsd_error(cpu, darwin::error::invalid_argument);
+                return;
+            }
+            if (*old_guard == 0U || *old_guard != found->second.identifier ||
+                old_guard_flags != found->second.flags) {
+                bsd_error(cpu, darwin::error::permission_denied);
+                return;
+            }
+        } else if (old_guard || old_guard_flags != 0U) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+
+        if (new_guard) {
+            if (*new_guard == 0U ||
+                (new_guard_flags & DarwinFileGuard::duplicate) == 0U ||
+                (new_guard_flags & ~DarwinFileGuard::supported_flags) != 0U) {
+                bsd_error(cpu, darwin::error::invalid_argument);
+                return;
+            }
+        } else if (new_guard_flags != 0U) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        } else if (!is_guarded) {
+            bsd_error(cpu, darwin::error::invalid_argument);
+            return;
+        }
+
+        if (new_guard) {
+            if (is_guarded) {
+                auto updated_flags = current_flags;
+                if ((found->second.flags & DarwinFileGuard::close) != 0U)
+                    updated_flags &= ~DarwinFileGuard::descriptor_close_on_fork;
+                if ((new_guard_flags & DarwinFileGuard::close) != 0U ||
+                    (requested_descriptor_flags &
+                        DarwinFileGuard::descriptor_close_on_fork) != 0U) {
+                    updated_flags |= DarwinFileGuard::descriptor_close_on_fork;
+                }
+                found->second = DarwinFileGuard { *new_guard, new_guard_flags };
+                descriptor_flags_[fd] = updated_flags;
+            } else {
+                descriptor_guards_.emplace(
+                    fd, DarwinFileGuard { *new_guard, new_guard_flags });
+                auto updated_flags =
+                    current_flags | DarwinFileGuard::descriptor_close_on_exec;
+                if ((new_guard_flags & DarwinFileGuard::close) != 0U)
+                    updated_flags |= DarwinFileGuard::descriptor_close_on_fork;
+                descriptor_flags_[fd] = updated_flags;
+            }
+        } else {
+            descriptor_guards_.erase(found);
+            constexpr auto descriptor_flag_mask =
+                DarwinFileGuard::descriptor_close_on_exec |
+                DarwinFileGuard::descriptor_close_on_fork;
+            descriptor_flags_[fd] =
+                (current_flags & ~descriptor_flag_mask) |
+                (requested_descriptor_flags & descriptor_flag_mask);
+        }
+        bsd_success(cpu, 0U);
+        return;
+    }
     if (number == 443U) {
         const auto attributes = registers[1];
         if ((attributes & DarwinFileGuard::duplicate) == 0U ||
@@ -44,7 +158,10 @@ void CompatibilityKernel::dispatch_bsd_guarded_file(Cpu& cpu, std::uint32_t numb
             return;
         const auto fd = registers[0];
         descriptor_guards_.emplace(fd, DarwinFileGuard { *guard, attributes });
-        descriptor_flags_[fd] = 1U;
+        descriptor_flags_[fd] = DarwinFileGuard::descriptor_close_on_exec |
+            ((attributes & DarwinFileGuard::close) != 0U
+                    ? DarwinFileGuard::descriptor_close_on_fork
+                    : 0U);
         output_.write("[guard] kqueue pid=" + std::to_string(process_.pid) +
             " fd=" + std::to_string(fd) + "\n");
         return;
@@ -72,7 +189,10 @@ void CompatibilityKernel::dispatch_bsd_guarded_file(Cpu& cpu, std::uint32_t numb
             return;
         const auto fd = registers[0];
         descriptor_guards_.emplace(fd, DarwinFileGuard { *guard, attributes });
-        descriptor_flags_[fd] = 1U;
+        descriptor_flags_[fd] = DarwinFileGuard::descriptor_close_on_exec |
+            ((attributes & DarwinFileGuard::close) != 0U
+                    ? DarwinFileGuard::descriptor_close_on_fork
+                    : 0U);
         output_.write("[guard] open pid=" + std::to_string(process_.pid) +
             " fd=" + std::to_string(fd) + "\n");
         return;

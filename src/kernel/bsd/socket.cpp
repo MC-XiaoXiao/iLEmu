@@ -735,6 +735,44 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
         bsd_success(cpu, 0);
         return;
     }
+    case 447: { // connectx
+        const auto fd = registers[0];
+        const auto source_address = registers[1];
+        const auto source_length = registers[2];
+        const auto destination_address = registers[3];
+        const auto destination_length = registers[4];
+        const auto association_id = registers[6];
+        const auto connection_id_address = registers[7];
+
+        if (association_id != 0U) {
+            bsd_error(cpu, darwin::error::operation_not_supported);
+            return;
+        }
+        if (source_address != 0U) {
+            registers[0] = fd;
+            registers[1] = source_address;
+            registers[2] = source_length;
+            dispatch_bsd_socket(cpu, darwin::syscall::bind);
+            if ((cpu.cpsr() & bsd_support::carry_flag) != 0U)
+                return;
+        }
+
+        // The compatibility network backend resolves ordinary single-address
+        // connections through the existing connect path. Darwin interface
+        // scope has no equivalent in the host-network socket abstraction.
+        registers[0] = fd;
+        registers[1] = destination_address;
+        registers[2] = destination_length;
+        dispatch_bsd_socket(cpu, darwin::syscall::connect);
+        if ((cpu.cpsr() & bsd_support::carry_flag) != 0U)
+            return;
+        if (connection_id_address != 0U) {
+            // This backend does not expose multipath connection identities;
+            // XNU also treats the connection-ID copyout as best effort.
+            static_cast<void>(memory_.write64(connection_id_address, 0U));
+        }
+        return;
+    }
     case darwin::syscall::bind: {
         const auto socket = virtual_descriptors_.find(registers[0]);
         if (socket == virtual_descriptors_.end()) {

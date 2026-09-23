@@ -59,6 +59,21 @@ inline constexpr DarwinAbiRoute legacy_iopolicysys_route {
     DarwinAbiEpoch::IphoneOs2, DarwinAbiEpoch::Later
 };
 
+// XNU's guarded descriptor update syscall is present in the Darwin 13 syscall
+// table and later. Older profiles keep the slot on the normal nosys path.
+inline constexpr DarwinAbiRoute guarded_fd_change_route {
+    DarwinAbiDomain::BsdSyscall, 444U,
+    DarwinAbiCompatibility::VersionSensitive, DarwinAbiEpoch::Darwin13,
+    DarwinAbiEpoch::Later
+};
+
+// XNU's socket connectx syscall is part of the Darwin 13 network ABI.
+inline constexpr DarwinAbiRoute connectx_route {
+    DarwinAbiDomain::BsdSyscall, 447U,
+    DarwinAbiCompatibility::VersionSensitive, DarwinAbiEpoch::Darwin13,
+    DarwinAbiEpoch::Later
+};
+
 // The compatibility kernel historically made writable ARM heap pages
 // executable after the i-cache fast trap so the first-generation UIKit
 // trampoline path could run without an explicit mprotect.  XNU's cache trap

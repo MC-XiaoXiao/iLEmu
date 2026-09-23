@@ -1041,7 +1041,15 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             if ((registers[2] & 1U) == 0U &&
                 reject_guarded_descriptor(cpu, fd, DarwinFileGuard::duplicate))
                 return;
-            descriptor_flags_[fd] = registers[2] & 1U; // FD_CLOEXEC
+            descriptor_flags_[fd] = registers[2] &
+                (DarwinFileGuard::descriptor_close_on_exec |
+                    DarwinFileGuard::descriptor_close_on_fork);
+            if (const auto guard = descriptor_guards_.find(fd);
+                guard != descriptor_guards_.end() &&
+                (guard->second.flags & DarwinFileGuard::close) != 0U) {
+                descriptor_flags_[fd] |=
+                    DarwinFileGuard::descriptor_close_on_fork;
+            }
             bsd_success(cpu, 0);
             return;
         case darwin::fcntl_command::get_status_flags:
