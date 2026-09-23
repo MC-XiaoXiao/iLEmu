@@ -688,13 +688,14 @@ struct SdlDisplay::Impl {
                 { source_width, 0.0F } } };
             break;
         case DisplayOrientation::LandscapeLeft:
-            texture_coordinates = { { { 0.0F, 0.0F }, { 0.0F, source_height },
-                { source_width, source_height }, { source_width, 0.0F } } };
+            texture_coordinates = { { { 0.0F, source_height },
+                { 0.0F, 0.0F }, { source_width, 0.0F },
+                { source_width, source_height } } };
             break;
         case DisplayOrientation::LandscapeRight:
-            texture_coordinates = { { { source_width, source_height },
-                { source_width, 0.0F }, { 0.0F, 0.0F },
-                { 0.0F, source_height } } };
+            texture_coordinates = { { { source_width, 0.0F },
+                { source_width, source_height }, { 0.0F, source_height },
+                { 0.0F, 0.0F } } };
             break;
         }
         const std::array<HostPoint, 4> positions { {

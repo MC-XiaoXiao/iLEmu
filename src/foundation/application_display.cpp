@@ -364,11 +364,11 @@ std::vector<std::uint32_t> orient_display_pixels(
                 break;
             case DisplayOrientation::LandscapeLeft:
                 source_x = y;
-                source_y = x;
+                source_y = source_geometry.height - 1U - x;
                 break;
             case DisplayOrientation::LandscapeRight:
                 source_x = source_geometry.width - 1U - y;
-                source_y = source_geometry.height - 1U - x;
+                source_y = x;
                 break;
             }
             output[static_cast<std::size_t>(y) * output_geometry.width + x] =
