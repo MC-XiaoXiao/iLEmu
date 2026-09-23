@@ -5,7 +5,7 @@
 // Define Mach thread-switch and scheduler policy constants.
 //
 // Apple public ABI/behavior references (guest profiles may differ):
-// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/thread_switch.h
+// https://github.com/apple-oss-distributions/xnu/blob/xnu-4903.241.1/osfmk/mach/thread_switch.h
 
 #pragma once
 
@@ -13,15 +13,19 @@
 
 namespace ilemu::darwin::mach::scheduler {
 
-// XNU osfmk/mach/thread_switch.h.
+// XNU osfmk/mach/thread_switch.h, including private lock/contention options.
 constexpr std::uint32_t swtch_pri_trap = 59;
 constexpr std::uint32_t swtch_trap = 60;
 constexpr std::uint32_t thread_switch_trap = 61;
 constexpr std::uint32_t switch_option_none = 0;
 constexpr std::uint32_t switch_option_depress = 1;
 constexpr std::uint32_t switch_option_wait = 2;
-constexpr std::uint32_t maximum_switch_option = switch_option_wait;
+constexpr std::uint32_t switch_option_dispatch_contention = 3;
+constexpr std::uint32_t switch_option_oslock_depress = 4;
+constexpr std::uint32_t switch_option_oslock_wait = 5;
+constexpr std::uint32_t maximum_switch_option = switch_option_oslock_wait;
 
 constexpr std::uint64_t nanoseconds_per_millisecond = 1'000'000ULL;
+constexpr std::uint64_t nanoseconds_per_microsecond = 1'000ULL;
 
 } // namespace ilemu::darwin::mach::scheduler

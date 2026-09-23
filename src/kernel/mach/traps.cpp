@@ -340,7 +340,7 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
         using namespace darwin::mach::scheduler;
         const auto thread_name = registers[0];
         const auto option = registers[1];
-        const auto option_time_ms = registers[2];
+        const auto option_time = registers[2];
         if (option > maximum_switch_option) {
             registers[0] = darwin::mach::invalid_argument;
             return;
@@ -354,9 +354,12 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
             const auto owner = object
                                    ? find_thread_owner(*shared_state_, *object)
                                    : std::nullopt;
-            if (owner && (owner->first != process_.pid ||
-                             owner->second != static_cast<std::uint32_t>(
-                                                  cpu.processor_id()))) {
+            const auto oslock_option = option == switch_option_oslock_depress ||
+                                       option == switch_option_oslock_wait;
+            if (owner && (!oslock_option || owner->first == process_.pid) &&
+                (owner->first != process_.pid ||
+                    owner->second != static_cast<std::uint32_t>(
+                                         cpu.processor_id()))) {
                 handoff_thread = XnuThreadId { owner->first, owner->second };
             }
         }
@@ -364,10 +367,16 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
             scheduler_handoffs_[cpu.processor_id()] = *handoff_thread;
 
         registers[0] = darwin::mach::success;
-        if (option == switch_option_wait && option_time_ms != 0) {
+        const auto wait_option = option == switch_option_wait ||
+                                 option == switch_option_dispatch_contention ||
+                                 option == switch_option_oslock_wait;
+        if (wait_option && option_time != 0) {
+            const auto scale = option == switch_option_dispatch_contention
+                                   ? nanoseconds_per_microsecond
+                                   : nanoseconds_per_millisecond;
             const auto deadline = shared_state_->clock.now() +
-                                  static_cast<std::uint64_t>(option_time_ms) *
-                                      nanoseconds_per_millisecond;
+                                  static_cast<std::uint64_t>(option_time) *
+                                      scale;
             pending_timers_[cpu.processor_id()] =
                 PendingTimer { deadline, PendingTimerKind::ThreadSwitch,
                     std::nullopt, false, std::nullopt };
@@ -376,12 +385,14 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
             return;
         }
 
-        // NONE and DEPRESS remain runnable, but XNU ends the current quantum.
-        // UserDefined8 is the scheduler-only yield reason: main.cpp does not
-        // move the thread to a wait queue and clears it on the next round.
-        scheduler_yields_[cpu.processor_id()] =
-            SchedulerYieldRequest { option == switch_option_depress,
-                option_time_ms };
+        // Nonwaiting options remain runnable, but XNU ends this quantum.
+        // UserDefined8 is a scheduler-only yield: it does not put the thread
+        // on a wait queue and is cleared on the next round.
+        scheduler_yields_[cpu.processor_id()] = SchedulerYieldRequest {
+            option == switch_option_depress ||
+                option == switch_option_oslock_depress,
+            option_time
+        };
         cpu.halt(Dynarmic::HaltReason::UserDefined8);
         return;
     }
