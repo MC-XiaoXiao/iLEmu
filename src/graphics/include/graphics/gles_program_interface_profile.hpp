@@ -24,6 +24,9 @@ enum class GlesFragmentOperation : std::uint32_t {
     Screen,
     LinearLight,
     Darken,
+    Overlay,
+    ColorBurn,
+    InverseLuminanceSourceOver,
 };
 
 // Conventional compositor shaders expose either a single color varying or

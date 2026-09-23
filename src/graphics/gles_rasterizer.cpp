@@ -304,6 +304,24 @@ namespace {
                         destination[3] * source[3];
             for (std::size_t component = 0; component < 3U; ++component)
                 result[component] = std::min(result[component], result[3]);
+        } else if (operation == GlesFragmentOperation::ColorBurn) {
+            result[3] = destination[3] * (1.0F - source[3]) +
+                        source[3] * (1.0F - destination[3]) +
+                        destination[3] * source[3];
+            for (std::size_t component = 0; component < 3U; ++component) {
+                const auto burn = source[component] >= 0.005F
+                                      ? destination[3] * source[3] -
+                                            source[3] * source[3] *
+                                                (destination[3] -
+                                                    destination[component]) /
+                                                std::max(source[component],
+                                                    0.005F)
+                                      : 0.0F;
+                result[component] = std::min(
+                    destination[component] * (1.0F - source[3]) +
+                        source[component] * (1.0F - destination[3]) + burn,
+                    result[3]);
+            }
         } else if (operation == GlesFragmentOperation::PlusLighter) {
             const auto alpha = source[3] + destination[3];
             result[3] = std::clamp(alpha, 0.0F, 1.0F);
@@ -313,11 +331,17 @@ namespace {
                     1.0F);
                 result[component] = result[3] - inverted;
             }
-        } else if (operation == GlesFragmentOperation::LuminanceSourceOver) {
+        } else if (operation == GlesFragmentOperation::LuminanceSourceOver ||
+                   operation ==
+                       GlesFragmentOperation::InverseLuminanceSourceOver) {
             const auto luminance = destination[0] * 0.2125F +
                                    destination[1] * 0.7154F +
                                    destination[2] * 0.0721F;
-            const auto squared = luminance * luminance;
+            const auto intensity =
+                operation == GlesFragmentOperation::InverseLuminanceSourceOver
+                    ? 1.0F - luminance
+                    : luminance;
+            const auto squared = intensity * intensity;
             const auto scale = squared * squared;
             for (std::size_t component = 0; component < 4U; ++component) {
                 result[component] = destination[component] *
@@ -338,6 +362,27 @@ namespace {
                                         (1.0F - destination[3]) +
                                     std::min(destination[component] * source[3],
                                         source[component] * destination[3]);
+            }
+            result[3] = destination[3] * (1.0F - source[3]) +
+                        source[3] * (1.0F - destination[3]) +
+                        destination[3] * source[3];
+        } else if (operation == GlesFragmentOperation::Overlay) {
+            for (std::size_t component = 0; component < 3U; ++component) {
+                const auto blend = destination[component] >=
+                                           0.5F * destination[3]
+                                       ? 2.0F * (source[component] *
+                                                      destination[3] +
+                                                 destination[component] *
+                                                     (source[3] -
+                                                         source[component])) -
+                                             source[3] * destination[3]
+                                       : 2.0F * destination[component] *
+                                             source[component];
+                result[component] = destination[component] *
+                                        (1.0F - source[3]) +
+                                    source[component] *
+                                        (1.0F - destination[3]) +
+                                    blend;
             }
             result[3] = destination[3] * (1.0F - source[3]) +
                         source[3] * (1.0F - destination[3]) +

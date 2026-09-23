@@ -203,7 +203,7 @@ namespace {
         static const std::regex luminance_source_over(
             R"((?:(?:lowp|mediump|highp)\s+)?vec4\s+(\w+)\s*\(\s*(?:(?:lowp|mediump|highp)\s+)?vec4\s+(\w+))"
             R"(\s*,\s*(?:(?:lowp|mediump|highp)\s+)?vec4\s+(\w+)\s*\)\s*\{)"
-            R"(\s*(?:(?:lowp|mediump|highp)\s+)?float\s+(\w+)\s*=\s*dot\s*\(\s*\3\.rgb\s*,\s*vec3\s*\()"
+            R"(\s*(?:(?:lowp|mediump|highp)\s+)?float\s+(\w+)\s*=\s*(1(?:\.0*)?\s*-\s*)?dot\s*\(\s*\3\.rgb\s*,\s*vec3\s*\()"
             R"(\s*0?\.2125\s*,\s*0?\.7154\s*,\s*0?\.0721\s*\)\s*\)\s*;\s*\2\s*=\s*\2\s*\*\s*\(\s*\4\s*\*)"
             R"(\s*\4\s*\)\s*\*\s*\(\s*\4\s*\*\s*\4\s*\)\s*;\s*return\s+\3\s*\*\s*\(\s*1(?:\.0*)?\s*-)"
             R"(\s*\2\.a\s*\)\s*\+\s*\2\s*;\s*\})");
@@ -214,7 +214,9 @@ namespace {
                 std::string_view { "(" }, source, std::string_view { "," },
                 destination, std::string_view { ")" } };
             if (contains_sequence(tokens, call))
-                return GlesFragmentOperation::LuminanceSourceOver;
+                return luminance_match[5].matched
+                           ? GlesFragmentOperation::InverseLuminanceSourceOver
+                           : GlesFragmentOperation::LuminanceSourceOver;
         }
 
         for (const auto& assignment : assignments) {
@@ -252,6 +254,26 @@ namespace {
                 contains_sequence(tokens, darken_rgb) &&
                 contains_sequence(tokens, alpha_product)) {
                 return GlesFragmentOperation::Darken;
+            }
+            const auto overlay_expression =
+                std::string { result } + ".rgb += mix(2.*" +
+                std::string { destination } + ".rgb*" +
+                std::string { source } + ".rgb, 2.*(" +
+                std::string { source } + ".rgb*" +
+                std::string { destination } + ".a + " +
+                std::string { destination } + ".rgb*(" +
+                std::string { source } + ".a - " +
+                std::string { source } + ".rgb)) - " +
+                std::string { source } + ".a*" +
+                std::string { destination } + ".a, step(.5*" +
+                std::string { destination } + ".a, " +
+                std::string { destination } + ".rgb))";
+            const auto overlay_rgb = tokenize(overlay_expression);
+            if (contains_sequence(tokens, assignment.expression_begin,
+                    assignment.expression_end, darken_base) &&
+                contains_sequence(tokens, overlay_rgb) &&
+                contains_sequence(tokens, alpha_product)) {
+                return GlesFragmentOperation::Overlay;
             }
             if (contains_sequence(tokens, linear_light) &&
                 contains_sequence(tokens, alpha_product))
@@ -295,6 +317,22 @@ namespace {
             if (contains_sequence(tokens, dodge) &&
                 contains_sequence(tokens, minimum)) {
                 return GlesFragmentOperation::ColorDodge;
+            }
+            const auto burn_expression = std::string { result } +
+                ".rgb += step(.005, " + std::string { source } +
+                ".rgb) * (" + std::string { destination } + ".a*" +
+                std::string { source } + ".a - " + std::string { source } +
+                ".a*" + std::string { source } + ".a*(" +
+                std::string { destination } + ".a - " +
+                std::string { destination } + ".rgb)/max(" +
+                std::string { source } + ".rgb, .005))";
+            const auto burn_rgb = tokenize(burn_expression);
+            if (contains_sequence(tokens, assignment.expression_begin,
+                    assignment.expression_end, darken_base) &&
+                contains_sequence(tokens, burn_rgb) &&
+                contains_sequence(tokens, alpha_product) &&
+                contains_sequence(tokens, minimum)) {
+                return GlesFragmentOperation::ColorBurn;
             }
         }
         return GlesFragmentOperation::TextureEnvironment;

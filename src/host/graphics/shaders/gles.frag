@@ -34,6 +34,9 @@ const int FRAGMENT_LUMINANCE_SOURCE_OVER = 3;
 const int FRAGMENT_SCREEN = 4;
 const int FRAGMENT_LINEAR_LIGHT = 5;
 const int FRAGMENT_DARKEN = 6;
+const int FRAGMENT_OVERLAY = 7;
+const int FRAGMENT_COLOR_BURN = 8;
+const int FRAGMENT_INVERSE_LUMINANCE_SOURCE_OVER = 9;
 
 struct TextureEnvironment {
     ivec4 mode_combine_enabled;
@@ -224,6 +227,17 @@ vec4 apply_fragment_operation(int operation, vec4 source, vec4 destination) {
         result.a += destination.a * source.a;
         return result;
     }
+    if (operation == FRAGMENT_OVERLAY) {
+        vec4 result = destination * (1.0 - source.a) +
+                      source * (1.0 - destination.a);
+        result.rgb += mix(2.0 * destination.rgb * source.rgb,
+            2.0 * (source.rgb * destination.a +
+                   destination.rgb * (source.a - source.rgb)) -
+                source.a * destination.a,
+            step(0.5 * destination.a, destination.rgb));
+        result.a += destination.a * source.a;
+        return result;
+    }
     if (operation == FRAGMENT_LINEAR_LIGHT) {
         vec4 result = destination * (1.0 - source.a) +
                       source * (1.0 - destination.a);
@@ -244,9 +258,25 @@ vec4 apply_fragment_operation(int operation, vec4 source, vec4 destination) {
         result.rgb = min(result.rgb, vec3(result.a));
         return result;
     }
-    if (operation == FRAGMENT_LUMINANCE_SOURCE_OVER) {
+    if (operation == FRAGMENT_COLOR_BURN) {
+        vec4 result = destination * (1.0 - source.a) +
+                      source * (1.0 - destination.a);
+        result.rgb += step(vec3(0.005), source.rgb) *
+                      (destination.a * source.a -
+                       source.a * source.a *
+                           (destination.a - destination.rgb) /
+                           max(source.rgb, vec3(0.005)));
+        result.a += destination.a * source.a;
+        result.rgb = min(result.rgb, vec3(result.a));
+        return result;
+    }
+    if (operation == FRAGMENT_LUMINANCE_SOURCE_OVER ||
+        operation == FRAGMENT_INVERSE_LUMINANCE_SOURCE_OVER) {
         float luminance = dot(destination.rgb, vec3(0.2125, 0.7154, 0.0721));
-        float squared = luminance * luminance;
+        float intensity = operation == FRAGMENT_INVERSE_LUMINANCE_SOURCE_OVER
+                              ? 1.0 - luminance
+                              : luminance;
+        float squared = intensity * intensity;
         source *= squared * squared;
         return destination * (1.0 - source.a) + source;
     }
@@ -291,7 +321,11 @@ void main() {
                                  operation == FRAGMENT_LUMINANCE_SOURCE_OVER ||
                                  operation == FRAGMENT_SCREEN ||
                                  operation == FRAGMENT_LINEAR_LIGHT ||
-                                 operation == FRAGMENT_DARKEN;
+                                 operation == FRAGMENT_DARKEN ||
+                                 operation == FRAGMENT_OVERLAY ||
+                                 operation == FRAGMENT_COLOR_BURN ||
+                                 operation ==
+                                     FRAGMENT_INVERSE_LUMINANCE_SOURCE_OVER;
     vec4 result = primary_color;
     if (!destination_operation || destination_unit != 0) {
         result = apply_unit(0, image0,
