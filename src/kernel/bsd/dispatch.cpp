@@ -380,6 +380,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::file_descriptor_path_configuration:
     case darwin::syscall::memory_protect:
     case darwin::syscall::memory_advise:
+    case darwin::syscall::memory_lock:
+    case darwin::syscall::memory_unlock:
     case 197:
     case 266:
     case 267:

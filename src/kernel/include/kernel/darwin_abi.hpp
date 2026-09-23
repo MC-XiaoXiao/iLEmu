@@ -239,6 +239,8 @@ namespace syscall {
     inline constexpr std::uint32_t memory_synchronize = 65;
     inline constexpr std::uint32_t memory_protect = 74;
     inline constexpr std::uint32_t memory_advise = 75;
+    inline constexpr std::uint32_t memory_lock = 203;
+    inline constexpr std::uint32_t memory_unlock = 204;
     inline constexpr std::uint32_t set_groups = 80;
     inline constexpr std::uint32_t get_descriptor_table_size = 89;
     inline constexpr std::uint32_t duplicate_to = 90;

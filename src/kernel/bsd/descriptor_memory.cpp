@@ -1199,6 +1199,29 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         bsd_success(cpu, 0);
         return;
     }
+    case darwin::syscall::memory_lock:
+    case darwin::syscall::memory_unlock: {
+        const auto address = registers[0];
+        const auto size = registers[1];
+        if (size == 0U) {
+            bsd_success(cpu, 0);
+            return;
+        }
+        if (size - 1U > std::numeric_limits<std::uint32_t>::max() - address) {
+            bsd_error(cpu, number == darwin::syscall::memory_lock
+                               ? darwin::error::invalid_argument
+                               : darwin::error::no_memory);
+            return;
+        }
+        if (!memory_.mapped(address, size)) {
+            bsd_error(cpu, darwin::error::no_memory);
+            return;
+        }
+        // Guest pages are already retained by AddressSpace; wiring and
+        // unwiring therefore have no additional address-space side effect.
+        bsd_success(cpu, 0);
+        return;
+    }
     case 197: // mmap
         dispatch_bsd_mmap(cpu);
         return;
