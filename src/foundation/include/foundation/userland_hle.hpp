@@ -86,6 +86,10 @@ public:
     // the continuation only adapts the surrounding service transaction.
     [[nodiscard]] bool call_guest_function(
         std::string_view symbol, Continuation continuation);
+    // Invoke a firmware-provided function pointer using the same return gate
+    // as a named guest function. Bit zero selects Thumb mode.
+    [[nodiscard]] bool call_guest_callback(
+        std::uint32_t address, Continuation continuation);
     // Queue a mapped guest function for the consumer thread's next receive-only
     // Mach-message boundary. This models a run-loop service notification after
     // the initiating call unwinds, without a polling thread or host timer.

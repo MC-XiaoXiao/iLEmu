@@ -898,6 +898,23 @@ bool UserlandHleCall::call_guest_function(
     return true;
 }
 
+bool UserlandHleCall::call_guest_callback(
+    std::uint32_t address, Continuation continuation)
+{
+    if (!continuation || address == 0U ||
+        !memory().accessible(address & ~1U, (address & 1U) ? 2U : 4U,
+            MemoryPermission::Execute)) {
+        return false;
+    }
+    const auto return_gate = registry_.install_continuation(
+        cpu_, cpu_.registers()[14], std::move(continuation));
+    if (!return_gate)
+        return false;
+    cpu_.registers()[14] = *return_gate;
+    tail_call_address_ = address;
+    return true;
+}
+
 bool UserlandHleCall::defer_guest_function(
     std::string_view symbol, Continuation setup, Continuation completion)
 {
