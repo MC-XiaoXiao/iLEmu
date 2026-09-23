@@ -123,6 +123,30 @@ namespace {
                alignment == 8;
     }
 
+    std::optional<std::uint32_t> bitmap_backing_row_bytes(
+        const AddressSpace& memory, std::uint32_t pixels,
+        std::uint32_t width, std::uint32_t height,
+        std::uint32_t visible_row_bytes)
+    {
+        // Some guest bitmap providers pass the pixel pointer following an
+        // SBPC descriptor. Its row pitch is part of the source allocation,
+        // even when no GLES pixel-store override was submitted.
+        if (pixels < 28U || memory.read32(pixels - 28U) != 0x43504253U ||
+            memory.read32(pixels - 24U) != 1U ||
+            memory.read32(pixels - 16U) != width ||
+            memory.read32(pixels - 12U) != height)
+            return std::nullopt;
+        const auto allocation_size = memory.read32(pixels - 20U);
+        const auto row_bytes = memory.read32(pixels - 8U);
+        if (!allocation_size || !row_bytes ||
+            *row_bytes < visible_row_bytes ||
+            *row_bytes > gles_abi::maximum_resource_bytes ||
+            static_cast<std::uint64_t>(*row_bytes) * (height - 1U) +
+                    visible_row_bytes > *allocation_size)
+            return std::nullopt;
+        return row_bytes;
+    }
+
     std::optional<std::vector<std::uint32_t>> decode_image(AddressSpace& memory,
         std::uint32_t width, std::uint32_t height, std::uint32_t format,
         std::uint32_t type, std::uint32_t pixels, const GlesPixelUnpack& unpack)
@@ -140,11 +164,20 @@ namespace {
             unpack.row_length != 0U ? unpack.row_length : width;
         const auto source_row_bytes =
             static_cast<std::uint64_t>(row_length) * layout->bytes_per_pixel;
+        const auto backing_row_bytes =
+            unpack.row_bytes == 0U && unpack.row_length == 0U &&
+                    unpack.skip_rows == 0U && unpack.skip_pixels == 0U &&
+                    row_bytes <= std::numeric_limits<std::uint32_t>::max()
+                ? bitmap_backing_row_bytes(memory, pixels, width, height,
+                      static_cast<std::uint32_t>(row_bytes))
+                : std::nullopt;
         const auto stride =
             unpack.row_bytes != 0U
                 ? static_cast<std::uint64_t>(unpack.row_bytes)
-                : (source_row_bytes + unpack.alignment - 1U) &
-                      ~static_cast<std::uint64_t>(unpack.alignment - 1U);
+                : backing_row_bytes
+                    ? static_cast<std::uint64_t>(*backing_row_bytes)
+                    : (source_row_bytes + unpack.alignment - 1U) &
+                          ~static_cast<std::uint64_t>(unpack.alignment - 1U);
         if (stride > gles_abi::maximum_resource_bytes)
             return std::nullopt;
         const auto start = static_cast<std::uint64_t>(pixels) +
