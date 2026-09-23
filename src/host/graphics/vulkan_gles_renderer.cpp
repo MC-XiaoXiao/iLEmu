@@ -2208,6 +2208,8 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             return VK_BLEND_FACTOR_SRC_ALPHA;
         case gles_abi::one_minus_source_alpha:
             return VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        case gles_abi::one_minus_source_color:
+            return VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
         case constant_alpha_blend_factor:
             return VK_BLEND_FACTOR_CONSTANT_ALPHA;
         case one_minus_constant_alpha_blend_factor:
@@ -2335,9 +2337,16 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         const auto constant_alpha_crossfade =
             key.blend_source == constant_alpha_blend_factor &&
             key.blend_destination == one_minus_constant_alpha_blend_factor;
+        const auto destination_alpha_mask =
+            key.blend_source == gles_abi::zero &&
+            key.blend_destination == gles_abi::source_alpha;
         blend.srcAlphaBlendFactor =
-            constant_alpha_crossfade ? *source : VK_BLEND_FACTOR_ONE;
+            constant_alpha_crossfade ? *source
+            : destination_alpha_mask ? VK_BLEND_FACTOR_ZERO
+                                     : VK_BLEND_FACTOR_ONE;
         blend.dstAlphaBlendFactor = constant_alpha_crossfade ? *destination
+                                    : destination_alpha_mask
+                                        ? VK_BLEND_FACTOR_SRC_ALPHA
                                     : key.blend_enabled
                                         ? VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA
                                         : VK_BLEND_FACTOR_ZERO;

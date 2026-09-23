@@ -324,6 +324,27 @@ namespace {
                                         (1.0F - source[3] * scale) +
                                     source[component] * scale;
             }
+        } else if (operation == GlesFragmentOperation::Screen) {
+            for (std::size_t component = 0; component < 4U; ++component)
+                result[component] =
+                    destination[component] * (1.0F - source[3]) +
+                    source[component] * (1.0F - destination[3]) +
+                    destination[component] * source[component];
+        } else if (operation == GlesFragmentOperation::LinearLight) {
+            for (std::size_t component = 0; component < 3U; ++component) {
+                result[component] = destination[component] *
+                                        (1.0F - source[3]) +
+                                    source[component] *
+                                        (1.0F - destination[3]) +
+                                    destination[component] * source[3] -
+                                    destination[3] *
+                                        (source[3] - 2.0F * source[component]);
+            }
+            result[3] = destination[3] * (1.0F - source[3]) +
+                        source[3] * (1.0F - destination[3]) +
+                        destination[3] * source[3];
+            for (std::size_t component = 0; component < 3U; ++component)
+                result[component] = std::min(result[component], result[3]);
         } else {
             return source_pixel;
         }
@@ -705,6 +726,25 @@ namespace {
                                gles_abi::one_minus_source_alpha) {
                     pixel =
                         premultiplied_source_over(pixel, frame.pixels[offset]);
+                } else if (state.blend_enabled &&
+                           state.blend_source == gles_abi::one &&
+                           state.blend_destination ==
+                               gles_abi::one_minus_source_color) {
+                    const auto source = unpack_color(pixel);
+                    const auto destination = unpack_color(frame.pixels[offset]);
+                    Color blended;
+                    for (std::size_t component = 0; component < 4U; ++component)
+                        blended[component] = source[component] +
+                            destination[component] * (1.0F - source[component]);
+                    pixel = pack_color(blended);
+                } else if (state.blend_enabled &&
+                           state.blend_source == gles_abi::zero &&
+                           state.blend_destination == gles_abi::source_alpha) {
+                    const auto source_alpha = unpack_color(pixel)[3];
+                    auto destination = unpack_color(frame.pixels[offset]);
+                    for (auto& component : destination)
+                        component *= source_alpha;
+                    pixel = pack_color(destination);
                 }
                 frame.pixels[offset] = apply_color_mask(
                     pixel, frame.pixels[offset], state.color_mask);

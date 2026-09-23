@@ -219,6 +219,27 @@ namespace {
 
         for (const auto& assignment : assignments) {
             const auto result = assignment.name;
+            const auto screen = std::to_array<std::string_view>({
+                destination, "*", "(", "1", ".", "-", source, ".", "a", ")",
+                "+", source, "*", "(", "1", ".", "-", destination,
+                ".", "a", ")", "+", destination, "*", source
+            });
+            if (contains_sequence(tokens, assignment.expression_begin,
+                    assignment.expression_end, screen))
+                return GlesFragmentOperation::Screen;
+            const auto linear_light = std::to_array<std::string_view>({
+                result, ".", "rgb", "+", "=", destination, ".", "rgb",
+                "*", source, ".", "a", "-", destination, ".", "a",
+                "*", "(", source, ".", "a", "-", "2", ".", "*",
+                source, ".", "rgb", ")"
+            });
+            const auto alpha_product = std::to_array<std::string_view>({
+                result, ".", "a", "+", "=", destination, ".", "a",
+                "*", source, ".", "a"
+            });
+            if (contains_sequence(tokens, linear_light) &&
+                contains_sequence(tokens, alpha_product))
+                return GlesFragmentOperation::LinearLight;
             const std::array source_plus_destination { source,
                 std::string_view { "+" }, destination };
             const std::array destination_plus_source { destination,
