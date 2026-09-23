@@ -37,6 +37,7 @@ ilemu_configure_module(ilemu_kernel)
 
 add_library(ilemu_kernel_graphics STATIC
     graphics/core_surface_hle.cpp
+    graphics/guest_drawable_geometry.cpp
     graphics/layerkit_hle.cpp
     graphics/mbx2d_hle.cpp
     graphics/mbx3d_quad_hle.cpp

@@ -8,6 +8,7 @@
 #include "kernel/opengles_hle.hpp"
 
 #include "opengles_dispatch_hle.hpp"
+#include "guest_drawable_geometry.hpp"
 
 #include <algorithm>
 #include <array>
@@ -1096,7 +1097,8 @@ std::shared_ptr<HostSurface> OpenGlesHle::acquire_compatibility_surface(
 }
 
 bool OpenGlesHle::publish_display_surface(
-    UserlandHleCall& call, const std::shared_ptr<HostSurface>& surface)
+    UserlandHleCall& call, const std::shared_ptr<HostSurface>& surface,
+    std::optional<DisplayViewport> drawable_viewport)
 {
     if (!surface || !display_ || !display_write_allowed(call))
         return false;
@@ -1111,12 +1113,37 @@ bool OpenGlesHle::publish_display_surface(
         return descriptor.width == geometry.width &&
                descriptor.height == geometry.height;
     };
-    if ((!profile && !is_geometry(output_geometry)) ||
-        (profile && !is_geometry(logical_geometry) &&
-            !is_geometry(output_geometry))) {
+    const auto compatibility =
+        profile && profile->kind != ApplicationDisplayMode::Native;
+    std::optional<DisplayViewport> viewport;
+    auto source_width = descriptor.width;
+    auto source_height = descriptor.height;
+    if (compatibility) {
+        if (!is_geometry(logical_geometry) && !is_geometry(output_geometry))
+            return false;
+        viewport = application_display_viewport(*profile, output_geometry);
+        source_width = std::min(logical_geometry.width, descriptor.width);
+        source_height = std::min(logical_geometry.height, descriptor.height);
+    } else if (drawable_viewport) {
+        viewport = drawable_viewport;
+    } else if (!is_geometry(output_geometry)) {
         return false;
     }
-    if (profile && profile->kind != ApplicationDisplayMode::Native &&
+    if (viewport && (viewport->x < 0 || viewport->y < 0 ||
+                        viewport->width == 0U || viewport->height == 0U ||
+                        static_cast<std::uint64_t>(viewport->x) +
+                                viewport->width > output_geometry.width ||
+                        static_cast<std::uint64_t>(viewport->y) +
+                                viewport->height > output_geometry.height ||
+                        source_width == 0U || source_height == 0U)) {
+        return false;
+    }
+    const auto needs_composition = viewport &&
+        (viewport->x != 0 || viewport->y != 0 ||
+            viewport->width != output_geometry.width ||
+            viewport->height != output_geometry.height ||
+            !is_geometry(output_geometry));
+    if (needs_composition &&
         (!renderer_->accelerated() || !command_encoder_)) {
         if (!renderer_->map_cpu(
                 *surface, true, PerfCpuMapReason::DeferredDisplayRead)) {
@@ -1124,32 +1151,38 @@ bool OpenGlesHle::publish_display_surface(
         }
         const auto mapping =
             surface->map_cpu(false, PerfCpuMapReason::DeferredDisplayRead);
-        auto pixels = compose_application_display_pixels(*profile,
-            { descriptor.width, descriptor.height }, output_geometry,
-            mapping.frame().pixels);
-        if (pixels.empty())
+        const auto& source = mapping.frame().pixels;
+        if (source.size() != static_cast<std::size_t>(descriptor.width) *
+                                 descriptor.height) {
             return false;
+        }
+        std::vector<std::uint32_t> pixels(output_geometry.pixel_count(),
+            0xff000000U);
+        for (std::uint32_t y = 0; y < viewport->height; ++y) {
+            const auto source_y = static_cast<std::uint32_t>(
+                static_cast<std::uint64_t>(y) * source_height /
+                viewport->height);
+            for (std::uint32_t x = 0; x < viewport->width; ++x) {
+                const auto source_x = static_cast<std::uint32_t>(
+                    static_cast<std::uint64_t>(x) * source_width /
+                    viewport->width);
+                pixels[static_cast<std::size_t>(viewport->y + y) *
+                           output_geometry.width + viewport->x + x] =
+                    source[static_cast<std::size_t>(source_y) *
+                               descriptor.width + source_x];
+            }
+        }
         display_->replace_pixels(std::move(pixels), call.process_id());
         return true;
     }
     std::shared_ptr<HostSurface> published_surface = surface;
-    if (profile && profile->kind != ApplicationDisplayMode::Native) {
-        const auto viewport =
-            application_display_viewport(*profile, output_geometry);
-        const auto source_width =
-            std::min(profile->logical_geometry.width, descriptor.width);
-        const auto source_height =
-            std::min(profile->logical_geometry.height, descriptor.height);
-        if (viewport.width == 0U || viewport.height == 0U ||
-            source_width == 0U || source_height == 0U || !command_encoder_) {
-            return false;
-        }
-        const auto destination_descriptor =
-            HostSurfaceDescriptor { output_geometry.width,
-                output_geometry.height,
-                output_geometry.width *
-                    static_cast<std::uint32_t>(sizeof(std::uint32_t)),
-                surface_pixel_format_bgra, PerfSurfaceKind::Scanout };
+    if (needs_composition) {
+        const auto destination_descriptor = HostSurfaceDescriptor {
+            output_geometry.width, output_geometry.height,
+            output_geometry.width *
+                static_cast<std::uint32_t>(sizeof(std::uint32_t)),
+            surface_pixel_format_bgra, PerfSurfaceKind::Scanout
+        };
         auto compatibility_surface =
             acquire_compatibility_surface(destination_descriptor);
         if (!compatibility_surface ||
@@ -1158,7 +1191,7 @@ bool OpenGlesHle::publish_display_surface(
                 0xff000000U) ||
             !command_encoder_->copy(surface, compatibility_surface,
                 { 0, 0, source_width, source_height },
-                { viewport.x, viewport.y, viewport.width, viewport.height },
+                { viewport->x, viewport->y, viewport->width, viewport->height },
                 HostCompositeMode::Copy, 0xffU, HostFilter::Nearest,
                 HostRotation::Identity) ||
             !command_encoder_->submit(PerfSubmitReason::Presentation)) {
@@ -1738,13 +1771,38 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
             const auto geometry =
                 display_geometry_for_process(shared_state_, call.process_id(),
                     display_ ? display_->geometry() : default_display_geometry);
-            const auto error = ensure_renderbuffer_storage(*context,
-                context->bound_renderbuffer, geometry.width, geometry.height,
-                gles_abi::bgra_apple);
-            if (error == gles_abi::no_error)
-                context->renderbuffers.at(context->bound_renderbuffer)
-                    .display_oriented = true;
-            call.set_return(error == gles_abi::no_error ? 1U : 0U);
+            const auto drawable = call.argument(3);
+            GuestDrawableGeometryReader::read(call, drawable,
+                [this, context, geometry](UserlandHleCall& completed,
+                    std::optional<GuestDrawableGeometry> drawable_geometry) {
+                    const auto pixels = drawable_geometry
+                                            ? drawable_geometry->pixels
+                                            : geometry;
+                    const auto error = ensure_renderbuffer_storage(*context,
+                        context->bound_renderbuffer, pixels.width,
+                        pixels.height, gles_abi::bgra_apple);
+                    if (error == gles_abi::no_error) {
+                        auto& renderbuffer = context->renderbuffers.at(
+                            context->bound_renderbuffer);
+                        renderbuffer.display_oriented = true;
+                        renderbuffer.drawable_viewport.reset();
+                        if (drawable_geometry && display_) {
+                            const auto scale = shared_state_
+                                ? display_scale_factor(
+                                      shared_state_->display_geometry,
+                                      shared_state_->user_interface_geometry)
+                                : 1U;
+                            const auto bounds = drawable_geometry->bounds;
+                            renderbuffer.drawable_viewport =
+                                fit_display_viewport(
+                                    { bounds.width * scale,
+                                        bounds.height * scale },
+                                    display_->geometry());
+                        }
+                    }
+                    completed.set_return(
+                        error == gles_abi::no_error ? 1U : 0U);
+                });
         });
     registry.register_objc_instance_method(std::string { opengles_image },
         "EAGLContext",
@@ -1779,7 +1837,9 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
             const auto binding = resolve_render_target(call, *context);
             context->bound_framebuffer = saved_framebuffer;
             if (!binding ||
-                !publish_display_surface(call, binding->host_surface)) {
+                !publish_display_surface(call, binding->host_surface,
+                    context->renderbuffers.at(context->bound_renderbuffer)
+                        .drawable_viewport)) {
                 call.set_return(0U);
                 return;
             }

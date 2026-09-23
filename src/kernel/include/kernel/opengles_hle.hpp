@@ -90,6 +90,7 @@ private:
             std::uint32_t internal_format { };
             std::uint32_t color_texture { };
             bool display_oriented { };
+            std::optional<DisplayViewport> drawable_viewport;
         };
         struct ArrayPointer {
             std::uint32_t size { };
@@ -259,7 +260,8 @@ private:
     [[nodiscard]] bool commit_render_target(UserlandHleCall& call,
         const RenderTargetBinding& binding, DisplayFrame frame);
     [[nodiscard]] bool publish_display_surface(
-        UserlandHleCall& call, const std::shared_ptr<HostSurface>& surface);
+        UserlandHleCall& call, const std::shared_ptr<HostSurface>& surface,
+        std::optional<DisplayViewport> drawable_viewport = std::nullopt);
     [[nodiscard]] std::shared_ptr<HostSurface> acquire_compatibility_surface(
         HostSurfaceDescriptor descriptor);
     void draw(UserlandHleCall& call, bool indexed);
