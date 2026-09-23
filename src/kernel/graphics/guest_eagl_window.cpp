@@ -13,7 +13,7 @@
 
 namespace ilemu {
 namespace {
-    constexpr std::uint32_t minimum_surface_window_version = 2U;
+    constexpr std::uint32_t minimum_surface_window_version = 1U;
     constexpr std::uint32_t configure_offset = 0x04U;
     constexpr std::uint32_t acquire_offset = 0x0cU;
     constexpr std::uint32_t present_offset = 0x10U;

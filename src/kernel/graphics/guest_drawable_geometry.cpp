@@ -152,7 +152,7 @@ void GuestDrawableGeometryReader::read_scale(UserlandHleCall& call)
     property(call, "contentsScale", [self](UserlandHleCall& boxed,
                                        std::uint32_t value) {
         if (!value) {
-            self->complete(boxed, std::nullopt);
+            self->read_window(boxed, 1U);
             return;
         }
         self->message(boxed, value, "integerValue", 0U,
