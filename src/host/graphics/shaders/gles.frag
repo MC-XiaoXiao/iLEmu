@@ -33,6 +33,7 @@ const int FRAGMENT_PLUS_LIGHTER = 2;
 const int FRAGMENT_LUMINANCE_SOURCE_OVER = 3;
 const int FRAGMENT_SCREEN = 4;
 const int FRAGMENT_LINEAR_LIGHT = 5;
+const int FRAGMENT_DARKEN = 6;
 
 struct TextureEnvironment {
     ivec4 mode_combine_enabled;
@@ -215,6 +216,14 @@ vec4 apply_fragment_operation(int operation, vec4 source, vec4 destination) {
     if (operation == FRAGMENT_SCREEN)
         return destination * (1.0 - source.a) +
                source * (1.0 - destination.a) + destination * source;
+    if (operation == FRAGMENT_DARKEN) {
+        vec4 result = destination * (1.0 - source.a) +
+                      source * (1.0 - destination.a);
+        result.rgb += min(destination.rgb * source.a,
+                          source.rgb * destination.a);
+        result.a += destination.a * source.a;
+        return result;
+    }
     if (operation == FRAGMENT_LINEAR_LIGHT) {
         vec4 result = destination * (1.0 - source.a) +
                       source * (1.0 - destination.a);
@@ -281,7 +290,8 @@ void main() {
                                  operation == FRAGMENT_PLUS_LIGHTER ||
                                  operation == FRAGMENT_LUMINANCE_SOURCE_OVER ||
                                  operation == FRAGMENT_SCREEN ||
-                                 operation == FRAGMENT_LINEAR_LIGHT;
+                                 operation == FRAGMENT_LINEAR_LIGHT ||
+                                 operation == FRAGMENT_DARKEN;
     vec4 result = primary_color;
     if (!destination_operation || destination_unit != 0) {
         result = apply_unit(0, image0,

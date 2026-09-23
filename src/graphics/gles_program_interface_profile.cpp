@@ -237,6 +237,22 @@ namespace {
                 result, ".", "a", "+", "=", destination, ".", "a",
                 "*", source, ".", "a"
             });
+            const auto darken_base = std::to_array<std::string_view>({
+                destination, "*", "(", "1", ".", "-", source, ".", "a", ")",
+                "+", source, "*", "(", "1", ".", "-", destination,
+                ".", "a", ")"
+            });
+            const auto darken_rgb = std::to_array<std::string_view>({
+                result, ".", "rgb", "+", "=", "min", "(", destination,
+                ".", "rgb", "*", source, ".", "a", ",", source, ".",
+                "rgb", "*", destination, ".", "a", ")"
+            });
+            if (contains_sequence(tokens, assignment.expression_begin,
+                    assignment.expression_end, darken_base) &&
+                contains_sequence(tokens, darken_rgb) &&
+                contains_sequence(tokens, alpha_product)) {
+                return GlesFragmentOperation::Darken;
+            }
             if (contains_sequence(tokens, linear_light) &&
                 contains_sequence(tokens, alpha_product))
                 return GlesFragmentOperation::LinearLight;

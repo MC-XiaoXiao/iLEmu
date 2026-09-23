@@ -330,6 +330,18 @@ namespace {
                     destination[component] * (1.0F - source[3]) +
                     source[component] * (1.0F - destination[3]) +
                     destination[component] * source[component];
+        } else if (operation == GlesFragmentOperation::Darken) {
+            for (std::size_t component = 0; component < 3U; ++component) {
+                result[component] = destination[component] *
+                                        (1.0F - source[3]) +
+                                    source[component] *
+                                        (1.0F - destination[3]) +
+                                    std::min(destination[component] * source[3],
+                                        source[component] * destination[3]);
+            }
+            result[3] = destination[3] * (1.0F - source[3]) +
+                        source[3] * (1.0F - destination[3]) +
+                        destination[3] * source[3];
         } else if (operation == GlesFragmentOperation::LinearLight) {
             for (std::size_t component = 0; component < 3U; ++component) {
                 result[component] = destination[component] *
