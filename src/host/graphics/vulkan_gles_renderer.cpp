@@ -231,6 +231,55 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
         std::array<float, 2> projected_texture3 { };
     };
 
+    VkRect2D framebuffer_fetch_region(std::span<const GpuVertex> vertices,
+        const VkViewport& viewport, VkRect2D scissor, VkExtent2D target)
+    {
+        const VkRect2D full { { 0, 0 }, target };
+        if (vertices.empty() || viewport.width <= 0.0F ||
+            viewport.height <= 0.0F)
+            return full;
+
+        float left = std::numeric_limits<float>::infinity();
+        float top = left;
+        float right = -left;
+        float bottom = right;
+        for (const auto& vertex : vertices) {
+            const auto w = vertex.position[3];
+            if (!(w > 0.0F) || !std::isfinite(w))
+                return full;
+            const auto x = viewport.x + viewport.width *
+                (1.0F + vertex.position[0] / w) * 0.5F;
+            const auto y = viewport.y + viewport.height *
+                (1.0F - vertex.position[1] / w) * 0.5F;
+            if (!std::isfinite(x) || !std::isfinite(y))
+                return full;
+            left = std::min(left, x);
+            top = std::min(top, y);
+            right = std::max(right, x);
+            bottom = std::max(bottom, y);
+        }
+
+        // Include edge pixels and clip to the same scissor used by the draw.
+        const auto scissor_right = static_cast<float>(
+            static_cast<std::int64_t>(scissor.offset.x) + scissor.extent.width);
+        const auto scissor_bottom = static_cast<float>(
+            static_cast<std::int64_t>(scissor.offset.y) + scissor.extent.height);
+        const auto x0 = std::clamp(std::floor(left - 2.0F),
+            static_cast<float>(scissor.offset.x), scissor_right);
+        const auto y0 = std::clamp(std::floor(top - 2.0F),
+            static_cast<float>(scissor.offset.y), scissor_bottom);
+        const auto x1 = std::clamp(std::ceil(right + 2.0F),
+            static_cast<float>(scissor.offset.x), scissor_right);
+        const auto y1 = std::clamp(std::ceil(bottom + 2.0F),
+            static_cast<float>(scissor.offset.y), scissor_bottom);
+        if (x1 <= x0 || y1 <= y0)
+            return full;
+        return { { static_cast<std::int32_t>(x0),
+                     static_cast<std::int32_t>(y0) },
+            { static_cast<std::uint32_t>(x1 - x0),
+                static_cast<std::uint32_t>(y1 - y0) } };
+    }
+
     struct alignas(16) GpuTextureEnvironment {
         std::array<std::int32_t, 4> mode_combine_enabled { };
         std::array<float, 4> color { };
@@ -4663,6 +4712,28 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             }
         }
 
+        VkViewport viewport { };
+        viewport.x = static_cast<float>(state.viewport_x);
+        viewport.y = state.render_target_inverted_vertical
+                         ? static_cast<float>(state.viewport_y)
+                         : static_cast<float>(frame.height) -
+                               static_cast<float>(state.viewport_y) -
+                               static_cast<float>(state.viewport_height);
+        viewport.width = static_cast<float>(state.viewport_width);
+        viewport.height = static_cast<float>(state.viewport_height);
+        viewport.minDepth = 0.0F;
+        viewport.maxDepth = 1.0F;
+        VkRect2D scissor { };
+        scissor.offset.x = static_cast<std::int32_t>(scissor_left);
+        scissor.offset.y = static_cast<std::int32_t>(
+            state.render_target_inverted_vertical
+                ? scissor_bottom
+                : static_cast<std::int64_t>(frame.height) - scissor_top);
+        scissor.extent.width =
+            static_cast<std::uint32_t>(scissor_right - scissor_left);
+        scissor.extent.height =
+            static_cast<std::uint32_t>(scissor_top - scissor_bottom);
+
         auto expanded = expand_vertices(
             primitive_vertices, primitive->mode(), primitive_state);
         if (expanded.empty())
@@ -5213,7 +5284,20 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
                 copy.srcSubresource.layerCount = 1U;
                 copy.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
                 copy.dstSubresource.layerCount = 1U;
-                copy.extent = { frame.width, frame.height, 1U };
+                const auto fetch_only = std::ranges::all_of(
+                    state.texture_units, [](const auto& unit) {
+                        return !unit.samples_render_target ||
+                               unit.framebuffer_fetch;
+                    });
+                const auto region = fetch_only
+                                        ? framebuffer_fetch_region(expanded,
+                                              viewport, scissor,
+                                              { frame.width, frame.height })
+                                        : VkRect2D { { 0, 0 },
+                                              { frame.width, frame.height } };
+                copy.srcOffset = { region.offset.x, region.offset.y, 0 };
+                copy.dstOffset = copy.srcOffset;
+                copy.extent = { region.extent.width, region.extent.height, 1U };
                 vkCmdCopyImage(commands.command, gpu_target.image.image,
                     VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     gpu_target.render_target_snapshot.image,
@@ -5256,28 +5340,7 @@ std::vector<std::uint32_t> compile_shader(std::string_view source,
             vkCmdBindDescriptorSets(commands.command,
                 VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout_, 0, 1,
                 &descriptor, 0, nullptr);
-            VkViewport viewport { };
-            viewport.x = static_cast<float>(state.viewport_x);
-            viewport.y = state.render_target_inverted_vertical
-                             ? static_cast<float>(state.viewport_y)
-                             : static_cast<float>(frame.height) -
-                                   static_cast<float>(state.viewport_y) -
-                                   static_cast<float>(state.viewport_height);
-            viewport.width = static_cast<float>(state.viewport_width);
-            viewport.height = static_cast<float>(state.viewport_height);
-            viewport.minDepth = 0.0F;
-            viewport.maxDepth = 1.0F;
             vkCmdSetViewport(commands.command, 0, 1, &viewport);
-            VkRect2D scissor { };
-            scissor.offset.x = static_cast<std::int32_t>(scissor_left);
-            scissor.offset.y = static_cast<std::int32_t>(
-                state.render_target_inverted_vertical
-                    ? scissor_bottom
-                    : static_cast<std::int64_t>(frame.height) - scissor_top);
-            scissor.extent.width =
-                static_cast<std::uint32_t>(scissor_right - scissor_left);
-            scissor.extent.height =
-                static_cast<std::uint32_t>(scissor_top - scissor_bottom);
             vkCmdSetScissor(commands.command, 0, 1, &scissor);
             vkCmdSetBlendConstants(
                 commands.command, state.blend_constant.data());
