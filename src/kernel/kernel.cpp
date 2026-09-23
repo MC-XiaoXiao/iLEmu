@@ -222,6 +222,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
 {
     memory_.set_file_generation_registry(
         shared_state_->guest_file_generation_registry);
+    audio_service_->set_output_gain(shared_state_->audio_output_gain);
+    core_audio_hle_.set_output_gain(shared_state_->audio_output_gain);
     shared_state_->shared_mapping_page_cache->set_generation_registry(
         shared_state_->guest_file_generation_registry);
     opengles_hle_.set_guest_capabilities(
@@ -2727,6 +2729,7 @@ void CompatibilityKernel::inherit_process_state(
     pthread_runtime_.inherit_from(parent.pthread_runtime_, inherit_fork_state);
     configure_darwin_notify_state();
     core_audio_hle_.set_service(audio_service_);
+    core_audio_hle_.set_output_gain(shared_state_->audio_output_gain);
     apple80211_hle_.set_wifi_state(wifi_state_);
     core_surface_hle_.set_display(display_state_);
     core_surface_hle_.set_presentation_tracker(presentation_tracker_);

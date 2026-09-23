@@ -66,6 +66,8 @@ public:
     [[nodiscard]] virtual std::string last_error() const = 0;
 };
 
+class AudioOutputGain;
+
 enum class AudioPlayStatus {
     Queued,
     UnknownSound,
@@ -96,6 +98,7 @@ public:
 
     void set_sink(std::shared_ptr<AudioSink> sink);
     void set_decoder(std::shared_ptr<AudioDecoder> decoder);
+    void set_output_gain(std::shared_ptr<AudioOutputGain> output_gain);
     [[nodiscard]] AudioPlayResult play_audio_file(
         const std::filesystem::path& guest_path, bool replace_current = false,
         float device_volume = 1.0F);
@@ -156,6 +159,7 @@ private:
     mutable std::mutex mutex_;
     std::shared_ptr<AudioSink> sink_;
     std::shared_ptr<AudioDecoder> decoder_;
+    std::shared_ptr<AudioOutputGain> output_gain_;
     std::map<std::filesystem::path, AudioBuffer> decoded_files_;
     struct ServiceSource {
         std::filesystem::path path;

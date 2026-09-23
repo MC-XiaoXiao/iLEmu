@@ -21,6 +21,7 @@
 namespace ilemu {
 
 class AudioService;
+class AudioOutputGain;
 class AddressSpace;
 class Output;
 class UserlandHleCall;
@@ -45,6 +46,7 @@ public:
         UserlandHleRegistry& registry, std::shared_ptr<AudioService> service);
 
     void set_service(std::shared_ptr<AudioService> service);
+    void set_output_gain(std::shared_ptr<AudioOutputGain> output_gain);
     void reset();
     [[nodiscard]] std::optional<std::uint64_t> next_io_proc_deadline() const;
     [[nodiscard]] std::optional<ScheduledIoProc> take_due_io_proc(
@@ -122,6 +124,7 @@ private:
 
     UserlandHleRegistry& registry_;
     std::shared_ptr<AudioService> service_;
+    std::shared_ptr<AudioOutputGain> output_gain_;
     std::uint32_t buffer_frame_size_ { 1024 };
     struct StreamFormatState {
         double sample_rate { };

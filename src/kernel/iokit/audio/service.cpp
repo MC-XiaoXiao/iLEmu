@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -46,6 +47,26 @@ namespace {
     constexpr std::uint32_t linear_pcm_format = 0x6c70636dU; // 'lpcm'
     constexpr std::uint32_t linear_pcm_flags = 0x0cU;
     constexpr std::uint32_t stream_format_size = 40;
+    constexpr std::uint32_t output_scope = 0x6f757470U; // 'outp'
+    constexpr std::uint32_t volume_control_class = 0x766c6d65U; // 'vlme'
+    constexpr std::uint32_t mute_control_class = 0x6d757465U; // 'mute'
+    constexpr std::uint32_t device_mute_control_class = 0x646d7574U; // 'dmut'
+
+    float linear_control_gain(
+        const IOAudio2ControlRangeDescription& range, std::uint32_t value)
+    {
+        const auto start_db = std::ldexp(static_cast<double>(
+                                            std::bit_cast<std::int64_t>(
+                                                range.start_db_value)),
+            -32);
+        const auto db_per_step =
+            std::ldexp(static_cast<double>(range.db_per_step), -32);
+        const auto db = start_db +
+                        static_cast<double>(value - range.start_integer_value) *
+                            db_per_step;
+        return static_cast<float>(
+            std::clamp(std::pow(10.0, db / 20.0), 0.0, 1.0));
+    }
 
     std::vector<std::byte> bytes_from_string(std::string_view value)
     {
@@ -744,6 +765,18 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         if (control == nullptr || !valid_control_value(*control, value))
             return MethodResult { iokit_abi::bad_argument, { } };
         connection.control_values[identifier] = value;
+        if (control->scope == output_scope && control->element == 0U &&
+            state.audio_output_gain) {
+            if (control->control_class == volume_control_class &&
+                control->range) {
+                state.audio_output_gain->set_hardware_volume(
+                    device->uid, linear_control_gain(*control->range, value));
+            } else if (control->control_class == mute_control_class ||
+                       control->control_class == device_mute_control_class) {
+                state.audio_output_gain->set_hardware_mute(
+                    device->uid, value != 0U);
+            }
+        }
         for (auto& entry : properties
                                .at(std::string { profile.registry.controls })
                                .array_value) {
@@ -828,9 +861,15 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
             return MethodResult { iokit_abi::bad_argument, { } };
         }
         const auto stream_id = static_cast<std::uint32_t>(scalar_input[0]);
-        if (find_stream(*device, stream_id) == nullptr)
+        const auto* stream = find_stream(*device, stream_id);
+        if (stream == nullptr)
             return MethodResult { iokit_abi::bad_argument, { } };
         connection.streams[stream_id].active = scalar_input[1] != 0;
+        if (scalar_input[1] != 0 &&
+            stream->direction == IOAudio2StreamDirection::Output &&
+            state.audio_output_gain) {
+            state.audio_output_gain->select_device(device->uid);
+        }
         return MethodResult { iokit_abi::success, { } };
     }
 

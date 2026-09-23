@@ -6,6 +6,7 @@
 // emulated audio hardware.
 
 #include "media/core_audio_hle.hpp"
+#include "media/audio_output_gain.hpp"
 
 #include <algorithm>
 #include <array>
@@ -318,6 +319,12 @@ void CoreAudioHle::set_service(std::shared_ptr<AudioService> service)
     service_ = std::move(service);
 }
 
+void CoreAudioHle::set_output_gain(
+    std::shared_ptr<AudioOutputGain> output_gain)
+{
+    output_gain_ = std::move(output_gain);
+}
+
 void CoreAudioHle::reset()
 {
     io_procs_.clear();
@@ -571,8 +578,9 @@ void CoreAudioHle::complete_io_proc(UserlandHleCall& call,
         ~(sample_bytes - 1U);
     AudioPlayResult result;
     std::uint32_t peak = 0;
-    const auto applied_gain =
-        native ? 1.0F : device_output_gain(registration->device);
+    const auto applied_gain = native
+                                  ? (output_gain_ ? output_gain_->gain() : 1.0F)
+                                  : device_output_gain(registration->device);
     if (byte_count != 0) {
         auto bytes = std::span { registration->captured_output_samples }.first(
             byte_count);

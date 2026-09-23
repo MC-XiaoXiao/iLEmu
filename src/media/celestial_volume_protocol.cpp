@@ -22,7 +22,14 @@
 namespace ilemu::celestial_volume_protocol {
 namespace {
 
-    constexpr std::uint32_t category_volume_reply_identifier = 1138;
+    struct CategoryVolumeReplyProfile {
+        std::uint32_t identifier;
+        bool has_category_presence_flag;
+    };
+    constexpr std::array category_volume_reply_profiles {
+        CategoryVolumeReplyProfile { 1138U, true },
+        CategoryVolumeReplyProfile { 2153U, false },
+    };
     struct SourceProtocolProfile {
         std::uint32_t create_request;
         std::uint32_t create_reply;
@@ -193,10 +200,15 @@ namespace {
 std::optional<CategoryVolume> decode_reply(
     std::uint32_t identifier, std::span<const std::byte> bytes)
 {
-    if (identifier != category_volume_reply_identifier ||
+    const auto profile = std::ranges::find_if(
+        category_volume_reply_profiles, [identifier](const auto& candidate) {
+            return candidate.identifier == identifier;
+        });
+    if (profile == category_volume_reply_profiles.end() ||
         bytes.size() < category_offset ||
         read_word(bytes, return_code_offset) != 0 ||
-        read_word(bytes, category_present_offset) == 0) {
+        (profile->has_category_presence_flag &&
+            read_word(bytes, category_present_offset) == 0)) {
         return std::nullopt;
     }
 

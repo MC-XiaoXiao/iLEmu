@@ -58,6 +58,7 @@
 #include "mach/receive_queue_generation.hpp"
 #include "foundation/touch_input.hpp"
 #include "foundation/virtual_clock.hpp"
+#include "media/audio_output_gain.hpp"
 #include "network/virtual_network.hpp"
 #include "network/virtual_udp.hpp"
 #include "network/local_socket_credentials.hpp"
@@ -1648,6 +1649,9 @@ struct KernelSharedState {
     std::map<std::uint32_t, IOKitDisplayConnectionState>
         iokit_display_connections;
     std::map<std::uint32_t, IOKitAudioConnectionState> iokit_audio_connections;
+    std::shared_ptr<AudioOutputGain> audio_output_gain {
+        std::make_shared<AudioOutputGain>()
+    };
     std::map<std::uint32_t, IOKitCameraAcceleratorConnectionState>
         iokit_camera_accelerator_connections;
     std::deque<IOKitCameraCaptureRequest> iokit_camera_capture_requests;

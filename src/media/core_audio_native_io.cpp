@@ -5,6 +5,7 @@
 // Configure host-scheduled IOProcs from the firmware HAL's output format.
 
 #include "media/core_audio_hle.hpp"
+#include "media/audio_output_gain.hpp"
 
 #include "foundation/address_space.hpp"
 #include "foundation/cpu.hpp"
@@ -175,6 +176,8 @@ void CoreAudioHle::configure_native_io(
     state.thread_r9 = call.cpu().registers()[9];
     state.cthread_self = call.cpu().cthread_self();
     state.running = true;
+    if (output_gain_)
+        output_gain_->begin_stream();
     state.in_flight = false;
     state.next_deadline = 0;
     state.sample_time = 0;

@@ -6,6 +6,7 @@
 // coordination.
 
 #include "media/audio.hpp"
+#include "media/audio_output_gain.hpp"
 
 #include <algorithm>
 #include <array>
@@ -191,6 +192,13 @@ void AudioService::set_decoder(std::shared_ptr<AudioDecoder> decoder)
 {
     std::lock_guard lock { mutex_ };
     decoder_ = std::move(decoder);
+}
+
+void AudioService::set_output_gain(
+    std::shared_ptr<AudioOutputGain> output_gain)
+{
+    std::lock_guard lock { mutex_ };
+    output_gain_ = std::move(output_gain);
 }
 
 AudioPlayResult AudioService::play_audio_file(
@@ -463,11 +471,15 @@ void AudioService::observe_category_volume(std::string category, float value)
     if (category.empty() || !std::isfinite(value))
         return;
     std::shared_ptr<AudioSink> sink;
+    std::shared_ptr<AudioOutputGain> output_gain;
     std::optional<float> gain;
+    std::string canonical;
+    const auto normalized = std::clamp(value, 0.0F, 1.0F);
     {
         std::lock_guard lock { mutex_ };
-        const auto canonical = canonical_category_locked(category);
-        category_volumes_[canonical] = std::clamp(value, 0.0F, 1.0F);
+        canonical = canonical_category_locked(category);
+        category_volumes_[canonical] = normalized;
+        output_gain = output_gain_;
         if (canonical == "Ringtone" && playing_service_source_id_) {
             const auto active =
                 service_sources_.find(*playing_service_source_id_);
@@ -478,6 +490,8 @@ void AudioService::observe_category_volume(std::string category, float value)
             }
         }
     }
+    if (output_gain)
+        output_gain->observe_category_volume(canonical, normalized);
     if (sink && gain)
         sink->set_gain(*gain);
 }
