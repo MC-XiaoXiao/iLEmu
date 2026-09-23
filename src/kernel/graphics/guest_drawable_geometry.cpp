@@ -163,13 +163,59 @@ void GuestDrawableGeometryReader::read_scale(UserlandHleCall& call)
                     self->complete(read, std::nullopt);
                     return;
                 }
-                self->complete(read, GuestDrawableGeometry {
-                    self->bounds_,
-                    { self->bounds_.width * scale,
-                        self->bounds_.height * scale }
-                });
+                self->read_window(read, scale);
             });
     });
+}
+
+void GuestDrawableGeometryReader::complete_with_window(
+    UserlandHleCall& call, std::uint32_t scale, std::uint32_t window)
+{
+    complete(call, GuestDrawableGeometry {
+        bounds_,
+        { bounds_.width * scale, bounds_.height * scale },
+        window
+    });
+}
+
+void GuestDrawableGeometryReader::read_window(
+    UserlandHleCall& call, std::uint32_t scale)
+{
+    const auto name = call.intern_string("nativeWindow");
+    if (!name) {
+        complete_with_window(call, scale, 0U);
+        return;
+    }
+    auto self = shared_from_this();
+    call.cpu().registers()[0] = name;
+    if (!call.call_guest_function("_sel_registerName",
+            [self, scale](UserlandHleCall& selected) {
+                const auto selector = selected.cpu().registers()[0];
+                if (!selector) {
+                    self->complete_with_window(selected, scale, 0U);
+                    return;
+                }
+                self->message(selected, self->drawable_,
+                    "respondsToSelector:", selector,
+                    [self, selector, scale](UserlandHleCall& tested,
+                        std::uint32_t responds) {
+                        if (!responds) {
+                            self->complete_with_window(tested, scale, 0U);
+                            return;
+                        }
+                        tested.cpu().registers()[0] = self->drawable_;
+                        tested.cpu().registers()[1] = selector;
+                        if (!tested.call_guest_function("_objc_msgSend",
+                                [self, scale](UserlandHleCall& returned) {
+                                    self->complete_with_window(returned, scale,
+                                        returned.cpu().registers()[0]);
+                                })) {
+                            self->complete_with_window(tested, scale, 0U);
+                        }
+                    });
+            })) {
+        complete_with_window(call, scale, 0U);
+    }
 }
 
 } // namespace ilemu

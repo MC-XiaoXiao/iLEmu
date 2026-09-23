@@ -9,6 +9,7 @@
 
 #include "opengles_dispatch_hle.hpp"
 #include "guest_drawable_geometry.hpp"
+#include "guest_eagl_window.hpp"
 
 #include <algorithm>
 #include <array>
@@ -746,12 +747,47 @@ std::uint32_t OpenGlesHle::ensure_renderbuffer_storage(ContextState& context,
     renderbuffer->second.height = height;
     renderbuffer->second.internal_format = internal_format;
     renderbuffer->second.display_oriented = false;
+    renderbuffer->second.native_window = 0U;
+    renderbuffer->second.drawable_surface_id.reset();
     for (auto& [framebuffer_name, framebuffer] : context.framebuffers) {
         static_cast<void>(framebuffer_name);
         if (framebuffer.color_renderbuffer == name)
             framebuffer.color_texture = renderbuffer->second.color_texture;
     }
     return gles_abi::no_error;
+}
+
+bool OpenGlesHle::attach_eagl_window_surface(UserlandHleCall& call,
+    ContextState& context, std::uint32_t renderbuffer_name,
+    std::uint32_t window, std::uint32_t surface)
+{
+    const auto identifier = core_surface_identifier(call, surface);
+    const auto backing = identifier
+                             ? surface_store_->find(*identifier)
+                             : std::nullopt;
+    auto renderbuffer = context.renderbuffers.find(renderbuffer_name);
+    if (!backing || renderbuffer == context.renderbuffers.end())
+        return false;
+    if (renderbuffer->second.width != backing->width ||
+        renderbuffer->second.height != backing->height ||
+        renderbuffer->second.color_texture == 0U) {
+        if (ensure_renderbuffer_storage(context, renderbuffer_name,
+                backing->width, backing->height,
+                gles_abi::bgra_apple) != gles_abi::no_error) {
+            return false;
+        }
+    }
+    auto& state = renderbuffer->second;
+    if (resources_.import_surface_texture(call.memory(), state.color_texture,
+            *surface_store_, *identifier, false) != gles_abi::no_error) {
+        return false;
+    }
+    state.native_window = window;
+    state.drawable_surface_id = *identifier;
+    state.display_oriented = true;
+    context.guest_capabilities =
+        open_gles_framebuffer_capabilities(context.guest_capabilities);
+    return true;
 }
 
 std::optional<OpenGlesHle::RenderTargetBinding>
@@ -1772,36 +1808,62 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
                 display_geometry_for_process(shared_state_, call.process_id(),
                     display_ ? display_->geometry() : default_display_geometry);
             const auto drawable = call.argument(3);
+            const auto renderbuffer_name = context->bound_renderbuffer;
             GuestDrawableGeometryReader::read(call, drawable,
-                [this, context, geometry](UserlandHleCall& completed,
+                [this, context, renderbuffer_name, geometry](UserlandHleCall& completed,
                     std::optional<GuestDrawableGeometry> drawable_geometry) {
-                    const auto pixels = drawable_geometry
-                                            ? drawable_geometry->pixels
-                                            : geometry;
-                    const auto error = ensure_renderbuffer_storage(*context,
-                        context->bound_renderbuffer, pixels.width,
-                        pixels.height, gles_abi::bgra_apple);
-                    if (error == gles_abi::no_error) {
-                        auto& renderbuffer = context->renderbuffers.at(
-                            context->bound_renderbuffer);
-                        renderbuffer.display_oriented = true;
-                        renderbuffer.drawable_viewport.reset();
-                        if (drawable_geometry && display_) {
-                            const auto scale = shared_state_
-                                ? display_scale_factor(
-                                      shared_state_->display_geometry,
-                                      shared_state_->user_interface_geometry)
-                                : 1U;
-                            const auto bounds = drawable_geometry->bounds;
-                            renderbuffer.drawable_viewport =
-                                fit_display_viewport(
-                                    { bounds.width * scale,
-                                        bounds.height * scale },
-                                    display_->geometry());
+                    const auto finish = [this, context, renderbuffer_name,
+                                            geometry, drawable_geometry](
+                                            UserlandHleCall& done,
+                                            std::uint32_t window,
+                                            std::uint32_t surface) {
+                        const auto attached = surface != 0U &&
+                            attach_eagl_window_surface(done, *context,
+                                renderbuffer_name, window, surface);
+                        const auto pixels = drawable_geometry
+                                                ? drawable_geometry->pixels
+                                                : geometry;
+                        const auto error = attached
+                                               ? gles_abi::no_error
+                                               : ensure_renderbuffer_storage(
+                                                     *context, renderbuffer_name,
+                                                     pixels.width, pixels.height,
+                                                     gles_abi::bgra_apple);
+                        if (error == gles_abi::no_error) {
+                            auto& renderbuffer = context->renderbuffers.at(
+                                renderbuffer_name);
+                            renderbuffer.display_oriented = true;
+                            renderbuffer.drawable_viewport.reset();
+                            if (drawable_geometry && display_) {
+                                const auto scale = shared_state_
+                                    ? display_scale_factor(
+                                          shared_state_->display_geometry,
+                                          shared_state_->user_interface_geometry)
+                                    : 1U;
+                                const auto bounds = drawable_geometry->bounds;
+                                renderbuffer.drawable_viewport =
+                                    fit_display_viewport(
+                                        { bounds.width * scale,
+                                            bounds.height * scale },
+                                        display_->geometry());
+                            }
                         }
+                        done.set_return(
+                            error == gles_abi::no_error ? 1U : 0U);
+                    };
+                    const auto window = GuestEaglWindow::open(completed,
+                        drawable_geometry ? drawable_geometry->native_window
+                                          : 0U);
+                    if (!window) {
+                        finish(completed, 0U, 0U);
+                        return;
                     }
-                    completed.set_return(
-                        error == gles_abi::no_error ? 1U : 0U);
+                    window->configure(completed,
+                        [finish, address = window->address()](
+                            UserlandHleCall& configured,
+                            std::uint32_t surface) {
+                            finish(configured, address, surface);
+                        });
                 });
         });
     registry.register_objc_instance_method(std::string { opengles_image },
@@ -1836,10 +1898,48 @@ void OpenGlesHle::register_eagl(UserlandHleRegistry& registry)
             context->bound_framebuffer = framebuffer->first;
             const auto binding = resolve_render_target(call, *context);
             context->bound_framebuffer = saved_framebuffer;
+            const auto& renderbuffer = context->renderbuffers.at(
+                context->bound_renderbuffer);
+            if (binding && renderbuffer.drawable_surface_id &&
+                binding->backing_identifier ==
+                    renderbuffer.drawable_surface_id) {
+                const auto window = GuestEaglWindow::open(call,
+                    renderbuffer.native_window);
+                if (!window || !renderer_->flush(binding->key)) {
+                    call.set_return(0U);
+                    return;
+                }
+                const auto renderbuffer_name = context->bound_renderbuffer;
+                window->present(call,
+                    [this, context, renderbuffer_name,
+                        address = window->address()](UserlandHleCall& completed,
+                        bool presented, std::uint32_t next_surface) {
+                        if (presented &&
+                            !attach_eagl_window_surface(completed, *context,
+                                renderbuffer_name, address, next_surface)) {
+                            // The frame is already in CoreAnimation. Restore
+                            // a private renderbuffer if its next drawable is
+                            // unavailable, so later draws remain usable.
+                            const auto found = context->renderbuffers.find(
+                                renderbuffer_name);
+                            if (found != context->renderbuffers.end()) {
+                                const auto width = found->second.width;
+                                const auto height = found->second.height;
+                                if (ensure_renderbuffer_storage(*context,
+                                        renderbuffer_name, width, height,
+                                        gles_abi::bgra_apple) ==
+                                    gles_abi::no_error) {
+                                    found->second.display_oriented = true;
+                                }
+                            }
+                        }
+                        completed.set_return(presented ? 1U : 0U);
+                    });
+                return;
+            }
             if (!binding ||
                 !publish_display_surface(call, binding->host_surface,
-                    context->renderbuffers.at(context->bound_renderbuffer)
-                        .drawable_viewport)) {
+                    renderbuffer.drawable_viewport)) {
                 call.set_return(0U);
                 return;
             }

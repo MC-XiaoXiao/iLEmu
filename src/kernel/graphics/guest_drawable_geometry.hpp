@@ -19,6 +19,7 @@ class UserlandHleCall;
 struct GuestDrawableGeometry {
     DisplayGeometry bounds;
     DisplayGeometry pixels;
+    std::uint32_t native_window { };
 };
 
 // Ask the firmware's CA drawable for its bounds and contentsScale. The
@@ -41,6 +42,9 @@ private:
 
     void read_bounds(UserlandHleCall& call);
     void read_scale(UserlandHleCall& call);
+    void read_window(UserlandHleCall& call, std::uint32_t scale);
+    void complete_with_window(UserlandHleCall& call, std::uint32_t scale,
+        std::uint32_t window);
     void complete(UserlandHleCall& call,
         std::optional<GuestDrawableGeometry> geometry);
     void property(UserlandHleCall& call, std::string_view name,

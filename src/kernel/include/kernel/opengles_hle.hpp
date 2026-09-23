@@ -91,6 +91,8 @@ private:
             std::uint32_t color_texture { };
             bool display_oriented { };
             std::optional<DisplayViewport> drawable_viewport;
+            std::uint32_t native_window { };
+            std::optional<std::uint32_t> drawable_surface_id;
         };
         struct ArrayPointer {
             std::uint32_t size { };
@@ -246,6 +248,9 @@ private:
     [[nodiscard]] std::uint32_t ensure_renderbuffer_storage(
         ContextState& context, std::uint32_t name, std::uint32_t width,
         std::uint32_t height, std::uint32_t internal_format);
+    [[nodiscard]] bool attach_eagl_window_surface(UserlandHleCall& call,
+        ContextState& context, std::uint32_t renderbuffer,
+        std::uint32_t window, std::uint32_t surface);
     [[nodiscard]] std::optional<RenderTargetBinding> resolve_render_target(
         UserlandHleCall& call, ContextState& context);
     [[nodiscard]] GlesRenderTargetKey render_target_key(
