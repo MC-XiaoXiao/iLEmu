@@ -32,6 +32,88 @@ bool CompatibilityKernel::dispatch_bsd_process_information(
     const auto output_address = registers[5];
     const auto output_size = registers[6];
 
+    if (call == darwin::proc_info::call_dirty_control) {
+        using namespace darwin::proc_info;
+        std::uint32_t error { };
+        std::uint32_t result { };
+        {
+            std::lock_guard lock { shared_state_->mach_mutex };
+            const auto target = target_pid > 0
+                ? shared_state_->processes.find(static_cast<std::uint32_t>(target_pid))
+                : shared_state_->processes.end();
+            if (target == shared_state_->processes.end() ||
+                (target->second.exited && flavor != dirty_control_get)) {
+                error = darwin::error::no_such_process;
+            } else {
+                auto& record = target->second;
+                const auto self = target_pid == static_cast<std::int32_t>(process_.pid);
+                const auto parent = record.parent_pid == process_.pid;
+                const auto root = process_.effective_uid == 0U;
+                const auto owner = root || process_.effective_uid == record.effective_uid ||
+                    process_.uid == record.effective_uid;
+                const auto flags = registers[3];
+                switch (flavor) {
+                case dirty_control_track:
+                    if (!self && !parent && !root)
+                        error = darwin::error::operation_not_permitted;
+                    else if (((flags & dirty_allow_idle_exit) && !(flags & dirty_track)) ||
+                             ((flags & dirty_launch_in_progress) && !(flags & dirty_track)) ||
+                             ((flags & dirty_defer) && !(flags & dirty_allow_idle_exit)))
+                        error = darwin::error::invalid_argument;
+                    else
+                        record.dirty_tracking_flags |= flags &
+                            (dirty_track | dirty_allow_idle_exit | dirty_defer |
+                             dirty_launch_in_progress);
+                    break;
+                case dirty_control_set:
+                    if (!owner)
+                        error = darwin::error::operation_not_permitted;
+                    else if (!(record.dirty_tracking_flags & dirty_track))
+                        error = darwin::error::invalid_argument;
+                    else {
+                        auto& state = self ? record.dirty_self : record.dirty_shutdown;
+                        if (state == (flags != 0U))
+                            error = darwin::error::already_in_progress;
+                        else
+                            state = flags != 0U;
+                    }
+                    break;
+                case dirty_control_get:
+                    if (record.dirty_tracking_flags & dirty_track) {
+                        result = record.dirty_tracking_flags &
+                            (dirty_track | dirty_allow_idle_exit | dirty_launch_in_progress);
+                        if (record.dirty_self || record.dirty_shutdown)
+                            result |= dirty_is_dirty;
+                    }
+                    break;
+                case dirty_control_clear:
+                    if (!owner)
+                        error = darwin::error::operation_not_permitted;
+                    else if (!(record.dirty_tracking_flags & dirty_track) ||
+                             !(flags & (dirty_defer | dirty_launch_in_progress)))
+                        error = darwin::error::invalid_argument;
+                    else
+                        record.dirty_tracking_flags &=
+                            ~(flags & (dirty_defer | dirty_launch_in_progress));
+                    break;
+                default:
+                    error = darwin::error::invalid_argument;
+                    break;
+                }
+            }
+        }
+        output_.write("[process] dirty-control caller=" + std::to_string(process_.pid) +
+                      " target=" + std::to_string(target_pid) +
+                      " operation=" + std::to_string(flavor) +
+                      " flags=" + std::to_string(registers[3]) +
+                      " result=" + std::to_string(error) + "\n");
+        if (error != 0U)
+            bsd_error(cpu, error);
+        else
+            bsd_success(cpu, result);
+        return true;
+    }
+
     if (call == darwin::proc_info::call_pid_info &&
         flavor == darwin::proc_info::flavor_pid_short_bsd_info) {
         constexpr auto size = darwin::proc_info::short_bsd_info_size;

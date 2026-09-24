@@ -637,6 +637,9 @@ struct KernelSharedState {
         // Audit tokens distinguish both PID reuse and replacement by exec.
         std::uint32_t audit_identity_version { };
         darwin::memorystatus::ProcessState memory_status { };
+        std::uint32_t dirty_tracking_flags { };
+        bool dirty_self { };
+        bool dirty_shutdown { };
         bool importance_donor { };
         std::uint32_t dyld_all_image_info_address { };
         std::uint32_t dyld_all_image_info_size { };
