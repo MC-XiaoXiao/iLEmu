@@ -1843,6 +1843,17 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             case darwin::sysctl::kernel_build_version:
                 write_read_only_string(identity.build_version);
                 return;
+            case darwin::sysctl::kernel_monotonic_clock_usecs: {
+                // The supported ARM32 platform clock exposes a uint64_t
+                // microsecond counter, independent of calendar adjustments.
+                const auto microseconds = shared_state_->clock.now() / 1000U;
+                std::array<std::byte, sizeof(microseconds)> bytes { };
+                for (std::size_t byte = 0; byte < bytes.size(); ++byte)
+                    bytes[byte] = static_cast<std::byte>(
+                        microseconds >> (byte * 8U));
+                write_read_only_bytes(bytes);
+                return;
+            }
             case darwin::sysctl::kernel_boot_time: {
                 const auto boot = shared_state_->clock.boot_time();
                 const std::array<std::uint32_t, 2> timeval {
