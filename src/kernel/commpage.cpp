@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -30,6 +31,16 @@ void CompatibilityKernel::install_commpage()
     page[0x34] = static_cast<std::byte>(count);
     page[0x35] = static_cast<std::byte>(count);
     page[0x36] = static_cast<std::byte>(count);
+    if (shared_state_->darwin_abi.arm_commpage ==
+        DarwinArmCommpageAbi::HighDataAddress) {
+        // ARM's high data commpage publishes user and kernel VM page shifts.
+        // libsystem derives vm_page_size from the kernel shift during mach_init.
+        static_assert(std::has_single_bit(AddressSpace::page_size));
+        constexpr auto page_shift = static_cast<std::byte>(
+            std::countr_zero(AddressSpace::page_size));
+        page[0x24] = page_shift;
+        page[0x37] = page_shift;
+    }
     const auto install = [&](std::uint32_t address) {
         if (!memory_.mapped(address))
             static_cast<void>(memory_.map(
