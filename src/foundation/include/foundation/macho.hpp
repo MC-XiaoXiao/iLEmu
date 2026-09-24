@@ -77,6 +77,10 @@ struct MachSymbol {
     std::uint8_t section { };
     std::uint16_t description { };
 
+    // Symbols recovered from the cache-local table are diagnostic metadata
+    // until a consumer explicitly opts into their use.
+    bool cache_local { };
+
     [[nodiscard]] bool thumb_definition() const
     {
         // Mach-O ARM N_ARM_THUMB_DEF in nlist::n_desc.

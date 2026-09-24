@@ -20,6 +20,7 @@ add_library(ilemu_foundation STATIC
     device_display_profile.cpp
     device_model.cpp
     dynarmic_ir_artifact.cpp
+    dyld_cache_local_symbols.cpp
     dyld_shared_cache.cpp
     executable_catalog.cpp
     firmware_prepare.cpp

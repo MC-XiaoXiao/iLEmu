@@ -80,7 +80,7 @@ namespace {
     constexpr std::uint32_t hle_plan_artifact_version_v2 = 2U;
     // Increment when metadata lookup semantics change without changing the
     // serialized plan layout, so persisted plans are rebuilt from the firmware.
-    constexpr std::uint32_t hle_plan_builder_version = 6U;
+    constexpr std::uint32_t hle_plan_builder_version = 7U;
     constexpr std::size_t hle_plan_header_size_v2 = 123U;
     constexpr std::size_t hle_plan_patch_record_size_v2 = 69U;
     constexpr std::size_t hle_plan_range_record_size_v2 = 12U;
@@ -956,7 +956,8 @@ UserlandHleRegistry::UserlandHleRegistry(AddressSpace& memory, Output& output)
 }
 
 void UserlandHleRegistry::register_function(
-    std::string image_suffix, std::string symbol, Handler handler)
+    std::string image_suffix, std::string symbol, Handler handler,
+    SymbolLookup lookup)
 {
     if (!handler || registrations_.size() >= userland_hle_call_mask) {
         throw std::runtime_error {
@@ -976,7 +977,7 @@ void UserlandHleRegistry::register_function(
     registrations_.push_back(
         Registration { static_cast<std::uint16_t>(registrations_.size() + 1U),
             std::move(image_suffix), std::move(symbol), false, std::nullopt,
-            std::nullopt, false, std::move(handler) });
+            std::nullopt, false, std::move(handler), lookup });
     ++registration_generation_;
 }
 
@@ -1510,6 +1511,8 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
     plan_key.push_back('\n');
     for (const auto& registration : registrations_) {
         plan_key += rule_key_text(rule_key(registration));
+        plan_key += registration.lookup == SymbolLookup::ImageAndCacheLocals
+                        ? "locals1|" : "locals0|";
         plan_key.push_back('\n');
     }
     for (const auto& dependency : guest_functions_) {
@@ -1612,6 +1615,9 @@ void UserlandHleRegistry::prepare_shared_cache_plan(
             const auto& symbol = parsed->symbols()[location.symbol_index];
             const auto* registration =
                 select_registration(image.path, symbol.name);
+            if (symbol.cache_local && registration &&
+                registration->lookup != SymbolLookup::ImageAndCacheLocals)
+                registration = nullptr;
             const auto guest_function = std::any_of(guest_functions_.begin(),
                 guest_functions_.end(), [&](const auto& dependency) {
                     return path_has_suffix(image.path, dependency.first) &&
@@ -1780,6 +1786,9 @@ UserlandHleRegistry::ParsedImageCacheEntry& UserlandHleRegistry::cached_image(
         const auto& symbol = entry.image->symbols()[location.symbol_index];
         const auto* registration =
             select_registration(logical_image_path, symbol.name);
+        if (symbol.cache_local && registration &&
+            registration->lookup != SymbolLookup::ImageAndCacheLocals)
+            registration = nullptr;
         const auto guest_function = std::any_of(guest_functions_.begin(),
             guest_functions_.end(), [&](const auto& dependency) {
                 return path_has_suffix(logical_image_path, dependency.first) &&
@@ -2024,8 +2033,9 @@ std::size_t UserlandHleRegistry::install_mapped_image_impl(Cpu& cpu,
             }
             const auto runtime_address =
                 mapping_address + static_cast<std::uint32_t>(mapping_delta);
-            if (hle_relevant || cached_symbol.guest_function ||
-                cached_symbol.guest_data_symbol) {
+            if ((hle_relevant && (!symbol.cache_local ||
+                                     cached_symbol.registration_id != 0U)) ||
+                cached_symbol.guest_function || cached_symbol.guest_data_symbol) {
                 if (cached_symbol.guest_data_symbol) {
                     installed_symbols_.insert_or_assign(symbol.name, runtime_address);
                 } else {

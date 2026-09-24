@@ -9,6 +9,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-1699.22.73/EXTERNAL_HEADERS/mach-o/loader.h
 
 #include "foundation/macho.hpp"
+#include "dyld_cache_local_symbols.hpp"
 
 #include <algorithm>
 #include <array>
@@ -265,6 +266,23 @@ namespace {
         return std::string {
             reinterpret_cast<const char*>(bytes.data() + start), cursor - start
         };
+    }
+
+    MachSymbol read_symbol(std::span<const std::byte> entry,
+        std::span<const std::byte> strings)
+    {
+        MachSymbol result;
+        const auto name_offset = read_u32(entry, 0U);
+        if (name_offset != 0U)
+            result.name = table_string(strings, 0U,
+                static_cast<std::uint32_t>(strings.size()), name_offset);
+        result.type = std::to_integer<std::uint8_t>(entry[4]);
+        result.section = std::to_integer<std::uint8_t>(entry[5]);
+        result.description = static_cast<std::uint16_t>(
+            std::to_integer<std::uint16_t>(entry[6]) |
+            (std::to_integer<std::uint16_t>(entry[7]) << 8U));
+        result.value = read_u32(entry, 8U);
+        return result;
     }
 
     bool is_dylib_command(std::uint32_t command)
@@ -747,20 +765,8 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
                 ++symbol_index) {
                 const auto symbol = static_cast<std::size_t>(symbol_offset) +
                                     symbol_index * 12U;
-                const auto name_offset = read_u32(bytes, symbol);
-                MachSymbol result;
-                if (name_offset != 0) {
-                    result.name = table_string(
-                        bytes, string_offset, string_size, name_offset);
-                }
-                result.type = std::to_integer<std::uint8_t>(bytes[symbol + 4]);
-                result.section =
-                    std::to_integer<std::uint8_t>(bytes[symbol + 5]);
-                result.description = static_cast<std::uint16_t>(
-                    std::to_integer<std::uint16_t>(bytes[symbol + 6]) |
-                    (std::to_integer<std::uint16_t>(bytes[symbol + 7]) << 8U));
-                result.value = read_u32(bytes, symbol + 8);
-                image.symbols_.push_back(std::move(result));
+                image.symbols_.push_back(read_symbol(bytes.subspan(symbol, 12U),
+                    bytes.subspan(string_offset, string_size)));
             }
         } else if (command == lc_dysymtab) {
             if (command_size < 80) {
@@ -903,6 +909,20 @@ MachOImage MachOImage::parse(const std::filesystem::path& path,
         image.code_signature_entitlements_ =
             extract_code_signature_entitlements(
                 bytes, code_signature->first, code_signature->second);
+    }
+    if (image_header_offset) {
+        if (const auto locals = Arm32DyldCacheLocalSymbols::find(
+                bytes, *image_header_offset)) {
+            // Append after resolving indirect indices: LC_DYSYMTAB indices
+            // refer only to the original LC_SYMTAB ordering.
+            for (std::size_t entry = 0; entry < locals->entries.size();
+                entry += 12U) {
+                auto symbol = read_symbol(
+                    locals->entries.subspan(entry, 12U), locals->strings);
+                symbol.cache_local = true;
+                image.symbols_.push_back(std::move(symbol));
+            }
+        }
     }
     image.symbol_file_locations_.reserve(image.symbols_.size());
     for (std::size_t index = 0; index < image.symbols_.size(); ++index) {

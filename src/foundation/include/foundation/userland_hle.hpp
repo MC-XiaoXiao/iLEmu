@@ -150,9 +150,14 @@ public:
 
     UserlandHleRegistry(AddressSpace& memory, Output& output);
 
-    // Exact registrations take precedence over prefix registrations.
+    enum class SymbolLookup { Image, ImageAndCacheLocals };
+
+    // Cache-local routines require explicit opt-in: discovering more symbols
+    // must not silently patch additional firmware code (e.g. integrity-checked
+    // modules). Exact registrations take precedence over prefix registrations.
     void register_function(
-        std::string image_suffix, std::string symbol, Handler handler);
+        std::string image_suffix, std::string symbol, Handler handler,
+        SymbolLookup lookup = SymbolLookup::Image);
     void register_prefix(
         std::string image_suffix, std::string symbol_prefix, Handler handler);
     // Resolve a defined guest function for call_guest_function without patching
@@ -269,6 +274,7 @@ private:
         std::optional<std::pair<std::string, std::string>> objc_instance_method;
         bool objc_class_method { };
         Handler handler;
+        SymbolLookup lookup { SymbolLookup::Image };
     };
     struct InstalledCall {
         std::uint16_t id { };
