@@ -564,6 +564,9 @@ private:
     [[nodiscard]] bool dispatch_bsd_process_spawn(
         Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_filesystem(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_directory_attributes(Cpu& cpu);
+    [[nodiscard]] const std::vector<DirectoryEntry>* cached_directory_entries(
+        const std::filesystem::path& path, std::uint32_t& error);
     [[nodiscard]] bool dispatch_bsd_filesystem_control(
         Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool dispatch_bsd_filesystem_ownership(

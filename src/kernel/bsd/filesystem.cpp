@@ -1234,112 +1234,13 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             bsd_error(cpu, 20); // ENOTDIR
             return;
         }
-        const auto cache_key = descriptor->second.lexically_normal();
-        auto cached_entries = directory_entries_cache_.find(cache_key);
-        if (cached_entries == directory_entries_cache_.end()) {
-            const auto current_metadata =
-                hfs_metadata_.query_directory_entry(descriptor->second, true);
-            const auto parent_path = descriptor->second == rootfs_
-                                         ? descriptor->second
-                                         : descriptor->second.parent_path();
-            const auto parent_metadata =
-                hfs_metadata_.query_directory_entry(parent_path, true);
-            std::vector<DirectoryEntry> entries {
-                { ".", 4,
-                    current_metadata ? current_metadata->catalog_id : 2U },
-                { "..", 4, parent_metadata ? parent_metadata->catalog_id : 2U }
-            };
-            for (std::filesystem::directory_iterator
-                     iterator { descriptor->second, directory_error },
-                end;
-                !directory_error && iterator != end;
-                iterator.increment(directory_error)) {
-                if (hfs::MetadataProvider::is_resource_sidecar(
-                        iterator->path())) {
-                    continue;
-                }
-                const auto metadata =
-                    hfs_metadata_.query_directory_entry(iterator->path(), false);
-                if (!metadata) {
-                    directory_error = std::make_error_code(std::errc::io_error);
-                    break;
-                }
-                std::uint8_t type = 0;
-                if (metadata->type == std::filesystem::file_type::directory)
-                    type = 4;
-                else if (metadata->type == std::filesystem::file_type::regular)
-                    type = 8;
-                else if (metadata->type == std::filesystem::file_type::symlink)
-                    type = 10;
-                entries.push_back({ iterator->path().filename().string(), type,
-                    metadata->catalog_id });
-            }
-            if (directory_error) {
-                bsd_error(cpu, 5);
-                return;
-            }
-            std::error_code dev_directory_error;
-            if (std::filesystem::equivalent(
-                    descriptor->second, rootfs_ / "dev", dev_directory_error) &&
-                !dev_directory_error) {
-                const auto add_virtual = [&](std::string name,
-                                             std::uint8_t type) {
-                    if (std::none_of(entries.begin(), entries.end(),
-                            [&](const DirectoryEntry& entry) {
-                                return entry.name == name;
-                            })) {
-                        constexpr std::uint32_t first_virtual_catalog_id =
-                            0x7fff0000U;
-                        entries.push_back({ std::move(name), type,
-                            first_virtual_catalog_id +
-                                static_cast<std::uint32_t>(entries.size()) });
-                    }
-                };
-                add_virtual("disk0s1", 6); // DT_BLK
-                add_virtual("disk0s2", 6);
-                add_virtual("rdisk0s1", 2); // DT_CHR
-                add_virtual("rdisk0s2", 2);
-                add_virtual("console", 2);
-                add_virtual("null", 2);
-                add_virtual("autofs_nowait", 2);
-                add_virtual("random", 2);
-                add_virtual("urandom", 2);
-                add_virtual("bpf0", 2);
-                if (shared_state_->baseband_device_state.available()) {
-                    add_virtual(
-                        std::string {
-                            bsd::baseband_device::legacy_path.substr(5) },
-                        2);
-                    add_virtual(
-                        std::string { bsd::baseband_device::directory_name },
-                        2);
-                    add_virtual(
-                        std::string {
-                            bsd::baseband_device::spi_mux_directory_name },
-                        2);
-                    add_virtual(
-                        std::string {
-                            bsd::baseband_device::h5_mux_directory_name },
-                        2);
-                }
-                add_virtual(
-                    std::string { bsd::offline_serial_device::directory_name },
-                    2);
-                std::ostringstream directory_trace;
-                directory_trace << "[vfs] virtual /dev enumeration entries="
-                                << entries.size() << " buffer=" << registers[2]
-                                << " index=" << file_offsets_[fd] << '\n';
-                output_.write(directory_trace.str());
-            }
-            std::sort(entries.begin() + 2, entries.end(),
-                [](const DirectoryEntry& lhs, const DirectoryEntry& rhs) {
-                    return lhs.name < rhs.name;
-                });
-            cached_entries =
-                directory_entries_cache_.emplace(cache_key, std::move(entries))
-                    .first;
+        std::uint32_t enumeration_error = 0;
+        const auto* cached = cached_directory_entries(descriptor->second, enumeration_error);
+        if (!cached) {
+            bsd_error(cpu, enumeration_error);
+            return;
         }
-        const auto& entries = cached_entries->second;
+        const auto& entries = *cached;
         auto entry_index = static_cast<std::size_t>(file_offsets_[fd]);
         if (entry_index > entries.size())
             entry_index = entries.size();

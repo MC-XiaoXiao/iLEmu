@@ -132,6 +132,13 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         return;
 
     switch (number) {
+    case 461: // getattrlistbulk
+        if (shared_state_->darwin_abi.abi_epoch == DarwinAbiEpoch::Later) {
+            dispatch_bsd_directory_attributes(cpu);
+        } else {
+            dispatch_bsd_nosys(cpu, shared_state_->darwin_abi.capabilities.send_sigsys);
+        }
+        return;
     case 467: // fchmodat
     case 468: // fchownat
         if (shared_state_->darwin_abi.abi_epoch == DarwinAbiEpoch::Later) {

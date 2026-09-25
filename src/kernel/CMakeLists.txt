@@ -208,6 +208,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/process.cpp
     bsd/posix_semaphore.cpp
     bsd/filesystem.cpp
+    bsd/filesystem/directory.cpp
     bsd/descriptor_lifecycle.cpp
     bsd/descriptor_memory.cpp
     bsd/vm/mapping.cpp

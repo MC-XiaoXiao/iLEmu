@@ -186,6 +186,10 @@ public:
     [[nodiscard]] static std::vector<std::byte> pack_attributes(
         const Metadata& metadata, const AttributeRequest& request,
         std::string_view guest_path = {});
+    [[nodiscard]] static bool valid_bulk_request(const AttributeRequest& request);
+    [[nodiscard]] static std::vector<std::byte> pack_bulk_attributes(
+        const Metadata& metadata, const AttributeRequest& request,
+        std::string_view guest_path, bool pack_invalid, std::uint32_t error = 0);
     [[nodiscard]] static std::vector<std::byte> pack_volume_attributes(
         const Metadata& root_metadata, const VolumeMetadata& volume,
         const AttributeRequest& request);
