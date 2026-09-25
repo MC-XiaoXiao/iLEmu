@@ -1538,17 +1538,39 @@ std::uint16_t CompatibilityKernel::descriptor_poll_revents(
     return revents;
 }
 
-std::optional<std::uint32_t> CompatibilityKernel::ready_mach_port_name(
-    std::uint32_t name) const
+std::optional<std::uint32_t> CompatibilityKernel::ready_mach_kevent_name(
+    const KeventRegistration& registration) const
 {
     using xnu::ipc::Right;
 
+    // Check the previously resolved object before taking the IPC lock. Rights
+    // and port-set topology changes invalidate every scoped generation.
+    if (registration.empty_mach_queue_pid == process_.pid &&
+        registration.empty_mach_queue_object != 0U &&
+        registration.empty_mach_queue_generation ==
+            shared_state_->mach_receive_generation_snapshot(
+                registration.empty_mach_queue_object)) {
+        return std::nullopt;
+    }
+
     std::lock_guard mach_lock { shared_state_->mach_mutex };
+    registration.empty_mach_queue_generation = 0;
+    const auto name = static_cast<std::uint32_t>(registration.ident);
     const auto entry =
         shared_state_->mach_namespaces.lookup(process_.pid, name);
     if (!entry)
         return std::nullopt;
 
+    const auto remember_empty = [&]() -> std::optional<std::uint32_t> {
+        // Namespace resolution and the negative observation share mach_mutex
+        // with producers. Copying registrations across tasks must re-resolve
+        // task-local names before this cache can be used.
+        registration.empty_mach_queue_object = entry->object;
+        registration.empty_mach_queue_pid = process_.pid;
+        registration.empty_mach_queue_generation =
+            shared_state_->mach_receive_generation_snapshot(entry->object);
+        return std::nullopt;
+    };
     const auto queue_has_message = [&](std::uint32_t object) {
         const auto queue = shared_state_->mach_queues.find(object);
         return queue != shared_state_->mach_queues.end() &&
@@ -1557,7 +1579,7 @@ std::optional<std::uint32_t> CompatibilityKernel::ready_mach_port_name(
     if ((entry->type & xnu::ipc::type_mask(Right::PortSet)) != 0U) {
         const auto set = shared_state_->mach_port_sets.find(entry->object);
         if (set == shared_state_->mach_port_sets.end())
-            return std::nullopt;
+            return remember_empty();
         // Enqueue, dequeue and membership changes maintain the same prepost
         // FIFO used by Mach receive under mach_mutex. An empty FIFO rules out
         // queued messages; a populated set retains its existing member order.
@@ -1565,7 +1587,7 @@ std::optional<std::uint32_t> CompatibilityKernel::ready_mach_port_name(
             shared_state_->mach_port_set_preposts.find(entry->object);
         if (preposts == shared_state_->mach_port_set_preposts.end() ||
             preposts->second.empty()) {
-            return std::nullopt;
+            return remember_empty();
         }
         for (const auto member_object : set->second) {
             if (!queue_has_message(member_object))
@@ -1576,35 +1598,13 @@ std::optional<std::uint32_t> CompatibilityKernel::ready_mach_port_name(
                 return member_name;
             }
         }
-        return std::nullopt;
+        return remember_empty();
     }
     if ((entry->type & xnu::ipc::type_mask(Right::Receive)) != 0U &&
         queue_has_message(entry->object)) {
         return name;
     }
-    return std::nullopt;
-}
-
-std::optional<std::uint32_t> CompatibilityKernel::ready_mach_kevent_name(
-    const KeventRegistration& registration) const
-{
-    const auto generation_before =
-        shared_state_->mach_queue_generation_snapshot();
-    if (registration.empty_mach_queue_generation == generation_before)
-        return std::nullopt;
-
-    if (const auto ready = ready_mach_port_name(static_cast<std::uint32_t>(registration.ident))) {
-        registration.empty_mach_queue_generation = 0;
-        return ready;
-    }
-
-    // Do not publish a negative result if a producer changed the queue while
-    // the namespace/port-set lookup was in progress. A later enqueue after the
-    // second snapshot also advances the generation and invalidates this value.
-    if (shared_state_->mach_queue_generation_snapshot() == generation_before) {
-        registration.empty_mach_queue_generation = generation_before;
-    }
-    return std::nullopt;
+    return remember_empty();
 }
 
 std::optional<std::uint32_t> CompatibilityKernel::socket_pending_byte_count(

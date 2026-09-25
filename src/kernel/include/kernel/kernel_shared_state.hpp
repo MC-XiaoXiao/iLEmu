@@ -132,11 +132,13 @@ struct KeventRegistration {
     bool enabled { true };
     bool clear_delivered { };
     std::uint32_t clear_available { };
-    // EVFILT_MACHPORT readiness is immutable while the shared Mach queue
+    // EVFILT_MACHPORT readiness is immutable while its receive-object queue
     // generation is unchanged. Cache only a negative observation; positive
     // readiness is always re-evaluated so consuming a message cannot leave a
     // stale ready result.
     mutable std::uint64_t empty_mach_queue_generation { };
+    mutable std::uint32_t empty_mach_queue_object { };
+    mutable std::uint32_t empty_mach_queue_pid { };
     std::optional<VnodeWatch> vnode_watch;
     std::array<std::uint64_t, 2> extension { };
     std::optional<KeventTimer> timer;

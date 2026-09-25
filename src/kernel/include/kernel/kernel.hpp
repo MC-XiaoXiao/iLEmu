@@ -815,8 +815,6 @@ private:
     // EVFILT_MACHPORT reports the task-local receive name that currently has a
     // queued message. For a port set this is the ready member, not the set
     // name.
-    [[nodiscard]] std::optional<std::uint32_t> ready_mach_port_name(
-        std::uint32_t name) const;
     [[nodiscard]] std::optional<std::uint32_t> ready_mach_kevent_name(
         const KeventRegistration& registration) const;
     [[nodiscard]] std::optional<std::uint32_t> socket_pending_byte_count(
