@@ -6,6 +6,7 @@
 // operations.
 
 #include "kernel/kernel_iokit_graphics.hpp"
+#include "device_client.hpp"
 
 #include "foundation/address_space.hpp"
 #include "mach/device_mig_ids.hpp"
@@ -440,6 +441,11 @@ std::optional<MethodResult> dispatch_connect_method(AddressSpace& memory,
     std::lock_guard lock { state.mach_mutex };
     if (!is_graphics_connection_locked(state, process, connection_object))
         return std::nullopt;
+
+    if (auto result = dispatch_device_method_locked(memory, state,
+            connection_object, selector, scalar_input, inband_input,
+            scalar_output_capacity, inband_output_capacity))
+        return result;
 
     auto& connection = state.iokit_graphics_connections[connection_object];
     const auto shared_mapping_reply = [&]() -> std::optional<MethodResult> {

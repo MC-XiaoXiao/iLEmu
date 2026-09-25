@@ -279,6 +279,7 @@ if(TARGET PkgConfig::PLIST)
 endif()
 
 add_library(ilemu_kernel_iokit_graphics STATIC
+    iokit/graphics/device_client.cpp
     iokit/graphics/service.cpp)
 add_library(iLEmu::kernel_iokit_graphics ALIAS
     ilemu_kernel_iokit_graphics)
