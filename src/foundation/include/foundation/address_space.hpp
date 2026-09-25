@@ -530,6 +530,8 @@ private:
     // sparse index instead of rescanning every resident guest page at each
     // CoreSurface/Mach shared-memory publication.
     std::unordered_set<std::uint32_t> direct_jit_write_pages_;
+    // Reservation aliases can only be shared-writable direct entries.
+    tsl::robin_pg_set<std::uint32_t> direct_shared_jit_write_pages_;
     bool jit_page_table_enabled_ { };
     bool jit_write_page_table_enabled_ { true };
     // Each page carries a mask of live physical reservation granules. Keep

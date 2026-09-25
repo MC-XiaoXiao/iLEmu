@@ -266,6 +266,7 @@ void AddressSpace::disable_jit_write_page_table()
         jit_write_page_table_->clear();
     clear_parallel_views_locked();
     direct_jit_write_pages_.clear();
+    direct_shared_jit_write_pages_.clear();
     exclusive_write_tracked_pages_.clear();
     exclusive_write_backings_.clear();
     exclusive_write_tracking_active_.store(false, std::memory_order_release);
@@ -306,7 +307,7 @@ void AddressSpace::track_exclusive_access(
                 marker.value() |= mask;
         }
         std::vector<std::uint32_t> aliases;
-        for (const auto alias_address : direct_jit_write_pages_) {
+        for (const auto alias_address : direct_shared_jit_write_pages_) {
             const auto* alias = find_page_locked(alias_address);
             if (alias != nullptr && alias->shared_writable &&
                 alias->backing.get() == backing)
@@ -1410,6 +1411,7 @@ void AddressSpace::ensure_jit_page_tables_locked()
     if (!jit_write_page_table_)
         jit_write_page_table_ = std::make_unique<JitPageTableStorage>();
     direct_jit_write_pages_.clear();
+    direct_shared_jit_write_pages_.clear();
     for (const auto& [address, page] : *pages_) {
         static_cast<void>(page);
         refresh_jit_page_locked(address);
@@ -1442,6 +1444,7 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
         if (*write_entry != nullptr) {
             *write_entry = nullptr;
             direct_jit_write_pages_.erase(base);
+            direct_shared_jit_write_pages_.erase(base);
         }
     }
     if (!jit_page_table_enabled_)
@@ -1481,6 +1484,8 @@ void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
         return;
     *write_entry = jit_page_pointer(*page->backing, base);
     direct_jit_write_pages_.insert(base);
+    if (page->shared_writable)
+        direct_shared_jit_write_pages_.insert(base);
 }
 
 void AddressSpace::refresh_jit_page_range_locked(
@@ -1507,6 +1512,7 @@ void AddressSpace::invalidate_shared_write_jit_pages_locked()
         if (page && page->backing &&
             page->backing->shared_write_tracking_enabled()) {
             entries[*address / page_size] = nullptr;
+            direct_shared_jit_write_pages_.erase(*address);
             address = direct_jit_write_pages_.erase(address);
         } else {
             ++address;
@@ -1537,6 +1543,7 @@ void AddressSpace::clear_jit_page_table_locked()
         jit_write_page_table_->clear();
     clear_parallel_views_locked();
     direct_jit_write_pages_.clear();
+    direct_shared_jit_write_pages_.clear();
 }
 
 std::byte AddressSpace::read_byte_locked(const Page* page, std::uint32_t offset)
