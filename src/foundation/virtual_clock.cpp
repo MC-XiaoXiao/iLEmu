@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <utility>
 
 namespace ilemu {
 namespace {
@@ -40,9 +41,20 @@ VirtualClock::VirtualClock(std::uint64_t initial_time)
 {
 }
 
+void VirtualClock::set_counter_source(CounterSource source)
+{
+    counter_source_ = std::move(source);
+}
+
 std::uint64_t VirtualClock::now() const
 {
-    return now_.load(std::memory_order_relaxed);
+    auto current = now_.load(std::memory_order_relaxed);
+    if (!counter_source_)
+        return current;
+    const auto sampled = counter_source_();
+    while (current < sampled &&
+           !now_.compare_exchange_weak(current, sampled, std::memory_order_relaxed)) { }
+    return std::max(current, sampled);
 }
 
 std::uint64_t VirtualClock::wall_time() const

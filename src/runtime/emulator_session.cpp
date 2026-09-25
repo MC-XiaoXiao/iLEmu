@@ -2363,6 +2363,10 @@ void EmulatorSession::run()
     if (device_time_policy == DeviceTimePolicy::HostMappedInteractive) {
         realtime_pacer.emplace(
             initial_runtime->kernel->current_absolute_time());
+        initial_runtime->kernel->set_absolute_time_source(
+            [pacer = *realtime_pacer] {
+                return pacer.allowed_device_monotonic_time();
+            });
         const auto host_wall_time =
             std::chrono::duration_cast<std::chrono::nanoseconds>(
                 std::chrono::system_clock::now().time_since_epoch())
@@ -2379,11 +2383,14 @@ void EmulatorSession::run()
     // translated slice or host-backed syscall, the next synchronization moves
     // directly to the fixed mapping and services every due device without
     // rebasing it. Deterministic runs intentionally bypass this path.
+    // Counter reads advance independently of scheduler rounds. Track the
+    // device-service watermark separately so reads cannot skip due events.
+    auto last_device_service_time =
+        initial_runtime->kernel->current_absolute_time();
     const auto synchronize_device_time_to_host = [&]() {
         if (!realtime_pacer)
             return;
-        const auto current_time =
-            initial_runtime->kernel->current_absolute_time();
+        const auto current_time = last_device_service_time;
         const auto host_time = realtime_pacer->allowed_device_monotonic_time();
         if (current_time >= host_time)
             return;
@@ -2403,6 +2410,7 @@ void EmulatorSession::run()
                 deficit);
         }
         initial_runtime->kernel->advance_absolute_time(host_time);
+        last_device_service_time = host_time;
         for (auto& runtime : runtimes) {
             if (runtime.get() != initial_runtime &&
                 !runtime->kernel->process().exited) {

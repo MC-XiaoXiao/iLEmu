@@ -369,6 +369,10 @@ public:
                                   ->client_process_id }
                             : std::nullopt;
     }
+    void set_absolute_time_source(VirtualClock::CounterSource source)
+    {
+        shared_state_->clock.set_counter_source(std::move(source));
+    }
     [[nodiscard]] std::uint64_t current_absolute_time() const
     {
         return shared_state_->clock.now();

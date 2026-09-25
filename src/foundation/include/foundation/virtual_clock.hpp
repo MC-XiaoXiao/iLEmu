@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 
 namespace ilemu {
 
@@ -24,6 +25,10 @@ public:
 
     explicit VirtualClock(std::uint64_t initial_time = default_initial_time);
 
+    using CounterSource = std::function<std::uint64_t()>;
+    // Configure while CPUs are idle. A source supplies the same absolute-time
+    // domain as advance_to(); no source retains deterministic stepped time.
+    void set_counter_source(CounterSource source);
     [[nodiscard]] std::uint64_t now() const;
     [[nodiscard]] std::uint64_t wall_time() const;
     // Calendar time at monotonic zero; follows RTC adjustments atomically.
@@ -35,7 +40,8 @@ public:
     void advance_to(std::uint64_t deadline);
 
 private:
-    std::atomic_uint64_t now_;
+    CounterSource counter_source_;
+    mutable std::atomic_uint64_t now_;
     std::atomic_int64_t wall_time_offset_;
 };
 
