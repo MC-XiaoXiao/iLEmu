@@ -132,6 +132,18 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         return;
 
     switch (number) {
+    case kernel_bsd::resource_monitor::ledger_route.identifier: {
+        if (!darwin_abi_route_supported(kernel_bsd::resource_monitor::ledger_route,
+                shared_state_->darwin_abi.abi_epoch)) {
+            dispatch_bsd_nosys(cpu,
+                shared_state_->darwin_abi.capabilities.send_sigsys);
+            return;
+        }
+        const auto& registers = cpu.registers();
+        bsd_error(cpu, kernel_bsd::resource_monitor::query_ledger(memory_,
+            *shared_state_, registers[0], registers[1], registers[2], registers[3]));
+        return;
+    }
     case 461: // getattrlistbulk
         if (shared_state_->darwin_abi.abi_epoch == DarwinAbiEpoch::Later) {
             dispatch_bsd_directory_attributes(cpu);

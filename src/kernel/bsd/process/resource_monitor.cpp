@@ -10,6 +10,40 @@
 
 namespace ilemu::kernel_bsd::resource_monitor {
 
+std::uint32_t query_ledger(AddressSpace& memory, KernelSharedState& state,
+    std::uint32_t command, std::uint32_t argument1,
+    std::uint32_t argument2, std::uint32_t argument3)
+{
+    // XNU bsd/kern/sys_generic.c copies the signed entry count before
+    // looking up the target. Template queries use the caller's template.
+    constexpr std::uint32_t info = 0;
+    constexpr std::uint32_t entry_info = 1;
+    constexpr std::uint32_t template_info = 2;
+    if (command == entry_info || command == template_info) {
+        const auto count_address =
+            command == entry_info ? argument3 : argument2;
+        if (count_address == 0U ||
+            !memory.accessible(count_address, 4U, MemoryPermission::Read))
+            return darwin::error::bad_address;
+        const auto count = memory.read32(count_address);
+        if (!count)
+            return darwin::error::bad_address;
+        if ((*count & 0x8000'0000U) != 0U)
+            return darwin::error::invalid_argument;
+    }
+    if (command != template_info) {
+        std::lock_guard lock { state.mach_mutex };
+        const auto target = state.processes.find(argument1);
+        if (target == state.processes.end() || target->second.exited)
+            return darwin::error::no_such_process;
+    }
+    // No task ledger is instantiated here. Match osfmk/kern/ledger.c's
+    // NULL-ledger errors without fabricating balances or touching output.
+    // Unknown commands and development-only LEDGER_LIMIT return EINVAL.
+    return command == info ? darwin::error::no_entry
+                           : darwin::error::invalid_argument;
+}
+
 std::uint32_t control(AddressSpace& memory, KernelSharedState& state,
     const ProcessContext& caller, std::uint32_t pid, std::uint32_t flavor,
     std::uint32_t argument)
