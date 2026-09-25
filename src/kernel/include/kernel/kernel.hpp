@@ -668,6 +668,8 @@ private:
     void trace_unknown(Cpu& cpu, std::string kind, std::uint32_t number);
     [[nodiscard]] std::filesystem::path resolve_guest_path(
         const std::string& path, bool follow_final_symlink = true) const;
+    [[nodiscard]] std::optional<std::string> read_guest_path_at(
+        Cpu& cpu, std::uint32_t directory_fd, std::uint32_t path_address);
     [[nodiscard]] std::optional<hfs::Metadata> query_hfs_metadata(
         const std::filesystem::path& path, bool follow_symlink,
         bool include_directory_entry_count = true) const;

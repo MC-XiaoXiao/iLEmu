@@ -132,6 +132,15 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         return;
 
     switch (number) {
+    case 467: // fchmodat
+    case 468: // fchownat
+        if (shared_state_->darwin_abi.abi_epoch == DarwinAbiEpoch::Later) {
+            dispatch_bsd_filesystem(cpu, number);
+        } else {
+            dispatch_bsd_nosys(cpu,
+                shared_state_->darwin_abi.capabilities.send_sigsys);
+        }
+        return;
     case 441: // guarded_open_np
     case 442: // guarded_close_np
     case 443: // guarded_kqueue_np

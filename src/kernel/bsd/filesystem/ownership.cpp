@@ -29,6 +29,39 @@ namespace {
 
 } // namespace
 
+std::optional<std::string> CompatibilityKernel::read_guest_path_at(
+    Cpu& cpu, std::uint32_t directory_fd, std::uint32_t path_address)
+{
+    const auto path = memory_.read_c_string(path_address);
+    if (!path || path->empty()) {
+        bsd_error(cpu, path ? darwin::error::no_entry
+                            : bsd_support::bad_address);
+        return std::nullopt;
+    }
+    constexpr auto at_fdcwd = static_cast<std::uint32_t>(-2);
+    if (path->front() == '/' || directory_fd == at_fdcwd)
+        return path;
+    if (const auto duplicate = duplicated_descriptors_.find(directory_fd);
+        duplicate != duplicated_descriptors_.end())
+        directory_fd = duplicate->second;
+    const auto descriptor = file_descriptors_.find(directory_fd);
+    if (descriptor == file_descriptors_.end()) {
+        bsd_error(cpu, bsd_support::bad_file_descriptor);
+        return std::nullopt;
+    }
+    std::error_code error;
+    if (!std::filesystem::is_directory(descriptor->second, error)) {
+        bsd_error(cpu, darwin::error::not_directory);
+        return std::nullopt;
+    }
+    const auto directory = descriptor->second.lexically_relative(rootfs_);
+    if (directory.empty() || *directory.begin() == "..") {
+        bsd_error(cpu, bsd_support::bad_file_descriptor);
+        return std::nullopt;
+    }
+    return (std::filesystem::path { "/" } / directory / *path).generic_string();
+}
+
 bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
     Cpu& cpu, std::uint32_t number)
 {
@@ -82,6 +115,31 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         return true;
     };
     switch (number) {
+    case 467: // fchmodat
+    case 468: { // fchownat
+        constexpr std::uint32_t at_symlink_nofollow = 0x0020;
+        const auto flags = registers[number == 467 ? 3 : 4];
+        if ((flags & ~at_symlink_nofollow) != 0) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return true;
+        }
+        const auto path = read_guest_path_at(cpu, registers[0], registers[1]);
+        if (!path)
+            return true;
+        const auto follow = (flags & at_symlink_nofollow) == 0;
+        const auto metadata =
+            query_hfs_metadata(resolve_guest_path(*path, follow), follow);
+        if (!metadata) {
+            bsd_error(cpu, darwin::error::no_entry);
+            return true;
+        }
+        const auto changed = number == 467
+            ? change_mode(*metadata, registers[2])
+            : change_owner(*metadata, registers[2], registers[3]);
+        if (changed)
+            bsd_success(cpu, 0);
+        return true;
+    }
     case darwin::syscall::change_mode: {
         const auto path = memory_.read_c_string(registers[0]);
         if (!path) {
