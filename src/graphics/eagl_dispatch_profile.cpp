@@ -63,6 +63,14 @@ std::optional<std::uint32_t> EaglContextFirstArm32Profile::dispatch_slot(
             base = first & 15U;
             destination = second >> 12U;
             immediate = second & 0xfffU;
+        } else if (!wide && (first & 0xff00U) == 0x4600U) {
+            // Some wrappers load the dispatch pointer into LR, then move it
+            // to IP before restoring LR and tail-calling. Track register
+            // copies instead of requiring BX to use the original LDR target.
+            const auto source = (first >> 3U) & 15U;
+            destination = (first & 7U) | ((first >> 4U) & 8U);
+            function_offsets[destination] = function_offsets[source];
+            private_context[destination] = private_context[source];
         } else if (!wide && (first & 0xff07U) == 0x4700U) {
             const auto target = (first >> 3U) & 15U;
             if (passes_context && function_offsets[target])
