@@ -22,6 +22,7 @@
 #include <unordered_set>
 #include <vector>
 #include <tsl/robin_map.h>
+#include <tsl/robin_set.h>
 
 #include "foundation/file_page_cache.hpp"
 #include "foundation/guest_memory_gate.hpp"
@@ -538,6 +539,10 @@ private:
     // counts avoid clustering the naturally page-aligned address keys.
     tsl::robin_pg_map<std::uint32_t, std::uint64_t>
         exclusive_write_tracked_pages_;
+    // Conservative membership: stale entries are harmless, but every backing
+    // of a guarded page must be present. Shared pixel stores can then reject
+    // unrelated reservations without scanning all virtual page markers.
+    tsl::robin_pg_set<const GuestPageBacking*> exclusive_write_backings_;
     std::atomic<bool> exclusive_write_tracking_active_ { };
     std::atomic<std::uint64_t> observed_shared_write_tracking_epoch_ { };
     std::vector<TrackedWriteRange> tracked_write_ranges_;

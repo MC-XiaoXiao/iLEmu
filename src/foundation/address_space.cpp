@@ -267,6 +267,7 @@ void AddressSpace::disable_jit_write_page_table()
     clear_parallel_views_locked();
     direct_jit_write_pages_.clear();
     exclusive_write_tracked_pages_.clear();
+    exclusive_write_backings_.clear();
     exclusive_write_tracking_active_.store(false, std::memory_order_release);
 }
 
@@ -287,6 +288,8 @@ void AddressSpace::track_exclusive_access(
             exclusive_write_tracked_pages_.try_emplace(page_address, 0U).second;
         exclusive_write_tracked_pages_.at(page_address) |= mask;
         const auto* page = find_page_locked(page_address);
+        if (page != nullptr && page->backing)
+            exclusive_write_backings_.insert(page->backing.get());
         if (inserted)
             refresh_jit_page_locked(page_address);
         if (page == nullptr || !page->shared_writable || !page->backing)
@@ -329,6 +332,7 @@ void AddressSpace::clear_exclusive_access_tracking()
         page = exclusive_write_tracked_pages_.erase(page);
         refresh_jit_page_locked(address);
     }
+    exclusive_write_backings_.clear();
     exclusive_write_tracking_active_.store(false, std::memory_order_release);
 }
 
@@ -342,6 +346,11 @@ void AddressSpace::release_exclusive_write_tracking_locked(
     const auto end = page_range_end(address, size);
     if (end == static_cast<std::uint64_t>(first) + page_size) {
         const auto* written_page = find_page_locked(first);
+        if (written_page != nullptr && written_page->backing &&
+            !exclusive_write_backings_.contains(written_page->backing.get()) &&
+            !exclusive_write_tracked_pages_.contains(first)) {
+            return;
+        }
         if (written_page == nullptr || !written_page->shared_writable ||
             !written_page->backing) {
             // A private page cannot invalidate a writable shared alias. Most
@@ -354,9 +363,11 @@ void AddressSpace::release_exclusive_write_tracking_locked(
             if (marker->second == 0U) {
                 exclusive_write_tracked_pages_.erase(marker);
                 refresh_jit_page_locked(first);
-                if (exclusive_write_tracked_pages_.empty())
+                if (exclusive_write_tracked_pages_.empty()) {
+                    exclusive_write_backings_.clear();
                     exclusive_write_tracking_active_.store(
                         false, std::memory_order_release);
+                }
             }
             return;
         }
@@ -384,9 +395,11 @@ void AddressSpace::release_exclusive_write_tracking_locked(
         marker = exclusive_write_tracked_pages_.erase(marker);
         refresh_jit_page_locked(page_address);
     }
-    if (exclusive_write_tracked_pages_.empty())
+    if (exclusive_write_tracked_pages_.empty()) {
+        exclusive_write_backings_.clear();
         exclusive_write_tracking_active_.store(
             false, std::memory_order_release);
+    }
 }
 
 void AddressSpace::synchronize_shared_write_tracking()
@@ -512,6 +525,7 @@ void AddressSpace::unmap_range_locked(
         exclusive_write_tracked_pages_.erase(static_cast<std::uint32_t>(base));
     }
     if (exclusive_write_tracked_pages_.empty()) {
+        exclusive_write_backings_.clear();
         exclusive_write_tracking_active_.store(
             false, std::memory_order_release);
     }
@@ -583,6 +597,7 @@ void AddressSpace::clear()
         chunk.reset();
     clear_jit_page_table_locked();
     exclusive_write_tracked_pages_.clear();
+    exclusive_write_backings_.clear();
     exclusive_write_tracking_active_.store(false, std::memory_order_release);
     tracked_write_ranges_.clear();
     write_tracked_pages_.clear();
@@ -1404,6 +1419,13 @@ void AddressSpace::ensure_jit_page_tables_locked()
 void AddressSpace::refresh_jit_page_locked(std::uint32_t address)
 {
     invalidate_parallel_page_locked(address);
+    // Mapping publication and COW may replace the backing of a guarded page.
+    // Record the new identity before exposing any updated JIT pointers.
+    if (exclusive_write_tracked_pages_.contains(page_base(address))) {
+        const auto* page = find_page_locked(address);
+        if (page != nullptr && page->backing)
+            exclusive_write_backings_.insert(page->backing.get());
+    }
     if (!jit_read_page_table_ && !jit_write_page_table_)
         return;
     const auto base = page_base(address);
@@ -2424,6 +2446,7 @@ std::unique_ptr<AddressSpace> AddressSpace::clone() const
     result->next_mapping_lease_token_ = next_mapping_lease_token_;
     result->file_page_cache_ = file_page_cache_;
     result->exclusive_write_tracked_pages_ = exclusive_write_tracked_pages_;
+    result->exclusive_write_backings_ = exclusive_write_backings_;
     result->exclusive_write_tracking_active_.store(
         !result->exclusive_write_tracked_pages_.empty(),
         std::memory_order_release);
