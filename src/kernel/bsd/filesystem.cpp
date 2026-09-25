@@ -204,11 +204,12 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             return;
         }
         {
+            const auto node_path = resolve_guest_path(*path, false).generic_string();
             std::lock_guard socket_lock { shared_state_->socket_mutex };
-            if (shared_state_->unix_socket_nodes.erase(*path) != 0) {
+            if (shared_state_->unix_socket_nodes.erase(node_path) != 0) {
                 // Existing connections and the listening open description
                 // remain alive, but new pathname lookups must stop now.
-                shared_state_->unix_listeners.erase(*path);
+                shared_state_->unix_listeners.erase(node_path);
                 output_.write("[network] unlink " + *path + "\n");
                 bsd_success(cpu, 0);
                 return;

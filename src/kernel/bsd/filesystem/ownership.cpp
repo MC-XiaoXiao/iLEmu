@@ -66,6 +66,25 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
     Cpu& cpu, std::uint32_t number)
 {
     auto& registers = cpu.registers();
+    const auto update_socket_permissions = [&](const std::string& path,
+                                               bool follow_symlink,
+                                               bool owner, std::uint32_t first,
+                                               std::uint32_t second = 0U) {
+        const auto node_path = resolve_guest_path(path, follow_symlink).generic_string();
+        std::lock_guard socket_lock { shared_state_->socket_mutex };
+        const auto node = shared_state_->unix_socket_nodes.find(node_path);
+        if (node == shared_state_->unix_socket_nodes.end())
+            return false;
+        const auto error = owner
+            ? node->second.change_owner(process_.effective_uid,
+                  process_.effective_gid, first, second)
+            : node->second.change_mode(process_.effective_uid, first);
+        if (error != 0U)
+            bsd_error(cpu, error);
+        else
+            bsd_success(cpu, 0);
+        return true;
+    };
     const auto change_owner = [&](const hfs::Metadata& metadata,
                                   std::uint32_t requested_owner,
                                   std::uint32_t requested_group) {
@@ -127,6 +146,9 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         if (!path)
             return true;
         const auto follow = (flags & at_symlink_nofollow) == 0;
+        if (update_socket_permissions(*path, follow, number == 468,
+                registers[2], registers[3]))
+            return true;
         const auto metadata =
             query_hfs_metadata(resolve_guest_path(*path, follow), follow);
         if (!metadata) {
@@ -146,22 +168,17 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
             bsd_error(cpu, bsd_support::bad_address);
             return true;
         }
-        const auto virtual_socket =
-            std::any_of(bound_socket_names_.begin(), bound_socket_names_.end(),
-                [&](const auto& entry) { return entry.second == *path; });
+        if (update_socket_permissions(*path, true, false, registers[1]))
+            return true;
         std::error_code error;
         const auto host = resolve_guest_path(*path);
-        const auto metadata = virtual_socket ? std::optional<hfs::Metadata> { }
-                                             : query_hfs_metadata(host, true);
-        if (!virtual_socket &&
-            (!std::filesystem::exists(host, error) || !metadata)) {
+        const auto metadata = query_hfs_metadata(host, true);
+        if (!std::filesystem::exists(host, error) || !metadata) {
             bsd_error(cpu, darwin::error::no_entry);
             return true;
         }
-        if (metadata) {
-            if (!change_mode(*metadata, registers[1]))
-                return true;
-        }
+        if (!change_mode(*metadata, registers[1]))
+            return true;
         output_.write("[vfs] chmod " + *path + " mode=" +
                       std::to_string(registers[1] & permission_bits) + "\n");
         bsd_success(cpu, 0);
@@ -337,6 +354,9 @@ bool CompatibilityKernel::dispatch_bsd_filesystem_ownership(
         }
         const bool follow_symlink =
             number != darwin::syscall::change_owner_no_follow;
+        if (update_socket_permissions(*path, follow_symlink, true,
+                registers[1], registers[2]))
+            return true;
         const auto host = resolve_guest_path(*path, follow_symlink);
         std::error_code error;
         // lchown changes the link vnode, including a dangling link. Both

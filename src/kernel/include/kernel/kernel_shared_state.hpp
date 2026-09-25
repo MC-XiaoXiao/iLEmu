@@ -11,6 +11,8 @@
 
 #pragma once
 
+#include "kernel/unix_socket_node.hpp"
+
 #include "kernel/hid_event_queue.hpp"
 #include "kernel/kevent_timer.hpp"
 
@@ -1709,7 +1711,7 @@ struct KernelSharedState {
     std::map<std::string, std::weak_ptr<UnixListener>> unix_listeners;
     // bind(2) creates an AF_UNIX namespace node. Closing the socket does not
     // unlink that node; the guest must remove it explicitly, just as on XNU.
-    std::set<std::string> unix_socket_nodes;
+    std::map<std::string, UnixSocketNode> unix_socket_nodes;
     std::uint32_t next_shared_memory_object { 1 };
     std::map<std::string, std::filesystem::path> shared_memory_objects;
     // POSIX shared-memory objects use host files only as volatile pager

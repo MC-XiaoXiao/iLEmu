@@ -709,8 +709,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::already_connected);
             return;
         }
+        const auto node_path = resolve_guest_path(name).generic_string();
         std::lock_guard socket_lock { shared_state_->socket_mutex };
-        const auto registration = shared_state_->unix_listeners.find(name);
+        const auto registration = shared_state_->unix_listeners.find(node_path);
         const auto listener =
             registration == shared_state_->unix_listeners.end()
                 ? std::shared_ptr<KernelSharedState::UnixListener> { }
@@ -895,6 +896,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             name = "family:" + std::to_string(*family);
         }
         if (*family == darwin::socket::local) {
+            const auto node_path = resolve_guest_path(name, false).generic_string();
             std::lock_guard socket_lock { shared_state_->socket_mutex };
             if (name.empty()) {
                 bsd_error(cpu, bsd_support::invalid_argument);
@@ -904,7 +906,9 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return;
             }
-            if (!shared_state_->unix_socket_nodes.insert(name).second) {
+            if (!shared_state_->unix_socket_nodes.try_emplace(node_path,
+                    process_.effective_uid, process_.effective_gid,
+                    0777U & ~process_.file_creation_mask).second) {
                 bsd_error(cpu, bsd_support::address_in_use);
                 return;
             }
@@ -1010,12 +1014,13 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, 22);
         } else {
             const auto& name = bound_socket_names_.at(registers[0]);
+            const auto node_path = resolve_guest_path(name, false).generic_string();
             std::lock_guard socket_lock { shared_state_->socket_mutex };
             const auto own = unix_listener_states_.find(registers[0]);
-            const auto linked = shared_state_->unix_socket_nodes.contains(name);
+            const auto linked = shared_state_->unix_socket_nodes.contains(node_path);
             auto existing =
-                linked && shared_state_->unix_listeners.contains(name)
-                    ? shared_state_->unix_listeners.at(name).lock()
+                linked && shared_state_->unix_listeners.contains(node_path)
+                    ? shared_state_->unix_listeners.at(node_path).lock()
                     : std::shared_ptr<KernelSharedState::UnixListener> { };
             if (linked && existing &&
                 (own == unix_listener_states_.end() ||
@@ -1036,7 +1041,7 @@ void CompatibilityKernel::dispatch_bsd_socket(Cpu& cpu, std::uint32_t number)
                 // unlink after bind but before listen leaves an unnamed
                 // listening socket. Do not resurrect the pathname.
                 if (linked)
-                    shared_state_->unix_listeners[name] = existing;
+                    shared_state_->unix_listeners[node_path] = existing;
                 unix_listener_states_[registers[0]] = std::move(existing);
                 listening_sockets_.insert(registers[0]);
                 output_.write(
