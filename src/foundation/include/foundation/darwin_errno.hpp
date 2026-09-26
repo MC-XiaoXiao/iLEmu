@@ -50,5 +50,6 @@ namespace ilemu::darwin::error {
     inline constexpr std::uint32_t network_unreachable = 51;
     inline constexpr std::uint32_t not_connected = 57;
     inline constexpr std::uint32_t connection_refused = 61;
+    inline constexpr std::uint32_t name_too_long = 63;
     inline constexpr std::uint32_t no_attribute = 93;
 } // namespace ilemu::darwin::error

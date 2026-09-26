@@ -1413,10 +1413,18 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
     case 202: // __sysctl
     case darwin::syscall::posix_semaphore_get_value: { // sysctlbyname profile
         std::optional<darwin::sysctl::ObjectIdentifier> named_identifier;
+        std::array<std::byte, darwin::sysctl::maximum_name_components *
+                                  sizeof(std::uint32_t)> numeric_name;
         if (number == darwin::syscall::posix_semaphore_get_value) {
             constexpr std::uint32_t maximum_name_length = 1024;
-            if (registers[1] == 0 || registers[1] >= maximum_name_length) {
-                bsd_error(cpu, bsd_support::invalid_argument);
+            if (registers[1] >= maximum_name_length) {
+                bsd_error(cpu, darwin::error::name_too_long);
+                return;
+            }
+            // A zero-byte copyin does not inspect the pointer; name2oid then
+            // rejects the empty name, independently of its address.
+            if (registers[1] == 0) {
+                bsd_error(cpu, darwin::error::no_entry);
                 return;
             }
             const auto bytes = memory_.read_bytes(registers[0], registers[1]);
@@ -1434,6 +1442,20 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 bsd_error(cpu, darwin::error::no_entry);
                 return;
             }
+        } else {
+            if (registers[1] < 2U ||
+                registers[1] > darwin::sysctl::maximum_name_components) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
+            // XNU copies the entire MIB before inspecting the node or output
+            // pointers. One bounded copy also avoids repeated VM lookups.
+            if (!memory_.copy_out(registers[0],
+                    std::span { numeric_name }.first(
+                        registers[1] * sizeof(std::uint32_t)))) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
         }
         const auto mib_count = named_identifier
                                    ? named_identifier->size
@@ -1444,8 +1466,11 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 return std::nullopt;
             if (named_identifier)
                 return named_identifier->components[index];
-            return memory_.read32(registers[0] +
-                                  static_cast<std::uint32_t>(index * 4U));
+            const auto offset = index * sizeof(std::uint32_t);
+            return std::to_integer<std::uint32_t>(numeric_name[offset]) |
+                   (std::to_integer<std::uint32_t>(numeric_name[offset + 1U]) << 8U) |
+                   (std::to_integer<std::uint32_t>(numeric_name[offset + 2U]) << 16U) |
+                   (std::to_integer<std::uint32_t>(numeric_name[offset + 3U]) << 24U);
         };
         const auto mib0 = read_mib(0);
         const auto mib1 = read_mib(1);

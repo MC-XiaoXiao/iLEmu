@@ -22,6 +22,8 @@
 
 namespace ilemu::darwin::sysctl {
 
+inline constexpr std::size_t maximum_name_components = 12; // CTL_MAXNAME
+
 inline constexpr std::uint32_t control_unspecified = 0;
 inline constexpr std::uint32_t control_kernel = 1;
 inline constexpr std::uint32_t control_vfs = 3;
