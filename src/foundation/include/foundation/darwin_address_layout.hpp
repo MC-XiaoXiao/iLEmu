@@ -8,6 +8,9 @@
 
 namespace ilemu {
 
+// The loader and resource limits must describe the same reserved stack.
+inline constexpr std::uint32_t initial_user_stack_size = 0x00100000U;
+
 // Keep the initial stack below the reserved shared-cache interval. These
 // addresses are a process ABI contract, independent of host memory layout.
 enum class DarwinAddressLayout { ClassicArm, ExpandedArmSharedRegion };

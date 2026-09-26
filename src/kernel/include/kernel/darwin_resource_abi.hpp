@@ -11,6 +11,8 @@
 
 #pragma once
 
+#include "foundation/darwin_address_layout.hpp"
+
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -67,6 +69,8 @@ struct Limit {
 [[nodiscard]] constexpr std::array<Limit, limit_count> initial_limits()
 {
     std::array<Limit, limit_count> limits { };
+    // Stack growth beyond the loader reservation is not supported.
+    limits[stack] = Limit { initial_user_stack_size, initial_user_stack_size };
     limits[open_files] = Limit { initial_open_files, maximum_open_files };
     return limits;
 }
