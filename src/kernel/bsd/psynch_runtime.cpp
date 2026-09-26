@@ -37,11 +37,11 @@ namespace {
 } // namespace
 
 DarwinPsynchRuntime::QueueKey DarwinPsynchRuntime::queue_key(
-    std::uint32_t process_id, std::uint32_t address, std::uint32_t flags,
+    std::uint32_t process_id, DarwinPsynchObject object, std::uint32_t flags,
     QueueFamily family)
 {
     const auto shared = (flags & process_shared_flag) != 0U;
-    return { shared, shared ? 0U : process_id, address, family };
+    return { shared, shared ? 0U : process_id, object.address, family };
 }
 
 bool DarwinPsynchRuntime::sequence_not_after(
@@ -71,14 +71,14 @@ void DarwinPsynchRuntime::prune_queue_locked(const QueueKey& key)
 }
 
 DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_mutex(
-    DarwinPsynchThread thread, std::uint32_t address,
+    DarwinPsynchThread thread, DarwinPsynchObject object,
     std::uint32_t lock_generation, std::uint32_t unlock_generation,
     std::uint32_t flags)
 {
     static_cast<void>(unlock_generation);
     std::lock_guard lock { mutex_ };
     const auto key = queue_key(
-        thread.process_id, address, flags, QueueFamily::Mutex);
+        thread.process_id, object, flags, QueueFamily::Mutex);
     auto& queue = queues_[key];
     const auto sequence = lock_generation & generation_mask;
     const auto first_fit = (flags & first_fit_policy) != 0U;
@@ -101,12 +101,12 @@ DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_mutex(
 }
 
 DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::drop_mutex_locked(
-    std::uint32_t process_id, std::uint32_t address,
+    std::uint32_t process_id, DarwinPsynchObject object,
     std::uint32_t lock_generation, std::uint32_t unlock_generation,
     std::uint32_t flags)
 {
     const auto key =
-        queue_key(process_id, address, flags, QueueFamily::Mutex);
+        queue_key(process_id, object, flags, QueueFamily::Mutex);
     auto& queue = queues_[key];
     WakeOutcome outcome;
     const auto next_sequence =
@@ -148,17 +148,17 @@ DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::drop_mutex_locked(
 }
 
 DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::drop_mutex(
-    std::uint32_t process_id, std::uint32_t address,
+    std::uint32_t process_id, DarwinPsynchObject object,
     std::uint32_t lock_generation, std::uint32_t unlock_generation,
     std::uint32_t flags)
 {
     std::lock_guard lock { mutex_ };
-    return drop_mutex_locked(process_id, address, lock_generation,
+    return drop_mutex_locked(process_id, object, lock_generation,
         unlock_generation, flags);
 }
 
 DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_condition(
-    DarwinPsynchThread thread, std::uint32_t address,
+    DarwinPsynchThread thread, DarwinPsynchObject object,
     std::uint64_t lock_and_signal_generation,
     std::uint32_t unlock_generation, std::optional<MutexDrop> mutex_drop,
     std::uint32_t flags)
@@ -167,14 +167,14 @@ DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_condition(
     WaitOutcome outcome;
     if (mutex_drop) {
         auto dropped = drop_mutex_locked(thread.process_id,
-            mutex_drop->address, mutex_drop->lock_generation,
+            mutex_drop->object, mutex_drop->lock_generation,
             mutex_drop->unlock_generation, flags);
         append_wakeups(outcome.woken_threads,
             std::move(dropped.woken_threads));
     }
 
     const auto key = queue_key(
-        thread.process_id, address, flags, QueueFamily::Condition);
+        thread.process_id, object, flags, QueueFamily::Condition);
     auto& queue = queues_[key];
     const auto lock_sequence =
         static_cast<std::uint32_t>(lock_and_signal_generation) &
@@ -200,14 +200,14 @@ DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_condition(
 }
 
 DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::signal_condition(
-    std::uint32_t process_id, std::uint32_t address,
+    std::uint32_t process_id, DarwinPsynchObject object,
     std::uint64_t lock_and_signal_generation,
     std::uint32_t unlock_generation, std::uint32_t flags,
     std::optional<DarwinPsynchThread> target)
 {
     std::lock_guard lock { mutex_ };
     const auto key =
-        queue_key(process_id, address, flags, QueueFamily::Condition);
+        queue_key(process_id, object, flags, QueueFamily::Condition);
     auto& queue = queues_[key];
     WakeOutcome outcome;
     const auto upper_sequence =
@@ -255,13 +255,13 @@ DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::signal_condition(
 }
 
 DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::broadcast_condition(
-    std::uint32_t process_id, std::uint32_t address,
+    std::uint32_t process_id, DarwinPsynchObject object,
     std::uint64_t lock_and_signal_generation,
     std::uint64_t unlock_and_count_generation, std::uint32_t flags)
 {
     std::lock_guard lock { mutex_ };
     const auto key =
-        queue_key(process_id, address, flags, QueueFamily::Condition);
+        queue_key(process_id, object, flags, QueueFamily::Condition);
     auto& queue = queues_[key];
     WakeOutcome outcome;
     const auto upper_sequence =
@@ -299,10 +299,10 @@ DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::broadcast_condition(
 }
 
 void DarwinPsynchRuntime::clear_preposts(std::uint32_t process_id,
-    std::uint32_t address, std::uint32_t flags, bool mutex_object)
+    DarwinPsynchObject object, std::uint32_t flags, bool mutex_object)
 {
     std::lock_guard lock { mutex_ };
-    const auto key = queue_key(process_id, address, flags,
+    const auto key = queue_key(process_id, object, flags,
         mutex_object ? QueueFamily::Mutex : QueueFamily::Condition);
     if (auto queue = queues_.find(key); queue != queues_.end()) {
         queue->second.preposts.clear();
@@ -311,7 +311,7 @@ void DarwinPsynchRuntime::clear_preposts(std::uint32_t process_id,
 }
 
 DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_rwlock(
-    DarwinPsynchThread thread, std::uint32_t address,
+    DarwinPsynchThread thread, DarwinPsynchObject object,
     std::uint32_t lock_generation, std::uint32_t unlock_generation,
     std::uint32_t sequence_word, std::uint32_t flags,
     DarwinPsynchWaitKind kind)
@@ -319,7 +319,7 @@ DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_rwlock(
     static_cast<void>(unlock_generation);
     std::lock_guard lock { mutex_ };
     const auto key =
-        queue_key(thread.process_id, address, flags, QueueFamily::RwLock);
+        queue_key(thread.process_id, object, flags, QueueFamily::RwLock);
     auto& queue = queues_[key];
     // The initial bit remains set across several waiters until the first
     // successful unlock. Keep their queue bookkeeping and any unlock prepost.
@@ -373,13 +373,13 @@ DarwinPsynchRuntime::WaitOutcome DarwinPsynchRuntime::wait_rwlock(
 }
 
 DarwinPsynchRuntime::WakeOutcome DarwinPsynchRuntime::unlock_rwlock(
-    std::uint32_t process_id, std::uint32_t address,
+    std::uint32_t process_id, DarwinPsynchObject object,
     std::uint32_t lock_generation, std::uint32_t unlock_generation,
     std::uint32_t sequence_word, std::uint32_t flags)
 {
     std::lock_guard lock { mutex_ };
     const auto key =
-        queue_key(process_id, address, flags, QueueFamily::RwLock);
+        queue_key(process_id, object, flags, QueueFamily::RwLock);
     auto& queue = queues_[key];
     if (!queue.rw)
         queue.rw = RwState { };
