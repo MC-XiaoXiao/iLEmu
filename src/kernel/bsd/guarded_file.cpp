@@ -143,7 +143,7 @@ void CompatibilityKernel::dispatch_bsd_guarded_file(Cpu& cpu, std::uint32_t numb
     if (number == 443U) {
         const auto attributes = registers[1];
         if ((attributes & DarwinFileGuard::duplicate) == 0U ||
-            (attributes & ~0x0fU) != 0U) {
+            (attributes & ~DarwinFileGuard::supported_flags) != 0U) {
             bsd_error(cpu, darwin::error::invalid_argument);
             return;
         }
@@ -171,20 +171,51 @@ void CompatibilityKernel::dispatch_bsd_guarded_file(Cpu& cpu, std::uint32_t numb
         bsd_error(cpu, darwin::error::bad_address);
         return;
     }
-    if (number == 441U) {
+    if (number == 485U || number == 486U) {
+        const auto fd = registers[0];
+        const auto found = descriptor_guards_.find(fd);
+        if (found == descriptor_guards_.end()) {
+            bsd_error(cpu, descriptor_valid(fd)
+                               ? darwin::error::invalid_argument
+                               : darwin::error::bad_file_descriptor);
+            return;
+        }
+        if (found->second.identifier != *guard) {
+            bsd_error(cpu, darwin::error::permission_denied);
+            return;
+        }
+        registers[1] = registers[2]; // buffer
+        registers[2] = registers[3]; // byte count
+        if (number == 485U) {
+            dispatch_bsd_descriptor_memory(cpu, darwin::syscall::write);
+            return;
+        }
+        registers[3] = registers[4]; // offset low word
+        registers[4] = registers[5]; // offset high word
+        dispatch_bsd_filesystem(cpu, 154U);
+        return;
+    }
+    if (number == 441U || number == 484U) {
         const auto attributes = registers[2];
         const auto flags = registers[3];
-        const auto mode = registers[4];
+        const auto mode = number == 484U ? registers[6] : registers[4];
         constexpr std::uint32_t close_on_exec = 0x01000000U;
         if (*guard == 0U || (flags & close_on_exec) == 0U ||
             (attributes & DarwinFileGuard::duplicate) == 0U ||
-            (attributes & ~0x0fU) != 0U) {
+            (attributes & ~DarwinFileGuard::supported_flags) != 0U) {
             bsd_error(cpu, darwin::error::invalid_argument);
             return;
         }
         registers[1] = flags;
-        registers[2] = mode;
-        dispatch_bsd_filesystem(cpu, 5U);
+        if (number == 484U) {
+            registers[2] = registers[4]; // data protection class
+            registers[3] = registers[5]; // data protection flags
+            registers[4] = mode;
+            dispatch_bsd_filesystem(cpu, 216U);
+        } else {
+            registers[2] = mode;
+            dispatch_bsd_filesystem(cpu, 5U);
+        }
         if ((cpu.cpsr() & bsd_support::carry_flag) != 0U)
             return;
         const auto fd = registers[0];

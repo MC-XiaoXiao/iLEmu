@@ -142,6 +142,7 @@ struct MetadataOverride {
     std::optional<std::uint32_t> owner;
     std::optional<std::uint32_t> group;
     std::optional<std::uint32_t> flags;
+    std::optional<std::uint32_t> data_protection_class;
     std::optional<Timestamp> creation_time;
     std::optional<Timestamp> modification_time;
     std::optional<Timestamp> change_time;

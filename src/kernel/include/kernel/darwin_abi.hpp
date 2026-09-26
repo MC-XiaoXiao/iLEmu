@@ -90,6 +90,7 @@ namespace memory_advice {
 } // namespace memory_advice
 
 namespace fcntl_command {
+    inline constexpr std::uint32_t duplicate_descriptor = 0;
     inline constexpr std::uint32_t get_descriptor_flags = 1;
     inline constexpr std::uint32_t set_descriptor_flags = 2;
     inline constexpr std::uint32_t get_status_flags = 3;
@@ -112,6 +113,8 @@ namespace fcntl_command {
     // file descriptor. The emulated data volume has no protection metadata,
     // so the descriptor layer reports the unprotected class.
     inline constexpr std::uint32_t get_protection_class = 63;
+    inline constexpr std::uint32_t set_protection_class = 64;
+    inline constexpr std::uint32_t duplicate_descriptor_close_on_exec = 67;
 } // namespace fcntl_command
 
 namespace ptrace_request {

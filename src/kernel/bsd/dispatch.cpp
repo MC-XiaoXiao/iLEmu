@@ -151,8 +151,10 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
             dispatch_bsd_nosys(cpu, shared_state_->darwin_abi.capabilities.send_sigsys);
         }
         return;
-    case 467: // fchmodat
-    case 468: // fchownat
+    case 463: // openat (Darwin 14+)
+    case 464: // openat_nocancel (Darwin 14+)
+    case 467: // fchmodat (Darwin 14+)
+    case 468: // fchownat (Darwin 14+)
         if (shared_state_->darwin_abi.abi_epoch == DarwinAbiEpoch::Later) {
             dispatch_bsd_filesystem(cpu, number);
         } else {
@@ -164,6 +166,16 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case 442: // guarded_close_np
     case 443: // guarded_kqueue_np
         dispatch_bsd_guarded_file(cpu, number);
+        return;
+    case 484: // guarded_open_dprotected_np (Darwin 14+)
+    case 485: // guarded_write_np (Darwin 14+)
+    case 486: // guarded_pwrite_np (Darwin 14+)
+        if (shared_state_->darwin_abi.abi_epoch == DarwinAbiEpoch::Later) {
+            dispatch_bsd_guarded_file(cpu, number);
+        } else {
+            dispatch_bsd_nosys(cpu,
+                shared_state_->darwin_abi.capabilities.send_sigsys);
+        }
         return;
     case 444: // change_fdguard_np
         if (darwin_abi_route_supported(guarded_fd_change_route,

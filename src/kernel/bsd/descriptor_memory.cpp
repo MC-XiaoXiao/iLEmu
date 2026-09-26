@@ -1034,6 +1034,43 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
         if (dispatch_bsd_record_locking(cpu, registers[1]))
             return;
         switch (registers[1]) {
+        case darwin::fcntl_command::duplicate_descriptor:
+        case darwin::fcntl_command::duplicate_descriptor_close_on_exec: {
+            const auto command = registers[1];
+            const auto minimum = registers[2];
+            const auto limit = file_descriptor_limit();
+            if (minimum >= limit) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
+            std::optional<std::uint32_t> destination;
+            for (auto candidate = std::max(minimum, 3U); candidate < limit;
+                 ++candidate) {
+                if (!file_descriptors_.contains(candidate) &&
+                    !virtual_descriptors_.contains(candidate) &&
+                    !duplicated_descriptors_.contains(candidate)) {
+                    destination = candidate;
+                    break;
+                }
+            }
+            if (!destination) {
+                bsd_error(cpu, darwin::error::too_many_open_files);
+                return;
+            }
+            // All descriptor types, including BPF and kqueues, already share
+            // the dup2 state-copy path. The selected slot is empty here.
+            registers[1] = *destination;
+            dispatch_bsd_descriptor_memory(cpu, darwin::syscall::duplicate_to);
+            registers[1] = command;
+            if ((cpu.cpsr() & bsd_support::carry_flag) == 0U) {
+                descriptor_flags_[*destination] =
+                    command ==
+                        darwin::fcntl_command::duplicate_descriptor_close_on_exec
+                    ? DarwinFileGuard::descriptor_close_on_exec
+                    : 0U;
+            }
+            return;
+        }
         case darwin::fcntl_command::get_descriptor_flags:
             bsd_success(cpu, descriptor_flags_[fd]);
             return;
@@ -1069,12 +1106,50 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
             bsd_success(cpu, 0);
             return;
         case darwin::fcntl_command::get_protection_class:
-            // The host-backed volume is not encrypted and does not expose
-            // Darwin data-protection metadata. Returning the unprotected
-            // class keeps read-only callers, such as NSData's mapped-file
-            // path, on the normal mmap flow.
-            bsd_success(cpu, 0);
+        case darwin::fcntl_command::set_protection_class: {
+            const auto file = file_descriptors_.find(fd);
+            if (file == file_descriptors_.end()) {
+                bsd_error(cpu, darwin::error::bad_file_descriptor);
+                return;
+            }
+            const auto metadata = query_hfs_metadata(file->second, true, false);
+            if (!metadata) {
+                bsd_error(cpu, darwin::error::no_entry);
+                return;
+            }
+            if (registers[1] == darwin::fcntl_command::set_protection_class) {
+                const auto requested = registers[2];
+                // The data volume stores the class as vnode metadata; its
+                // bytes remain unencrypted in the host-backed VFS.
+                if (requested > 6U && requested != UINT32_MAX) {
+                    bsd_error(cpu, darwin::error::invalid_argument);
+                    return;
+                }
+                if ((file_status_flags_[fd] & darwin::open_flag::access_mode) ==
+                    darwin::open_flag::read_only) {
+                    bsd_error(cpu, darwin::error::bad_file_descriptor);
+                    return;
+                }
+                const std::lock_guard filesystem_lock {
+                    shared_state_->filesystem_mutex
+                };
+                shared_state_->hfs_metadata_overrides[metadata->permanent_id]
+                    .data_protection_class =
+                    requested == UINT32_MAX ? 0U : requested;
+                bsd_success(cpu, 0);
+                return;
+            }
+            const std::lock_guard filesystem_lock {
+                shared_state_->filesystem_mutex
+            };
+            const auto found = shared_state_->hfs_metadata_overrides.find(
+                metadata->permanent_id);
+            bsd_success(cpu,
+                found != shared_state_->hfs_metadata_overrides.end()
+                    ? found->second.data_protection_class.value_or(0U)
+                    : 0U);
             return;
+        }
         case darwin::fcntl_command::set_read_ahead:
         case darwin::fcntl_command::set_no_cache:
             // Host page-cache policy is deliberately not projected into guest

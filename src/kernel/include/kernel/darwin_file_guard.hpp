@@ -9,8 +9,9 @@ struct DarwinFileGuard {
     static constexpr std::uint32_t duplicate = 2U;
     static constexpr std::uint32_t socket_ipc = 4U;
     static constexpr std::uint32_t fileport = 8U;
+    static constexpr std::uint32_t write = 16U;
     static constexpr std::uint32_t supported_flags =
-        close | duplicate | socket_ipc | fileport;
+        close | duplicate | socket_ipc | fileport | write;
     static constexpr std::uint32_t descriptor_close_on_exec = 1U;
     static constexpr std::uint32_t descriptor_close_on_fork = 2U;
     std::uint64_t identifier;

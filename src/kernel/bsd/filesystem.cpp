@@ -256,9 +256,14 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         return;
     }
     case 5: // open
-    case 216: { // open_dprotected_np
-        const auto flags = registers[1];
-        const auto mode = number == 216U ? registers[4] : registers[2];
+    case 216: // open_dprotected_np
+    case 463: // openat
+    case 464: { // openat_nocancel
+        const bool relative_to_descriptor = number == 463U || number == 464U;
+        const auto flags = registers[relative_to_descriptor ? 2 : 1];
+        const auto mode = number == 216U ? registers[4]
+                          : relative_to_descriptor ? registers[3]
+                                                   : registers[2];
         constexpr std::uint32_t raw_encrypted = 1U; // O_DP_GETRAWENCRYPTED
         if (number == 216U && (registers[3] & raw_encrypted) != 0U &&
             (flags & darwin::open_flag::access_mode) !=
@@ -269,16 +274,15 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         // The VFS exposes an unencrypted volume (F_GETPROTECTIONCLASS=0).
         // Raw reads therefore use the same bytes and descriptor lifecycle as
         // open; a requested creation class adds no encryption metadata.
-        const auto path = memory_.read_c_string(registers[0]);
+        const auto path = relative_to_descriptor
+            ? read_guest_path_at(cpu, registers[0], registers[1])
+            : memory_.read_c_string(registers[0]);
         if (!path) {
-            bsd_error(cpu, bsd_support::bad_address);
+            if (!relative_to_descriptor)
+                bsd_error(cpu, bsd_support::bad_address);
             return;
         }
         if (path->empty()) {
-            // POSIX open(2) does not treat an empty pathname as the process
-            // working directory.  Resolving it to rootfs would hand the guest a
-            // directory descriptor and change ENOENT into a later EISDIR
-            // failure.
             bsd_error(cpu, darwin::error::no_entry);
             return;
         }
@@ -395,12 +399,20 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
         }
         if (*path == "/dev/disk0s1" || *path == "/dev/disk0s2" ||
             *path == "/dev/rdisk0s1" || *path == "/dev/rdisk0s2") {
-            const auto backing =
-                rootfs_.parent_path() / "firmware" / "iphoneos-1.0-hfsx.img";
+            const auto system_partition = path->ends_with("s1");
+            auto backing = rootfs_.parent_path() / "firmware" /
+                (system_partition ? "system.hfsx.img" : "data.hfsx.img");
             std::error_code backing_error;
             if (!std::filesystem::is_regular_file(backing, backing_error)) {
-                bsd_error(cpu, 2);
-                return;
+                // Preserve the original image layout used by early firmware
+                // extractions while allowing later devices to provide
+                // separate system and data partition images.
+                backing = rootfs_.parent_path() / "firmware" /
+                    "iphoneos-1.0-hfsx.img";
+                if (!std::filesystem::is_regular_file(backing, backing_error)) {
+                    bsd_error(cpu, 2);
+                    return;
+                }
             }
             const auto fd = allocate_file_descriptor();
             if (!fd) {
