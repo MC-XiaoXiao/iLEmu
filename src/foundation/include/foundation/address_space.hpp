@@ -81,6 +81,9 @@ public:
     // file-generation view.
     void set_file_generation_registry(
         std::shared_ptr<GuestFileGenerationRegistry> generation_registry);
+    // Configure before guest execution. Spawn shares immutable file pages,
+    // while its virtual mappings and all detached private writes stay local.
+    void share_file_page_cache(const AddressSpace& source);
 
     // Selects the synchronization policy before guest execution starts. The
     // physical single-core device runs all memory access on the scheduler

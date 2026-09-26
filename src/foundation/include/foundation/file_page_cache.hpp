@@ -563,6 +563,8 @@ private:
         std::map<std::string, Identity>::iterator iterator);
     void evict_identity_locked();
     void evict_locked();
+    [[nodiscard]] std::shared_ptr<GuestPageBacking> find_page_locked(
+        const Key& key);
     void prune_mutable_pages_locked();
 
     mutable std::mutex mutex_;
@@ -572,6 +574,11 @@ private:
     std::list<std::string> identity_lru_;
     std::map<Key, PageRecord> pages_;
     std::list<Key> lru_;
+    // Eviction releases ownership, but another address space may still map
+    // this exact generation. Reuse that physical page instead of duplicating
+    // it for every process whose working set exceeds the strong-cache limit.
+    std::map<Key, std::weak_ptr<GuestPageBacking>> evicted_pages_;
+    std::size_t evictions_since_prune_ { };
     std::multimap<MutablePageKey, std::weak_ptr<GuestPageBacking>>
         mutable_pages_;
     std::size_t mutable_page_insertions_since_prune_ { };

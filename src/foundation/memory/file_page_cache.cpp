@@ -1781,6 +1781,8 @@ void FilePageCache::evict_identity_locked()
 
 void FilePageCache::erase_path_locked(const std::string& path)
 {
+    std::erase_if(evicted_pages_,
+        [&](const auto& entry) { return entry.first.path == path; });
     if (const auto identity = identities_.find(path);
         identity != identities_.end()) {
         erase_identity_locked(identity);
@@ -1803,9 +1805,40 @@ void FilePageCache::evict_locked()
         const auto key = lru_.front();
         lru_.pop_front();
         const auto page = pages_.find(key);
-        if (page != pages_.end())
+        if (page != pages_.end()) {
+            if (!page->second.page.unique())
+                evicted_pages_.insert_or_assign(key, page->second.page);
             pages_.erase(page);
+        }
+        // Amortize the sweep over the live index size. Expired weak pointers
+        // must also be removed because make_shared retains their allocation.
+        if (++evictions_since_prune_ >=
+            std::max<std::size_t>(1024U, evicted_pages_.size())) {
+            std::erase_if(evicted_pages_,
+                [](const auto& entry) { return entry.second.expired(); });
+            evictions_since_prune_ = 0;
+        }
     }
+}
+
+std::shared_ptr<GuestPageBacking> FilePageCache::find_page_locked(
+    const Key& key)
+{
+    if (const auto cached = pages_.find(key); cached != pages_.end()) {
+        touch_locked(cached);
+        return cached->second.page;
+    }
+    const auto evicted = evicted_pages_.find(key);
+    if (evicted == evicted_pages_.end())
+        return { };
+    auto page = evicted->second.lock();
+    evicted_pages_.erase(evicted);
+    if (page) {
+        lru_.push_back(key);
+        pages_.emplace(key, PageRecord { page, std::prev(lru_.end()) });
+        evict_locked();
+    }
+    return page;
 }
 
 void FilePageCache::prune_mutable_pages_locked()
@@ -2170,10 +2203,8 @@ std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
         const std::scoped_lock lock { mutex_ };
         if (auto shared = live_shared_page_locked())
             return shared;
-        if (const auto cached = pages_.find(key); cached != pages_.end()) {
-            touch_locked(cached);
-            return cached->second.page;
-        }
+        if (auto cached = find_page_locked(key))
+            return cached;
     }
 
     auto page = std::make_shared<GuestPageBacking>();
@@ -2187,6 +2218,8 @@ std::shared_ptr<GuestPageBacking> FilePageCache::load_page(
         const std::scoped_lock lock { mutex_ };
         if (auto shared = live_shared_page_locked())
             return shared;
+        if (auto cached = find_page_locked(key))
+            return cached;
         const auto [entry, inserted] = pages_.try_emplace(key, PageRecord { });
         if (!inserted) {
             touch_locked(entry);

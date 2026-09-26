@@ -144,6 +144,11 @@ void AddressSpace::set_file_generation_registry(
     file_page_cache_->set_generation_registry(std::move(generation_registry));
 }
 
+void AddressSpace::share_file_page_cache(const AddressSpace& source)
+{
+    file_page_cache_ = source.file_page_cache_;
+}
+
 std::uint64_t AddressSpace::exclusive_reservation_key(
     std::uint32_t address) const noexcept
 {
