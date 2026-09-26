@@ -20,12 +20,13 @@ target_link_libraries(ilemu_kernel_api INTERFACE
     iLEmu::graphics
     iLEmu::xnu_adapter)
 
-# Inspection-only catalog; no dependency from the live syscall dispatcher.
+# Shared catalog for inspection and migrated executable BSD bindings.
 add_library(ilemu_syscall_routes STATIC
     routes/table.cpp
     routes/names.cpp
     routes/catalog.cpp
     routes/bsd_entries.cpp
+    routes/bsd_contract_entries.cpp
     routes/bsd_aliases.cpp
     routes/pthread_entries.cpp
     routes/mach_entries.cpp)
@@ -211,6 +212,7 @@ target_link_libraries(ilemu_kernel_bsd_vm_shared_region PRIVATE
 
 target_sources(ilemu_kernel PRIVATE
     bsd/dispatch.cpp
+    bsd/dispatch_table.cpp
     bsd/coalition.cpp
     bsd/network_policy.cpp
     bsd/platform.cpp
@@ -237,6 +239,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/device/offline_serial.cpp
     bsd/support.cpp)
 target_link_libraries(ilemu_kernel PRIVATE
+    iLEmu::syscall_routes
     iLEmu::kernel_bsd_baseband_device
     iLEmu::kernel_bsd_control
     iLEmu::kernel_bsd_debug

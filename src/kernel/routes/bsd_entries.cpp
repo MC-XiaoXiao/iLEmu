@@ -151,8 +151,7 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         Handler::BsdPosixSemaphore);
     add(darwin::syscall::posix_semaphore_post, "posix_semaphore_post",
         Handler::BsdPosixSemaphore);
-    add(darwin::syscall::posix_semaphore_get_value, "posix_semaphore_get_value",
-        Handler::BsdPosixSemaphore, Contract::SemaphoreValue, true);
+    bind_bsd_contract_entries(table, abi);
     add(darwin::syscall::alternate_signal_stack, "alternate_signal_stack",
         Handler::BsdSignal);
     add(111, "sigsuspend", Handler::BsdSignal);
@@ -348,18 +347,6 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         Handler::BsdFileport);
     add(darwin::syscall::fileport_makefd, "fileport_makefd",
         Handler::BsdFileport);
-    // Checked replacements model the current outer-switch precedence.
-    const Entry semaphore { Domain::BsdSyscall, 274, 274,
-        "posix_semaphore_get_value", Handler::BsdPosixSemaphore,
-        Contract::SemaphoreValue, Cancellation::OriginalEntry,
-        Outcome::HandlerValidated, "bsd/dispatch.cpp" };
-    if (abi.sysctl_by_name_abi == DarwinSysctlByNameAbi::NamedSysctlAt274) {
-        auto named = semaphore;
-        named.operation = "sysctlbyname";
-        named.handler = Handler::BsdEvents;
-        named.contract = Contract::NamedSysctl;
-        table.replace_entry(semaphore, named);
-    }
     if (abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1) {
         const auto replace = [&](std::uint32_t n, std::string_view previous,
                                  std::string_view next) {

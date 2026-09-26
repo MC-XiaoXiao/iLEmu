@@ -4,6 +4,7 @@
 #pragma once
 #include "kernel/syscall_routes.hpp"
 namespace ilemu::syscall_routes {
+void bind_bsd_contract_entries(Table& table, const DarwinAbi& abi);
 void bind_bsd_entries(Table& table, const DarwinAbi& abi);
 void bind_pthread_entries(Table& table, const DarwinAbi& abi);
 void bind_mach_entries(Table& table, const DarwinAbi& abi);

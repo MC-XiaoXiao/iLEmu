@@ -130,6 +130,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     }
     if (dispatch_bsd_pthread(cpu, number))
         return;
+    if (shared_state_->bsd_dispatch_table.dispatch(*this, cpu, number))
+        return;
 
     switch (number) {
     case kernel_bsd::resource_monitor::ledger_route.identifier: {
@@ -367,13 +369,7 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
     case darwin::syscall::posix_semaphore_wait:
     case darwin::syscall::posix_semaphore_try_wait:
     case darwin::syscall::posix_semaphore_post:
-    case darwin::syscall::posix_semaphore_get_value:
-        if (number == darwin::syscall::posix_semaphore_get_value &&
-            shared_state_->darwin_abi.sysctl_by_name_abi ==
-                DarwinSysctlByNameAbi::NamedSysctlAt274)
-            dispatch_bsd_events(cpu, number);
-        else
-            dispatch_bsd_posix_semaphore(cpu, number);
+        dispatch_bsd_posix_semaphore(cpu, number);
         return;
     case darwin::syscall::alternate_signal_stack:
     case 111: // sigsuspend

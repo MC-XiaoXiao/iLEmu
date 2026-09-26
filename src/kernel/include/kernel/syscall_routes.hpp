@@ -121,5 +121,7 @@ private:
 [[nodiscard]] std::string_view contract_name(Contract contract);
 [[nodiscard]] std::string_view domain_name(Domain domain);
 [[nodiscard]] std::string_view outcome_name(Outcome outcome);
+// Migrated contracts only; unrelated unresolved selectors are untouched.
+[[nodiscard]] Table build_bsd_contracts(const DarwinAbi& abi);
 [[nodiscard]] Table build(const DarwinAbi& abi);
 } // namespace ilemu::syscall_routes

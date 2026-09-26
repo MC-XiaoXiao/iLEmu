@@ -15,6 +15,7 @@
 #include "kernel/darwin_coalition_runtime.hpp"
 #include "kernel/hid_event_queue.hpp"
 #include "kernel/kevent_timer.hpp"
+#include "kernel/bsd_dispatch_table.hpp"
 
 #include <algorithm>
 #include <array>
@@ -426,6 +427,7 @@ struct KernelSharedState {
     explicit KernelSharedState(DarwinAbi abi = {})
         : darwin_abi { abi }
         , pthread_contract { resolve_pthread_contract(abi.pthread_abi) }
+        , bsd_dispatch_table { abi }
     {
     }
 
@@ -435,6 +437,7 @@ struct KernelSharedState {
     DarwinAbi darwin_abi;
     // Resolved once at construction; fork shares it and exec preserves it.
     const PthreadContract& pthread_contract;
+    const BsdDispatchTable bsd_dispatch_table;
     std::string device_product_type;
     std::string device_board_config;
     std::string device_hardware_model;

@@ -502,6 +502,7 @@ public:
     [[nodiscard]] std::string wait_reason(std::size_t processor) const;
 
 private:
+    friend class BsdDispatchTable;
     struct CreatedGuestThread {
         std::size_t processor { };
         std::uint32_t port_name { };
