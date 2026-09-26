@@ -9,7 +9,8 @@ add_library(ilemu_device_state STATIC
     graphics_services_capabilities.cpp
     launchd_job_catalog.cpp
     lockdown_state.cpp
-    network_preferences.cpp)
+    network_preferences.cpp
+    pthread_contract.cpp)
 add_library(iLEmu::device_state ALIAS ilemu_device_state)
 ilemu_configure_module(ilemu_device_state)
 target_link_libraries(ilemu_device_state PUBLIC
