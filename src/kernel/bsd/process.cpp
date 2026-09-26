@@ -185,6 +185,7 @@ void CompatibilityKernel::exit_process(
     apple80211_hle_.reset(process_.pid);
     release_process_descriptors();
     process_.thread_disk_io_policies.clear();
+    reset_pthread_runtime();
     // DisplayState is shared by all task facades. If this process was the
     // producer of the last scanout, revoke that frame before its local HLE
     // surfaces and deferred presenter callbacks disappear. A newer foreground

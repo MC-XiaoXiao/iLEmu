@@ -132,6 +132,8 @@ public:
         std::function<bool(std::size_t, std::uint32_t, std::int32_t, bool)>;
     using ThreadPolicyHandler = std::function<bool(
         std::size_t, std::uint32_t, std::span<const std::uint32_t>)>;
+    using ThreadQosOverrideHandler =
+        std::function<bool(std::size_t, std::optional<std::int32_t>)>;
     using TaskPriorityHandler = std::function<void(std::int32_t)>;
     using SchedulerPreemptionQuery = std::function<bool(std::size_t)>;
     using SignalDeliveryHandler =
@@ -256,6 +258,12 @@ public:
     {
         legacy_thread_policy_handler_ = std::move(handler);
     }
+    void set_thread_qos_override_handler(ThreadQosOverrideHandler handler)
+    {
+        thread_qos_override_handler_ = std::move(handler);
+    }
+    void clear_thread_pthread_state(std::size_t processor);
+
     void set_thread_policy_handler(ThreadPolicyHandler handler)
     {
         thread_policy_handler_ = std::move(handler);
@@ -908,6 +916,7 @@ private:
     std::filesystem::path guest_working_directory_ { "/" };
     std::string process_image_ { "/sbin/launchd" };
     ProcessContext process_;
+    void reset_pthread_runtime();
     DarwinPthreadRuntime pthread_runtime_;
     std::map<std::uint32_t, std::filesystem::path> file_descriptors_;
     std::map<std::uint32_t, std::shared_ptr<bsd::RegularFileOpenDescription>>
@@ -988,6 +997,7 @@ private:
     SchedulerRunnableQuery scheduler_runnable_query_;
     LegacyThreadPolicyHandler legacy_thread_policy_handler_;
     ThreadPolicyHandler thread_policy_handler_;
+    ThreadQosOverrideHandler thread_qos_override_handler_;
     TaskPriorityHandler task_priority_handler_;
     SchedulerPreemptionQuery scheduler_preemption_query_;
     SignalDeliveryHandler signal_delivery_handler_;

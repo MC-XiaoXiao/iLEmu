@@ -35,6 +35,7 @@ CompatibilityKernel::create_guest_thread(
 
     // A terminated thread can leave a host persistence operation in flight.
     // Its completion belongs to the old thread, never a reused processor slot.
+    clear_thread_pthread_state(*processor);
     pending_file_syncs_.erase(*processor);
     pending_file_renames_.erase(*processor);
     pending_filesystem_dispatches_.erase(*processor);

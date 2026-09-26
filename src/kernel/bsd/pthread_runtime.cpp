@@ -68,6 +68,25 @@ namespace {
         }
     }
 
+    [[nodiscard]] std::optional<std::int32_t> qos_override_priority(
+        const PthreadContract& contract, std::uint32_t encoded) noexcept
+    {
+        // XNU thread_qos_policy_params: class base priorities. The legacy
+        // anonymous override ignores flags/relative priority and donates only
+        // QoS. Reuse the selected ABI decoder, never compare encoded integers.
+        const auto decoded = decode_dispatch_workqueue_priority(contract, encoded);
+        if (!decoded)
+            return std::nullopt;
+        switch (decoded->thread_class) {
+        case 0x21U: return 46;
+        case 0x19U: return 37;
+        case 0x15U: return 31;
+        case 0x11U: return 20;
+        case 0x09U: return 4;
+        default: return std::nullopt;
+        }
+    }
+
     [[nodiscard]] std::uint32_t thread_pointer_for_pthread(
         const PthreadContract& contract, std::uint32_t pthread_address) noexcept
     {
@@ -253,6 +272,26 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
         requesting_cpu->request_guest_preemption();
     }
     return true;
+}
+
+void CompatibilityKernel::clear_thread_pthread_state(std::size_t processor)
+{
+    if (processor <= std::numeric_limits<std::uint32_t>::max())
+        pthread_runtime_.remove_worker(static_cast<std::uint32_t>(processor));
+}
+
+void CompatibilityKernel::reset_pthread_runtime()
+{
+    if (thread_qos_override_handler_) {
+        for (const auto& [processor, port] : thread_ports_) {
+            if (!pthread_runtime_.qos_override(
+                     static_cast<std::uint32_t>(processor)).empty()) {
+                static_cast<void>(thread_qos_override_handler_(
+                    processor, std::nullopt));
+            }
+        }
+    }
+    pthread_runtime_.prepare_exec();
 }
 
 void CompatibilityKernel::notify_thread_blocked(std::size_t processor)
@@ -678,26 +717,48 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::invalid_argument);
             return true;
         }
-        const auto thread_port = registers[1];
-        const auto target = std::find_if(thread_ports_.begin(),
-            thread_ports_.end(), [thread_port](const auto& entry) {
-                return entry.second == thread_port;
-            });
-        if (target == thread_ports_.end() || registers[3] != 0U ||
+        if (registers[3] != 0U ||
             (operation == qos_override_end && registers[2] != 0U)) {
             bsd_error(cpu, bsd_support::invalid_argument);
             return true;
         }
-        const auto processor = static_cast<std::uint32_t>(target->first);
+        std::optional<std::pair<std::uint32_t, std::uint32_t>> target;
+        {
+            std::lock_guard mach_lock { shared_state_->mach_mutex };
+            const auto object = mach_support::resolve_name_with_right(
+                *shared_state_, process_.pid, registers[1], xnu::ipc::Right::Send);
+            if (object)
+                target = mach_support::find_thread_owner(*shared_state_, *object);
+        }
+        if (!target || target->first != process_.pid) {
+            bsd_error(cpu, darwin::error::no_such_process);
+            return true;
+        }
+        const auto processor = target->second;
+        auto state = pthread_runtime_.qos_override(processor);
         if (operation == qos_override_start) {
-            if (!pthread_runtime_.start_qos_override(processor, registers[2])) {
+            // XNU's anonymous override consumes the class only. Unknown class
+            // encodings donate no QoS, but still require a matching end.
+            const auto priority = qos_override_priority(contract, registers[2]);
+            if (!state.start(priority)) {
                 bsd_error(cpu, darwin::error::no_memory);
                 return true;
             }
-        } else if (!pthread_runtime_.end_qos_override(processor)) {
+        } else if (!state.end()) {
             bsd_error(cpu, bsd_support::bad_address);
             return true;
         }
+        // Publish only after the scheduler accepts the live target. A failed
+        // update must not consume a start/end or leave a donated priority.
+        if (!thread_qos_override_handler_ ||
+            !thread_qos_override_handler_(processor, state.priority())) {
+            bsd_error(cpu, darwin::error::no_such_process);
+            return true;
+        }
+        pthread_runtime_.set_qos_override(processor, state);
+        if (scheduler_preemption_query_ &&
+            scheduler_preemption_query_(cpu.processor_id()))
+            cpu.request_guest_preemption();
         bsd_success(cpu, 0);
         return true;
     }

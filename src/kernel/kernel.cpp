@@ -913,7 +913,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     signal_actions_ = { };
     signal_mask_ = 0;
     alternate_signal_stacks_.clear();
-    pthread_runtime_.prepare_exec();
+    reset_pthread_runtime();
     shared_state_->psynch_runtime->clear_process(process_.pid);
     process_.waiting_for_events = false;
     const auto current_thread_port =

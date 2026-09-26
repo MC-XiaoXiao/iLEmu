@@ -148,25 +148,41 @@ void DarwinPthreadRuntime::remove_worker(std::uint32_t processor)
     reset_qos_overrides(processor);
 }
 
-bool DarwinPthreadRuntime::start_qos_override(
-    std::uint32_t processor, std::uint32_t priority)
+bool DarwinPthreadQosOverride::start(
+    std::optional<std::int32_t> priority) noexcept
 {
-    auto& overrides = qos_overrides_[processor];
-    if (overrides.size() >= maximum_qos_override_depth)
+    if (count_ == maximum_depth)
         return false;
-    overrides.push_back(priority);
+    ++count_;
+    if (priority && (!priority_ || *priority > *priority_))
+        priority_ = priority;
     return true;
 }
 
-bool DarwinPthreadRuntime::end_qos_override(std::uint32_t processor)
+bool DarwinPthreadQosOverride::end() noexcept
+{
+    if (count_ == 0U)
+        return false;
+    if (--count_ == 0U)
+        priority_.reset();
+    return true;
+}
+
+DarwinPthreadQosOverride DarwinPthreadRuntime::qos_override(
+    std::uint32_t processor) const noexcept
 {
     const auto found = qos_overrides_.find(processor);
-    if (found == qos_overrides_.end() || found->second.empty())
-        return false;
-    found->second.pop_back();
-    if (found->second.empty())
-        qos_overrides_.erase(found);
-    return true;
+    return found == qos_overrides_.end() ? DarwinPthreadQosOverride { }
+                                        : found->second;
+}
+
+void DarwinPthreadRuntime::set_qos_override(
+    std::uint32_t processor, DarwinPthreadQosOverride state)
+{
+    if (state.empty())
+        qos_overrides_.erase(processor);
+    else
+        qos_overrides_.insert_or_assign(processor, state);
 }
 
 void DarwinPthreadRuntime::reset_qos_overrides(std::uint32_t processor)

@@ -50,6 +50,28 @@ struct DarwinWorkqueueWorker {
     bool idle { };
 };
 
+// The split-libpthread anonymous start/end contract uses one counted resource.
+// Its peak QoS remains donated until the last matching end; encoded flags and
+// relative priority are not part of the donation. Dispatch overrides are a
+// separate contract and must not share their reset scope with this state.
+// See libpthread-105.1.4/kern/kern_support.c and
+// xnu-2782.40.9/osfmk/kern/task_policy.c (anonymous resource coalescing).
+class DarwinPthreadQosOverride {
+public:
+    static constexpr std::uint32_t maximum_depth = 256U;
+    [[nodiscard]] bool start(std::optional<std::int32_t> priority) noexcept;
+    [[nodiscard]] bool end() noexcept;
+    [[nodiscard]] bool empty() const noexcept { return count_ == 0U; }
+    [[nodiscard]] std::optional<std::int32_t> priority() const noexcept
+    {
+        return priority_;
+    }
+
+private:
+    std::uint32_t count_ { };
+    std::optional<std::int32_t> priority_;
+};
+
 // Per-process state installed by Darwin's bsdthread_register syscall. The
 // compatibility kernel owns scheduling and memory; this object only retains
 // the Guest ABI registration across fork and clears it across exec.
@@ -62,7 +84,6 @@ public:
     static constexpr std::uint32_t workqueue_overcommit = 0x0001'0000U;
     static constexpr std::size_t maximum_workqueue_workers = 64U;
     static constexpr std::size_t maximum_workqueue_items_per_priority = 64U;
-    static constexpr std::size_t maximum_qos_override_depth = 256U;
 
     [[nodiscard]] bool register_process(DarwinPthreadRegistration registration);
     [[nodiscard]] const std::optional<DarwinPthreadRegistration>&
@@ -116,9 +137,10 @@ public:
     void remove_worker(std::uint32_t processor);
     [[nodiscard]] bool set_target_concurrency(
         std::uint32_t priority, std::uint32_t concurrency);
-    [[nodiscard]] bool start_qos_override(
-        std::uint32_t processor, std::uint32_t priority);
-    [[nodiscard]] bool end_qos_override(std::uint32_t processor);
+    [[nodiscard]] DarwinPthreadQosOverride qos_override(
+        std::uint32_t processor) const noexcept;
+    void set_qos_override(
+        std::uint32_t processor, DarwinPthreadQosOverride state);
     void reset_qos_overrides(std::uint32_t processor);
 
     void prepare_exec() noexcept
@@ -146,7 +168,7 @@ private:
         maximum_workqueue_priority_count>
         workitems_;
     std::map<std::uint32_t, DarwinWorkqueueWorker> workers_;
-    std::map<std::uint32_t, std::vector<std::uint32_t>> qos_overrides_;
+    std::map<std::uint32_t, DarwinPthreadQosOverride> qos_overrides_;
     std::array<std::uint32_t, maximum_workqueue_priority_count>
         target_concurrency_ { };
 };

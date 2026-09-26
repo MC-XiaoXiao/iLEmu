@@ -1557,6 +1557,7 @@ void EmulatorSession::run()
                     return false;
                 }
                 runtime_ptr->kernel->clear_thread_io_policy(processor);
+                runtime_ptr->kernel->clear_thread_pthread_state(processor);
                 guest_execution_policy.forget(
                     XnuThreadId { pid, static_cast<std::uint32_t>(processor) });
                 guest_parallelism_policy.forget(
@@ -1991,6 +1992,13 @@ void EmulatorSession::run()
                 }
                 return scheduler.set_timeshare(thread, timeshare) &&
                        scheduler.set_base_priority(thread, base_priority);
+            });
+        runtime.kernel->set_thread_qos_override_handler(
+            [runtime_ptr, &scheduler](std::size_t processor,
+                std::optional<std::int32_t> priority) {
+                return scheduler.set_qos_override_priority(
+                    XnuThreadId { runtime_ptr->kernel->process().pid,
+                        static_cast<std::uint32_t>(processor) }, priority);
             });
         runtime.kernel->set_thread_policy_handler(
             [runtime_ptr, &scheduler, guest_ticks_per_second](

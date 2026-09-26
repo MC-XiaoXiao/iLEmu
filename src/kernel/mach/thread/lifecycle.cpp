@@ -99,6 +99,7 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
             shared_state_->psynch_runtime->cancel_wait(
                 DarwinPsynchThread { target->first, target->second });
             if (target->first == process_.pid) {
+                clear_thread_pthread_state(target->second);
                 process_.thread_disk_io_policies.erase(*target_object);
                 pending_psynch_waits_.erase(target->second);
                 thread_ports_.erase(target->second);
