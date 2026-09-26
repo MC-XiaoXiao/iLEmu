@@ -270,10 +270,6 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
     add(298, "psynch_rw_yieldwrlock", Handler::BsdPsynch, Contract::Psynch,
         abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
-    add(299, "shared_region_map_file_np", Handler::BsdSharedRegion,
-        Contract::LegacySharedRegion, true);
-    add(300, "shared_region_make_private_np", Handler::BsdSharedRegion,
-        Contract::LegacySharedRegion, true);
     add(301, "psynch_mutexwait", Handler::BsdPsynch, Contract::Psynch,
         abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1);
     add(302, "psynch_mutexdrop", Handler::BsdPsynch, Contract::Psynch,
@@ -347,21 +343,5 @@ void bind_bsd_entries(Table& table, const DarwinAbi& abi)
         Handler::BsdFileport);
     add(darwin::syscall::fileport_makefd, "fileport_makefd",
         Handler::BsdFileport);
-    if (abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1) {
-        const auto replace = [&](std::uint32_t n, std::string_view previous,
-                                 std::string_view next) {
-            const Entry expected { Domain::BsdSyscall, n, n, previous,
-                Handler::BsdSharedRegion, Contract::LegacySharedRegion,
-                Cancellation::OriginalEntry, Outcome::HandlerValidated,
-                "bsd/dispatch.cpp" };
-            auto entry = expected;
-            entry.operation = next;
-            entry.handler = Handler::BsdPsynch;
-            entry.contract = Contract::Psynch;
-            table.replace_entry(expected, entry);
-        };
-        replace(299, "shared_region_map_file_np", "psynch_rw_downgrade");
-        replace(300, "shared_region_make_private_np", "psynch_rw_upgrade");
-    }
 }
 }

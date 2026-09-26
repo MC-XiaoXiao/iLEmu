@@ -27,6 +27,30 @@ void bind_bsd_contract_entries(Table& table, const DarwinAbi& abi)
         named.contract = Contract::NamedSysctl;
         table.replace_entry(semaphore, named);
     }
+    switch (abi.psynch_abi) {
+    case DarwinPsynchAbi::Unsupported:
+    case DarwinPsynchAbi::Arm32GenerationV1:
+        break;
+    default:
+        throw std::invalid_argument("unknown route contract: psynch_abi");
+    }
+    const auto bind_region = [&](std::uint32_t number, std::string_view legacy,
+                                 std::string_view psynch) {
+        const Entry expected { Domain::BsdSyscall, number, number, legacy,
+            Handler::BsdSharedRegion, Contract::LegacySharedRegion,
+            Cancellation::OriginalEntry, Outcome::HandlerValidated,
+            "bsd/dispatch.cpp" };
+        table.bind_new(expected);
+        if (abi.psynch_abi == DarwinPsynchAbi::Arm32GenerationV1) {
+            auto entry = expected;
+            entry.operation = psynch;
+            entry.handler = Handler::BsdPsynch;
+            entry.contract = Contract::Psynch;
+            table.replace_entry(expected, entry);
+        }
+    };
+    bind_region(299, "shared_region_map_file_np", "psynch_rw_downgrade");
+    bind_region(300, "shared_region_make_private_np", "psynch_rw_upgrade");
 }
 Table build_bsd_contracts(const DarwinAbi& abi)
 {

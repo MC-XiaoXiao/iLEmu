@@ -20,6 +20,14 @@ BsdDispatchTable::Adapter BsdDispatchTable::adapter_for(
         return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) {
             kernel.dispatch_bsd_events(cpu, number);
         };
+    case Handler::BsdSharedRegion:
+        return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) {
+            static_cast<void>(kernel.dispatch_bsd_shared_region(cpu, number));
+        };
+    case Handler::BsdPsynch:
+        return [](CompatibilityKernel& kernel, Cpu& cpu, std::uint32_t number) {
+            kernel.dispatch_bsd_psynch(cpu, number);
+        };
     default:
         throw std::logic_error("missing migrated BSD handler adapter");
     }

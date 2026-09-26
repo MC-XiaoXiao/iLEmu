@@ -470,8 +470,6 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         return;
     case 297:
     case 298:
-    case 299:
-    case 300:
     case 301:
     case 302:
     case 303:
@@ -487,14 +485,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
             dispatch_bsd_psynch(cpu, number);
             return;
         }
-        // Pre-psynch ARM32 kernels use these two slots for the legacy shared
-        // region ABI. All other entries retain their audited nosys behavior.
-        if (number == 299U || number == 300U) {
-            static_cast<void>(dispatch_bsd_shared_region(cpu, number));
-        } else {
-            dispatch_bsd_nosys(cpu,
-                shared_state_->darwin_abi.capabilities.send_sigsys);
-        }
+        dispatch_bsd_nosys(cpu,
+            shared_state_->darwin_abi.capabilities.send_sigsys);
         return;
     case 438: // shared_region_map_and_slide_np
         if (shared_state_->darwin_abi.shared_region_abi !=

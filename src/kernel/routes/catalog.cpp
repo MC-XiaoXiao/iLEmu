@@ -27,14 +27,6 @@ namespace {
                 DarwinAbiEpoch::Later },
             "abi_epoch");
         static_cast<void>(resolve_pthread_contract(abi.pthread_abi));
-        require_known(abi.psynch_abi,
-            { DarwinPsynchAbi::Unsupported,
-                DarwinPsynchAbi::Arm32GenerationV1 },
-            "psynch_abi");
-        require_known(abi.sysctl_by_name_abi,
-            { DarwinSysctlByNameAbi::LegacySemaphoreValue,
-                DarwinSysctlByNameAbi::NamedSysctlAt274 },
-            "sysctl_by_name_abi");
         require_known(abi.shared_region_abi,
             { DarwinSharedRegionAbi::LegacyRelocatableMappings,
                 DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1 },
