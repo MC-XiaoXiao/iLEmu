@@ -29,6 +29,7 @@
 #include "foundation/jit_page_table.hpp"
 #include "foundation/memory_permission.hpp"
 #include "foundation/vm_map.hpp"
+#include "foundation/shared_memory_identity.hpp"
 
 namespace ilemu {
 
@@ -128,6 +129,12 @@ public:
     void suspend_parallel_access();
     void resume_parallel_access();
     void leave_parallel_access();
+
+    // Resolve a mapped byte to its stable page owner and byte offset. Lazy
+    // pages are materialized; private COW views are detached before publishing
+    // the identity. No ownership of bytes escapes or interferes with COW.
+    [[nodiscard]] std::optional<SharedMemoryIdentity> shared_memory_identity(
+        std::uint32_t address);
 
     // A shared Dynarmic monitor can conservatively invalidate all reservations
     // whenever this address space performs a checked Guest write. Direct JIT

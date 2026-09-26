@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include "foundation/shared_memory_identity.hpp"
 #include <array>
 #include <atomic>
 #include <compare>
@@ -263,6 +264,9 @@ struct GuestFileBacking {
     // The descriptor is opened when the mapping is created and shared by range
     // splits. This preserves the old vnode/file object across atomic rename.
     std::shared_ptr<GuestFileIoState> io_state;
+    // Canonical live vnode owner, independent of path/content generations and
+    // page-cache residency. Its retained descriptor prevents inode reuse.
+    std::shared_ptr<const GuestFileIoState> object_identity;
     std::uint64_t first_offset { };
     std::uint64_t end_offset { };
 };
@@ -320,6 +324,8 @@ struct GuestPageBacking {
     // checked callback path.
     void publish_shared_write() noexcept;
     [[nodiscard]] bool file_backed() const;
+    [[nodiscard]] std::optional<SharedMemoryIdentity> shared_file_identity(
+        std::uint32_t offset) const;
     // Persists a MAP_SHARED page without affecting private file mappings.
     [[nodiscard]] bool flush_file();
     [[nodiscard]] std::shared_ptr<GuestFileIoState> writeback_io_state() const;
@@ -582,6 +588,9 @@ private:
     std::multimap<MutablePageKey, std::weak_ptr<GuestPageBacking>>
         mutable_pages_;
     std::size_t mutable_page_insertions_since_prune_ { };
+    std::map<std::pair<std::uint64_t, std::uint64_t>,
+        std::weak_ptr<const GuestFileIoState>> file_objects_;
+    std::size_t file_object_insertions_since_prune_ { };
     FilePageCacheStats stats_;
 };
 

@@ -149,6 +149,41 @@ void AddressSpace::share_file_page_cache(const AddressSpace& source)
     file_page_cache_ = source.file_page_cache_;
 }
 
+std::optional<SharedMemoryIdentity> AddressSpace::shared_memory_identity(
+    std::uint32_t address)
+{
+    auto lock = write_lock();
+    if (!range_accessible_locked(address, 1, MemoryPermission::None))
+        return std::nullopt;
+
+    // A lazy shared file mapping names the live vnode, not a cache page.
+    // This also preserves identity after all resident aliases are evicted.
+    if (const auto* mapping = find_file_mapping_locked(address);
+        mapping && mapping->mode != PageMappingMode::CopyOnWrite &&
+        mapping->backing->object_identity) {
+        const auto start = std::prev(file_mappings_.upper_bound(address))->first;
+        return SharedMemoryIdentity { mapping->backing->object_identity,
+            mapping->file_offset + (address - start) };
+    }
+
+    // Fault lazy file pages through the same cache used by guest accesses.
+    // Resolve private COW views before publishing an identity so a later
+    // first write cannot silently move an existing synchronization object.
+    auto& page = ensure_page_locked(address);
+    if (!page.shared_writable) {
+        bool changed = false;
+        static_cast<void>(writable_backing_locked(page, &changed));
+        if (changed) {
+            refresh_jit_page_locked(page_base(address));
+            bump_executable_content_generation_locked();
+        }
+    }
+    const auto offset = address & (page_size - 1U);
+    if (auto file = page.backing->shared_file_identity(offset))
+        return file;
+    return SharedMemoryIdentity { page.backing, offset };
+}
+
 std::uint64_t AddressSpace::exclusive_reservation_key(
     std::uint32_t address) const noexcept
 {

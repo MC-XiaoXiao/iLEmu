@@ -1679,6 +1679,15 @@ std::shared_ptr<GuestFileIoState> GuestPageBacking::writeback_io_state() const
     return file_writeback_ ? file_writeback_->io_state : nullptr;
 }
 
+std::optional<SharedMemoryIdentity> GuestPageBacking::shared_file_identity(
+    std::uint32_t offset) const
+{
+    if (!shared_vnode_ || !file_writeback_ || !file_writeback_->object_identity)
+        return std::nullopt;
+    return SharedMemoryIdentity { file_writeback_->object_identity,
+        file_offset_ + offset };
+}
+
 bool GuestPageBacking::flush_file()
 {
     if (!file_writeback_)
@@ -2168,6 +2177,20 @@ std::shared_ptr<FileMappingPreparation> FilePageCache::prepare_mapping(
         mapping->immutable_file_view = std::move(immutable_file_view);
         mapping->generation_registry = generation_registry;
         mapping->io_state = std::move(io_state);
+        if (mapping->io_state->file_descriptor >= 0) {
+            const std::scoped_lock lock { mutex_ };
+            auto& owner = file_objects_[{ generation.device, generation.inode }];
+            mapping->object_identity = owner.lock();
+            if (!mapping->object_identity) {
+                mapping->object_identity = mapping->io_state;
+                owner = mapping->object_identity;
+            }
+            if (++file_object_insertions_since_prune_ >= 64U) {
+                std::erase_if(file_objects_,
+                    [](const auto& entry) { return entry.second.expired(); });
+                file_object_insertions_since_prune_ = 0;
+            }
+        }
         return mapping;
     };
     if (cached_identity)
