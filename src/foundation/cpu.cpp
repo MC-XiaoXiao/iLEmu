@@ -1339,7 +1339,6 @@ public:
 
     void MemoryReadExclusive(std::uint32_t address, std::size_t size) override
     {
-        memory_.leave_parallel_access();
         memory_.track_exclusive_access(address, size);
     }
 
@@ -1353,10 +1352,6 @@ public:
         return swap(address, value, &AddressSpace::exchange32);
     }
 
-    void MemoryWriteExclusiveBegin(std::uint32_t, std::size_t) override
-    {
-        memory_.leave_parallel_access();
-    }
     void MemoryExecutionSuspend() override { memory_.suspend_parallel_access(); }
     void MemoryExecutionResume() override { memory_.resume_parallel_access(); }
 
@@ -2301,6 +2296,7 @@ public:
                         true, std::memory_order_relaxed);
                     executor.jit_->HaltExecution(Dynarmic::HaltReason::UserDefined2);
                 }, this);
+            memory_execution_scope_active_ = parallel_access.has_value();
             const auto jit_started = std::chrono::steady_clock::now();
             Dynarmic::HaltReason reason { };
             bool memory_pause_seen { };
@@ -2327,6 +2323,7 @@ public:
                 memory_pause_seen = true;
             }
             parallel_access.reset();
+            memory_execution_scope_active_ = false;
             const auto jit_elapsed =
                 std::chrono::duration_cast<std::chrono::nanoseconds>(
                     std::chrono::steady_clock::now() - jit_started);
@@ -2395,6 +2392,7 @@ public:
             diagnostics.checkpoint(PerfLatencyKind::CpuRunCacheAccounting);
             return result;
         } catch (...) {
+            memory_execution_scope_active_ = false;
             set_portable_demand_provider(false);
             guest_preemption_requested_ = false;
             guest_preemption_requested_at_.reset();
@@ -3034,6 +3032,7 @@ private:
             config.native_code_block_lookup_callback_arg = this;
         }
         config.lookup_link = lookup_link_cell_address_;
+        config.memory_execution_scope_active = &memory_execution_scope_active_;
         config.runtime_config_link = runtime_config_link_cell_address_;
         config.fast_dispatch_table_link =
             fast_dispatch_table_link_cell_address_;
@@ -3314,6 +3313,7 @@ private:
         exclusive_monitor_values_link_cell_address_ { };
     std::unique_ptr<Dynarmic::A32::Jit> jit_;
     JitHostExecutionBudget host_execution_budget_;
+    bool memory_execution_scope_active_ { };
     std::atomic<bool> memory_yield_requested_ { };
     std::size_t code_cache_size_ { 64U * 1024U * 1024U };
     bool recorded_shared_memory_ { };
@@ -5314,7 +5314,7 @@ CpuCluster::CpuCluster(std::size_t initial_processor_count,
             &GuestExclusiveAddressResolver::resolve_callback,
             address_resolver_.get());
         // Checked accesses remain the default. Scheduler-authorized native
-        // slices may select leased views; exclusive callbacks revoke them
+        // slices may select leased views; exclusive callbacks suspend them
         // before acquiring the shared reservation monitor.
         if (monitor_processor_count_ > 1)
             memory.set_parallel_access(true);
