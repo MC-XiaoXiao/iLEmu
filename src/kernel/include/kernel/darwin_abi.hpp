@@ -166,6 +166,7 @@ namespace mig {
     // Darwin 8 osfmk/mach/mig_errors.h. Keep the signed MIG value in its exact
     // 32-bit wire representation.
     inline constexpr std::uint32_t bad_id = 0xffff'fed1U; // -303
+    inline constexpr std::uint32_t bad_arguments = 0xffff'fed0U; // -304
 } // namespace mig
 
 namespace mach_message {
@@ -180,6 +181,8 @@ namespace mach_message {
     inline constexpr std::uint32_t type_make_send_once = 21U;
     inline constexpr std::uint32_t bits_complex = 0x8000'0000U;
     inline constexpr std::uint32_t send_invalid_right = 0x1000'000AU;
+    inline constexpr std::uint32_t send_invalid_data = 0x1000'0002U;
+    inline constexpr std::uint32_t send_message_too_small = 0x1000'0008U;
     inline constexpr std::uint32_t send_no_buffer = 0x1000'000DU;
     inline constexpr std::uint32_t send_invalid_destination = 0x1000'0003U;
     inline constexpr std::uint32_t send_timed_out = 0x1000'0004U;

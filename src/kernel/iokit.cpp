@@ -45,6 +45,7 @@
 #include "network/wifi_state.hpp"
 
 #include "iokit/battery.hpp"
+#include "iokit/connect_method.hpp"
 #include "iokit/diagnostic_data.hpp"
 #include "iokit/display/backlight.hpp"
 #include "iokit/environment.hpp"
@@ -53,8 +54,11 @@
 
 namespace ilemu {
 namespace {
+    using ConnectMethodCodec = kernel_iokit::ConnectMethodCodec;
+    using ConnectMethodResult = ConnectMethodCodec::Result;
 
-    constexpr std::uint32_t single_service_message_id(DarwinIOKitMatchingRpcAbi abi)
+    constexpr std::uint32_t single_service_message_id(
+        DarwinIOKitMatchingRpcAbi abi)
     {
         switch (abi) {
         case DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1:
@@ -183,30 +187,6 @@ namespace {
     static_assert(device_mig::id(device_mig::Routine::io_service_open) ==
                   static_cast<std::uint32_t>(iokit_abi::Message::ServiceOpen));
 
-    struct ConnectMethodRequest {
-        struct OutOfLineStructure {
-            std::uint64_t address { };
-            std::uint64_t size { };
-        };
-
-        std::uint32_t selector { };
-        std::array<std::uint64_t,
-            iokit_abi::connect_method::maximum_scalar_count>
-            scalar_input { };
-        std::uint32_t scalar_input_count { };
-        std::vector<std::byte> inband_input;
-        std::uint32_t scalar_output_capacity { };
-        std::uint32_t inband_output_capacity { };
-        OutOfLineStructure out_of_line_input;
-        OutOfLineStructure out_of_line_output;
-    };
-
-    struct ConnectMethodResult {
-        std::uint32_t return_code { iokit_abi::unsupported };
-        std::vector<std::uint64_t> scalar_output;
-        std::vector<std::byte> inband_output;
-    };
-
     template <std::size_t Size>
     std::uint32_t write_reply(AddressSpace& memory, std::uint32_t address,
         const std::array<std::uint32_t, Size>& reply);
@@ -215,208 +195,6 @@ namespace {
     {
         constexpr std::uint32_t alignment = sizeof(std::uint32_t);
         return (size + alignment - 1U) & ~(alignment - 1U);
-    }
-
-    std::optional<ConnectMethodRequest> read_connect_method_request(
-        AddressSpace& memory, std::uint32_t address, std::uint32_t send_size,
-        std::uint32_t receive_size, DarwinIOConnectMethodAbi profile)
-    {
-        using namespace iokit_abi::connect_method;
-        const auto mach_vm64_ool =
-            profile ==
-            DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar;
-        const auto ool_request_size =
-            mach_vm64_ool ? mach_vm64_ool_request_size
-                          : natural32_ool_request_size;
-        const auto profiled_trailing_request_size =
-            mach_vm64_ool ? mach_vm64_trailing_request_size
-                          : trailing_request_size;
-        const auto profiled_minimum_request_size = scalar_input_offset +
-                                                   inband_count_size +
-                                                   profiled_trailing_request_size;
-        const auto profiled_minimum_reply_size =
-            mach_vm64_ool ? mach_vm64_minimum_reply_size
-                          : minimum_reply_size;
-        if (send_size < profiled_minimum_request_size ||
-            receive_size < profiled_minimum_reply_size) {
-            return std::nullopt;
-        }
-
-        ConnectMethodRequest request;
-        request.selector = memory.read32(address + selector_offset).value_or(0);
-        request.scalar_input_count =
-            memory.read32(address + scalar_input_count_offset)
-                .value_or(maximum_scalar_count + 1U);
-        if (request.scalar_input_count > maximum_scalar_count) {
-            return std::nullopt;
-        }
-        const auto scalar_bytes = request.scalar_input_count * scalar_size;
-        const auto inband_count_offset = scalar_input_offset + scalar_bytes;
-        if (inband_count_offset + inband_count_size > send_size) {
-            return std::nullopt;
-        }
-        const auto inband_count = memory.read32(address + inband_count_offset);
-        if (!inband_count || *inband_count > maximum_inband_size) {
-            return std::nullopt;
-        }
-        const auto trailing_offset = inband_count_offset + inband_count_size +
-                                     align_mig_field(*inband_count);
-        const auto required_size =
-            trailing_offset + profiled_trailing_request_size;
-        if (send_size < required_size)
-            return std::nullopt;
-
-        for (std::uint32_t index = 0; index < request.scalar_input_count;
-            ++index) {
-            const auto scalar_address =
-                address + scalar_input_offset + index * scalar_size;
-            const auto low = memory.read32(scalar_address);
-            const auto high =
-                memory.read32(scalar_address + sizeof(std::uint32_t));
-            if (!low || !high)
-                return std::nullopt;
-            request.scalar_input[index] =
-                static_cast<std::uint64_t>(*low) |
-                (static_cast<std::uint64_t>(*high) << 32U);
-        }
-        const auto inband_address =
-            address + inband_count_offset + inband_count_size;
-        if (*inband_count != 0) {
-            const auto bytes = memory.read_bytes(inband_address, *inband_count);
-            if (!bytes)
-                return std::nullopt;
-            request.inband_input = std::move(*bytes);
-        }
-        // The two CountInOut capacities follow the profiled OOL input fields.
-        // Legacy clients use natural_t address/size words; later clients carry
-        // mach_vm_address_t and mach_vm_size_t even for an ARM32 caller.
-        // Copy the complete bounded tail once: no descriptor-sized allocation
-        // or guest buffer access is needed on the inline dispatch path.
-        std::array<std::byte, mach_vm64_trailing_request_size> trailing;
-        if (!memory.copy_out(address + trailing_offset,
-                std::span { trailing }.first(profiled_trailing_request_size)))
-            return std::nullopt;
-        const auto word = [&](std::size_t offset) {
-            return std::to_integer<std::uint32_t>(trailing[offset]) |
-                   (std::to_integer<std::uint32_t>(trailing[offset + 1]) << 8U) |
-                   (std::to_integer<std::uint32_t>(trailing[offset + 2]) << 16U) |
-                   (std::to_integer<std::uint32_t>(trailing[offset + 3]) << 24U);
-        };
-        const auto vm_value = [&](std::size_t offset) {
-            return std::uint64_t { word(offset) } |
-                   (mach_vm64_ool ? std::uint64_t { word(offset + 4) } << 32U
-                                  : 0);
-        };
-        const auto vm_size = ool_request_size / 2U;
-        request.out_of_line_input = { vm_value(0), vm_value(vm_size) };
-        const auto output_offset =
-            ool_request_size + output_capacity_request_size;
-        request.out_of_line_output = { vm_value(output_offset),
-            vm_value(output_offset + vm_size) };
-        const auto first_output_capacity = word(ool_request_size);
-        const auto second_output_capacity = word(ool_request_size + 4U);
-        if (profile !=
-            DarwinIOConnectMethodAbi::Natural32OolScalarThenStructure) {
-            request.inband_output_capacity = first_output_capacity;
-            request.scalar_output_capacity = second_output_capacity;
-        } else {
-            request.scalar_output_capacity = first_output_capacity;
-            request.inband_output_capacity = second_output_capacity;
-        }
-        if (request.scalar_output_capacity > maximum_scalar_count ||
-            request.inband_output_capacity > maximum_inband_size) {
-            return std::nullopt;
-        }
-        return request;
-    }
-
-    std::uint32_t write_connect_method_reply(AddressSpace& memory,
-        std::uint32_t address, std::uint32_t local_port,
-        std::uint32_t message_id, std::uint32_t receive_size,
-        const ConnectMethodResult& result, DarwinIOConnectMethodAbi profile)
-    {
-        using namespace iokit_abi::connect_method;
-        const auto scalar_count =
-            static_cast<std::uint32_t>(std::min<std::size_t>(
-                result.scalar_output.size(), maximum_scalar_count));
-        const auto inband_count =
-            static_cast<std::uint32_t>(std::min<std::size_t>(
-                result.inband_output.size(), maximum_inband_size));
-        std::uint32_t scalar_count_offset { };
-        std::uint32_t scalar_bytes_offset { };
-        std::uint32_t inband_count_offset { };
-        std::uint32_t inband_bytes_offset { };
-        const auto mach_vm64_ool =
-            profile ==
-            DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar;
-        std::uint32_t ool_output_offset { };
-        if (profile !=
-            DarwinIOConnectMethodAbi::Natural32OolScalarThenStructure) {
-            inband_count_offset = return_code_offset + sizeof(std::uint32_t);
-            inband_bytes_offset = inband_count_offset + sizeof(std::uint32_t);
-            scalar_count_offset =
-                inband_bytes_offset + aligned_inband_output_size(inband_count);
-            scalar_bytes_offset = scalar_count_offset + sizeof(std::uint32_t);
-            ool_output_offset =
-                scalar_bytes_offset + scalar_count * scalar_size;
-        } else {
-            scalar_count_offset = scalar_output_count_offset;
-            scalar_bytes_offset = scalar_output_offset;
-            inband_count_offset = inband_output_count_offset(scalar_count);
-            inband_bytes_offset = inband_output_offset(scalar_count);
-            ool_output_offset =
-                out_of_line_output_size_offset(scalar_count, inband_count);
-        }
-        const auto ool_reply_size = mach_vm64_ool
-                                        ? mach_vm64_ool_reply_size
-                                        : natural32_ool_reply_size;
-        const auto encoded_reply_size = static_cast<std::uint32_t>(
-            ool_output_offset + ool_reply_size);
-        if (encoded_reply_size > receive_size)
-            return mach_rcv_invalid_data;
-        const std::vector<std::byte> cleared_reply(encoded_reply_size);
-        if (!memory.copy_in(address, cleared_reply))
-            return mach_rcv_invalid_data;
-        const auto write = [&](std::uint32_t offset, std::uint32_t value) {
-            return memory.write32(address + offset, value);
-        };
-        if (!write(darwin::mig_wire::header_bits_offset, mach_reply_bits) ||
-            !write(darwin::mig_wire::header_size_offset, encoded_reply_size) ||
-            !write(darwin::mig_wire::header_remote_port_offset, local_port) ||
-            !write(darwin::mig_wire::header_identifier_offset,
-                message_id + mig_reply_id_delta) ||
-            !write(darwin::mig_wire::message_header_size, mach_ndr_native) ||
-            !write(darwin::mig_wire::message_header_size +
-                       darwin::mig_wire::word_size,
-                mach_ndr_little_endian) ||
-            !write(return_code_offset, result.return_code) ||
-            !write(scalar_count_offset, scalar_count) ||
-            !write(inband_count_offset, inband_count)) {
-            return mach_rcv_invalid_data;
-        }
-        for (std::uint32_t index = 0; index < scalar_count; ++index) {
-            const auto scalar_offset =
-                scalar_bytes_offset + index * scalar_size;
-            if (!write(scalar_offset,
-                    static_cast<std::uint32_t>(result.scalar_output[index])) ||
-                !write(scalar_offset + sizeof(std::uint32_t),
-                    static_cast<std::uint32_t>(
-                        result.scalar_output[index] >> 32U))) {
-                return mach_rcv_invalid_data;
-            }
-        }
-        if (inband_count != 0 &&
-            !memory.copy_in(address + inband_bytes_offset,
-                std::span<const std::byte> {
-                    result.inband_output.data(), inband_count })) {
-            return mach_rcv_invalid_data;
-        }
-        if (!write(ool_output_offset, 0) ||
-            (mach_vm64_ool &&
-                !write(ool_output_offset + sizeof(std::uint32_t), 0))) {
-            return mach_rcv_invalid_data;
-        }
-        return 0;
     }
 
     bool contains_text(std::span<const std::byte> bytes, std::string_view text)
@@ -2559,23 +2337,31 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
 
     if (message_id ==
         static_cast<std::uint32_t>(iokit_abi::Message::ConnectMethod)) {
-        const auto request = read_connect_method_request(memory,
-            message_address, send_size, receive_size,
-            shared_state.darwin_abi.io_connect_method);
-        if (!request)
-            return mach_rcv_invalid_data;
+        std::uint32_t decode_error = 0;
+        const auto request = ConnectMethodCodec::read(memory, message_address,
+            send_size, shared_state.darwin_abi.io_connect_method, decode_error);
+        if (!request) {
+            if (decode_error != darwin::mig::bad_arguments)
+                return decode_error;
+            return ConnectMethodCodec::write_error(memory, message_address,
+                local_port, message_id, receive_size, decode_error);
+        }
+        {
+            std::lock_guard mach_lock { shared_state.mach_mutex };
+            if (!connection_user_client_kind_locked(
+                    shared_state, remote_object))
+                return ConnectMethodCodec::write_error(memory, message_address,
+                    local_port, message_id, receive_size,
+                    iokit_abi::bad_argument);
+        }
         // These virtual clients expose inline structure handlers. Match the
         // IOUserClient legacy bridge: descriptors require a descriptor-aware
         // handler, and must never be silently converted into empty input.
         // Address presence (not length) selects a descriptor in XNU.
         if (request->out_of_line_input.address != 0 ||
             request->out_of_line_output.address != 0) {
-            const std::array<std::uint32_t, 9> reply {
-                mach_reply_bits, darwin::mig_wire::simple_reply_payload_base,
-                local_port, 0, 0, message_id + mig_reply_id_delta,
-                mach_ndr_native, mach_ndr_little_endian, iokit_abi::ipc_error
-            };
-            return write_reply(memory, message_address, reply);
+            return ConnectMethodCodec::write_error(memory, message_address,
+                local_port, message_id, receive_size, iokit_abi::ipc_error);
         }
         const auto display_result =
             kernel_iokit::display::dispatch_connect_method(shared_state,
@@ -2761,8 +2547,7 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                 (request->scalar_input_count >= 2U
                         ? " scalar1=" + std::to_string(request->scalar_input[1])
                         : "") +
-                " inband-in=" +
-                std::to_string(request->inband_input.size()) +
+                " inband-in=" + std::to_string(request->inband_input.size()) +
                 " scalar-cap=" +
                 std::to_string(request->scalar_output_capacity) +
                 " inband-cap=" +
@@ -2777,9 +2562,10 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
                                         : format_call_site(memory, call_site)) +
                 "\n");
         }
-        return write_connect_method_reply(memory, message_address, local_port,
-            message_id, receive_size, result,
-            shared_state.darwin_abi.io_connect_method);
+        return ConnectMethodCodec::write_reply(memory, message_address,
+            local_port, message_id, receive_size, result,
+            shared_state.darwin_abi.io_connect_method,
+            request->out_of_line_output.size);
     }
 
     if (message_id ==
