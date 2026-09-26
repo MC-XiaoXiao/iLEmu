@@ -100,6 +100,7 @@ constexpr bool is_mobile_framebuffer_power_selector(std::uint32_t selector)
 
 inline constexpr std::uint32_t success = 0;
 inline constexpr std::uint32_t no_memory = 0xe00002bdU;
+inline constexpr std::uint32_t ipc_error = 0xe00002bfU;
 inline constexpr std::uint32_t not_found = 0xe00002f0U;
 inline constexpr std::uint32_t bad_argument = 0xe00002c2U;
 inline constexpr std::uint32_t unsupported = 0xe00002c7U;

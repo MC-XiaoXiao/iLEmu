@@ -184,6 +184,11 @@ namespace {
                   static_cast<std::uint32_t>(iokit_abi::Message::ServiceOpen));
 
     struct ConnectMethodRequest {
+        struct OutOfLineStructure {
+            std::uint64_t address { };
+            std::uint64_t size { };
+        };
+
         std::uint32_t selector { };
         std::array<std::uint64_t,
             iokit_abi::connect_method::maximum_scalar_count>
@@ -192,6 +197,8 @@ namespace {
         std::vector<std::byte> inband_input;
         std::uint32_t scalar_output_capacity { };
         std::uint32_t inband_output_capacity { };
+        OutOfLineStructure out_of_line_input;
+        OutOfLineStructure out_of_line_output;
     };
 
     struct ConnectMethodResult {
@@ -283,16 +290,31 @@ namespace {
         // The two CountInOut capacities follow the profiled OOL input fields.
         // Legacy clients use natural_t address/size words; later clients carry
         // mach_vm_address_t and mach_vm_size_t even for an ARM32 caller.
-        const auto output_capacities_offset = trailing_offset + ool_request_size;
-        const auto first_output_capacity =
-            memory
-                .read32(address + output_capacities_offset)
-                .value_or(0);
-        const auto second_output_capacity =
-            memory
-                .read32(address + output_capacities_offset +
-                        sizeof(std::uint32_t))
-                .value_or(0);
+        // Copy the complete bounded tail once: no descriptor-sized allocation
+        // or guest buffer access is needed on the inline dispatch path.
+        std::array<std::byte, mach_vm64_trailing_request_size> trailing;
+        if (!memory.copy_out(address + trailing_offset,
+                std::span { trailing }.first(profiled_trailing_request_size)))
+            return std::nullopt;
+        const auto word = [&](std::size_t offset) {
+            return std::to_integer<std::uint32_t>(trailing[offset]) |
+                   (std::to_integer<std::uint32_t>(trailing[offset + 1]) << 8U) |
+                   (std::to_integer<std::uint32_t>(trailing[offset + 2]) << 16U) |
+                   (std::to_integer<std::uint32_t>(trailing[offset + 3]) << 24U);
+        };
+        const auto vm_value = [&](std::size_t offset) {
+            return std::uint64_t { word(offset) } |
+                   (mach_vm64_ool ? std::uint64_t { word(offset + 4) } << 32U
+                                  : 0);
+        };
+        const auto vm_size = ool_request_size / 2U;
+        request.out_of_line_input = { vm_value(0), vm_value(vm_size) };
+        const auto output_offset =
+            ool_request_size + output_capacity_request_size;
+        request.out_of_line_output = { vm_value(output_offset),
+            vm_value(output_offset + vm_size) };
+        const auto first_output_capacity = word(ool_request_size);
+        const auto second_output_capacity = word(ool_request_size + 4U);
         if (profile !=
             DarwinIOConnectMethodAbi::Natural32OolScalarThenStructure) {
             request.inband_output_capacity = first_output_capacity;
@@ -2542,6 +2564,19 @@ std::optional<std::uint32_t> handle_iokit_mach_request(AddressSpace& memory,
             shared_state.darwin_abi.io_connect_method);
         if (!request)
             return mach_rcv_invalid_data;
+        // These virtual clients expose inline structure handlers. Match the
+        // IOUserClient legacy bridge: descriptors require a descriptor-aware
+        // handler, and must never be silently converted into empty input.
+        // Address presence (not length) selects a descriptor in XNU.
+        if (request->out_of_line_input.address != 0 ||
+            request->out_of_line_output.address != 0) {
+            const std::array<std::uint32_t, 9> reply {
+                mach_reply_bits, darwin::mig_wire::simple_reply_payload_base,
+                local_port, 0, 0, message_id + mig_reply_id_delta,
+                mach_ndr_native, mach_ndr_little_endian, iokit_abi::ipc_error
+            };
+            return write_reply(memory, message_address, reply);
+        }
         const auto display_result =
             kernel_iokit::display::dispatch_connect_method(shared_state,
                 process, remote_object, request->selector,
