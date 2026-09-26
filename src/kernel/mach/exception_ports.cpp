@@ -2,7 +2,7 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Manage guest task exception-port masks, behaviors and replies.
+// Manage guest host and task exception-port masks, behaviors and replies.
 //
 // Apple public ABI/behavior references (guest profiles may differ):
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/task.defs
@@ -10,6 +10,7 @@
 #include "kernel/kernel.hpp"
 
 #include "mach/mig_wire_abi.hpp"
+#include "mach/host_priv_mig_ids.hpp"
 #include "mach/task_mig_ids.hpp"
 
 #include <algorithm>
@@ -24,7 +25,7 @@
 #include <string>
 #include <vector>
 
-#include "../support.hpp"
+#include "support.hpp"
 
 namespace ilemu {
 namespace {
@@ -52,8 +53,15 @@ namespace {
         3U * sizeof(std::uint32_t);
     constexpr std::size_t first_exception_type = 1;
     constexpr std::uint32_t mach_exception_codes = 0x80000000U;
-    constexpr std::uint32_t valid_exception_mask =
-        (1U << KernelSharedState::task_exception_type_count) - 2U;
+
+    [[nodiscard]] std::uint32_t valid_exception_mask(
+        DarwinExceptionPortAbi abi) noexcept
+    {
+        const auto count = abi == DarwinExceptionPortAbi::ThroughGuard
+                               ? KernelSharedState::task_exception_type_count
+                               : std::size_t { 11 };
+        return (1U << count) - 2U;
+    }
 
     static_assert(exception_reply_array_base_size == 424);
     static_assert(exception_reply_array_base_size +
@@ -118,6 +126,17 @@ namespace {
         return object;
     }
 
+    std::optional<std::uint32_t> host_object_for_name_locked(
+        const KernelSharedState& state, std::uint32_t caller,
+        std::uint32_t name)
+    {
+        const auto object = resolve_name_with_right(
+            state, caller, name, xnu::ipc::Right::Send);
+        if (!object || *object != mach_task_identity::initial_host_self_name)
+            return std::nullopt;
+        return object;
+    }
+
     std::vector<ExceptionGroup> group_exception_actions(
         const KernelSharedState::TaskExceptionActions& actions,
         std::uint32_t mask)
@@ -143,15 +162,35 @@ namespace {
 
 } // namespace
 
-bool CompatibilityKernel::dispatch_mach_task_exception_message(
+bool CompatibilityKernel::dispatch_mach_exception_ports_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
-    const auto set_id =
+    const auto valid_mask =
+        valid_exception_mask(shared_state_->darwin_abi.exception_port_abi);
+    const auto task_set_id =
         mig_message_id(xnu::mig::task::Routine::task_set_exception_ports);
-    const auto get_id =
+    const auto task_get_id =
         mig_message_id(xnu::mig::task::Routine::task_get_exception_ports);
-    if (request.identifier != set_id && request.identifier != get_id)
+    const auto host_set_id = mig_message_id(
+        xnu::mig::host_priv::Routine::host_set_exception_ports);
+    const auto host_get_id = mig_message_id(
+        xnu::mig::host_priv::Routine::host_get_exception_ports);
+    const auto is_host = request.identifier == host_set_id ||
+                         request.identifier == host_get_id;
+    const auto is_set = request.identifier == task_set_id ||
+                        request.identifier == host_set_id;
+    if (!is_host && request.identifier != task_set_id &&
+        request.identifier != task_get_id)
         return false;
+
+    // Host-privileged MIG numbers overlap bootstrap routines. Determine the
+    // service before interpreting its request or writing an inline reply.
+    if (is_host) {
+        const std::lock_guard lock { shared_state_->mach_mutex };
+        if (!host_object_for_name_locked(*shared_state_, process_.pid,
+                request.remote_port))
+            return false;
+    }
 
     auto& registers = cpu.registers();
     if (registers[3] < simple_reply_size) {
@@ -159,7 +198,7 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
         return true;
     }
 
-    if (request.identifier == set_id) {
+    if (is_set) {
         const auto& arguments =
             xnu::mig::task::task_set_exception_ports_arguments;
         const auto descriptor_count =
@@ -187,13 +226,16 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
         const auto received_right = right_for_disposition(disposition);
         const auto source_right = source_right_for_disposition(disposition);
         std::uint32_t result = mach_message_success;
-        std::uint32_t task_object = 0;
+        std::uint32_t target_object = 0;
         std::uint32_t port_object = 0;
         {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
-            const auto task = task_object_for_name_locked(
-                *shared_state_, process_.pid, request.remote_port);
-            task_object = task.value_or(0);
+            const auto target = is_host
+                                    ? host_object_for_name_locked(*shared_state_,
+                                          process_.pid, request.remote_port)
+                                    : task_object_for_name_locked(*shared_state_,
+                                          process_.pid, request.remote_port);
+            target_object = target.value_or(0);
             const auto port =
                 port_name && *port_name == xnu::ipc::null_name
                     ? std::optional<std::uint32_t> { xnu::ipc::null_name }
@@ -216,7 +258,7 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
                 (received_right && source_right &&
                     *received_right == xnu::ipc::Right::Send);
             if (!valid_wire || !exception_mask || !behavior || !flavor ||
-                !task || (*exception_mask & ~valid_exception_mask) != 0) {
+                !target || (*exception_mask & ~valid_mask) != 0) {
                 result = kernel_invalid_argument;
             } else if (!port || !valid_port_right) {
                 result = kernel_invalid_capability;
@@ -228,7 +270,9 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
                            *port_name, xnu::ipc::Right::Send, true)) {
                 result = kernel_invalid_right;
             } else {
-                auto& actions = shared_state_->task_exception_actions[*task];
+                auto& actions = is_host
+                                    ? shared_state_->host_exception_actions
+                                    : shared_state_->task_exception_actions[*target];
                 for (std::size_t type = first_exception_type;
                     type < KernelSharedState::task_exception_type_count;
                     ++type) {
@@ -255,9 +299,10 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
         }
         registers[0] = write_simple_reply(memory_, request.address,
             request.local_port, request.identifier, result);
-        output_.write("[mach] task_set_exception_ports caller=" +
+        output_.write(std::string { is_host ? "[mach] host_set_exception_ports caller="
+                                         : "[mach] task_set_exception_ports caller=" } +
                       std::to_string(process_.pid) +
-                      " task=" + std::to_string(task_object) + " mask=0x" +
+                      " target=" + std::to_string(target_object) + " mask=0x" +
                       hexadecimal(exception_mask.value_or(0)) +
                       " port=" + std::to_string(port_object) +
                       " behavior=" + std::to_string(behavior.value_or(0)) +
@@ -270,26 +315,29 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
         xnu::mig::task::task_get_exception_ports_arguments;
     const auto exception_mask =
         memory_.read32(request.address + arguments[1].request_offset);
-    std::uint32_t task_object = 0;
+    std::uint32_t target_object = 0;
     std::uint32_t result = mach_message_success;
     std::vector<ExceptionGroup> groups;
     std::vector<std::uint32_t> handler_names;
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
-        const auto task = task_object_for_name_locked(
-            *shared_state_, process_.pid, request.remote_port);
-        task_object = task.value_or(0);
-        if (registers[2] < task_get_request_size || !exception_mask || !task ||
-            (*exception_mask & ~valid_exception_mask) != 0) {
+        const auto target = is_host
+                                ? host_object_for_name_locked(*shared_state_,
+                                      process_.pid, request.remote_port)
+                                : task_object_for_name_locked(*shared_state_,
+                                      process_.pid, request.remote_port);
+        target_object = target.value_or(0);
+        if (registers[2] < task_get_request_size || !exception_mask || !target ||
+            (*exception_mask & ~valid_mask) != 0) {
             result = kernel_invalid_argument;
         } else {
-            const auto actions =
-                shared_state_->task_exception_actions.find(*task);
             const KernelSharedState::TaskExceptionActions defaults { };
-            groups = group_exception_actions(
-                actions == shared_state_->task_exception_actions.end()
-                    ? defaults
-                    : actions->second,
+            const auto actions = shared_state_->task_exception_actions.find(*target);
+            groups = group_exception_actions(is_host
+                    ? shared_state_->host_exception_actions
+                    : actions == shared_state_->task_exception_actions.end()
+                        ? defaults
+                        : actions->second,
                 *exception_mask);
             const auto reply_size = exception_reply_array_base_size +
                                     static_cast<std::uint32_t>(groups.size()) *
@@ -356,9 +404,11 @@ bool CompatibilityKernel::dispatch_mach_task_exception_message(
                            ? mach_message_success
                            : mach_receive_invalid_data;
     }
-    output_.write("[mach] task_get_exception_ports caller=" +
+    output_.write(std::string { is_host ? "[mach] host_get_exception_ports caller="
+                                     : "[mach] task_get_exception_ports caller=" } +
                   std::to_string(process_.pid) +
-                  " task=" + std::to_string(task_object) + " mask=0x" +
+                  " remote=" + std::to_string(request.remote_port) +
+                  " target=" + std::to_string(target_object) + " mask=0x" +
                   hexadecimal(exception_mask.value_or(0)) +
                   " count=" + std::to_string(groups.size()) +
                   " result=" + std::to_string(result) + "\n");

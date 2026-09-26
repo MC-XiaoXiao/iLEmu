@@ -577,6 +577,12 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             return fail_receive(0x10004008U); // MACH_RCV_INVALID_DATA
         }
     }
+    if (pending_message.voucher_object && pending_message.voucher_right &&
+        *pending_message.voucher_right == xnu::ipc::Right::Receive &&
+        !shared_state_->mach_port_objects.contains(
+            *pending_message.voucher_object)) {
+        return fail_receive(darwin::mach_message::receive_invalid_data);
+    }
     for (const auto& transfer : pending_message.port_transfers) {
         if (transfer.right == xnu::ipc::Right::Receive &&
             !shared_state_->mach_port_objects.contains(transfer.object)) {
@@ -613,6 +619,20 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
                 release_inflight_send_right_locked(
                     *shared_state_, *reply_object);
             }
+        }
+    }
+    if (pending_message.voucher_object && pending_message.voucher_right) {
+        const auto voucher_name = copyout_received_right(
+            *pending_message.voucher_object, *pending_message.voucher_right);
+        if (!voucher_name) {
+            outcome.status = darwin::mach_message::receive_invalid_data;
+            return outcome;
+        }
+        write_little_word(received->bytes,
+            darwin::mig_wire::header_voucher_offset, *voucher_name);
+        if (*pending_message.voucher_right == xnu::ipc::Right::Send) {
+            release_inflight_send_right_locked(*shared_state_,
+                *pending_message.voucher_object);
         }
     }
 

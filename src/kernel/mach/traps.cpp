@@ -144,9 +144,15 @@ void CompatibilityKernel::dispatch_mach(Cpu& cpu, std::uint32_t trap)
     case 28: // task_self_trap
         registers[0] = process_.task_port;
         return;
-    case 29: // host_self_trap
+    case 29: { // host_self_trap
+        std::lock_guard mach_lock { shared_state_->mach_mutex };
+        const auto name = shared_state_->mach_namespaces.copyout_at_name(
+            process_.pid, mach_task_identity::initial_host_self_name,
+            xnu::ipc::type_mask(xnu::ipc::Right::Send), process_.host_port);
+        process_.host_port = name.value_or(xnu::ipc::null_name);
         registers[0] = process_.host_port;
         return;
+    }
     case 44: { // task_name_for_pid(target_task, pid, task_name_out)
         constexpr std::uint32_t kern_failure = 5;
         const auto target_task = registers[0];

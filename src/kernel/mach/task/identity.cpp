@@ -30,9 +30,12 @@ namespace {
         // objects. Materialize them once so fallback MIG dispatch can
         // distinguish a valid kernel destination from an invalid name without
         // hard-coding a routine or firmware version.
-        if (!state.mach_port_objects.contains(name) &&
-            !state.mach_port_objects.create(name)) {
-            return false;
+        if (!state.mach_port_objects.contains(name)) {
+            if (!state.mach_port_objects.create(name))
+                return false;
+            // Kernel service ports survive a task releasing its last Send
+            // right. Later self traps may copy out another right to them.
+            ++state.mach_kernel_send_rights[name];
         }
         return state.mach_namespaces.install(
             process.pid, name, name, send_right);

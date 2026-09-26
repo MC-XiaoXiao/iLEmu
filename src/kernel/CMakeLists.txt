@@ -372,7 +372,7 @@ add_library(ilemu_kernel_mach_task STATIC
     mach/task/identity.cpp
     mach/task/info.cpp
     mach/task/enumeration.cpp
-    mach/task/exception_ports.cpp)
+    mach/exception_ports.cpp)
 add_library(iLEmu::kernel_mach_task ALIAS
     ilemu_kernel_mach_task)
 ilemu_configure_module(ilemu_kernel_mach_task)
@@ -427,6 +427,8 @@ target_sources(ilemu_kernel PRIVATE
     mach/semaphore.cpp
     mach/message.cpp
     mach/host_message.cpp
+    mach/host_special_port.cpp
+    mach/voucher_message.cpp
     mach/port_message.cpp
     mach/task_vm_message.cpp
     mach/rights_message.cpp

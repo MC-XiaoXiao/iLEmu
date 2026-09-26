@@ -11,6 +11,7 @@
 #include "kernel/graphics_services_input.hpp"
 #include "kernel/kernel.hpp"
 #include "foundation/performance.hpp"
+#include "../../mach/support.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -29,10 +30,18 @@ namespace {
     constexpr std::uint16_t posix_spawn_start_suspended = 0x0080U;
     constexpr std::uint32_t maximum_vector_entries = 4096U;
     constexpr std::uint32_t maximum_string_size = 64U * 1024U;
+    constexpr std::uint32_t maximum_port_actions = 256U;
+
+    struct SpawnPortAction {
+        std::uint32_t type { };
+        std::uint32_t port_name { };
+        std::uint32_t which { };
+    };
 
     struct PosixSpawnAttributes {
         bool setexec { };
         bool start_suspended { };
+        std::vector<SpawnPortAction> port_actions;
     };
 
     std::optional<std::vector<std::string>> read_string_vector(
@@ -77,7 +86,79 @@ namespace {
             result.start_suspended =
                 (*flags & posix_spawn_start_suspended) != 0;
         }
+        // The 32-bit _posix_spawn_args_desc carries the port-actions block
+        // separately from the fixed spawnattr structure. Each action is the
+        // six-word _ps_port_action_t defined by XNU's spawn_internal.h.
+        const auto port_actions_size = memory.read32(address + 16U);
+        const auto port_actions_address = memory.read32(address + 20U);
+        if (!port_actions_size || !port_actions_address)
+            return std::nullopt;
+        if (*port_actions_size != 0U) {
+            if (*port_actions_address == 0U || *port_actions_size < 8U)
+                return std::nullopt;
+            const auto count = memory.read32(*port_actions_address + 4U);
+            if (!count || *count > maximum_port_actions ||
+                *port_actions_size < 8U + *count * 24U)
+                return std::nullopt;
+            for (std::uint32_t index = 0; index < *count; ++index) {
+                const auto record = *port_actions_address + 8U + index * 24U;
+                const auto type = memory.read32(record);
+                const auto port_name = memory.read32(record + 8U);
+                const auto which = memory.read32(record + 20U);
+                if (!type || !port_name || !which)
+                    return std::nullopt;
+                result.port_actions.push_back({ *type, *port_name, *which });
+            }
+        }
         return result;
+    }
+
+    std::uint32_t apply_special_port_actions(KernelSharedState& state,
+        ProcessContext& process, const PosixSpawnAttributes& attributes)
+    {
+        std::lock_guard mach_lock { state.mach_mutex };
+        const auto task_object =
+            state.mach_namespaces.resolve(process.pid, process.task_port);
+        if (!task_object)
+            return bsd_support::invalid_argument;
+        for (const auto& action : attributes.port_actions) {
+            if (action.type != 0U) // PSPA_SPECIAL
+                continue;
+            if (!attributes.setexec)
+                return 45U; // ENOTSUP
+            const auto port_object =
+                action.port_name == xnu::ipc::null_name
+                    ? std::optional<std::uint32_t> { 0U }
+                    : mach_support::resolve_name_with_right(state,
+                          process.pid, action.port_name, xnu::ipc::Right::Send);
+            if (!port_object)
+                return bsd_support::invalid_argument;
+            const auto task = state.task_special_ports.find(*task_object);
+            const auto previous =
+                task != state.task_special_ports.end() &&
+                        task->second.contains(action.which)
+                    ? task->second.at(action.which)
+                    : 0U;
+            if (*port_object != 0U && previous != *port_object)
+                mach_support::retain_kernel_send_right_locked(state,
+                    *port_object);
+            if (*port_object == 0U) {
+                if (task != state.task_special_ports.end()) {
+                    task->second.erase(action.which);
+                    if (task->second.empty())
+                        state.task_special_ports.erase(task);
+                }
+            } else {
+                state.task_special_ports[*task_object][action.which] =
+                    *port_object;
+            }
+            if (previous != 0U && previous != *port_object)
+                mach_support::release_kernel_send_right_locked(state, previous);
+            if (action.which == 4U)
+                process.bootstrap_port = *port_object != 0U
+                    ? action.port_name : xnu::ipc::null_name;
+        }
+        return 0U;
     }
 
 } // namespace
@@ -128,6 +209,15 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
             bsd_error(cpu, 8); // ENOEXEC
             return true;
         }
+        if (const auto error = apply_special_port_actions(
+                *shared_state_, process_, *attributes); error != 0U) {
+            bsd_error(cpu, error);
+            return true;
+        }
+        output_.write("[process] spawn-port-actions pid=" +
+            std::to_string(process_.pid) + " count=" +
+            std::to_string(attributes->port_actions.size()) +
+            " bootstrap=" + std::to_string(process_.bootstrap_port) + "\n");
         // SpringBoard's older launch path forks a helper and asks that child to
         // SETEXEC the application. There is no separate child-return path
         // below, so observe the successful PID-bound spawn here after exec has

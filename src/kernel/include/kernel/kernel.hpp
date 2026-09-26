@@ -614,6 +614,10 @@ private:
         std::optional<std::uint32_t> receive_address = std::nullopt);
     [[nodiscard]] bool dispatch_mach_host_message(
         Cpu& cpu, const MachMessageRequest& request);
+    [[nodiscard]] bool dispatch_mach_voucher_message(
+        Cpu& cpu, const MachMessageRequest& request);
+    [[nodiscard]] bool dispatch_mach_host_special_port_message(
+        Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_processor_message(
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_port_message(
@@ -632,7 +636,7 @@ private:
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_task_info_message(
         Cpu& cpu, const MachMessageRequest& request);
-    [[nodiscard]] bool dispatch_mach_task_exception_message(
+    [[nodiscard]] bool dispatch_mach_exception_ports_message(
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_thread_state_message(
         Cpu& cpu, const MachMessageRequest& request);

@@ -167,12 +167,14 @@ void CompatibilityKernel::dispatch_mach_message(
         const MachMessageRequest request { message_address, *bits, *remote_port,
             *local_port, *message_id };
         if (dispatch_mach_host_message(cpu, request) ||
+            dispatch_mach_host_special_port_message(cpu, request) ||
+            dispatch_mach_voucher_message(cpu, request) ||
             dispatch_mach_processor_message(cpu, request) ||
             dispatch_mach_port_message(cpu, request) ||
             dispatch_mach_port_context_message(cpu, request) ||
             dispatch_mach_task_enumeration_message(cpu, request) ||
             dispatch_mach_task_info_message(cpu, request) ||
-            dispatch_mach_task_exception_message(cpu, request) ||
+            dispatch_mach_exception_ports_message(cpu, request) ||
             dispatch_mach_thread_lifecycle_message(cpu, request) ||
             dispatch_mach_thread_state_message(cpu, request) ||
             dispatch_mach_task_vm_message(cpu, request) ||
@@ -741,8 +743,11 @@ void CompatibilityKernel::dispatch_mach_message(
             if (routable) {
                 std::optional<std::uint32_t> reply_object;
                 std::optional<xnu::ipc::Right> reply_right;
+                std::optional<std::uint32_t> voucher_object;
+                std::optional<xnu::ipc::Right> voucher_right;
                 std::optional<std::uint32_t> destination_send_object;
                 std::uint32_t reply_disposition = 0;
+                std::uint32_t voucher_disposition = 0;
                 std::vector<KernelSharedState::MachMessage::PortTransfer>
                     port_transfers;
                 const auto capture =
@@ -785,6 +790,25 @@ void CompatibilityKernel::dispatch_mach_message(
                         // as a send-right error; treating it as an unknown trap
                         // incorrectly terminates otherwise healthy servers
                         // which intentionally probe optional rights.
+                        registers[0] = darwin::mach_message::send_invalid_right;
+                        return;
+                    }
+                }
+
+                const auto voucher_name =
+                    memory_
+                        .read32(message_address +
+                                darwin::mig_wire::header_voucher_offset)
+                        .value_or(0);
+                voucher_disposition = (*bits >> 16U) & 0xffU;
+                if (voucher_name != xnu::ipc::null_name &&
+                    voucher_name != xnu::ipc::dead_name &&
+                    voucher_disposition != 0U) {
+                    if (const auto transfer =
+                            capture(voucher_name, voucher_disposition, 0)) {
+                        voucher_object = transfer->object;
+                        voucher_right = transfer->right;
+                    } else {
                         registers[0] = darwin::mach_message::send_invalid_right;
                         return;
                     }
@@ -867,6 +891,10 @@ void CompatibilityKernel::dispatch_mach_message(
                         !count_move(reply_name, reply_disposition)) {
                         routable = false;
                     }
+                    if (routable && voucher_object &&
+                        !count_move(voucher_name, voucher_disposition)) {
+                        routable = false;
+                    }
                     if (routable) {
                         for (const auto& transfer : port_transfers) {
                             if (!count_move(transfer.sender_name,
@@ -932,6 +960,10 @@ void CompatibilityKernel::dispatch_mach_message(
                     !consume_transfer(reply_name, reply_disposition)) {
                     routable = false;
                 }
+                if (routable && voucher_object &&
+                    !consume_transfer(voucher_name, voucher_disposition)) {
+                    routable = false;
+                }
                 if (routable) {
                     for (const auto& transfer : port_transfers) {
                         if (!consume_transfer(
@@ -979,6 +1011,10 @@ void CompatibilityKernel::dispatch_mach_message(
                     if (reply_object && reply_right) {
                         retain_inflight(
                             *reply_object, *reply_right, reply_disposition);
+                    }
+                    if (voucher_object && voucher_right) {
+                        retain_inflight(*voucher_object, *voucher_right,
+                            voucher_disposition);
                     }
                     for (const auto& transfer : port_transfers) {
                         retain_inflight(transfer.object, transfer.right,
@@ -1061,6 +1097,8 @@ void CompatibilityKernel::dispatch_mach_message(
                     queued.reply_object = reply_object;
                     routed_reply_object = reply_object;
                     queued.reply_right = reply_right;
+                    queued.voucher_object = voucher_object;
+                    queued.voucher_right = voucher_right;
                     queued.destination_send_object = destination_send_object;
                     queued.port_transfers = std::move(port_transfers);
                     shared_state_->enqueue_mach_message_locked(

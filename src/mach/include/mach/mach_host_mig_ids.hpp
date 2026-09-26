@@ -43,6 +43,8 @@ enum class Routine : std::uint32_t {
     host_statistics = 216U,
     host_request_notification = 217U,
     host_lockgroup_info = 218U,
+    // Darwin 14 adds voucher creation after the host statistics/zone slots.
+    host_create_mach_voucher = 222U,
 };
 
 inline constexpr std::array<ArgumentInfo, 3> host_info_arguments{{

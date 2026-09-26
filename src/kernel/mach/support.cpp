@@ -604,6 +604,10 @@ namespace mach_support {
                     action.port_object = xnu::ipc::null_name;
             }
         }
+        for (auto& action : state.host_exception_actions) {
+            if (action.port_object == object)
+                action.port_object = xnu::ipc::null_name;
+        }
         // Kernel-held special-port references cannot outlive their backing
         // port. In-flight message holds are tracked separately and are
         // deliberately retained until their queue sidecar is delivered or
@@ -612,6 +616,7 @@ namespace mach_support {
         state.mach_semaphores.erase(object);
         state.mach_timers.erase(object);
         state.mach_memory_entries.erase(object);
+        state.mach_vouchers.erase(object);
         state.mach_fileports.erase(object);
         state.iokit_iterators.erase(object);
         // Every IOServiceClose and receive-right teardown converges here.
@@ -686,6 +691,28 @@ namespace mach_support {
             return;
         }
         state.mach_fileports.erase(object);
+        remove_port_object_locked(state, object);
+    }
+
+    void release_unreferenced_voucher_locked(
+        KernelSharedState& state, std::uint32_t object)
+    {
+        if (!state.mach_vouchers.contains(object) ||
+            state.mach_namespaces.right_reference_count(
+                object, xnu::ipc::Right::Send) != 0) {
+            return;
+        }
+        const auto inflight = state.mach_inflight_send_rights.find(object);
+        if (inflight != state.mach_inflight_send_rights.end() &&
+            inflight->second != 0) {
+            return;
+        }
+        const auto kernel_hold = state.mach_kernel_send_rights.find(object);
+        if (kernel_hold != state.mach_kernel_send_rights.end() &&
+            kernel_hold->second != 0) {
+            return;
+        }
+        state.mach_vouchers.erase(object);
         remove_port_object_locked(state, object);
     }
 
@@ -1015,6 +1042,7 @@ namespace mach_support {
         static_cast<void>(
             enqueue_no_senders_notification_locked(state, object));
         release_unreferenced_fileport_locked(state, object);
+        release_unreferenced_voucher_locked(state, object);
     }
 
     void retain_kernel_send_right_locked(
@@ -1044,6 +1072,7 @@ namespace mach_support {
         release_unreferenced_memory_entry_locked(state, object);
         release_unreferenced_iokit_object_locked(state, object);
         release_unreferenced_fileport_locked(state, object);
+        release_unreferenced_voucher_locked(state, object);
     }
 
     void discard_mach_message_rights_locked(
@@ -1069,6 +1098,9 @@ namespace mach_support {
         if (message.reply_object && message.reply_right) {
             discard(*message.reply_object, *message.reply_right);
         }
+        if (message.voucher_object && message.voucher_right) {
+            discard(*message.voucher_object, *message.voucher_right);
+        }
         if (message.destination_send_object) {
             release_inflight_send_right_locked(
                 state, *message.destination_send_object);
@@ -1084,7 +1116,6 @@ namespace mach_support {
         const auto entry = state.mach_namespaces.lookup(task, name);
         if (!entry)
             return false;
-
         cancel_dead_name_notification_locked(state, task, name);
         if (!state.mach_namespaces.destroy_name(task, name))
             return false;
@@ -1106,6 +1137,7 @@ namespace mach_support {
         }
         if (has(xnu::ipc::Right::Send)) {
             release_unreferenced_fileport_locked(state, entry->object);
+            release_unreferenced_voucher_locked(state, entry->object);
         }
         return true;
     }
@@ -1193,6 +1225,7 @@ namespace mach_support {
             static_cast<void>(
                 enqueue_no_senders_notification_locked(state, entry->object));
             release_unreferenced_fileport_locked(state, entry->object);
+            release_unreferenced_voucher_locked(state, entry->object);
         }
         return kern_success;
     }

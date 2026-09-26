@@ -553,6 +553,8 @@ struct KernelSharedState {
         std::vector<OolPortArray> ool_port_arrays;
         std::optional<std::uint32_t> reply_object;
         std::optional<xnu::ipc::Right> reply_right;
+        std::optional<std::uint32_t> voucher_object;
+        std::optional<xnu::ipc::Right> voucher_right;
         // A MOVE_SEND used as the message's remote port has no sender ipc_entry
         // after copyin, but the queued message still keeps the destination port
         // alive until receive/discard. Record that hold explicitly.
@@ -1074,7 +1076,7 @@ struct KernelSharedState {
 
         bool operator==(const TaskExceptionAction&) const = default;
     };
-    static constexpr std::size_t task_exception_type_count = 11;
+    static constexpr std::size_t task_exception_type_count = 13;
     using TaskExceptionActions =
         std::array<TaskExceptionAction, task_exception_type_count>;
     struct MachNotificationRequest {
@@ -1307,9 +1309,13 @@ struct KernelSharedState {
         task_thread_port_objects;
     std::map<std::uint32_t, std::map<std::uint32_t, std::uint32_t>>
         task_special_ports;
+    std::map<std::uint32_t, std::uint32_t> host_special_ports;
     // XNU stores exception actions on the task object, not in the caller's
     // task-local IPC namespace. Port fields therefore use global IPC objects.
     std::map<std::uint32_t, TaskExceptionActions> task_exception_actions;
+    // Host exception handlers belong to the kernel host, independent of any
+    // task's lifetime or namespace.
+    TaskExceptionActions host_exception_actions { };
     std::map<std::uint32_t, std::deque<MachMessage>> mach_queues;
     // Queue producers may run on host input/device threads while guest kernels
     // poll from the scheduler. Keep the cheap readiness snapshot lock-free;
@@ -1613,6 +1619,7 @@ struct KernelSharedState {
     // XNU named-memory entries are kernel ipc_port objects. The per-task Mach
     // namespace carries rights; this table carries the referenced VM object.
     std::map<std::uint32_t, MachMemoryEntry> mach_memory_entries;
+    std::map<std::uint32_t, std::vector<std::byte>> mach_vouchers;
     // BSD fileports are send-only Mach objects whose payload is a transferable
     // open-file description. The key is the global object identifier; callers
     // hold mach_mutex while accessing this table.
