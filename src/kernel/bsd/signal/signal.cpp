@@ -39,6 +39,21 @@ namespace {
 
 } // namespace
 
+void CompatibilityKernel::apply_spawn_signal_attributes(
+    const SpawnSignalAttributes& attributes)
+{
+    if (attributes.mask) {
+        constexpr auto unmaskable =
+            (1U << (darwin::signal::kill - 1U)) |
+            (1U << (darwin::signal::stop - 1U));
+        signal_mask_ = *attributes.mask & ~unmaskable;
+    }
+    for (std::size_t signal = 1; signal < signal_actions_.size(); ++signal) {
+        if ((attributes.defaults & (1U << (signal - 1U))) != 0U)
+            signal_actions_[signal] = { };
+    }
+}
+
 std::uint32_t CompatibilityKernel::deliver_signal(std::uint32_t signal)
 {
     if (signal == 0 || signal >= darwin::signal::count) {

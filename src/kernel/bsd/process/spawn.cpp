@@ -15,6 +15,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -26,6 +27,8 @@ namespace ilemu {
 namespace {
 
     constexpr std::uint32_t posix_spawn_syscall = 244U;
+    constexpr std::uint16_t posix_spawn_setsigdef = 0x0004U;
+    constexpr std::uint16_t posix_spawn_setsigmask = 0x0008U;
     constexpr std::uint16_t posix_spawn_setexec = 0x0040U;
     constexpr std::uint16_t posix_spawn_start_suspended = 0x0080U;
     constexpr std::uint32_t maximum_vector_entries = 4096U;
@@ -41,6 +44,7 @@ namespace {
     struct PosixSpawnAttributes {
         bool setexec { };
         bool start_suspended { };
+        CompatibilityKernel::SpawnSignalAttributes signals;
         std::vector<SpawnPortAction> port_actions;
     };
 
@@ -85,6 +89,28 @@ namespace {
             result.setexec = (*flags & posix_spawn_setexec) != 0;
             result.start_suspended =
                 (*flags & posix_spawn_start_suspended) != 0;
+            // XNU _posix_spawnattr begins with flags/padding, sigdefault and
+            // sigmask. Read only the fields requested by the flags.
+            const auto read_signal_set = [&](std::uint32_t offset)
+                -> std::optional<std::uint32_t> {
+                if (*attribute_size < offset + sizeof(std::uint32_t) ||
+                    *attribute_address >
+                        std::numeric_limits<std::uint32_t>::max() -
+                            offset - (sizeof(std::uint32_t) - 1U))
+                    return std::nullopt;
+                return memory.read32(*attribute_address + offset);
+            };
+            if ((*flags & posix_spawn_setsigdef) != 0U) {
+                const auto defaults = read_signal_set(4U);
+                if (!defaults)
+                    return std::nullopt;
+                result.signals.defaults = *defaults;
+            }
+            if ((*flags & posix_spawn_setsigmask) != 0U) {
+                result.signals.mask = read_signal_set(8U);
+                if (!result.signals.mask)
+                    return std::nullopt;
+            }
         }
         // The 32-bit _posix_spawn_args_desc carries the port-actions block
         // separately from the fixed spawnattr structure. Each action is the
@@ -214,6 +240,7 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
             bsd_error(cpu, error);
             return true;
         }
+        apply_spawn_signal_attributes(attributes->signals);
         output_.write("[process] spawn-port-actions pid=" +
             std::to_string(process_.pid) + " count=" +
             std::to_string(attributes->port_actions.size()) +
@@ -261,7 +288,7 @@ bool CompatibilityKernel::dispatch_bsd_process_spawn(
     performance_counters().record_fork();
     if (!spawn_exec_handler_ ||
         !spawn_exec_handler_(*child, *path, *arguments, *environment,
-            attributes->start_suspended)) {
+            attributes->start_suspended, attributes->signals)) {
         bsd_error(cpu, 8); // ENOEXEC
         return true;
     }

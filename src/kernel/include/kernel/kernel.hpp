@@ -125,8 +125,13 @@ public:
         std::function<std::optional<std::uint32_t>(Cpu&)>;
     using ExecHandler = std::function<bool(
         Cpu&, std::string, std::vector<std::string>, std::vector<std::string>)>;
+    struct SpawnSignalAttributes {
+        std::optional<std::uint32_t> mask;
+        std::uint32_t defaults { };
+    };
     using SpawnExecHandler = std::function<bool(std::uint32_t, std::string,
-        std::vector<std::string>, std::vector<std::string>, bool)>;
+        std::vector<std::string>, std::vector<std::string>, bool,
+        const SpawnSignalAttributes&)>;
     using SchedulerRunnableQuery = std::function<bool(std::size_t)>;
     using LegacyThreadPolicyHandler =
         std::function<bool(std::size_t, std::uint32_t, std::int32_t, bool)>;
@@ -444,6 +449,7 @@ public:
         std::uint32_t child_pid,
         ProcessInheritance inheritance = ProcessInheritance::Fork);
     void prepare_exec(std::size_t processor_id);
+    void apply_spawn_signal_attributes(const SpawnSignalAttributes& attributes);
     void install_main_image_hle(
         Cpu& cpu, std::string_view mapped_guest_path = { });
     void set_process_image(std::string_view guest_path,

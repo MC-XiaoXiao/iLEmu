@@ -1787,7 +1787,10 @@ void EmulatorSession::run()
                                                        arguments,
                                                    std::vector<std::string>
                                                        environment,
-                                                   bool start_suspended) {
+                                                   bool start_suspended,
+                                                   const CompatibilityKernel::
+                                                       SpawnSignalAttributes&
+                                                           signal_attributes) {
             auto* child_runtime = runtime_index.find(child_pid);
             if (child_runtime == nullptr)
                 return false;
@@ -1835,6 +1838,8 @@ void EmulatorSession::run()
                         path, loaded.executable.code_signature_entitlements(),
                         &loaded.dynamic_linker, &loaded.executable);
                     child_runtime->kernel->prepare_exec(0);
+                    child_runtime->kernel->apply_spawn_signal_attributes(
+                        signal_attributes);
                     auto& child_cpu = child_runtime->cpus->cpu(0);
                     child_cpu.reset();
                     child_cpu.clear_cache();

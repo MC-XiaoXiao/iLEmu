@@ -910,8 +910,12 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     mobile_framebuffer_hle_.reset();
     layerkit_hle_.reset();
     next_display_scanout_deadline_.reset();
-    signal_actions_ = { };
-    signal_mask_ = 0;
+    // execsigs resets caught handlers. Ignored dispositions and the caller's
+    // signal mask survive replacement of its address space.
+    for (auto& action : signal_actions_) {
+        if (action[0] != darwin::signal::ignore_action)
+            action = { };
+    }
     alternate_signal_stacks_.clear();
     reset_pthread_runtime();
     shared_state_->psynch_runtime->clear_process(process_.pid);
@@ -2817,9 +2821,11 @@ void CompatibilityKernel::inherit_process_state(
     socket_pair_endpoints_ = parent.socket_pair_endpoints_;
     if (inherit_fork_state) {
         vm_purgable_states_ = parent.vm_purgable_states_;
-        signal_actions_ = parent.signal_actions_;
-        signal_mask_ = parent.signal_mask_;
     }
+    // A fresh spawn address space still inherits signal state; explicit
+    // spawn attributes override it after exec has reset caught handlers.
+    signal_actions_ = parent.signal_actions_;
+    signal_mask_ = parent.signal_mask_;
     kqueues_ = parent.kqueues_;
     // Descriptors with FD_CLOFORK close in the child. Other guarded
     // descriptors inherit their guard along with the descriptor.
