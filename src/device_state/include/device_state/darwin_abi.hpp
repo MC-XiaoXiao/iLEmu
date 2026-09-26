@@ -32,6 +32,8 @@ enum class DarwinPthreadAbi : std::uint8_t {
     // Split libpthread retains v1 registration and four queues, but moves
     // its embedded TSD past the expanded thread bookkeeping fields.
     BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,
+    // Same TSD placement with encoded QoS classes and capability reporting.
+    BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues,
     BsdThreadRegisterV2,
 };
 
@@ -116,6 +118,31 @@ enum class DarwinPsynchAbi : std::uint8_t {
 enum class DarwinSemaphoreWaitAbi : std::uint8_t {
     InlineSeconds32,
     InlineSeconds64,
+};
+
+// Syscall slot 274 changed from sem_getvalue to sysctlbyname. Select the
+// audited syscall table explicitly so older semaphore clients keep their ABI.
+enum class DarwinSysctlByNameAbi : std::uint8_t {
+    LegacySemaphoreValue,
+    NamedSysctlAt274,
+};
+
+// Later XNU adds EXC_RESOURCE and EXC_GUARD to the exception mask. The
+// exception-port arrays reserve room for both, while older kernels reject
+// those bits through their selected wire contract.
+enum class DarwinExceptionPortAbi : std::uint8_t {
+    ThroughCrash,
+    ThroughGuard,
+};
+
+enum class DarwinCoalitionAbi : std::uint8_t {
+    Unsupported,
+    ResourceCoalitions,
+};
+
+enum class DarwinMachVoucherAbi : std::uint8_t {
+    Unsupported,
+    HostCreateWithInlineRecipes,
 };
 
 // Darwin 11 exposes the legacy stack_snapshot diagnostic syscall. Later
@@ -210,6 +237,14 @@ struct DarwinAbi {
     DarwinSemaphoreWaitAbi semaphore_wait_abi {
         DarwinSemaphoreWaitAbi::InlineSeconds32
     };
+    DarwinSysctlByNameAbi sysctl_by_name_abi {
+        DarwinSysctlByNameAbi::LegacySemaphoreValue
+    };
+    DarwinExceptionPortAbi exception_port_abi {
+        DarwinExceptionPortAbi::ThroughCrash
+    };
+    DarwinCoalitionAbi coalition_abi { DarwinCoalitionAbi::Unsupported };
+    DarwinMachVoucherAbi mach_voucher_abi { DarwinMachVoucherAbi::Unsupported };
     DarwinStackSnapshotAbi stack_snapshot_abi {
         DarwinStackSnapshotAbi::Unsupported
     };

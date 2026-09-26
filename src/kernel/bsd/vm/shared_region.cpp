@@ -80,6 +80,7 @@ namespace {
     struct MappingSource {
         std::filesystem::path path;
         std::uint64_t file_offset { };
+        std::uintmax_t file_size { };
         std::optional<GuestFileGeneration> expected_generation;
         std::optional<ContentIdentity> expected_content_identity;
         std::shared_ptr<const ImmutableFileView> immutable_file_view;
@@ -356,6 +357,56 @@ namespace {
         return available <=
                    std::numeric_limits<std::uintmax_t>::max() - padding &&
                size <= available + padding;
+    }
+
+    [[nodiscard]] std::uint32_t cache_mapping_alignment(
+        const Mapping& mapping)
+    {
+        constexpr auto maximum_alignment = 16U * 1024U;
+        auto alignment = AddressSpace::page_size;
+        while (alignment < maximum_alignment) {
+            const auto next_alignment = alignment * 2U;
+            if (mapping.address % next_alignment != 0U ||
+                mapping.size % next_alignment != 0U ||
+                mapping.file_offset % next_alignment != 0U) {
+                break;
+            }
+            alignment = next_alignment;
+        }
+        return alignment;
+    }
+
+    [[nodiscard]] bool fits_cache_mapping_file_range(const Mapping& mapping,
+        std::uintmax_t file_size)
+    {
+        if (mapping.file_offset > file_size)
+            return false;
+        const auto available = file_size - mapping.file_offset;
+        if (mapping.size <= available)
+            return true;
+        const auto alignment = cache_mapping_alignment(mapping);
+        const auto remainder = available % alignment;
+        const auto padding = remainder == 0U ? 0U : alignment - remainder;
+        return available <=
+                   std::numeric_limits<std::uintmax_t>::max() - padding &&
+               mapping.size <= available + padding;
+    }
+
+    [[nodiscard]] std::uint32_t file_backed_mapping_size(
+        const Mapping& mapping, std::uintmax_t file_size)
+    {
+        if (mapping.file_offset >= file_size)
+            return 0;
+        const auto available = file_size - mapping.file_offset;
+        const auto remainder = available % AddressSpace::page_size;
+        const auto padding =
+            remainder == 0U ? 0U : AddressSpace::page_size - remainder;
+        const auto page_rounded_available =
+            available <= std::numeric_limits<std::uintmax_t>::max() - padding
+                ? available + padding
+                : available;
+        return static_cast<std::uint32_t>(
+            std::min<std::uintmax_t>(mapping.size, page_rounded_available));
     }
 
     [[nodiscard]] bool valid_mapping(
@@ -771,7 +822,7 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
         [&](const Mapping& mapping) -> std::optional<MappingSource> {
         if (shared_cache == nullptr) {
             return MappingSource { descriptor->second, mapping.file_offset,
-                std::nullopt, std::nullopt, { } };
+                file_size, std::nullopt, std::nullopt, { } };
         }
         const auto files = shared_cache->files();
         for (std::size_t file_index = 0; file_index < files.size();
@@ -798,16 +849,15 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
                     return std::nullopt;
                 }
                 return MappingSource { source_path, source_offset,
-                    file.file_generation, file.content_identity,
+                    source_size, file.file_generation, file.content_identity,
                     shared_cache->immutable_file_view_at(file_index) };
             }
         }
 
-        // dyld may include an auxiliary range, such as the code-signature
-        // tail, in the shared-region request even though it is not listed in
-        // the cache member's VM mapping table. XNU rounds vnode mappings to a
-        // page and zeroes bytes beyond EOF, so accept only that final partial
-        // page while retaining the exact immutable cache generation.
+        // dyld can include an auxiliary, aligned tail range that is not listed
+        // in the cache member's VM mapping table. Keep it tied to the same
+        // immutable cache generation; the map loop backs file bytes and
+        // zero-fills only the range beyond EOF.
         const auto descriptor_file = std::find_if(files.begin(), files.end(),
             [&](const DyldCacheFileView& file) {
                 // Parsed generations may retain an absolute catalog path
@@ -821,12 +871,12 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
         if (descriptor_file != files.end()) {
             const auto cache_file = *descriptor_file;
             const auto source_size = cache_file.file_size;
-            if (fits_page_rounded_file_range(
-                    mapping.file_offset, mapping.size, source_size)) {
+            if (fits_cache_mapping_file_range(mapping, source_size)) {
                 const auto file_index = static_cast<std::size_t>(
                     std::distance(files.begin(), descriptor_file));
                 return MappingSource { cache_file.path, mapping.file_offset,
-                    cache_file.file_generation, cache_file.content_identity,
+                    source_size, cache_file.file_generation,
+                    cache_file.content_identity,
                     shared_cache->immutable_file_view_at(file_index) };
             }
         }
@@ -834,7 +884,7 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
     };
 
     std::vector<AppliedMapping> applied;
-    applied.reserve(mappings->size());
+    applied.reserve(mappings->size() * 2U);
     // Non-cache shared-region calls describe several ranges of the same
     // descriptor. Reuse the first validated backing across those ranges so a
     // cold App launch does not reopen, canonicalize, and re-identify the same
@@ -867,15 +917,33 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
         const auto map_started =
             diagnostics.enabled() ? std::chrono::steady_clock::now()
                                   : std::chrono::steady_clock::time_point { };
-        const auto mapped =
-            zero_fill ? memory_.map(address, mapping.size, mapping_permissions)
-                      : memory_.map_file(address, mapping.size,
-                            mapping_permissions, source->path,
-                            source->file_offset, source->expected_generation,
-                            source->expected_content_identity, { },
-                            source->immutable_file_view,
-                            shared_cache == nullptr ? &file_mapping_context
-                                                    : nullptr);
+        bool mapped = true;
+        if (zero_fill) {
+            mapped = memory_.map(address, mapping.size, mapping_permissions);
+            if (mapped)
+                applied.push_back({ address, mapping.size });
+        } else {
+            const auto file_backed_size =
+                file_backed_mapping_size(mapping, source->file_size);
+            const auto zero_fill_size = mapping.size - file_backed_size;
+            if (file_backed_size != 0U) {
+                mapped = memory_.map_file(address, file_backed_size,
+                    mapping_permissions, source->path,
+                    source->file_offset, source->expected_generation,
+                    source->expected_content_identity, { },
+                    source->immutable_file_view,
+                    shared_cache == nullptr ? &file_mapping_context : nullptr);
+                if (mapped)
+                    applied.push_back({ address, file_backed_size });
+            }
+            if (mapped && zero_fill_size != 0U) {
+                const auto zero_fill_address = address + file_backed_size;
+                mapped = memory_.map(
+                    zero_fill_address, zero_fill_size, mapping_permissions);
+                if (mapped)
+                    applied.push_back({ zero_fill_address, zero_fill_size });
+            }
+        }
         if (diagnostics.enabled())
             map_time += std::chrono::steady_clock::now() - map_started;
         if (!mapped) {
@@ -883,7 +951,6 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
             bsd_error(cpu, zero_fill ? 12 : bsd_support::invalid_argument);
             return true;
         }
-        applied.push_back({ address, mapping.size });
         if (*address_slide == 0U &&
             has_permission(mapping_permissions, MemoryPermission::Execute)) {
             memory_.mark_translation_profile_stable(address, mapping.size);

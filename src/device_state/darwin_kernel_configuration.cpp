@@ -67,6 +67,51 @@ namespace {
         return abi;
     }();
 
+    constexpr DarwinAbi darwin14_expanded_shared_region_abi {
+        .abi_epoch = DarwinAbiEpoch::Later,
+        .pthread_abi = DarwinPthreadAbi::
+            BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,
+        .io_connect_method =
+            DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar,
+        .mach_vm_address = DarwinMachVmAddressWidth::Wide64,
+        .arm_commpage = DarwinArmCommpageAbi::HighDataAddress,
+        .initial_apple_vector_abi =
+            DarwinInitialAppleVectorAbi::LegacyExecutablePath,
+        .shared_region_abi =
+            DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1,
+        .mach_kernel_rpc =
+            DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps,
+        .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+        .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
+        .iokit_matching_rpc = DarwinIOKitMatchingRpcAbi::
+            InlineSingleServiceAfterVariableOutput,
+        .framebuffer_registry =
+            DarwinFramebufferRegistryAbi::UnifiedClcdClass,
+        .sandbox_abi = DarwinSandboxAbi::Wide64Arguments,
+        .mach_port_context = DarwinMachVmAddressWidth::Wide64,
+        .memory_status_priority = DarwinMemoryStatusPriorityAbi::PriorityBands,
+        .hid_digitizer = DarwinHidDigitizerAbi::CollectionContactChangesWithEdgeOrigin,
+        .address_layout = DarwinAddressLayout::ExpandedArmSharedRegion,
+        .io_service_state =
+            DarwinIOServiceStateAbi::StateWithBusyAccounting,
+        .capabilities = { .send_sigsys = true },
+    };
+
+    // Keep release identity separate from the fine-priority/voucher contract.
+    // Older expanded-region callers retain their original stack and queues.
+    constexpr DarwinAbi darwin14_fine_priority_abi = [] {
+        auto abi = darwin14_expanded_shared_region_abi;
+        abi.pthread_abi = DarwinPthreadAbi::
+            BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues;
+        abi.sysctl_by_name_abi = DarwinSysctlByNameAbi::NamedSysctlAt274;
+        abi.exception_port_abi = DarwinExceptionPortAbi::ThroughGuard;
+        abi.coalition_abi = DarwinCoalitionAbi::ResourceCoalitions;
+        abi.mach_voucher_abi =
+            DarwinMachVoucherAbi::HostCreateWithInlineRecipes;
+        abi.address_layout = DarwinAddressLayout::ArmSharedRegionAt512MiB;
+        return abi;
+    }();
+
     // Release identity and ABI values are independent. Entries sharing a
     // Darwin release retain the wire differences required by their callers.
     constexpr std::array configurations {
@@ -202,35 +247,12 @@ namespace {
         DarwinConfigurationEntry {
             .name = "darwin14.0.0",
             .darwin_release = "14.0.0",
-            .abi = {
-                .abi_epoch = DarwinAbiEpoch::Later,
-                .pthread_abi = DarwinPthreadAbi::
-                    BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,
-                .io_connect_method =
-                    DarwinIOConnectMethodAbi::MachVm64OolStructureThenScalar,
-                .mach_vm_address = DarwinMachVmAddressWidth::Wide64,
-                .arm_commpage = DarwinArmCommpageAbi::HighDataAddress,
-                .initial_apple_vector_abi =
-                    DarwinInitialAppleVectorAbi::LegacyExecutablePath,
-                .shared_region_abi =
-                    DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1,
-                .mach_kernel_rpc =
-                    DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps,
-                .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
-                .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
-                .iokit_matching_rpc = DarwinIOKitMatchingRpcAbi::
-                    InlineSingleServiceAfterVariableOutput,
-                .framebuffer_registry =
-                    DarwinFramebufferRegistryAbi::UnifiedClcdClass,
-                .sandbox_abi = DarwinSandboxAbi::Wide64Arguments,
-                .mach_port_context = DarwinMachVmAddressWidth::Wide64,
-                .memory_status_priority = DarwinMemoryStatusPriorityAbi::PriorityBands,
-                .hid_digitizer = DarwinHidDigitizerAbi::CollectionContactChangesWithEdgeOrigin,
-                .address_layout = DarwinAddressLayout::ExpandedArmSharedRegion,
-                .io_service_state =
-                    DarwinIOServiceStateAbi::StateWithBusyAccounting,
-                .capabilities = { .send_sigsys = true },
-            },
+            .abi = darwin14_expanded_shared_region_abi,
+        },
+        DarwinConfigurationEntry {
+            .name = "darwin14.0.0-fine-priority",
+            .darwin_release = "14.0.0",
+            .abi = darwin14_fine_priority_abi,
         },
     };
 
@@ -281,6 +303,8 @@ namespace {
             Rule { "9B", "darwin11.0.0-wide-vm-high-vectors" },
             Rule { "10", "darwin13.0.0-wide-vm-high-commpage" },
             Rule { "11", "darwin14.0.0" },
+            // iOS 8's ARM kernels remain on the Darwin 14 ABI release.
+            Rule { "12", "darwin14.0.0-fine-priority" },
         };
         const auto branch = build.find_first_not_of("0123456789");
         const auto generation = build.substr(0, branch);

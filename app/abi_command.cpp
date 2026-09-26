@@ -59,7 +59,10 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
                     "darwin-10", "darwin-11", "darwin-13", "later" }) << '\n'
          << "pthread: " << choice(abi.pthread_abi,
                 { "mach-threads", "bsd-register-v1", "bsd-register-v1-tsd",
-                    "bsd-register-v1-tsd-four-priority", "bsd-register-v2" })
+                    "bsd-register-v1-tsd-four-priority",
+                    "bsd-register-v1-expanded-tsd-four-priority",
+                    "bsd-register-v1-expanded-tsd-fine-priority",
+                    "bsd-register-v2" })
          << '\n'
          << "apple80211: " << choice(abi.apple80211_ioctl,
                 { "aligned-network-record", "compact-network-record" }) << '\n'
@@ -74,9 +77,10 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
          << "shared-region: " << choice(abi.shared_region_abi,
                 { "relocatable", "fixed-with-slide-info-v1" }) << '\n'
          << "mach-kernel-rpc: " << choice(abi.mach_kernel_rpc,
-                { "mig-only", "direct-vm-port-traps-v1" }) << '\n'
+                { "mig-only", "direct-vm-port-traps-v1",
+                    "direct-wide-vm-port-traps" }) << '\n'
          << "arm-commpage: " << choice(abi.arm_commpage,
-                { "legacy-address", "high-address" }) << '\n'
+                { "legacy-address", "high-address", "high-data-address" }) << '\n'
          << "psynch: " << choice(abi.psynch_abi,
                 { "unsupported", "arm32-generation-v1" }) << '\n'
          << "semaphore-wait: " << choice(abi.semaphore_wait_abi,
@@ -84,6 +88,16 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
          << "iokit-matching: " << choice(abi.iokit_matching_rpc,
                 { "plural-iterator", "inline-single-service-v1",
                     "inline-single-service-after-variable-output" }) << '\n'
+         << "address-layout: " << choice(abi.address_layout,
+                { "classic-arm", "expanded-arm-shared-region", "arm-shared-region-at-512mib" }) << '\n'
+         << "sysctl-by-name: " << choice(abi.sysctl_by_name_abi,
+                { "legacy-semaphore-value", "named-sysctl-at-274" }) << '\n'
+         << "exception-ports: " << choice(abi.exception_port_abi,
+                { "through-crash", "through-guard" }) << '\n'
+         << "coalition: " << choice(abi.coalition_abi,
+                { "unsupported", "resource-coalitions" }) << '\n'
+         << "mach-voucher: " << choice(abi.mach_voucher_abi,
+                { "unsupported", "host-create-inline-recipes" }) << '\n'
          << "sandbox: " << choice(abi.sandbox_abi,
                 { "natural32-arguments", "wide64-arguments" }) << '\n'
          << "mach-port-context: " << choice(abi.mach_port_context,

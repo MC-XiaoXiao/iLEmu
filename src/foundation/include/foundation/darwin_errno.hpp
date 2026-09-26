@@ -33,11 +33,13 @@ namespace ilemu::darwin::error {
     inline constexpr std::uint32_t broken_pipe = 32;
     inline constexpr std::uint32_t would_block = 35;
     inline constexpr std::uint32_t operation_in_progress = 36;
+    inline constexpr std::uint32_t already_in_progress = 37;
     inline constexpr std::uint32_t no_protocol_option = 42;
     inline constexpr std::uint32_t address_in_use = 48;
     inline constexpr std::uint32_t not_directory = 20;
     inline constexpr std::uint32_t is_directory = 21;
     inline constexpr std::uint32_t invalid_argument = 22;
+    inline constexpr std::uint32_t too_many_open_files = 24;
     inline constexpr std::uint32_t result_too_large = 34;
     inline constexpr std::uint32_t value_too_large = 84;
     inline constexpr std::uint32_t protocol_not_supported = 43;
