@@ -12,7 +12,7 @@
 #pragma once
 
 #include "kernel/unix_socket_node.hpp"
-
+#include "kernel/darwin_coalition_runtime.hpp"
 #include "kernel/hid_event_queue.hpp"
 #include "kernel/kevent_timer.hpp"
 
@@ -422,6 +422,7 @@ make_socket_pair_endpoints(std::uint32_t pair)
 }
 
 struct KernelSharedState {
+    DarwinCoalitionRuntime coalitions;
     HidEventQueue hid_event_queue;
     DarwinKernelIdentity darwin_kernel_identity;
     DarwinAbi darwin_abi;

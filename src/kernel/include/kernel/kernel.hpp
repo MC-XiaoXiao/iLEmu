@@ -542,6 +542,7 @@ private:
     void dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool service_bsd_workqueue(Cpu* requesting_cpu);
     void dispatch_bsd_nosys(Cpu& cpu, bool send_sigsys);
+    void dispatch_bsd_coalition(Cpu& cpu);
     [[nodiscard]] std::optional<std::uint32_t> thread_object_for_processor(
         std::size_t processor) const;
     [[nodiscard]] std::optional<CreatedGuestThread> create_guest_thread(

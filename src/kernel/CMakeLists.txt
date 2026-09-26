@@ -197,6 +197,7 @@ target_link_libraries(ilemu_kernel_bsd_vm_shared_region PRIVATE
 
 target_sources(ilemu_kernel PRIVATE
     bsd/dispatch.cpp
+    bsd/coalition.cpp
     bsd/network_policy.cpp
     bsd/platform.cpp
     bsd/pthread_runtime.cpp
