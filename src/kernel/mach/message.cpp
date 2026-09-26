@@ -8,13 +8,10 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/ipc/mach_msg.c
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/ipc/ipc_mqueue.c
 
-#include "mach/bootstrap_mig_ids.hpp"
-#include "media/celestial_volume_protocol.hpp"
+#include "../clock/query_server.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
-#include "network/darwin_network_abi.hpp"
 #include "kernel/darwin_resource_abi.hpp"
-#include "network/darwin_route_socket.hpp"
 #include "kernel/graphics_services_input.hpp"
 #include "kernel/kernel.hpp"
 #include "kernel/kernel_clock.hpp"
@@ -23,17 +20,21 @@
 #include "kernel/kernel_network.hpp"
 #include "kernel/mach_clock_abi.hpp"
 #include "kernel/mach_descriptor_transport.hpp"
-#include "mach/mach_host_mig_ids.hpp"
-#include "mach/mach_port_mig_ids.hpp"
 #include "kernel/mach_scheduler_abi.hpp"
 #include "kernel/mach_thread_policy_abi.hpp"
-#include "media/media_library_service.hpp"
-#include "mach/mig_wire_abi.hpp"
 #include "kernel/protocol_vproc_contract.hpp"
+#include "mach/bootstrap_mig_ids.hpp"
+#include "mach/mach_host_mig_ids.hpp"
+#include "mach/mach_port_mig_ids.hpp"
+#include "mach/mig_wire_abi.hpp"
 #include "mach/task_mig_ids.hpp"
 #include "mach/thread_act_mig_ids.hpp"
 #include "mach/vm_map_mig_ids.hpp"
 #include "mach/xnu_mig_adapter.hpp"
+#include "media/celestial_volume_protocol.hpp"
+#include "media/media_library_service.hpp"
+#include "network/darwin_network_abi.hpp"
+#include "network/darwin_route_socket.hpp"
 
 #include <algorithm>
 #include <array>
@@ -133,6 +134,11 @@ void CompatibilityKernel::dispatch_mach_message(
         (registers[1] & darwin::mach_message::option_send) != 0;
     const auto wants_receive =
         (registers[1] & darwin::mach_message::option_receive) != 0;
+    if (wants_send && (registers[2] < darwin::mig_wire::message_header_size ||
+                          registers[2] % darwin::mig_wire::word_size != 0U)) {
+        registers[0] = darwin::mach_message::send_message_too_small;
+        return;
+    }
     if (!wants_send && wants_receive) {
         begin_receive();
         return;
@@ -147,7 +153,7 @@ void CompatibilityKernel::dispatch_mach_message(
         message_address + darwin::mig_wire::header_identifier_offset);
     // A send-only mach_msg legitimately carries MACH_PORT_NULL in the local
     // header slot.  Keep the optional reply port distinct from a failed read.
-    if (!bits || !remote_port || !message_id) {
+    if (!bits || !remote_port || !local_port || !message_id) {
         registers[0] = 0x1000000eU; // MACH_SEND_INVALID_MEMORY
         return;
     }
@@ -157,7 +163,28 @@ void CompatibilityKernel::dispatch_mach_message(
     // below until those providers expose separate reply storage.
     const auto separate_receive = wants_receive && receive_address &&
         *receive_address != message_address;
-    if (!separate_receive) {
+    bool clock_query_request = false;
+    if (wants_send && kernel_clock::QueryServer::handles(*message_id)) {
+        std::lock_guard lock { shared_state_->mach_mutex };
+        const auto object = resolve_name_with_right(
+            *shared_state_, process_.pid, *remote_port, xnu::ipc::Right::Send);
+        const auto clock =
+            object ? kernel_clock::QueryServer::identify_locked(
+                         *shared_state_, process_, *object, *message_id)
+                   : std::nullopt;
+        clock_query_request = clock.has_value();
+        if (clock && pending_mach_receives_.empty()) {
+            if (const auto result =
+                    kernel_clock::QueryServer::try_synchronous_locked(memory_,
+                        *shared_state_, process_, *clock, registers, *bits,
+                        *local_port,
+                        receive_address.value_or(message_address))) {
+                registers[0] = *result;
+                return;
+            }
+        }
+    }
+    if (!separate_receive && !clock_query_request) {
         if (const auto result = handle_clock_mach_request(memory_, *shared_state_,
                 process_, *message_id, message_address, registers[2], registers[3],
                 *remote_port, *local_port)) {
@@ -486,6 +513,10 @@ void CompatibilityKernel::dispatch_mach_message(
     }
     if (wants_send && registers[2] >= 24 && registers[2] <= 64U * 1024U) {
         auto bytes = memory_.read_bytes(message_address, registers[2]);
+        if (!bytes) {
+            registers[0] = darwin::mach_message::send_invalid_data;
+            return;
+        }
         std::uint32_t remote_object = 0;
         std::uint32_t remote_owner = 0;
         std::size_t remote_queue_depth = 0;
@@ -496,6 +527,7 @@ void CompatibilityKernel::dispatch_mach_message(
                 .read32(message_address + darwin::mig_wire::header_size_offset)
                 .value_or(0);
         bool routable = false;
+        bool kernel_query_handled = false;
         std::optional<std::uint32_t> graphics_event_type;
         std::optional<std::uint32_t> routed_reply_object;
         std::optional<std::string> service_source_create_path;
@@ -653,7 +685,13 @@ void CompatibilityKernel::dispatch_mach_message(
                 destination_object
                     ? shared_state_->mach_port_objects.lookup(remote_object)
                     : std::nullopt;
-            if (destination_port && destination_port->kernel_owned) {
+            const auto clock_query =
+                destination_object
+                    ? kernel_clock::QueryServer::identify_locked(*shared_state_,
+                          process_, *destination_object, *message_id)
+                    : std::nullopt;
+            if (destination_port && destination_port->kernel_owned &&
+                !clock_query) {
                 if (separate_receive) {
                     registers[0] = darwin::mach_message::receive_invalid_data;
                     return;
@@ -1101,14 +1139,26 @@ void CompatibilityKernel::dispatch_mach_message(
                     queued.voucher_right = voucher_right;
                     queued.destination_send_object = destination_send_object;
                     queued.port_transfers = std::move(port_transfers);
-                    shared_state_->enqueue_mach_message_locked(
-                        remote_object, std::move(queued));
+                    if (clock_query) {
+                        kernel_query_handled = true;
+                        const auto destination =
+                            kernel_clock::QueryServer::dispatch_locked(
+                                *shared_state_, *clock_query, queued);
+                        remote_object = destination.value_or(0U);
+                    } else {
+                        shared_state_->enqueue_mach_message_locked(
+                            remote_object, std::move(queued));
+                    }
                     remote_owner =
                         shared_state_->mach_port_objects.lookup(remote_object)
                             .value_or(xnu::ipc::PortObject { })
                             .receive_owner;
+                    const auto response_queue =
+                        shared_state_->mach_queues.find(remote_object);
                     remote_queue_depth =
-                        shared_state_->mach_queues[remote_object].size();
+                        response_queue == shared_state_->mach_queues.end()
+                            ? 0U
+                            : response_queue->second.size();
                     if (remote_owner == process_.pid) {
                         local_pending_receiver =
                             preferred_pending_mach_receiver_locked(
@@ -1183,18 +1233,20 @@ void CompatibilityKernel::dispatch_mach_message(
                               std::to_string(*transferred_receive) +
                               " from=" + std::to_string(process_.pid) + "\n");
             }
-            output_.write(
-                "[mach] enqueue sender=" + std::to_string(process_.pid) +
-                " port=" + std::to_string(*remote_port) +
-                " object=" + std::to_string(remote_object) +
-                " owner=" + std::to_string(remote_owner) +
-                " depth=" + std::to_string(remote_queue_depth) + " id=" +
-                std::to_string(*message_id) + mig_message_label(*message_id) +
-                (bootstrap_service_name.empty()
-                        ? std::string { }
-                        : " service=" + bootstrap_service_name) +
-                " caller-header=" + std::to_string(caller_header_size) +
-                " bytes=" + std::to_string(registers[2]) + "\n");
+            if (!kernel_query_handled)
+                output_.write(
+                    "[mach] enqueue sender=" + std::to_string(process_.pid) +
+                    " port=" + std::to_string(*remote_port) +
+                    " object=" + std::to_string(remote_object) +
+                    " owner=" + std::to_string(remote_owner) +
+                    " depth=" + std::to_string(remote_queue_depth) +
+                    " id=" + std::to_string(*message_id) +
+                    mig_message_label(*message_id) +
+                    (bootstrap_service_name.empty()
+                            ? std::string { }
+                            : " service=" + bootstrap_service_name) +
+                    " caller-header=" + std::to_string(caller_header_size) +
+                    " bytes=" + std::to_string(registers[2]) + "\n");
             if (process_.pid != 0) {
                 if (graphics_event_type) {
                     output_.write(

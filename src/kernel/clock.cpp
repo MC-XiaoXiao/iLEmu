@@ -25,7 +25,6 @@
 namespace ilemu {
 namespace {
 
-    constexpr std::uint32_t mach_rcv_too_large = 0x10004004U;
     constexpr std::uint32_t mach_rcv_invalid_data = 0x10004008U;
     constexpr std::uint32_t mig_reply_id_delta = 100;
     constexpr std::uint32_t move_send_once_bits = 18;
@@ -97,11 +96,8 @@ std::optional<std::uint32_t> handle_clock_mach_request(AddressSpace& memory,
     std::uint32_t local_port)
 {
     using namespace xnu::mig::clock;
-    if (message_id != id(Routine::clock_get_time) &&
-        message_id != id(Routine::clock_get_attributes) &&
-        message_id != id(Routine::clock_alarm)) {
+    if (message_id != id(Routine::clock_alarm))
         return std::nullopt;
-    }
     {
         std::lock_guard lock { state.mach_mutex };
         // MIG identifiers are local to a service. User-space protocols can
@@ -109,100 +105,6 @@ std::optional<std::uint32_t> handle_clock_mach_request(AddressSpace& memory,
         if (!clock_id_locked(state, process, remote_port))
             return std::nullopt;
     }
-    if (message_id == id(Routine::clock_get_time)) {
-        constexpr const auto& output = clock_get_time_arguments[1];
-        constexpr auto success_size = output.reply_offset + output.wire_size;
-        constexpr auto error_size = darwin::mig_wire::simple_reply_payload_base;
-        if (receive_size < success_size)
-            return mach_rcv_too_large;
-        std::optional<std::uint32_t> clock_id;
-        {
-            std::lock_guard lock { state.mach_mutex };
-            clock_id = clock_id_locked(state, process, remote_port);
-        }
-        const auto result =
-            clock_id ? darwin::mach::success : darwin::mach::invalid_argument;
-        const auto reply_size = clock_id ? success_size : error_size;
-        const auto now = clock_id == darwin::mach::clock::calendar_clock_id
-                             ? state.clock.wall_time()
-                             : state.clock.now();
-        const std::array<std::uint32_t, success_size / sizeof(std::uint32_t)>
-            reply {
-                move_send_once_bits,
-                reply_size,
-                local_port,
-                0,
-                0,
-                message_id + mig_reply_id_delta,
-                0,
-                1,
-                result,
-                clock_id
-                    ? static_cast<std::uint32_t>(
-                          now / darwin::mach::clock::nanoseconds_per_second)
-                    : 0U,
-                clock_id
-                    ? static_cast<std::uint32_t>(
-                          now % darwin::mach::clock::nanoseconds_per_second)
-                    : 0U,
-            };
-        return write_reply(
-            memory, message_address, reply, reply_size / sizeof(std::uint32_t));
-    }
-
-    if (message_id == id(Routine::clock_get_attributes)) {
-        constexpr const auto& arguments = clock_get_attributes_arguments;
-        constexpr auto success_size =
-            arguments[2].reply_offset + arguments[2].wire_size;
-        constexpr auto error_size = darwin::mig_wire::simple_reply_payload_base;
-        if (receive_size < success_size)
-            return mach_rcv_too_large;
-        const auto flavor =
-            memory.read32(message_address + arguments[1].request_offset)
-                .value_or(0);
-        const auto count =
-            memory.read32(message_address + arguments[2].request_count_offset)
-                .value_or(0);
-        bool valid = false;
-        {
-            std::lock_guard lock { state.mach_mutex };
-            valid = clock_id_locked(state, process, remote_port).has_value();
-        }
-        auto result =
-            valid ? darwin::mach::success : darwin::mach::invalid_argument;
-        if (result == 0 && count != darwin::mach::clock::attribute_word_count) {
-            result = darwin::mach::failure;
-        }
-        if (result == 0 &&
-            flavor != darwin::mach::clock::get_time_resolution_flavor &&
-            flavor != darwin::mach::clock::alarm_current_resolution_flavor &&
-            flavor != darwin::mach::clock::alarm_minimum_resolution_flavor &&
-            flavor != darwin::mach::clock::alarm_maximum_resolution_flavor) {
-            result = darwin::mach::invalid_value;
-        }
-        const auto reply_size = result == 0 ? success_size : error_size;
-        const std::array<std::uint32_t, success_size / sizeof(std::uint32_t)>
-            reply {
-                move_send_once_bits,
-                reply_size,
-                local_port,
-                0,
-                0,
-                message_id + mig_reply_id_delta,
-                0,
-                1,
-                result,
-                result == 0 ? darwin::mach::clock::attribute_word_count : 0U,
-                result == 0
-                    ? darwin::mach::clock::virtual_resolution_nanoseconds
-                    : 0U,
-            };
-        return write_reply(
-            memory, message_address, reply, reply_size / sizeof(std::uint32_t));
-    }
-
-    if (message_id != id(Routine::clock_alarm))
-        return std::nullopt;
     constexpr const auto& arguments = clock_alarm_arguments;
     constexpr auto request_size =
         arguments[2].request_offset + arguments[2].wire_size;
