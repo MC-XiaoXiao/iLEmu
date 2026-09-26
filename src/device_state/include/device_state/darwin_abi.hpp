@@ -113,6 +113,13 @@ enum class DarwinPsynchAbi : std::uint8_t {
     Arm32GenerationV1,
 };
 
+// XNU 1504 implements read/write conversions; XNU 1699 and later pthread
+// shims retain the syscall entries but disable their queue operations.
+enum class DarwinPsynchRwConversionAbi : std::uint8_t {
+    GenerationQueues,
+    UnusedStubs,
+};
+
 // __semwait_signal widened tv_sec independently of ARM pointer width.
 // The timespec-pointer syscall has its own number and is not affected.
 enum class DarwinSemaphoreWaitAbi : std::uint8_t {
@@ -233,6 +240,9 @@ struct DarwinAbi {
     };
     DarwinPsynchAbi psynch_abi {
         DarwinPsynchAbi::Unsupported
+    };
+    DarwinPsynchRwConversionAbi psynch_rw_conversion {
+        DarwinPsynchRwConversionAbi::GenerationQueues
     };
     DarwinSemaphoreWaitAbi semaphore_wait_abi {
         DarwinSemaphoreWaitAbi::InlineSeconds32

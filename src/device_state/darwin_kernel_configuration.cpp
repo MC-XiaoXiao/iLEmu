@@ -38,6 +38,7 @@ namespace {
             DarwinSharedRegionAbi::FixedMappingsWithSlideInfoV1,
         .mach_kernel_rpc = DarwinMachKernelRpcAbi::DirectVmAndPortTrapsV1,
         .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+        .psynch_rw_conversion = DarwinPsynchRwConversionAbi::UnusedStubs,
         .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
         .stack_snapshot_abi = DarwinStackSnapshotAbi::LegacyFourArguments,
         .iokit_matching_rpc = DarwinIOKitMatchingRpcAbi::InlineSingleServiceV1,
@@ -82,6 +83,7 @@ namespace {
         .mach_kernel_rpc =
             DarwinMachKernelRpcAbi::DirectWideVmAndPortTraps,
         .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+        .psynch_rw_conversion = DarwinPsynchRwConversionAbi::UnusedStubs,
         .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
         .iokit_matching_rpc = DarwinIOKitMatchingRpcAbi::
             InlineSingleServiceAfterVariableOutput,
@@ -217,6 +219,7 @@ namespace {
                 .initial_apple_vector_abi =
                     DarwinInitialAppleVectorAbi::LegacyExecutablePath,
                 .psynch_abi = DarwinPsynchAbi::Arm32GenerationV1,
+                .psynch_rw_conversion = DarwinPsynchRwConversionAbi::UnusedStubs,
                 .semaphore_wait_abi = DarwinSemaphoreWaitAbi::InlineSeconds64,
                 .stack_snapshot_abi =
                     DarwinStackSnapshotAbi::LegacyFourArguments,

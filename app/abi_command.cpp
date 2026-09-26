@@ -57,6 +57,8 @@ namespace {
                 { "legacy-address", "high-address", "high-data-address" }) << '\n'
          << "psynch: " << choice(abi.psynch_abi,
                 { "unsupported", "arm32-generation-v1" }) << '\n'
+         << "psynch-rw-conversion: " << choice(abi.psynch_rw_conversion,
+                { "generation-queues", "unused-stubs" }) << '\n'
          << "semaphore-wait: " << choice(abi.semaphore_wait_abi,
                 { "inline-seconds32", "inline-seconds64" }) << '\n'
          << "iokit-matching: " << choice(abi.iokit_matching_rpc,

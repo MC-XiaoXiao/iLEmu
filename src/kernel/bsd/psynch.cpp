@@ -76,6 +76,14 @@ namespace {
 void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
 {
     auto& registers = cpu.registers();
+    // The enabled XNU stubs neither inspect addresses nor touch queue state.
+    // In particular, they cannot consume an unlock prepost or block a reader.
+    if ((number == 299U || number == 300U) &&
+        shared_state_->darwin_abi.psynch_rw_conversion ==
+            DarwinPsynchRwConversionAbi::UnusedStubs) {
+        bsd_success(cpu, 0);
+        return;
+    }
     const DarwinPsynchThread current_thread { process_.pid,
         static_cast<std::uint32_t>(cpu.processor_id()) };
     const auto wake_threads = [&](std::span<const DarwinPsynchThread> threads) {
