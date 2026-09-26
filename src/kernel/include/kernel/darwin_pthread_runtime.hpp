@@ -36,6 +36,7 @@ struct DarwinWorkqueueItem {
     std::uint32_t affinity { };
     bool overcommit { };
     DarwinWorkqueueDelivery delivery { DarwinWorkqueueDelivery::WorkItem };
+    std::uint32_t thread_class { };
 };
 
 struct DarwinWorkqueueWorker {
@@ -61,6 +62,7 @@ public:
     static constexpr std::uint32_t workqueue_overcommit = 0x0001'0000U;
     static constexpr std::size_t maximum_workqueue_workers = 64U;
     static constexpr std::size_t maximum_workqueue_items_per_priority = 64U;
+    static constexpr std::size_t maximum_qos_override_depth = 256U;
 
     [[nodiscard]] bool register_process(DarwinPthreadRegistration registration);
     [[nodiscard]] const std::optional<DarwinPthreadRegistration>&
@@ -96,7 +98,8 @@ public:
     [[nodiscard]] bool enqueue_workitem(
         DarwinWorkqueueItem item, bool front = false);
     [[nodiscard]] bool request_dispatch_threads(
-        std::uint32_t count, std::uint32_t priority, bool overcommit);
+        std::uint32_t count, std::uint32_t priority, bool overcommit,
+        std::uint32_t thread_class);
     [[nodiscard]] std::optional<DarwinWorkqueueItem> take_workitem();
     [[nodiscard]] bool remove_workitem(
         std::uint32_t address, std::uint32_t priority);
@@ -113,11 +116,16 @@ public:
     void remove_worker(std::uint32_t processor);
     [[nodiscard]] bool set_target_concurrency(
         std::uint32_t priority, std::uint32_t concurrency);
+    [[nodiscard]] bool start_qos_override(
+        std::uint32_t processor, std::uint32_t priority);
+    [[nodiscard]] bool end_qos_override(std::uint32_t processor);
+    void reset_qos_overrides(std::uint32_t processor);
 
     void prepare_exec() noexcept
     {
         registration_.reset();
         reset_workqueue();
+        qos_overrides_.clear();
     }
     void inherit_from(const DarwinPthreadRuntime& parent, bool fork) noexcept
     {
@@ -125,6 +133,7 @@ public:
         // XNU constructs a fresh workqueue for a child process.  The pthread
         // ABI registration survives fork, but kernel workqueue state does not.
         reset_workqueue();
+        qos_overrides_.clear();
     }
 
 private:
@@ -137,6 +146,7 @@ private:
         maximum_workqueue_priority_count>
         workitems_;
     std::map<std::uint32_t, DarwinWorkqueueWorker> workers_;
+    std::map<std::uint32_t, std::vector<std::uint32_t>> qos_overrides_;
     std::array<std::uint32_t, maximum_workqueue_priority_count>
         target_concurrency_ { };
 };

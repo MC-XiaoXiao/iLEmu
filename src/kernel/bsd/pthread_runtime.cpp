@@ -20,12 +20,16 @@
 #include <algorithm>
 #include <array>
 #include <limits>
+#include <string_view>
 
 namespace ilemu {
 namespace {
 
     constexpr std::uint32_t workqueue_stack_size = 512U * 1024U;
     constexpr std::uint32_t pthread_dynamic_base = 0x1000'0000U;
+    constexpr std::uint32_t pthread_feature_fine_priority = 0x2U;
+    constexpr std::uint32_t pthread_feature_bsdthread_ctl = 0x4U;
+    constexpr std::uint32_t pthread_feature_qos_default = 0x4000'0000U;
     // Darwin 10.4 ARM32 passes the embedded TSD base at this pthread_t
     // member to thread_set_tsd_base. Darwin 10.3 keeps TPIDRURO equal to
     // pthread_t itself, so select this offset through the ABI contract.
@@ -35,11 +39,13 @@ namespace {
         DarwinPthreadAbi profile) noexcept
     {
         return profile == DarwinPthreadAbi::BsdThreadRegisterV1 ||
-               profile == DarwinPthreadAbi::BsdThreadRegisterV1TsdBase ||
-               profile == DarwinPthreadAbi::
+                  profile == DarwinPthreadAbi::BsdThreadRegisterV1TsdBase ||
+                  profile == DarwinPthreadAbi::
                               BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues ||
+                  profile == DarwinPthreadAbi::
+                              BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues ||
                profile == DarwinPthreadAbi::
-                              BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues;
+                              BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues;
     }
 
     [[nodiscard]] std::uint32_t workqueue_priority_count_for_abi(
@@ -48,17 +54,62 @@ namespace {
         if (profile == DarwinPthreadAbi::
                            BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues ||
             profile == DarwinPthreadAbi::
-                           BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues) {
+                           BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues ||
+            profile == DarwinPthreadAbi::
+                           BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues) {
             return 4U;
         }
         return supports_bsdthread_register_v1(profile) ? 3U : 0U;
+    }
+
+    struct DispatchWorkqueuePriority {
+        std::uint32_t queue { };
+        std::uint32_t thread_class { };
+        bool overcommit { };
+    };
+
+    [[nodiscard]] std::optional<DispatchWorkqueuePriority>
+    decode_dispatch_workqueue_priority(
+        DarwinPthreadAbi profile, std::uint32_t encoded) noexcept
+    {
+        if (profile != DarwinPthreadAbi::
+                           BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues) {
+            return DispatchWorkqueuePriority {
+                encoded & ~DarwinPthreadRuntime::workqueue_overcommit,
+                encoded & ~DarwinPthreadRuntime::workqueue_overcommit,
+                (encoded & DarwinPthreadRuntime::workqueue_overcommit) != 0U,
+            };
+        }
+
+        // The split-libpthread fine-priority SPI passes a QoS bitfield, not
+        // the legacy queue index. Without QOS_MAINTENANCE, the kernel uses
+        // version-2 class bits. The upcall receives the public QoS class.
+        constexpr std::uint32_t class_mask = 0x00ff'ff00U;
+        constexpr std::uint32_t class_shift = 8U;
+        constexpr std::uint32_t overcommit_flag = 0x8000'0000U;
+        const auto class_bit = (encoded & class_mask) >> class_shift;
+        switch (class_bit) {
+        case 0x10U: return DispatchWorkqueuePriority { 0U, 0x21U,
+                        (encoded & overcommit_flag) != 0U };
+        case 0x08U: return DispatchWorkqueuePriority { 0U, 0x19U,
+                        (encoded & overcommit_flag) != 0U };
+        case 0x04U: return DispatchWorkqueuePriority { 1U, 0x15U,
+                        (encoded & overcommit_flag) != 0U };
+        case 0x02U: return DispatchWorkqueuePriority { 2U, 0x11U,
+                        (encoded & overcommit_flag) != 0U };
+        case 0x01U: return DispatchWorkqueuePriority { 3U, 0x09U,
+                        (encoded & overcommit_flag) != 0U };
+        default: return std::nullopt;
+        }
     }
 
     [[nodiscard]] std::uint32_t thread_pointer_for_pthread(
         DarwinPthreadAbi profile, std::uint32_t pthread_address) noexcept
     {
         if (profile == DarwinPthreadAbi::
-                           BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues) {
+                           BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues ||
+            profile == DarwinPthreadAbi::
+                           BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues) {
             return pthread_address + 0xa4U;
         }
         if (profile == DarwinPthreadAbi::BsdThreadRegisterV1TsdBase ||
@@ -92,7 +143,7 @@ namespace {
             constexpr std::uint32_t dispatch_spi = 0x00040000U;
             constexpr std::uint32_t reused_thread = 0x00020000U;
             state[3] = 0;
-            state[4] = dispatch_spi | item.priority |
+            state[4] = dispatch_spi | item.thread_class |
                 (reuse ? reused_thread : 0U) |
                 (item.overcommit ? DarwinPthreadRuntime::workqueue_overcommit : 0U);
         }
@@ -129,7 +180,8 @@ bool DarwinPthreadRuntime::enqueue_workitem(
 }
 
 bool DarwinPthreadRuntime::request_dispatch_threads(
-    std::uint32_t count, std::uint32_t priority, bool overcommit)
+    std::uint32_t count, std::uint32_t priority, bool overcommit,
+    std::uint32_t thread_class)
 {
     if (!workqueue_open_ || priority >= workqueue_priority_count_ || count == 0U)
         return false;
@@ -138,7 +190,7 @@ bool DarwinPthreadRuntime::request_dispatch_threads(
         return false;
     for (std::uint32_t index = 0; index < count; ++index)
         queue.push_back(DarwinWorkqueueItem { 0U, priority, 0U, overcommit,
-            DarwinWorkqueueDelivery::DispatchThread });
+            DarwinWorkqueueDelivery::DispatchThread, thread_class });
     return true;
 }
 
@@ -235,6 +287,33 @@ void DarwinPthreadRuntime::park_worker(std::uint32_t processor)
 void DarwinPthreadRuntime::remove_worker(std::uint32_t processor)
 {
     workers_.erase(processor);
+    reset_qos_overrides(processor);
+}
+
+bool DarwinPthreadRuntime::start_qos_override(
+    std::uint32_t processor, std::uint32_t priority)
+{
+    auto& overrides = qos_overrides_[processor];
+    if (overrides.size() >= maximum_qos_override_depth)
+        return false;
+    overrides.push_back(priority);
+    return true;
+}
+
+bool DarwinPthreadRuntime::end_qos_override(std::uint32_t processor)
+{
+    const auto found = qos_overrides_.find(processor);
+    if (found == qos_overrides_.end() || found->second.empty())
+        return false;
+    found->second.pop_back();
+    if (found->second.empty())
+        qos_overrides_.erase(found);
+    return true;
+}
+
+void DarwinPthreadRuntime::reset_qos_overrides(std::uint32_t processor)
+{
+    qos_overrides_.erase(processor);
 }
 
 bool DarwinPthreadRuntime::set_target_concurrency(
@@ -455,6 +534,9 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         constexpr std::uint32_t custom_stack = 0x0100'0000U;
         const auto& registration = pthread_runtime_.registration();
         if (!registration) {
+            output_.write("[pthread] create-failed pid=" +
+                          std::to_string(process_.pid) +
+                          " stage=unregistered\n");
             bsd_error(cpu, bsd_support::invalid_argument);
             return true;
         }
@@ -464,6 +546,17 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         const auto stack_argument = registers[2];
         const auto pthread_argument = registers[3];
         const auto flags = registers[4];
+        const auto fail_create = [&](std::string_view stage,
+                                     std::uint32_t error) {
+            output_.write("[pthread] create-failed pid=" +
+                          std::to_string(process_.pid) +
+                          " stage=" + std::string { stage } +
+                          " function=" + std::to_string(user_function) +
+                          " stack=" + std::to_string(stack_argument) +
+                          " flags=" + std::to_string(flags) +
+                          " error=" + std::to_string(error) + "\n");
+            bsd_error(cpu, error);
+        };
         std::uint32_t pthread_address = pthread_argument;
         std::uint32_t stack_pointer = stack_argument;
         std::optional<std::pair<std::uint32_t, std::uint32_t>> allocation;
@@ -474,7 +567,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
                                       registration->pthread_size;
             if (stack_argument == 0 ||
                 total_size64 > std::numeric_limits<std::uint32_t>::max()) {
-                bsd_error(cpu, bsd_support::invalid_argument);
+                fail_create("stack", bsd_support::invalid_argument);
                 return true;
             }
             const auto total_size = static_cast<std::uint32_t>(total_size64);
@@ -486,14 +579,14 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
                     MemoryPermission::Read | MemoryPermission::Write)) {
                 if (base)
                     static_cast<void>(memory_.unmap(*base, total_size));
-                bsd_error(cpu, darwin::error::no_memory);
+                fail_create("map", darwin::error::no_memory);
                 return true;
             }
             allocation = std::pair { *base, total_size };
             pthread_address = *base + guard_size + stack_argument;
             stack_pointer = pthread_address;
         } else if (stack_pointer == 0 || pthread_address == 0) {
-            bsd_error(cpu, bsd_support::invalid_argument);
+            fail_create("custom-stack", bsd_support::invalid_argument);
             return true;
         }
 
@@ -515,9 +608,10 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             if (allocation)
                 static_cast<void>(
                     memory_.unmap(allocation->first, allocation->second));
-            bsd_error(cpu, create_error == darwin::mach::resource_shortage
-                               ? darwin::error::no_memory
-                               : bsd_support::invalid_argument);
+            fail_create("thread",
+                create_error == darwin::mach::resource_shortage
+                    ? darwin::error::no_memory
+                    : bsd_support::invalid_argument);
             return true;
         }
 
@@ -539,7 +633,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             if (allocation)
                 static_cast<void>(
                     memory_.unmap(allocation->first, allocation->second));
-            bsd_error(cpu, bsd_support::invalid_argument);
+            fail_create("thread-state", bsd_support::invalid_argument);
             return true;
         }
         output_.write("[pthread] create pid=" + std::to_string(process_.pid) +
@@ -647,7 +741,16 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             " pthread-size=" + std::to_string(registration.pthread_size) +
             " dispatch-queue-offset=" +
             std::to_string(registration.dispatch_queue_offset) + "\n");
-        bsd_success(cpu, 0);
+        // Split libpthread stores the positive registration result as its
+        // kernel capability word. libdispatch requires fine-priority workqueues
+        // before installing its worker callback.
+        bsd_success(cpu,
+            profile == DarwinPthreadAbi::
+                           BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues
+                ? pthread_feature_fine_priority |
+                      pthread_feature_bsdthread_ctl |
+                      pthread_feature_qos_default
+                : 0U);
         return true;
     }
     case 367: { // workq_open, Darwin 10 ARM32 v1
@@ -692,14 +795,16 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             raw_priority & ~DarwinPthreadRuntime::workqueue_overcommit;
         if (operation == request_dispatch_threads) {
             const auto count = affinity;
-            const auto overcommit =
-                (raw_priority & DarwinPthreadRuntime::workqueue_overcommit) != 0U;
-            if (count == 0U || count > INT32_MAX ||
-                priority >= pthread_runtime_.workqueue_priority_count()) {
+            const auto decoded =
+                decode_dispatch_workqueue_priority(profile, raw_priority);
+            if (count == 0U || count > INT32_MAX || !decoded ||
+                decoded->queue >= pthread_runtime_.workqueue_priority_count()) {
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return true;
             }
-            if (!pthread_runtime_.request_dispatch_threads(count, priority, overcommit)) {
+            if (!pthread_runtime_.request_dispatch_threads(count,
+                    decoded->queue, decoded->overcommit,
+                    decoded->thread_class)) {
                 bsd_error(cpu, darwin::error::no_memory);
                 return true;
             }
@@ -800,6 +905,41 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             return true;
         }
         bsd_success(cpu, *thread_object, 0);
+        return true;
+    }
+    case 478: { // bsdthread_ctl, split-libpthread QoS contract
+        if (profile != DarwinPthreadAbi::
+                           BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues) {
+            return false;
+        }
+        constexpr std::uint32_t qos_override_start = 0x40U;
+        constexpr std::uint32_t qos_override_end = 0x80U;
+        const auto operation = registers[0];
+        if (operation != qos_override_start && operation != qos_override_end) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return true;
+        }
+        const auto thread_port = registers[1];
+        const auto target = std::find_if(thread_ports_.begin(),
+            thread_ports_.end(), [thread_port](const auto& entry) {
+                return entry.second == thread_port;
+            });
+        if (target == thread_ports_.end() || registers[3] != 0U ||
+            (operation == qos_override_end && registers[2] != 0U)) {
+            bsd_error(cpu, bsd_support::invalid_argument);
+            return true;
+        }
+        const auto processor = static_cast<std::uint32_t>(target->first);
+        if (operation == qos_override_start) {
+            if (!pthread_runtime_.start_qos_override(processor, registers[2])) {
+                bsd_error(cpu, darwin::error::no_memory);
+                return true;
+            }
+        } else if (!pthread_runtime_.end_qos_override(processor)) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return true;
+        }
+        bsd_success(cpu, 0);
         return true;
     }
     default:
