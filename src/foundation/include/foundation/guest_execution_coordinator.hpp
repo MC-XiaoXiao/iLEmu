@@ -44,8 +44,8 @@ public:
     // thread submits/collects; Guest kernel state is never touched by workers.
     void submit(GuestExecutionRequest& request);
     [[nodiscard]] GuestExecutionRequest* wait();
-    // Dispatch and drain a kernel commit window, preserving the old runtime
-    // boundary while individual execution channels remain independently usable.
+    // Execute one lane on the caller while dispatching its peers, then drain
+    // the kernel commit window. Individual channels remain independently usable.
     void run(std::span<GuestExecutionRequest*> requests);
     static void execute(GuestExecutionRequest& request) noexcept;
     [[nodiscard]] static bool in_execution_channel() noexcept;

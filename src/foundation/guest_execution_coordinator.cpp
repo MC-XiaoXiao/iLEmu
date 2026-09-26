@@ -11,6 +11,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace ilemu {
@@ -134,16 +135,20 @@ void GuestExecutionCoordinator::run(std::span<GuestExecutionRequest*> requests)
                 requests[i]->execution_slot == requests[j]->execution_slot)
                 throw std::invalid_argument { "duplicate guest execution channel or CPU" };
     }
-    // CompatibilityKernel's commit window still requires all requests back.
-    // Native preparation, budgets and completion have no cross-channel latch.
-    // A future caller can consume wait() and refill that channel independently,
-    // provided it does not commit kernel mutations while other CPUs run.
+    if (requests.empty())
+        return;
+    // The caller can execute a lane while its peers run instead of paying a
+    // worker handoff only to wait idle. It uses the same deferred-SVC and
+    // parallel-memory scope as a worker; kernel commits still wait for every
+    // lane. submit()/wait() retain their independent channel semantics.
     try {
-        for (auto* request : requests) {
-            if (!request)
-                throw std::invalid_argument { "null guest execution request" };
+        for (auto* request : requests.subspan(1)) {
             submit(*request);
         }
+        const auto previous_channel =
+            std::exchange(execution_channel_active, true);
+        execute(*requests.front());
+        execution_channel_active = previous_channel;
     } catch (...) {
         while (wait()) { }
         throw;
