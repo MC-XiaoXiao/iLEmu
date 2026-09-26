@@ -16,6 +16,7 @@ namespace ilemu {
 class Output;
 
 void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
-    const std::optional<std::string>& ios_build, Output& output);
+    const std::optional<std::string>& ios_build, Output& output,
+    bool all = false);
 
 } // namespace ilemu

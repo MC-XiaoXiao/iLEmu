@@ -68,7 +68,7 @@ std::string usage()
 {
     return "Usage:\n"
            "  ilemu profile [--device PROFILE] [--output FILE]\n"
-           "  ilemu abi [--rootfs DIR] [--ios-build CODE] [--output FILE]\n"
+           "  ilemu abi [--all] [--rootfs DIR] [--ios-build CODE] [--output FILE]\n"
            "  ilemu inspect --rootfs DIR [--binary /sbin/launchd] "
            "[--device PROFILE] [--shared-cache GUEST_PATH] "
            "[--symbols SUBSTRING] [--output FILE]\n"
@@ -1187,7 +1187,7 @@ int main(int argc, char** argv)
                 profile(args, *output);
             } else if (command == "abi") {
                 inspect_abi(option(args, "--rootfs"), ios_build_option(args),
-                    *output);
+                    *output, flag(args, "--all"));
             } else if (command == "inspect") {
                 inspect(args, *output);
             } else if (command == "catalog") {

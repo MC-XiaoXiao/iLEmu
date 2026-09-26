@@ -9,6 +9,7 @@
 
 #include <initializer_list>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 
 #include "device_state/darwin_kernel_configuration.hpp"
@@ -25,36 +26,9 @@ namespace {
         return index < names.size() ? names.begin()[index] : "unknown";
     }
 
-} // namespace
-
-void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
-    const std::optional<std::string>& ios_build, Output& output)
-{
-    if (!rootfs && !ios_build) {
-        output.line("Use --rootfs DIR to inspect the firmware's "
-                    "Darwin/ABI configuration.");
-        output.line("Use --ios-build CODE (e.g. 9A334) to override "
-                    "firmware metadata.");
-        output.line("Known Darwin/ABI configurations:");
-        for (const auto& entry : darwin_configurations())
-            output.line("  " + std::string { entry.name });
-        return;
-    }
-    const auto configuration = resolve_darwin_configuration(
-        rootfs.value_or(std::filesystem::path { }), ios_build);
-    const auto& abi = configuration.abi;
-    const auto& identity = configuration.identity;
-    std::ostringstream text;
-    text << "abi: " << configuration.abi_name << '\n'
-         << "source: " << darwin_abi_source_name(configuration.abi_source)
-         << '\n' << "source-detail: " << configuration.abi_source_detail << '\n'
-         << "kernel: " << identity.name << '\n'
-         << "os-type: " << identity.operating_system_type << '\n'
-         << "os-release: " << identity.operating_system_release << '\n'
-         << "os-revision: " << identity.operating_system_revision << '\n'
-         << "os-version: " << identity.build_version << '\n'
-         << "kernel-version: " << identity.version << '\n'
-         << "epoch: " << choice(abi.abi_epoch,
+    void write_abi_fields(std::ostream& text, const DarwinAbi& abi)
+    {
+        text << "epoch: " << choice(abi.abi_epoch,
                 { "unknown", "iphone-os-1", "iphone-os-2", "iphone-os-3",
                     "darwin-10", "darwin-11", "darwin-13", "later" }) << '\n'
          << "pthread: " << choice(abi.pthread_abi,
@@ -107,10 +81,66 @@ void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
                 { "retail", "development-board" }) << '\n'
          << "mach-vm-address: " << choice(abi.mach_vm_address,
                 { "natural32", "wide64" }) << '\n'
+         << "stack-snapshot: " << choice(abi.stack_snapshot_abi,
+                { "unsupported", "legacy-four-arguments", "legacy-five-arguments" }) << '\n'
+         << "framebuffer-registry: " << choice(abi.framebuffer_registry,
+                { "device-specific-class", "unified-clcd-class" }) << '\n'
+         << "memory-status-priority: " << choice(abi.memory_status_priority,
+                { "unsupported", "signed-priority", "priority-bands" }) << '\n'
+         << "hid-digitizer: " << choice(abi.hid_digitizer,
+                { "collection-contact-changes", "child-contact-changes", "collection-contact-changes-with-edge-origin" }) << '\n'
+         << "io-service-state: " << choice(abi.io_service_state,
+                { "state-only", "state-with-busy-accounting" }) << '\n'
          << std::boolalpha
          << "send-sigsys: " << abi.capabilities.send_sigsys << '\n'
          << "cache-trap-grants-execute: "
          << abi.capabilities.arm_cache_trap_grants_execute << '\n';
+    }
+
+} // namespace
+
+void inspect_abi(const std::optional<std::filesystem::path>& rootfs,
+    const std::optional<std::string>& ios_build, Output& output, bool all)
+{
+    if (all) {
+        if (rootfs || ios_build)
+            throw std::invalid_argument {
+                "abi --all cannot be combined with --rootfs or --ios-build" };
+        std::ostringstream text;
+        text << "abi-catalog-schema: 1" << std::endl;
+        for (const auto& entry : darwin_configurations()) {
+            text << std::endl << "abi: " << entry.name << std::endl
+                 << "os-release: " << entry.darwin_release << std::endl;
+            write_abi_fields(text, entry.abi);
+        }
+        output.write(text.str());
+        return;
+    }
+    if (!rootfs && !ios_build) {
+        output.line("Use --rootfs DIR to inspect the firmware's "
+                    "Darwin/ABI configuration.");
+        output.line("Use --ios-build CODE (e.g. 9A334) to override "
+                    "firmware metadata.");
+        output.line("Known Darwin/ABI configurations:");
+        for (const auto& entry : darwin_configurations())
+            output.line("  " + std::string { entry.name });
+        return;
+    }
+    const auto configuration = resolve_darwin_configuration(
+        rootfs.value_or(std::filesystem::path { }), ios_build);
+    const auto& abi = configuration.abi;
+    const auto& identity = configuration.identity;
+    std::ostringstream text;
+    text << "abi: " << configuration.abi_name << '\n'
+         << "source: " << darwin_abi_source_name(configuration.abi_source)
+         << '\n' << "source-detail: " << configuration.abi_source_detail << '\n'
+         << "kernel: " << identity.name << '\n'
+         << "os-type: " << identity.operating_system_type << '\n'
+         << "os-release: " << identity.operating_system_release << '\n'
+         << "os-revision: " << identity.operating_system_revision << '\n'
+         << "os-version: " << identity.build_version << '\n'
+         << "kernel-version: " << identity.version << '\n';
+    write_abi_fields(text, abi);
     output.write(text.str());
 }
 
