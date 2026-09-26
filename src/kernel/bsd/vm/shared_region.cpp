@@ -10,6 +10,7 @@
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/vm/vm_shared_memory_server.c
 // https://github.com/apple-oss-distributions/xnu/blob/xnu-1699.22.73/bsd/vm/vm_unix.c
 
+#include "kernel/darwin_abi.hpp"
 #include "kernel/kernel.hpp"
 
 #include "../support.hpp"
@@ -31,11 +32,10 @@
 namespace ilemu {
 namespace {
 
-    // The iPhoneOS 1 ARM dyld uses five 32-bit words here.  This differs from
-    // xnu's desktop 32-bit ABI, whose mach_vm_* members make the entry 32
-    // bytes.  The layout below is confirmed by the firmware dyld's syscall 299
-    // call site and matches the ARM split-segment addresses in the system
-    // dylibs.
+    // Legacy ARM calls use natural_t fields, independently of the desktop
+    // XNU mach_vm_* declarations. The ARM kernel copies 20 bytes per mapping,
+    // 8 per private range, and 4 for the slide result. Map-and-slide uses the
+    // later 32-byte mach_vm mapping contract.
     constexpr std::uint32_t arm_mapping_size = 5U * sizeof(std::uint32_t);
     constexpr std::uint32_t mach_vm_mapping_size =
         (3U * sizeof(std::uint64_t)) + (2U * sizeof(std::uint32_t));
@@ -44,7 +44,7 @@ namespace {
     constexpr std::uint32_t vm_protection_zero_fill = 0x10U;
     constexpr std::uint32_t vm_protection_slide = 0x20U;
     constexpr std::uint32_t shared_region_range_size =
-        2U * sizeof(std::uint64_t);
+        2U * sizeof(std::uint32_t);
     constexpr std::uint32_t map_and_slide_maximum_mapping_count = 8U;
     constexpr std::uint32_t maximum_slide_info_size = 1024U * 1024U;
     constexpr std::uint32_t slide_info_header_size =
@@ -157,6 +157,15 @@ namespace {
         return right > std::numeric_limits<std::uint32_t>::max() - left;
     }
 
+    [[nodiscard]] bool readable_user_array(const AddressSpace& memory,
+        std::uint32_t address, std::uint32_t count, std::uint32_t entry_size)
+    {
+        const auto size = static_cast<std::uint64_t>(count) * entry_size;
+        return size <= (1ULL << 32U) - address &&
+               memory.accessible(address, static_cast<std::size_t>(size),
+                   MemoryPermission::Read);
+    }
+
     [[nodiscard]] bool page_aligned(std::uint64_t value)
     {
         return value % AddressSpace::page_size == 0;
@@ -183,9 +192,12 @@ namespace {
         const auto maximum_range_count =
             (bounds.shared_region_end - bounds.shared_region_base) /
             AddressSpace::page_size;
-        if (range_count > maximum_range_count ||
-            (range_count != 0 && ranges_address == 0)) {
+        if (range_count > maximum_range_count) {
             return { { }, bsd_support::invalid_argument };
+        }
+        if (range_count != 0 && !readable_user_array(memory, ranges_address,
+                                    range_count, shared_region_range_size)) {
+            return { { }, bsd_support::bad_address };
         }
 
         std::vector<SharedRegionRange> ranges;
@@ -193,33 +205,26 @@ namespace {
         for (std::uint32_t index = 0; index < range_count; ++index) {
             const auto offset =
                 static_cast<std::uint64_t>(index) * shared_region_range_size;
-            if (offset > std::numeric_limits<std::uint32_t>::max() -
-                             ranges_address ||
-                ranges_address + static_cast<std::uint32_t>(offset) >
-                    std::numeric_limits<std::uint32_t>::max() -
-                        shared_region_range_size + 1U) {
-                return { { }, bsd_support::bad_address };
-            }
             const auto address =
                 ranges_address + static_cast<std::uint32_t>(offset);
-            const auto range_address = memory.read64(address);
+            const auto range_address = memory.read32(address);
             const auto range_size =
-                memory.read64(address + sizeof(std::uint64_t));
+                memory.read32(address + sizeof(std::uint32_t));
             if (!range_address || !range_size) {
                 return { { }, bsd_support::bad_address };
             }
-            if (*range_address > std::numeric_limits<std::uint32_t>::max() ||
-                *range_size > std::numeric_limits<std::uint32_t>::max() ||
-                *range_size == 0 || !page_aligned(*range_address) ||
-                !page_aligned(*range_size) ||
-                !in_arm_shared_region(
-                    static_cast<std::uint32_t>(*range_address),
-                    static_cast<std::uint32_t>(*range_size), bounds)) {
-                return { { }, bsd_support::invalid_argument };
-            }
-            const auto start = static_cast<std::uint32_t>(*range_address);
-            ranges.push_back(
-                { start, start + static_cast<std::uint32_t>(*range_size) });
+            // shared_region_cleanup rounds and clips the supplied intervals;
+            // empty or out-of-region intervals are not argument errors. Keep
+            // the ARM kernel's natural-width arithmetic before clipping.
+            constexpr auto page_mask = AddressSpace::page_size - 1U;
+            const auto start = std::clamp(*range_address & ~page_mask,
+                bounds.shared_region_base, bounds.shared_region_end);
+            const std::uint32_t rounded_end =
+                (*range_address + *range_size + page_mask) & ~page_mask;
+            const auto end = std::clamp(rounded_end,
+                bounds.shared_region_base, bounds.shared_region_end);
+            if (start < end)
+                ranges.push_back({ start, end });
         }
 
         std::sort(ranges.begin(), ranges.end(),
@@ -708,7 +713,7 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
     }
     if (number == 300) { // shared_region_make_private_np
         // The old ARM ABI passes (rangeCount, ranges), where each range
-        // contains two mach_vm_* (64-bit) fields.  AddressSpace is already
+        // contains two natural_t (32-bit) fields. AddressSpace is already
         // process-local; map_file() gives retained file pages private-on-write
         // semantics.  The observable part of privatization is therefore
         // releasing every mapped shared-region interval outside the requested
@@ -740,6 +745,26 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
     SharedRegionDiagnostics diagnostics { process_.pid };
     const auto fixed_mapping_contract = number == 438;
 
+    const auto mapping_count = registers[1];
+    const auto mappings_address = registers[2];
+    // Map-and-slide validates the copied array before looking up its file.
+    // The older entry points validate the vnode before touching user input.
+    if (fixed_mapping_contract) {
+        if (mapping_count == 0) {
+            bsd_success(cpu, 0);
+            return true;
+        }
+        if (mapping_count > map_and_slide_maximum_mapping_count) {
+            bsd_error(cpu, 5); // The native wrapper returns KERN_FAILURE.
+            return true;
+        }
+        if (!readable_user_array(memory_, mappings_address, mapping_count,
+                mach_vm_mapping_size)) {
+            bsd_error(cpu, bsd_support::bad_address);
+            return true;
+        }
+    }
+
     auto descriptor_number = registers[0];
     if (const auto duplicate = duplicated_descriptors_.find(descriptor_number);
         duplicate != duplicated_descriptors_.end()) {
@@ -750,34 +775,43 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
         bsd_error(cpu, bsd_support::bad_file_descriptor);
         return true;
     }
-    const auto mapping_count = registers[1];
-    const auto mappings_address = registers[2];
+    const auto flags = file_status_flags_.find(descriptor_number);
+    const auto descriptor_flags = flags != file_status_flags_.end()
+                                      ? flags->second
+                                      : darwin::open_flag::read_only;
+    if ((descriptor_flags & darwin::open_flag::access_mode) ==
+        darwin::open_flag::write_only) {
+        bsd_error(cpu, darwin::error::operation_not_permitted);
+        return true;
+    }
+    std::error_code file_error;
+    const auto file_size =
+        std::filesystem::file_size(descriptor->second, file_error);
+    if (file_error) {
+        bsd_error(cpu, bsd_support::invalid_argument);
+        return true;
+    }
     const auto slide_address = number == 299 ? registers[3] : 0U;
     const auto content_slide = fixed_mapping_contract ? registers[3] : 0U;
     const auto slide_info_address =
         fixed_mapping_contract ? registers[4] : 0U;
     const auto slide_info_size = fixed_mapping_contract ? registers[5] : 0U;
     if (mapping_count == 0) {
-        if (slide_address != 0 && !memory_.write64(slide_address, 0)) {
-            bsd_error(cpu, bsd_support::bad_address);
-        } else {
-            bsd_success(cpu, 0);
-        }
+        // XNU returns before touching either user buffer for an empty list.
+        bsd_success(cpu, 0);
         return true;
     }
-    const auto mapping_count_limit = fixed_mapping_contract
-                                         ? map_and_slide_maximum_mapping_count
-                                         : maximum_mapping_count;
-    if (mapping_count > mapping_count_limit || mappings_address == 0) {
+    if (!fixed_mapping_contract && mapping_count > maximum_mapping_count) {
         bsd_error(cpu, bsd_support::invalid_argument);
         return true;
     }
 
-    std::error_code file_error;
-    const auto file_size =
-        std::filesystem::file_size(descriptor->second, file_error);
-    if (file_error) {
-        bsd_error(cpu, bsd_support::invalid_argument);
+    const auto layout = fixed_mapping_contract ? MappingLayout::MachVm64
+                                               : MappingLayout::Arm32Words;
+    // copyin covers the entire wire array before any entry is interpreted.
+    if (!fixed_mapping_contract && !readable_user_array(
+            memory_, mappings_address, mapping_count, arm_mapping_size)) {
+        bsd_error(cpu, bsd_support::bad_address);
         return true;
     }
     diagnostics.checkpoint(SharedRegionDiagnosticPhase::Preflight);
@@ -795,15 +829,8 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
     const auto mapping_validation_size =
         shared_cache ? std::numeric_limits<std::uintmax_t>::max() : file_size;
 
-    auto layout = fixed_mapping_contract ? MappingLayout::MachVm64
-                                         : MappingLayout::Arm32Words;
-    auto mappings = read_mappings(memory_, mappings_address, mapping_count,
+    const auto mappings = read_mappings(memory_, mappings_address, mapping_count,
         mapping_validation_size, layout, bounds);
-    if (!mappings && !fixed_mapping_contract) {
-        layout = MappingLayout::MachVm64;
-        mappings = read_mappings(memory_, mappings_address, mapping_count,
-            mapping_validation_size, layout, bounds);
-    }
     if (!mappings) {
         bsd_error(cpu, bsd_support::invalid_argument);
         return true;
@@ -967,12 +994,10 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
         }
     }
 
-    if (slide_address != 0 &&
-        !memory_.write64(slide_address, *address_slide)) {
-        rollback(memory_, applied);
-        bsd_error(cpu, bsd_support::bad_address);
-        return true;
-    }
+    // A late copyout fault leaves both the mappings and their executable
+    // bookkeeping committed. Report it after completing image installation.
+    const auto slide_copyout_failed = slide_address != 0 &&
+        !memory_.write32(slide_address, *address_slide);
     for (const auto& mapping : *mappings) {
         if ((mapping.initial_protection & vm_protection_zero_fill) != 0)
             continue;
@@ -1026,7 +1051,10 @@ bool CompatibilityKernel::dispatch_bsd_shared_region(
                   " layout=" + layout_name(layout) +
                   " address-slide=" + std::to_string(*address_slide) +
                   " content-slide=" + std::to_string(content_slide) + "\n");
-    bsd_success(cpu, 0);
+    if (slide_copyout_failed)
+        bsd_error(cpu, bsd_support::bad_address);
+    else
+        bsd_success(cpu, 0);
     return true;
 }
 
