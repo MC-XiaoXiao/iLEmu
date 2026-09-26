@@ -52,6 +52,7 @@
 #include "foundation/performance.hpp"
 
 #include "app/abi_command.hpp"
+#include "app/routes_command.hpp"
 #include "app/desktop_host.hpp"
 #include "foundation/host_memory.hpp"
 #include "host/resource_usage.hpp"
@@ -69,6 +70,7 @@ std::string usage()
     return "Usage:\n"
            "  ilemu profile [--device PROFILE] [--output FILE]\n"
            "  ilemu abi [--all] [--rootfs DIR] [--ios-build CODE] [--output FILE]\n"
+           "  ilemu routes (--all | --rootfs DIR | --ios-build CODE) [--validate] [--output FILE]\n"
            "  ilemu inspect --rootfs DIR [--binary /sbin/launchd] "
            "[--device PROFILE] [--shared-cache GUEST_PATH] "
            "[--symbols SUBSTRING] [--output FILE]\n"
@@ -1188,6 +1190,9 @@ int main(int argc, char** argv)
             } else if (command == "abi") {
                 inspect_abi(option(args, "--rootfs"), ios_build_option(args),
                     *output, flag(args, "--all"));
+            } else if (command == "routes") {
+                inspect_routes(option(args, "--rootfs"), ios_build_option(args),
+                    *output, flag(args, "--all"), flag(args, "--validate"));
             } else if (command == "inspect") {
                 inspect(args, *output);
             } else if (command == "catalog") {

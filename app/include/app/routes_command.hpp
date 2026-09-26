@@ -1,0 +1,13 @@
+// This Source Code Form is subject to the terms of the Mozilla Public
+// License, v. 2.0. If a copy of the MPL was not distributed with this
+// file, You can obtain one at https://mozilla.org/MPL/2.0/.
+#pragma once
+#include <filesystem>
+#include <optional>
+#include <string>
+namespace ilemu {
+class Output;
+void inspect_routes(const std::optional<std::filesystem::path>& rootfs,
+    const std::optional<std::string>& ios_build, Output& output, bool all,
+    bool validate_only);
+}
