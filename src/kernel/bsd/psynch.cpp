@@ -170,23 +170,6 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
         const auto outcome = shared_state_->psynch_runtime->wait_mutex(
             current_thread, registers[0], registers[1], registers[2],
             registers[5]);
-        if (outcome.blocked && process_image_.ends_with("/assetsd")) {
-            const auto word0 = memory_.read32(registers[0]).value_or(0U);
-            const auto word1 = memory_.read32(registers[0] + 4U).value_or(0U);
-            const auto word2 = memory_.read32(registers[0] + 8U).value_or(0U);
-            const auto word3 = memory_.read32(registers[0] + 12U).value_or(0U);
-            output_.line("[perf] assetsd psynch_mutexwait pid=" +
-                         std::to_string(process_.pid) + " slot=" +
-                         std::to_string(cpu.processor_id()) + " address=" +
-                         std::to_string(registers[0]) + " mgen=" +
-                         std::to_string(registers[1]) + " ugen=" +
-                         std::to_string(registers[2]) + " flags=" +
-                         std::to_string(registers[5]) + " words=" +
-                         std::to_string(word0) + "," +
-                         std::to_string(word1) + "," +
-                         std::to_string(word2) + "," +
-                         std::to_string(word3));
-        }
         begin_wait(std::move(outcome),
             registers[0], DarwinPsynchWaitKind::Mutex);
         return;

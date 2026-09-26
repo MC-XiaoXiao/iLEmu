@@ -4088,6 +4088,20 @@ void EmulatorSession::run()
                     hard_stop = true;
                 } else {
                     debug_request = request;
+                    if (fatal_result &&
+                        request.kind == GdbResumeKind::Continue &&
+                        runtime.kernel->process().pid !=
+                            initial_runtime->kernel->process().pid) {
+                        runtime.kernel->exit_process(0,
+                            result.fault ? gdb_signal::segmentation_fault
+                                         : gdb_signal::illegal_instruction);
+                        scheduler.remove_process(
+                            runtime.kernel->process().pid);
+                        guest_execution_policy.forget_process(
+                            runtime.kernel->process().pid);
+                        guest_parallelism_policy.forget_process(
+                            runtime.kernel->process().pid);
+                    }
                 }
             }
             if (hard_stop)

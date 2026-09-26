@@ -2395,6 +2395,8 @@ std::string CompatibilityKernel::wait_reason(std::size_t processor) const
                     shared_state_->mach_port_sets.find(*object);
                 members != shared_state_->mach_port_sets.end()) {
                 reason += ",members=" + std::to_string(members->second.size());
+                for (const auto member : members->second)
+                    reason += "/" + std::to_string(member);
             }
         }
         return reason + ")";

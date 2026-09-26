@@ -571,6 +571,8 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
         dispatch_bsd_fileport(cpu, number);
         return;
     default:
+        output_.marker("[process] unsupported-bsd pid=" + std::to_string(process_.pid) +
+            " number=" + std::to_string(number));
         trace_unknown(cpu, "BSD syscall", number);
         dispatch_bsd_nosys(cpu,
             shared_state_->darwin_abi.capabilities.send_sigsys);
