@@ -49,6 +49,8 @@ namespace {
         NamedObject { "kern.maxproc", control_kernel, 6 },
         NamedObject { "kern.maxfiles", control_kernel, 7 },
         NamedObject { "kern.argmax", control_kernel, 8 },
+        NamedObject { "kern.securelevel", control_kernel, kernel_security_level,
+            readable | writable | integer_type },
         NamedObject { "kern.hostname", control_kernel, 10,
             readable | writable | string_type, "A" },
         NamedObject { "kern.boottime", control_kernel, kernel_boot_time,
