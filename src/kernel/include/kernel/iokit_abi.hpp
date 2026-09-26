@@ -60,6 +60,10 @@ namespace service_get_matching_service_v1 {
 // can select its native IORegistry class without changing the transport ABI.
 enum class MobileFramebufferSelector : std::uint32_t {
     GetLayerDefaultSurface = 3,
+    // The framebuffer user client also uses selector 8 for a two-scalar
+    // native canvas-size query. Its empty input and output count distinguish
+    // it from the older two-input vsync registration contract.
+    GetNativeCanvasSize = 8,
     SetVSyncNotificationsV1 = 8,
     SetVSyncNotifications = 9,
     RequestPowerChangeV2 = 12,

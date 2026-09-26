@@ -261,6 +261,19 @@ std::optional<MethodResult> dispatch_connect_method(KernelSharedState& state,
         return MethodResult { iokit_abi::success, { } };
     }
 
+    if (selector == static_cast<std::uint32_t>(
+                        iokit_abi::MobileFramebufferSelector::
+                            GetNativeCanvasSize) &&
+        scalar_input.empty() && inband_input.empty() &&
+        scalar_output_capacity >= 2U) {
+        const auto geometry = external ? state.external_framebuffer.geometry
+                                       : state.display_geometry;
+        if (!geometry.valid())
+            return MethodResult { iokit_abi::bad_argument, { } };
+        return MethodResult { iokit_abi::success,
+            { geometry.width, geometry.height } };
+    }
+
     if (iokit_abi::is_mobile_framebuffer_vsync_selector(selector)) {
         if (scalar_input.size() != 2U || !inband_input.empty()) {
             return MethodResult { iokit_abi::bad_argument, { } };
