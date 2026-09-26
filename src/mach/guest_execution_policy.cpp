@@ -53,7 +53,15 @@ std::chrono::nanoseconds GuestExecutionPolicy::budget(
     const auto history = histories_.find(request.thread);
     const auto saturation_level =
         history == histories_.end() ? 0U : history->second.saturation_level;
+    const auto translation_active = history != histories_.end() &&
+        history->second.translation_active;
     auto policy_cap = throughput_budget_;
+
+    // A thread which just translated guest code is still building its cold
+    // working set. Do not let the measured translation tail turn its next
+    // cooperative slice into a throughput slice before peers can run.
+    if (translation_active)
+        policy_cap = initial_budget_;
 
     const auto equal_or_higher_competitors =
         scheduler.runnable_count_at_or_above_priority(
@@ -80,8 +88,11 @@ std::chrono::nanoseconds GuestExecutionPolicy::budget(
 
     const auto adaptive_target = std::min(throughput_budget_,
         initial_budget_ * static_cast<std::int64_t>(saturation_level + 1U));
-    const auto translation_floor = std::min(policy_cap,
-        std::max(initial_budget_, request.jit_block_p99 + translation_safety));
+    const auto translation_floor = translation_active
+        ? initial_budget_
+        : std::min(policy_cap,
+              std::max(initial_budget_,
+                  request.jit_block_p99 + translation_safety));
     auto result =
         std::min(policy_cap, std::max(adaptive_target, translation_floor));
 
@@ -106,22 +117,31 @@ std::chrono::nanoseconds GuestExecutionPolicy::budget(
 }
 
 void GuestExecutionPolicy::observe(
-    XnuThreadId thread, XnuSliceCompletion completion)
+    XnuThreadId thread, XnuSliceCompletion completion, bool translated_code)
 {
     if (completion == XnuSliceCompletion::Terminate) {
         histories_.erase(thread);
         return;
     }
     auto history = histories_.find(thread);
+    if (translated_code) {
+        if (history == histories_.end())
+            history = histories_.try_emplace(thread).first;
+        history->second.translation_active = true;
+        history->second.saturation_level = 0U;
+        return;
+    }
     if (completion == XnuSliceCompletion::HostCooperate) {
         if (history == histories_.end())
             history = histories_.try_emplace(thread).first;
+        history->second.translation_active = false;
         history->second.saturation_level = std::min<std::uint8_t>(
             maximum_saturation_level, history->second.saturation_level + 1U);
         return;
     }
     if (history == histories_.end())
         return;
+    history->second.translation_active = false;
     if (history->second.saturation_level > 1U) {
         --history->second.saturation_level;
     } else {

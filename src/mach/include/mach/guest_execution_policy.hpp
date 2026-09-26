@@ -33,13 +33,19 @@ public:
 
     [[nodiscard]] std::chrono::nanoseconds budget(const XnuScheduler& scheduler,
         const GuestExecutionBudgetRequest& request) const;
-    void observe(XnuThreadId thread, XnuSliceCompletion completion);
+    // A translated host-cooperative slice is expensive work rather than a
+    // hot-code throughput sample. Keep its next slice at the low-latency
+    // starting budget so display and input peers can run while demand JIT is
+    // still building the working set.
+    void observe(XnuThreadId thread, XnuSliceCompletion completion,
+        bool translated_code = false);
     void forget(XnuThreadId thread);
     void forget_process(std::uint32_t process_id);
 
 private:
     struct ThreadHistory {
         std::uint8_t saturation_level { };
+        bool translation_active { };
     };
 
     static constexpr std::uint8_t maximum_saturation_level = 2;

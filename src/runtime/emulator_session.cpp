@@ -4044,7 +4044,8 @@ void EmulatorSession::run()
                 display_yielded_thread = scheduled->thread;
             }
             if (!scheduler_completed) {
-                guest_execution_policy.observe(scheduled->thread, completion);
+                guest_execution_policy.observe(scheduled->thread, completion,
+                    result.translated_code);
                 const auto slice_completed = scheduler.complete_slice(
                     scheduled->thread, result.ticks_consumed, completion,
                     XnuTimeAccounting::Deferred);
