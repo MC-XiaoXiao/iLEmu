@@ -41,6 +41,7 @@
 #include <vector>
 
 #include "support.hpp"
+#include "sysctl/user_transfer.hpp"
 
 namespace {
 
@@ -1476,6 +1477,19 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         const auto mib1 = read_mib(1);
         const auto mib2 = read_mib(2);
         const auto mib3 = read_mib(3);
+        // The legacy wrapper authorizes writes before reading oldlenp or
+        // probing the output mapping. These fixed leaves have no ANYBODY
+        // exception; keep OID-handler authorization at its own call site.
+        if (registers[4] != 0 && process_.effective_uid != 0 &&
+            shared_state_->darwin_abi.sysctl_transfer ==
+                DarwinSysctlTransferAbi::LegacyKernelHandlers &&
+            (*mib0 == darwin::sysctl::control_hardware ||
+                (*mib0 == darwin::sysctl::control_kernel &&
+                    (*mib1 == darwin::sysctl::kernel_security_level ||
+                        darwin::sysctl::describe_object(*mib0, *mib1))))) {
+            bsd_error(cpu, darwin::error::operation_not_permitted);
+            return;
+        }
         const auto old_size = registers[3] != 0
                                   ? memory_.read32(registers[3])
                                   : std::optional<std::uint32_t> { 0 };
@@ -1485,40 +1499,51 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
-        // CTL_HW uses the OID tree even in legacy XNU. Known scalar/string
-        // leaves reject trailing components before invoking their handler.
-        if (mib_count > 2U && *mib0 == darwin::sysctl::control_hardware &&
-            darwin::sysctl::describe_object(*mib0, *mib1)) {
-            bsd_error(cpu, darwin::error::is_directory);
+        // Legacy __sysctl applies useracc to the entire offered buffer
+        // before dispatch, even when the selected value needs fewer bytes.
+        if (shared_state_->darwin_abi.sysctl_transfer ==
+                DarwinSysctlTransferAbi::LegacyKernelHandlers &&
+            registers[2] != 0 && !memory_.accessible(registers[2], *old_size,
+                MemoryPermission::Write)) {
+            bsd_error(cpu, darwin::error::bad_address);
             return;
         }
+        // Fixed kernel leaves use the old switch or the OID tree. Hardware
+        // leaves already use OIDs in legacy XNU. Parameterized nodes are
+        // handled separately and must retain their additional components.
+        if (mib_count > 2U &&
+            (*mib0 == darwin::sysctl::control_hardware ||
+                *mib0 == darwin::sysctl::control_kernel) &&
+            darwin::sysctl::describe_object(*mib0, *mib1)) {
+            bsd_error(cpu, *mib0 == darwin::sysctl::control_kernel &&
+                    shared_state_->darwin_abi.sysctl_transfer ==
+                        DarwinSysctlTransferAbi::LegacyKernelHandlers
+                ? darwin::error::not_directory : darwin::error::is_directory);
+            return;
+        }
+        darwin::sysctl::UserTransfer transfer {
+            memory_, registers[2], registers[3], *old_size,
+            shared_state_->darwin_abi.sysctl_transfer,
+            *mib0 == darwin::sysctl::control_kernel };
+        const bool writing = transfer.has_input(registers[4], registers[5]);
+        const auto finish_transfer = [&](std::uint32_t result) {
+            result = transfer.finish(result);
+            if (result != 0)
+                bsd_error(cpu, result);
+            else
+                bsd_success(cpu, 0);
+        };
         const auto write_read_only_bytes = [&](std::span<const std::byte> bytes) {
-            const auto required = static_cast<std::uint32_t>(bytes.size());
-            if (registers[4] != 0) {
-                bsd_error(cpu, darwin::error::operation_not_permitted);
-                return;
-            }
-            if (registers[3] == 0 || !memory_.write32(registers[3], required)) {
-                bsd_error(cpu, bsd_support::bad_address);
-                return;
-            }
-            if (registers[2] != 0) {
-                if (*old_size < required) {
-                    bsd_error(cpu, darwin::error::no_memory);
-                    return;
-                }
-                if (!memory_.copy_in(registers[2], bytes)) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                    return;
-                }
-            }
-            bsd_success(cpu, 0);
+            finish_transfer(writing &&
+                    (!transfer.legacy_leaf() || transfer.accepts(bytes.size()))
+                    ? darwin::error::operation_not_permitted
+                    : transfer.write(bytes));
         };
         const auto write_read_only_string = [&](std::string_view value) {
-            std::vector<std::byte> bytes(value.size() + 1U);
-            std::transform(value.begin(), value.end(), bytes.begin(),
-                [](char character) { return static_cast<std::byte>(character); });
-            write_read_only_bytes(bytes);
+            finish_transfer(writing &&
+                    (!transfer.legacy_leaf() || transfer.accepts(value.size() + 1U))
+                    ? darwin::error::operation_not_permitted
+                    : transfer.write_string(value));
         };
         if (*mib0 == darwin::sysctl::control_unspecified &&
             (*mib1 == darwin::sysctl::operation_oid_to_name ||
@@ -2068,144 +2093,76 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             return;
         }
         if (*mib0 == darwin::sysctl::control_kernel &&
-            *mib1 == darwin::sysctl::kernel_security_level &&
-            mib_count == 2) { // KERN_SECURELVL
-            const auto previous =
-                shared_state_->security_level.load(std::memory_order_relaxed);
-            std::optional<std::int32_t> requested_level;
-            if (registers[4] != 0) {
-                if (registers[5] != sizeof(std::int32_t)) {
-                    bsd_error(cpu, bsd_support::invalid_argument);
-                    return;
-                }
-                const auto requested = memory_.read32(registers[4]);
-                if (!requested) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                    return;
-                }
-                const auto level = static_cast<std::int32_t>(*requested);
-                if (level < previous && process_.pid != 1) {
-                    bsd_error(cpu, darwin::error::operation_not_permitted);
-                    return;
-                }
-                requested_level = level;
-            }
-            if (registers[3] != 0) {
-                constexpr std::uint32_t value_size = sizeof(std::int32_t);
-                if (!memory_.write32(registers[3], value_size)) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                    return;
-                }
-                if (registers[2] != 0) {
-                    if (*old_size < value_size) {
-                        bsd_error(cpu, darwin::error::no_memory);
-                        return;
-                    }
-                    if (!memory_.write32(registers[2],
-                            static_cast<std::uint32_t>(previous))) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                }
-            }
-            if (requested_level) {
-                shared_state_->security_level.store(
-                    *requested_level, std::memory_order_relaxed);
-            }
-            bsd_success(cpu, 0);
-            return;
-        }
-        if (*mib0 == 1 && *mib1 == 5) { // KERN_MAXVNODES (read/write)
-            const auto previous = shared_state_->desired_vnodes;
-            if (registers[4] != 0) {
-                if (registers[5] != 4) {
-                    bsd_error(cpu, bsd_support::invalid_argument);
-                    return;
-                }
-                const auto requested = memory_.read32(registers[4]);
-                if (!requested) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                    return;
-                }
-                shared_state_->desired_vnodes = *requested;
-            }
-            if (registers[3] != 0) {
-                if (!memory_.write32(registers[3], 4) ||
-                    (registers[2] != 0 &&
-                        (*old_size < 4 ||
-                            !memory_.write32(registers[2], previous)))) {
-                    bsd_error(
-                        cpu, *old_size < 4 ? 12 : bsd_support::bad_address);
-                    return;
-                }
-            }
-            bsd_success(cpu, 0);
-            return;
-        }
-        if (*mib0 == 1 && *mib1 == 10) { // KERN_HOSTNAME (read/write)
-            const auto previous = shared_state_->hostname;
-            if (registers[4] != 0) {
-                if (registers[5] == 0 || registers[5] > 256) {
-                    bsd_error(cpu, bsd_support::invalid_argument);
-                    return;
-                }
-                const auto bytes =
-                    memory_.read_bytes(registers[4], registers[5]);
-                if (!bytes) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                    return;
-                }
-                shared_state_->hostname.assign(
-                    reinterpret_cast<const char*>(bytes->data()),
-                    bytes->size());
-                if (!shared_state_->hostname.empty() &&
-                    shared_state_->hostname.back() == '\0') {
-                    shared_state_->hostname.pop_back();
-                }
-            }
-            if (registers[3] != 0) {
-                const auto required =
-                    static_cast<std::uint32_t>(previous.size() + 1);
-                if (!memory_.write32(registers[3], required)) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                    return;
-                }
-                if (registers[2] != 0) {
-                    if (*old_size < required) {
-                        bsd_error(cpu, 12);
-                        return;
-                    }
-                    std::vector<std::byte> bytes(required);
-                    std::transform(previous.begin(), previous.end(),
-                        bytes.begin(), [](char value) {
-                            return static_cast<std::byte>(value);
-                        });
-                    if (!memory_.copy_in(registers[2], bytes)) {
-                        bsd_error(cpu, bsd_support::bad_address);
-                        return;
-                    }
-                }
-            }
-            bsd_success(cpu, 0);
-            return;
-        }
-        if (*mib0 == 6 && *mib1 == 24) { // HW_MEMSIZE
-            if (registers[3] == 0 || !memory_.write32(registers[3], 8)) {
-                bsd_error(cpu, bsd_support::bad_address);
+            (*mib1 == darwin::sysctl::kernel_security_level || *mib1 == 5) &&
+            mib_count == 2) { // KERN_SECURELVL, KERN_MAXVNODES
+            const bool security_level =
+                *mib1 == darwin::sysctl::kernel_security_level;
+            if (writing && process_.effective_uid != 0) {
+                bsd_error(cpu, darwin::error::operation_not_permitted);
                 return;
             }
-            if (registers[2] != 0) {
-                if (*old_size < 8) {
-                    bsd_error(cpu, 12);
-                    return;
-                }
-                if (!memory_.write64(
-                        registers[2], shared_state_->device_ram_bytes)) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                    return;
+            const auto previous = security_level
+                ? static_cast<std::uint32_t>(shared_state_->security_level.load(
+                      std::memory_order_relaxed))
+                : shared_state_->desired_vnodes;
+            auto result = transfer.legacy_leaf() && writing &&
+                    transfer.accepts(sizeof(previous)) &&
+                    registers[5] != sizeof(previous)
+                ? darwin::error::invalid_argument
+                : transfer.write_integer(previous);
+            if (result == 0 && writing) {
+                std::uint32_t requested { };
+                result = transfer.read_number32(registers[4], registers[5], requested);
+                if (result == 0) {
+                    const auto level = static_cast<std::int32_t>(requested);
+                    if (security_level &&
+                        level < static_cast<std::int32_t>(previous) &&
+                        process_.pid != 1) {
+                        result = darwin::error::operation_not_permitted;
+                    } else if (security_level) {
+                        shared_state_->security_level.store(
+                            level, std::memory_order_relaxed);
+                    } else {
+                        shared_state_->desired_vnodes = requested;
+                    }
                 }
             }
-            bsd_success(cpu, 0);
+            finish_transfer(result);
+            return;
+        }
+        if (*mib0 == 1 && *mib1 == 10 && mib_count == 2) { // KERN_HOSTNAME
+            if (writing && process_.effective_uid != 0) {
+                bsd_error(cpu, darwin::error::operation_not_permitted);
+                return;
+            }
+            constexpr std::size_t hostname_capacity = 256;
+            auto result = transfer.legacy_leaf() && writing &&
+                    transfer.accepts(1U) &&
+                    registers[5] >= hostname_capacity
+                ? darwin::error::invalid_argument
+                : transfer.write_string(shared_state_->hostname, true);
+            if (result == 0 && writing) {
+                if (registers[5] >= hostname_capacity) {
+                    result = darwin::error::invalid_argument;
+                } else {
+                    std::array<char, hostname_capacity> bytes { };
+                    const auto input = std::span { bytes }.first(registers[5]);
+                    if (!memory_.copy_out(registers[4], std::as_writable_bytes(input))) {
+                        result = darwin::error::bad_address;
+                    } else {
+                        // Native handlers expose only the first C string.
+                        shared_state_->hostname.assign(bytes.data());
+                    }
+                }
+            }
+            finish_transfer(result);
+            return;
+        }
+        if (*mib0 == darwin::sysctl::control_hardware &&
+            *mib1 == darwin::sysctl::hardware_memory_size) {
+            finish_transfer(writing
+                    ? darwin::error::operation_not_permitted
+                    : transfer.write_number64(shared_state_->device_ram_bytes));
             return;
         }
         if (const auto hardware_string =
@@ -2214,31 +2171,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                           shared_state_->device_product_type,
                           shared_state_->device_hardware_model)
                     : std::nullopt) {
-            const auto required =
-                static_cast<std::uint32_t>(hardware_string->size() + 1);
-            if (registers[4] != 0) {
-                bsd_error(cpu, darwin::error::operation_not_permitted);
-                return;
-            }
-            if (registers[3] == 0 || !memory_.write32(registers[3], required)) {
-                bsd_error(cpu, bsd_support::bad_address);
-                return;
-            }
-            if (registers[2] != 0) {
-                if (*old_size < required) {
-                    bsd_error(cpu, darwin::error::no_memory);
-                    return;
-                }
-                std::vector<std::byte> bytes(required);
-                std::transform(hardware_string->begin(), hardware_string->end(),
-                    bytes.begin(),
-                    [](char value) { return static_cast<std::byte>(value); });
-                if (!memory_.copy_in(registers[2], bytes)) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                    return;
-                }
-            }
-            bsd_success(cpu, 0);
+            write_read_only_string(*hardware_string);
             return;
         }
         if ((*mib0 == darwin::sysctl::control_kernel &&
@@ -2261,119 +2194,111 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                     *mib1 == darwin::sysctl::hardware_l3_settings ||
                     *mib1 == darwin::sysctl::hardware_l3_cache_size))) {
             // Common read-only capacity/boot values plus HW_NCPU.
-            if (registers[4] != 0) {
-                bsd_error(cpu, 1); // EPERM: read-only MIB
+            if (writing && (!transfer.legacy_leaf() || transfer.accepts(4U))) {
+                bsd_error(cpu, darwin::error::operation_not_permitted);
                 return;
             }
-            if (!memory_.write32(registers[3], 4)) {
-                bsd_error(cpu, bsd_support::bad_address);
-                return;
-            }
-            if (registers[2] != 0) {
-                if (*old_size < 4) {
-                    bsd_error(cpu, 12); // ENOMEM
-                    return;
+            std::uint32_t value = 1;
+            if (*mib0 == 1) {
+                switch (*mib1) {
+                case 5:
+                    value = 65'536;
+                    break; // KERN_MAXVNODES
+                case 6:
+                    value = 2'048;
+                    break; // KERN_MAXPROC
+                case 7:
+                    value = 12'288;
+                    break; // KERN_MAXFILES
+                case 8:
+                    value = 262'144;
+                    break; // KERN_ARGMAX
+                case darwin::sysctl::kernel_maximum_files_per_process:
+                    value = static_cast<std::uint32_t>(
+                        darwin::resource::maximum_open_files);
+                    break;
+                case 35:
+                    value = darwin_address_bounds(
+                        shared_state_->darwin_abi.address_layout).stack_top;
+                    break; // KERN_USRSTACK32
+                case 40: // KERN_NETBOOT
+                case 66:
+                    value = 0;
+                    break; // KERN_SAFEBOOT
+                default:
+                    value = 1;
+                    break;
                 }
-                std::uint32_t value = 1;
-                if (*mib0 == 1) {
-                    switch (*mib1) {
-                    case 5:
-                        value = 65'536;
-                        break; // KERN_MAXVNODES
-                    case 6:
-                        value = 2'048;
-                        break; // KERN_MAXPROC
-                    case 7:
-                        value = 12'288;
-                        break; // KERN_MAXFILES
-                    case 8:
-                        value = 262'144;
-                        break; // KERN_ARGMAX
-                    case darwin::sysctl::kernel_maximum_files_per_process:
-                        value = static_cast<std::uint32_t>(
-                            darwin::resource::maximum_open_files);
-                        break;
-                    case 35:
-                        value = darwin_address_bounds(
-                            shared_state_->darwin_abi.address_layout).stack_top;
-                        break; // KERN_USRSTACK32
-                    case 40: // KERN_NETBOOT
-                    case 66:
-                        value = 0;
-                        break; // KERN_SAFEBOOT
-                    default:
-                        value = 1;
-                        break;
-                    }
-                } else {
-                    const auto configured_memory_size =
-                        device_model_.memory.usable_ram_bytes != 0
-                            ? std::min(device_model_.memory.usable_ram_bytes,
-                                  shared_state_->device_ram_bytes)
-                            : shared_state_->device_ram_bytes;
-                    switch (*mib1) {
-                    case darwin::sysctl::hardware_cpu_count:
-                    case darwin::sysctl::hardware_available_cpu:
-                    case darwin::sysctl::hardware_physical_cpu:
-                    case darwin::sysctl::hardware_physical_cpu_max:
-                    case darwin::sysctl::hardware_logical_cpu:
-                    case darwin::sysctl::hardware_logical_cpu_max:
-                        value = virtual_processor_count_;
-                        break;
-                    case darwin::sysctl::hardware_byte_order:
-                        value = 1234;
-                        break; // HW_BYTEORDER
-                    case darwin::sysctl::hardware_physical_memory:
-                        value =
-                            static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                                configured_memory_size,
-                                std::numeric_limits<std::uint32_t>::max()));
-                        break; // HW_PHYSMEM
-                    case darwin::sysctl::hardware_user_memory:
-                        value =
-                            static_cast<std::uint32_t>(std::min<std::uint64_t>(
-                                shared_state_->device_ram_bytes > 0x01000000U
-                                    ? shared_state_->device_ram_bytes -
-                                          0x01000000U
-                                    : shared_state_->device_ram_bytes,
-                                std::numeric_limits<std::uint32_t>::max()));
-                        break; // HW_USERMEM
-                    case darwin::sysctl::hardware_page_size:
-                        value = 4096;
-                        break; // HW_PAGESIZE
-                    case 11:
-                        value = 1;
-                        break; // HW_FLOATINGPT
-                    case 13:
-                        value = 0;
-                        break; // HW_VECTORUNIT
-                    case darwin::sysctl::hardware_cache_line:
-                        value = 64;
-                        break; // HW_CACHELINE
-                    case darwin::sysctl::hardware_l1_i_cache_size:
-                    case darwin::sysctl::hardware_l1_d_cache_size:
-                        value = 32U * 1024U;
-                        break; // HW_L1{I,D}CACHESIZE
-                    case darwin::sysctl::hardware_l2_settings:
-                        value = 0;
-                        break; // HW_L2SETTINGS
-                    case darwin::sysctl::hardware_l2_cache_size:
-                        value = 1024U * 1024U;
-                        break; // HW_L2CACHESIZE
-                    case darwin::sysctl::hardware_l3_settings:
-                    case darwin::sysctl::hardware_l3_cache_size:
-                        value = 0;
-                        break; // HW_L3{SETTINGS,CACHESIZE}
-                    default:
-                        break;
-                    }
-                }
-                if (!memory_.write32(registers[2], value)) {
-                    bsd_error(cpu, bsd_support::bad_address);
-                    return;
+            } else {
+                const auto configured_memory_size =
+                    device_model_.memory.usable_ram_bytes != 0
+                        ? std::min(device_model_.memory.usable_ram_bytes,
+                              shared_state_->device_ram_bytes)
+                        : shared_state_->device_ram_bytes;
+                switch (*mib1) {
+                case darwin::sysctl::hardware_cpu_count:
+                case darwin::sysctl::hardware_available_cpu:
+                case darwin::sysctl::hardware_physical_cpu:
+                case darwin::sysctl::hardware_physical_cpu_max:
+                case darwin::sysctl::hardware_logical_cpu:
+                case darwin::sysctl::hardware_logical_cpu_max:
+                    value = virtual_processor_count_;
+                    break;
+                case darwin::sysctl::hardware_byte_order:
+                    value = 1234;
+                    break; // HW_BYTEORDER
+                case darwin::sysctl::hardware_physical_memory:
+                    value =
+                        static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                            configured_memory_size,
+                            std::numeric_limits<std::uint32_t>::max()));
+                    break; // HW_PHYSMEM
+                case darwin::sysctl::hardware_user_memory:
+                    value =
+                        static_cast<std::uint32_t>(std::min<std::uint64_t>(
+                            shared_state_->device_ram_bytes > 0x01000000U
+                                ? shared_state_->device_ram_bytes -
+                                      0x01000000U
+                                : shared_state_->device_ram_bytes,
+                            std::numeric_limits<std::uint32_t>::max()));
+                    break; // HW_USERMEM
+                case darwin::sysctl::hardware_page_size:
+                    value = 4096;
+                    break; // HW_PAGESIZE
+                case 11:
+                    value = 1;
+                    break; // HW_FLOATINGPT
+                case 13:
+                    value = 0;
+                    break; // HW_VECTORUNIT
+                case darwin::sysctl::hardware_cache_line:
+                    value = 64;
+                    break; // HW_CACHELINE
+                case darwin::sysctl::hardware_l1_i_cache_size:
+                case darwin::sysctl::hardware_l1_d_cache_size:
+                    value = 32U * 1024U;
+                    break; // HW_L1{I,D}CACHESIZE
+                case darwin::sysctl::hardware_l2_settings:
+                    value = 0;
+                    break; // HW_L2SETTINGS
+                case darwin::sysctl::hardware_l2_cache_size:
+                    value = 1024U * 1024U;
+                    break; // HW_L2CACHESIZE
+                case darwin::sysctl::hardware_l3_settings:
+                case darwin::sysctl::hardware_l3_cache_size:
+                    value = 0;
+                    break; // HW_L3{SETTINGS,CACHESIZE}
+                default:
+                    break;
                 }
             }
-            bsd_success(cpu, 0);
+            // Keep the common numeric leaf on the existing scalar fast
+            // path, including the final length copyout.
+            const auto result = transfer.finish(transfer.write_integer(value));
+            if (result != 0)
+                bsd_error(cpu, result);
+            else
+                bsd_success(cpu, 0);
             return;
         }
         std::ostringstream message;

@@ -68,6 +68,9 @@ namespace {
                 { "classic-arm", "expanded-arm-shared-region", "arm-shared-region-at-512mib" }) << '\n'
          << "sysctl-by-name: " << choice(abi.sysctl_by_name_abi,
                 { "legacy-semaphore-value", "named-sysctl-at-274" }) << '\n'
+         << "sysctl-transfer: " << choice(abi.sysctl_transfer,
+                { "legacy-kernel-handlers", "oid-sized-queries",
+                    "oid-natural-size-queries" }) << '\n'
          << "exception-ports: " << choice(abi.exception_port_abi,
                 { "through-crash", "through-guard" }) << '\n'
          << "coalition: " << choice(abi.coalition_abi,

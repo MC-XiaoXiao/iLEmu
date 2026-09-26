@@ -18,6 +18,7 @@ namespace {
 
     constexpr DarwinAbi disk_policy_abi {
         .abi_epoch = DarwinAbiEpoch::IphoneOs2,
+        .sysctl_transfer = DarwinSysctlTransferAbi::OidSizedQueries,
         .activation_hardware_model_policy =
             ActivationHardwareModelPolicy::DevelopmentBoard,
         .capabilities = { .send_sigsys = true },
@@ -25,6 +26,7 @@ namespace {
 
     constexpr DarwinAbi darwin11_wide_vm_abi {
         .abi_epoch = DarwinAbiEpoch::Darwin11,
+        .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi =
             DarwinPthreadAbi::BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,
         .apple80211_ioctl =
@@ -70,6 +72,7 @@ namespace {
 
     constexpr DarwinAbi darwin14_expanded_shared_region_abi {
         .abi_epoch = DarwinAbiEpoch::Later,
+        .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi = DarwinPthreadAbi::
             BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues,
         .io_connect_method =
@@ -145,6 +148,7 @@ namespace {
             .darwin_release = "10.0.0d3",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::IphoneOs3,
+                .sysctl_transfer = DarwinSysctlTransferAbi::OidSizedQueries,
                 .activation_hardware_model_policy =
                     ActivationHardwareModelPolicy::DevelopmentBoard,
                 .capabilities = { .send_sigsys = true },
@@ -155,6 +159,7 @@ namespace {
             .darwin_release = "10.3.1",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::Darwin10,
+                .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
                 .apple80211_ioctl =
                     DarwinApple80211IoctlAbi::CompactCurrentNetworkRecord,
@@ -173,6 +178,7 @@ namespace {
             .darwin_release = "10.3.1",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::Darwin10,
+                .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1,
                 .apple80211_ioctl =
                     DarwinApple80211IoctlAbi::CompactCurrentNetworkRecord,
@@ -191,6 +197,7 @@ namespace {
             .darwin_release = "10.4.0",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::Darwin10,
+                .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi = DarwinPthreadAbi::BsdThreadRegisterV1TsdBase,
                 .apple80211_ioctl =
                     DarwinApple80211IoctlAbi::CompactCurrentNetworkRecord,
@@ -210,6 +217,7 @@ namespace {
             .darwin_release = "11.0.0",
             .abi = {
                 .abi_epoch = DarwinAbiEpoch::Darwin11,
+                .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi =
                     DarwinPthreadAbi::BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,
                 .apple80211_ioctl =

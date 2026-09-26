@@ -134,6 +134,14 @@ enum class DarwinSysctlByNameAbi : std::uint8_t {
     NamedSysctlAt274,
 };
 
+// XNU 792 uses legacy kern_sysctl leaves. XNU 1228 moves these to
+// OID handlers; XNU 1504 also stops narrowing 64-bit size-only queries.
+enum class DarwinSysctlTransferAbi : std::uint8_t {
+    LegacyKernelHandlers,
+    OidSizedQueries,
+    OidNaturalSizeQueries,
+};
+
 // Later XNU adds EXC_RESOURCE and EXC_GUARD to the exception mask. The
 // exception-port arrays reserve room for both, while older kernels reject
 // those bits through their selected wire contract.
@@ -211,6 +219,9 @@ struct DarwinGuestCapabilities {
 
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
+    DarwinSysctlTransferAbi sysctl_transfer {
+        DarwinSysctlTransferAbi::LegacyKernelHandlers
+    };
     DarwinPthreadAbi pthread_abi {
         DarwinPthreadAbi::LegacyMachThreads
     };
