@@ -42,6 +42,7 @@
 #include "device_state/darwin_abi.hpp"
 #include "network/darwin_network_abi.hpp"
 #include "kernel/darwin_psynch_runtime.hpp"
+#include "kernel/darwin_packet_filter_device.hpp"
 #include "kernel/darwin_resource_abi.hpp"
 #include "network/darwin_route_socket.hpp"
 #include "foundation/device_display_profile.hpp"
@@ -1694,6 +1695,7 @@ struct KernelSharedState {
     std::uint64_t system_keybag_handle { };
     std::shared_ptr<KeyStore> key_store;
     bsd::baseband_device::State baseband_device_state;
+    darwin::packet_filter::State packet_filter_device_state;
     std::uint32_t mobile_framebuffer_service { };
     std::uint32_t external_framebuffer_service { };
     std::uint32_t multitouch_hid_service { };

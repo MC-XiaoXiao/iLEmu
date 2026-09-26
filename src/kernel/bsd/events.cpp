@@ -14,6 +14,7 @@
 #include "kernel/baseband_device.hpp"
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
+#include "kernel/darwin_packet_filter_device.hpp"
 #include "network/darwin_network_abi.hpp"
 #include "kernel/darwin_resource_abi.hpp"
 #include "network/darwin_route_socket.hpp"
@@ -192,6 +193,93 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 flags &= ~darwin::open_flag::non_block;
             bsd_success(cpu, 0);
             return;
+        }
+        if (darwin::packet_filter::minor_for_descriptor(device->second)) {
+            switch (registers[1]) {
+            case darwin::packet_filter::ioctl_set_debug: {
+                const auto level = memory_.read32(registers[2]);
+                if (!level) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                } else {
+                    shared_state_->packet_filter_device_state.set_debug(*level);
+                    bsd_success(cpu, 0);
+                }
+                return;
+            }
+            case darwin::packet_filter::ioctl_get_limit:
+            case darwin::packet_filter::ioctl_set_limit: {
+                const auto index = memory_.read32(registers[2]);
+                const auto requested = memory_.read32(registers[2] + 4U);
+                if (!index || !requested) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                    return;
+                }
+                const auto previous =
+                    registers[1] == darwin::packet_filter::ioctl_set_limit
+                        ? shared_state_->packet_filter_device_state.set_limit(
+                              *index, *requested)
+                        : shared_state_->packet_filter_device_state.get_limit(
+                              *index);
+                if (!previous) {
+                    bsd_error(cpu, darwin::error::invalid_argument);
+                } else if (!memory_.write32(registers[2] + 4U, *previous)) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                } else {
+                    bsd_success(cpu, 0);
+                }
+                return;
+            }
+            case darwin::packet_filter::ioctl_get_timeout:
+            case darwin::packet_filter::ioctl_set_timeout: {
+                const auto index = memory_.read32(registers[2]);
+                const auto requested = memory_.read32(registers[2] + 4U);
+                if (!index || !requested) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                    return;
+                }
+                const auto previous =
+                    registers[1] == darwin::packet_filter::ioctl_set_timeout
+                        ? shared_state_->packet_filter_device_state.set_timeout(
+                              *index, *requested)
+                        : shared_state_->packet_filter_device_state.get_timeout(
+                              *index);
+                if (!previous) {
+                    bsd_error(cpu, darwin::error::invalid_argument);
+                } else if (!memory_.write32(registers[2] + 4U, *previous)) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                } else {
+                    bsd_success(cpu, 0);
+                }
+                return;
+            }
+            case darwin::packet_filter::ioctl_set_interface_flag:
+            case darwin::packet_filter::ioctl_clear_interface_flag: {
+                const auto name_bytes = memory_.read_bytes(registers[2], 16);
+                const auto flags = memory_.read32(registers[2] + 36U);
+                if (!name_bytes || !flags) {
+                    bsd_error(cpu, bsd_support::bad_address);
+                    return;
+                }
+                std::string name;
+                for (const auto byte : *name_bytes) {
+                    const auto value = std::to_integer<char>(byte);
+                    if (value == '\0')
+                        break;
+                    name.push_back(value);
+                }
+                shared_state_->packet_filter_device_state.update_interface_flags(
+                    name, *flags,
+                    registers[1] ==
+                        darwin::packet_filter::ioctl_clear_interface_flag);
+                bsd_success(cpu, 0);
+                return;
+            }
+            case 0xc0104405U: // DIOCGETSTARTERS, no starter tokens yet
+                bsd_error(cpu, darwin::error::no_entry);
+                return;
+            default:
+                break;
+            }
         }
         if (ioctl_bpf_device(cpu, fd))
             return;

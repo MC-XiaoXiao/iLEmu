@@ -595,6 +595,7 @@ private:
     void dispatch_bsd_socket(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_kqueue(Cpu& cpu, std::uint32_t number);
     void dispatch_bsd_guarded_file(Cpu& cpu, std::uint32_t number);
+    void dispatch_bsd_network_policy(Cpu& cpu);
     bool reject_guarded_descriptor(Cpu& cpu, std::uint32_t fd, std::uint32_t flags);
     void dispatch_bsd_events(Cpu& cpu, std::uint32_t number);
     [[nodiscard]] bool ioctl_bpf_device(Cpu& cpu, std::uint32_t fd);

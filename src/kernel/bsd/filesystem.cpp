@@ -13,6 +13,7 @@
 #include "kernel/darwin_abi.hpp"
 #include "kernel/darwin_bpf_abi.hpp"
 #include "kernel/darwin_kqueue_abi.hpp"
+#include "kernel/darwin_packet_filter_device.hpp"
 #include "network/darwin_network_abi.hpp"
 #include "kernel/darwin_resource_abi.hpp"
 #include "network/darwin_route_socket.hpp"
@@ -72,6 +73,10 @@ namespace {
         if (descriptor_kind == bsd::offline_serial_device::descriptor_kind) {
             return bsd::offline_serial_device::device_minor;
         }
+        if (const auto minor =
+                darwin::packet_filter::minor_for_descriptor(descriptor_kind)) {
+            return *minor;
+        }
         return std::nullopt;
     }
 
@@ -96,6 +101,9 @@ namespace {
         }
         if (bsd::offline_serial_device::is_path(path)) {
             return bsd::offline_serial_device::device_minor;
+        }
+        if (const auto minor = darwin::packet_filter::minor_for_path(path)) {
+            return *minor;
         }
         return std::nullopt;
     }
@@ -348,6 +356,21 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             auto state = std::make_shared<darwin::bpf::DescriptorState>();
             state->minor = *minor;
             bpf_descriptors_.emplace(*fd, std::move(state));
+            file_status_flags_[*fd] = flags;
+            descriptor_flags_[*fd] = 0;
+            bsd_success(cpu, *fd);
+            return;
+        }
+        if (const auto minor = darwin::packet_filter::minor_for_path(*path)) {
+            const auto fd = allocate_file_descriptor();
+            if (!fd) {
+                bsd_error(cpu, 24); // EMFILE
+                return;
+            }
+            virtual_descriptors_.emplace(
+                *fd, *minor == darwin::packet_filter::manager_minor
+                         ? darwin::packet_filter::manager_descriptor_kind
+                         : darwin::packet_filter::control_descriptor_kind);
             file_status_flags_[*fd] = flags;
             descriptor_flags_[*fd] = 0;
             bsd_success(cpu, *fd);
@@ -643,6 +666,7 @@ void CompatibilityKernel::dispatch_bsd_filesystem(
             *path == "/dev/disk0s2" || *path == "/dev/rdisk0s1" ||
             *path == "/dev/rdisk0s2" ||
             *path == darwin::network::apple80211_driver::event_device_path ||
+            darwin::packet_filter::minor_for_path(*path) ||
             (bsd::baseband_device::is_path(*path) &&
                 shared_state_->baseband_device_state.available()) ||
             bsd::offline_serial_device::is_path(*path)) {

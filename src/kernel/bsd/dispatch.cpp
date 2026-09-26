@@ -144,6 +144,14 @@ void CompatibilityKernel::dispatch_bsd(Cpu& cpu, std::uint32_t number)
             *shared_state_, registers[0], registers[1], registers[2], registers[3]));
         return;
     }
+    case 460: // necp_match_policy (Darwin 14+)
+        if (shared_state_->darwin_abi.abi_epoch == DarwinAbiEpoch::Later) {
+            dispatch_bsd_network_policy(cpu);
+        } else {
+            dispatch_bsd_nosys(cpu,
+                shared_state_->darwin_abi.capabilities.send_sigsys);
+        }
+        return;
     case 461: // getattrlistbulk
         if (shared_state_->darwin_abi.abi_epoch == DarwinAbiEpoch::Later) {
             dispatch_bsd_directory_attributes(cpu);
