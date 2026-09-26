@@ -43,12 +43,13 @@ inline constexpr std::uint32_t kernel_clock_rate = 12;
 inline constexpr std::uint32_t kernel_security_level = 9;
 inline constexpr std::uint32_t kernel_process = 14;
 inline constexpr std::uint32_t kernel_boot_time = 21;
-// Stable OID for the platform-provided named monotonic clock.
-inline constexpr std::uint32_t kernel_monotonic_clock_usecs = 1001;
 inline constexpr std::uint32_t kernel_maximum_files_per_process = 29;
 inline constexpr std::uint32_t kernel_process_arguments = 38;
 inline constexpr std::uint32_t kernel_process_arguments2 = 49;
 inline constexpr std::uint32_t kernel_build_version = 65;
+inline constexpr std::uint32_t kernel_boot_arguments = 1000;
+// Stable OID for the platform-provided named monotonic clock.
+inline constexpr std::uint32_t kernel_monotonic_clock_usecs = 1001;
 inline constexpr std::uint32_t kernel_process_all = 0;
 inline constexpr std::uint32_t kernel_process_id = 1;
 inline constexpr std::uint32_t kernel_process_pgrp = 2;

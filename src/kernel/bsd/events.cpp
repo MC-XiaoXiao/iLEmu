@@ -1322,20 +1322,53 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         cpu.halt(Dynarmic::HaltReason::UserDefined5);
         return;
     }
-    case 202: { // __sysctl
-        const auto mib0 = memory_.read32(registers[0]);
-        const auto mib1 =
-            registers[1] >= 2 ? memory_.read32(registers[0] + 4) : std::nullopt;
-        const auto mib2 =
-            registers[1] >= 3 ? memory_.read32(registers[0] + 8) : std::nullopt;
-        const auto mib3 =
-            registers[1] >= 4 ? memory_.read32(registers[0] + 12) : std::nullopt;
+    case 202: // __sysctl
+    case darwin::syscall::posix_semaphore_get_value: { // sysctlbyname profile
+        std::optional<darwin::sysctl::ObjectIdentifier> named_identifier;
+        if (number == darwin::syscall::posix_semaphore_get_value) {
+            constexpr std::uint32_t maximum_name_length = 1024;
+            if (registers[1] == 0 || registers[1] >= maximum_name_length) {
+                bsd_error(cpu, bsd_support::invalid_argument);
+                return;
+            }
+            const auto bytes = memory_.read_bytes(registers[0], registers[1]);
+            if (!bytes) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return;
+            }
+            std::string_view name {
+                reinterpret_cast<const char*>(bytes->data()), bytes->size() };
+            if (const auto terminator = name.find('\0');
+                terminator != std::string_view::npos)
+                name = name.substr(0, terminator);
+            named_identifier = darwin::sysctl::resolve_name(name);
+            if (!named_identifier) {
+                bsd_error(cpu, darwin::error::no_entry);
+                return;
+            }
+        }
+        const auto mib_count = named_identifier
+                                   ? named_identifier->size
+                                   : static_cast<std::size_t>(registers[1]);
+        const auto read_mib = [&](std::size_t index)
+            -> std::optional<std::uint32_t> {
+            if (index >= mib_count)
+                return std::nullopt;
+            if (named_identifier)
+                return named_identifier->components[index];
+            return memory_.read32(registers[0] +
+                                  static_cast<std::uint32_t>(index * 4U));
+        };
+        const auto mib0 = read_mib(0);
+        const auto mib1 = read_mib(1);
+        const auto mib2 = read_mib(2);
+        const auto mib3 = read_mib(3);
         const auto old_size = registers[3] != 0
                                   ? memory_.read32(registers[3])
                                   : std::optional<std::uint32_t> { 0 };
         if (!mib0 || !mib1 || !old_size ||
-            (registers[1] >= 3 && !mib2) ||
-            (registers[1] >= 4 && !mib3)) {
+            (mib_count >= 3 && !mib2) ||
+            (mib_count >= 4 && !mib3)) {
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
@@ -1370,7 +1403,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         if (*mib0 == darwin::sysctl::control_unspecified &&
             (*mib1 == darwin::sysctl::operation_oid_to_name ||
                 *mib1 == darwin::sysctl::operation_oid_format)) {
-            const auto metadata = registers[1] == 4
+            const auto metadata = mib_count == 4
                                       ? darwin::sysctl::describe_object(*mib2, *mib3)
                                       : std::nullopt;
             if (!metadata)
@@ -1383,7 +1416,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         }
         if (*mib0 == darwin::sysctl::control_unspecified &&
             *mib1 == darwin::sysctl::operation_name_to_oid &&
-            registers[1] == 2) {
+            mib_count == 2) {
             // XNU's sysctl.name2oid consumes an un-terminated name through the
             // new value and returns the integer MIB through the old value.
             constexpr std::uint32_t maximum_name_length = 1024;
@@ -1438,7 +1471,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         }
         if (*mib0 == darwin::sysctl::control_vfs &&
             *mib1 == darwin::sysctl::vfs_generic &&
-            registers[1] == 3 && mib2 &&
+            mib_count == 3 && mib2 &&
             *mib2 == darwin::sysctl::vfs_max_type_number) {
             constexpr std::uint32_t value_size = sizeof(std::uint32_t);
             if (registers[4] != 0) {
@@ -1464,20 +1497,20 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         }
         if (*mib0 == darwin::sysctl::control_vfs &&
             *mib1 == darwin::sysctl::vfs_generic &&
-            registers[1] >= 4 && mib2 &&
+            mib_count >= 4 && mib2 &&
             *mib2 == darwin::sysctl::vfs_conf) {
             // vfs.generic.conf.<type> is a sparse table keyed by the
             // historical filesystem type number. An unregistered type is a
             // normal ENOTSUP result in XNU, not an unimplemented syscall.
-            if (!memory_.read32(registers[0] + 12U)) {
+            if (!read_mib(3)) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
             }
             bsd_error(cpu, darwin::error::not_supported);
             return;
         }
-        const auto route_operation = registers[1] == 6
-                                         ? memory_.read32(registers[0] + 16)
+        const auto route_operation = mib_count == 6
+                                         ? read_mib(4)
                                          : std::nullopt;
         if (*mib0 == 4 && *mib1 == darwin::route::protocol_family &&
             route_operation &&
@@ -1487,8 +1520,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             // CTL_NET/PF_ROUTE/NET_RT_DUMP, NET_RT_FLAGS, or NET_RT_DUMP2.
             // rt_msghdr and ARM32 rt_msghdr2 are both 92 bytes; offsets 16,
             // 20, and 24 become refcnt/parentflags/reserved for RTM_GET2.
-            const auto address_family = memory_.read32(registers[0] + 12);
-            const auto flags = memory_.read32(registers[0] + 20);
+            const auto address_family = read_mib(3);
+            const auto flags = read_mib(5);
             if (!address_family || !flags || registers[3] == 0) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
@@ -1523,13 +1556,13 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             return;
         }
         if (*mib0 == 4 && *mib1 == darwin::route::protocol_family &&
-            registers[1] == 6 &&
-            memory_.read32(registers[0] + 16).value_or(0) ==
+            mib_count == 6 &&
+            read_mib(4).value_or(0) ==
                 darwin::route::sysctl_interface_list) {
             // CTL_NET/PF_ROUTE/NET_RT_IFLIST. XNU returns a sequence of
             // variable-length if_msghdr/ifa_msghdr records, not host ifaddrs.
-            const auto address_family = memory_.read32(registers[0] + 12);
-            const auto interface_index = memory_.read32(registers[0] + 20);
+            const auto address_family = read_mib(3);
+            const auto interface_index = read_mib(5);
             if (!address_family || !interface_index || registers[3] == 0) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
@@ -1576,8 +1609,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         if (*mib0 == darwin::sysctl::control_kernel &&
             (*mib1 == darwin::sysctl::kernel_process_arguments ||
                 *mib1 == darwin::sysctl::kernel_process_arguments2) &&
-            registers[1] == 3) { // KERN_PROCARGS[2] / pid
-            const auto requested_pid = memory_.read32(registers[0] + 8U);
+            mib_count == 3) { // KERN_PROCARGS[2] / pid
+            const auto requested_pid = read_mib(2);
             if (!requested_pid || registers[3] == 0) {
                 bsd_error(cpu, bsd_support::bad_address);
                 return;
@@ -1679,18 +1712,18 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         const auto process_table_request =
             *mib0 == darwin::sysctl::control_kernel &&
             *mib1 == darwin::sysctl::kernel_process && mib2 &&
-            (registers[1] == 3 || registers[1] == 4);
+            (mib_count == 3 || mib_count == 4);
         if (process_table_request) {
             const auto selector = *mib2;
             const auto selector_argument = mib3;
             const auto is_all_request =
                 selector == darwin::sysctl::kernel_process_all &&
-                (registers[1] == 3 ||
-                    (registers[1] == 4 && selector_argument &&
+                (mib_count == 3 ||
+                    (mib_count == 4 && selector_argument &&
                         *selector_argument == 0));
             const auto is_filtered_request =
                 selector != darwin::sysctl::kernel_process_all &&
-                registers[1] == 4 && selector_argument;
+                mib_count == 4 && selector_argument;
             if (!is_all_request && !is_filtered_request) {
                 bsd_error(cpu, bsd_support::invalid_argument);
                 return;
@@ -1810,7 +1843,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             bsd_success(cpu, 0);
             return;
         }
-        if (*mib0 == darwin::sysctl::control_kernel && registers[1] == 2) {
+        if (*mib0 == darwin::sysctl::control_kernel && mib_count == 2) {
             const auto& identity = shared_state_->darwin_kernel_identity;
             switch (*mib1) {
             case darwin::sysctl::kernel_operating_system_type:
@@ -1842,6 +1875,9 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 return;
             case darwin::sysctl::kernel_build_version:
                 write_read_only_string(identity.build_version);
+                return;
+            case darwin::sysctl::kernel_boot_arguments:
+                write_read_only_string({});
                 return;
             case darwin::sysctl::kernel_monotonic_clock_usecs: {
                 // The supported ARM32 platform clock exposes a uint64_t
@@ -1895,8 +1931,8 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
                 break;
             }
         }
-        if (*mib0 == 1 && *mib1 == 61 && registers[1] == 3) { // KERN_TFP
-            const auto selector = memory_.read32(registers[0] + 8);
+        if (*mib0 == 1 && *mib1 == 61 && mib_count == 3) { // KERN_TFP
+            const auto selector = read_mib(2);
             if (!selector || (*selector != 2 && *selector != 3) ||
                 registers[4] == 0 || registers[5] != 4) {
                 bsd_error(cpu, bsd_support::invalid_argument);
@@ -1913,7 +1949,7 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         }
         if (*mib0 == darwin::sysctl::control_kernel &&
             *mib1 == darwin::sysctl::kernel_security_level &&
-            registers[1] == 2) { // KERN_SECURELVL
+            mib_count == 2) { // KERN_SECURELVL
             const auto previous =
                 shared_state_->security_level.load(std::memory_order_relaxed);
             std::optional<std::int32_t> requested_level;
@@ -2222,10 +2258,10 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
         }
         std::ostringstream message;
         message << "[sysctl] unsupported mib";
-        for (std::uint32_t index = 0; index < registers[1] && index < 8;
+        for (std::uint32_t index = 0; index < mib_count && index < 8;
             ++index) {
             message << ' '
-                    << memory_.read32(registers[0] + index * 4U)
+                    << read_mib(index)
                            .value_or(0xffffffffU);
         }
         message << '\n';
