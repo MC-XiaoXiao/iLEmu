@@ -11,7 +11,7 @@
 #include "kernel/darwin_pthread_runtime.hpp"
 
 #include "kernel/darwin_abi.hpp"
-#include "device_state/darwin_abi.hpp"
+#include "device_state/pthread_contract.hpp"
 #include "kernel/kernel.hpp"
 
 #include "../mach/support.hpp"
@@ -27,41 +27,6 @@ namespace {
 
     constexpr std::uint32_t workqueue_stack_size = 512U * 1024U;
     constexpr std::uint32_t pthread_dynamic_base = 0x1000'0000U;
-    constexpr std::uint32_t pthread_feature_fine_priority = 0x2U;
-    constexpr std::uint32_t pthread_feature_bsdthread_ctl = 0x4U;
-    constexpr std::uint32_t pthread_feature_qos_default = 0x4000'0000U;
-    // Darwin 10.4 ARM32 passes the embedded TSD base at this pthread_t
-    // member to thread_set_tsd_base. Darwin 10.3 keeps TPIDRURO equal to
-    // pthread_t itself, so select this offset through the ABI contract.
-    constexpr std::uint32_t pthread_tsd_base_offset = 0x48U;
-
-    [[nodiscard]] bool supports_bsdthread_register_v1(
-        DarwinPthreadAbi profile) noexcept
-    {
-        return profile == DarwinPthreadAbi::BsdThreadRegisterV1 ||
-                  profile == DarwinPthreadAbi::BsdThreadRegisterV1TsdBase ||
-                  profile == DarwinPthreadAbi::
-                              BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues ||
-                  profile == DarwinPthreadAbi::
-                              BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues ||
-               profile == DarwinPthreadAbi::
-                              BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues;
-    }
-
-    [[nodiscard]] std::uint32_t workqueue_priority_count_for_abi(
-        DarwinPthreadAbi profile) noexcept
-    {
-        if (profile == DarwinPthreadAbi::
-                           BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues ||
-            profile == DarwinPthreadAbi::
-                           BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues ||
-            profile == DarwinPthreadAbi::
-                           BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues) {
-            return 4U;
-        }
-        return supports_bsdthread_register_v1(profile) ? 3U : 0U;
-    }
-
     struct DispatchWorkqueuePriority {
         std::uint32_t queue { };
         std::uint32_t thread_class { };
@@ -70,10 +35,10 @@ namespace {
 
     [[nodiscard]] std::optional<DispatchWorkqueuePriority>
     decode_dispatch_workqueue_priority(
-        DarwinPthreadAbi profile, std::uint32_t encoded) noexcept
+        const PthreadContract& contract, std::uint32_t encoded) noexcept
     {
-        if (profile != DarwinPthreadAbi::
-                           BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues) {
+        if (contract.priority_encoding !=
+            PthreadPriorityEncoding::FineClassBitsV2) {
             return DispatchWorkqueuePriority {
                 encoded & ~DarwinPthreadRuntime::workqueue_overcommit,
                 encoded & ~DarwinPthreadRuntime::workqueue_overcommit,
@@ -104,20 +69,9 @@ namespace {
     }
 
     [[nodiscard]] std::uint32_t thread_pointer_for_pthread(
-        DarwinPthreadAbi profile, std::uint32_t pthread_address) noexcept
+        const PthreadContract& contract, std::uint32_t pthread_address) noexcept
     {
-        if (profile == DarwinPthreadAbi::
-                           BsdThreadRegisterV1ExpandedTsdFourPriorityWorkqueues ||
-            profile == DarwinPthreadAbi::
-                           BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues) {
-            return pthread_address + 0xa4U;
-        }
-        if (profile == DarwinPthreadAbi::BsdThreadRegisterV1TsdBase ||
-            profile == DarwinPthreadAbi::
-                           BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues) {
-            return pthread_address + pthread_tsd_base_offset;
-        }
-        return pthread_address;
+        return pthread_address + contract.thread_pointer_offset;
     }
 
     std::uint32_t pthread_start_cpsr(std::uint32_t entry)
@@ -347,8 +301,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
     const auto& registration = pthread_runtime_.registration();
     if (!registration || !pthread_runtime_.workqueue_open())
         return false;
-    const auto pthread_abi =
-        shared_state_->darwin_abi.pthread_abi;
+    const auto& contract = shared_state_->pthread_contract;
 
     const auto idle_worker = pthread_runtime_.idle_worker();
     const auto next_item = pthread_runtime_.take_workitem();
@@ -392,7 +345,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
                 thread_pointer_update_handler_(process_.pid,
                     idle_worker->processor,
                     thread_pointer_for_pthread(
-                        pthread_abi, idle_worker->pthread_address)));
+                        contract, idle_worker->pthread_address)));
         const auto wake_result =
             updated ? thread_wake_handler_(process_.pid, idle_worker->processor)
                     : XnuThreadWakeResult { };
@@ -466,7 +419,7 @@ bool CompatibilityKernel::service_bsd_workqueue(Cpu* requesting_cpu)
             !thread_pointer_update_handler_(
                 process_.pid, worker.processor,
                 thread_pointer_for_pthread(
-                    pthread_abi, worker.pthread_address))) ||
+                    contract, worker.pthread_address))) ||
         !pthread_runtime_.add_worker(worker)) {
         if (thread_terminate_handler_)
             static_cast<void>(
@@ -519,11 +472,11 @@ void CompatibilityKernel::notify_thread_blocked(std::size_t processor)
 
 bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
 {
-    const auto profile = shared_state_->darwin_abi.pthread_abi;
+    const auto& contract = shared_state_->pthread_contract;
     // The thread identity query is independent of the registration layout.
     const bool supports_thread_identity =
-        number == 372 && profile == DarwinPthreadAbi::BsdThreadRegisterV2;
-    if (!supports_bsdthread_register_v1(profile) && !supports_thread_identity)
+        number == 372 && contract.supports_thread_identity;
+    if (!contract.supports_registration_v1() && !supports_thread_identity)
         return false;
 
     auto& registers = cpu.registers();
@@ -626,7 +579,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
             (thread_pointer_update_handler_ &&
                 !thread_pointer_update_handler_(process_.pid,
                     static_cast<std::uint32_t>(created->processor),
-                    thread_pointer_for_pthread(profile, pthread_address)))) {
+                    thread_pointer_for_pthread(contract, pthread_address)))) {
             if (thread_terminate_handler_)
                 static_cast<void>(thread_terminate_handler_(
                     process_.pid, created->processor));
@@ -744,18 +697,12 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         // Split libpthread stores the positive registration result as its
         // kernel capability word. libdispatch requires fine-priority workqueues
         // before installing its worker callback.
-        bsd_success(cpu,
-            profile == DarwinPthreadAbi::
-                           BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues
-                ? pthread_feature_fine_priority |
-                      pthread_feature_bsdthread_ctl |
-                      pthread_feature_qos_default
-                : 0U);
+        bsd_success(cpu, contract.registration_features);
         return true;
     }
     case 367: { // workq_open, Darwin 10 ARM32 v1
         if (!pthread_runtime_.open_workqueue(virtual_processor_count_,
-                workqueue_priority_count_for_abi(profile))) {
+                contract.workqueue_priority_count)) {
             bsd_error(cpu, bsd_support::invalid_argument);
             return true;
         }
@@ -796,7 +743,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         if (operation == request_dispatch_threads) {
             const auto count = affinity;
             const auto decoded =
-                decode_dispatch_workqueue_priority(profile, raw_priority);
+                decode_dispatch_workqueue_priority(contract, raw_priority);
             if (count == 0U || count > INT32_MAX || !decoded ||
                 decoded->queue >= pthread_runtime_.workqueue_priority_count()) {
                 bsd_error(cpu, bsd_support::invalid_argument);
@@ -908,8 +855,7 @@ bool CompatibilityKernel::dispatch_bsd_pthread(Cpu& cpu, std::uint32_t number)
         return true;
     }
     case 478: { // bsdthread_ctl, split-libpthread QoS contract
-        if (profile != DarwinPthreadAbi::
-                           BsdThreadRegisterV1ExpandedTsdFinePriorityWorkqueues) {
+        if (!contract.supports_bsdthread_ctl) {
             return false;
         }
         constexpr std::uint32_t qos_override_start = 0x40U;

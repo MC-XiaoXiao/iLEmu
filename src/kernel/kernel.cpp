@@ -219,6 +219,11 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         presentation_tracker_ }
     , mobile_framebuffer_hle_ { userland_hle_, display_state_, surface_store_,
         presentation_tracker_ }
+    , shared_state_ { [&] {
+        if (!configuration)
+            configuration = resolve_darwin_configuration(rootfs_);
+        return std::make_shared<KernelSharedState>(configuration->abi);
+    }() }
 {
     memory_.set_file_generation_registry(
         shared_state_->guest_file_generation_registry);
@@ -269,10 +274,8 @@ CompatibilityKernel::CompatibilityKernel(AddressSpace& memory, Output& output,
         [this](std::uint32_t descriptor, std::uint32_t event) {
             inject_wifi_driver_event(descriptor, event);
         });
-    auto resolved = configuration ? std::move(*configuration)
-                                  : resolve_darwin_configuration(rootfs_);
+    auto resolved = std::move(*configuration);
     shared_state_->darwin_kernel_identity = std::move(resolved.identity);
-    shared_state_->darwin_abi = resolved.abi;
     configure_darwin_notify_state();
     shared_state_->device_product_type = device_model_.identity.product_type;
     shared_state_->device_board_config = device_model_.identity.board_config;

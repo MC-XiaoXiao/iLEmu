@@ -40,6 +40,7 @@
 #include "graphics/core_animation_remote_abi.hpp"
 #include "device_state/darwin_kernel_identity.hpp"
 #include "device_state/darwin_abi.hpp"
+#include "device_state/pthread_contract.hpp"
 #include "network/darwin_network_abi.hpp"
 #include "kernel/darwin_psynch_runtime.hpp"
 #include "kernel/darwin_packet_filter_device.hpp"
@@ -422,10 +423,18 @@ make_socket_pair_endpoints(std::uint32_t pair)
 }
 
 struct KernelSharedState {
+    explicit KernelSharedState(DarwinAbi abi = {})
+        : darwin_abi { abi }
+        , pthread_contract { resolve_pthread_contract(abi.pthread_abi) }
+    {
+    }
+
     DarwinCoalitionRuntime coalitions;
     HidEventQueue hid_event_queue;
     DarwinKernelIdentity darwin_kernel_identity;
     DarwinAbi darwin_abi;
+    // Resolved once at construction; fork shares it and exec preserves it.
+    const PthreadContract& pthread_contract;
     std::string device_product_type;
     std::string device_board_config;
     std::string device_hardware_model;
