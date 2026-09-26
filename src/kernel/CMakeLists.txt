@@ -20,6 +20,20 @@ target_link_libraries(ilemu_kernel_api INTERFACE
     iLEmu::graphics
     iLEmu::xnu_adapter)
 
+# Inspection-only catalog; no dependency from the live syscall dispatcher.
+add_library(ilemu_syscall_routes STATIC
+    routes/table.cpp
+    routes/names.cpp
+    routes/catalog.cpp
+    routes/bsd_entries.cpp
+    routes/bsd_aliases.cpp
+    routes/pthread_entries.cpp
+    routes/mach_entries.cpp)
+add_library(iLEmu::syscall_routes ALIAS ilemu_syscall_routes)
+ilemu_configure_module(ilemu_syscall_routes)
+target_include_directories(ilemu_syscall_routes PUBLIC include)
+target_link_libraries(ilemu_syscall_routes PUBLIC iLEmu::device_state)
+
 add_library(ilemu_kernel STATIC
     kernel.cpp
     commpage.cpp
