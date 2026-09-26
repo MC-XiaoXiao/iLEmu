@@ -40,8 +40,27 @@ DarwinPsynchRuntime::QueueKey DarwinPsynchRuntime::queue_key(
     std::uint32_t process_id, DarwinPsynchObject object, std::uint32_t flags,
     QueueFamily family)
 {
-    const auto shared = (flags & process_shared_flag) != 0U;
-    return { shared, shared ? 0U : process_id, object.address, family };
+    static_cast<void>(flags);
+    const auto shared = object.shared.has_value();
+    // Shared calls are rare relative to private fast paths. Amortize removal
+    // of dead preposts/RW state without pinning bytes or sweeping on stores.
+    if (shared && ++shared_operations_ % 64U == 0U)
+        prune_expired_shared_queues_locked();
+    return { shared, shared ? 0U : process_id,
+        shared ? 0U : object.address, family,
+        object.shared.value_or(SharedMemoryIdentity { }) };
+}
+
+void DarwinPsynchRuntime::prune_expired_shared_queues_locked()
+{
+    // An unmapped waiter still belongs to the original object until it is
+    // signalled through another alias, times out, or is cancelled. Never
+    // transfer it to a replacement mapping at its former virtual address.
+    std::erase_if(queues_, [](const auto& entry) {
+        return entry.first.process_shared &&
+               entry.first.shared_identity.backing.expired() &&
+               entry.second.waiters.empty();
+    });
 }
 
 bool DarwinPsynchRuntime::sequence_not_after(
@@ -495,7 +514,11 @@ void DarwinPsynchRuntime::cancel_wait(DarwinPsynchThread thread)
     for (auto queue = queues_.begin(); queue != queues_.end();) {
         std::erase_if(queue->second.waiters,
             [&](const auto& waiter) { return waiter.thread == thread; });
-        if (queue->second.waiters.empty() && queue->second.preposts.empty())
+        if (queue->second.waiters.empty() &&
+            ((queue->second.preposts.empty() &&
+                 (!queue->first.process_shared || !queue->second.rw)) ||
+                (queue->first.process_shared &&
+                    queue->first.shared_identity.backing.expired())))
             queue = queues_.erase(queue);
         else
             ++queue;
@@ -515,7 +538,11 @@ void DarwinPsynchRuntime::clear_process(std::uint32_t process_id)
         const auto private_process_queue = !queue->first.process_shared &&
                                            queue->first.process_id == process_id;
         if (private_process_queue ||
-            (queue->second.waiters.empty() && queue->second.preposts.empty())) {
+            (queue->second.waiters.empty() &&
+            ((queue->second.preposts.empty() &&
+                 (!queue->first.process_shared || !queue->second.rw)) ||
+                (queue->first.process_shared &&
+                    queue->first.shared_identity.backing.expired())))) {
             queue = queues_.erase(queue);
         } else {
             ++queue;

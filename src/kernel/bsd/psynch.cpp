@@ -134,12 +134,27 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
                      std::to_string(woken.size()));
         ++psynch_trace_count_;
     };
+    const auto resolve_object = [&](std::uint32_t address, std::uint32_t flags)
+        -> std::optional<DarwinPsynchObject> {
+        DarwinPsynchObject object { address, std::nullopt };
+        if ((flags & DarwinPsynchRuntime::process_shared_flag) != 0U) {
+            object.shared = memory_.shared_memory_identity(address);
+            if (!object.shared) {
+                bsd_error(cpu, bsd_support::bad_address);
+                return std::nullopt;
+            }
+        }
+        return object;
+    };
     switch (number) {
     case 297: // psynch_rw_longrdlock
     case 306: { // psynch_rw_rdlock
+        const auto object = resolve_object(registers[0], registers[4]);
+        if (!object)
+            return;
         trace_rw("wait-enter");
         auto outcome = shared_state_->psynch_runtime->wait_rwlock(current_thread,
-            { registers[0] }, registers[1], registers[2], registers[3], registers[4],
+            *object, registers[1], registers[2], registers[3], registers[4],
             DarwinPsynchWaitKind::ReadLock);
         begin_wait(std::move(outcome),
             registers[0], DarwinPsynchWaitKind::ReadLock);
@@ -148,18 +163,24 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
     case 298: // psynch_rw_yieldwrlock
     case 300: // psynch_rw_upgrade
     case 307: { // psynch_rw_wrlock
+        const auto object = resolve_object(registers[0], registers[4]);
+        if (!object)
+            return;
         trace_rw("wait-enter");
         auto outcome = shared_state_->psynch_runtime->wait_rwlock(current_thread,
-            { registers[0] }, registers[1], registers[2], registers[3], registers[4],
+            *object, registers[1], registers[2], registers[3], registers[4],
             DarwinPsynchWaitKind::WriteLock);
         begin_wait(std::move(outcome),
             registers[0], DarwinPsynchWaitKind::WriteLock);
         return;
     }
     case 299: { // psynch_rw_downgrade
+        const auto object = resolve_object(registers[0], registers[4]);
+        if (!object)
+            return;
         trace_rw("unlock-enter");
         auto outcome = shared_state_->psynch_runtime->unlock_rwlock(
-            process_.pid, { registers[0] }, registers[1], registers[2],
+            process_.pid, *object, registers[1], registers[2],
             registers[3], registers[4]);
         trace_rw("unlock-return", outcome.woken_threads, outcome.result);
         wake_threads(outcome.woken_threads);
@@ -167,23 +188,32 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
         return;
     }
     case 301: { // psynch_mutexwait
+        const auto object = resolve_object(registers[0], registers[5]);
+        if (!object)
+            return;
         const auto outcome = shared_state_->psynch_runtime->wait_mutex(
-            current_thread, { registers[0] }, registers[1], registers[2],
+            current_thread, *object, registers[1], registers[2],
             registers[5]);
         begin_wait(std::move(outcome),
             registers[0], DarwinPsynchWaitKind::Mutex);
         return;
     }
     case 302: { // psynch_mutexdrop
+        const auto object = resolve_object(registers[0], registers[5]);
+        if (!object)
+            return;
         auto outcome = shared_state_->psynch_runtime->drop_mutex(process_.pid,
-            { registers[0] }, registers[1], registers[2], registers[5]);
+            *object, registers[1], registers[2], registers[5]);
         wake_threads(outcome.woken_threads);
         bsd_success(cpu, outcome.result);
         return;
     }
     case 303: { // psynch_cvbroad
+        const auto object = resolve_object(registers[0], registers[5]);
+        if (!object)
+            return;
         auto outcome = shared_state_->psynch_runtime->broadcast_condition(
-            process_.pid, { registers[0] }, joined_words(registers[1], registers[2]),
+            process_.pid, *object, joined_words(registers[1], registers[2]),
             joined_words(registers[3], registers[4]), registers[5]);
         wake_threads(outcome.woken_threads);
         bsd_success(cpu, outcome.result);
@@ -195,6 +225,9 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
+        const auto object = resolve_object(registers[0], *flags);
+        if (!object)
+            return;
         std::optional<DarwinPsynchThread> target;
         if (registers[4] != 0U) {
             std::lock_guard mach_lock { shared_state_->mach_mutex };
@@ -212,7 +245,7 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
             }
         }
         auto outcome = shared_state_->psynch_runtime->signal_condition(
-            process_.pid, { registers[0] }, joined_words(registers[1], registers[2]),
+            process_.pid, *object, joined_words(registers[1], registers[2]),
             registers[3], *flags, target);
         wake_threads(outcome.woken_threads);
         bsd_success(cpu, outcome.result);
@@ -250,23 +283,31 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
                            ? std::numeric_limits<std::uint64_t>::max()
                            : now + interval;
         }
-        const auto mutex_drop = registers[4] == 0U
-                                    ? std::optional<
-                                          DarwinPsynchRuntime::MutexDrop> { }
-                                    : DarwinPsynchRuntime::MutexDrop {
-                                          { registers[4] }, registers[5],
-                                          registers[6] };
+        const auto object = resolve_object(registers[0], *flags);
+        if (!object)
+            return;
+        std::optional<DarwinPsynchRuntime::MutexDrop> mutex_drop;
+        if (registers[4] != 0U) {
+            const auto mutex = resolve_object(registers[4], *flags);
+            if (!mutex)
+                return;
+            mutex_drop = DarwinPsynchRuntime::MutexDrop {
+                *mutex, registers[5], registers[6] };
+        }
         begin_wait(shared_state_->psynch_runtime->wait_condition(current_thread,
-                       { registers[0] }, joined_words(registers[1], registers[2]),
+                       *object, joined_words(registers[1], registers[2]),
                        registers[3], mutex_drop, *flags),
             registers[0], DarwinPsynchWaitKind::Condition, deadline);
         return;
     }
     case 308: // psynch_rw_unlock
     case 309: { // psynch_rw_unlock2
+        const auto object = resolve_object(registers[0], registers[4]);
+        if (!object)
+            return;
         trace_rw("unlock-enter");
         auto outcome = shared_state_->psynch_runtime->unlock_rwlock(
-            process_.pid, { registers[0] }, registers[1], registers[2],
+            process_.pid, *object, registers[1], registers[2],
             registers[3], registers[4]);
         trace_rw("unlock-return", outcome.woken_threads, outcome.result);
         wake_threads(outcome.woken_threads);
@@ -275,8 +316,11 @@ void CompatibilityKernel::dispatch_bsd_psynch(Cpu& cpu, std::uint32_t number)
     }
     case 312: { // psynch_cvclrprepost
         const auto flags = registers[6];
+        const auto object = resolve_object(registers[0], flags);
+        if (!object)
+            return;
         shared_state_->psynch_runtime->clear_preposts(process_.pid,
-            { registers[0] }, flags, (flags & mutex_object_flag) != 0U);
+            *object, flags, (flags & mutex_object_flag) != 0U);
         bsd_success(cpu, 0);
         return;
     }

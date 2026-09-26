@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include "foundation/shared_memory_identity.hpp"
+
 #include <compare>
 #include <cstdint>
 #include <deque>
@@ -30,6 +32,7 @@ struct DarwinPsynchThread {
 // An object resolved by the syscall boundary, independently of queue policy.
 struct DarwinPsynchObject {
     std::uint32_t address { };
+    std::optional<SharedMemoryIdentity> shared;
 };
 
 enum class DarwinPsynchWaitKind : std::uint8_t {
@@ -76,8 +79,8 @@ public:
 
     [[nodiscard]] WaitOutcome wait_condition(DarwinPsynchThread thread,
         DarwinPsynchObject object, std::uint64_t lock_and_signal_generation,
-        std::uint32_t unlock_generation,
-        std::optional<MutexDrop> mutex_drop, std::uint32_t flags);
+        std::uint32_t unlock_generation, std::optional<MutexDrop> mutex_drop,
+        std::uint32_t flags);
     [[nodiscard]] WakeOutcome signal_condition(std::uint32_t process_id,
         DarwinPsynchObject object, std::uint64_t lock_and_signal_generation,
         std::uint32_t unlock_generation, std::uint32_t flags,
@@ -111,6 +114,8 @@ private:
         std::uint32_t address { };
         QueueFamily family { QueueFamily::Mutex };
 
+        SharedMemoryIdentity shared_identity;
+
         auto operator<=>(const QueueKey&) const = default;
     };
 
@@ -143,7 +148,7 @@ private:
         std::optional<RwState> rw;
     };
 
-    [[nodiscard]] static QueueKey queue_key(std::uint32_t process_id,
+    [[nodiscard]] QueueKey queue_key(std::uint32_t process_id,
         DarwinPsynchObject object, std::uint32_t flags, QueueFamily family);
     [[nodiscard]] static bool sequence_not_after(
         std::uint32_t sequence, std::uint32_t upper_bound);
@@ -156,6 +161,9 @@ private:
     void complete_wait_locked(const Waiter& waiter, std::uint32_t result,
         std::vector<DarwinPsynchThread>& woken_threads);
     void prune_queue_locked(const QueueKey& key);
+
+    void prune_expired_shared_queues_locked();
+    std::uint32_t shared_operations_ { };
 
     std::mutex mutex_;
     std::map<QueueKey, QueueState> queues_;
