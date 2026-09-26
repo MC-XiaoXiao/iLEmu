@@ -419,6 +419,23 @@ bool XnuScheduler::set_base_priority(XnuThreadId thread, std::int32_t priority)
     return true;
 }
 
+bool XnuScheduler::set_qos_override_priority(
+    XnuThreadId thread, std::optional<std::int32_t> priority)
+{
+    const auto iterator = threads_.find(thread);
+    if (iterator == threads_.end())
+        return false;
+    if (priority)
+        priority = std::clamp(*priority, xnu::scheduler::minimum_priority,
+            xnu::scheduler::maximum_user_priority);
+    auto& record = iterator->second;
+    if (record.info.qos_override_priority == priority)
+        return true;
+    record.info.qos_override_priority = priority;
+    recompute_priority(thread, record);
+    return true;
+}
+
 bool XnuScheduler::depress(XnuThreadId thread, std::uint64_t duration_ticks)
 {
     const auto iterator = threads_.find(thread);
@@ -1246,13 +1263,20 @@ void XnuScheduler::recompute_priority(XnuThreadId thread, ThreadRecord& record)
             ? record.info.scheduling_usage >> *record.priority_usage_shift
             : 0,
         static_cast<std::uint64_t>(xnu::scheduler::maximum_priority)));
+    // Keep depression, realtime and failsafe policy authoritative. Normal
+    // timeshare accounting applies to the effective base, including donations.
+    const auto effective_base = record.info.failsafe
+        ? record.info.base_priority
+        : std::max(record.info.base_priority,
+              record.info.qos_override_priority.value_or(
+                  xnu::scheduler::minimum_priority));
     const auto priority = record.info.realtime
                               ? xnu::scheduler::realtime_queue_priority
                           : record.info.timeshare
-                              ? std::clamp(record.info.base_priority - penalty,
+                              ? std::clamp(effective_base - penalty,
                                     xnu::scheduler::minimum_priority,
                                     xnu::scheduler::maximum_kernel_priority)
-                              : record.info.base_priority;
+                              : effective_base;
     if (priority == record.info.scheduled_priority)
         return;
     const auto was_queued = record.queued;

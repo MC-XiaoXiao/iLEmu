@@ -127,6 +127,8 @@ struct XnuThreadSchedulingInfo {
     std::int32_t scheduled_priority {
         xnu::scheduler::default_base_priority
     };
+    // QoS donations never overwrite the requested base priority.
+    std::optional<std::int32_t> qos_override_priority;
     std::uint64_t remaining_quantum {
         xnu::scheduler::standard_quantum_ticks
     };
@@ -187,6 +189,8 @@ public:
     bool suspend_thread(XnuThreadId thread);
     bool resume_thread(XnuThreadId thread);
     bool set_base_priority(XnuThreadId thread, std::int32_t priority);
+    bool set_qos_override_priority(
+        XnuThreadId thread, std::optional<std::int32_t> priority);
     bool depress(XnuThreadId thread, std::uint64_t duration_ticks = 0);
     bool bind_thread(XnuThreadId thread, std::optional<std::size_t> processor);
     bool set_timeshare(XnuThreadId thread, bool timeshare);
