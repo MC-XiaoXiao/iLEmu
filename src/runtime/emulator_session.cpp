@@ -105,7 +105,7 @@ namespace {
         std::size_t thread_index { };
         GuestExecutionRequest execution;
         bool deferred_svc { };
-        bool throughput_measurement_limited { };
+        bool host_tick_budget_limited { };
     };
 
 } // namespace
@@ -3698,7 +3698,7 @@ void EmulatorSession::run()
             for (auto& prepared : prepared_slices) {
                 if (prepared.execution.tick_budget > *measurement_tick_limit) {
                     prepared.execution.tick_budget = *measurement_tick_limit;
-                    prepared.throughput_measurement_limited = true;
+                    prepared.host_tick_budget_limited = true;
                 }
             }
         }
@@ -3710,6 +3710,24 @@ void EmulatorSession::run()
                     return guest_parallelism_policy.should_serialize(
                         prepared.scheduled.thread);
                 });
+        if (parallel_guest_batch) {
+            // A nearly exhausted Guest quantum must not leave its lane idle
+            // for a full peer quantum before the kernel commit window closes.
+            // Bound work at admission; native time budgets and channel entry
+            // remain independent. A shortened slice is host cooperation, not
+            // Guest quantum expiration, and consumed ticks are never padded.
+            const auto shortest = std::min_element(prepared_slices.begin(),
+                prepared_slices.end(), [](const auto& left, const auto& right) {
+                    return left.execution.tick_budget <
+                        right.execution.tick_budget;
+                })->execution.tick_budget;
+            for (auto& prepared : prepared_slices) {
+                if (prepared.execution.tick_budget > shortest) {
+                    prepared.execution.tick_budget = shortest;
+                    prepared.host_tick_budget_limited = true;
+                }
+            }
+        }
         for (auto& prepared : prepared_slices) {
             prepared.deferred_svc = parallel_guest_batch;
             prepared.execution.cpu->set_parallel_memory_allowed(
@@ -3784,7 +3802,7 @@ void EmulatorSession::run()
             const auto index = prepared.thread_index;
             auto& cpu = *prepared.execution.cpu;
             auto result = std::move(prepared.execution.result);
-            if (prepared.throughput_measurement_limited &&
+            if (prepared.host_tick_budget_limited &&
                 result.ticks_consumed >= prepared.execution.tick_budget)
                 result.host_yielded = true;
             if (performance_counters().cpu_source_diagnostics_enabled() &&
