@@ -137,7 +137,9 @@ std::optional<ReceivedMessage> prepare_received_message(
     }
     if (result.trailer_size >= 20U) {
         write_word(result.bytes, aligned_size + 12U, message.sender_uid);
-        write_word(result.bytes, aligned_size + 16U, message.sender_gid);
+        // XNU kernel-originated messages carry KERNEL_SECURITY_TOKEN {0, 1}.
+        write_word(result.bytes, aligned_size + 16U,
+            message.sender_pid == 0U ? 1U : message.sender_gid);
     }
     if (result.trailer_size >= 52U) {
         const std::array<std::uint32_t, 8> audit_token {

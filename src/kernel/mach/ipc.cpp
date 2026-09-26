@@ -467,6 +467,10 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         context != shared_state_->mach_port_contexts.end() ? context->second : 0U,
         shared_state_->darwin_abi.mach_port_context);
     if (!received) {
+        static_cast<void>(
+            shared_state_->mach_port_objects.increment_sequence_number(
+                queued_port));
+
         auto discarded = std::move(queue->second.front());
         queue->second.pop_front();
         shared_state_->note_mach_message_dequeued_locked(queued_port);
@@ -499,6 +503,9 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             // Without MACH_RCV_LARGE XNU consumes and destroys the oversized
             // message, returning only the receive error. Leaving it queued
             // would make a caller retry forever with the same capacity.
+            static_cast<void>(
+                shared_state_->mach_port_objects.increment_sequence_number(
+                    queued_port));
             auto discarded = std::move(queue->second.front());
             queue->second.pop_front();
             shared_state_->note_mach_message_dequeued_locked(queued_port);
@@ -507,6 +514,13 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         }
         return outcome;
     }
+
+    // XNU assigns the receive sequence when it removes a message, even if
+    // subsequent right or user-buffer copyout fails. LARGE probing above
+    // does not consume the message and therefore keeps the sequence.
+    static_cast<void>(
+        shared_state_->mach_port_objects.increment_sequence_number(
+            queued_port));
 
     // A queued message keeps the semantic right in its sidecar, but the
     // backing ipc_port may have been retired while the receiver was asleep.
@@ -920,6 +934,8 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         " bytes=" + std::to_string(received->message_size) +
         " trailer=" + std::to_string(received->trailer_size) + "\n");
     const auto copied =
+        memory_.accessible(receive.message_address, received->bytes.size(),
+            MemoryPermission::Write) &&
         memory_.copy_in(receive.message_address, received->bytes);
     if (copied) {
         if (delivered_vsync_connection) {
@@ -969,9 +985,6 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
                 *shared_state_, delivered_sender_pid, queued_port,
                 *delivered_graphics_event_type, scene_coordinator_.get());
         }
-        static_cast<void>(
-            shared_state_->mach_port_objects.increment_sequence_number(
-                queued_port));
         const auto receiver = shared_state_->processes.find(process_.pid);
         if (delivered_input_sequence != 0U &&
             delivered_input_kind ==
