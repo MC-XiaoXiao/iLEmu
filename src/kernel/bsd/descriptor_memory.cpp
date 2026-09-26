@@ -1125,8 +1125,15 @@ void CompatibilityKernel::dispatch_bsd_descriptor_memory(
                     bsd_error(cpu, darwin::error::invalid_argument);
                     return;
                 }
-                if ((file_status_flags_[fd] & darwin::open_flag::access_mode) ==
-                    darwin::open_flag::read_only) {
+                // XNU authorizes writes to the vnode, not through this open
+                // description. In particular, directories are opened read-only
+                // even when their owner can change the data protection class.
+                const auto write_permission =
+                    process_.effective_uid == metadata->owner ? 0200U
+                    : process_.effective_gid == metadata->group ? 0020U
+                                                               : 0002U;
+                if (process_.effective_uid != 0U &&
+                    (metadata->mode & write_permission) == 0U) {
                     bsd_error(cpu, darwin::error::bad_file_descriptor);
                     return;
                 }
