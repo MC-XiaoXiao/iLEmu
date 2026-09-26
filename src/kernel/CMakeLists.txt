@@ -217,6 +217,7 @@ target_sources(ilemu_kernel PRIVATE
     bsd/network_policy.cpp
     bsd/platform.cpp
     bsd/pthread_runtime.cpp
+    bsd/pthread_state.cpp
     bsd/psynch_runtime.cpp
     bsd/psynch.cpp
     bsd/aio.cpp
