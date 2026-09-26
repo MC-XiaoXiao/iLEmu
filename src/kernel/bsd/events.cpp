@@ -1485,6 +1485,13 @@ void CompatibilityKernel::dispatch_bsd_events(Cpu& cpu, std::uint32_t number)
             bsd_error(cpu, bsd_support::bad_address);
             return;
         }
+        // CTL_HW uses the OID tree even in legacy XNU. Known scalar/string
+        // leaves reject trailing components before invoking their handler.
+        if (mib_count > 2U && *mib0 == darwin::sysctl::control_hardware &&
+            darwin::sysctl::describe_object(*mib0, *mib1)) {
+            bsd_error(cpu, darwin::error::is_directory);
+            return;
+        }
         const auto write_read_only_bytes = [&](std::span<const std::byte> bytes) {
             const auto required = static_cast<std::uint32_t>(bytes.size());
             if (registers[4] != 0) {
