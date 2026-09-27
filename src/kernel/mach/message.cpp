@@ -40,6 +40,7 @@
 #include "transport/port_copyin.hpp"
 #include "transport/ool_copyin.hpp"
 #include "transport/copyin_cleanup.hpp"
+#include "transport/pseudo_copyout.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -707,36 +708,48 @@ void CompatibilityKernel::dispatch_mach_message(
                 (shared_state_->mach_port_objects.contains(remote_object) ||
                     shared_state_->mach_port_set_links_by_member.contains(
                         remote_object));
-            // CoreFoundation deliberately uses a zero-timeout send for run-loop
-            // wakeups. XNU rejects a duplicate wakeup once the port's
-            // one-message queue is full; allowing it to grow without bound
-            // starves the main run loop during periodic display notifications.
-            if (routable &&
-                (registers[1] & darwin::mach_message::option_send_timeout) !=
-                    0 &&
-                registers[5] == 0) {
-                const auto port =
-                    shared_state_->mach_port_objects.lookup(remote_object);
-                const auto queue =
-                    shared_state_->mach_queues.find(remote_object);
-                const auto queue_depth =
-                    queue == shared_state_->mach_queues.end()
-                        ? 0U
-                        : queue->second.size();
-                if (port && queue_depth >= port->queue_limit) {
-                    if ((registers[1] & darwin::mach_message::option_send_notify) != 0U &&
-                        destination_right != xnu::ipc::Right::SendOnce) {
-                        const auto notification = shared_state_->mach_dead_name_notifications.find(
-                            std::pair { process_.pid, *remote_port });
-                        if (notification != shared_state_->mach_dead_name_notifications.end() &&
-                            notification->second.send_possible) {
-                            notification->second.armed = true;
-                            shared_state_->mach_send_possible_armed_destinations.insert(remote_object);
-                        }
-                    }
-                    registers[0] = darwin::mach_message::send_timed_out;
+            const auto immediate_send_timeout = [&] {
+                if (!routable || destination_right == xnu::ipc::Right::SendOnce ||
+                    (registers[1] & darwin::mach_message::option_send_timeout) == 0 ||
+                    registers[5] != 0)
+                    return false;
+                const auto port = shared_state_->mach_port_objects.lookup(remote_object);
+                const auto queue = shared_state_->mach_queues.find(remote_object);
+                const auto depth = queue == shared_state_->mach_queues.end() ? 0U : queue->second.size();
+                return port && depth >= port->queue_limit;
+            };
+            const auto arm_send_possible = [&] {
+                if ((registers[1] & darwin::mach_message::option_send_notify) == 0U)
                     return;
+                const auto notification = shared_state_->mach_dead_name_notifications.find(
+                    std::pair { process_.pid, *remote_port });
+                if (notification != shared_state_->mach_dead_name_notifications.end() &&
+                    notification->second.send_possible) {
+                    notification->second.armed = true;
+                    shared_state_->mach_send_possible_armed_destinations.insert(remote_object);
                 }
+            };
+            // A simple COPY_SEND wakeup has no remaining copyin failure point.
+            // Avoid a queued-message allocation, but preserve pseudo-copyout:
+            // copying the destination back creates one additional Send uref.
+            const auto simple_copy_send =
+                *bits == darwin::mig_wire::disposition_copy_send &&
+                *local_port == xnu::ipc::null_name &&
+                read_little_word(*bytes, darwin::mig_wire::header_voucher_offset) == 0U;
+            if (simple_copy_send && immediate_send_timeout()) {
+                // Admission just validated the live destination under mach_mutex.
+                const auto name = shared_state_->mach_namespaces.copyout(
+                    process_.pid, remote_object, xnu::ipc::type_mask(xnu::ipc::Right::Send));
+                write_little_word(*bytes, darwin::mig_wire::header_bits_offset,
+                    darwin::mig_wire::disposition_move_send);
+                write_little_word(*bytes, darwin::mig_wire::header_size_offset, registers[2]);
+                write_little_word(*bytes, darwin::mig_wire::header_remote_port_offset, name.value_or(0));
+                // mach_msg ignores ipc_kmsg_put failure after send timeout.
+                mach_transport::PseudoCopyout::write_back(memory_, message_address, *bytes);
+                arm_send_possible();
+                registers[0] = darwin::mach_message::send_timed_out |
+                    (name ? 0U : darwin::mach_message::ipc_space);
+                return;
             }
             if (routable) {
                 std::optional<std::uint32_t> reply_object;
@@ -1062,6 +1075,18 @@ void CompatibilityKernel::dispatch_mach_message(
                     // Keep payload consumers in physical descriptor order.
                     if (reverse)
                         std::reverse(ool_payloads.begin(), ool_payloads.end());
+                    // Simple COPY_SEND cannot change the queue during copyin.
+                    if (!simple_copy_send && immediate_send_timeout()) {
+                        cleanup.commit();
+                        mach_transport::PseudoCopyout copyout {
+                            *shared_state_, memory_, process_.pid };
+                        const auto copyout_error = copyout.restore(queued, *bytes,
+                            descriptors, remote_object, *destination_right);
+                        mach_transport::PseudoCopyout::write_back(memory_, message_address, *bytes);
+                        arm_send_possible();
+                        registers[0] = darwin::mach_message::send_timed_out | copyout_error;
+                        return;
+                    }
                     for (const auto& payload : ool_payloads) {
                         service_source_create_path =
                             celestial_volume_protocol::decode_source_create_path(

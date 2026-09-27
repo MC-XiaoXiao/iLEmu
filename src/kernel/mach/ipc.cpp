@@ -49,6 +49,7 @@
 #include <vector>
 
 #include "support.hpp"
+#include "transport/port_copyout.hpp"
 
 namespace ilemu {
 
@@ -522,33 +523,8 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         shared_state_->mach_port_objects.increment_sequence_number(
             queued_port));
 
-    // A queued message keeps the semantic right in its sidecar, but the
-    // backing ipc_port may have been retired while the receiver was asleep.
-    // Never let copyout recreate a live Send/Receive name for such an object.
-    // XNU copies dead send-like objects out as MACH_PORT_DEAD without
-    // allocating a namespace entry; receive rights cannot be recovered
-    // once their port object is gone and invalidate the queued message.
-    const auto copyout_received_right =
-        [&](std::uint32_t object,
-            xnu::ipc::Right right) -> std::optional<std::uint32_t> {
-        if (object == xnu::ipc::null_name)
-            return std::nullopt;
-        if (!shared_state_->mach_port_objects.contains(object)) {
-            if (right != xnu::ipc::Right::Send &&
-                right != xnu::ipc::Right::SendOnce) {
-                return std::nullopt;
-            }
-            // Directly retired legacy objects may not have gone through
-            // terminate_receive_object_locked. Normalize any stale namespace
-            // send entries before returning the sentinel so a PID/name reuse
-            // cannot observe a resurrected Send right.
-            static_cast<void>(
-                shared_state_->mach_namespaces.mark_object_dead(object));
-            return xnu::ipc::dead_name;
-        }
-        return shared_state_->mach_namespaces.copyout(
-            process_.pid, object, xnu::ipc::type_mask(right));
-    };
+    const mach_transport::PortCopyout copyout_received_right {
+        *shared_state_, process_.pid };
 
     const auto discard_queued_message = [&] {
         auto discarded = std::move(queue->second.front());
