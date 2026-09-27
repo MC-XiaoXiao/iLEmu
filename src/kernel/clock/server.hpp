@@ -12,13 +12,14 @@
 #include <array>
 
 namespace ilemu::kernel_clock {
-class QueryServer {
+class Server {
 public:
     static bool handles(std::uint32_t identifier)
     {
         using namespace xnu::mig::clock;
         return identifier == id(Routine::clock_get_time) ||
-               identifier == id(Routine::clock_get_attributes);
+               identifier == id(Routine::clock_get_attributes) ||
+               identifier == id(Routine::clock_alarm);
     }
 
     // Called after generic Mach copyin has resolved the destination capability.
@@ -122,15 +123,30 @@ public:
             std::span { payload }.first(payload[2] == 0U ? 5U : 3U));
     }
 
+    static std::optional<std::uint32_t> try_alarm_synchronous_locked(
+        AddressSpace& memory, KernelSharedState& state,
+        const ProcessContext& process, std::uint32_t clock,
+        std::span<const std::uint32_t> registers, std::uint32_t bits,
+        std::uint32_t reply_name, std::uint32_t receive_address);
+
     static std::optional<std::uint32_t> dispatch_locked(
         KernelSharedState& state, std::uint32_t clock,
         KernelSharedState::MachMessage& request)
     {
-        const auto payload = evaluate(state, clock, request.bytes);
+        const auto alarm =
+            mach_support::read_little_word(request.bytes, 20U) ==
+            xnu::mig::clock::id(xnu::mig::clock::Routine::clock_alarm);
+        const auto payload = alarm ? std::array<std::uint32_t, 5> { 0U, 1U,
+            register_alarm_locked(state, clock, request), 0U, 0U }
+                                   : evaluate(state, clock, request.bytes);
         return mach_ipc::enqueue_kernel_reply_locked(state, request,
             mach_support::read_little_word(request.bytes, 20U),
             std::span<const std::uint32_t> { payload }.first(
-                payload[2] == 0 ? 5U : 3U));
+                !alarm && payload[2] == 0 ? 5U : 3U));
     }
+
+private:
+    static std::uint32_t register_alarm_locked(KernelSharedState& state,
+        std::uint32_t clock, KernelSharedState::MachMessage& request);
 };
 } // namespace ilemu::kernel_clock

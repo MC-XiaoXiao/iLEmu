@@ -615,6 +615,7 @@ namespace mach_support {
         state.mach_kernel_send_rights.erase(object);
         state.mach_semaphores.erase(object);
         state.mach_timers.erase(object);
+        cancel_clock_alarms_locked(state, object);
         state.mach_memory_entries.erase(object);
         state.mach_vouchers.erase(object);
         state.mach_fileports.erase(object);

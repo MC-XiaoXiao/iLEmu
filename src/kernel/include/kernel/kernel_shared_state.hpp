@@ -577,10 +577,9 @@ struct KernelSharedState {
         std::vector<ReceivePointerFixup> receive_pointer_fixups;
     };
     struct ClockAlarm {
-        std::uint64_t deadline { };
-        std::uint64_t alarm_time { };
         std::uint32_t alarm_type { };
         std::uint32_t reply_object { };
+        xnu::ipc::Right reply_right { xnu::ipc::Right::SendOnce };
     };
     struct UnixListener {
         std::uint32_t owner_pid { };
@@ -1638,8 +1637,8 @@ struct KernelSharedState {
     // open-file description. The key is the global object identifier; callers
     // hold mach_mutex while accessing this table.
     std::map<std::uint32_t, DescriptorTransfer> mach_fileports;
-    std::map<std::uint64_t, ClockAlarm> clock_alarms;
-    std::uint64_t next_clock_alarm { 1 };
+    // Deadline ordering makes the scheduler lookup constant-time.
+    std::multimap<std::uint64_t, ClockAlarm> clock_alarms;
     std::map<std::pair<std::uint32_t, std::uint32_t>, MachNotificationRequest>
         mach_notifications;
     std::map<std::pair<std::uint32_t, std::uint32_t>,

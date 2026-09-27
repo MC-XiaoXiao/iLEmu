@@ -165,6 +165,7 @@ namespace mach {
 namespace mig {
     // Darwin 8 osfmk/mach/mig_errors.h. Keep the signed MIG value in its exact
     // 32-bit wire representation.
+    inline constexpr std::uint32_t type_error = 0xffff'fed4U; // -300
     inline constexpr std::uint32_t bad_id = 0xffff'fed1U; // -303
     inline constexpr std::uint32_t bad_arguments = 0xffff'fed0U; // -304
 } // namespace mig
