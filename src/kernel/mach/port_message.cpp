@@ -375,9 +375,17 @@ bool CompatibilityKernel::dispatch_mach_port_message(
             const auto target = target_task_for_port(
                 *shared_state_, process_.pid, *remote_port);
             if (!target) {
-                result = 4;
+                result = darwin::mach::invalid_task;
             } else if (right > 4U) {
                 result = 18;
+            } else if (name == xnu::ipc::null_name || name == xnu::ipc::dead_name) {
+                // XNU treats NULL/DEAD send and send-once tokens as one
+                // reference; they are not ipc_space entries.
+                if (right == static_cast<std::uint32_t>(xnu::ipc::Right::Send) ||
+                    right == static_cast<std::uint32_t>(xnu::ipc::Right::SendOnce))
+                    references = 1U;
+                else
+                    result = darwin::mach::invalid_name;
             } else if (const auto count =
                            shared_state_->mach_namespaces.user_references(
                                *target, name,
@@ -386,8 +394,6 @@ bool CompatibilityKernel::dispatch_mach_port_message(
             } else if (!shared_state_->mach_namespaces.contains(
                            *target, name)) {
                 result = 15;
-            } else {
-                result = 17;
             }
         }
         const std::array<std::uint32_t, 10> reply {
