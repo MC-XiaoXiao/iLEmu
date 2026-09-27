@@ -32,6 +32,7 @@ namespace {
         .mach_descriptor_copyin =
             DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
         .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
+        .mach_port_names = DarwinMachPortNamesAbi::SendPossibleRequests,
         .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi =
@@ -85,6 +86,7 @@ namespace {
             DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
         .task_suspension = DarwinTaskSuspensionAbi::ResumePortTokens,
         .task_special_ports = DarwinTaskSpecialPortsAbi::Security,
+        .mach_port_names = DarwinMachPortNamesAbi::SendPossibleRequests,
         .thread_timeshare = DarwinThreadTimeshareAbi::CanonicalBoolean,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi = DarwinPthreadAbi::
@@ -247,6 +249,7 @@ namespace {
                 .mach_descriptor_copyin =
                     DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
                 .task_special_ports = DarwinTaskSpecialPortsAbi::SecurityLedger,
+                .mach_port_names = DarwinMachPortNamesAbi::SendPossibleRequests,
                 .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi =

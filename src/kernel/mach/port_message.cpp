@@ -53,8 +53,7 @@ bool CompatibilityKernel::dispatch_mach_port_message(
     Cpu& cpu, const MachMessageRequest& request)
 {
     if (dispatch_mach_port_limit_message(cpu, request) ||
-        dispatch_mach_port_membership_message(cpu, request) ||
-        dispatch_mach_port_query_message(cpu, request))
+        dispatch_mach_port_membership_message(cpu, request))
         return true;
     auto& registers = cpu.registers();
     const auto message_address = request.address;
@@ -62,51 +61,6 @@ bool CompatibilityKernel::dispatch_mach_port_message(
     const std::optional<std::uint32_t> remote_port { request.remote_port };
     const std::optional<std::uint32_t> local_port { request.local_port };
     const std::optional<std::uint32_t> message_id { request.identifier };
-    if (*message_id ==
-            mig_message_id(xnu::mig::mach_port::Routine::mach_port_type) &&
-        registers[3] >= 40) {
-        const auto name =
-            memory_
-                .read32(message_address +
-                        xnu::mig::mach_port::mach_port_type_arguments[1]
-                            .request_offset)
-                .value_or(0);
-        std::uint32_t result = 15; // KERN_INVALID_NAME
-        std::uint32_t port_type = 0;
-        {
-            std::lock_guard mach_lock { shared_state_->mach_mutex };
-            if (const auto task = target_task_for_port(
-                    *shared_state_, process_.pid, *remote_port)) {
-                if (const auto type =
-                        shared_state_->mach_namespaces.type(*task, name)) {
-                    port_type = *type;
-                    result = 0;
-                }
-            }
-        }
-        const std::array<std::uint32_t, 10> reply {
-            18,
-            40,
-            *local_port,
-            0,
-            0,
-            *message_id + 100,
-            0x00000000U,
-            0x00000001U,
-            result,
-            port_type,
-        };
-        for (std::size_t index = 0; index < reply.size(); ++index) {
-            if (!memory_.write32(
-                    message_address + static_cast<std::uint32_t>(index * 4U),
-                    reply[index])) {
-                registers[0] = 0x10004008U;
-                return true;
-            }
-        }
-        registers[0] = 0;
-        return true;
-    }
     if (*message_id ==
             mig_message_id(xnu::mig::mach_port::Routine::mach_port_rename) &&
         registers[3] >= 36) {
@@ -340,73 +294,6 @@ bool CompatibilityKernel::dispatch_mach_port_message(
             0x00000000U,
             0x00000001U,
             result,
-        };
-        for (std::size_t index = 0; index < reply.size(); ++index) {
-            if (!memory_.write32(
-                    message_address + static_cast<std::uint32_t>(index * 4U),
-                    reply[index])) {
-                registers[0] = 0x10004008U;
-                return true;
-            }
-        }
-        registers[0] = 0;
-        return true;
-    }
-    if (*message_id ==
-            mig_message_id(
-                xnu::mig::mach_port::Routine::mach_port_get_refs) &&
-        registers[3] >= 40) {
-        const auto name =
-            memory_
-                .read32(message_address +
-                        xnu::mig::mach_port::mach_port_get_refs_arguments[1]
-                            .request_offset)
-                .value_or(0);
-        const auto right =
-            memory_
-                .read32(message_address +
-                        xnu::mig::mach_port::mach_port_get_refs_arguments[2]
-                            .request_offset)
-                .value_or(5);
-        std::uint32_t result = 0;
-        std::uint32_t references = 0;
-        {
-            std::lock_guard mach_lock { shared_state_->mach_mutex };
-            const auto target = target_task_for_port(
-                *shared_state_, process_.pid, *remote_port);
-            if (!target) {
-                result = darwin::mach::invalid_task;
-            } else if (right > 4U) {
-                result = 18;
-            } else if (name == xnu::ipc::null_name || name == xnu::ipc::dead_name) {
-                // XNU treats NULL/DEAD send and send-once tokens as one
-                // reference; they are not ipc_space entries.
-                if (right == static_cast<std::uint32_t>(xnu::ipc::Right::Send) ||
-                    right == static_cast<std::uint32_t>(xnu::ipc::Right::SendOnce))
-                    references = 1U;
-                else
-                    result = darwin::mach::invalid_name;
-            } else if (const auto count =
-                           shared_state_->mach_namespaces.user_references(
-                               *target, name,
-                               static_cast<xnu::ipc::Right>(right))) {
-                references = *count;
-            } else if (!shared_state_->mach_namespaces.contains(
-                           *target, name)) {
-                result = 15;
-            }
-        }
-        const std::array<std::uint32_t, 10> reply {
-            18,
-            40,
-            *local_port,
-            0,
-            0,
-            *message_id + 100,
-            0x00000000U,
-            0x00000001U,
-            result,
-            references,
         };
         for (std::size_t index = 0; index < reply.size(); ++index) {
             if (!memory_.write32(

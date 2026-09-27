@@ -50,6 +50,7 @@
 
 #include "support.hpp"
 #include "transport/port_copyout.hpp"
+#include "transport/memory_copyout.hpp"
 
 namespace ilemu {
 
@@ -800,22 +801,12 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             darwin::mig_wire::replace_descriptor_disposition(descriptor_word,
                 darwin::mig_wire::received_port_disposition(disposition)));
 
-        std::uint32_t copied_address = 0;
-        if (!names.empty()) {
-            const auto mapped_size = static_cast<std::uint32_t>(
-                (names.size() + AddressSpace::page_size - 1U) &
-                ~(static_cast<std::size_t>(AddressSpace::page_size) - 1U));
-            const auto free_region =
-                find_free_guest_region(memory_, ool_receive_base, mapped_size);
-            if (!free_region ||
-                !memory_.map(*free_region, mapped_size,
-                    MemoryPermission::Read | MemoryPermission::Write) ||
-                !memory_.copy_in(*free_region, names)) {
-                outcome.status = 0x10004008U;
-                return outcome;
-            }
-            copied_address = *free_region;
+        const auto copied = mach_ipc::copyout_memory(memory_, names);
+        if (!copied) {
+            outcome.status = darwin::mach_message::receive_invalid_data;
+            return outcome;
         }
+        const auto copied_address = *copied;
         write_little_word(
             received->bytes, array.descriptor_offset, copied_address);
         if (output_.enabled("[mach]")) {
@@ -831,22 +822,12 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             outcome.status = 0x10004008U; // MACH_RCV_INVALID_DATA
             return outcome;
         }
-        std::uint32_t copied_address = 0;
-        if (!payload.bytes.empty()) {
-            const auto mapped_size = static_cast<std::uint32_t>(
-                (payload.bytes.size() + AddressSpace::page_size - 1U) &
-                ~(static_cast<std::size_t>(AddressSpace::page_size) - 1U));
-            const auto free_region =
-                find_free_guest_region(memory_, ool_receive_base, mapped_size);
-            if (!free_region ||
-                !memory_.map(*free_region, mapped_size,
-                    MemoryPermission::Read | MemoryPermission::Write) ||
-                !memory_.copy_in(*free_region, payload.bytes)) {
-                outcome.status = 0x10004008U;
-                return outcome;
-            }
-            copied_address = *free_region;
+        const auto copied = mach_ipc::copyout_memory(memory_, payload.bytes);
+        if (!copied) {
+            outcome.status = darwin::mach_message::receive_invalid_data;
+            return outcome;
         }
+        const auto copied_address = *copied;
         for (std::size_t byte = 0; byte < 4; ++byte) {
             received->bytes[payload.descriptor_offset + byte] =
                 static_cast<std::byte>(copied_address >> (byte * 8U));

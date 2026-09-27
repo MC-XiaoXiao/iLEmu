@@ -9,11 +9,14 @@
 #include "kernel/darwin_abi.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "mach/mig_wire_abi.hpp"
+#include "memory_copyout.hpp"
 #include <algorithm>
 #include <array>
 #include <cassert>
 #include <optional>
 #include <span>
+#include <utility>
+#include <vector>
 
 namespace ilemu::mach_ipc {
 // Validate an uncontended fixed task RPC before dispatching in-kernel.
@@ -38,8 +41,9 @@ bool try_task_rpc_locked(AddressSpace& memory, KernelSharedState& state,
         registers[3] < minimum_reply_size || registers[4] != reply_name)
         return false;
     const auto target = memory.read32(registers[0] + 8U);
-    const auto object = target ? resolve_name_with_right(
-        state, process.pid, *target, xnu::ipc::Right::Send) : std::nullopt;
+    const auto object = target ? resolve_name_with_right(state, process.pid,
+                                     *target, xnu::ipc::Right::Send)
+                               : std::nullopt;
     if (!object || !state.task_port_pids.contains(*object))
         return false;
     const auto reply = resolve_name_with_right(
@@ -66,13 +70,14 @@ bool try_task_rpc_locked(AddressSpace& memory, KernelSharedState& state,
 inline std::uint32_t copyout_kernel_reply_locked(AddressSpace& memory,
     KernelSharedState& state, std::uint32_t address, std::uint32_t receive_name,
     std::uint32_t receive_object, std::uint32_t identifier,
-    std::span<const std::uint32_t> payload, bool complex = false)
+    std::span<const std::uint32_t> payload, bool complex = false,
+    std::span<const KernelSharedState::MachMessage::OolPayload> buffers = { })
 {
-    assert(payload.size() <= 5U);
-    std::array<std::uint32_t, 13> words { };
+    assert(payload.size() <= 11U);
+    std::array<std::uint32_t, 19> words { };
     const auto size = 24U + static_cast<std::uint32_t>(payload.size_bytes());
-    words[0] = (18U << 8U) |
-               (complex ? darwin::mig_wire::message_complex_bit : 0U);
+    words[0] =
+        (18U << 8U) | (complex ? darwin::mig_wire::message_complex_bit : 0U);
     words[1] = size;
     words[3] = receive_name;
     words[5] = identifier + 100U;
@@ -80,6 +85,14 @@ inline std::uint32_t copyout_kernel_reply_locked(AddressSpace& memory,
     words[size / 4U + 1U] = darwin::mig_wire::trailer_minimum_size;
     static_cast<void>(
         state.mach_port_objects.increment_sequence_number(receive_object));
+    for (const auto& buffer : buffers) {
+        assert(buffer.descriptor_offset % 4U == 0U &&
+               buffer.descriptor_offset + 4U <= size);
+        const auto copied = copyout_memory(memory, buffer.bytes);
+        if (!copied)
+            return darwin::mach_message::receive_invalid_data;
+        words[buffer.descriptor_offset / 4U] = *copied;
+    }
     if (!memory.accessible(address, size + 8U, MemoryPermission::Write) ||
         !memory.copy_in(
             address, std::as_bytes(std::span { words }).first(size + 8U)))
@@ -94,7 +107,8 @@ inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
     std::uint32_t identifier, std::span<const std::uint32_t> payload,
     std::span<const KernelSharedState::MachMessage::PortTransfer> ports = { },
     std::span<const KernelSharedState::MachMessage::OolPortArray> arrays = { },
-    bool complex = false)
+    bool complex = false,
+    std::vector<KernelSharedState::MachMessage::OolPayload> memory = { })
 {
     using namespace mach_support;
     const auto destination = request.reply_object;
@@ -117,16 +131,21 @@ inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
     reply.bytes.resize(
         darwin::mig_wire::message_header_size + payload.size_bytes());
     const auto disposition = *right == xnu::ipc::Right::Send ? 17U : 18U;
-    const std::uint32_t header[] { disposition |
-            (!complex && ports.empty() && arrays.empty() ? 0U : darwin::mig_wire::message_complex_bit),
+    const std::uint32_t header[] {
+        disposition |
+            (!complex && ports.empty() && arrays.empty() && memory.empty()
+                    ? 0U
+                    : darwin::mig_wire::message_complex_bit),
         static_cast<std::uint32_t>(reply.bytes.size()), *destination, 0, 0,
-        identifier + 100U };
+        identifier + 100U
+    };
     for (std::size_t i = 0; i < 6; ++i)
         write_little_word(reply.bytes, i * 4U, header[i]);
     for (std::size_t i = 0; i < payload.size(); ++i)
         write_little_word(reply.bytes, 24U + i * 4U, payload[i]);
     reply.port_transfers.assign(ports.begin(), ports.end());
     reply.ool_port_arrays.assign(arrays.begin(), arrays.end());
+    reply.ool_payloads = std::move(memory);
     for (const auto& port : ports) {
         // Newly produced Send rights become message-held only after a live
         // reply destination exists; receiver copyout installs the user refs.

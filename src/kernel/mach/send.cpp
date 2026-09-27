@@ -37,6 +37,7 @@
 #include "network/darwin_route_socket.hpp"
 
 #include "host/service_ports.hpp"
+#include "port/queries.hpp"
 #include "task/enumeration.hpp"
 #include "task/special_ports.hpp"
 #include "task/lifecycle.hpp"
@@ -241,7 +242,9 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
     routed_reply_object = reply_object;
     if (kernel_service) {
         kernel_service_handled = true;
-        const auto destination = task_mig::Enumeration::handles(message_id)
+        const auto destination = port_mig::Queries::handles(message_id)
+            ? port_mig::Queries::dispatch_locked(*shared_state_, remote_object, queued)
+            : task_mig::Enumeration::handles(message_id)
             ? task_mig::Enumeration::dispatch_locked(*shared_state_, remote_object, queued)
             : task_mig::SpecialPorts::handles(message_id)
             ? task_mig::SpecialPorts::dispatch_locked(*shared_state_, remote_object, queued)
