@@ -6,6 +6,7 @@
 
 #include "../mach/transport/kernel_reply.hpp"
 #include "kernel/darwin_abi.hpp"
+#include "kernel/kernel_mach_task_identity.hpp"
 #include "kernel/kernel_shared_state.hpp"
 #include "kernel/mach_clock_abi.hpp"
 #include "mach/clock_mig_ids.hpp"
@@ -23,18 +24,15 @@ public:
     }
 
     // Called after generic Mach copyin has resolved the destination capability.
-    static std::optional<std::uint32_t> identify_locked(
-        const KernelSharedState& state, const ProcessContext& process,
+    static std::optional<std::uint32_t> identify(
         std::uint32_t object, std::uint32_t identifier)
     {
-        using namespace xnu::mig::clock;
         if (!handles(identifier))
             return std::nullopt;
-        if (state.mach_namespaces.resolve(process.pid, process.clock_port) ==
-            object)
+        // Kernel-owned service identities survive task-local name changes.
+        if (object == mach_task_identity::initial_clock_name)
             return darwin::mach::clock::system_clock_id;
-        if (state.mach_namespaces.resolve(
-                process.pid, process.calendar_clock_port) == object)
+        if (object == mach_task_identity::initial_calendar_clock_name)
             return darwin::mach::clock::calendar_clock_id;
         return std::nullopt;
     }
@@ -124,7 +122,7 @@ public:
         if (!memory.copy_out(registers[0], bytes))
             return darwin::mach_message::send_invalid_data;
         const auto payload = evaluate(state, clock, bytes);
-        return mach_ipc::copyout_simple_kernel_reply_locked(memory, state,
+        return mach_ipc::copyout_kernel_reply_locked(memory, state,
             receive_address, reply_name, *reply, read_little_word(bytes, 20U),
             std::span { payload }.first(payload[2] == 0U ? 5U : 3U));
     }

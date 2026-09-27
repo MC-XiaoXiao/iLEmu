@@ -36,6 +36,7 @@
 #include "network/darwin_network_abi.hpp"
 #include "network/darwin_route_socket.hpp"
 
+#include "host/service_ports.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -169,8 +170,7 @@ void CompatibilityKernel::dispatch_mach_message(
         const auto object = resolve_name_with_right(
             *shared_state_, process_.pid, *remote_port, xnu::ipc::Right::Send);
         const auto clock =
-            object ? kernel_clock::Server::identify_locked(
-                         *shared_state_, process_, *object, *message_id)
+            object ? kernel_clock::Server::identify(*object, *message_id)
                    : std::nullopt;
         clock_service_request = clock.has_value();
         if (clock && pending_mach_receives_.empty()) {
@@ -191,7 +191,22 @@ void CompatibilityKernel::dispatch_mach_message(
             }
         }
     }
-    if (!separate_receive && !clock_service_request) {
+    const auto host_service_request = host_mig::ServicePorts::handles(*message_id);
+    if (wants_send && host_service_request && pending_mach_receives_.empty()) {
+        std::lock_guard lock { shared_state_->mach_mutex };
+        const auto object = resolve_name_with_right(
+            *shared_state_, process_.pid, *remote_port, xnu::ipc::Right::Send);
+        if (object == mach_task_identity::initial_host_self_name) {
+            const auto result = host_mig::ServicePorts::try_synchronous_locked(
+                memory_, *shared_state_, process_, registers, *bits, *local_port,
+                receive_address.value_or(message_address));
+            if (result) {
+                registers[0] = *result;
+                return;
+            }
+        }
+    }
+    if (!separate_receive && !clock_service_request && !host_service_request) {
         const MachMessageRequest request { message_address, *bits, *remote_port,
             *local_port, *message_id };
         if (dispatch_mach_host_message(cpu, request) ||
@@ -541,7 +556,7 @@ void CompatibilityKernel::dispatch_mach_message(
                 .read32(message_address + darwin::mig_wire::header_size_offset)
                 .value_or(0);
         bool routable = false;
-        bool kernel_clock_handled = false;
+        bool kernel_service_handled = false;
         std::optional<std::uint32_t> graphics_event_type;
         std::optional<std::uint32_t> routed_reply_object;
         std::optional<std::string> service_source_create_path;
@@ -701,11 +716,12 @@ void CompatibilityKernel::dispatch_mach_message(
                     : std::nullopt;
             const auto clock_service =
                 destination_object
-                    ? kernel_clock::Server::identify_locked(*shared_state_,
-                          process_, *destination_object, *message_id)
+                    ? kernel_clock::Server::identify(*destination_object, *message_id)
                     : std::nullopt;
+            const auto host_service = destination_port &&
+                destination_port->kernel_owned && host_service_request;
             if (destination_port && destination_port->kernel_owned &&
-                !clock_service) {
+                !clock_service && !host_service) {
                 if (separate_receive) {
                     registers[0] = darwin::mach_message::receive_invalid_data;
                     return;
@@ -1149,8 +1165,13 @@ void CompatibilityKernel::dispatch_mach_message(
                     queued.voucher_right = voucher_right;
                     queued.destination_send_object = destination_send_object;
                     queued.port_transfers = std::move(port_transfers);
-                    if (clock_service) {
-                        kernel_clock_handled = true;
+                    if (host_service) {
+                        kernel_service_handled = true;
+                        const auto destination = host_mig::ServicePorts::dispatch_locked(
+                            *shared_state_, remote_object, queued);
+                        remote_object = destination.value_or(0U);
+                    } else if (clock_service) {
+                        kernel_service_handled = true;
                         const auto destination =
                             kernel_clock::Server::dispatch_locked(
                                 *shared_state_, *clock_service, queued);
@@ -1243,7 +1264,7 @@ void CompatibilityKernel::dispatch_mach_message(
                               std::to_string(*transferred_receive) +
                               " from=" + std::to_string(process_.pid) + "\n");
             }
-            if (!kernel_clock_handled)
+            if (!kernel_service_handled)
                 output_.write(
                     "[mach] enqueue sender=" + std::to_string(process_.pid) +
                     " port=" + std::to_string(*remote_port) +

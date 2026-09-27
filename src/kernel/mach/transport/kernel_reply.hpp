@@ -16,17 +16,18 @@
 #include <span>
 
 namespace ilemu::mach_ipc {
-// Direct handoff of an uncontended COPY_SEND/MAKE_SEND_ONCE simple RPC.
+// Direct handoff of an uncontended COPY_SEND/MAKE_SEND_ONCE RPC.
 // The caller validates the rights, empty receive queue and default trailer.
-inline std::uint32_t copyout_simple_kernel_reply_locked(AddressSpace& memory,
+inline std::uint32_t copyout_kernel_reply_locked(AddressSpace& memory,
     KernelSharedState& state, std::uint32_t address, std::uint32_t receive_name,
     std::uint32_t receive_object, std::uint32_t identifier,
-    std::span<const std::uint32_t> payload)
+    std::span<const std::uint32_t> payload, bool complex = false)
 {
     assert(payload.size() <= 5U);
     std::array<std::uint32_t, 13> words { };
     const auto size = 24U + static_cast<std::uint32_t>(payload.size_bytes());
-    words[0] = 18U << 8U;
+    words[0] = (18U << 8U) |
+               (complex ? darwin::mig_wire::message_complex_bit : 0U);
     words[1] = size;
     words[3] = receive_name;
     words[5] = identifier + 100U;
@@ -45,7 +46,8 @@ inline std::uint32_t copyout_simple_kernel_reply_locked(AddressSpace& memory,
 // The caller holds mach_mutex; ordinary receive handles copyout and trailers.
 inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
     KernelSharedState& state, KernelSharedState::MachMessage& request,
-    std::uint32_t identifier, std::span<const std::uint32_t> payload)
+    std::uint32_t identifier, std::span<const std::uint32_t> payload,
+    std::span<const KernelSharedState::MachMessage::PortTransfer> ports = { })
 {
     using namespace mach_support;
     const auto destination = request.reply_object;
@@ -62,13 +64,21 @@ inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
     reply.bytes.resize(
         darwin::mig_wire::message_header_size + payload.size_bytes());
     const auto disposition = *right == xnu::ipc::Right::Send ? 17U : 18U;
-    const std::uint32_t header[] { disposition,
+    const std::uint32_t header[] { disposition |
+            (ports.empty() ? 0U : darwin::mig_wire::message_complex_bit),
         static_cast<std::uint32_t>(reply.bytes.size()), *destination, 0, 0,
         identifier + 100U };
     for (std::size_t i = 0; i < 6; ++i)
         write_little_word(reply.bytes, i * 4U, header[i]);
     for (std::size_t i = 0; i < payload.size(); ++i)
         write_little_word(reply.bytes, 24U + i * 4U, payload[i]);
+    reply.port_transfers.assign(ports.begin(), ports.end());
+    for (const auto& port : ports) {
+        // Newly produced Send rights become message-held only after a live
+        // reply destination exists; receiver copyout installs the user refs.
+        assert(port.right == xnu::ipc::Right::Send);
+        ++state.mach_inflight_send_rights[port.object];
+    }
     reply.destination = *destination;
     if (*right == xnu::ipc::Right::Send)
         reply.destination_send_object = destination;

@@ -152,7 +152,7 @@ std::optional<std::uint32_t> kernel_clock::Server::try_alarm_synchronous_locked(
             *alarm_port, xnu::ipc::Right::SendOnce },
         read_little_word(bytes, 52U), read_little_word(bytes, 56U));
     constexpr std::array<std::uint32_t, 3> payload { 0U, 1U, 0U };
-    return mach_ipc::copyout_simple_kernel_reply_locked(memory, state,
+    return mach_ipc::copyout_kernel_reply_locked(memory, state,
         receive_address, reply_name, *reply, read_little_word(bytes, 20U),
         payload);
 }

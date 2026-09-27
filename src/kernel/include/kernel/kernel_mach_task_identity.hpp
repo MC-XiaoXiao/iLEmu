@@ -19,8 +19,10 @@ struct ProcessContext;
 namespace mach_task_identity {
 
     // libSystem exposes these task-local names during the earliest iPhoneOS 1.0
-    // startup. They may repeat in every ipc_space; they are never global object
-    // identifiers.
+    // startup. Task, thread and bootstrap names may repeat in every ipc_space
+    // and have distinct object identities. Fixed host/clock/IO service objects
+    // use these values as their global identity too; a task may rename or drop
+    // its capability without changing that kernel-owned identity.
     inline constexpr std::uint32_t initial_task_self_name = 0x103U;
     inline constexpr std::uint32_t initial_thread_self_name = 0x203U;
     inline constexpr std::uint32_t initial_host_self_name = 0x303U;

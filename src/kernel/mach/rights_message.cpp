@@ -568,19 +568,11 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
         return true;
     }
     if ((*message_id ==
-                mig_message_id(
-                    xnu::mig::mach_host::Routine::host_get_io_master) ||
-            *message_id ==
-                mig_message_id(
-                    xnu::mig::mach_host::Routine::host_get_clock_service) ||
-            *message_id ==
-                mig_message_id(
-                    xnu::mig::task::Routine::task_get_special_port) ||
+                mig_message_id(xnu::mig::task::Routine::task_get_special_port) ||
             *message_id ==
                 mig_message_id(xnu::mig::task::Routine::semaphore_create)) &&
         registers[3] >= 40) {
-        // host_get_io_master, host_get_clock_service,
-        // task_get_special_port, and semaphore_create return a port.
+        // task_get_special_port and semaphore_create return a port.
         const auto which =
             *message_id ==
                     mig_message_id(
@@ -590,32 +582,11 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                       xnu::mig::task::task_get_special_port_arguments[1]
                           .request_offset)
                 : std::optional<std::uint32_t> { };
-        const auto clock_id =
-            *message_id ==
-                    mig_message_id(
-                        xnu::mig::mach_host::Routine::host_get_clock_service)
-                ? memory_.read32(
-                      message_address + xnu::mig::mach_host::
-                                            host_get_clock_service_arguments[1]
-                                                .request_offset)
-                : std::optional<std::uint32_t> { };
         std::uint32_t port = 0;
         bool port_already_copied_out = false;
         bool update_process_bootstrap = false;
         if (*message_id ==
-            mig_message_id(
-                xnu::mig::mach_host::Routine::host_get_io_master)) {
-            port = process_.io_master_port;
-        } else if (*message_id == mig_message_id(xnu::mig::mach_host::
-                                          Routine::host_get_clock_service)) {
-            if (clock_id == darwin::mach::clock::system_clock_id) {
-                port = process_.clock_port;
-            } else if (clock_id == darwin::mach::clock::calendar_clock_id) {
-                port = process_.calendar_clock_port;
-            }
-        } else if (*message_id ==
-                   mig_message_id(
-                       xnu::mig::task::Routine::semaphore_create)) {
+            mig_message_id(xnu::mig::task::Routine::semaphore_create)) {
             const auto policy =
                 memory_
                     .read32(message_address +
