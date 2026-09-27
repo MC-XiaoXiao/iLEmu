@@ -14,7 +14,8 @@ public:
     {
         using xnu::mig::task::Routine;
         using xnu::mig::task::id;
-        return identifier == id(Routine::task_suspend) ||
+        return identifier == id(Routine::task_terminate) ||
+               identifier == id(Routine::task_suspend) ||
                identifier == id(Routine::task_resume) ||
                identifier == id(Routine::task_suspend2) ||
                identifier == id(Routine::task_resume2);
@@ -39,7 +40,12 @@ public:
             result = darwin::mig::bad_id;
         } else if (request.bytes.size() == 24U &&
             (read_little_word(request.bytes, 0U) & darwin::mig_wire::message_complex_bit) == 0U) {
-            if (resume_token) {
+            if (identifier == id(Routine::task_terminate)) {
+                // Public task ports name BSD-backed processes. XNU rejects
+                // those before task_terminate_internal; this is not BSD exit.
+                result = state.task_port_pids.contains(object)
+                    ? darwin::mach::failure : darwin::mach::invalid_argument;
+            } else if (resume_token) {
                 result = Suspension::resume_token_locked(state, object);
             } else {
                 const auto target = state.task_port_pids.find(object);
