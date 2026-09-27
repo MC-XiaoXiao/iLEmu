@@ -222,13 +222,9 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                 mig_message_id(
                     xnu::mig::task::Routine::task_set_special_port) ||
             *message_id ==
-                mig_message_id(xnu::mig::task::Routine::semaphore_destroy) ||
-            *message_id ==
-                mig_message_id(
-                    xnu::mig::thread_act::Routine::thread_policy)) &&
+                mig_message_id(xnu::mig::task::Routine::semaphore_destroy)) &&
         registers[3] >= 36) {
-        // mach_port_deallocate / mach_port_insert_right / semaphore_destroy /
-        // thread_policy
+        // mach_port_deallocate / mach_port_insert_right / semaphore_destroy
         std::uint32_t kernel_result = 0;
         if (*message_id ==
             mig_message_id(
@@ -387,45 +383,6 @@ bool CompatibilityKernel::dispatch_mach_rights_message(
                         process_.pid, *task, target_name, poly_name,
                         disposition);
                 }
-            }
-        } else if (*message_id ==
-                   mig_message_id(
-                       xnu::mig::thread_act::Routine::thread_policy)) {
-            using namespace darwin::mach::thread_policy;
-            bool applied = false;
-            if (registers[3] >= legacy_minimum_request_size) {
-                const auto policy = memory_.read32(
-                    message_address + legacy_request_policy_offset);
-                const auto count = memory_.read32(
-                    message_address + legacy_request_count_offset);
-                const auto base = memory_.read32(
-                    message_address + legacy_request_base_offset);
-                const auto set_limit = memory_.read32(
-                    message_address + legacy_request_set_limit_offset);
-                std::optional<std::size_t> target_thread;
-                for (const auto& [processor, port] : thread_ports_) {
-                    if (port == *remote_port) {
-                        target_thread = processor;
-                        break;
-                    }
-                }
-                if (policy && count && *count == legacy_policy_word_count &&
-                    base && set_limit && target_thread &&
-                    legacy_thread_policy_handler_) {
-                    applied = legacy_thread_policy_handler_(*target_thread,
-                        *policy, std::bit_cast<std::int32_t>(*base),
-                        *set_limit != 0);
-                }
-            }
-            if (!applied) {
-                kernel_result = darwin::mach::invalid_argument;
-            } else if (scheduler_preemption_query_ &&
-                       scheduler_preemption_query_(cpu.processor_id())) {
-                // Legacy thread_policy can change a runnable candidate's
-                // priority or realtime deadline. Check the complete scheduler
-                // ordering before the current HLE dispatch returns to guest
-                // code.
-                cpu.request_guest_preemption();
             }
         } else if (*message_id ==
                    mig_message_id(

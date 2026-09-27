@@ -30,6 +30,7 @@ namespace {
         .abi_epoch = DarwinAbiEpoch::Darwin11,
         .mach_descriptor_copyin =
             DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+        .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
         .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
         .pthread_abi =
             DarwinPthreadAbi::BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,
@@ -236,6 +237,7 @@ namespace {
                 .abi_epoch = DarwinAbiEpoch::Darwin11,
                 .mach_descriptor_copyin =
                     DarwinMachDescriptorCopyinAbi::ForwardExpandedDescriptors,
+                .thread_priority_floor = DarwinThreadPriorityFloor::Throttle,
                 .sysctl_transfer = DarwinSysctlTransferAbi::OidNaturalSizeQueries,
                 .pthread_abi =
                     DarwinPthreadAbi::BsdThreadRegisterV1TsdBaseFourPriorityWorkqueues,

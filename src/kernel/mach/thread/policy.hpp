@@ -4,7 +4,7 @@
 
 #pragma once
 
-#include "../transport/kernel_reply.hpp"
+#include "legacy_policy.hpp"
 #include "kernel/mach_thread_policy_abi.hpp"
 #include "mach/xnu_scheduler.hpp"
 
@@ -14,19 +14,21 @@ public:
     static bool handles(std::uint32_t identifier)
     {
         using namespace darwin::mach::thread_policy;
-        return identifier == policy_set_message ||
+        return identifier == legacy_policy_message || identifier == policy_set_message ||
                identifier == policy_get_message;
     }
 
-    template <typename Apply, typename Query>
+    template <typename Apply, typename LegacyApply, typename Query>
     static std::optional<std::uint32_t> dispatch_locked(
         KernelSharedState& state, std::uint32_t object,
         KernelSharedState::MachMessage& request, const Apply& apply,
-        const Query& query)
+        const LegacyApply& legacy_apply, const Query& query)
     {
         using namespace mach_support;
         using namespace darwin::mach::thread_policy;
         const auto identifier = read_little_word(request.bytes, 20U);
+        if (identifier == legacy_policy_message)
+            return LegacyPolicy::dispatch_locked(state, object, request, legacy_apply);
         const auto error = [&](std::uint32_t result) {
             const std::array<std::uint32_t, 3> payload { 0U, 1U, result };
             return mach_ipc::enqueue_kernel_reply_locked(

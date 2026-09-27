@@ -244,7 +244,7 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
                   remote_object, queued, task_suspended)
             : thread_mig::Policy::handles(message_id)
             ? thread_mig::Policy::dispatch_locked(*shared_state_, remote_object, queued,
-                  thread_policy_handler_, thread_statistics_query_)
+                  thread_policy_handler_, legacy_thread_policy_handler_, thread_statistics_query_)
             : host_mig::ServicePorts::dispatch_locked(*shared_state_, remote_object, queued);
         remote_object = destination.value_or(0U);
     } else if (clock_service) {

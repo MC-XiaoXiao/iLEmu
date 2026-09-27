@@ -235,6 +235,8 @@ enum class DarwinThreadTimeshareAbi : std::uint8_t {
     NonzeroBoolean, CanonicalBoolean,
 };
 
+enum class DarwinThreadPriorityFloor : std::uint8_t { Unrestricted, Throttle };
+
 struct DarwinAbi {
     DarwinAbiEpoch abi_epoch { DarwinAbiEpoch::Unknown };
     DarwinMachDescriptorCopyinAbi mach_descriptor_copyin {
@@ -242,6 +244,7 @@ struct DarwinAbi {
     };
     DarwinTaskSuspensionAbi task_suspension { DarwinTaskSuspensionAbi::SharedUserCount };
     DarwinThreadTimeshareAbi thread_timeshare { DarwinThreadTimeshareAbi::NonzeroBoolean };
+    DarwinThreadPriorityFloor thread_priority_floor { DarwinThreadPriorityFloor::Unrestricted };
     DarwinSysctlTransferAbi sysctl_transfer {
         DarwinSysctlTransferAbi::LegacyKernelHandlers
     };

@@ -194,7 +194,8 @@ public:
             xnu::scheduler::scheduler_tick_interval,
         std::size_t processor_count = 1,
         std::uint32_t guest_ticks_per_second =
-            xnu::scheduler::default_guest_ticks_per_second);
+            xnu::scheduler::default_guest_ticks_per_second,
+        std::int32_t minimum_user_priority = xnu::scheduler::minimum_priority);
 
     void set_dispatch_diagnostics(bool enabled);
 
@@ -224,6 +225,8 @@ public:
     bool set_precedence(XnuThreadId thread, std::int32_t task_priority,
         std::int32_t importance);
     bool set_task_priority(XnuThreadId thread, std::int32_t priority);
+    bool set_legacy_policy(XnuThreadId thread, bool timeshare,
+        std::int32_t task_priority, std::int32_t priority);
     bool set_qos_override_priority(
         XnuThreadId thread, std::optional<std::int32_t> priority);
     bool depress(XnuThreadId thread, std::uint64_t duration_ticks = 0);
@@ -421,6 +424,7 @@ private:
     std::uint64_t quantum_ticks_ { };
     std::uint64_t scheduler_tick_ticks_ { };
     std::uint32_t guest_ticks_per_second_ { };
+    std::int32_t minimum_user_priority_ { };
     std::uint64_t minimum_realtime_computation_ticks_ { };
     std::uint64_t maximum_realtime_computation_ticks_ { };
     std::uint32_t priority_usage_shift_ { };

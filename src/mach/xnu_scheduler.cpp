@@ -40,11 +40,12 @@ namespace {
 
 XnuScheduler::XnuScheduler(std::uint64_t quantum_ticks,
     std::uint64_t scheduler_tick_ticks, std::size_t processor_count,
-    std::uint32_t guest_ticks_per_second)
+    std::uint32_t guest_ticks_per_second, std::int32_t minimum_user_priority)
     : processor_run_queues_(processor_count)
     , quantum_ticks_ { quantum_ticks }
     , scheduler_tick_ticks_ { scheduler_tick_ticks }
     , guest_ticks_per_second_ { guest_ticks_per_second }
+    , minimum_user_priority_ { minimum_user_priority }
     , minimum_realtime_computation_ticks_ { std::max<std::uint64_t>(1,
           static_cast<std::uint64_t>(guest_ticks_per_second) * 50 /
               xnu::scheduler::microseconds_per_second) }
@@ -57,6 +58,10 @@ XnuScheduler::XnuScheduler(std::uint64_t quantum_ticks,
         throw std::invalid_argument {
             "XNU scheduler intervals must be non-zero"
         };
+    }
+    if (minimum_user_priority < xnu::scheduler::minimum_priority ||
+        minimum_user_priority > xnu::scheduler::maximum_user_priority) {
+        throw std::invalid_argument { "XNU user priority floor is out of range" };
     }
     priority_usage_shift_ = priority_usage_shift(scheduler_tick_ticks_);
 }
@@ -437,7 +442,7 @@ bool XnuScheduler::set_precedence(XnuThreadId thread,
     const auto priority = static_cast<std::int32_t>(std::clamp<std::int64_t>(
         static_cast<std::int64_t>(task_priority) + std::clamp(importance,
             -xnu::scheduler::maximum_priority, xnu::scheduler::maximum_priority),
-        xnu::scheduler::minimum_priority, xnu::scheduler::maximum_user_priority));
+        minimum_user_priority_, xnu::scheduler::maximum_user_priority));
     if (record.info.failsafe) {
         record.failsafe_saved_base_priority = priority;
         if (record.failsafe_saved_realtime)
@@ -451,6 +456,29 @@ bool XnuScheduler::set_task_priority(XnuThreadId thread, std::int32_t priority)
     const auto iterator = threads_.find(thread);
     return iterator != threads_.end() &&
            set_precedence(thread, priority, iterator->second.importance);
+}
+
+bool XnuScheduler::set_legacy_policy(XnuThreadId thread, bool timeshare,
+    std::int32_t task_priority, std::int32_t priority)
+{
+    const auto iterator = threads_.find(thread);
+    if (iterator == threads_.end())
+        return false;
+    const auto& record = iterator->second;
+    // XNU 792 through 2782 accept but ignore legacy changes to an RT thread,
+    // including a thread temporarily demoted by the scheduler failsafe.
+    if (record.info.realtime ||
+        (record.info.failsafe && record.failsafe_saved_realtime))
+        return true;
+    // User tasks have max_priority 63, below the reserved/kernel bands.
+    const auto base = priority >= xnu::scheduler::maximum_user_priority
+        ? xnu::scheduler::maximum_user_priority
+        : static_cast<std::int32_t>(std::clamp<std::int64_t>(
+              static_cast<std::int64_t>(priority) -
+                  xnu::scheduler::default_base_priority + task_priority,
+              xnu::scheduler::minimum_priority, xnu::scheduler::maximum_user_priority));
+    return set_timeshare(thread, timeshare) &&
+           set_precedence(thread, task_priority, base - task_priority);
 }
 
 bool XnuScheduler::set_qos_override_priority(

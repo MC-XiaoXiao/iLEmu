@@ -1399,7 +1399,9 @@ void EmulatorSession::run()
     XnuScheduler scheduler { guest_ticks_per_second /
                                  xnu::scheduler::default_preemption_rate,
         guest_ticks_per_second / xnu::scheduler::scheduler_ticks_per_second,
-        guest_processor_count, guest_ticks_per_second };
+        guest_processor_count, guest_ticks_per_second,
+        darwin_abi.thread_priority_floor == DarwinThreadPriorityFloor::Throttle
+            ? 4 : xnu::scheduler::minimum_priority };
     GuestExecutionPolicy guest_execution_policy { std::chrono::nanoseconds {
         static_cast<std::int64_t>(
             iokit_abi::display_vsync::period_absolute_time) } };
@@ -2033,20 +2035,13 @@ void EmulatorSession::run()
                 }
             });
         runtime.kernel->set_legacy_thread_policy_handler(
-            [runtime_ptr, &scheduler](std::size_t processor,
-                std::uint32_t policy, std::int32_t base_priority, bool) {
-                using namespace darwin::mach::thread_policy;
-                const XnuThreadId thread { runtime_ptr->kernel->process().pid,
-                    static_cast<std::uint32_t>(processor) };
-                const auto timeshare = policy == legacy_timeshare_policy;
-                if (!timeshare && policy != legacy_round_robin_policy &&
-                    policy != legacy_fifo_policy) {
-                    return false;
-                }
-                return scheduler.set_timeshare(thread, timeshare) &&
-                       scheduler.set_precedence(thread,
-                           runtime_ptr->kernel->process().thread_base_priority,
-                           base_priority - runtime_ptr->kernel->process().thread_base_priority);
+            [&runtime_index, &scheduler](std::uint32_t pid, std::uint32_t processor,
+                std::uint32_t policy, std::int32_t priority) {
+                const auto* target = runtime_index.find(pid);
+                return target && scheduler.set_legacy_policy(
+                    XnuThreadId { pid, processor },
+                    policy == darwin::mach::thread_policy::legacy_timeshare_policy,
+                    target->kernel->process().thread_base_priority, priority);
             });
         runtime.kernel->set_thread_qos_override_handler(
             [runtime_ptr, &scheduler](std::size_t processor,
