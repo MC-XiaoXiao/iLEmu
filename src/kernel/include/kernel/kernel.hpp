@@ -108,6 +108,8 @@ public:
         std::uint32_t, std::uint32_t, const darwin::arm_thread::GeneralState&)>;
     using ThreadPointerUpdateHandler = std::function<bool(
         std::uint32_t, std::uint32_t, std::optional<std::uint32_t>)>;
+    using ThreadAbortHandler =
+        std::function<bool(std::uint32_t, std::uint32_t, bool)>;
     using ThreadRunnableHandler =
         std::function<bool(std::uint32_t, std::uint32_t, bool)>;
     using ProcessRunnableHandler =
@@ -210,6 +212,10 @@ public:
     {
         thread_pointer_update_handler_ = std::move(handler);
     }
+    void set_thread_abort_handler(ThreadAbortHandler handler)
+    {
+        thread_abort_handler_ = std::move(handler);
+    }
     void set_thread_runnable_handler(ThreadRunnableHandler handler)
     {
         thread_runnable_handler_ = std::move(handler);
@@ -270,6 +276,8 @@ public:
     void clear_thread_pthread_state(std::size_t processor);
     // Called by serialized kernel/runtime lifecycle paths before slot reuse.
     void retire_thread_continuations(std::size_t processor);
+    // Caller owns serial kernel dispatch, as for thread retirement.
+    bool abort_thread(Cpu& cpu, bool safely, bool kernel_entry_pending);
 
     void set_thread_policy_handler(ThreadPolicyHandler handler)
     {
@@ -752,6 +760,9 @@ private:
         std::optional<std::uint32_t> receive_address, std::unique_lock<std::mutex>& mach_lock,
         bool scheduler_completion = false);
     bool complete_pending_mach_send(Cpu& cpu);
+    bool complete_thread_abort(Cpu& cpu);
+    void complete_timer(Cpu& cpu, const PendingTimer& pending,
+        std::uint32_t result);
     [[nodiscard]] bool mach_receive_poll_required_locked(
         const PendingMachReceive& pending, std::uint64_t now) const;
     bool deliver_pending_mach_if_ready_locked(
@@ -1007,6 +1018,7 @@ private:
     ThreadStateQuery thread_state_query_;
     ThreadStateUpdateHandler thread_state_update_handler_;
     ThreadPointerUpdateHandler thread_pointer_update_handler_;
+    ThreadAbortHandler thread_abort_handler_;
     ThreadRunnableHandler thread_runnable_handler_;
     ProcessRunnableHandler process_runnable_handler_;
     ProcessSocketsShutdownHandler process_sockets_shutdown_handler_;
@@ -1029,6 +1041,7 @@ private:
     TaskMemoryShareQuery task_memory_share_query_;
     std::map<std::size_t, SchedulerYieldRequest> scheduler_yields_;
     std::map<std::size_t, XnuThreadId> scheduler_handoffs_;
+    std::set<std::size_t> pending_thread_aborts_;
     std::map<std::size_t, PendingWait> pending_waits_;
     std::map<std::size_t, PendingMachSend> pending_mach_sends_;
     std::map<std::size_t, PendingMachReceive> pending_mach_receives_;

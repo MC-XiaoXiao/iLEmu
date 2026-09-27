@@ -960,6 +960,7 @@ void CompatibilityKernel::prepare_exec(std::size_t processor_id)
     thread_ports_.emplace(processor_id, current_thread_port);
     last_delivered_graphics_inputs_.clear();
     disabled_thread_signals_.clear();
+    pending_thread_aborts_.clear();
     pending_waits_.clear();
     {
         std::lock_guard mach_lock { shared_state_->mach_mutex };
@@ -1500,6 +1501,8 @@ bool CompatibilityKernel::deliver_pending_event(Cpu& cpu)
                 processor, io_generation, mach_generation);
         }
     }
+    if (!pending_thread_aborts_.empty())
+        delivered = complete_thread_abort(cpu) || delivered;
     refresh_pending_event_processor_locked(processor);
     return delivered;
 }
@@ -1794,6 +1797,32 @@ CompatibilityKernel::take_last_delivered_graphics_input(std::size_t processor)
     return sequence;
 }
 
+void CompatibilityKernel::complete_timer(Cpu& cpu, const PendingTimer& pending,
+    std::uint32_t result)
+{
+    if (pending.kind == PendingTimerKind::ClockSleep &&
+        pending.wakeup_time_address) {
+        const auto now = pending.calendar_clock
+                             ? shared_state_->clock.wall_time()
+                             : shared_state_->clock.now();
+        const auto seconds = static_cast<std::uint32_t>(
+            now / darwin::mach::clock::nanoseconds_per_second);
+        const auto nanoseconds = static_cast<std::uint32_t>(
+            now % darwin::mach::clock::nanoseconds_per_second);
+        // XNU clock_sleep_trap deliberately ignores copyout's result.
+        static_cast<void>(memory_.write32(
+            *pending.wakeup_time_address +
+                darwin::mach::clock::timespec_seconds_offset,
+            seconds));
+        static_cast<void>(memory_.write32(
+            *pending.wakeup_time_address +
+                darwin::mach::clock::timespec_nanoseconds_offset,
+            nanoseconds));
+    }
+    cpu.registers()[0] = result;
+    cpu.clear_halt();
+}
+
 bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
 {
     bool timer_topology_changed = false;
@@ -2063,27 +2092,7 @@ bool CompatibilityKernel::deliver_pending_io_locked(Cpu& cpu)
                           std::to_string(process_.pid) + " service=" +
                           pending.bootstrap_retry->service_name + "\n");
         }
-        if (pending.kind == PendingTimerKind::ClockSleep &&
-            pending.wakeup_time_address) {
-            const auto now = pending.calendar_clock
-                                 ? shared_state_->clock.wall_time()
-                                 : shared_state_->clock.now();
-            const auto seconds = static_cast<std::uint32_t>(
-                now / darwin::mach::clock::nanoseconds_per_second);
-            const auto nanoseconds = static_cast<std::uint32_t>(
-                now % darwin::mach::clock::nanoseconds_per_second);
-            // XNU clock_sleep_trap deliberately ignores copyout's result.
-            static_cast<void>(memory_.write32(
-                *pending.wakeup_time_address +
-                    darwin::mach::clock::timespec_seconds_offset,
-                seconds));
-            static_cast<void>(memory_.write32(
-                *pending.wakeup_time_address +
-                    darwin::mach::clock::timespec_nanoseconds_offset,
-                nanoseconds));
-        }
-        cpu.registers()[0] = darwin::mach::success;
-        cpu.clear_halt();
+        complete_timer(cpu, pending, darwin::mach::success);
         return true;
     }
     if (const auto pending = pending_selects_.find(cpu.processor_id());
@@ -2942,6 +2951,8 @@ void CompatibilityKernel::dispatch(Cpu& cpu, std::uint32_t svc_immediate)
             dispatch_bsd(cpu, static_cast<std::uint32_t>(number));
         }
     }
+    if (!pending_thread_aborts_.empty())
+        static_cast<void>(complete_thread_abort(cpu));
     refresh_pending_event_processor_locked(cpu.processor_id());
 }
 

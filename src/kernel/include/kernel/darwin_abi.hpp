@@ -171,6 +171,8 @@ namespace mig {
 } // namespace mig
 
 namespace mach_message {
+    inline constexpr std::uint32_t send_interrupted = 0x1000'0007U;
+    inline constexpr std::uint32_t receive_interrupted = 0x1000'4005U;
     inline constexpr std::uint32_t option_send = 0x0000'0001U;
     inline constexpr std::uint32_t option_receive = 0x0000'0002U;
     inline constexpr std::uint32_t option_send_timeout = 0x0000'0010U;

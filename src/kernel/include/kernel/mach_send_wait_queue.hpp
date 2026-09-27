@@ -19,7 +19,7 @@ namespace ilemu {
 // All mutation requires mach_mutex; readiness alone is read without the lock.
 template <class Message> class MachSendWaitQueue {
 public:
-    enum class State { Waiting, Granted, TimedOut, Destroyed, Cancelled };
+    enum class State { Waiting, Granted, TimedOut, Interrupted, Destroyed, Cancelled };
     struct Ticket {
         Message message;
         std::uint32_t task, processor, destination;

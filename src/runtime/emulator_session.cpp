@@ -1444,6 +1444,9 @@ void EmulatorSession::run()
     std::array<std::atomic<std::uint64_t>, jit_precompile_target_count>
         precompile_blocks_by_target { };
     auto file_mapping_preparer = std::make_shared<HostFileMappingPreparer>();
+    // A captured deferred SVC has entered the kernel even before its serial
+    // dispatch. Track the uncommitted suffix without per-slice allocation.
+    std::span<const PreparedGuestSlice> pending_kernel_entries;
     std::function<void(Runtime&)> configure_runtime;
     configure_runtime = [&](Runtime& runtime) {
         auto* runtime_ptr = &runtime;
@@ -1610,6 +1613,24 @@ void EmulatorSession::run()
                     return false;
                 }
                 runtime->cpus->cpu(slot).set_cthread_self(cthread_self);
+                return true;
+            });
+        runtime.kernel->set_thread_abort_handler(
+            [&runtime_index, &scheduler, &pending_kernel_entries](
+                std::uint32_t pid, std::uint32_t slot, bool safely) {
+                auto* target = runtime_index.find(pid);
+                if (!target || slot >= target->cpus->size() ||
+                    slot >= target->allocated.size() || !target->allocated[slot])
+                    return false;
+                const auto entry_pending = std::any_of(
+                    pending_kernel_entries.begin(), pending_kernel_entries.end(),
+                    [target, slot](const auto& entry) {
+                        return entry.runtime == target && entry.thread_index == slot &&
+                               entry.deferred_svc && entry.execution.result.svc;
+                    });
+                if (target->kernel->abort_thread(
+                        target->cpus->cpu(slot), safely, entry_pending))
+                    static_cast<void>(scheduler.wake_thread({ pid, slot }));
                 return true;
             });
         runtime.kernel->set_thread_runnable_handler(
@@ -3798,7 +3819,9 @@ void EmulatorSession::run()
 
         const bool ran_thread = !prepared_slices.empty();
         std::uint64_t scheduler_round_ticks = 0;
+        pending_kernel_entries = prepared_slices;
         for (auto& prepared : prepared_slices) {
+            pending_kernel_entries = pending_kernel_entries.subspan(1);
             if (prepared.execution.error)
                 std::rethrow_exception(prepared.execution.error);
             const auto scheduled =

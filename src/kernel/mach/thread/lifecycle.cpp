@@ -34,7 +34,11 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
     const auto resumes =
         request.identifier ==
         mig_message_id(xnu::mig::thread_act::Routine::thread_resume);
-    if (!terminates && !suspends && !resumes) {
+    const auto aborts = request.identifier ==
+        mig_message_id(xnu::mig::thread_act::Routine::thread_abort);
+    const auto aborts_safely = request.identifier ==
+        mig_message_id(xnu::mig::thread_act::Routine::thread_abort_safely);
+    if (!terminates && !suspends && !resumes && !aborts && !aborts_safely) {
         return false;
     }
 
@@ -61,9 +65,17 @@ bool CompatibilityKernel::dispatch_mach_thread_lifecycle_message(
             cpu.request_guest_preemption();
         }
     }
+    if ((aborts || aborts_safely) && target && thread_abort_handler_ &&
+        thread_abort_handler_(target->first, target->second, aborts_safely)) {
+        kernel_result = darwin::mach::success;
+        if (scheduler_preemption_query_ &&
+            scheduler_preemption_query_(cpu.processor_id()))
+            cpu.request_guest_preemption();
+    }
     if (!terminates) {
         output_.write("[thread] " +
-                      std::string(resumes ? "resume" : "suspend") +
+                      std::string(aborts ? "abort" : aborts_safely ? "abort-safely"
+                                                : resumes ? "resume" : "suspend") +
                       " caller=" + std::to_string(process_.pid) +
                       " target=" + std::to_string(target ? target->first : 0U) +
                       ":" + std::to_string(target ? target->second : 0U) +

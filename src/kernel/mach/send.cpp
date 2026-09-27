@@ -376,7 +376,8 @@ bool CompatibilityKernel::complete_pending_mach_send(Cpu& cpu)
     cpu.clear_halt();
     process_.waiting_for_events = false;
     auto& message = pending.ticket->message;
-    if (state == State::Waiting || state == State::TimedOut) {
+    if (state == State::Waiting || state == State::TimedOut ||
+        state == State::Interrupted) {
         const auto descriptors =
             mach_transport::preflight_copyin_descriptors(message.bytes);
         const auto original_name = read_little_word(
@@ -388,8 +389,9 @@ bool CompatibilityKernel::complete_pending_mach_send(Cpu& cpu)
                 pending.ticket->destination, xnu::ipc::Right::Send);
         mach_transport::PseudoCopyout::write_back(
             memory_, pending.arguments[0], message.bytes);
-        if ((pending.arguments[1] & darwin::mach_message::option_send_notify) !=
-            0U) {
+        if (state != State::Interrupted &&
+            (pending.arguments[1] & darwin::mach_message::option_send_notify) !=
+                0U) {
             const auto notify =
                 shared_state_->mach_dead_name_notifications.find(
                     std::pair { process_.pid, original_name });
@@ -400,7 +402,9 @@ bool CompatibilityKernel::complete_pending_mach_send(Cpu& cpu)
                     pending.ticket->destination);
             }
         }
-        registers[0] = darwin::mach_message::send_timed_out | error;
+        registers[0] = (state == State::Interrupted
+                           ? darwin::mach_message::send_interrupted
+                           : darwin::mach_message::send_timed_out) | error;
         return true;
     }
     if (state == State::Cancelled)
