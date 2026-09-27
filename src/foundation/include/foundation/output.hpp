@@ -25,6 +25,9 @@ public:
     // guest tracing cannot become part of the emulation hot path. Diagnostic
     // commands can retain the constructor's verbose default.
     void set_verbose(bool verbose) { verbose_ = verbose; }
+    // Query the same filter before formatting a costly diagnostic. A prefix
+    // is sufficient when the complete message has the same output category.
+    [[nodiscard]] bool enabled(std::string_view text) const;
     void write(std::string_view text);
     void line(std::string_view text);
     // Emit one explicitly requested low-volume control/attribution marker.
@@ -34,8 +37,6 @@ public:
     void marker(std::string_view text);
 
 private:
-    [[nodiscard]] bool should_emit(std::string_view text) const;
-
     std::unique_ptr<std::ofstream> file_;
     std::ostream* stream_ { };
     bool flush_each_write_ { true };

@@ -102,8 +102,10 @@ std::optional<ReceivedMessage> prepare_received_message(
     ReceivedMessage result;
     result.message_size = message.bytes.size();
     result.trailer_size = requested_trailer_size(receive_options, context_width);
-    result.bytes = message.bytes;
     const auto aligned_size = (result.message_size + 3U) & ~std::size_t { 3U };
+    result.bytes.reserve(aligned_size + result.trailer_size);
+    result.bytes.insert(
+        result.bytes.end(), message.bytes.begin(), message.bytes.end());
     result.bytes.resize(aligned_size + result.trailer_size, std::byte { 0 });
 
     const auto send_bits =

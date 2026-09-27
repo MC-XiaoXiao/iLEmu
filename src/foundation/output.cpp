@@ -69,7 +69,7 @@ Output::Output(const std::filesystem::path& path)
 
 void Output::write(std::string_view text)
 {
-    if (!should_emit(text))
+    if (!enabled(text))
         return;
     std::lock_guard lock { mutex_ };
     stream_->write(text.data(), static_cast<std::streamsize>(text.size()));
@@ -79,7 +79,7 @@ void Output::write(std::string_view text)
 
 void Output::line(std::string_view text)
 {
-    if (!should_emit(text))
+    if (!enabled(text))
         return;
     std::lock_guard lock { mutex_ };
     stream_->write(text.data(), static_cast<std::streamsize>(text.size()));
@@ -93,7 +93,7 @@ void Output::line(std::string_view text)
 
 void Output::marker(std::string_view text)
 {
-    if (!should_emit(text))
+    if (!enabled(text))
         return;
     std::lock_guard lock { mutex_ };
     stream_->write(text.data(), static_cast<std::streamsize>(text.size()));
@@ -101,7 +101,7 @@ void Output::marker(std::string_view text)
     stream_->flush();
 }
 
-bool Output::should_emit(std::string_view text) const
+bool Output::enabled(std::string_view text) const
 {
     return verbose_ || text.empty() || text.front() != '[' ||
            concise_prefix(text);

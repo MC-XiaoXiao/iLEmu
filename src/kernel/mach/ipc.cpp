@@ -818,10 +818,12 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         }
         write_little_word(
             received->bytes, array.descriptor_offset, copied_address);
-        output_.write(
-            "[mach] ool-ports-copy receiver=" + std::to_string(process_.pid) +
-            " count=" + std::to_string(array.count) +
-            " address=" + std::to_string(copied_address) + "\n");
+        if (output_.enabled("[mach]")) {
+            output_.write(
+                "[mach] ool-ports-copy receiver=" + std::to_string(process_.pid) +
+                " count=" + std::to_string(array.count) +
+                " address=" + std::to_string(copied_address) + "\n");
+        }
     }
 
     for (const auto& payload : pending_message.ool_payloads) {
@@ -849,10 +851,12 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
             received->bytes[payload.descriptor_offset + byte] =
                 static_cast<std::byte>(copied_address >> (byte * 8U));
         }
-        output_.write(
-            "[mach] ool-copy receiver=" + std::to_string(process_.pid) +
-            " bytes=" + std::to_string(payload.bytes.size()) +
-            " address=" + std::to_string(copied_address) + "\n");
+        if (output_.enabled("[mach]")) {
+            output_.write(
+                "[mach] ool-copy receiver=" + std::to_string(process_.pid) +
+                " bytes=" + std::to_string(payload.bytes.size()) +
+                " address=" + std::to_string(copied_address) + "\n");
+        }
 
     }
 
@@ -901,15 +905,17 @@ CompatibilityKernel::receive_mach_message_locked(PendingMachReceive& receive,
         release_inflight_send_right_locked(
             *shared_state_, *delivered_destination_send_object);
     }
-    output_.write(
-        "[mach] deliver sender=" + std::to_string(delivered_sender_pid) +
-        " receiver=" + std::to_string(process_.pid) +
-        " port=" + std::to_string(queued_port) +
-        " id=" + std::to_string(received->message_id) +
-        mig_message_label(received->message_id) +
-        " header=" + std::to_string(received->caller_header_size) +
-        " bytes=" + std::to_string(received->message_size) +
-        " trailer=" + std::to_string(received->trailer_size) + "\n");
+    if (output_.enabled("[mach]")) {
+        output_.write(
+            "[mach] deliver sender=" + std::to_string(delivered_sender_pid) +
+            " receiver=" + std::to_string(process_.pid) +
+            " port=" + std::to_string(queued_port) +
+            " id=" + std::to_string(received->message_id) +
+            mig_message_label(received->message_id) +
+            " header=" + std::to_string(received->caller_header_size) +
+            " bytes=" + std::to_string(received->message_size) +
+            " trailer=" + std::to_string(received->trailer_size) + "\n");
+    }
     const auto copied =
         memory_.accessible(receive.message_address, received->bytes.size(),
             MemoryPermission::Write) &&

@@ -330,12 +330,12 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
                 " value=" + std::to_string(update->value) + "\n");
         }
     }
-    if (transferred_receive) {
+    if (transferred_receive && output_.enabled("[mach]")) {
         output_.write("[mach] move-receive in-transit port=" +
                       std::to_string(*transferred_receive) +
                       " from=" + std::to_string(process_.pid) + "\n");
     }
-    if (!kernel_service_handled)
+    if (!kernel_service_handled && output_.enabled("[mach]"))
         output_.write("[mach] enqueue sender=" + std::to_string(process_.pid) +
                       " port=" + std::to_string(remote_port) +
                       " object=" + std::to_string(remote_object) +
