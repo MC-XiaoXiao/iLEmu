@@ -677,8 +677,6 @@ private:
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_task_vm_message(
         Cpu& cpu, const MachMessageRequest& request);
-    [[nodiscard]] bool dispatch_mach_task_enumeration_message(
-        Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_task_info_message(
         Cpu& cpu, const MachMessageRequest& request);
     [[nodiscard]] bool dispatch_mach_exception_ports_message(

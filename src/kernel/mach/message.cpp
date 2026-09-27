@@ -37,6 +37,7 @@
 #include "network/darwin_route_socket.hpp"
 
 #include "host/service_ports.hpp"
+#include "task/enumeration.hpp"
 #include "task/lifecycle.hpp"
 #include "thread/policy.hpp"
 #include "transport/port_copyin.hpp"
@@ -170,7 +171,21 @@ void CompatibilityKernel::dispatch_mach_message(
             }
         }
     }
-    const bool task_service_request = task_mig::Lifecycle::handles(*message_id);
+    if (task_mig::Enumeration::handles(*message_id) &&
+        pending_mach_receives_.empty()) {
+        bool enqueued;
+        {
+            std::lock_guard lock { shared_state_->mach_mutex };
+            enqueued = task_mig::Enumeration::try_synchronous_enqueue_locked(
+                memory_, *shared_state_, process_, registers, *bits, *local_port);
+        }
+        if (enqueued) {
+            begin_mach_receive(cpu, receive_address);
+            return;
+        }
+    }
+    const bool task_service_request = task_mig::Lifecycle::handles(*message_id) ||
+                                      task_mig::Enumeration::handles(*message_id);
     const bool thread_policy_request = thread_mig::Policy::handles(*message_id);
     if (!separate_receive && !clock_service_request && !host_service_request &&
         !task_service_request && !thread_policy_request) {
@@ -182,7 +197,6 @@ void CompatibilityKernel::dispatch_mach_message(
             dispatch_mach_processor_message(cpu, request) ||
             dispatch_mach_port_message(cpu, request) ||
             dispatch_mach_port_context_message(cpu, request) ||
-            dispatch_mach_task_enumeration_message(cpu, request) ||
             dispatch_mach_task_info_message(cpu, request) ||
             dispatch_mach_exception_ports_message(cpu, request) ||
             dispatch_mach_thread_lifecycle_message(cpu, request) ||

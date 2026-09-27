@@ -2,171 +2,103 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 //
-// Enumerate guest tasks, threads and registered task ports.
-//
-// Apple public ABI/behavior references (guest profiles may differ):
-// https://github.com/apple-oss-distributions/xnu/blob/xnu-792.24.17/osfmk/mach/task.defs
+// XNU task_threads returns an OOL array of newly made thread send rights.
+// Copyout belongs to the actual receiver, not the task issuing the request.
 
-#include "kernel/kernel.hpp"
-
-#include "mach/mig_wire_abi.hpp"
-#include "mach/task_mig_ids.hpp"
+#include "enumeration.hpp"
+#include "../transport/kernel_reply.hpp"
 
 #include <array>
-#include <cstddef>
-#include <cstdint>
-#include <mutex>
-#include <span>
 #include <vector>
 
-#include "../support.hpp"
-
-namespace ilemu {
-namespace {
-
-    using namespace mach_support;
-
-    constexpr std::uint32_t mach_message_success = 0;
-    constexpr std::uint32_t mach_receive_invalid_data = 0x10004008U;
-    constexpr std::uint32_t kernel_invalid_argument = 4;
-    constexpr std::uint32_t kernel_resource_shortage = 3;
-    constexpr std::uint32_t complex_move_send_once = 0x80000012U;
-    constexpr std::uint32_t complex_ool_ports_reply_size = 52;
-    constexpr std::uint32_t simple_reply_size = 36;
-
-    bool write_words(AddressSpace& memory, std::uint32_t address,
-        std::span<const std::uint32_t> words)
-    {
-        for (std::size_t index = 0; index < words.size(); ++index) {
-            if (!memory.write32(address + static_cast<std::uint32_t>(
-                                              index * sizeof(std::uint32_t)),
-                    words[index])) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-} // namespace
-
-bool CompatibilityKernel::dispatch_mach_task_enumeration_message(
-    Cpu& cpu, const MachMessageRequest& request)
+namespace ilemu::task_mig {
+bool Enumeration::try_synchronous_enqueue_locked(AddressSpace& memory,
+    KernelSharedState& state, const ProcessContext& process,
+    std::span<const std::uint32_t> registers, std::uint32_t bits,
+    std::uint32_t reply_name)
 {
-    const auto message_id = request.identifier;
-    if (message_id !=
-        mig_message_id(xnu::mig::task::Routine::task_threads)) {
+    using namespace mach_support;
+    constexpr auto send_receive = darwin::mach_message::option_send |
+                                  darwin::mach_message::option_receive;
+    constexpr auto options = send_receive |
+                             darwin::mach_message::option_send_timeout |
+                             darwin::mach_message::option_receive_timeout |
+                             darwin::mach_message::option_receive_large;
+    if (bits != (darwin::mig_wire::disposition_copy_send |
+                    (darwin::mig_wire::disposition_make_send_once << 8U)) ||
+        (registers[1] & send_receive) != send_receive ||
+        (registers[1] & ~options) != 0U || registers[2] != 24U ||
+        registers[3] < 60U || registers[4] != reply_name)
         return false;
-    }
-
-    auto& registers = cpu.registers();
-    if (registers[3] < simple_reply_size) {
-        registers[0] = mach_receive_invalid_data;
-        return true;
-    }
-
-    std::vector<std::uint32_t> thread_names;
-    std::uint32_t result = mach_message_success;
-    {
-        std::lock_guard mach_lock { shared_state_->mach_mutex };
-        const auto target_pid = target_task_for_port(
-            *shared_state_, process_.pid, request.remote_port);
-        const auto target_threads =
-            target_pid
-                ? shared_state_->task_thread_port_objects.find(*target_pid)
-                : shared_state_->task_thread_port_objects.end();
-        if (!target_pid ||
-            target_threads == shared_state_->task_thread_port_objects.end()) {
-            result = kernel_invalid_argument;
-        } else {
-            thread_names.reserve(target_threads->second.size());
-            for (const auto& [slot, object] : target_threads->second) {
-                static_cast<void>(slot);
-                const auto name =
-                    shared_state_->mach_namespaces.copyout(process_.pid, object,
-                        xnu::ipc::type_mask(xnu::ipc::Right::Send));
-                if (!name) {
-                    result = kernel_resource_shortage;
-                    thread_names.clear();
-                    break;
-                }
-                thread_names.push_back(*name);
-            }
-        }
-    }
-
-    if (result != mach_message_success ||
-        registers[3] < complex_ool_ports_reply_size) {
-        const std::array<std::uint32_t,
-            simple_reply_size / sizeof(std::uint32_t)>
-            reply {
-                darwin::mig_wire::message_bits(
-                    darwin::mig_wire::disposition_move_send_once),
-                simple_reply_size,
-                request.local_port,
-                0,
-                0,
-                message_id + 100,
-                0,
-                1,
-                result != mach_message_success ? result
-                                               : kernel_resource_shortage,
-            };
-        registers[0] = write_words(memory_, request.address, reply)
-                           ? mach_message_success
-                           : mach_receive_invalid_data;
-        return true;
-    }
-
-    std::uint32_t array_address = 0;
-    if (!thread_names.empty()) {
-        const auto byte_count = static_cast<std::uint32_t>(
-            thread_names.size() * sizeof(std::uint32_t));
-        const auto mapped_size = (byte_count + AddressSpace::page_size - 1U) &
-                                 ~(AddressSpace::page_size - 1U);
-        const auto region =
-            find_free_guest_region(memory_, ool_results_base, mapped_size);
-        if (!region || !memory_.map(*region, mapped_size,
-                           MemoryPermission::Read | MemoryPermission::Write)) {
-            registers[0] = mach_receive_invalid_data;
-            return true;
-        }
-        array_address = *region;
-        for (std::size_t index = 0; index < thread_names.size(); ++index) {
-            if (!memory_.write32(
-                    array_address + static_cast<std::uint32_t>(
-                                        index * sizeof(std::uint32_t)),
-                    thread_names[index])) {
-                registers[0] = mach_receive_invalid_data;
-                return true;
-            }
-        }
-    }
-
-    const auto count = static_cast<std::uint32_t>(thread_names.size());
-    const std::array<std::uint32_t,
-        complex_ool_ports_reply_size / sizeof(std::uint32_t)>
-        reply {
-            complex_move_send_once,
-            complex_ool_ports_reply_size,
-            request.local_port,
-            0,
-            0,
-            message_id + 100,
-            1,
-            array_address,
-            count,
-            darwin::mig_wire::ool_ports_descriptor_metadata(
-                darwin::mig_wire::disposition_move_send, true),
-            0,
-            1,
-            count,
-        };
-    registers[0] = write_words(memory_, request.address, reply)
-                       ? mach_message_success
-                       : mach_receive_invalid_data;
-    output_.write("[mach] task_threads caller=" + std::to_string(process_.pid) +
-                  " count=" + std::to_string(count) + "\n");
-    return true;
+    const auto target = memory.read32(registers[0] + 8U);
+    const auto object = target ? resolve_name_with_right(
+        state, process.pid, *target, xnu::ipc::Right::Send) : std::nullopt;
+    if (!object || !state.task_port_pids.contains(*object))
+        return false;
+    const auto reply = resolve_name_with_right(
+        state, process.pid, reply_name, xnu::ipc::Right::Receive);
+    if (!reply || !state.mach_port_objects.contains(*reply) ||
+        state.mach_port_set_links_by_member.contains(*reply))
+        return false;
+    const auto queue = state.mach_queues.find(*reply);
+    if (queue == state.mach_queues.end() || !queue->second.empty())
+        return false;
+    KernelSharedState::MachMessage request;
+    request.bytes.resize(24U);
+    if (!memory.copy_out(registers[0], request.bytes))
+        return false;
+    // COPY_SEND never consumes the task right. MAKE_SEND_ONCE is produced
+    // directly in transit under mach_mutex, as in ipc_kobject_server.
+    // Keep the shared queue/receiver responsible for OOL names, VM and faults.
+    request.reply_object = reply;
+    request.reply_right = xnu::ipc::Right::SendOnce;
+    return dispatch_locked(state, *object, request).has_value();
 }
 
-} // namespace ilemu
+std::optional<std::uint32_t> Enumeration::dispatch_locked(KernelSharedState& state,
+    std::uint32_t object, KernelSharedState::MachMessage& request)
+{
+    using namespace mach_support;
+    constexpr auto identifier =
+        xnu::mig::task::id(xnu::mig::task::Routine::task_threads);
+    const auto error = [&](std::uint32_t result) {
+        const std::array<std::uint32_t, 3> payload { 0U, 1U, result };
+        return mach_ipc::enqueue_kernel_reply_locked(
+            state, request, identifier, payload);
+    };
+    if (request.bytes.size() != darwin::mig_wire::message_header_size ||
+        (read_little_word(request.bytes, 0U) &
+            darwin::mig_wire::message_complex_bit) != 0U)
+        return error(darwin::mig::bad_arguments);
+    const auto task = state.task_port_pids.find(object);
+    if (task == state.task_port_pids.end())
+        return error(darwin::mach::invalid_argument);
+    const auto process = state.processes.find(task->second);
+    if (process == state.processes.end() || process->second.exited)
+        return error(darwin::mach::failure);
+
+    using Message = KernelSharedState::MachMessage;
+    std::vector<Message::PortTransfer> ports;
+    const auto threads = state.task_thread_port_objects.find(task->second);
+    if (threads != state.task_thread_port_objects.end()) {
+        ports.reserve(threads->second.size());
+        for (const auto& [slot, thread] : threads->second) {
+            static_cast<void>(slot);
+            ports.push_back({ .descriptor_offset = 28U, .sender_name = 0U,
+                .array_index = static_cast<std::uint32_t>(ports.size()),
+                .object = thread, .right = xnu::ipc::Right::Send,
+                .disposition = darwin::mig_wire::disposition_move_send });
+        }
+    }
+    const auto count = static_cast<std::uint32_t>(ports.size());
+    const std::array<std::uint32_t, 7> payload { 1U, 0U, count,
+        darwin::mig_wire::ool_ports_descriptor_metadata(
+            darwin::mig_wire::disposition_move_send, true),
+        0U, 1U, count };
+    const std::array<Message::OolPortArray, 1> arrays { {
+        { .descriptor_offset = 28U, .count = count, .dead_elements = { } }
+    } };
+    return mach_ipc::enqueue_kernel_reply_locked(
+        state, request, identifier, payload, ports, arrays);
+}
+} // namespace ilemu::task_mig

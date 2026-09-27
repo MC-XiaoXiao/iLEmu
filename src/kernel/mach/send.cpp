@@ -37,6 +37,7 @@
 #include "network/darwin_route_socket.hpp"
 
 #include "host/service_ports.hpp"
+#include "task/enumeration.hpp"
 #include "task/lifecycle.hpp"
 #include "thread/policy.hpp"
 #include "transport/copyin_cleanup.hpp"
@@ -239,7 +240,9 @@ void CompatibilityKernel::post_mach_send(Cpu& cpu,
     routed_reply_object = reply_object;
     if (kernel_service) {
         kernel_service_handled = true;
-        const auto destination = task_mig::Lifecycle::handles(message_id)
+        const auto destination = task_mig::Enumeration::handles(message_id)
+            ? task_mig::Enumeration::dispatch_locked(*shared_state_, remote_object, queued)
+            : task_mig::Lifecycle::handles(message_id)
             ? task_mig::Lifecycle::dispatch_locked(*shared_state_, process_.pid,
                   remote_object, queued, task_suspended)
             : thread_mig::Policy::handles(message_id)

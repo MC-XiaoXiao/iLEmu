@@ -47,7 +47,8 @@ inline std::uint32_t copyout_kernel_reply_locked(AddressSpace& memory,
 inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
     KernelSharedState& state, KernelSharedState::MachMessage& request,
     std::uint32_t identifier, std::span<const std::uint32_t> payload,
-    std::span<const KernelSharedState::MachMessage::PortTransfer> ports = { })
+    std::span<const KernelSharedState::MachMessage::PortTransfer> ports = { },
+    std::span<const KernelSharedState::MachMessage::OolPortArray> arrays = { })
 {
     using namespace mach_support;
     const auto destination = request.reply_object;
@@ -71,7 +72,7 @@ inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
         darwin::mig_wire::message_header_size + payload.size_bytes());
     const auto disposition = *right == xnu::ipc::Right::Send ? 17U : 18U;
     const std::uint32_t header[] { disposition |
-            (ports.empty() ? 0U : darwin::mig_wire::message_complex_bit),
+            (ports.empty() && arrays.empty() ? 0U : darwin::mig_wire::message_complex_bit),
         static_cast<std::uint32_t>(reply.bytes.size()), *destination, 0, 0,
         identifier + 100U };
     for (std::size_t i = 0; i < 6; ++i)
@@ -79,6 +80,7 @@ inline std::optional<std::uint32_t> enqueue_kernel_reply_locked(
     for (std::size_t i = 0; i < payload.size(); ++i)
         write_little_word(reply.bytes, 24U + i * 4U, payload[i]);
     reply.port_transfers.assign(ports.begin(), ports.end());
+    reply.ool_port_arrays.assign(arrays.begin(), arrays.end());
     for (const auto& port : ports) {
         // Newly produced Send rights become message-held only after a live
         // reply destination exists; receiver copyout installs the user refs.
