@@ -87,6 +87,8 @@ public:
         TaskId task, MachName name) const;
     [[nodiscard]] std::optional<MachName> name_for(
         TaskId task, MachObject object) const;
+    [[nodiscard]] std::optional<MachName> name_for(
+        TaskId task, MachObject object, Right right) const;
     [[nodiscard]] std::optional<MachTypeMask> type(
         TaskId task, MachName name) const;
     [[nodiscard]] bool owns_right(

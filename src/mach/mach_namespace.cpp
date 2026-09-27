@@ -239,6 +239,24 @@ std::optional<MachName> MachNamespaceTable::name_for(
                                     : std::nullopt;
 }
 
+std::optional<MachName> MachNamespaceTable::name_for(
+    TaskId task, MachObject object, Right right) const
+{
+    const auto space = spaces_.find(task);
+    if (space == spaces_.end())
+        return std::nullopt;
+    const auto names = indexed_names(space->second, object);
+    if (names) {
+        for (const auto name : *names) {
+            const auto entry = space->second.entries.find(name);
+            if (entry != space->second.entries.end() &&
+                (entry->second.type & type_mask(right)) != 0U)
+                return name;
+        }
+    }
+    return std::nullopt;
+}
+
 std::optional<MachTypeMask> MachNamespaceTable::type(
     TaskId task, MachName name) const
 {
