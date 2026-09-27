@@ -37,6 +37,7 @@
 #include "network/darwin_route_socket.hpp"
 
 #include "host/service_ports.hpp"
+#include "transport/port_copyin.hpp"
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -814,32 +815,14 @@ void CompatibilityKernel::dispatch_mach_message(
                 std::optional<std::uint32_t> voucher_object;
                 std::optional<xnu::ipc::Right> voucher_right;
                 std::optional<std::uint32_t> destination_send_object;
-                bool named_dead_reply = false;
                 std::uint32_t reply_disposition = 0;
                 std::uint32_t voucher_disposition = 0;
                 std::vector<KernelSharedState::MachMessage::PortTransfer>
                     port_transfers;
-                const auto capture =
-                    [&](std::uint32_t name, std::uint32_t disposition,
-                        std::uint32_t offset,
-                        std::optional<std::uint32_t> array_index = { })
-                    -> std::optional<
-                        KernelSharedState::MachMessage::PortTransfer> {
-                    const auto source =
-                        source_right_for_disposition(disposition);
-                    const auto result_right =
-                        right_for_disposition(disposition);
-                    if (!source || !result_right)
-                        return std::nullopt;
-                    const auto object = resolve_name_with_right(
-                        *shared_state_, process_.pid, name, *source);
-                    if (!object)
-                        return std::nullopt;
-                    return KernelSharedState::MachMessage::PortTransfer {
-                        offset, name, array_index, *object, *result_right,
-                        disposition
-                    };
-                };
+                std::vector<KernelSharedState::MachMessage::PortTransfer>
+                    dead_transfers;
+                const mach_transport::PortCopyin copyin {
+                    *shared_state_, process_.pid };
 
                 const auto reply_name =
                     memory_
@@ -851,23 +834,18 @@ void CompatibilityKernel::dispatch_mach_message(
                 if (reply_name != xnu::ipc::null_name &&
                     reply_name != xnu::ipc::dead_name) {
                     reply_disposition = (*bits >> 8U) & 0xffU;
-                    if (const auto transfer =
-                            capture(reply_name, reply_disposition, 0)) {
-                        reply_object = transfer->object;
-                        reply_right = transfer->right;
-                    } else {
-                        // Native deadok copyin accepts named dead rights for
-                        // COPY_SEND/MOVE_SEND/MOVE_SEND_ONCE, but never MAKE.
-                        const auto entry = shared_state_->mach_namespaces.lookup(
-                            process_.pid, reply_name);
-                        named_dead_reply = reply_disposition >= 17U &&
-                            reply_disposition <= 19U && entry &&
-                            (entry->type & xnu::ipc::type_mask(
-                                xnu::ipc::Right::DeadName)) != 0U;
-                        if (!named_dead_reply) {
-                            registers[0] = darwin::mach_message::send_invalid_reply;
-                            return;
+                    if (const auto transfer = copyin.capture(reply_name,
+                            reply_disposition,
+                            darwin::mig_wire::header_local_port_offset)) {
+                        if (transfer->right == xnu::ipc::Right::DeadName) {
+                            dead_transfers.push_back(*transfer);
+                        } else {
+                            reply_object = transfer->object;
+                            reply_right = transfer->right;
                         }
+                    } else {
+                        registers[0] = darwin::mach_message::send_invalid_reply;
+                        return;
                     }
                 }
 
@@ -881,7 +859,9 @@ void CompatibilityKernel::dispatch_mach_message(
                     voucher_name != xnu::ipc::dead_name &&
                     voucher_disposition != 0U) {
                     if (const auto transfer =
-                            capture(voucher_name, voucher_disposition, 0)) {
+                            copyin.capture(voucher_name, voucher_disposition, 0);
+                        transfer &&
+                        transfer->right != xnu::ipc::Right::DeadName) {
                         voucher_object = transfer->object;
                         voucher_right = transfer->right;
                     } else {
@@ -899,9 +879,12 @@ void CompatibilityKernel::dispatch_mach_message(
                                 name == xnu::ipc::dead_name)
                                 continue;
                             if (const auto transfer =
-                                    capture(name, descriptor.disposition(),
+                                    copyin.capture(name, descriptor.disposition(),
                                         descriptor.offset)) {
-                                port_transfers.push_back(*transfer);
+                                if (transfer->right == xnu::ipc::Right::DeadName)
+                                    dead_transfers.push_back(*transfer);
+                                else
+                                    port_transfers.push_back(*transfer);
                             } else {
                                 registers[0] =
                                     darwin::mach_message::send_invalid_right;
@@ -925,9 +908,12 @@ void CompatibilityKernel::dispatch_mach_message(
                                 name == xnu::ipc::dead_name)
                                 continue;
                             if (const auto transfer =
-                                    capture(name, descriptor.disposition(),
+                                    copyin.capture(name, descriptor.disposition(),
                                         descriptor.offset, element)) {
-                                port_transfers.push_back(*transfer);
+                                if (transfer->right == xnu::ipc::Right::DeadName)
+                                    dead_transfers.push_back(*transfer);
+                                else
+                                    port_transfers.push_back(*transfer);
                             } else {
                                 registers[0] =
                                     darwin::mach_message::send_invalid_right;
@@ -980,6 +966,14 @@ void CompatibilityKernel::dispatch_mach_message(
                             }
                         }
                     }
+                    for (const auto& transfer : dead_transfers) {
+                        if (transfer.disposition == 17U ||
+                            transfer.disposition == 18U) {
+                            ++moved_references[{ transfer.sender_name,
+                                static_cast<std::uint32_t>(
+                                    xnu::ipc::Right::DeadName) }];
+                        }
+                    }
                     const auto destination_move_disposition = *bits & 0xffU;
                     if (routable &&
                         (destination_move_disposition == 17U ||
@@ -1019,20 +1013,29 @@ void CompatibilityKernel::dispatch_mach_message(
                     }
                 }
 
-                if (routable && named_dead_reply) {
-                    // Only consume a dead-name uref after all copyin checks.
-                    // The message carries IP_DEAD, not a task-local name or
-                    // an in-flight reference to a backing port object.
-                    if (reply_disposition != 19U &&
+                // Dead names contribute sender urefs but no in-flight right.
+                // Canonicalize them only after all reference checks succeed.
+                for (const auto& transfer : dead_transfers) {
+                    if (transfer.disposition != 19U &&
                         modify_port_references_locked(*shared_state_,
-                            process_.pid, reply_name, xnu::ipc::Right::DeadName,
-                            -1) != darwin::mach::success) {
-                        registers[0] = darwin::mach_message::send_invalid_reply;
+                            process_.pid,
+                            transfer.sender_name, xnu::ipc::Right::DeadName, -1) !=
+                            darwin::mach::success) {
+                        registers[0] = darwin::mach_message::send_invalid_right;
                         return;
                     }
-                    write_little_word(*bytes,
-                        darwin::mig_wire::header_local_port_offset,
-                        xnu::ipc::dead_name);
+                    if (transfer.array_index) {
+                        for (auto& array : ool_port_arrays) {
+                            if (array.descriptor_offset ==
+                                transfer.descriptor_offset) {
+                                array.dead_elements.push_back(*transfer.array_index);
+                                break;
+                            }
+                        }
+                    } else {
+                        write_little_word(*bytes, transfer.descriptor_offset,
+                            xnu::ipc::dead_name);
+                    }
                 }
 
                 const auto consume_transfer = [&](std::uint32_t name,
